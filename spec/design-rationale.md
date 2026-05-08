@@ -605,16 +605,24 @@ When the handle is bound (`let h = ...`), the locus lives until
 `dissolve` are invoked).
 
 When the handle is **unbound** (`HelloL { };` as a statement-
-expression), the rule depends on whether the locus has a `run`
-lifecycle method:
+expression), the rule depends on whether the locus has any
+**ongoing-work surface** beyond birth:
 
-- **No `run`** (only `birth` work). The locus dissolves at the
-  enclosing statement boundary. Hello-world's
-  `HelloL { };` is the canonical case.
-- **Has `run`**. The locus becomes an *anonymous child of the
-  enclosing function scope*. Its work runs to completion (or
-  drain) before the enclosing scope returns. Example 01's
-  `TickerL { n: 3 };` is the canonical case.
+- **Ephemeral.** Only `birth` + `params` (or just `params`).
+  The locus dissolves at the enclosing statement boundary.
+  Hello-world's `HelloL { };` is the canonical case.
+- **Long-lived.** Has `run`, *or* has bus subscriptions, *or*
+  has mode declarations callable from outside, *or* otherwise
+  exposes a surface that can be invoked post-birth. The locus
+  becomes an *anonymous child of the enclosing scope*; its
+  work proceeds until the enclosing scope dissolves it
+  (typically via SIGINT-triggered drain cascade). Examples:
+  01's `TickerL { n: 3 };` (run), 05's `EchoL { };` (bus
+  subscriptions).
+
+The rule generalizes: a locus is long-lived iff it can do
+something *after* birth completes. If birth is all there is, it
+dissolves at the statement that birthed it.
 
 This means every function scope is itself an implicit locus
 (see §D below). Anonymous children of a scope dissolve before
@@ -969,6 +977,44 @@ class loci. The cost reflects the projection class:
 (`accept(c: TypeA)` and `accept(c: TypeB)` overloads — not
 yet in grammar) would need `self.children` as a sum type
 (`[TypeA | TypeB]`) and is deferred to a future version.
+
+### F.12 `publish` builtin and bus-block scoping
+
+(Added in v0.1.6 from 05-bus.)
+
+The `publish(subject, msg)` builtin is in scope inside any
+locus that declares a matching `publish SUBJECT of type T`
+in its `bus { ... }` block. The compiler verifies at each call
+site that the subject is declared and the type matches.
+
+Out of scope in loci with no publish declarations. Calling
+`publish` outside a locus body, or with an undeclared subject,
+or with a mismatched type, is a compile-time error.
+
+The runtime emits the message on whatever transport is bound
+to the subject in the deployment configuration (per
+`std::bus::Adapter` / runtime bus router). Author writes typed
+declarations; deployment config selects transports;
+typechecking happens at compile time; routing happens at
+runtime.
+
+### F.13 Bus subscription handler signature
+
+(Added in v0.1.6 from 05-bus.)
+
+A handler named in `subscribe SUBJECT as HANDLER of type T` is
+a function defined elsewhere on the locus body, with signature:
+
+```
+fn HANDLER(payload: T) { ... }
+```
+
+It returns nothing (`-> ()`); to emit responses, the body calls
+`publish(...)` explicitly. This gives the handler full control
+over how many responses to emit, on which subjects, and under
+what conditions — more flexible than the return-value-as-publish
+pattern (which v0 doesn't have but a future version might add
+for the simple single-response case).
 
 ### F.5 Mode-projections share the locus's arena
 

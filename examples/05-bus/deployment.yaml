@@ -1,0 +1,27 @@
+# Example deployment config — binds bus channels to transports.
+#
+# Same source code (main.lt) can target different transports by
+# changing this file. The runtime resolves "demo.greeting" and
+# "demo.ack" against this map at startup.
+
+channels:
+  # Both channels run over an in-memory transport for testing.
+  "demo.*":
+    transport: in_memory
+
+  # Production swap (uncomment to use):
+  # "demo.greeting":
+  #   transport: nats
+  #   url: "nats://localhost:4222"
+  # "demo.ack":
+  #   transport: nats
+  #   url: "nats://localhost:4222"
+
+  # Or for line-rate multicast:
+  # "demo.greeting":
+  #   transport: udp_multicast
+  #   group: "239.1.2.3"
+  #   port: 9000
+  # "demo.ack":
+  #   transport: tcp
+  #   address: "ack-collector:5000"

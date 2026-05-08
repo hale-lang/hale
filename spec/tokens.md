@@ -271,6 +271,11 @@ without an `import`. They write to stdout. `print` does not
 emit a trailing newline; `println` does. They accept any number
 of arguments of any displayable type and concatenate.
 
+`publish` is a built-in function in scope inside any locus
+that declares matching `bus { publish SUBJECT of type T; }`.
+The compiler verifies the subject and type at each call site.
+Out of scope in loci with no publish declaration.
+
 The framework names `(B, c, σ, φ)` use ASCII spellings in source:
 `B`, `c`, `sigma`, `phi`. The framework's `k_max` is `k_max` or
 its named alias `span_max`.

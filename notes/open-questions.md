@@ -42,11 +42,11 @@ when the type-system / operational-semantics docs are drafted.
    dissolution.
 
 6. **What happens to in-flight messages on `dissolve`?**
-   Drop, deliver, error to sender, store in dead-letter queue?
-   Probably: drain phase delivers in-flight; dissolve phase
-   discards anything still queued. (Still open; not surfaced
-   yet — `02-parent-child` doesn't exercise messaging.
-   Probably resolved in `05-bus`.)
+   **Resolved (05-bus):** drain phase delivers in-flight messages
+   before any new messages are accepted; dissolve phase discards
+   anything still queued. SIGINT triggers drain on root → cascade
+   → leaf loci stop accepting new inbound, finish their in-flight
+   handlers, then dissolve.
 
 7. **How is locus-scoped memory shared across mode projections?**
    **Resolved (delivery plan, commitment 7):** modes share the

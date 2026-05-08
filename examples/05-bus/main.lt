@@ -1,0 +1,37 @@
+// 05-bus — typed pub-sub on a transport-agnostic bus.
+//
+// An echo service. Subscribes to demo.greeting; publishes
+// demo.ack in response. The transport (NATS, UDP multicast,
+// in-memory, ...) is bound at deployment time, not in source.
+// Same source code, different transport per channel as the
+// deployment configures.
+
+type Greeting {
+    text: string;
+    sender: string;
+}
+
+type Acknowledgment {
+    received: string;
+}
+
+locus EchoL {
+    bus {
+        subscribe "demo.greeting" as on_greeting of type Greeting;
+        publish   "demo.ack"               of type Acknowledgment;
+    }
+
+    fn on_greeting(g: Greeting) {
+        println("got: ", g.text, " from ", g.sender);
+        publish("demo.ack", Acknowledgment { received: g.text });
+    }
+}
+
+fn main() {
+    EchoL { };
+    // EchoL has a bus subscription, so it is long-lived as an
+    // anonymous child of main's implicit locus. main returns
+    // when EchoL's subscriptions are drained — typically on
+    // SIGINT, which triggers the depth-first drain cascade
+    // (per F.4) from the runtime root.
+}
