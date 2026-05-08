@@ -805,9 +805,12 @@ impl Interpreter {
         // long-lived locus (run, or subscribed) stays registered
         // until program end (program-end dissolve cascade is a
         // future iteration). Closures evaluated here surface
-        // collapse vs explosion per F.9.
+        // collapse vs explosion per F.9; the immediate parent
+        // (if any) is captured here so its on_failure handler
+        // can absorb violations.
         if is_ephemeral_locus(&decl) {
-            self.dissolve_locus(handle.clone())?;
+            let parent = self.parent_stack.last().cloned();
+            self.dissolve_locus(handle.clone(), parent)?;
         }
 
         Ok(Value::Locus(handle))
@@ -884,18 +887,24 @@ impl Interpreter {
     /// Drain a locus through the dissolve discipline (F.4 +
     /// F.9): drain children first depth-first, evaluate every
     /// closure whose epoch is dissolve, run the dissolve()
-    /// lifecycle if defined. A failing closure prints a
-    /// ClosureViolation report; the failure surfaces as
-    /// `Signal::Error` once any closure fails (the locus
-    /// "explodes" rather than "collapses").
-    fn dissolve_locus(&mut self, handle: LocusHandle) -> Result<(), Signal> {
-        // Depth-first child drain (per F.4).
+    /// lifecycle if defined. A failing closure produces a
+    /// ClosureViolation that is delivered to the parent's
+    /// `on_failure(child, err)` handler if one is defined.
+    /// If the parent absorbs (handler returns without raising),
+    /// the dissolution is treated as a collapse. If no parent
+    /// or no parent-handler, the violation is reported on
+    /// stderr and the dissolve completes.
+    fn dissolve_locus(
+        &mut self,
+        handle: LocusHandle,
+        parent: Option<LocusHandle>,
+    ) -> Result<(), Signal> {
+        // Depth-first child drain (per F.4): every child is
+        // dissolved with `handle` as their parent so violations
+        // route to the locally-correct on_failure.
         let children: Vec<LocusHandle> = handle.children.borrow().clone();
-        let mut violation: Option<String> = None;
         for child in children {
-            if let Err(Signal::Error(msg)) = self.dissolve_locus(child) {
-                violation.get_or_insert(msg);
-            }
+            self.dissolve_locus(child, Some(handle.clone()))?;
         }
 
         // Evaluate every closure declared on this locus whose
@@ -909,35 +918,111 @@ impl Interpreter {
                 _ => None,
             })
             .collect();
+
+        let mut violations: Vec<Value> = Vec::new();
         for closure in &closures {
-            if let Some(msg) = self.evaluate_closure(handle.clone(), closure)? {
-                violation.get_or_insert(msg);
+            match self.evaluate_closure(handle.clone(), closure)? {
+                ClosureOutcome::Pass => {}
+                ClosureOutcome::Violation(v) => violations.push(v),
             }
         }
 
-        // Run dissolve() lifecycle if defined.
+        // Run dissolve() lifecycle if defined (independent of
+        // closure evaluation; this is the locus's own cleanup).
         if let Some(dissolve_decl) = lookup_lifecycle(&handle.decl, LifecycleKind::Dissolve) {
             self.run_lifecycle(handle.clone(), &dissolve_decl, &[])?;
         }
 
-        if let Some(msg) = violation {
-            // Future: invoke parent's on_failure(child,
-            // ClosureViolation { ... }) per F.9. v0: surface
-            // the report and continue (a parent on_failure
-            // path is the next iteration).
-            eprintln!("{}", msg);
+        // Route violations to parent's on_failure if defined.
+        for violation in violations {
+            self.deliver_violation(handle.clone(), parent.as_ref(), violation)?;
+        }
+
+        Ok(())
+    }
+
+    /// Deliver a ClosureViolation up the parent chain, if a
+    /// parent on_failure handler exists. If absorbed, return
+    /// silently. If no handler, print on stderr and continue.
+    fn deliver_violation(
+        &mut self,
+        child: LocusHandle,
+        parent: Option<&LocusHandle>,
+        violation: Value,
+    ) -> Result<(), Signal> {
+        if let Some(parent) = parent {
+            if let Some(failure_decl) = lookup_failure(&parent.decl) {
+                if failure_decl.params.len() != 2 {
+                    return Err(Signal::Error(format!(
+                        "on_failure on locus `{}` must take 2 params (child, err); \
+                         got {}",
+                        parent.name,
+                        failure_decl.params.len()
+                    )));
+                }
+                self.run_failure(
+                    parent.clone(),
+                    &failure_decl,
+                    Value::Locus(child),
+                    violation,
+                )?;
+                return Ok(());
+            }
+        }
+        // No handler: print and continue (the violation isn't
+        // a hard runtime error in v0; future iterations may
+        // make absence-of-handler a process-exit-non-zero per
+        // F.9's "no parent → bubble to root → process exits").
+        if let Value::Struct { fields, .. } = &violation {
+            let f = fields.borrow();
+            let locus = f.get("locus").map(|v| v.display()).unwrap_or_default();
+            let closure = f.get("closure").map(|v| v.display()).unwrap_or_default();
+            let lt = f.get("left").map(|v| v.display()).unwrap_or_default();
+            let rt = f.get("right").map(|v| v.display()).unwrap_or_default();
+            let tol = f.get("tolerance").map(|v| v.display()).unwrap_or_default();
+            eprintln!(
+                "ClosureViolation: locus `{}` closure `{}` failed at dissolve: \
+                 {} ~~ {} within {}",
+                locus, closure, lt, rt, tol
+            );
         }
         Ok(())
     }
 
-    /// Evaluate one closure assertion. Returns Ok(None) on
-    /// pass, Ok(Some(report)) on fail. The caller decides
-    /// whether to print/bubble.
+    fn run_failure(
+        &mut self,
+        handle: LocusHandle,
+        decl: &FailureDecl,
+        child_handle: Value,
+        violation: Value,
+    ) -> Result<(), Signal> {
+        self.self_stack.push(handle.clone());
+        self.parent_stack.push(handle);
+        self.env.push();
+        // Bind the two declared params positionally.
+        self.env
+            .define(&decl.params[0].name.name, child_handle);
+        self.env.define(&decl.params[1].name.name, violation);
+        let result = self.exec_block(&decl.body);
+        self.env.pop();
+        self.parent_stack.pop();
+        self.self_stack.pop();
+        match result {
+            Ok(()) | Err(Signal::Return(_)) => Ok(()),
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Evaluate one closure assertion. Returns
+    /// [`ClosureOutcome::Pass`] when the band holds, or
+    /// [`ClosureOutcome::Violation`] carrying a structured
+    /// `ClosureViolation` value the runtime can route to a
+    /// parent's on_failure handler.
     fn evaluate_closure(
         &mut self,
         handle: LocusHandle,
         closure: &ClosureDecl,
-    ) -> Result<Option<String>, Signal> {
+    ) -> Result<ClosureOutcome, Signal> {
         self.self_stack.push(handle.clone());
         self.env.push();
 
@@ -954,17 +1039,21 @@ impl Interpreter {
         let (lt, rt, tol) = result?;
         let passes = approx_pass(&lt, &rt, &tol).map_err(Signal::Error)?;
         if passes {
-            return Ok(None);
+            return Ok(ClosureOutcome::Pass);
         }
-        Ok(Some(format!(
-            "ClosureViolation: locus `{}` closure `{}` failed at dissolve: \
-             {} ~~ {} within {}",
-            handle.name,
-            closure.name.name,
-            lt.display(),
-            rt.display(),
-            tol.display(),
-        )))
+
+        let mut fields: BTreeMap<String, Value> = BTreeMap::new();
+        fields.insert("locus".into(), Value::String(handle.name.clone()));
+        fields.insert("closure".into(), Value::String(closure.name.name.clone()));
+        fields.insert("left".into(), lt.clone());
+        fields.insert("right".into(), rt.clone());
+        fields.insert("tolerance".into(), tol);
+        fields.insert("diff".into(), diff_value(&lt, &rt));
+        let violation = Value::Struct {
+            name: "ClosureViolation".to_string(),
+            fields: Rc::new(RefCell::new(fields)),
+        };
+        Ok(ClosureOutcome::Violation(violation))
     }
 
     /// Publish a payload on a subject, then drain all pending
@@ -988,6 +1077,32 @@ impl Interpreter {
             }
         }
         Ok(())
+    }
+}
+
+/// Outcome of evaluating one closure assertion at its epoch.
+enum ClosureOutcome {
+    Pass,
+    Violation(Value),
+}
+
+fn lookup_failure(decl: &LocusDecl) -> Option<FailureDecl> {
+    decl.members.iter().find_map(|m| match m {
+        LocusMember::Failure(fd) => Some(fd.clone()),
+        _ => None,
+    })
+}
+
+fn diff_value(l: &Value, r: &Value) -> Value {
+    match (l, r) {
+        (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
+        (Value::Float(a), Value::Float(b)) => Value::Float(a - b),
+        (Value::Decimal(a), Value::Decimal(b)) => {
+            let af = parse_decimal(a).unwrap_or(0.0);
+            let bf = parse_decimal(b).unwrap_or(0.0);
+            Value::Decimal(fmt_decimal(af - bf))
+        }
+        _ => Value::Nil,
     }
 }
 

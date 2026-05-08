@@ -1,0 +1,55 @@
+// 03b-closure-absorbed — parent on_failure absorbs a
+// ClosureViolation.
+//
+// 03-closure-test demonstrates the *unhandled* fail case:
+// CheckerL explodes, no parent handler exists, the runtime
+// emits the violation report on stderr.
+//
+// This example shows the *handled* path of F.9: when a child
+// dissolves with a closure violation, the parent's
+// `on_failure(child, err)` handler runs, receives a structured
+// `ClosureViolation` value, and decides what to do. Reading
+// the violation's fields (closure name, left/right values,
+// tolerance, diff) without re-raising is "absorption" — the
+// parent has accepted the imbalance and the dissolution
+// completes as a collapse from the parent's perspective.
+
+locus CheckerL {
+    params {
+        x: Int = 5;
+        y: Int = 5;
+    }
+
+    closure xy_match {
+        self.x ~~ self.y within 0;
+    }
+}
+
+locus AuditL {
+    on_failure(c: CheckerL, err: ClosureViolation) {
+        // Read the structured violation. v0 fields:
+        //   locus: String (the failed locus's name)
+        //   closure: String (the failed closure's name)
+        //   left, right, tolerance: the assertion values
+        //   diff: left - right when both are numeric
+        println("AuditL absorbed: ", err.closure,
+                " on ", err.locus,
+                " (diff=", err.diff, ")");
+        // Returning without re-raising counts as absorption.
+        // A future bubble(err) would propagate to grandparent.
+    }
+
+    run() {
+        println("--- pass: silent collapse, no audit message ---");
+        CheckerL { x: 5, y: 5 };
+
+        println("--- fail: AuditL absorbs the violation ---");
+        CheckerL { x: 5, y: 7 };
+
+        println("--- run() ends; AuditL stays alive (has run) ---");
+    }
+}
+
+fn main() {
+    AuditL { };
+}

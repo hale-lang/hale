@@ -50,6 +50,11 @@ fn closure_test_runs() {
 }
 
 #[test]
+fn closure_absorbed_runs() {
+    assert_eq!(parse_and_run("03b-closure-absorbed/main.lt").unwrap(), 0);
+}
+
+#[test]
 fn modes_runs() {
     assert_eq!(parse_and_run("04-modes/main.lt").unwrap(), 0);
 }

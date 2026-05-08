@@ -113,9 +113,13 @@ impl Parser {
     }
 
     /// Like [`expect_ident`] but also accepts mode keywords as
-    /// member names (per F.10).
+    /// member names (per F.10) plus framework keywords that
+    /// conflict with field names of built-in struct values
+    /// (notably `closure` on a `ClosureViolation` value). The
+    /// post-`.` position is unambiguous, so admitting reserved
+    /// words here is always safe.
     fn expect_member_name(&mut self) -> Result<Ident, Diag> {
-        if let Some(name) = try_keyword_as_name(self.peek()) {
+        if let Some(name) = try_member_keyword_as_name(self.peek()) {
             let span = self.peek_token().span;
             self.bump();
             return Ok(Ident { name: name.to_string(), span });
@@ -1893,6 +1897,31 @@ fn try_keyword_as_name(k: &TokenKind) -> Option<&'static str> {
         TokenKind::Bulk => "bulk",
         TokenKind::Harmonic => "harmonic",
         TokenKind::Resolution => "resolution",
+        _ => return None,
+    })
+}
+
+/// Broader keyword-as-name set permitted in member-name
+/// position (post-`.`). The post-dot position is
+/// unambiguous, so it's safe to admit framework-vocabulary
+/// keywords here as field names. This unlocks fields like
+/// `err.closure`, `err.locus`, `err.params` on built-in
+/// struct values without renaming.
+fn try_member_keyword_as_name(k: &TokenKind) -> Option<&'static str> {
+    if let Some(name) = try_keyword_as_name(k) {
+        return Some(name);
+    }
+    Some(match k {
+        TokenKind::Closure => "closure",
+        TokenKind::Locus => "locus",
+        TokenKind::Params => "params",
+        TokenKind::Contract => "contract",
+        TokenKind::Bus => "bus",
+        TokenKind::Mode => "mode",
+        TokenKind::Tier => "tier",
+        TokenKind::Projection => "projection",
+        TokenKind::Perspective => "perspective",
+        TokenKind::Type => "type",
         _ => return None,
     })
 }
