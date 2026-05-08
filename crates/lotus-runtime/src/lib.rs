@@ -11,6 +11,7 @@
 //!   (or set of programs) starting from `fn main()`.
 
 pub mod builtins;
+pub mod bus;
 pub mod env;
 pub mod eval;
 pub mod value;

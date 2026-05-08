@@ -1,10 +1,14 @@
 // 05-bus — typed pub-sub on a transport-agnostic bus.
 //
-// An echo service. Subscribes to demo.greeting; publishes
-// demo.ack in response. The transport (NATS, UDP multicast,
-// in-memory, ...) is bound at deployment time, not in source.
-// Same source code, different transport per channel as the
-// deployment configures.
+// Two loci wired through the bus:
+//   - SenderL publishes a Greeting on demo.greeting at birth.
+//   - EchoL subscribes to demo.greeting; on receipt, prints
+//     and publishes an Acknowledgment on demo.ack.
+//
+// The transport (in-memory router for v0; NATS / UDP multicast
+// / unix sockets in production) is bound at deployment time,
+// not in source. Same source code, different transport per
+// channel as the deployment configures.
 
 type Greeting {
     text: String;
@@ -27,11 +31,41 @@ locus EchoL {
     }
 }
 
+locus AckLogL {
+    bus {
+        subscribe "demo.ack" as on_ack of type Acknowledgment;
+    }
+
+    fn on_ack(a: Acknowledgment) {
+        println("ack: ", a.received);
+    }
+}
+
+locus SenderL {
+    bus {
+        publish "demo.greeting" of type Greeting;
+    }
+
+    birth() {
+        "demo.greeting" <- Greeting {
+            text: "hello",
+            sender: "sender-1",
+        };
+    }
+}
+
 fn main() {
+    // EchoL and AckLogL register their subscriptions at birth.
+    // Order matters in v0 (subscriptions registered first fire
+    // first; the SenderL must be born last so the subscribers
+    // are ready when its birth() publishes).
     EchoL { };
-    // EchoL has a bus subscription, so it is long-lived as an
-    // anonymous child of main's implicit locus. main returns
-    // when EchoL's subscriptions are drained — typically on
-    // SIGINT, which triggers the depth-first drain cascade
-    // (per F.4) from the runtime root.
+    AckLogL { };
+    SenderL { };
+
+    // Anonymous children of main's implicit locus: they live
+    // until main returns. main has no run() body, so it
+    // returns immediately after instantiation; the SIGINT-
+    // triggered drain cascade (per F.4) would dissolve the
+    // tree in production. v0: the process just exits.
 }

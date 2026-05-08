@@ -13,6 +13,7 @@ use std::rc::Rc;
 use lotus_syntax::ast::*;
 
 use crate::builtins;
+use crate::bus::BusRouter;
 use crate::env::Env;
 use crate::value::{FnRef, LocusHandle, Value};
 
@@ -59,6 +60,9 @@ struct Interpreter {
     /// receive any unbound child instantiations as anonymous
     /// children. None at top level (main's implicit locus).
     parent_stack: Vec<LocusHandle>,
+    /// In-memory bus router. Subscribers register on locus
+    /// instantiation; `<-` dispatches through it.
+    bus: BusRouter,
 }
 
 impl Interpreter {
@@ -71,6 +75,7 @@ impl Interpreter {
             types: BTreeMap::new(),
             self_stack: Vec::new(),
             parent_stack: Vec::new(),
+            bus: BusRouter::new(),
         }
     }
 
@@ -190,11 +195,18 @@ impl Interpreter {
                 let v = self.eval_expr(value)?;
                 self.assign_lvalue(target, *op, v)
             }
-            Stmt::Send { .. } => {
-                // Bus router not in v0 interpreter. The typechecker
-                // already validated the call is structurally legal;
-                // executing is a no-op (but warn).
-                Ok(())
+            Stmt::Send { subject, value, .. } => {
+                let payload = self.eval_expr(value)?;
+                let subject_str = match self.eval_expr(subject)? {
+                    Value::String(s) => s,
+                    other => {
+                        return Err(Signal::Error(format!(
+                            "bus send subject must be String; got {}",
+                            other.type_name()
+                        )));
+                    }
+                };
+                self.dispatch_bus(&subject_str, payload)
             }
             Stmt::If(if_stmt) => self.exec_if(if_stmt),
             Stmt::Match(_) => Err(Signal::Error(
@@ -731,6 +743,21 @@ impl Interpreter {
             decl: decl.clone(),
         };
 
+        // Register every bus subscription on the router.
+        for member in &decl.members {
+            if let LocusMember::Bus(bb) = member {
+                for bm in &bb.members {
+                    if let BusMember::Subscribe { subject, handler, .. } = bm {
+                        self.bus.subscribe(
+                            subject.clone(),
+                            handle.clone(),
+                            handler.name.clone(),
+                        );
+                    }
+                }
+            }
+        }
+
         // Attach to enclosing parent (if any) before birth, per
         // F.7. v0: we don't yet route through accept(); we
         // simply register on the parent.
@@ -786,6 +813,56 @@ impl Interpreter {
             Ok(()) | Err(Signal::Return(_)) => Ok(()),
             Err(other) => Err(other),
         }
+    }
+
+    /// Run a locus's bound `fn` member as a handler invocation.
+    /// Used by the bus router when dispatching subscribed
+    /// messages: the handler runs *as the locus*, so self_stack
+    /// and parent_stack are pushed for the call.
+    fn run_handler(
+        &mut self,
+        handle: LocusHandle,
+        handler_name: &str,
+        arg: Value,
+    ) -> Result<(), Signal> {
+        let fn_decl = lookup_method(&handle.decl, handler_name).ok_or_else(|| {
+            Signal::Error(format!(
+                "bus dispatch: locus `{}` has no handler `{}`",
+                handle.name, handler_name
+            ))
+        })?;
+        if fn_decl.params.len() != 1 {
+            return Err(Signal::Error(format!(
+                "bus handler `{}` must take exactly one parameter; got {}",
+                handler_name,
+                fn_decl.params.len()
+            )));
+        }
+        self.self_stack.push(handle.clone());
+        self.parent_stack.push(handle.clone());
+        self.env.push();
+        self.env.define(&fn_decl.params[0].name.name, arg);
+        let result = self.exec_block(&fn_decl.body);
+        self.env.pop();
+        self.parent_stack.pop();
+        self.self_stack.pop();
+        match result {
+            Ok(()) | Err(Signal::Return(_)) => Ok(()),
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Synchronously deliver a published message to every
+    /// subscriber registered for the subject. Re-entrancy is
+    /// safe because `subscribers_for` snapshots the list before
+    /// dispatching — a handler may publish more messages
+    /// without invalidating the iteration.
+    fn dispatch_bus(&mut self, subject: &str, payload: Value) -> Result<(), Signal> {
+        let subs = self.bus.subscribers_for(subject);
+        for sub in subs {
+            self.run_handler(sub.locus, &sub.handler, payload.clone())?;
+        }
+        Ok(())
     }
 }
 

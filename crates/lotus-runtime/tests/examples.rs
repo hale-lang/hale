@@ -54,6 +54,11 @@ fn modes_runs() {
     assert_eq!(parse_and_run("04-modes/main.lt").unwrap(), 0);
 }
 
+#[test]
+fn bus_runs() {
+    assert_eq!(parse_and_run("05-bus/main.lt").unwrap(), 0);
+}
+
 // 01-locus-with-run uses time::sleep with 500ms intervals;
 // running it under cargo test would stall. Smoke-tested
 // manually via `lotus run examples/01-locus-with-run/main.lt`.
