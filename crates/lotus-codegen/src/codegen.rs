@@ -38,6 +38,13 @@ enum LotusType {
     Bool,
     String,
     Duration,
+    /// 64-bit decimal value. v0 codegen stores this as `f64` (same
+    /// hack the interpreter uses — `parse_decimal` calls
+    /// `s.parse::<f64>()`). Distinct from `Float` at the type level
+    /// so type-checking stays strict; same LLVM lowering. A real
+    /// fixed-point or arbitrary-precision representation lands
+    /// later when Decimal precision actually matters.
+    Decimal,
     /// Pointer to a locus's struct. The string carries the locus
     /// name; the layout + field map live in `Cx.user_loci`. Used
     /// for the child param of `accept(g: ChildLocus)`.
@@ -114,6 +121,7 @@ pub fn build_executable(
         user_types: BTreeMap::new(),
         bus_state: None,
         deferred_dissolves: Vec::new(),
+        in_main: false,
     };
 
     cx.declare_builtins();
@@ -204,6 +212,10 @@ struct Cx<'ctx, 'p> {
     /// immediately, then drained + dissolved in reverse order at
     /// scope exit so they outlive synchronous publishes.
     deferred_dissolves: Vec<Vec<(PointerValue<'ctx>, String)>>,
+    /// True while lowering the body of `main`. `return` is treated
+    /// as an exit-code return (truncated to i32) when this is set,
+    /// rather than the user-fn `current_user_fn_ret` path.
+    in_main: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -781,6 +793,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.current_fn = Some(main_fn);
         self.current_user_fn_ret = None;
         self.current_self = None;
+        self.in_main = true;
         self.push_dissolve_frame();
 
         let mut scope = Scope::default();
@@ -802,6 +815,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // dissolves are unreachable.
             let _ = self.deferred_dissolves.pop();
         }
+        self.in_main = false;
         self.current_fn = None;
         Ok(())
     }
@@ -834,6 +848,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 PrimType::Bool => Ok(LotusType::Bool),
                 PrimType::String => Ok(LotusType::String),
                 PrimType::Duration => Ok(LotusType::Duration),
+                PrimType::Decimal => Ok(LotusType::Decimal),
                 other => Err(CodegenError::Unsupported(format!(
                     "type primitive `{:?}` in signature",
                     other
@@ -961,6 +976,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         ParamValue::Bool(_) => LotusType::Bool,
                         ParamValue::String(_) => LotusType::String,
                         ParamValue::Duration(_) => LotusType::Duration,
+                        ParamValue::Decimal(_) => LotusType::Decimal,
                     };
                     if let Some(ascribed) = &p.ty {
                         let asc_ty = self.type_expr_to_lotus(ascribed)?;
@@ -1159,7 +1175,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     .context
                                     .i64_type()
                                     .fn_type(&llvm_param_tys, false),
-                                LotusType::Float => self
+                                LotusType::Float | LotusType::Decimal => self
                                     .context
                                     .f64_type()
                                     .fn_type(&llvm_param_tys, false),
@@ -1406,7 +1422,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .context
                 .i64_type()
                 .fn_type(&llvm_param_tys, false),
-            Some(LotusType::Float) => {
+            Some(LotusType::Float) | Some(LotusType::Decimal) => {
                 self.context.f64_type().fn_type(&llvm_param_tys, false)
             }
             Some(LotusType::Bool) => {
@@ -1591,6 +1607,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                     Expr::Path(qn) => {
                         self.lower_path_call(qn, args, scope)?;
+                    }
+                    Expr::Field { receiver, name, .. }
+                        if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
+                    {
+                        let _ = self.lower_self_method_call(
+                            &name.name,
+                            args,
+                            scope,
+                        )?;
                     }
                     _ => {
                         return Err(CodegenError::Unsupported(
@@ -1874,11 +1899,47 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         expr: Option<&Expr>,
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
+        if self.in_main {
+            // Return from main maps to the C entry point's i32
+            // exit code. A bare `return;` exits 0; `return n;`
+            // truncates the i64 to i32 to match the declared
+            // ABI. main itself returns void at the lotus level
+            // OR Int (per spec/runtime.md), but at LLVM we always
+            // emit i32. Flush the dissolve frame first so any
+            // long-lived loci wind down before the process exits.
+            self.flush_dissolve_frame()?;
+            // Re-open an empty frame so the post-flush bookkeeping
+            // (popped in lower_program) stays balanced.
+            self.push_dissolve_frame();
+            let i32_t = self.context.i32_type();
+            let code = match expr {
+                None => i32_t.const_int(0, false),
+                Some(e) => {
+                    let (v, ty) = self.lower_expr(e, scope)?;
+                    if ty != LotusType::Int {
+                        return Err(CodegenError::Unsupported(format!(
+                            "`return` from main must carry Int (exit code); \
+                             got {:?}",
+                            ty
+                        )));
+                    }
+                    self.builder
+                        .build_int_truncate(
+                            v.into_int_value(),
+                            i32_t,
+                            "exit.code",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                }
+            };
+            self.builder
+                .build_return(Some(&code))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            return Ok(BlockEnd::Terminated);
+        }
         let ret_ty = self.current_user_fn_ret.clone().ok_or_else(|| {
             CodegenError::Unsupported(
-                "`return` outside a user fn (main return values not yet \
-                 supported in codegen)"
-                    .to_string(),
+                "`return` outside a user fn".to_string(),
             )
         })?;
         match (expr, ret_ty) {
@@ -1938,7 +1999,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .builder
                 .build_alloca(self.context.i64_type(), name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
-            LotusType::Float => self
+            LotusType::Float | LotusType::Decimal => self
                 .builder
                 .build_alloca(self.context.f64_type(), name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
@@ -1983,6 +2044,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // like `time::sleep` enforce the typed contract.
                 let v = self.context.i64_type().const_int(*ns as u64, true);
                 Ok((v.into(), LotusType::Duration))
+            }
+            Expr::Literal(Literal::Decimal(s), _) => {
+                // v0 codegen mirrors the interpreter's
+                // `parse_decimal`: strip optional `d` suffix, parse
+                // as f64. Real fixed-point lands later when Decimal
+                // precision actually matters for trellis production.
+                let stripped = s.strip_suffix('d').unwrap_or(s);
+                let f = stripped.parse::<f64>().map_err(|e| {
+                    CodegenError::Unsupported(format!(
+                        "Decimal literal `{}` failed to parse: {}",
+                        s, e
+                    ))
+                })?;
+                let v = self.context.f64_type().const_float(f);
+                Ok((v.into(), LotusType::Decimal))
             }
             Expr::Ident(id) => {
                 let (alloca, ty) = scope
@@ -2148,6 +2224,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     })
                 }
                 Expr::Path(qn) => self.lower_path_call_expr(qn, args),
+                Expr::Field { receiver, name, .. }
+                    if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
+                {
+                    let result =
+                        self.lower_self_method_call(&name.name, args, scope)?;
+                    result.ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "self.{} returns no value but is used in \
+                             expression position",
+                            name.name
+                        ))
+                    })
+                }
                 _ => Err(CodegenError::Unsupported(format!(
                     "non-user-fn call in expression position: {:?}",
                     std::mem::discriminant(callee.as_ref())
@@ -2190,6 +2279,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.context.i64_type().const_int(*ns as u64, true).into(),
                 LotusType::Duration,
             ),
+            ParamValue::Decimal(f) => (
+                self.context.f64_type().const_float(*f).into(),
+                LotusType::Decimal,
+            ),
         }
     }
 
@@ -2201,7 +2294,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             LotusType::Int | LotusType::Duration => {
                 self.context.i64_type().into()
             }
-            LotusType::Float => self.context.f64_type().into(),
+            LotusType::Float | LotusType::Decimal => {
+                self.context.f64_type().into()
+            }
             LotusType::Bool => self.context.bool_type().into(),
             LotusType::String
             | LotusType::LocusRef(_)
@@ -2284,6 +2379,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((v.into(), LotusType::Float))
             }
+            (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, LotusType::Decimal) => {
+                let l = lv.into_float_value();
+                let r = rv.into_float_value();
+                let v = match op {
+                    BinOp::Add => self.builder.build_float_add(l, r, "decadd"),
+                    BinOp::Sub => self.builder.build_float_sub(l, r, "decsub"),
+                    BinOp::Mul => self.builder.build_float_mul(l, r, "decmul"),
+                    BinOp::Div => self.builder.build_float_div(l, r, "decdiv"),
+                    _ => unreachable!(),
+                };
+                let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((v.into(), LotusType::Decimal))
+            }
             (BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq,
                 LotusType::Int) =>
             {
@@ -2305,7 +2413,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((v.into(), LotusType::Bool))
             }
             (BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq,
-                LotusType::Float) =>
+                LotusType::Float | LotusType::Decimal) =>
             {
                 let l = lv.into_float_value();
                 let r = rv.into_float_value();
@@ -2368,6 +2476,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((r.into(), LotusType::Float))
             }
+            (UnaryOp::Neg, LotusType::Decimal) => {
+                let r = self
+                    .builder
+                    .build_float_neg(v.into_float_value(), "decneg")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((r.into(), LotusType::Decimal))
+            }
             (UnaryOp::Not, LotusType::Bool) => {
                 let r = self
                     .builder
@@ -2417,7 +2532,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     format.push_str("%lld");
                     printf_args.push(BasicMetadataValueEnum::IntValue(val.into_int_value()));
                 }
-                LotusType::Float => {
+                LotusType::Float | LotusType::Decimal => {
                     format.push_str("%g");
                     printf_args
                         .push(BasicMetadataValueEnum::FloatValue(val.into_float_value()));
@@ -2922,6 +3037,99 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// Lower a `self.method(args)` call. Resolves the method on the
+    /// current locus's `user_methods` table and emits a call with
+    /// `self_ptr` prepended. Returns the lowered value + type when
+    /// the method has a return type, or `None` for void methods.
+    fn lower_self_method_call(
+        &mut self,
+        method_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<(BasicValueEnum<'ctx>, LotusType)>, CodegenError> {
+        let cs = self.current_self.as_ref().cloned().ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "self.{}(...) outside a locus method",
+                method_name
+            ))
+        })?;
+        let info = self
+            .user_loci
+            .get(&cs.locus_name)
+            .cloned()
+            .expect("current_self points to a declared locus");
+        let func = info
+            .user_methods
+            .get(method_name)
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "locus `{}` has no method `{}`",
+                    cs.locus_name, method_name
+                ))
+            })?;
+        // Find the source-level FnDecl so we can read the param/ret
+        // types for typechecking the call site.
+        let fd: FnDecl = self
+            .program
+            .items
+            .iter()
+            .find_map(|item| match item {
+                TopDecl::Locus(l) if l.name.name == cs.locus_name => l
+                    .members
+                    .iter()
+                    .find_map(|m| match m {
+                        LocusMember::Fn(fd) if fd.name.name == method_name => {
+                            Some(fd.clone())
+                        }
+                        _ => None,
+                    }),
+                _ => None,
+            })
+            .expect("method declaration was visited in pass A2");
+        if args.len() != fd.params.len() {
+            return Err(CodegenError::Unsupported(format!(
+                "self.{}: expected {} args, got {}",
+                method_name,
+                fd.params.len(),
+                args.len()
+            )));
+        }
+        let mut llvm_args: Vec<BasicMetadataValueEnum> =
+            Vec::with_capacity(args.len() + 1);
+        llvm_args.push(cs.self_ptr.into());
+        for (i, a) in args.iter().enumerate() {
+            let (v, ty) = self.lower_expr(a, scope)?;
+            let want = self.type_expr_to_lotus(&fd.params[i].ty)?;
+            if ty != want {
+                return Err(CodegenError::Unsupported(format!(
+                    "self.{} arg {} type mismatch: expected {:?}, got {:?}",
+                    method_name, i, want, ty
+                )));
+            }
+            llvm_args.push(v.into());
+        }
+        let call = self
+            .builder
+            .build_call(
+                func,
+                &llvm_args,
+                &format!("self.{}.call", method_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        match &fd.ret {
+            None => Ok(None),
+            Some(t) => {
+                let rt = self.type_expr_to_lotus(t)?;
+                let v = call
+                    .try_as_basic_value()
+                    .left()
+                    .expect("non-void method returns a basic value");
+                Ok(Some((v, rt)))
+            }
+        }
+    }
+
     /// Lower a `subject <- payload;` statement to a call into the
     /// generated `lotus.bus_dispatch` fn. Subject must be a String
     /// literal (or evaluate to a String pointer); payload must be
@@ -3063,6 +3271,7 @@ enum ParamValue {
     Float(f64),
     Bool(bool),
     Duration(i64),
+    Decimal(f64),
 }
 
 fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
@@ -3072,6 +3281,16 @@ fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
         Expr::Literal(Literal::Float(f), _) => Ok(ParamValue::Float(*f)),
         Expr::Literal(Literal::Bool(b), _) => Ok(ParamValue::Bool(*b)),
         Expr::Literal(Literal::Duration(ns), _) => Ok(ParamValue::Duration(*ns)),
+        Expr::Literal(Literal::Decimal(s), _) => {
+            let stripped = s.strip_suffix('d').unwrap_or(s);
+            let f = stripped.parse::<f64>().map_err(|e| {
+                CodegenError::Unsupported(format!(
+                    "Decimal literal `{}` failed to parse: {}",
+                    s, e
+                ))
+            })?;
+            Ok(ParamValue::Decimal(f))
+        }
         _ => Err(CodegenError::Unsupported(
             "param initializer must be a literal in milestone-1 codegen".to_string(),
         )),

@@ -155,8 +155,20 @@ impl Interpreter {
             _ => return Err("no `fn main()` defined".to_string()),
         };
         let main_result = self.call_fn(&main, &[]);
+        // `return n` from main (or `main()` returning Int) maps to
+        // a process exit code per spec/runtime.md. Bare return /
+        // fall-through exits 0.
+        let mut explicit_exit_code: Option<i32> = None;
         let main_signal = match main_result {
+            Ok(crate::value::Value::Int(n)) => {
+                explicit_exit_code = Some(n as i32);
+                None
+            }
             Ok(_) => None,
+            Err(Signal::Return(crate::value::Value::Int(n))) => {
+                explicit_exit_code = Some(n as i32);
+                None
+            }
             Err(Signal::Return(_)) => None,
             Err(s) => Some(s),
         };
@@ -176,7 +188,7 @@ impl Interpreter {
         }
 
         match main_signal.or(dissolve_signal) {
-            None => Ok(0),
+            None => Ok(explicit_exit_code.unwrap_or(0)),
             Some(Signal::Error(s)) => Err(s),
             Some(_) => Err("unexpected control-flow signal at program end".to_string()),
         }

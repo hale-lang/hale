@@ -1,0 +1,30 @@
+// 13-decimal-and-exit — Decimal arithmetic + return-from-main
+// as process exit code.
+//
+// Decimal literals carry a `d` suffix to disambiguate from
+// Float (which uses unsuffixed `1.5`). Decimal arithmetic
+// produces Decimal; mixing with Float / Int requires explicit
+// conversion (not yet provided). v0 codegen and v0 interpreter
+// both store Decimal as f64 internally — real fixed-point
+// representation lands when trellis-grade precision matters.
+
+fn fee(price: Decimal, rate: Decimal) -> Decimal {
+    return price * rate;
+}
+
+fn main() {
+    let bid: Decimal = 100.40d;
+    let ask: Decimal = 100.45d;
+    let spread: Decimal = ask - bid;
+    let mid: Decimal = (bid + ask) / 2.0d;
+    let f: Decimal = fee(mid, 0.001d);
+
+    println("bid=", bid, " ask=", ask);
+    println("spread=", spread);
+    println("mid=", mid);
+    println("fee=", f);
+
+    // Bare `return n;` from main becomes the process exit code.
+    // Useful for shell scripting and CI assertions.
+    return 0;
+}
