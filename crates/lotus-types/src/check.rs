@@ -173,11 +173,82 @@ impl<'a> Checker<'a> {
             }
         }
 
+        // F.8: contract compatibility. If this locus consumes
+        // fields from coordinatees, the accept-child type
+        // must expose each consumed field at a compatible
+        // type. The check fires once per parent locus; the
+        // child's expose-set must be a superset (by name) of
+        // the parent's consume-set, with assignable types.
+        if !info.contract_consume.is_empty() {
+            self.check_contract_compatibility(info);
+        }
+
         for member in &decl.members {
             self.check_locus_member(member);
         }
 
         self.current_locus = prev;
+    }
+
+    fn check_contract_compatibility(&mut self, parent: &LocusInfo) {
+        let child_name = match &parent.accept_param {
+            Some((_, Ty::Named(n))) => n.clone(),
+            Some((_, _)) => return, // non-named child type → can't statically resolve
+            None => {
+                // Parent declares consume but doesn't accept any
+                // child. Static error per F.8 — the consume
+                // surface has nothing to bind against.
+                for entry in &parent.contract_consume {
+                    self.diags.push(Diag::ty(
+                        entry.span,
+                        format!(
+                            "locus `{}`: contract consumes `{}` but declares no \
+                             `accept(_: ChildType)` to bind against",
+                            parent.name, entry.name
+                        ),
+                    ));
+                }
+                return;
+            }
+        };
+        let child = match self.top.lookup(&child_name) {
+            Some(TopSymbol::Locus(c)) => c,
+            _ => return, // unresolved child type — separate error already raised
+        };
+        for need in &parent.contract_consume {
+            match child
+                .contract_expose
+                .iter()
+                .find(|e| e.name == need.name)
+            {
+                Some(have) => {
+                    if !need.ty.assignable_from(&have.ty) {
+                        self.diags.push(Diag::ty(
+                            need.span,
+                            format!(
+                                "contract: locus `{}` consumes `{}: {}`, but child \
+                                 locus `{}` exposes it as `{}`",
+                                parent.name,
+                                need.name,
+                                need.ty.display(),
+                                child.name,
+                                have.ty.display()
+                            ),
+                        ));
+                    }
+                }
+                None => {
+                    self.diags.push(Diag::ty(
+                        need.span,
+                        format!(
+                            "contract: locus `{}` consumes `{}` but child locus \
+                             `{}` does not expose it",
+                            parent.name, need.name, child.name
+                        ),
+                    ));
+                }
+            }
+        }
     }
 
     fn check_locus_member(&mut self, member: &'a LocusMember) {

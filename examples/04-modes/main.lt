@@ -34,6 +34,14 @@ locus AggregatorL {
         consume value: Int;
     }
 
+    accept(c: LeafL) {
+        // Default accept body — registers the child. The
+        // declaration's type binding is what makes F.8
+        // contract-compatibility verifiable: AggregatorL's
+        // `consume value: Int` is checked against LeafL's
+        // `expose value: Int` at compile time.
+    }
+
     mode bulk() -> Int {
         let mut total: Int = 0;
         for child in self.children {

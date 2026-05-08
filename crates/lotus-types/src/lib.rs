@@ -128,6 +128,85 @@ mod tests {
     }
 
     #[test]
+    fn err_contract_consume_missing_on_child() {
+        let src = r#"
+            locus ChildL {
+                params { v: Int = 0; }
+                contract { expose v: Int; }
+            }
+            locus ParentL {
+                contract { consume value: Int; }
+                accept(c: ChildL) { }
+            }
+            fn main() { ParentL { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("does not expose")),
+            "expected contract-missing error; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_contract_type_mismatch() {
+        let src = r#"
+            locus ChildL {
+                params { value: String = "hi"; }
+                contract { expose value: String; }
+            }
+            locus ParentL {
+                contract { consume value: Int; }
+                accept(c: ChildL) { }
+            }
+            fn main() { ParentL { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| d.message.contains("exposes it as")),
+            "expected type-mismatch error; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_consume_without_accept() {
+        let src = r#"
+            locus ParentL {
+                contract { consume thing: Int; }
+            }
+            fn main() { ParentL { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("declares no `accept")),
+            "expected accept-missing error; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_contract_compatible() {
+        let src = r#"
+            locus ChildL {
+                params { value: Int = 0; }
+                contract { expose value: Int; }
+            }
+            locus ParentL {
+                contract { consume value: Int; }
+                accept(c: ChildL) { }
+            }
+            fn main() { ParentL { }; }
+        "#;
+        let diags = check(src);
+        assert!(diags.is_empty(), "expected clean check; got: {:?}", diags);
+    }
+
+    #[test]
     fn err_let_type_mismatch() {
         let src = r#"
             fn main() {

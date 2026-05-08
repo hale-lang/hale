@@ -116,6 +116,8 @@ fn register_locus(
     let mut accept_param: Option<(String, Ty)> = None;
     let mut mode_returns: BTreeMap<ModeKind, Ty> = BTreeMap::new();
     let mut annotations = Annotations::default();
+    let mut contract_expose: Vec<ContractEntry> = Vec::new();
+    let mut contract_consume: Vec<ContractEntry> = Vec::new();
 
     for ann in &decl.annotations {
         match ann {
@@ -183,7 +185,28 @@ fn register_locus(
                 };
                 mode_returns.insert(md.kind, ret);
             }
-            _ => {} // contract / closure / failure / fn / const / type members
+            LocusMember::Contract(cb) => {
+                if let ContractKind::Members(members) = &cb.kind {
+                    for m in members {
+                        let ContractName::Named(name) = &m.name else {
+                            continue;
+                        };
+                        let Some(te) = &m.ty else {
+                            continue;
+                        };
+                        let entry = ContractEntry {
+                            name: name.name.clone(),
+                            ty: resolve_type_expr(te, known),
+                            span: m.span,
+                        };
+                        match m.direction {
+                            ContractDirection::Expose => contract_expose.push(entry),
+                            ContractDirection::Consume => contract_consume.push(entry),
+                        }
+                    }
+                }
+            }
+            _ => {} // closure / failure / fn / const / type members
                     // are not yet hoisted into the locus's external surface in
                     // milestone 2.
         }
@@ -197,6 +220,8 @@ fn register_locus(
         accept_param,
         mode_returns,
         annotations,
+        contract_expose,
+        contract_consume,
         span: decl.span,
     };
 

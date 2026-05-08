@@ -53,6 +53,20 @@ pub struct LocusInfo {
     pub accept_param: Option<(String, Ty)>,
     pub mode_returns: BTreeMap<ModeKind, Ty>,
     pub annotations: Annotations,
+    /// Fields the locus exposes upward to its coordinator
+    /// (the F.8 typed surface).
+    pub contract_expose: Vec<ContractEntry>,
+    /// Fields the locus consumes downward from its
+    /// coordinatees. Each entry must match an `expose` on
+    /// the accept-param child type.
+    pub contract_consume: Vec<ContractEntry>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractEntry {
+    pub name: String,
+    pub ty: Ty,
     pub span: Span,
 }
 
