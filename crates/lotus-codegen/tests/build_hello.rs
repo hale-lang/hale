@@ -106,6 +106,41 @@ fn build_comparisons_yield_bool() {
 }
 
 #[test]
+fn build_let_mut_and_assign() {
+    let src = r#"
+        fn main() {
+            let mut n = 0;
+            n = n + 1;       // 1
+            n = n + 10;      // 11
+            let mut f = 1.0;
+            f = f * 2.5;     // 2.5
+            println("n=", n, " f=", f);
+        }
+    "#;
+    let (stdout, status) = build_and_run("let_mut_assign", src);
+    assert!(status.success());
+    assert!(stdout.contains("n=11 f=2.5"), "got: {:?}", stdout);
+}
+
+#[test]
+fn build_compound_assign() {
+    let src = r#"
+        fn main() {
+            let mut n = 0;
+            n += 2;          // 2
+            n *= 5;          // 10
+            n -= 3;          // 7
+            n /= 2;          // 3
+            n %= 2;          // 1
+            println("n=", n);
+        }
+    "#;
+    let (stdout, status) = build_and_run("compound_assign", src);
+    assert!(status.success());
+    assert!(stdout.contains("n=1"), "got: {:?}", stdout);
+}
+
+#[test]
 fn build_int_override_at_instantiation() {
     // Instantiation overrides the param default.
     let src = r#"
@@ -120,6 +155,36 @@ fn build_int_override_at_instantiation() {
     let (stdout, status) = build_and_run("int_override", src);
     assert!(status.success());
     assert!(stdout.contains("n=99"), "got: {:?}", stdout);
+}
+
+#[test]
+fn mutable_counter_example_builds_and_runs() {
+    let mut src_path = examples_dir();
+    src_path.push("06-mutable-counter");
+    src_path.push("main.lt");
+    let source = std::fs::read_to_string(&src_path).expect("read source");
+    let program = lotus_syntax::parse_source(&source).expect("parse");
+
+    let temp_dir = std::env::temp_dir();
+    let mut bin_path = temp_dir.clone();
+    bin_path.push("lotus_test_06_mutable_counter");
+
+    build_executable(&program, &bin_path).expect("build");
+
+    let output = Command::new(&bin_path).output().expect("run");
+    let _ = std::fs::remove_file(&bin_path);
+
+    assert!(
+        output.status.success(),
+        "binary exited non-zero: {:?}",
+        output.status
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("n=2"),
+        "expected n=2 in stdout; got: {:?}",
+        stdout
+    );
 }
 
 #[test]

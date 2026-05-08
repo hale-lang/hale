@@ -1,0 +1,21 @@
+// 06-mutable-counter — `let mut` and assignment via the codegen path.
+//
+// This example exercises the mutable-binding subset that landed in
+// codegen milestone 3: `let mut` allocates a stack slot, plain `=`
+// stores into it, and compound ops `+=` / `-=` / `*=` / `/=` / `%=`
+// load-then-store via the existing binop lowering. No control flow
+// yet — the counter steps are hand-unrolled.
+//
+// Builds via `lotus build`; also runs under the interpreter
+// (`lotus run`) for the same observable output.
+
+fn main() {
+    let mut n = 0;
+    n = n + 1;       // 1
+    n += 4;          // 5
+    n *= 3;          // 15
+    n -= 5;          // 10
+    n /= 2;          // 5
+    n %= 3;          // 2
+    println("n=", n);
+}

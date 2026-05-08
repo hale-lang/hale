@@ -78,6 +78,14 @@ fn modes_runs() {
 }
 
 #[test]
+fn mutable_counter_runs() {
+    assert_eq!(
+        parse_and_run("06-mutable-counter/main.lt").unwrap(),
+        0
+    );
+}
+
+#[test]
 fn bus_runs() {
     assert_eq!(parse_and_run("05-bus/main.lt").unwrap(), 0);
 }

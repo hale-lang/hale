@@ -215,6 +215,63 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 scope.locals.insert(name.name.clone(), (alloca, ty));
                 Ok(())
             }
+            Stmt::Assign { target, op, value, .. } => {
+                // v0 codegen: only bare-local assignment. `self.X =`
+                // and field/index lvalues require the locus-as-struct
+                // ABI which lands later in phase 3.
+                if target.head.name == "self" || !target.tail.is_empty() {
+                    return Err(CodegenError::Unsupported(
+                        "assignment target other than a local variable"
+                            .to_string(),
+                    ));
+                }
+                let (alloca, slot_ty) = scope
+                    .locals
+                    .get(&target.head.name)
+                    .copied()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "assignment to unbound `{}`",
+                            target.head.name
+                        ))
+                    })?;
+                let (rhs, rhs_ty) =
+                    self.lower_expr(value, scope, &BTreeMap::new())?;
+                let new_val = if matches!(op, AssignOp::Eq) {
+                    if rhs_ty != slot_ty {
+                        return Err(CodegenError::Unsupported(format!(
+                            "type mismatch in assignment: slot {:?} vs rhs {:?}",
+                            slot_ty, rhs_ty
+                        )));
+                    }
+                    rhs
+                } else {
+                    let bin_op = match op {
+                        AssignOp::PlusEq => BinOp::Add,
+                        AssignOp::MinusEq => BinOp::Sub,
+                        AssignOp::StarEq => BinOp::Mul,
+                        AssignOp::SlashEq => BinOp::Div,
+                        AssignOp::PercentEq => BinOp::Mod,
+                        other => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "compound assignment {:?}",
+                                other
+                            )));
+                        }
+                    };
+                    let llvm_ty = self.llvm_basic_type(slot_ty);
+                    let cur = self
+                        .builder
+                        .build_load(llvm_ty, alloca, &target.head.name)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let (v, _) = self.lower_binop(bin_op, cur, rhs, slot_ty)?;
+                    v
+                };
+                self.builder
+                    .build_store(alloca, new_val)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok(())
+            }
             Stmt::Expr(_) => Err(CodegenError::Unsupported(
                 "expression statement other than locus literal or builtin call"
                     .to_string(),
