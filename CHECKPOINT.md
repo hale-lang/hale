@@ -1,7 +1,7 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work in a
-new session. State as of commit `d5afffd` (2026-05-08).
+new session. State as of commit `cdd7353` (2026-05-08).
 
 This is part of the alpha-conjecture program (see
 `~/notes/alpha-conjecture/CLAUDE.md`). Lotus is the language-substrate
@@ -13,7 +13,7 @@ coordination primitives.
 A working compiler that **runs** lotus programs end-to-end (tree-
 walking interpreter) AND **produces** native ELF binaries (LLVM via
 inkwell) for a substantial subset including loci with `run()` and
-parent-child `accept()` lifecycle methods. 90 tests pass across
+parent-child `accept()` lifecycle methods. 91 tests pass across
 the workspace.
 
 ```
@@ -31,20 +31,16 @@ Phase status:
 - **Phase 1** (lex / parse / typecheck) — complete; F.1–F.18 enforced
 - **Phase 2 v0** (interpreter + bus router) — 8 of 9 example projects
   execute end-to-end
-- **Phase 3 milestone 8** (codegen subset) — complete; literals,
-  arithmetic, let / let mut bindings, assignment + compound ops,
-  mixed-type println, if/else/while + break/continue,
-  `time::sleep` on CLOCK_MONOTONIC, user-defined fns, the locus
-  runtime ABI (struct + birth + run), and **parent-child
-  `accept()` lifecycle** with F.7 ordering (accept fires before
-  child birth). `02-parent-child` builds to native ELF.
-- **Phase 3 next** — `time::now()` / `time::monotonic()`
-  value-returners (small, paired with milestone 5's clock
-  discipline), then `drain()` / `dissolve()` (lets us tear down
-  long-lived loci cleanly), then the bus router lowering for
-  `05-bus`. After bus lowering, modes (`bulk` / `harmonic` /
-  `resolution`) and the closure runtime are the remaining big
-  pieces before `trellis-demo` is a build target.
+- **Phase 3 milestone 9** (codegen subset) — complete; everything
+  through milestone 8 plus `time::monotonic()` (clock_gettime on
+  CLOCK_MONOTONIC) and Duration arithmetic / comparisons on both
+  paths. Elapsed-time patterns like `let dt = t1 - t0; if dt > 20ms`
+  work end-to-end.
+- **Phase 3 next** — `drain()` / `dissolve()` lifecycle (tear
+  down long-lived loci cleanly per F.4 cascade), then bus router
+  lowering for `05-bus`. Modes (bulk / harmonic / resolution),
+  closures, and decimal arithmetic are the remaining big pieces
+  before `trellis-demo` is a build target.
 
 ## What runs vs. what builds
 
@@ -60,6 +56,7 @@ Phase status:
 | `let mut` + assignment (incl. compound `+=` etc.) | ✅ | ✅ |
 | `if` / `else` / `else if` / `while` + `break` / `continue` | ✅ | ✅ |
 | `time::sleep` on CLOCK_MONOTONIC + EINTR retry | ✅ | ✅ |
+| `time::monotonic()` + Duration ± Duration / cmp | ✅ | ✅ |
 | User-defined fns called from main / each other | ✅ | ✅ |
 | `run()` lifecycle method | ✅ | ✅ |
 | `self.X = ...` mutation in lifecycle methods | ✅ | ✅ |
@@ -161,6 +158,8 @@ real-world use case for lotus.
 ## Recent commit history (last 30, newest first)
 
 ```
+cdd7353 Codegen milestone 9: time::monotonic() + Duration arithmetic
+73d6002 CHECKPOINT.md + README: refresh for milestone 8 (accept lifecycle)
 d5afffd Codegen milestone 8: accept() lifecycle + parent-child wiring
 7c93f69 CHECKPOINT.md + README: refresh for milestone 7 (locus runtime ABI)
 206fbd0 Codegen milestone 7: locus runtime ABI
@@ -196,7 +195,7 @@ e07b3ce Phase 2 v0: tree-walking interpreter — `lotus run` works
 5a961f0 Phase 1 milestone 1: lex / parse / AST threaded through
 ```
 
-42 commits ahead of origin/master at checkpoint time.
+43 commits ahead of origin/master at checkpoint time.
 
 ## Next steps in priority order
 
@@ -205,28 +204,23 @@ user-facing). Each is a focused single-commit chunk unless noted.
 
 **Codegen surface expansion (Tier 4, the LLVM path):**
 
-1. **`time::now()` / `time::monotonic()`** — the value-returning
-   side of the clock module. `clock_gettime(CLOCK_MONOTONIC)` and
-   `clock_gettime(CLOCK_REALTIME)` lowering; pairs with the
-   monotonic-only-scheduling discipline locked in by milestone 5
-   (see spec/runtime.md "Time" section).
-2. **`drain()` / `dissolve()` lifecycle methods.** `drain` cascades
+1. **`drain()` / `dissolve()` lifecycle methods.** `drain` cascades
    depth-first per F.4; `dissolve` runs at scope-exit. With these,
    long-lived loci can be torn down cleanly. Touches the
    "ephemeral-only" constraint — initial cut keeps the alloca on
    the stack and runs drain → dissolve at the end of the parent's
    lifetime, before the alloca is freed.
-3. **Bus router lowering** — vtable-style dispatch, sync transport
+2. **Bus router lowering** — vtable-style dispatch, sync transport
    first; ring buffer follows. With this, `05-bus` becomes a
    build target.
-4. **Modes (bulk / harmonic / resolution)** — share the locus's
+3. **Modes (bulk / harmonic / resolution)** — share the locus's
    alloca'd struct with three projection-specific dispatch entry
    points. `04-modes` becomes a build target.
-5. **Closure runtime as a small C-runtime support library**
+4. **Closure runtime as a small C-runtime support library**
    (statically linked) — once we're ready to compile away from
    the interpreter for the closure-test path. `03-closure-test`
    becomes a build target.
-6. **`for` loops + arrays.** Need an array runtime representation;
+5. **`for` loops + arrays.** Need an array runtime representation;
    simplest is `{ i64 len, ptr data }` for fixed-size arrays
    first. Unblocks `self.children` iteration patterns.
 
@@ -267,14 +261,14 @@ System has:
 - `gcc` 13.x
 
 Cargo workspace builds clean. `cargo test --workspace --tests` passes
-all 90 tests (the locus-with-run test runs 3×500ms sleeps so the
+all 91 tests (the locus-with-run test runs 3×500ms sleeps so the
 runtime + codegen integration buckets clock ~1.5s each).
 
 ## How to verify the checkpoint
 
 ```
 cd ~/code/lotus-lang
-cargo test --workspace --tests           # 90 passed
+cargo test --workspace --tests           # 91 passed
 cargo run --bin lotus -- run examples/trellis-demo/main.lt
 cargo run --bin lotus -- build examples/hello-world/main.lt
 ./examples/hello-world/main              # prints "hello, world"
