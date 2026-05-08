@@ -9,3 +9,4 @@ description = "Lotus runtime — interpreter (v0) + region/scheduler/bus (Phase 
 [dependencies]
 lotus-syntax = { path = "../lotus-syntax" }
 lotus-types = { path = "../lotus-types" }
+libc = "0.2"

@@ -179,6 +179,23 @@ and modes; specific transports come from stdlib (`std::bus::*`).
 - **Monotonic + wall-clock.** `time::now()` and
   `time::monotonic()` are runtime-provided. Mocking is
   available for tests via `time::mock_clock(...)` (stdlib).
+- **Monotonic-only scheduling.** Every scheduling primitive in
+  lotus — `time::sleep`, `time::tick`, the cooperative
+  scheduler's deadline queue — is grounded on the monotonic
+  clock. NTP slewing, leap seconds, and wall-clock jumps cannot
+  warp scheduling decisions. `time::sleep` retries on EINTR
+  using the kernel's reported remaining time, so a delivered
+  signal does not shorten the total sleep. `CLOCK_REALTIME` is
+  reserved for `time::now()` (wall-clock observation only) and
+  has no scheduling role.
+- **Implementation invariant.** Both interpreter and codegen
+  paths lower `time::sleep(d)` to
+  `clock_nanosleep(CLOCK_MONOTONIC, 0, &req, &rem)` with EINTR
+  retry. The same primitive on both paths means observable
+  scheduling behavior is identical regardless of the
+  compilation route — important for a system targeting
+  trading-grade clock semantics where the substrate cannot
+  drift between development and production.
 
 ### I/O — minimal
 

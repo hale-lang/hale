@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Instant;
 
 use lotus_codegen::build_executable;
 
@@ -310,6 +311,110 @@ fn mutable_counter_example_builds_and_runs() {
 }
 
 #[test]
+fn build_time_sleep_blocks_for_at_least_requested_duration() {
+    // 50ms is short enough to keep the test fast and long enough
+    // that scheduler jitter on a busy CI host can't accidentally
+    // take it under the floor. We measure with the host's
+    // monotonic clock (std::time::Instant) which Rust documents
+    // as monotonic on Linux.
+    let src = r#"
+        fn main() {
+            println("before");
+            time::sleep(50ms);
+            println("after");
+        }
+    "#;
+    let program = lotus_syntax::parse_source(src).expect("parse");
+    let mut bin = std::env::temp_dir();
+    bin.push("lotus_test_time_sleep");
+    build_executable(&program, &bin).expect("build");
+
+    let start = Instant::now();
+    let output = Command::new(&bin).output().expect("run");
+    let elapsed = start.elapsed();
+    let _ = std::fs::remove_file(&bin);
+
+    assert!(output.status.success(), "non-zero: {:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("before"), "got: {:?}", stdout);
+    assert!(stdout.contains("after"), "got: {:?}", stdout);
+    // Must sleep at least the requested duration. Process spawn
+    // overhead is included; we only assert the floor.
+    assert!(
+        elapsed.as_millis() >= 50,
+        "sleep returned too early: {:?}",
+        elapsed
+    );
+    // Sanity ceiling so a hung test fails loud rather than hanging
+    // CI. 5s is generous; if we hit it something is broken.
+    assert!(
+        elapsed.as_secs() < 5,
+        "sleep took implausibly long: {:?}",
+        elapsed
+    );
+}
+
+#[test]
+fn build_time_sleep_in_loop_accumulates() {
+    // Three 30ms sleeps under a while loop — ~90ms total. Verifies
+    // that the sleep call composes with control flow and that
+    // basic-block management around the FFI loop is correct.
+    let src = r#"
+        fn main() {
+            let mut i = 0;
+            while i < 3 {
+                time::sleep(30ms);
+                i = i + 1;
+            }
+            println("i=", i);
+        }
+    "#;
+    let program = lotus_syntax::parse_source(src).expect("parse");
+    let mut bin = std::env::temp_dir();
+    bin.push("lotus_test_time_sleep_loop");
+    build_executable(&program, &bin).expect("build");
+
+    let start = Instant::now();
+    let output = Command::new(&bin).output().expect("run");
+    let elapsed = start.elapsed();
+    let _ = std::fs::remove_file(&bin);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("i=3"), "got: {:?}", stdout);
+    assert!(
+        elapsed.as_millis() >= 90,
+        "loop sleep returned too early: {:?}",
+        elapsed
+    );
+}
+
+#[test]
+fn build_duration_param_prints_as_ns() {
+    // Duration self.X round-trips as a compile-time-known param
+    // and prints with the same `<ns>ns` formatting the interpreter
+    // uses, so the two paths agree.
+    let src = r#"
+        locus T {
+            params {
+                interval: Duration = 250ms;
+            }
+            birth() {
+                println("interval=", self.interval);
+            }
+        }
+        fn main() { T { }; }
+    "#;
+    let (stdout, status) = build_and_run("duration_param", src);
+    assert!(status.success());
+    assert!(
+        stdout.contains("interval=250000000ns"),
+        "got: {:?}",
+        stdout
+    );
+}
+
+#[test]
 fn control_flow_example_builds_and_runs() {
     let mut src_path = examples_dir();
     src_path.push("07-control-flow");
@@ -331,6 +436,37 @@ fn control_flow_example_builds_and_runs() {
         stdout.contains("sum=29 stopped at n=9"),
         "got: {:?}",
         stdout
+    );
+}
+
+#[test]
+fn monotonic_sleep_example_builds_and_runs() {
+    let mut src_path = examples_dir();
+    src_path.push("08-monotonic-sleep");
+    src_path.push("main.lt");
+    let source = std::fs::read_to_string(&src_path).expect("read source");
+    let program = lotus_syntax::parse_source(&source).expect("parse");
+
+    let temp_dir = std::env::temp_dir();
+    let mut bin_path = temp_dir.clone();
+    bin_path.push("lotus_test_08_monotonic_sleep");
+
+    build_executable(&program, &bin_path).expect("build");
+    let start = Instant::now();
+    let output = Command::new(&bin_path).output().expect("run");
+    let elapsed = start.elapsed();
+    let _ = std::fs::remove_file(&bin_path);
+
+    assert!(output.status.success(), "non-zero: {:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("tick 0"), "got: {:?}", stdout);
+    assert!(stdout.contains("tick 2"), "got: {:?}", stdout);
+    assert!(stdout.contains("done"), "got: {:?}", stdout);
+    // 3 × 50ms sleeps = 150ms floor.
+    assert!(
+        elapsed.as_millis() >= 150,
+        "example returned too early: {:?}",
+        elapsed
     );
 }
 

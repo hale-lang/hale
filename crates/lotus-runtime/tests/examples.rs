@@ -94,6 +94,16 @@ fn control_flow_runs() {
 }
 
 #[test]
+fn monotonic_sleep_runs() {
+    // 3 × 50ms = 150ms floor; trivially fast under the
+    // interpreter's monotonic-clock sleep primitive.
+    assert_eq!(
+        parse_and_run("08-monotonic-sleep/main.lt").unwrap(),
+        0
+    );
+}
+
+#[test]
 fn bus_runs() {
     assert_eq!(parse_and_run("05-bus/main.lt").unwrap(), 0);
 }

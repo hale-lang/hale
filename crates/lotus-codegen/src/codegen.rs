@@ -22,13 +22,19 @@ use lotus_syntax::ast::*;
 /// Compile-time tag for a value's type. Mirrors a small subset
 /// of `lotus_types::Ty`; we don't pull the full type system in
 /// because codegen only needs to discriminate the lowered
-/// shapes (Int/Float/Bool are scalar; String is ptr).
+/// shapes (Int/Float/Bool/Duration are scalar i64/f64/i1/i64;
+/// String is a ptr to a NUL-terminated byte array).
+///
+/// `Duration` is logically an i64 nanosecond count, distinct from
+/// `Int` so type-driven dispatch (e.g. `time::sleep` accepts only
+/// Duration) stays correct at the codegen layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LotusType {
     Int,
     Float,
     Bool,
     String,
+    Duration,
 }
 
 /// Did the last lowered statement leave the current basic block
@@ -151,6 +157,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let printf_ty = i32_t.fn_type(&[ptr_t.into()], true);
         self.module.add_function("printf", printf_ty, None);
+
+        // declare i32 @clock_nanosleep(i32, i32, ptr, ptr)
+        //
+        // Backing primitive for `time::sleep` on the monotonic
+        // clock. CLOCK_MONOTONIC means NTP / wall-clock adjustments
+        // cannot warp scheduling; EINTR retry uses `rem` so signals
+        // do not shorten the total sleep. CLOCK_REALTIME is reserved
+        // for `time::now()` (wall-clock observation) and never used
+        // for scheduling.
+        let clock_nanosleep_ty =
+            i32_t.fn_type(&[i32_t.into(), i32_t.into(), ptr_t.into(), ptr_t.into()], false);
+        self.module
+            .add_function("clock_nanosleep", clock_nanosleep_ty, None);
+    }
+
+    /// LLVM struct type matching `struct timespec` on Linux x86_64
+    /// (`{ time_t tv_sec; long tv_nsec }` ≡ `{ i64, i64 }`).
+    /// 32-bit / non-Linux ABIs would need a different layout; we
+    /// only target 64-bit Linux for now.
+    fn timespec_type(&self) -> inkwell::types::StructType<'ctx> {
+        let i64_t = self.context.i64_type();
+        self.context.struct_type(&[i64_t.into(), i64_t.into()], false)
     }
 
     fn lower_program(&mut self) -> Result<(), CodegenError> {
@@ -242,15 +270,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(BlockEnd::Open)
             }
             Stmt::Expr(Expr::Call { callee, args, .. }) => {
-                let name = match callee.as_ref() {
-                    Expr::Ident(i) => i.name.as_str(),
+                match callee.as_ref() {
+                    Expr::Ident(i) => {
+                        self.lower_print_call(
+                            i.name.as_str(),
+                            args,
+                            scope,
+                            &BTreeMap::new(),
+                        )?;
+                    }
+                    Expr::Path(qn) => {
+                        self.lower_path_call(qn, args, scope)?;
+                    }
                     _ => {
                         return Err(CodegenError::Unsupported(
                             "non-identifier callee".to_string(),
-                        ))
+                        ));
                     }
-                };
-                self.lower_print_call(name, args, scope, &BTreeMap::new())?;
+                }
                 Ok(BlockEnd::Open)
             }
             Stmt::Let { name, value, .. } => {
@@ -481,7 +518,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         name: &str,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
         match ty {
-            LotusType::Int => self
+            LotusType::Int | LotusType::Duration => self
                 .builder
                 .build_alloca(self.context.i64_type(), name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
@@ -522,6 +559,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Expr::Literal(Literal::String(s), _) => {
                 let p = self.global_string(s);
                 Ok((p.into(), LotusType::String))
+            }
+            Expr::Literal(Literal::Duration(ns), _) => {
+                // Duration literals are i64 nanoseconds at the
+                // lowered level; tracked as Duration so callers
+                // like `time::sleep` enforce the typed contract.
+                let v = self.context.i64_type().const_int(*ns as u64, true);
+                Ok((v.into(), LotusType::Duration))
             }
             Expr::Ident(id) => {
                 let (alloca, ty) = scope.locals.get(&id.name).ok_or_else(|| {
@@ -588,6 +632,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 LotusType::Bool,
             ),
             ParamValue::String(s) => (self.global_string(s).into(), LotusType::String),
+            ParamValue::Duration(ns) => (
+                self.context.i64_type().const_int(*ns as u64, true).into(),
+                LotusType::Duration,
+            ),
         }
     }
 
@@ -596,7 +644,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         t: LotusType,
     ) -> inkwell::types::BasicTypeEnum<'ctx> {
         match t {
-            LotusType::Int => self.context.i64_type().into(),
+            LotusType::Int | LotusType::Duration => {
+                self.context.i64_type().into()
+            }
             LotusType::Float => self.context.f64_type().into(),
             LotusType::Bool => self.context.bool_type().into(),
             LotusType::String => self.context.ptr_type(AddressSpace::default()).into(),
@@ -798,6 +848,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         val.into_pointer_value(),
                     ));
                 }
+                LotusType::Duration => {
+                    // Match the interpreter's `<ns>ns` rendering so
+                    // both paths produce identical stdout.
+                    format.push_str("%lldns");
+                    printf_args.push(BasicMetadataValueEnum::IntValue(
+                        val.into_int_value(),
+                    ));
+                }
             }
         }
         if name == "println" {
@@ -812,6 +870,184 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_call(printf, &printf_args, "printf_call")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Dispatch a `path::ident(...)` call. Currently only
+    /// `time::sleep` is recognized; other namespaced calls land in
+    /// the stdlib lowering when those features arrive.
+    fn lower_path_call(
+        &mut self,
+        qn: &QualifiedName,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let segs: Vec<&str> =
+            qn.segments.iter().map(|s| s.name.as_str()).collect();
+        match segs.as_slice() {
+            ["time", "sleep"] => {
+                self.lower_time_sleep(args, scope, &BTreeMap::new())
+            }
+            _ => Err(CodegenError::Unsupported(format!(
+                "path call `{}`",
+                segs.join("::")
+            ))),
+        }
+    }
+
+    /// Lower `time::sleep(duration)` to a monotonic-clock,
+    /// EINTR-retrying `clock_nanosleep` call. The lowered IR is:
+    ///
+    /// ```text
+    ///   sec = ns / 1_000_000_000
+    ///   nsec = ns % 1_000_000_000
+    ///   req.tv_sec  = sec
+    ///   req.tv_nsec = nsec
+    ///   while clock_nanosleep(CLOCK_MONOTONIC, 0, &req, &rem) == EINTR {
+    ///       req = rem;   // resume from the remaining time
+    ///   }
+    /// ```
+    ///
+    /// `CLOCK_MONOTONIC` is hardcoded to 1 (Linux); flags = 0 means
+    /// the request is relative (`TIMER_ABSTIME` would make it a
+    /// deadline). Any non-EINTR error exits the loop best-effort —
+    /// we don't crash the program over a clock failure.
+    fn lower_time_sleep(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        self_state: &BTreeMap<String, ParamValue>,
+    ) -> Result<(), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "time::sleep takes 1 argument, got {}",
+                args.len()
+            )));
+        }
+        let (val, ty) = self.lower_expr(&args[0], scope, self_state)?;
+        if ty != LotusType::Duration {
+            return Err(CodegenError::Unsupported(format!(
+                "time::sleep expects Duration, got {:?}",
+                ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let ts_t = self.timespec_type();
+        let ns = val.into_int_value();
+        let billion = i64_t.const_int(1_000_000_000, false);
+
+        let sec = self
+            .builder
+            .build_int_signed_div(ns, billion, "ts.sec")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let nsec = self
+            .builder
+            .build_int_signed_rem(ns, billion, "ts.nsec")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let req = self
+            .builder
+            .build_alloca(ts_t, "req")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let rem = self
+            .builder
+            .build_alloca(ts_t, "rem")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let req_sec_ptr = self
+            .builder
+            .build_struct_gep(ts_t, req, 0, "req.sec.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let req_nsec_ptr = self
+            .builder
+            .build_struct_gep(ts_t, req, 1, "req.nsec.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(req_sec_ptr, sec)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(req_nsec_ptr, nsec)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let func = self
+            .current_fn
+            .expect("current_fn set while lowering time::sleep");
+        let loop_bb = self.context.append_basic_block(func, "sleep.loop");
+        let retry_bb = self.context.append_basic_block(func, "sleep.retry");
+        let done_bb = self.context.append_basic_block(func, "sleep.done");
+
+        self.builder
+            .build_unconditional_branch(loop_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // loop_bb: call clock_nanosleep, branch on EINTR vs done
+        self.builder.position_at_end(loop_bb);
+        let cns = self
+            .module
+            .get_function("clock_nanosleep")
+            .expect("clock_nanosleep declared");
+        // CLOCK_MONOTONIC = 1, flags = 0
+        let clock_id = i32_t.const_int(1, false);
+        let flags = i32_t.const_int(0, false);
+        let call_result = self
+            .builder
+            .build_call(
+                cns,
+                &[
+                    clock_id.into(),
+                    flags.into(),
+                    req.into(),
+                    rem.into(),
+                ],
+                "cns.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ret_int = call_result
+            .try_as_basic_value()
+            .left()
+            .expect("clock_nanosleep returns i32")
+            .into_int_value();
+        // EINTR == 4 on Linux. Everything else (including success=0)
+        // exits the loop.
+        let eintr = i32_t.const_int(4, false);
+        let is_eintr = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::EQ, ret_int, eintr, "is.eintr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(is_eintr, retry_bb, done_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // retry_bb: copy rem → req, jump back into the loop
+        self.builder.position_at_end(retry_bb);
+        let rem_sec_ptr = self
+            .builder
+            .build_struct_gep(ts_t, rem, 0, "rem.sec.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let rem_nsec_ptr = self
+            .builder
+            .build_struct_gep(ts_t, rem, 1, "rem.nsec.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let rem_sec = self
+            .builder
+            .build_load(i64_t, rem_sec_ptr, "rem.sec")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let rem_nsec = self
+            .builder
+            .build_load(i64_t, rem_nsec_ptr, "rem.nsec")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(req_sec_ptr, rem_sec)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(req_nsec_ptr, rem_nsec)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(loop_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(done_bb);
         Ok(())
     }
 
@@ -899,6 +1135,7 @@ enum ParamValue {
     Int(i64),
     Float(f64),
     Bool(bool),
+    Duration(i64),
 }
 
 fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
@@ -907,6 +1144,7 @@ fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
         Expr::Literal(Literal::Int(n), _) => Ok(ParamValue::Int(*n)),
         Expr::Literal(Literal::Float(f), _) => Ok(ParamValue::Float(*f)),
         Expr::Literal(Literal::Bool(b), _) => Ok(ParamValue::Bool(*b)),
+        Expr::Literal(Literal::Duration(ns), _) => Ok(ParamValue::Duration(*ns)),
         _ => Err(CodegenError::Unsupported(
             "param initializer must be a literal in milestone-1 codegen".to_string(),
         )),
