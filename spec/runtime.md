@@ -126,20 +126,32 @@ and modes; specific transports come from stdlib (`std::bus::*`).
 
 ### Closure-test infrastructure
 
+- **Default epoch is `dissolve`.** Closures with no `epoch`
+  clause evaluate at the locus's dissolution. Other epochs:
+  `epoch tick`, `epoch duration(...)`, `epoch birth`,
+  `epoch explicit` — runtime-managed per declaration.
 - **Accumulator engine.** For each `closure name { ... }`, the
   runtime maintains accumulators for the left and right sides
-  of `~~`, scoped per epoch.
-- **Epoch management.** `epoch tick`, `epoch duration(...)`,
-  `epoch explicit` are runtime-managed: tick increments on
-  configurable signal; duration on time elapsed; explicit on
-  user `epoch_advance()` call.
+  of `~~`, scoped per epoch (when accumulation is needed; not
+  needed for one-shot self-referential closures like
+  `self.x ~~ self.y within 0`).
 - **Band checking + reporting.** At each epoch boundary, the
-  runtime checks the closure band and emits a typed
-  `ClosureReport` event the application can subscribe to via
-  bus.
+  runtime evaluates left and right expressions, checks the
+  band, and emits a typed `ClosureReport` event the application
+  can subscribe to via bus.
+- **Collapse vs. explosion.** A closure-pass at any epoch is
+  silent. A closure-fail flips an "exploded" flag on the locus.
+  At dissolve, if exploded, the parent's
+  `on_failure(self, ClosureViolation { ... })` is invoked with
+  a typed event carrying closure name, epoch, left/right
+  values, tolerance, diff. Distinct from structural failures
+  (panic). See design-rationale §F.9.
 - **Recovery-event interaction.** `persists_through(...)` and
   `resets_on(...)` clauses are honored at recovery time; the
-  accumulator is preserved or zeroed per declaration.
+  accumulator is preserved or zeroed per declaration. The
+  exploded flag itself persists across `restart_in_place` and
+  `quarantine` (per default; future `clear_violation_on(...)`
+  clause may override).
 
 ### Perspective infrastructure
 

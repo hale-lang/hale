@@ -119,7 +119,7 @@ hand-declaration; learned values are commit-after-N=3).
 
 ---
 
-## 3. `params` block
+## 3. `params` block (also: locus state)
 
 ```
 params {
@@ -128,6 +128,7 @@ params {
     sigma: int = 10;
     phi: float = 1.0;
     capital_usd: decimal = 1_000_000.00d;
+    running_sum: int = 0;
     inferred_param: int : inferred;
 }
 ```
@@ -139,17 +140,39 @@ to-be-determined (statically by the compiler if possible,
 otherwise at runtime via the lotus runtime's perspective-stability
 machinery).
 
+**`params` is also the locus's state.** Following Ruby's `@foo`
+pattern, lotus collapses the params-vs-state distinction. The
+declared params are simultaneously:
+
+1. *Birth-time defaults*: overridable at instantiation
+   (`AggregatorL { running_sum: 100 }`).
+2. *Runtime mutable state*: accessible and reassignable via
+   `self.foo` throughout the locus's lifetime, from any
+   lifecycle method, mode block, closure, or member function.
+
+There is no separate `state { ... }` block. A locus's state is
+its params; its params are its state.
+
 **Why.** Multi-perspective stability is the framework's commit
 discipline. Hand-declared values are perspectives the author
 provides; `inferred` is "no perspective yet, system finds one."
-The grammar makes this explicit per parameter, so a single locus
-can mix declared and inferred params without ceremony.
+Collapsing params and state means the same surface is both the
+declared-perspective surface and the running-state surface; no
+artificial barrier between them. Aligned with how Erlang
+processes hold state (one mutable bundle per process) and how
+Ruby instance variables work (`@foo` is both a parameter and an
+instance variable).
 
 **Considered and rejected.**
 
-- *Make every param a literal.* Reject; the framework explicitly
-  permits inferred values, and modeling that as a special case
-  in the type system is uglier than encoding it in the grammar.
+- *Separate `state { ... }` block from `params { ... }`.*
+  Reject; introduces an artificial distinction between
+  "declared at birth" and "mutable at runtime" that the
+  framework doesn't make. The framework's substrate-cell view
+  treats locus state as one thing.
+- *Make every param a literal (immutable).* Reject; loses the
+  Ruby-style ergonomics; a long-running locus needs mutable
+  state and forcing a separate state mechanism is ceremony.
 - *Use option types instead of `inferred`.* Reject; an `Option<T>`
   param can be present-or-absent at runtime, but `inferred` is a
   compile-time / runtime determination promise. Different
@@ -822,6 +845,58 @@ error.
 This is the framework's contract-graded visibility commitment
 expressed as a type rule. The full typing rule lives in
 `spec/types.md` (Phase 0 deliverable).
+
+### F.9 Collapse vs. explosion as dissolution modes
+
+(Added in v0.1.4 from 03-closure-test.)
+
+A locus that dissolves with all closures passing **collapses** —
+clean dissolution from the parent's perspective. A locus that
+dissolves with at least one closure failing at the dissolve
+epoch **explodes** — the discrepancy is surfaced to the parent.
+
+This is the framework's distinction between *structural failure*
+(panic; the locus crashed) and *audit failure* (the locus
+completed normally but its books didn't balance).
+
+Mechanically:
+
+1. When a closure fires (at its declared epoch boundary) and
+   fails, the runtime flips an "exploded" flag on the locus.
+   The locus continues running otherwise (it might still pass
+   later epochs, but the explosion flag persists for that
+   closure's failure).
+2. At dissolve, if any closure-failure has been recorded, the
+   parent's `on_failure(self, ClosureViolation { ... })` is
+   invoked. The `ClosureViolation` carries: the closure name,
+   the epoch at which it fired, the left/right values, the
+   tolerance, and the diff.
+3. If the parent's handler returns without re-raising
+   (effectively absorbing), the locus is treated as collapsed —
+   the parent has accepted the imbalance into its own books.
+4. If the parent bubbles, the failure propagates up another
+   level.
+5. If no parent handler exists (e.g., the runtime root), the
+   process exits non-zero with a structured violation report.
+
+**Why this distinction matters.** Books at the parent's level
+*must* balance, even if a child's didn't. The parent has to know
+about the imbalance to absorb it correctly. Exploding the failure
+upward — with typed information about exactly which closure broke
+and by how much — gives the parent's handler the data it needs
+to take corrective action. Conflating audit failure with
+structural failure (everything is just "panic") loses this
+information.
+
+**Recovery primitives interact.** A parent's `on_failure` for a
+ClosureViolation can:
+
+- `ignore` (return without action) — treat as collapse
+- `absorb(violation)` — fold the discrepancy into self's state
+- `bubble(err)` — pass to grandparent
+- `restart(child)` — re-instantiate the failed locus
+  (semantics: the closure violation invalidates this child's
+  state; restart gives a fresh attempt)
 
 ### F.5 Mode-projections share the locus's arena
 

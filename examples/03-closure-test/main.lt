@@ -1,0 +1,37 @@
+// 03-closure-test — collapse vs explosion.
+//
+// A locus declares two values and asserts they should match.
+// On dissolution, the closure is evaluated:
+//   - pass  -> collapse: clean dissolve, parent sees normal
+//              child-dissolution event.
+//   - fail  -> explosion: locus dissolves with audit failure;
+//              parent's on_failure receives a ClosureViolation
+//              event; if no parent handler, bubbles to root and
+//              the process exits non-zero.
+//
+// This program demonstrates the pass case (collapse). The
+// README walks the fail case.
+
+locus CheckerL {
+    params {
+        x: int = 5;
+        y: int = 5;
+    }
+
+    closure xy_match {
+        self.x ~~ self.y within 0;
+        // Default epoch: dissolve. Closure evaluates as the
+        // locus dissolves; if it fails, the locus is exploded.
+    }
+}
+
+fn main() {
+    // Closure passes (5 ~~ 5 within 0). Locus collapses cleanly.
+    CheckerL { x: 5, y: 5 };
+
+    // To see the fail case (explosion), instantiate with mismatched
+    // values: CheckerL { x: 5, y: 7 };
+    // The closure fails at dissolve; main's implicit locus has no
+    // on_failure handler; the failure bubbles to the runtime root;
+    // the process exits non-zero with a ClosureViolation report.
+}
