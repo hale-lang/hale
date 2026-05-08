@@ -7,45 +7,50 @@ when the type-system / operational-semantics docs are drafted.
 ## Type system
 
 1. **How are projection-class generics monomorphized?**
-   Compile-time monomorphization (Rust-style) means every concrete
-   `Rich<Foo>` / `Chunked<Foo>` / `Recognition<Foo>` instantiation
-   gets its own machine code. Cheap at runtime, expensive at
-   compile time. Alternative: vtable-style dispatch, slower but
-   smaller binaries. Probably monomorphization for v0.
+   **Resolved (delivery plan, commitment 1):** Compile-time
+   monomorphization. Per the runtime-perf-over-compile-perf
+   commitment, we accept the compile-time cost for runtime speed.
+   Each concrete `Rich<Foo>` / `Chunked<Foo>` / `Recognition<Foo>`
+   gets its own machine code.
 
 2. **What does a trait-less generic constraint look like?**
-   `<T: ProjectionClass>` is fine syntactically, but without
-   traits the bound has to be language-built-in. Is
-   `ProjectionClass` a magic symbol, a built-in trait, or
-   something else?
+   **Resolved (delivery plan, commitment 2):** `ProjectionClass`
+   is a built-in "any-of-three" constraint, analogous to Go's
+   `any`. `<T: ProjectionClass>` requires T ∈ {Rich, Chunked,
+   Recognition}. No full trait system in v0; can grow later if
+   needed.
 
 3. **Refinement types for k_max bounds?**
-   Could express `accept(child: Strategy)` as constrained by
-   `where self.children_count < self.k_max`. Refinement types are
-   heavy; v0 punts to runtime checking. Future spec might add.
+   **Resolved (delivery plan, commitment 3):** Deferred. k_max is
+   computed at compile time from constant params and checked at
+   runtime where dynamic. Refinement types add compile-time
+   complexity for marginal runtime benefit; runtime check is
+   sufficient given the framework discipline already enforces
+   correctness.
 
-4. **Decimal semantics.** Fixed precision? Configurable? Same as
-   shopspring/decimal in grease for FFI compat? Probably the last.
+4. **Decimal semantics.** **Resolved:** matches shopspring/decimal
+   semantics for direct FFI compatibility with grease.
 
 ## Memory / runtime
 
 5. **How is the parent's bookkeeping for a coordinatee freed when
-   the coordinatee dissolves?** Within the parent's arena, the
-   bookkeeping entry for a dead child needs to be reclaimed (or
-   compacted). Pure arena says no per-entry free; epoch reset on
-   parent dissolution would leak across long-running parents.
-   Probably: parent maintains a free-list of bookkeeping slots
-   within its arena.
+   the coordinatee dissolves?** **Resolved (delivery plan,
+   commitment 5):** per-arena free-list (chunked-class loci) or
+   periodic defrag (high-churn). Reclamation is per-arena,
+   bounded, deterministic — never stop-the-world. Coordinatee
+   sub-regions are pristine arenas freed wholesale on
+   dissolution.
 
 6. **What happens to in-flight messages on `dissolve`?**
    Drop, deliver, error to sender, store in dead-letter queue?
    Probably: drain phase delivers in-flight; dissolve phase
-   discards anything still queued.
+   discards anything still queued. (Open; resolution awaits
+   `02-parent-child` example.)
 
 7. **How is locus-scoped memory shared across mode projections?**
-   Three modes (bulk / harmonic / resolution) compute over the
-   same underlying state. They share the locus's arena. Need to
-   confirm the modes don't accidentally double-allocate.
+   **Resolved (delivery plan, commitment 7):** modes share the
+   locus's arena via the arena cascade. No double allocation;
+   no copy. Compiler verifies modes don't write-conflict.
 
 ## Bus interface
 

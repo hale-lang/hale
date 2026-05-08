@@ -108,11 +108,15 @@ stable_when     serialize_as
 ### Statement / expression keywords
 
 ```
-let             if              else            match
-for             in              while           return
-break           continue        true            false
-nil             tier            self
+let             mut             if              else
+match           for             in              while
+return          break           continue        true
+false           nil             tier            self
 ```
+
+Bindings are immutable by default. `let mut x = ...` declares a
+mutable binding; reassignment via `x = ...` is permitted. Without
+`mut`, reassignment is a compile-time error.
 
 `self` is meaningful only inside a lifecycle block, mode block,
 or closure block. It refers to the enclosing locus's own params

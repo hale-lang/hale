@@ -23,7 +23,11 @@ the model: runtime is automatic; stdlib is explicit.
   compile time per locus.
 - **Free-list within parent for bookkeeping reclamation.** When
   a coordinatee dissolves, its bookkeeping slot in the parent's
-  arena becomes available for the next accept.
+  arena is reclaimed via a per-arena free-list (chunked-class
+  loci) or periodic defrag (high-churn loci). Reclamation is
+  **per-arena**, **bounded**, **deterministic** — never stop-
+  the-world. Coordinatee sub-regions remain pristine arenas
+  freed wholesale on dissolution.
 
 ### Lifecycle
 
@@ -35,6 +39,12 @@ the model: runtime is automatic; stdlib is explicit.
   drain has begun, can't run before birth completed, etc. The
   runtime tracks state; transitions are rejected if they
   violate ordering.
+- **`drain()` cascades depth-first.** Calling `drain()` on a
+  locus first recursively drains all its children (depth-first),
+  waits for them, then drains itself. SIGINT triggers `drain()`
+  on the runtime root, cascading through the whole process
+  tree. No separate cascade syntax — `drain()` is always
+  cascading.
 - **Recovery primitives.** `restart`, `restart_in_place`,
   `quarantine`, `reorganize`, `bubble`, `dissolve`, `drain` —
   all language keywords; runtime implements the actual

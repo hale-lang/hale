@@ -579,11 +579,24 @@ exit at the runtime root).
 
 When the handle is bound (`let h = ...`), the locus lives until
 `h` goes out of scope (at which point default `drain` and
-`dissolve` are invoked). When the handle is unbound (`HelloL { };`
-as a statement-expression), the locus's lifetime ends at the
-enclosing statement boundary. This is RAII-shaped: locus
-lifetime is bounded by the lifetime of any handle that holds
-it.
+`dissolve` are invoked).
+
+When the handle is **unbound** (`HelloL { };` as a statement-
+expression), the rule depends on whether the locus has a `run`
+lifecycle method:
+
+- **No `run`** (only `birth` work). The locus dissolves at the
+  enclosing statement boundary. Hello-world's
+  `HelloL { };` is the canonical case.
+- **Has `run`**. The locus becomes an *anonymous child of the
+  enclosing function scope*. Its work runs to completion (or
+  drain) before the enclosing scope returns. Example 01's
+  `TickerL { n: 3 };` is the canonical case.
+
+This means every function scope is itself an implicit locus
+(see §D below). Anonymous children of a scope dissolve before
+the scope returns — same rule as bound handles, just without
+a name.
 
 Multiple bindings of a handle are not yet specified. v0 punts;
 expected: handles are move-only (Rust-shaped), so `let h2 = h;`
@@ -611,6 +624,31 @@ Considered and rejected:
 - *`this` instead of `self`.* Reject; `self` is more aligned
   with Rust / Python and avoids the C++/Java baggage.
 
+## D. Function scope as implicit locus
+
+(Added in v0.1.2, after the 01-locus-with-run example surfaced
+this.)
+
+Every function — `fn main()`, `fn helper()`, lifecycle methods
+inside a locus — has an **implicit locus** at its scope.
+Locally-bound handles and anonymous children of the function
+body are children of this implicit locus. The function returns
+when:
+
+- The function body's last statement completes, AND
+- All children of the function's implicit locus have dissolved.
+
+For `fn main() { TickerL { ... }; }`, the implicit `main` locus
+has one anonymous child (the ticker). `main` cannot return until
+the ticker's `run()` has completed (or been drained). This makes
+"main returns when its work is done" the natural semantics
+without requiring explicit `wait()` or `join()` calls.
+
+The implicit-function-locus model also underwrites SIGINT
+handling: SIGINT triggers `drain()` on the runtime root locus
+(which contains main); the drain cascades to main's implicit
+locus, which cascades to its children. See §E (drain cascade).
+
 ## C. Default lifecycle methods
 
 (Added in v0.1.1.)
@@ -632,6 +670,110 @@ a default:
 
 A locus with only `params` and `birth` (like the hello-world
 program) is fully valid; the compiler fills in the rest.
+
+## E. `mut` keyword and immutable-by-default bindings
+
+(Added in v0.1.2.)
+
+Bindings are **immutable by default**. `let x = 0;` produces
+an immutable binding; reassignment `x = 1;` is a compile-time
+error. `let mut x = 0;` produces a mutable binding; reassignment
+is permitted.
+
+This matches Rust. Considered and rejected:
+
+- *Mutable by default (Go).* Simpler surface; loses the
+  discipline of marking mutation. Lotus's framework
+  alignment prefers explicit-mutation marking.
+- *No mutation; recursion only.* Pure but awkward; while-loops
+  with counters are natural and the `mut` annotation is cheap.
+- *Allow rebinding via shadowing.* Confusing; doesn't help with
+  loops (inner `let i = i + 1` shadows in inner scope; outer
+  loop never advances).
+
+Mutability is a per-binding property, not a per-type property.
+A `let mut x: int` is mutable; the `int` type itself is not
+"mutable" or "immutable." This avoids the type-level mutability
+machinery seen in some languages.
+
+## F. Locked design commitments (v0.1.2 — from delivery plan)
+
+These commitments came from the delivery-plan turn and lock in
+specific decisions for the language's evolution toward v1.0:
+
+### F.1 Optimize for runtime perf, never sacrifice behavior
+
+When choosing between two options, the **faster runtime** wins —
+provided correctness, framework discipline, and cyclic-closure
+invariants hold. Compile-time perf is secondary; we accept
+expensive compile passes (e.g., per-projection-class
+monomorphization) if they produce faster runtime code.
+
+This is an architectural directive, not a syntactic feature.
+It informs every implementation decision: codegen strategies
+prefer runtime speed, allocator design prefers runtime
+determinism, scheduler design prefers runtime throughput.
+
+### F.2 `ProjectionClass` as the "any-of-three" constraint
+
+`ProjectionClass` is a built-in type-system primitive analogous
+to Go's `any`. The constraint `<T: ProjectionClass>` requires
+T to be `Rich`, `Chunked`, or `Recognition`. No full trait
+system in v0; the constraint is built into the compiler.
+
+This resolves the open question of "how does a generic bound
+work without traits" without adding type-system surface. If
+later versions need richer constraints (e.g., custom-defined
+projection classes), the trait system can grow then.
+
+### F.3 Per-arena defrag, no whole-program GC
+
+Within a parent's arena, dissolved-coordinatee bookkeeping
+slots are reclaimed via a **free-list** (for chunked-class
+loci) or **periodic defrag** (if churn is high). The
+reclamation is **per-arena**, **bounded**, and
+**deterministic** — it cannot stop the world.
+
+Coordinatee sub-regions remain pristine arenas freed wholesale
+on dissolution; only the parent's *bookkeeping* about
+coordinatees (registry slots, dispatch entries) needs free-list
+reclamation. This keeps the no-GC commitment intact while
+solving the "long-running parent with churning children leaks
+bookkeeping" problem from `notes/open-questions.md`.
+
+### F.4 `drain()` cascades depth-first
+
+Calling `drain()` on a locus:
+
+1. Recursively calls `drain()` on each child first (depth-first
+   traversal).
+2. Waits for all children to finish draining.
+3. Drains itself.
+
+There is no separate `drain_cascade()` syntax — `drain()` is
+*always* cascading.
+
+SIGINT triggers `drain()` on the runtime root locus, cascading
+through the entire process tree. This gives clean shutdown for
+free: from the user's perspective, "Ctrl-C and the program exits
+cleanly" is the default.
+
+### F.5 Mode-projections share the locus's arena
+
+A locus may declare any subset of `mode bulk`, `mode harmonic`,
+`mode resolution`. All declared modes operate on the same
+underlying locus state and share the **same arena**. The
+arena cascade (parent arena ⊃ child arena) gives mode-projection
+sharing for free — there is no duplicate allocation, no copy,
+no separate per-mode region.
+
+This was implicit in §11 (region-based memory) but worth
+making explicit: when you write three mode blocks, the runtime
+generates three implementations that all read/write the same
+arena. The compiler is responsible for verifying that the modes
+don't conflict (e.g., resolution-mode mutating state that
+bulk-mode also writes is a compile-time error if the writes
+race).
 
 ## 16. What's deferred
 

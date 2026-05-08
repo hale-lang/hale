@@ -280,8 +280,8 @@ statement         = let_stmt
                   | expr_stmt
                   ;
 
-let_stmt          = "let" , IDENTIFIER , [ ":" , type_expr ] , "=" ,
-                    expression , ";" ;
+let_stmt          = "let" , [ "mut" ] , IDENTIFIER ,
+                    [ ":" , type_expr ] , "=" , expression , ";" ;
 
 assign_stmt       = lvalue , assign_op , expression , ";" ;
 assign_op         = "=" | "+=" | "-=" | "*=" | "/=" | "%="
