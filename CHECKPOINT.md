@@ -78,7 +78,7 @@ m11 Codegen milestone 11: user `type` decls + struct literals   (5cb4882)
 m12 Codegen milestone 12: bus router (subscribe + <- + deferral)(5645eaa)
 m13 Codegen milestone 13: self.method() calls                   (b036c7f)
 m14 Codegen milestone 14: Decimal + return-from-main exit code  (b036c7f)
-m15 Codegen milestone 15: closures (collapse-only path)         (this commit)
+m15 Codegen milestone 15: closures (collapse-only path)         (9bf21c1)
 ```
 
 The architectural pivots are **m7** (locus → LLVM struct,
