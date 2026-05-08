@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Lotus language: type checker (Phase 1 milestone 2 — placeholder)"
+description = "Lotus language: type checker (Phase 1 milestone 2)"
 
 [dependencies]
 lotus-syntax = { path = "../lotus-syntax" }

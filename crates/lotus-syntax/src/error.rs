@@ -15,6 +15,8 @@ pub enum DiagKind {
     Lex,
     /// Parser errors.
     Parse,
+    /// Type-checker errors.
+    Type,
 }
 
 impl Diag {
@@ -34,11 +36,20 @@ impl Diag {
         }
     }
 
+    pub fn ty(span: Span, msg: impl Into<String>) -> Self {
+        Diag {
+            kind: DiagKind::Type,
+            span,
+            message: msg.into(),
+        }
+    }
+
     pub fn render(&self, source: &str) -> String {
         let (line, col) = self.span.line_col(source);
         let kind = match self.kind {
             DiagKind::Lex => "lex error",
             DiagKind::Parse => "parse error",
+            DiagKind::Type => "type error",
         };
         format!("{}:{}: {}: {}", line, col, kind, self.message)
     }

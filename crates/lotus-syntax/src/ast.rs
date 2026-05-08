@@ -180,7 +180,7 @@ pub struct ModeDecl {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Copy)]
 pub enum ModeKind {
     Bulk,
     Harmonic,

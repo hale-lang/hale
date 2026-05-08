@@ -1,0 +1,823 @@
+//! Type checking — milestone 2 cut.
+//!
+//! Walks every program in the bundle and verifies a tractable
+//! subset of the type rules:
+//!
+//! - Literal expressions get their natural primitive type.
+//! - Binary / unary operator operand-type compatibility.
+//! - `let x: T = e;` — e's inferred type assignable to T.
+//! - Struct-literal field names + types match the type
+//!   declaration.
+//! - Bus send (`"subject" <- v`): subject is declared in the
+//!   enclosing locus's bus block, payload type matches.
+//! - `~~` closure assertion: left and right have compatible
+//!   types; tolerance is numeric-ish (we don't enforce strictly
+//!   in milestone 2 — just that something is there).
+//! - `self.field`: resolves against enclosing locus's params.
+//!
+//! Names referenced via paths the bundle can't see (stdlib,
+//! `time::sleep`, `println`) resolve to `Ty::Unknown`, which
+//! is bidirectionally compatible — milestone 2 does not error
+//! on these. Milestone 3 will tighten.
+
+use std::collections::BTreeMap;
+
+use lotus_syntax::ast::*;
+use lotus_syntax::{Diag, Span};
+
+use crate::resolve::{resolve_type_expr, TopScope};
+use crate::symbol::*;
+use crate::ty::Ty;
+
+pub fn check_bundle(bundle: &Bundle<'_>, top: &TopScope) -> Vec<Diag> {
+    let mut diags = Vec::new();
+    let known = collect_known_names(top);
+    for program in bundle.programs.values() {
+        let mut cx = Checker {
+            top,
+            known: &known,
+            diags: &mut diags,
+            locals: ScopeStack::new(),
+            current_locus: None,
+            in_lifecycle: false,
+            in_closure: false,
+        };
+        for item in &program.items {
+            cx.check_top_decl(item);
+        }
+    }
+    diags
+}
+
+fn collect_known_names(top: &TopScope) -> BTreeMap<String, Span> {
+    let mut m = BTreeMap::new();
+    for (name, sym) in &top.symbols {
+        if matches!(
+            sym,
+            TopSymbol::Locus(_) | TopSymbol::Type(_) | TopSymbol::Perspective(_)
+        ) {
+            m.insert(name.clone(), sym.span());
+        }
+    }
+    m
+}
+
+struct Checker<'a> {
+    top: &'a TopScope,
+    known: &'a BTreeMap<String, Span>,
+    diags: &'a mut Vec<Diag>,
+    locals: ScopeStack,
+    current_locus: Option<&'a LocusInfo>,
+    in_lifecycle: bool,
+    in_closure: bool,
+}
+
+#[derive(Default)]
+struct ScopeStack {
+    frames: Vec<BTreeMap<String, LocalSym>>,
+}
+
+#[derive(Debug, Clone)]
+struct LocalSym {
+    ty: Ty,
+}
+
+impl ScopeStack {
+    fn new() -> Self {
+        Self {
+            frames: vec![BTreeMap::new()],
+        }
+    }
+    fn push(&mut self) {
+        self.frames.push(BTreeMap::new());
+    }
+    fn pop(&mut self) {
+        self.frames.pop();
+    }
+    fn insert(&mut self, name: &str, sym: LocalSym) {
+        self.frames
+            .last_mut()
+            .expect("at least one scope")
+            .insert(name.to_string(), sym);
+    }
+    fn lookup(&self, name: &str) -> Option<&LocalSym> {
+        for frame in self.frames.iter().rev() {
+            if let Some(s) = frame.get(name) {
+                return Some(s);
+            }
+        }
+        None
+    }
+}
+
+impl<'a> Checker<'a> {
+    fn check_top_decl(&mut self, decl: &'a TopDecl) {
+        match decl {
+            TopDecl::Locus(l) => self.check_locus(l),
+            TopDecl::Fn(f) => self.check_fn(f, None),
+            TopDecl::Const(c) => {
+                let want = resolve_type_expr(&c.ty, self.known);
+                let got = self.check_expr(&c.value);
+                if !want.assignable_from(&got) {
+                    self.diags.push(Diag::ty(
+                        c.value.span(),
+                        format!(
+                            "const `{}`: expected `{}`, got `{}`",
+                            c.name.name,
+                            want.display(),
+                            got.display()
+                        ),
+                    ));
+                }
+            }
+            TopDecl::Module(m) => {
+                for item in &m.items {
+                    self.check_top_decl(item);
+                }
+            }
+            TopDecl::Type(_) | TopDecl::Perspective(_) => {
+                // Structure already validated by resolver; field
+                // types are checked when something instantiates
+                // them via struct literal.
+            }
+        }
+    }
+
+    fn check_locus(&mut self, decl: &'a LocusDecl) {
+        let info = match self.top.lookup(&decl.name.name) {
+            Some(TopSymbol::Locus(info)) => info,
+            _ => return,
+        };
+        let prev = self.current_locus.replace(info);
+
+        // Validate that bus-subscribe handlers are declared on
+        // the locus body (as fn members).
+        let fn_members: BTreeMap<String, &FnDecl> = decl
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                LocusMember::Fn(f) => Some((f.name.name.clone(), f)),
+                _ => None,
+            })
+            .collect();
+        for sub in &info.bus_subscribes {
+            if !fn_members.contains_key(&sub.handler) {
+                self.diags.push(Diag::ty(
+                    sub.span,
+                    format!(
+                        "bus subscribe `{}` references handler `{}` which is \
+                         not declared on locus `{}`",
+                        sub.subject, sub.handler, info.name
+                    ),
+                ));
+            }
+        }
+
+        for member in &decl.members {
+            self.check_locus_member(member);
+        }
+
+        self.current_locus = prev;
+    }
+
+    fn check_locus_member(&mut self, member: &'a LocusMember) {
+        match member {
+            LocusMember::Params(_) | LocusMember::Contract(_) | LocusMember::Bus(_) => {
+                // Already lowered by resolver; param defaults are
+                // checked against declared types implicitly when
+                // the param is referenced. (Milestone-2 cut: no
+                // default-vs-declared-type re-check here.)
+            }
+            LocusMember::Lifecycle(lc) => {
+                self.in_lifecycle = true;
+                self.locals.push();
+                for p in &lc.params {
+                    let ty = resolve_type_expr(&p.ty, self.known);
+                    self.locals.insert(&p.name.name, LocalSym { ty });
+                }
+                self.check_block(&lc.body);
+                self.locals.pop();
+                self.in_lifecycle = false;
+            }
+            LocusMember::Mode(md) => {
+                self.in_lifecycle = true;
+                self.locals.push();
+                for p in &md.params {
+                    let ty = resolve_type_expr(&p.ty, self.known);
+                    self.locals.insert(&p.name.name, LocalSym { ty });
+                }
+                self.check_block(&md.body);
+                self.locals.pop();
+                self.in_lifecycle = false;
+            }
+            LocusMember::Failure(fd) => {
+                self.in_lifecycle = true;
+                self.locals.push();
+                for p in &fd.params {
+                    let ty = resolve_type_expr(&p.ty, self.known);
+                    self.locals.insert(&p.name.name, LocalSym { ty });
+                }
+                self.check_block(&fd.body);
+                self.locals.pop();
+                self.in_lifecycle = false;
+            }
+            LocusMember::Closure(cd) => {
+                self.in_closure = true;
+                self.in_lifecycle = true;
+                let lt = self.check_expr(&cd.assertion.left);
+                let rt = self.check_expr(&cd.assertion.right);
+                if !lt.assignable_from(&rt) && !rt.assignable_from(&lt) {
+                    self.diags.push(Diag::ty(
+                        cd.assertion.span,
+                        format!(
+                            "closure `{}`: assertion sides have incompatible types \
+                             `{}` and `{}`",
+                            cd.name.name,
+                            lt.display(),
+                            rt.display()
+                        ),
+                    ));
+                }
+                let _ = self.check_expr(&cd.assertion.tolerance);
+                self.in_lifecycle = false;
+                self.in_closure = false;
+            }
+            LocusMember::Fn(f) => {
+                self.in_lifecycle = true;
+                self.check_fn(f, self.current_locus);
+                self.in_lifecycle = false;
+            }
+            LocusMember::Const(c) => {
+                let want = resolve_type_expr(&c.ty, self.known);
+                let got = self.check_expr(&c.value);
+                if !want.assignable_from(&got) {
+                    self.diags.push(Diag::ty(
+                        c.value.span(),
+                        format!(
+                            "const `{}`: expected `{}`, got `{}`",
+                            c.name.name,
+                            want.display(),
+                            got.display()
+                        ),
+                    ));
+                }
+            }
+            LocusMember::Type(_) => {}
+        }
+    }
+
+    fn check_fn(&mut self, decl: &'a FnDecl, locus: Option<&'a LocusInfo>) {
+        let prev_locus = self.current_locus;
+        if locus.is_some() {
+            self.current_locus = locus;
+        }
+        self.locals.push();
+        for p in &decl.params {
+            let ty = resolve_type_expr(&p.ty, self.known);
+            self.locals.insert(&p.name.name, LocalSym { ty });
+        }
+        self.check_block(&decl.body);
+        self.locals.pop();
+        self.current_locus = prev_locus;
+    }
+
+    fn check_block(&mut self, block: &Block) {
+        self.locals.push();
+        for stmt in &block.stmts {
+            self.check_stmt(stmt);
+        }
+        self.locals.pop();
+    }
+
+    fn check_stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Let { name, ty, value, .. } => {
+                let got = self.check_expr(value);
+                let bound = match ty {
+                    Some(te) => {
+                        let want = resolve_type_expr(te, self.known);
+                        if !want.assignable_from(&got) {
+                            self.diags.push(Diag::ty(
+                                value.span(),
+                                format!(
+                                    "let `{}`: expected `{}`, got `{}`",
+                                    name.name,
+                                    want.display(),
+                                    got.display()
+                                ),
+                            ));
+                        }
+                        want
+                    }
+                    None => got,
+                };
+                self.locals.insert(&name.name, LocalSym { ty: bound });
+            }
+            Stmt::Assign { target, value, .. } => {
+                let got = self.check_expr(value);
+                let want = self.lvalue_ty(target);
+                if !want.assignable_from(&got) {
+                    self.diags.push(Diag::ty(
+                        value.span(),
+                        format!(
+                            "assignment: target type `{}` not assignable from `{}`",
+                            want.display(),
+                            got.display()
+                        ),
+                    ));
+                }
+            }
+            Stmt::Send { subject, value, span } => {
+                self.check_send(subject, value, *span);
+            }
+            Stmt::If(if_stmt) => self.check_if(if_stmt),
+            Stmt::Match(m) => self.check_match(m),
+            Stmt::For { name, iter, body, .. } => {
+                let _ = self.check_expr(iter);
+                self.locals.push();
+                self.locals.insert(&name.name, LocalSym { ty: Ty::Unknown });
+                self.check_block(body);
+                self.locals.pop();
+            }
+            Stmt::While { cond, body, .. } => {
+                let ct = self.check_expr(cond);
+                if !ct.assignable_from(&Ty::Prim(PrimType::Bool)) {
+                    self.diags.push(Diag::ty(
+                        cond.span(),
+                        format!(
+                            "while condition must be Bool; got `{}`",
+                            ct.display()
+                        ),
+                    ));
+                }
+                self.check_block(body);
+            }
+            Stmt::Return(expr, _) => {
+                if let Some(e) = expr {
+                    let _ = self.check_expr(e);
+                }
+            }
+            Stmt::Break(_) | Stmt::Continue(_) => {}
+            Stmt::Block(b) => self.check_block(b),
+            Stmt::Recovery { args, modifier, .. } => {
+                for a in args {
+                    let _ = self.check_expr(a);
+                }
+                if let Some(RecoveryModifier::For(e) | RecoveryModifier::Until(e)) = modifier {
+                    let _ = self.check_expr(e);
+                }
+            }
+            Stmt::Expr(e) => {
+                let _ = self.check_expr(e);
+            }
+        }
+    }
+
+    fn check_if(&mut self, stmt: &IfStmt) {
+        let ct = self.check_expr(&stmt.cond);
+        if !ct.assignable_from(&Ty::Prim(PrimType::Bool)) {
+            self.diags.push(Diag::ty(
+                stmt.cond.span(),
+                format!("if condition must be Bool; got `{}`", ct.display()),
+            ));
+        }
+        self.check_block(&stmt.then_block);
+        if let Some(else_branch) = &stmt.else_block {
+            match else_branch.as_ref() {
+                ElseBranch::Else(b) => self.check_block(b),
+                ElseBranch::ElseIf(s) => self.check_if(s),
+            }
+        }
+    }
+
+    fn check_match(&mut self, stmt: &MatchStmt) {
+        let _ = self.check_expr(&stmt.scrutinee);
+        for arm in &stmt.arms {
+            if let Some(g) = &arm.guard {
+                let _ = self.check_expr(g);
+            }
+            match &arm.body {
+                MatchArmBody::Expr(e) => {
+                    let _ = self.check_expr(e);
+                }
+                MatchArmBody::Block(b) => self.check_block(b),
+            }
+        }
+    }
+
+    fn check_send(&mut self, subject: &Expr, value: &Expr, span: Span) {
+        let payload_ty = self.check_expr(value);
+        let subject_str = match subject {
+            Expr::Literal(Literal::String(s), _) => Some(s.clone()),
+            _ => None,
+        };
+        let locus = match self.current_locus {
+            Some(l) => l,
+            None => {
+                self.diags.push(Diag::ty(
+                    span,
+                    "bus send (`<-`) only valid inside a locus body".to_string(),
+                ));
+                return;
+            }
+        };
+        let subject_str = match subject_str {
+            Some(s) => s,
+            None => {
+                self.diags.push(Diag::ty(
+                    subject.span(),
+                    "bus send subject must be a string literal in milestone 2"
+                        .to_string(),
+                ));
+                return;
+            }
+        };
+        let pub_decl = locus
+            .bus_publishes
+            .iter()
+            .find(|p| p.subject == subject_str);
+        match pub_decl {
+            Some(decl) => {
+                if !decl.payload.assignable_from(&payload_ty) {
+                    self.diags.push(Diag::ty(
+                        value.span(),
+                        format!(
+                            "bus send `{}`: payload `{}` not assignable to declared `{}`",
+                            subject_str,
+                            payload_ty.display(),
+                            decl.payload.display()
+                        ),
+                    ));
+                }
+            }
+            None => {
+                self.diags.push(Diag::ty(
+                    subject.span(),
+                    format!(
+                        "bus send subject `{}` is not declared in locus `{}`'s bus block",
+                        subject_str, locus.name
+                    ),
+                ));
+            }
+        }
+    }
+
+    fn lvalue_ty(&mut self, lv: &LValue) -> Ty {
+        let mut ty = if lv.head.name == "self" {
+            self.self_ty()
+        } else if let Some(s) = self.locals.lookup(&lv.head.name) {
+            s.ty.clone()
+        } else {
+            Ty::Unknown
+        };
+        for seg in &lv.tail {
+            match seg {
+                LValueSeg::Field(f) => {
+                    ty = self.field_ty(&ty, &f.name).unwrap_or(Ty::Unknown);
+                }
+                LValueSeg::Index(idx) => {
+                    let _ = self.check_expr(idx);
+                    ty = match ty {
+                        Ty::Array(elem, _) => *elem,
+                        _ => Ty::Unknown,
+                    };
+                }
+            }
+        }
+        ty
+    }
+
+    fn self_ty(&self) -> Ty {
+        match self.current_locus {
+            Some(l) => Ty::Named(l.name.clone()),
+            None => Ty::Unknown,
+        }
+    }
+
+    /// Look up a named field on a type. Resolves struct fields,
+    /// locus params (when accessing a locus handle's exposed
+    /// state — milestone 2 just exposes all params), and
+    /// perspective params.
+    fn field_ty(&self, ty: &Ty, name: &str) -> Option<Ty> {
+        match ty {
+            Ty::Named(n) => match self.top.lookup(n)? {
+                TopSymbol::Type(info) => match &info.kind {
+                    TypeKind::Struct(fields) => fields
+                        .iter()
+                        .find(|f| f.name == name)
+                        .map(|f| f.ty.clone()),
+                    TypeKind::Alias(t) => self.field_ty(t, name),
+                    TypeKind::Enum(_) => None,
+                },
+                TopSymbol::Locus(info) => {
+                    if name == "children" {
+                        return Some(match &info.accept_param {
+                            Some((_, t)) => Ty::Array(Box::new(t.clone()), None),
+                            None => Ty::Array(Box::new(Ty::Unknown), None),
+                        });
+                    }
+                    info.params
+                        .iter()
+                        .find(|p| p.name == name)
+                        .map(|p| p.ty.clone())
+                }
+                TopSymbol::Perspective(info) => info
+                    .params
+                    .iter()
+                    .find(|p| p.name == name)
+                    .map(|p| p.ty.clone()),
+                _ => None,
+            },
+            Ty::Unknown => Some(Ty::Unknown),
+            _ => None,
+        }
+    }
+
+    fn check_expr(&mut self, expr: &Expr) -> Ty {
+        match expr {
+            Expr::Literal(lit, _) => lit_ty(lit),
+            Expr::Ident(id) => {
+                if let Some(s) = self.locals.lookup(&id.name) {
+                    s.ty.clone()
+                } else if let Some(sym) = self.top.lookup(&id.name) {
+                    match sym {
+                        TopSymbol::Const(c) => c.ty.clone(),
+                        TopSymbol::Fn(sig) => Ty::Function {
+                            params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
+                            ret: Box::new(sig.ret.clone()),
+                        },
+                        // Locus / Type / Perspective names used in
+                        // expression position resolve to the type
+                        // (struct-literal or call site).
+                        TopSymbol::Locus(_)
+                        | TopSymbol::Type(_)
+                        | TopSymbol::Perspective(_) => Ty::Named(id.name.clone()),
+                    }
+                } else {
+                    Ty::Unknown
+                }
+            }
+            Expr::Path(_) | Expr::Path2 { .. } => Ty::Unknown,
+            Expr::KwSelf(span) => {
+                if self.current_locus.is_none() {
+                    self.diags.push(Diag::ty(
+                        *span,
+                        "`self` used outside a locus body".to_string(),
+                    ));
+                }
+                self.self_ty()
+            }
+            Expr::Binary { op, left, right, span } => {
+                let lt = self.check_expr(left);
+                let rt = self.check_expr(right);
+                self.binop_ty(*op, &lt, &rt, *span)
+            }
+            Expr::Unary { op, operand, .. } => {
+                let t = self.check_expr(operand);
+                match op {
+                    UnaryOp::Neg | UnaryOp::BitNot => t,
+                    UnaryOp::Not => Ty::Prim(PrimType::Bool),
+                }
+            }
+            Expr::Call { callee, args, .. } => {
+                let callee_ty = self.check_expr(callee);
+                for a in args {
+                    let _ = self.check_expr(a);
+                }
+                match callee_ty {
+                    Ty::Function { ret, .. } => *ret,
+                    _ => Ty::Unknown,
+                }
+            }
+            Expr::Field { receiver, name, .. } => {
+                let rt = self.check_expr(receiver);
+                self.field_ty(&rt, &name.name).unwrap_or(Ty::Unknown)
+            }
+            Expr::Index { receiver, index, .. } => {
+                let rt = self.check_expr(receiver);
+                let _ = self.check_expr(index);
+                match rt {
+                    Ty::Array(elem, _) => *elem,
+                    _ => Ty::Unknown,
+                }
+            }
+            Expr::Tuple(parts, _) => {
+                Ty::Tuple(parts.iter().map(|e| self.check_expr_local(e)).collect())
+            }
+            Expr::Array(parts, _) => {
+                let elem = if let Some(first) = parts.first() {
+                    self.check_expr_local(first)
+                } else {
+                    Ty::Unknown
+                };
+                for e in parts.iter().skip(1) {
+                    let _ = self.check_expr(e);
+                }
+                Ty::Array(Box::new(elem), Some(parts.len() as u64))
+            }
+            Expr::Struct { path, inits, span } => self.check_struct_literal(path, inits, *span),
+            Expr::Block(b) => {
+                self.check_block(b);
+                Ty::Unit
+            }
+            Expr::If(s) => {
+                self.check_if(s);
+                Ty::Unit
+            }
+            Expr::Match(m) => {
+                self.check_match(m);
+                Ty::Unit
+            }
+            Expr::Sum(inner, _) | Expr::Prod(inner, _) => self.check_expr(inner),
+            Expr::Approx { left, right, tolerance, span } => {
+                if !self.in_closure {
+                    self.diags.push(Diag::ty(
+                        *span,
+                        "approximate-equality (`~~`) only valid inside a closure block"
+                            .to_string(),
+                    ));
+                }
+                let _ = self.check_expr(left);
+                let _ = self.check_expr(right);
+                let _ = self.check_expr(tolerance);
+                Ty::Prim(PrimType::Bool)
+            }
+        }
+    }
+
+    /// Same as check_expr but used when we need a type without
+    /// risking borrow conflicts with the recursion. (In practice
+    /// it's identical; named to mark intent at the call sites.)
+    fn check_expr_local(&mut self, expr: &Expr) -> Ty {
+        self.check_expr(expr)
+    }
+
+    fn binop_ty(&mut self, op: BinOp, lt: &Ty, rt: &Ty, span: Span) -> Ty {
+        use BinOp::*;
+        match op {
+            Add | Sub | Mul | Div | Mod | BitAnd | BitOr | BitXor | Shl | Shr => {
+                if !lt.assignable_from(rt) && !rt.assignable_from(lt) {
+                    self.diags.push(Diag::ty(
+                        span,
+                        format!(
+                            "binary op: incompatible operand types `{}` and `{}`",
+                            lt.display(),
+                            rt.display()
+                        ),
+                    ));
+                }
+                if matches!(lt, Ty::Unknown) {
+                    rt.clone()
+                } else {
+                    lt.clone()
+                }
+            }
+            Eq | NotEq | Lt | Gt | LtEq | GtEq => {
+                if !lt.assignable_from(rt) && !rt.assignable_from(lt) {
+                    self.diags.push(Diag::ty(
+                        span,
+                        format!(
+                            "comparison: incompatible operand types `{}` and `{}`",
+                            lt.display(),
+                            rt.display()
+                        ),
+                    ));
+                }
+                Ty::Prim(PrimType::Bool)
+            }
+            And | Or => Ty::Prim(PrimType::Bool),
+        }
+    }
+
+    fn check_struct_literal(
+        &mut self,
+        path: &QualifiedName,
+        inits: &[StructInit],
+        span: Span,
+    ) -> Ty {
+        if path.segments.len() != 1 {
+            for init in inits {
+                let _ = self.check_expr(&init.value);
+            }
+            return Ty::Unknown;
+        }
+        let name = &path.segments[0].name;
+        let sym = match self.top.lookup(name) {
+            Some(s) => s,
+            None => {
+                self.diags.push(Diag::ty(
+                    span,
+                    format!("unknown type `{}` in struct/locus literal", name),
+                ));
+                for init in inits {
+                    let _ = self.check_expr(&init.value);
+                }
+                return Ty::Unknown;
+            }
+        };
+
+        let (fields, kind_label, requires_all): (Vec<(String, Ty, bool)>, &str, bool) = match sym {
+            TopSymbol::Type(info) => match &info.kind {
+                TypeKind::Struct(fields) => (
+                    fields
+                        .iter()
+                        .map(|f| (f.name.clone(), f.ty.clone(), f.has_default))
+                        .collect(),
+                    "type",
+                    true,
+                ),
+                _ => {
+                    self.diags.push(Diag::ty(
+                        span,
+                        format!("`{}` is not a struct type", name),
+                    ));
+                    return Ty::Unknown;
+                }
+            },
+            TopSymbol::Locus(info) => (
+                info.params
+                    .iter()
+                    .map(|p| (p.name.clone(), p.ty.clone(), p.has_default))
+                    .collect(),
+                "locus",
+                false,
+            ),
+            TopSymbol::Perspective(info) => (
+                info.params
+                    .iter()
+                    .map(|p| (p.name.clone(), p.ty.clone(), p.has_default))
+                    .collect(),
+                "perspective",
+                false,
+            ),
+            _ => {
+                self.diags.push(Diag::ty(
+                    span,
+                    format!("`{}` cannot be instantiated with `{{...}}`", name),
+                ));
+                return Ty::Unknown;
+            }
+        };
+
+        let mut seen: BTreeMap<String, ()> = BTreeMap::new();
+        for init in inits {
+            let got = self.check_expr(&init.value);
+            match fields.iter().find(|(n, _, _)| n == &init.name.name) {
+                Some((_, want, _)) => {
+                    if !want.assignable_from(&got) {
+                        self.diags.push(Diag::ty(
+                            init.value.span(),
+                            format!(
+                                "{} `{}`: field `{}` expects `{}`, got `{}`",
+                                kind_label,
+                                name,
+                                init.name.name,
+                                want.display(),
+                                got.display()
+                            ),
+                        ));
+                    }
+                }
+                None => {
+                    self.diags.push(Diag::ty(
+                        init.span,
+                        format!(
+                            "{} `{}` has no field `{}`",
+                            kind_label, name, init.name.name
+                        ),
+                    ));
+                }
+            }
+            seen.insert(init.name.name.clone(), ());
+        }
+        if requires_all {
+            for (fname, _, has_default) in &fields {
+                if !seen.contains_key(fname) && !has_default {
+                    self.diags.push(Diag::ty(
+                        span,
+                        format!(
+                            "{} `{}`: missing field `{}`",
+                            kind_label, name, fname
+                        ),
+                    ));
+                }
+            }
+        }
+
+        Ty::Named(name.clone())
+    }
+}
+
+fn lit_ty(lit: &Literal) -> Ty {
+    match lit {
+        Literal::Int(_) => Ty::Prim(PrimType::Int),
+        Literal::Float(_) => Ty::Prim(PrimType::Float),
+        Literal::Decimal(_) => Ty::Prim(PrimType::Decimal),
+        Literal::String(_) => Ty::Prim(PrimType::String),
+        Literal::Bool(_) => Ty::Prim(PrimType::Bool),
+        Literal::Nil => Ty::Unknown,
+        Literal::Duration(_) => Ty::Prim(PrimType::Duration),
+        Literal::Time(_) => Ty::Prim(PrimType::Time),
+        Literal::Bytes(_) => Ty::Prim(PrimType::Bytes),
+    }
+}
