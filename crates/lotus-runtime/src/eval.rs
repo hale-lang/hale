@@ -927,7 +927,23 @@ impl Interpreter {
         // child cascade.
         if is_ephemeral_locus(&decl) {
             let parent = self.parent_stack.last().cloned();
-            self.dissolve_locus(handle.clone(), parent)?;
+            self.dissolve_locus(handle.clone(), parent.clone())?;
+            // The handle was registered on the parent's children
+            // list above (per F.7) so accept() could see it. Now
+            // that the ephemeral has dissolved synchronously, it
+            // no longer logically exists — pop it so the parent's
+            // own dissolve cascade doesn't double-fire its
+            // drain/dissolve bodies. Long-lived children stay
+            // registered and dissolve via the parent cascade.
+            if let Some(p) = parent {
+                let mut kids = p.children.borrow_mut();
+                if let Some(pos) = kids
+                    .iter()
+                    .position(|c| std::rc::Rc::ptr_eq(&c.state, &handle.state))
+                {
+                    kids.remove(pos);
+                }
+            }
         } else if self.parent_stack.is_empty() {
             self.top_level_loci.push(handle.clone());
         }
@@ -1024,6 +1040,15 @@ impl Interpreter {
         let children: Vec<LocusHandle> = handle.children.borrow().clone();
         for child in children {
             self.dissolve_locus(child, Some(handle.clone()))?;
+        }
+
+        // F.4: after the child cascade (which IS drain's
+        // recursive structure), invoke the locus's own drain()
+        // body if declared. Default is no-op. drain runs before
+        // closure evaluation and dissolve() so user-level cleanup
+        // can happen while the locus's state is still observable.
+        if let Some(drain_decl) = lookup_lifecycle(&handle.decl, LifecycleKind::Drain) {
+            self.run_lifecycle(handle.clone(), &drain_decl, &[])?;
         }
 
         // Evaluate every closure declared on this locus whose

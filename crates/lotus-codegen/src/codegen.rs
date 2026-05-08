@@ -413,9 +413,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// signatures. Body lowering happens later (pass C).
     ///
     /// Each lifecycle method takes the struct pointer as its first
-    /// arg and returns void. accept / drain / dissolve are accepted
-    /// in the AST but rejected here until parent-child + recovery
-    /// work lands; running into one in source is an Unsupported.
+    /// arg and returns void. accept additionally takes the child
+    /// pointer.
     /// Pass A1: register a locus's struct type + field layout. Done
     /// before any method signatures (pass A2) so accept methods can
     /// reference any locus's struct type, regardless of declaration
@@ -507,9 +506,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// - `accept(parent_self_ptr, child_ptr)` — runs once per child,
     ///   before that child's own `birth` (per F.7)
     /// - `run(self_ptr)` — runs after `birth`
-    ///
-    /// `drain` / `dissolve` wait on the cooperative scheduler +
-    /// recovery work.
+    /// - `drain(self_ptr)` — runs after `run`, before `dissolve`,
+    ///   after the body's child loci have already finished their
+    ///   own drain/dissolve sequence (F.4 depth-first cascade)
+    /// - `dissolve(self_ptr)` — runs last, before the alloca dies
     fn declare_locus_methods(
         &mut self,
         l: &LocusDecl,
@@ -534,10 +534,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         )));
                     }
                     match lc.kind {
-                        LifecycleKind::Birth | LifecycleKind::Run => {
+                        LifecycleKind::Birth
+                        | LifecycleKind::Run
+                        | LifecycleKind::Drain
+                        | LifecycleKind::Dissolve => {
                             let kind: &'static str = match lc.kind {
                                 LifecycleKind::Birth => "birth",
                                 LifecycleKind::Run => "run",
+                                LifecycleKind::Drain => "drain",
+                                LifecycleKind::Dissolve => "dissolve",
                                 _ => unreachable!(),
                             };
                             if !lc.params.is_empty() {
@@ -591,13 +596,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             accept_param =
                                 Some((p.name.name.clone(), child_locus));
                         }
-                        LifecycleKind::Drain | LifecycleKind::Dissolve => {
-                            return Err(CodegenError::Unsupported(format!(
-                                "locus `{}` lifecycle `{:?}`: codegen does \
-                                 not yet lower drain / dissolve",
-                                l.name.name, lc.kind
-                            )));
-                        }
                     }
                 }
                 LocusMember::Bus(_)
@@ -645,7 +643,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     LifecycleKind::Birth => "birth",
                     LifecycleKind::Run => "run",
                     LifecycleKind::Accept => "accept",
-                    _ => continue,
+                    LifecycleKind::Drain => "drain",
+                    LifecycleKind::Dissolve => "dissolve",
                 };
                 let func = *info
                     .methods
@@ -2138,9 +2137,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
 
-        // Fire birth(), then run() if either is declared. drain /
-        // dissolve are not yet implemented for codegen.
-        for kind in &["birth", "run"] {
+        // Fire birth → run → drain → dissolve in order. Each
+        // method is optional; only declared ones are called.
+        //
+        // F.4 depth-first cascade: any child loci instantiated
+        // inside this locus's run() body have already gone
+        // through their full birth → run → drain → dissolve
+        // sequence (each via this same lowering, recursively)
+        // before run() returns. So when drain() fires here, all
+        // descendants are already gone — the cascade is implicit
+        // in v0's all-ephemeral, synchronous-instantiation model.
+        for kind in &["birth", "run", "drain", "dissolve"] {
             if let Some(method) = info.methods.get(kind) {
                 self.builder
                     .build_call(

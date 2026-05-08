@@ -5,21 +5,24 @@ coordination primitives.
 
 **Status.** v0 compiler runs lotus programs end-to-end via a
 tree-walking interpreter AND emits native ELF binaries via LLVM
-for a substantial subset of the language including loci with
-`run()` and parent-child `accept()` lifecycle methods. Phase 3
-(codegen) is at milestone 8: literals + arithmetic, `let`/`let mut`
-+ assignment + compound ops, `if`/`else`/`while` + `break`/`continue`,
-`time::sleep` on `CLOCK_MONOTONIC` with EINTR retry, user-defined
-fns (typed params + return + recursion), the **locus runtime ABI**
-(each locus → LLVM struct, lifecycle methods take `self_ptr`,
-`self.X` reads/writes via `getelementptr`), and parent-child
+for a substantial subset of the language including the full
+lifecycle quartet (`birth` / `accept` / `run` / `drain` /
+`dissolve`). Phase 3 (codegen) is at milestone 10: literals +
+arithmetic, `let`/`let mut` + assignment + compound ops,
+`if`/`else`/`while` + `break`/`continue`, `time::sleep` on
+`CLOCK_MONOTONIC` with EINTR retry, `time::monotonic()` +
+Duration arithmetic / comparisons, user-defined fns (typed
+params + return + recursion), the **locus runtime ABI** (each
+locus → LLVM struct, lifecycle methods take `self_ptr`,
+`self.X` reads/writes via `getelementptr`), parent-child
 **`accept()` lifecycle** with F.7 ordering (accept fires before
-child birth).
+child birth), and **`drain()` / `dissolve()` lifecycle methods**
+with F.4 depth-first cascade (children dissolve before parent).
 
 Phase 0 (spec stabilization + example ladder) and Phase 1
 (compiler frontend: lex / parse / typecheck) are complete. The
 v0 runtime (Phase 2 first cut) is a tree-walking interpreter
-that executes 12 of 14 example projects end-to-end, including
+that executes 15 of 16 example projects end-to-end, including
 the trellis-demo pipeline. The bus router has a Transport
 trait with two implementations (sync dispatch, LMAX-style ring
 buffer); the typechecker enforces the framework's distinctive
@@ -178,6 +181,10 @@ examples/
                           reads/writes via getelementptr; state
                           flows from birth → run through the same
                           alloca'd struct
+  11-drain-dissolve/      drain() and dissolve() lifecycle methods:
+                          F.4 depth-first cascade via synchronous
+                          instantiation; identical interpreter +
+                          codegen output
   trellis-demo/           full producer→analyst→executor→logger
                           pipeline as one process; F.4 program-end
                           dissolve fires the analyst's audit closure
@@ -190,31 +197,33 @@ examples/
 notes/
   open-questions.md       deferred decisions and future directions
 
-crates/                   (Phase 1 + 2 v0 + Phase 3 milestones 0-8)
+crates/                   (Phase 1 + 2 v0 + Phase 3 milestones 0-10)
   lotus-syntax/           lexer + parser + AST + diagnostics
   lotus-types/            symbol resolution + type checker (F.8,
                           field strictness, closure cycle, match
                           exhaustiveness, k_max recognition)
   lotus-runtime/          tree-walking interpreter + bus router
                           (Transport trait: SyncDispatch / RingBuffer)
-                          + dissolve cascade (F.4 + F.9); time::sleep
-                          via libc::clock_nanosleep on CLOCK_MONOTONIC
+                          + dissolve cascade (F.4 + F.9, with drain
+                          bodies invoked); time::sleep / monotonic
+                          via libc::clock_* on CLOCK_MONOTONIC
   lotus-codegen/          LLVM codegen (inkwell + llvm-18). Subset:
                           literals, arithmetic, let mut + assignment,
-                          control flow, time::sleep on CLOCK_MONOTONIC,
-                          user-defined fns, locus runtime ABI
-                          (struct + birth + run + accept w/ F.7
-                          ordering + self.X / g.X via GEP)
+                          control flow, time::sleep + monotonic,
+                          user-defined fns, the locus runtime ABI,
+                          the full lifecycle quartet (birth + accept
+                          w/ F.7 ordering + run + drain + dissolve
+                          w/ F.4 cascade) + self.X / g.X via GEP
   lotus-cli/              `lotus` binary (lex / parse / check / run /
                           build)
 ```
 
-Example ladder: 15 projects from hello-world → trellis-pair;
-~750 lines of source + ~1,200+ lines of README walk-throughs.
-90 tests across the workspace; 14 of 15 projects run end-to-end
+Example ladder: 16 projects from hello-world → trellis-pair;
+~800 lines of source + ~1,300+ lines of README walk-throughs.
+91 tests across the workspace; 15 of 16 projects run end-to-end
 under `lotus run` (only multi-binary trellis-pair waits on the
-cross-process bus). Eight projects (hello-world, 01, 02, 06, 07,
-08, 09, 10) also build to native ELF via `lotus build`.
+cross-process bus). Nine projects (hello-world, 01, 02, 06, 07,
+08, 09, 10, 11) also build to native ELF via `lotus build`.
 
 ## Toolchain
 
@@ -226,7 +235,7 @@ lotus parse <file>           parse and print the AST
 lotus check <file | dir>     parse + typecheck (the full F-rules)
 lotus run   <file | dir>     parse + typecheck + interpret
 lotus build <file>           parse + typecheck + emit native ELF
-                              (Phase 3, milestone-5 subset)
+                              (Phase 3, milestone-10 subset)
 ```
 
 Per `spec/testing.md`, the planned full surface adds:
@@ -257,16 +266,18 @@ Per the delivery plan:
   Region allocator + cooperative scheduler are the remaining
   Phase 2 deep-pushes.
 - **Phase 3** — Codegen in Rust targeting LLVM. *In progress;
-  milestone 8 of N complete.* Working subset: literals, arithmetic,
+  milestone 10 of N complete.* Working subset: literals, arithmetic,
   `let`/`let mut` + assignment + compound ops, mixed-type println,
-  if/else/while + break/continue, `time::sleep` on CLOCK_MONOTONIC,
-  user-defined fns (typed params + return + recursion), the locus
-  runtime ABI, and parent-child `accept()` lifecycle with F.7
-  ordering. `01-locus-with-run` and `02-parent-child` both
-  compile to native ELF and run identically to the interpreter.
-  Up next: `time::now()`/`time::monotonic()`, then `drain()`/
-  `dissolve()`, then bus router lowering for `05-bus`. Modes,
-  closures, and decimal arithmetic are the remaining big chunks
+  if/else/while + break/continue, `time::sleep` + `time::monotonic`
+  on `CLOCK_MONOTONIC` with EINTR retry, Duration arithmetic /
+  comparisons, user-defined fns (typed params + return +
+  recursion), the locus runtime ABI, parent-child `accept()`
+  lifecycle with F.7 ordering, and the `drain()` / `dissolve()`
+  lifecycle quartet with F.4 depth-first cascade.
+  `01-locus-with-run`, `02-parent-child`, `10-stateful-locus`,
+  and `11-drain-dissolve` all compile to native ELF and run
+  identically to the interpreter. Up next: bus router lowering
+  for `05-bus`, then modes, closures, and decimal arithmetic
   before `trellis-demo` is a build target.
 - **Phase 4** — Stdlib v0 in lotus + Rust FFI shims. Overlaps
   Phase 3.

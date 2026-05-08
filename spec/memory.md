@@ -348,6 +348,8 @@ order:
    being instantiated** → call `parent.accept(parent_self, child_ptr)`.
 2. Call `T.birth(child_ptr)` if declared.
 3. Call `T.run(child_ptr)` if declared.
+4. Call `T.drain(child_ptr)` if declared.
+5. Call `T.dissolve(child_ptr)` if declared.
 
 `accept` runs *before* the child's own `birth`, per F.7. This
 is how `02-parent-child`'s `Coord.accept(g: GreeterL)` fires for
@@ -356,20 +358,32 @@ body. Inside `accept`, `self.X` GEPs through the parent's struct
 and `g.X` GEPs through the child's struct — different `getelementptr`
 chains, same lowering machinery.
 
+`drain` / `dissolve` run last, in that order, before the alloca
+dies. The F.4 depth-first cascade is implicit in v0's
+synchronous-instantiation model: any descendants instantiated
+inside this locus's `run()` body have already gone through their
+own full birth → run → drain → dissolve sequence (each via this
+same lowering, recursively) before `run()` returns. So when this
+locus's `drain()` fires, all descendants are already gone — no
+explicit cascade walk is needed at the substrate level. When the
+cooperative scheduler lands and loci can be long-lived, the
+cascade becomes explicit; the lifecycle-method ABI doesn't
+change.
+
 v0 codegen is **ephemeral-only**: every alloca is on the caller's
-stack and freed when the enclosing fn returns. Long-lived loci,
-the parent-child region hierarchy described above (each child's
-region nested in the parent's), and `drain` / `dissolve`
-lifecycle dispatch wait on the cooperative scheduler + region
-allocator work.
+stack and freed when the enclosing fn returns. Long-lived loci
+and the parent-child region hierarchy described above (each
+child's region nested in the parent's) wait on the cooperative
+scheduler + region allocator work.
 
 Constraints v0 codegen enforces (will relax as more lands):
 
-- Lifecycle methods supported: `birth`, `accept`, `run`. `drain`
-  and `dissolve` are rejected at declare time.
-- `birth` and `run` take no user-declared params (only implicit
-  `self`); `accept` takes exactly one param, the typed child
-  reference. All lifecycle methods return `void`.
+- Lifecycle methods supported: `birth`, `accept`, `run`,
+  `drain`, `dissolve`.
+- `birth`, `run`, `drain`, `dissolve` take no user-declared
+  params (only implicit `self`); `accept` takes exactly one
+  param, the typed child reference. All lifecycle methods
+  return `void`.
 - Locus param defaults must be literals (Int / Float / Bool /
   String / Duration). Non-literal defaults compile under the
   interpreter but not via `lotus build`.
@@ -378,14 +392,15 @@ Constraints v0 codegen enforces (will relax as more lands):
   surfaces are still type-checked across coordinator / coordinatee
   per F.8 by the typechecker pass.
 - Locus members other than `params`, `contract`, and the
-  `birth` / `accept` / `run` lifecycle methods (modes, bus
-  blocks, closures, failure handlers, nested fns / consts /
-  types) are rejected at declare time so a partially-supported
-  locus doesn't silently produce dead code.
+  five-method lifecycle set (modes, bus blocks, closures,
+  failure handlers, nested fns / consts / types) are rejected
+  at declare time so a partially-supported locus doesn't
+  silently produce dead code.
 
-The struct ABI + accept dispatch is what makes
-`01-locus-with-run`, `02-parent-child`, and `10-stateful-locus`
-compile to native ELF identically to their interpreter behavior.
+The struct ABI + accept + drain/dissolve dispatch is what makes
+`01-locus-with-run`, `02-parent-child`, `10-stateful-locus`, and
+`11-drain-dissolve` compile to native ELF identically to their
+interpreter behavior.
 
 ## Future work
 

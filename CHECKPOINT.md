@@ -1,7 +1,8 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work in a
-new session. State as of commit `cdd7353` (2026-05-08).
+new session. State as of codegen milestone 10 (drain/dissolve)
+on top of commit `cdd7353` (2026-05-08).
 
 This is part of the alpha-conjecture program (see
 `~/notes/alpha-conjecture/CLAUDE.md`). Lotus is the language-substrate
@@ -33,21 +34,22 @@ greeting from child: yo
 Phase status:
 - **Phase 0** (spec stabilization) — complete
 - **Phase 1** (lex / parse / typecheck) — complete; F.1–F.18 enforced
-- **Phase 2 v0** (interpreter + bus router) — 14 of 15 example
+- **Phase 2 v0** (interpreter + bus router) — 15 of 16 example
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
-- **Phase 3 milestone 9** (codegen subset) — complete. 8 of 15
+- **Phase 3 milestone 10** (codegen subset) — complete. 9 of 16
   example projects build to native ELF via `lotus build`:
   hello-world, 01-locus-with-run, 02-parent-child, 06-mutable-
   counter, 07-control-flow, 08-monotonic-sleep, 09-functions,
-  10-stateful-locus. Latest: `time::monotonic()` (`clock_gettime`
-  on CLOCK_MONOTONIC) + Duration arithmetic / comparisons on both
-  paths.
-- **Phase 3 next** — `drain()` / `dissolve()` lifecycle (tear
-  down long-lived loci cleanly per F.4 cascade), then bus router
-  lowering for `05-bus`. Modes (bulk / harmonic / resolution),
-  closures, and decimal arithmetic are the remaining big pieces
-  before `trellis-demo` is a build target.
+  10-stateful-locus, 11-drain-dissolve. Latest: `drain()` /
+  `dissolve()` lifecycle methods lowered + cascade-ordered
+  dispatch (F.4 depth-first via synchronous instantiation), with
+  matching interpreter parity (drain bodies now fire; ephemeral
+  child no longer double-dissolves).
+- **Phase 3 next** — bus router lowering for `05-bus`. Then
+  modes (bulk / harmonic / resolution), closures, and decimal
+  arithmetic — the remaining big pieces before `trellis-demo` is
+  a build target.
 
 ## Codegen milestone arc (Phase 3 progress)
 
@@ -67,6 +69,7 @@ m6  Codegen milestone 6: multi-fn programs                      (9955bea)
 m7  Codegen milestone 7: locus runtime ABI    ← load-bearing    (206fbd0)
 m8  Codegen milestone 8: accept() + parent-child wiring         (d5afffd)
 m9  Codegen milestone 9: time::monotonic() + Duration arith     (cdd7353)
+m10 Codegen milestone 10: drain() / dissolve() lifecycle        (this commit)
 ```
 
 The architectural pivots are **m7** (locus → LLVM struct,
@@ -95,9 +98,9 @@ m7 builds on the struct ABI.
 | `run()` lifecycle method | ✅ | ✅ |
 | `self.X = ...` mutation in lifecycle methods | ✅ | ✅ |
 | `accept()` lifecycle method (F.7 ordering) + child `g.X` reads | ✅ | ✅ |
+| `drain()` / `dissolve()` lifecycle methods (F.4 cascade) | ✅ | ✅ |
 | Contracts (typecheck only — F.8) | ✅ | ✅ (skipped at codegen) |
 | `for` / `match` | ✅ | — |
-| `drain()` / `dissolve()` lifecycle methods | ✅ | — |
 | Bus router (`<-` send + subscribe dispatch) | ✅ | — |
 | Closure runtime (collapse / absorb / bubble) | ✅ | — |
 | Modes as methods | ✅ | — |
@@ -253,23 +256,17 @@ user-facing). Each is a focused single-commit chunk unless noted.
 
 **Codegen surface expansion (Tier 4, the LLVM path):**
 
-1. **`drain()` / `dissolve()` lifecycle methods.** `drain` cascades
-   depth-first per F.4; `dissolve` runs at scope-exit. With these,
-   long-lived loci can be torn down cleanly. Touches the
-   "ephemeral-only" constraint — initial cut keeps the alloca on
-   the stack and runs drain → dissolve at the end of the parent's
-   lifetime, before the alloca is freed.
-2. **Bus router lowering** — vtable-style dispatch, sync transport
+1. **Bus router lowering** — vtable-style dispatch, sync transport
    first; ring buffer follows. With this, `05-bus` becomes a
    build target.
-3. **Modes (bulk / harmonic / resolution)** — share the locus's
+2. **Modes (bulk / harmonic / resolution)** — share the locus's
    alloca'd struct with three projection-specific dispatch entry
    points. `04-modes` becomes a build target.
-4. **Closure runtime as a small C-runtime support library**
+3. **Closure runtime as a small C-runtime support library**
    (statically linked) — once we're ready to compile away from
    the interpreter for the closure-test path. `03-closure-test`
    becomes a build target.
-5. **`for` loops + arrays.** Need an array runtime representation;
+4. **`for` loops + arrays.** Need an array runtime representation;
    simplest is `{ i64 len, ptr data }` for fixed-size arrays
    first. Unblocks `self.children` iteration patterns.
 
@@ -343,6 +340,9 @@ rm examples/09-functions/main            # clean up artifact
 cargo run --bin lotus -- build examples/10-stateful-locus/main.lt
 ./examples/10-stateful-locus/main        # prints total=160 / step=30
 rm examples/10-stateful-locus/main       # clean up artifact
+cargo run --bin lotus -- build examples/11-drain-dissolve/main.lt
+./examples/11-drain-dissolve/main        # parent: birth, child-a/b drain+dissolve, parent: drain+dissolve
+rm examples/11-drain-dissolve/main       # clean up artifact
 ```
 
-If all eleven work, the checkpoint is intact.
+If all twelve work, the checkpoint is intact.

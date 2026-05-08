@@ -1,0 +1,76 @@
+// 11-drain-dissolve — drain() and dissolve() lifecycle methods.
+//
+// Demonstrates F.4 cascade ordering: a parent's run() body
+// instantiates child loci that synchronously go through their
+// full birth → run → drain → dissolve sequence. By the time the
+// parent's drain() fires, all descendants are already gone.
+//
+// Expected stdout:
+//   parent: birth
+//   child-a: birth
+//   child-a: drain
+//   child-a: dissolve
+//   child-b: birth
+//   child-b: drain
+//   child-b: dissolve
+//   parent: drain
+//   parent: dissolve
+
+locus ChildL {
+    params {
+        tag: String = "child";
+    }
+
+    contract {
+        expose tag: String;
+    }
+
+    birth() {
+        println(self.tag, ": birth");
+    }
+
+    drain() {
+        println(self.tag, ": drain");
+    }
+
+    dissolve() {
+        println(self.tag, ": dissolve");
+    }
+}
+
+locus ParentL {
+    params {
+        B: Int = 100;
+        c: Int = 1;
+        sigma: Int = 1;
+        phi: Float = 1.0;
+    }
+
+    contract {
+        consume tag: String;
+    }
+
+    accept(g: ChildL) {
+    }
+
+    birth() {
+        println("parent: birth");
+    }
+
+    run() {
+        ChildL { tag: "child-a" };
+        ChildL { tag: "child-b" };
+    }
+
+    drain() {
+        println("parent: drain");
+    }
+
+    dissolve() {
+        println("parent: dissolve");
+    }
+}
+
+fn main() {
+    ParentL { };
+}
