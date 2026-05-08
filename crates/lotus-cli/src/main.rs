@@ -32,6 +32,7 @@ fn main() -> ExitCode {
         "parse" => run_parse_file(&target),
         "check" => run_check(&target),
         "run" => run_program(&target),
+        "build" => run_build(&target),
         other => {
             eprintln!("unknown command: {}", other);
             usage();
@@ -48,6 +49,7 @@ fn usage() {
     eprintln!("    lotus parse <file.lt>           parse and print the AST");
     eprintln!("    lotus check <file.lt | dir>     parse + typecheck");
     eprintln!("    lotus run   <file.lt | dir>     parse + typecheck + interpret");
+    eprintln!("    lotus build <file.lt>           parse + typecheck + emit native binary");
 }
 
 fn run_lex_file(path: &Path) -> ExitCode {
@@ -220,6 +222,54 @@ fn run_program(target: &Path) -> ExitCode {
         Ok(code) => ExitCode::from(code as u8),
         Err(e) => {
             eprintln!("runtime error: {}", e);
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn run_build(target: &Path) -> ExitCode {
+    if !target.is_file() {
+        eprintln!("`lotus build` accepts a single .lt file in milestone 0");
+        return ExitCode::from(1);
+    }
+    let source = match fs::read_to_string(target) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("could not read {}: {}", target.display(), e);
+            return ExitCode::from(1);
+        }
+    };
+    let program = match lotus_syntax::parse_source(&source) {
+        Ok(p) => p,
+        Err(diags) => {
+            for d in &diags {
+                eprintln!("{}", d.render(&source));
+            }
+            return ExitCode::from(1);
+        }
+    };
+    // Typecheck before lowering.
+    let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
+    bundle_programs.insert(target.display().to_string(), &program);
+    let bundle = lotus_types::Bundle {
+        programs: bundle_programs,
+    };
+    let diags = lotus_types::check_bundle(&bundle);
+    if !diags.is_empty() {
+        for d in &diags {
+            eprintln!("{}", d.render(&source));
+        }
+        return ExitCode::from(1);
+    }
+    // Output binary alongside the source: hello-world.lt → hello-world.
+    let output = target.with_extension("");
+    match lotus_codegen::build_executable(&program, &output) {
+        Ok(()) => {
+            eprintln!("built: {}", output.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("codegen error: {}", e);
             ExitCode::from(1)
         }
     }
