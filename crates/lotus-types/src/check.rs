@@ -36,6 +36,24 @@ fn method_to_fn_ty(m: &MethodInfo) -> Ty {
     }
 }
 
+/// True if `e` is composed entirely of literals — no
+/// identifiers, no `self`, no calls, no field access. Used by
+/// closure-cycle-existence: a closure assertion with pure-
+/// literal sides has nothing to audit.
+fn is_pure_literal(e: &Expr) -> bool {
+    match e {
+        Expr::Literal(_, _) => true,
+        Expr::Unary { operand, .. } => is_pure_literal(operand),
+        Expr::Binary { left, right, .. } => {
+            is_pure_literal(left) && is_pure_literal(right)
+        }
+        Expr::Tuple(parts, _) | Expr::Array(parts, _) => {
+            parts.iter().all(is_pure_literal)
+        }
+        _ => false,
+    }
+}
+
 pub fn check_bundle(bundle: &Bundle<'_>, top: &TopScope) -> Vec<Diag> {
     let mut diags = Vec::new();
     let known = collect_known_names(top);
@@ -313,6 +331,24 @@ impl<'a> Checker<'a> {
                             cd.name.name,
                             lt.display(),
                             rt.display()
+                        ),
+                    ));
+                }
+                // Cycle-existence: at least one side of the
+                // assertion must observe runtime-varying state
+                // (self, locals, method calls). Two pure-literal
+                // sides means the assertion has nothing to
+                // audit — either always passes or always fails.
+                if is_pure_literal(&cd.assertion.left)
+                    && is_pure_literal(&cd.assertion.right)
+                {
+                    self.diags.push(Diag::ty(
+                        cd.assertion.span,
+                        format!(
+                            "closure `{}`: both assertion sides are pure literals; \
+                             a closure must observe at least one runtime-varying \
+                             value (e.g. `self.x`) to audit anything",
+                            cd.name.name
                         ),
                     ));
                 }

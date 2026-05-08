@@ -211,6 +211,44 @@ mod tests {
     }
 
     #[test]
+    fn err_closure_pure_literal_assertion() {
+        let src = r#"
+            locus L {
+                params { x: Int = 5; }
+                closure dud {
+                    5 ~~ 5 within 0;
+                }
+            }
+            fn main() { L { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("pure literals")),
+            "expected pure-literal closure error; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_closure_one_side_literal() {
+        // One literal side is fine — `self.x ~~ 0 within 5`
+        // is a meaningful "x stays near zero" invariant.
+        let src = r#"
+            locus L {
+                params { count: Int = 0; }
+                closure stays_low {
+                    self.count ~~ 0 within 100;
+                }
+            }
+            fn main() { L { }; }
+        "#;
+        let diags = check(src);
+        assert!(diags.is_empty(), "expected no diags; got: {:?}", diags);
+    }
+
+    #[test]
     fn err_typo_on_struct_value() {
         let src = r#"
             type Point { x: Int; y: Int; }
