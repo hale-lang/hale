@@ -16,6 +16,59 @@ fn examples_dir() -> PathBuf {
     p
 }
 
+/// Compile `source` to a fresh temp binary, run it, return
+/// (stdout, status). Caller asserts on the output.
+fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus) {
+    let program = lotus_syntax::parse_source(source).expect("parse");
+    let mut bin = std::env::temp_dir();
+    bin.push(format!("lotus_test_{}", name));
+    build_executable(&program, &bin).expect("build");
+    let output = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    (String::from_utf8_lossy(&output.stdout).to_string(), output.status)
+}
+
+#[test]
+fn build_int_param_and_println() {
+    // Mixed-type println in a single composed printf call.
+    let src = r#"
+        locus N {
+            params {
+                name: String = "x";
+                n: Int = 42;
+                f: Float = 1.5;
+                flag: Bool = true;
+            }
+            birth() {
+                println("name=", self.name);
+                println("n=", self.n, " f=", self.f, " flag=", self.flag);
+            }
+        }
+        fn main() { N { }; }
+    "#;
+    let (stdout, status) = build_and_run("mixed_println", src);
+    assert!(status.success(), "binary exited non-zero: {:?}", status);
+    assert!(stdout.contains("name=x"), "got: {:?}", stdout);
+    assert!(stdout.contains("n=42 f=1.5 flag=true"), "got: {:?}", stdout);
+}
+
+#[test]
+fn build_int_override_at_instantiation() {
+    // Instantiation overrides the param default.
+    let src = r#"
+        locus M {
+            params { n: Int = 0; }
+            birth() {
+                println("n=", self.n);
+            }
+        }
+        fn main() { M { n: 99 }; }
+    "#;
+    let (stdout, status) = build_and_run("int_override", src);
+    assert!(status.success());
+    assert!(stdout.contains("n=99"), "got: {:?}", stdout);
+}
+
 #[test]
 fn hello_world_builds_and_runs() {
     let mut src_path = examples_dir();

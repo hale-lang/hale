@@ -195,33 +195,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// Lower `LocusName { ... };` for a locus that has only
-    /// `params` and `birth()`. The locus's state is a set of
-    /// scalars (currently: string literals) computed at the
-    /// instantiation site; birth() runs inline against them.
+    /// `params` and `birth()`. The locus's state is a flat
+    /// scope of scalars (string / Int / Float / Bool); birth()
+    /// runs inline against them. Beyond birth(), the rest of
+    /// the lifecycle is unimplemented in this milestone.
     fn lower_locus_birth(
         &mut self,
         locus: &LocusDecl,
         inits: &[StructInit],
     ) -> Result<(), CodegenError> {
-        // Collect param defaults + overrides into a name → expr
-        // map. v0 supports only string-literal initializers.
-        let mut state: std::collections::BTreeMap<String, String> =
+        let mut state: std::collections::BTreeMap<String, ParamValue> =
             std::collections::BTreeMap::new();
         for member in &locus.members {
             if let LocusMember::Params(pb) = member {
                 for p in &pb.params {
-                    if let ParamInit::Value(Expr::Literal(Literal::String(s), _)) =
-                        &p.init
-                    {
-                        state.insert(p.name.name.clone(), s.clone());
+                    if let ParamInit::Value(e) = &p.init {
+                        state.insert(p.name.name.clone(), param_value(e)?);
                     }
                 }
             }
         }
         for init in inits {
-            if let Expr::Literal(Literal::String(s), _) = &init.value {
-                state.insert(init.name.name.clone(), s.clone());
-            }
+            state.insert(init.name.name.clone(), param_value(&init.value)?);
         }
 
         // Lower birth() body.
@@ -243,7 +238,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_birth_stmt(
         &mut self,
         stmt: &Stmt,
-        state: &std::collections::BTreeMap<String, String>,
+        state: &std::collections::BTreeMap<String, ParamValue>,
     ) -> Result<(), CodegenError> {
         match stmt {
             Stmt::Expr(Expr::Call { callee, args, .. }) => {
@@ -261,25 +256,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         name
                     )));
                 }
-                // Concat all args into one printf call.
-                let mut composed = String::new();
+                // Compose a single printf format + arg list.
+                // Each argument contributes a format fragment
+                // (with `%` escaped in literal text) and
+                // optionally a value to plug in.
+                let mut format = String::new();
+                let mut printf_args: Vec<BasicMetadataValueEnum> =
+                    Vec::with_capacity(args.len() + 1);
+                // Reserve the format-string slot at index 0.
+                printf_args.push(BasicMetadataValueEnum::PointerValue(
+                    self.context.ptr_type(AddressSpace::default()).const_null(),
+                ));
                 for a in args {
-                    composed.push_str(&resolve_string_arg(a, state)?);
+                    let (fmt, value) = self.resolve_arg(a, state)?;
+                    format.push_str(&fmt);
+                    if let Some(v) = value {
+                        printf_args.push(v);
+                    }
                 }
                 if name == "println" {
-                    composed.push('\n');
+                    format.push('\n');
                 }
-                let fmt_ptr = self.global_string(&composed);
+                let fmt_ptr = self.global_string(&format);
+                printf_args[0] = BasicMetadataValueEnum::PointerValue(fmt_ptr);
                 let printf = self
                     .module
                     .get_function("printf")
                     .expect("printf declared");
                 self.builder
-                    .build_call(
-                        printf,
-                        &[BasicMetadataValueEnum::PointerValue(fmt_ptr)],
-                        "printf_call",
-                    )
+                    .build_call(printf, &printf_args, "printf_call")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok(())
             }
@@ -290,40 +295,102 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     fn global_string(&mut self, s: &str) -> PointerValue<'ctx> {
-        // Each string literal becomes a private global; printf
-        // takes a pointer.
         let g = self
             .builder
             .build_global_string_ptr(s, "s")
             .expect("build_global_string_ptr");
         g.as_pointer_value()
     }
+
+    /// Lower one println argument. Returns:
+    /// - `String`: the format-string fragment to splice in
+    ///   (literal text with `%` escaped, or a printf format
+    ///   specifier like `%s` / `%lld` / `%g`).
+    /// - `Option<BasicMetadataValueEnum>`: the LLVM value to
+    ///   pass to printf, if the fragment was a specifier;
+    ///   `None` if the argument was a literal text fragment.
+    fn resolve_arg(
+        &mut self,
+        e: &Expr,
+        state: &std::collections::BTreeMap<String, ParamValue>,
+    ) -> Result<(String, Option<BasicMetadataValueEnum<'ctx>>), CodegenError> {
+        match e {
+            Expr::Literal(Literal::String(s), _) => Ok((escape_format(s), None)),
+            Expr::Literal(Literal::Int(n), _) => {
+                let v = self.context.i64_type().const_int(*n as u64, true);
+                Ok(("%lld".to_string(), Some(BasicMetadataValueEnum::IntValue(v))))
+            }
+            Expr::Literal(Literal::Float(f), _) => {
+                let v = self.context.f64_type().const_float(*f);
+                Ok(("%g".to_string(), Some(BasicMetadataValueEnum::FloatValue(v))))
+            }
+            Expr::Literal(Literal::Bool(b), _) => {
+                let s = if *b { "true" } else { "false" };
+                Ok((s.to_string(), None))
+            }
+            Expr::Field { receiver, name, .. } if matches!(receiver.as_ref(), Expr::KwSelf(_)) => {
+                let value = state.get(&name.name).ok_or_else(|| {
+                    CodegenError::Unsupported(format!(
+                        "self.{}: param not found in compile-time state",
+                        name.name
+                    ))
+                })?;
+                match value {
+                    ParamValue::String(s) => {
+                        let ptr = self.global_string(s);
+                        Ok((
+                            "%s".to_string(),
+                            Some(BasicMetadataValueEnum::PointerValue(ptr)),
+                        ))
+                    }
+                    ParamValue::Int(n) => {
+                        let v = self.context.i64_type().const_int(*n as u64, true);
+                        Ok((
+                            "%lld".to_string(),
+                            Some(BasicMetadataValueEnum::IntValue(v)),
+                        ))
+                    }
+                    ParamValue::Float(f) => {
+                        let v = self.context.f64_type().const_float(*f);
+                        Ok((
+                            "%g".to_string(),
+                            Some(BasicMetadataValueEnum::FloatValue(v)),
+                        ))
+                    }
+                    ParamValue::Bool(b) => {
+                        Ok(((if *b { "true" } else { "false" }).to_string(), None))
+                    }
+                }
+            }
+            _ => Err(CodegenError::Unsupported(
+                "println argument is neither literal nor self.<param>".to_string(),
+            )),
+        }
+    }
 }
 
-/// Resolve an Expr down to the concrete string content for the
-/// milestone-0 println path. Supports: string literals,
-/// `self.field` references against the locus's state map.
-fn resolve_string_arg(
-    e: &Expr,
-    state: &std::collections::BTreeMap<String, String>,
-) -> Result<String, CodegenError> {
+#[derive(Debug, Clone)]
+enum ParamValue {
+    String(String),
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+}
+
+fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
     match e {
-        Expr::Literal(Literal::String(s), _) => Ok(s.clone()),
-        Expr::Field { receiver, name, .. } => match receiver.as_ref() {
-            Expr::KwSelf(_) => state.get(&name.name).cloned().ok_or_else(|| {
-                CodegenError::Unsupported(format!(
-                    "self.{}: only string-literal params resolved in v0",
-                    name.name
-                ))
-            }),
-            _ => Err(CodegenError::Unsupported(
-                "non-self field receiver".to_string(),
-            )),
-        },
+        Expr::Literal(Literal::String(s), _) => Ok(ParamValue::String(s.clone())),
+        Expr::Literal(Literal::Int(n), _) => Ok(ParamValue::Int(*n)),
+        Expr::Literal(Literal::Float(f), _) => Ok(ParamValue::Float(*f)),
+        Expr::Literal(Literal::Bool(b), _) => Ok(ParamValue::Bool(*b)),
         _ => Err(CodegenError::Unsupported(
-            "non-string-literal println argument".to_string(),
+            "param initializer must be a literal in milestone-1 codegen".to_string(),
         )),
     }
+}
+
+fn escape_format(s: &str) -> String {
+    s.replace('%', "%%")
 }
 
 /// LLVM produces architecture-specific triples; expose a way
