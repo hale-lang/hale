@@ -6,15 +6,15 @@ coordination primitives.
 **Status.** v0 compiler runs lotus programs end-to-end via a
 tree-walking interpreter AND emits native ELF binaries via LLVM
 for a substantial subset of the language including loci with
-`run()` lifecycle methods. Phase 3 (codegen) is at milestone 7:
-literals + arithmetic, `let`/`let mut` + assignment + compound
-ops, `if`/`else`/`while` + `break`/`continue`, `time::sleep` on
-`CLOCK_MONOTONIC` with EINTR retry, user-defined fns (typed
-params + return + recursion), and the **locus runtime ABI**
+`run()` and parent-child `accept()` lifecycle methods. Phase 3
+(codegen) is at milestone 8: literals + arithmetic, `let`/`let mut`
++ assignment + compound ops, `if`/`else`/`while` + `break`/`continue`,
+`time::sleep` on `CLOCK_MONOTONIC` with EINTR retry, user-defined
+fns (typed params + return + recursion), the **locus runtime ABI**
 (each locus → LLVM struct, lifecycle methods take `self_ptr`,
-`self.X` reads/writes via `getelementptr`, statement-level
-instantiation does alloca → fill defaults+overrides → call
-birth → call run).
+`self.X` reads/writes via `getelementptr`), and parent-child
+**`accept()` lifecycle** with F.7 ordering (accept fires before
+child birth).
 
 Phase 0 (spec stabilization + example ladder) and Phase 1
 (compiler frontend: lex / parse / typecheck) are complete. The
@@ -31,9 +31,9 @@ Quick start:
 ```
 cargo build
 cargo run --bin lotus -- run   examples/hello-world/main.lt
-cargo run --bin lotus -- build examples/01-locus-with-run/main.lt
-./examples/01-locus-with-run/main                     # tick 0..2 over 1.5s
-cargo test --workspace                                # 86 tests
+cargo run --bin lotus -- build examples/02-parent-child/main.lt
+./examples/02-parent-child/main                       # 3× "greeting from child"
+cargo test --workspace                                # 90 tests
 ```
 
 Working CLI commands: `lex`, `parse`, `check`, `run`, `build` —
@@ -144,7 +144,7 @@ spec/
   runtime.md              258 lines  what the lotus binary ships with
   stdlib.md               272 lines  batteries-included module map
   testing.md              247 lines  3-layer testing pipeline design
-  memory.md               378 lines  formal memory model + codegen ABI
+  memory.md               406 lines  formal memory model + codegen ABI
   types.md                320 lines  type system rules
   semantics.md            357 lines  operational semantics
 
@@ -190,7 +190,7 @@ examples/
 notes/
   open-questions.md       deferred decisions and future directions
 
-crates/                   (Phase 1 + 2 v0 + Phase 3 milestones 0-7)
+crates/                   (Phase 1 + 2 v0 + Phase 3 milestones 0-8)
   lotus-syntax/           lexer + parser + AST + diagnostics
   lotus-types/            symbol resolution + type checker (F.8,
                           field strictness, closure cycle, match
@@ -203,18 +203,18 @@ crates/                   (Phase 1 + 2 v0 + Phase 3 milestones 0-7)
                           literals, arithmetic, let mut + assignment,
                           control flow, time::sleep on CLOCK_MONOTONIC,
                           user-defined fns, locus runtime ABI
-                          (struct + lifecycle methods + self.X via
-                          GEP)
+                          (struct + birth + run + accept w/ F.7
+                          ordering + self.X / g.X via GEP)
   lotus-cli/              `lotus` binary (lex / parse / check / run /
                           build)
 ```
 
 Example ladder: 15 projects from hello-world → trellis-pair;
 ~750 lines of source + ~1,200+ lines of README walk-throughs.
-86 tests across the workspace; 14 of 15 projects run end-to-end
+90 tests across the workspace; 14 of 15 projects run end-to-end
 under `lotus run` (only multi-binary trellis-pair waits on the
-cross-process bus). Six projects (hello-world, 01, 06, 07, 08,
-09, 10) also build to native ELF via `lotus build`.
+cross-process bus). Eight projects (hello-world, 01, 02, 06, 07,
+08, 09, 10) also build to native ELF via `lotus build`.
 
 ## Toolchain
 
@@ -257,16 +257,17 @@ Per the delivery plan:
   Region allocator + cooperative scheduler are the remaining
   Phase 2 deep-pushes.
 - **Phase 3** — Codegen in Rust targeting LLVM. *In progress;
-  milestone 7 of N complete.* Working subset: literals, arithmetic,
+  milestone 8 of N complete.* Working subset: literals, arithmetic,
   `let`/`let mut` + assignment + compound ops, mixed-type println,
   if/else/while + break/continue, `time::sleep` on CLOCK_MONOTONIC,
-  user-defined fns (typed params + return + recursion), and the
-  locus runtime ABI (locus → LLVM struct, lifecycle methods take
-  `self_ptr`, `self.X` reads/writes via getelementptr).
-  `01-locus-with-run` compiles to native ELF and runs identically
-  to the interpreter. Up next: `accept()`/`drain()`/`dissolve()`
-  parent-child lifecycle (unblocks `02-parent-child`), then
-  `time::now()`/`time::monotonic()`, then bus router lowering.
+  user-defined fns (typed params + return + recursion), the locus
+  runtime ABI, and parent-child `accept()` lifecycle with F.7
+  ordering. `01-locus-with-run` and `02-parent-child` both
+  compile to native ELF and run identically to the interpreter.
+  Up next: `time::now()`/`time::monotonic()`, then `drain()`/
+  `dissolve()`, then bus router lowering for `05-bus`. Modes,
+  closures, and decimal arithmetic are the remaining big chunks
+  before `trellis-demo` is a build target.
 - **Phase 4** — Stdlib v0 in lotus + Rust FFI shims. Overlaps
   Phase 3.
 - **Phase 5** — Toolchain. Overlaps Phase 3–4.
