@@ -75,8 +75,8 @@ m9  Codegen milestone 9: time::monotonic() + Duration arith     (cdd7353)
 m10 Codegen milestone 10: drain() / dissolve() lifecycle        (3ba3e05)
 m11 Codegen milestone 11: user `type` decls + struct literals   (5cb4882)
 m12 Codegen milestone 12: bus router (subscribe + <- + deferral)(5645eaa)
-m13 Codegen milestone 13: self.method() calls                   (this commit)
-m14 Codegen milestone 14: Decimal + return-from-main exit code  (this commit)
+m13 Codegen milestone 13: self.method() calls                   (b036c7f)
+m14 Codegen milestone 14: Decimal + return-from-main exit code  (b036c7f)
 ```
 
 The architectural pivots are **m7** (locus → LLVM struct,
