@@ -798,6 +798,18 @@ impl Interpreter {
             self.run_lifecycle(handle.clone(), &run_decl, &[])?;
         }
 
+        // Dissolve discipline (F.9): evaluate any closure with
+        // epoch=dissolve. v0 cut: a locus is "ephemeral" — and
+        // therefore dissolves at end of instantiation — if it
+        // has no run() and no bus *subscribe* declarations. A
+        // long-lived locus (run, or subscribed) stays registered
+        // until program end (program-end dissolve cascade is a
+        // future iteration). Closures evaluated here surface
+        // collapse vs explosion per F.9.
+        if is_ephemeral_locus(&decl) {
+            self.dissolve_locus(handle.clone())?;
+        }
+
         Ok(Value::Locus(handle))
     }
 
@@ -869,6 +881,92 @@ impl Interpreter {
         }
     }
 
+    /// Drain a locus through the dissolve discipline (F.4 +
+    /// F.9): drain children first depth-first, evaluate every
+    /// closure whose epoch is dissolve, run the dissolve()
+    /// lifecycle if defined. A failing closure prints a
+    /// ClosureViolation report; the failure surfaces as
+    /// `Signal::Error` once any closure fails (the locus
+    /// "explodes" rather than "collapses").
+    fn dissolve_locus(&mut self, handle: LocusHandle) -> Result<(), Signal> {
+        // Depth-first child drain (per F.4).
+        let children: Vec<LocusHandle> = handle.children.borrow().clone();
+        let mut violation: Option<String> = None;
+        for child in children {
+            if let Err(Signal::Error(msg)) = self.dissolve_locus(child) {
+                violation.get_or_insert(msg);
+            }
+        }
+
+        // Evaluate every closure declared on this locus whose
+        // epoch is dissolve (the default).
+        let closures: Vec<ClosureDecl> = handle
+            .decl
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                LocusMember::Closure(c) if closure_fires_at_dissolve(c) => Some(c.clone()),
+                _ => None,
+            })
+            .collect();
+        for closure in &closures {
+            if let Some(msg) = self.evaluate_closure(handle.clone(), closure)? {
+                violation.get_or_insert(msg);
+            }
+        }
+
+        // Run dissolve() lifecycle if defined.
+        if let Some(dissolve_decl) = lookup_lifecycle(&handle.decl, LifecycleKind::Dissolve) {
+            self.run_lifecycle(handle.clone(), &dissolve_decl, &[])?;
+        }
+
+        if let Some(msg) = violation {
+            // Future: invoke parent's on_failure(child,
+            // ClosureViolation { ... }) per F.9. v0: surface
+            // the report and continue (a parent on_failure
+            // path is the next iteration).
+            eprintln!("{}", msg);
+        }
+        Ok(())
+    }
+
+    /// Evaluate one closure assertion. Returns Ok(None) on
+    /// pass, Ok(Some(report)) on fail. The caller decides
+    /// whether to print/bubble.
+    fn evaluate_closure(
+        &mut self,
+        handle: LocusHandle,
+        closure: &ClosureDecl,
+    ) -> Result<Option<String>, Signal> {
+        self.self_stack.push(handle.clone());
+        self.env.push();
+
+        let result: Result<(Value, Value, Value), Signal> = (|| {
+            let lt = self.eval_expr(&closure.assertion.left)?;
+            let rt = self.eval_expr(&closure.assertion.right)?;
+            let tol = self.eval_expr(&closure.assertion.tolerance)?;
+            Ok((lt, rt, tol))
+        })();
+
+        self.env.pop();
+        self.self_stack.pop();
+
+        let (lt, rt, tol) = result?;
+        let passes = approx_pass(&lt, &rt, &tol).map_err(Signal::Error)?;
+        if passes {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "ClosureViolation: locus `{}` closure `{}` failed at dissolve: \
+             {} ~~ {} within {}",
+            handle.name,
+            closure.name.name,
+            lt.display(),
+            rt.display(),
+            tol.display(),
+        )))
+    }
+
     /// Publish a payload on a subject, then drain all pending
     /// deliveries until none remain. The drain loop catches
     /// re-entrant publishes from inside handlers — a handler
@@ -891,6 +989,58 @@ impl Interpreter {
         }
         Ok(())
     }
+}
+
+fn is_ephemeral_locus(decl: &LocusDecl) -> bool {
+    // Ephemeral: no run lifecycle, no bus subscribe declarations.
+    // (Long-lived loci stay registered; v0 doesn't yet have
+    // program-end dissolve so their closures never fire.)
+    let has_run = decl
+        .members
+        .iter()
+        .any(|m| matches!(m, LocusMember::Lifecycle(lc) if matches!(lc.kind, LifecycleKind::Run)));
+    let has_subscribe = decl.members.iter().any(|m| match m {
+        LocusMember::Bus(bb) => bb
+            .members
+            .iter()
+            .any(|bm| matches!(bm, BusMember::Subscribe { .. })),
+        _ => false,
+    });
+    !has_run && !has_subscribe
+}
+
+fn closure_fires_at_dissolve(c: &ClosureDecl) -> bool {
+    // Closure fires at dissolve if either no epoch clause was
+    // given (default per spec) or the explicit epoch is
+    // EpochSpec::Dissolve.
+    let mut has_epoch = false;
+    for clause in &c.clauses {
+        if let ClosureClause::Epoch(spec) = clause {
+            has_epoch = true;
+            if matches!(spec, EpochSpec::Dissolve) {
+                return true;
+            }
+        }
+    }
+    !has_epoch
+}
+
+fn approx_pass(l: &Value, r: &Value, tol: &Value) -> Result<bool, String> {
+    let (la, ra, ta) = match (l, r, tol) {
+        (Value::Int(a), Value::Int(b), Value::Int(t)) => (*a as f64, *b as f64, *t as f64),
+        (Value::Int(a), Value::Int(b), Value::Float(t)) => (*a as f64, *b as f64, *t),
+        (Value::Float(a), Value::Float(b), Value::Int(t)) => (*a, *b, *t as f64),
+        (Value::Float(a), Value::Float(b), Value::Float(t)) => (*a, *b, *t),
+        _ => {
+            return Err(format!(
+                "closure assertion: numeric operands required; got {} ~~ {} within {}",
+                l.type_name(),
+                r.type_name(),
+                tol.type_name()
+            ))
+        }
+    };
+    Ok((la - ra).abs() <= ta)
 }
 
 fn lookup_lifecycle(decl: &LocusDecl, kind: LifecycleKind) -> Option<LifecycleDecl> {

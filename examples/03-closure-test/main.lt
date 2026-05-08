@@ -3,14 +3,12 @@
 // A locus declares two values and asserts they should match.
 // On dissolution, the closure is evaluated:
 //   - pass  -> collapse: clean dissolve, parent sees normal
-//              child-dissolution event.
+//              child-dissolution event, no output.
 //   - fail  -> explosion: locus dissolves with audit failure;
-//              parent's on_failure receives a ClosureViolation
-//              event; if no parent handler, bubbles to root and
-//              the process exits non-zero.
-//
-// This program demonstrates the pass case (collapse). The
-// README walks the fail case.
+//              v0 surfaces the ClosureViolation report on
+//              stderr. F.9's full design also bubbles to the
+//              parent's on_failure handler — that path lands
+//              when failure routing is wired in.
 
 locus CheckerL {
     params {
@@ -26,12 +24,11 @@ locus CheckerL {
 }
 
 fn main() {
-    // Closure passes (5 ~~ 5 within 0). Locus collapses cleanly.
+    println("--- pass case (5 ~~ 5 within 0): expect silent collapse ---");
     CheckerL { x: 5, y: 5 };
 
-    // To see the fail case (explosion), instantiate with mismatched
-    // values: CheckerL { x: 5, y: 7 };
-    // The closure fails at dissolve; main's implicit locus has no
-    // on_failure handler; the failure bubbles to the runtime root;
-    // the process exits non-zero with a ClosureViolation report.
+    println("--- fail case (5 ~~ 7 within 0): expect ClosureViolation ---");
+    CheckerL { x: 5, y: 7 };
+
+    println("--- after both dissolves ---");
 }
