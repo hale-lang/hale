@@ -1,14 +1,17 @@
-// 03-closure-test — collapse vs explosion.
+// 03-closure-test — collapse: clean dissolution.
 //
 // A locus declares two values and asserts they should match.
 // On dissolution, the closure is evaluated:
-//   - pass  -> collapse: clean dissolve, parent sees normal
-//              child-dissolution event, no output.
-//   - fail  -> explosion: locus dissolves with audit failure;
-//              v0 surfaces the ClosureViolation report on
-//              stderr. F.9's full design also bubbles to the
-//              parent's on_failure handler — that path lands
-//              when failure routing is wired in.
+//   - pass  -> collapse: clean dissolve, no observable output,
+//              parent (if any) sees a normal child-dissolution
+//              event.
+//
+// The fail path has two branches in F.9:
+//   - parent absorbs the ClosureViolation -> see
+//     `examples/03b-closure-absorbed/`.
+//   - parent bubbles or no parent handler -> process exits
+//     non-zero with the violation report. See
+//     `examples/03c-closure-bubbled/`.
 
 locus CheckerL {
     params {
@@ -24,11 +27,8 @@ locus CheckerL {
 }
 
 fn main() {
-    println("--- pass case (5 ~~ 5 within 0): expect silent collapse ---");
+    // Closure passes (5 ~~ 5 within 0). Locus collapses
+    // cleanly; no output.
     CheckerL { x: 5, y: 5 };
-
-    println("--- fail case (5 ~~ 7 within 0): expect ClosureViolation ---");
-    CheckerL { x: 5, y: 7 };
-
-    println("--- after both dissolves ---");
+    println("collapsed cleanly.");
 }

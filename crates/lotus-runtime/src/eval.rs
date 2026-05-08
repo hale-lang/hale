@@ -18,11 +18,17 @@ use crate::env::Env;
 use crate::value::{FnRef, LocusHandle, Value};
 
 /// A non-local control-flow signal raised by `return`,
-/// `break`, `continue`, or a runtime error.
+/// `break`, `continue`, `bubble(err)`, or a runtime error.
 pub enum Signal {
     Return(Value),
     Break,
     Continue,
+    /// `bubble(v)` raised inside an `on_failure` handler.
+    /// The runtime catches it at the failure-routing layer
+    /// and either re-raises to the next parent's handler or
+    /// surfaces the wrapped value as the program's failure
+    /// (process exits non-zero).
+    Bubble(Value),
     Error(String),
 }
 
@@ -276,7 +282,23 @@ impl Interpreter {
             Stmt::Break(_) => Err(Signal::Break),
             Stmt::Continue(_) => Err(Signal::Continue),
             Stmt::Block(b) => self.exec_block(b),
-            Stmt::Recovery { .. } => Ok(()), // v0: no-op
+            Stmt::Recovery { op, args, .. } => {
+                let mut arg_vs = Vec::with_capacity(args.len());
+                for a in args {
+                    arg_vs.push(self.eval_expr(a)?);
+                }
+                match op {
+                    RecoveryOp::Bubble => {
+                        let payload = arg_vs.into_iter().next().unwrap_or(Value::Nil);
+                        Err(Signal::Bubble(payload))
+                    }
+                    // restart / restart_in_place / drain / dissolve /
+                    // quarantine / reorganize: parsed for surface
+                    // completeness; full semantics land with the
+                    // scheduler + region allocator.
+                    _ => Ok(()),
+                }
+            }
             Stmt::Expr(e) => {
                 let _ = self.eval_expr(e)?;
                 Ok(())
@@ -941,9 +963,13 @@ impl Interpreter {
         Ok(())
     }
 
-    /// Deliver a ClosureViolation up the parent chain, if a
-    /// parent on_failure handler exists. If absorbed, return
-    /// silently. If no handler, print on stderr and continue.
+    /// Deliver a ClosureViolation to the parent's on_failure
+    /// handler. Three outcomes per F.9:
+    ///   - parent absorbs (handler returns) → Ok(()) collapse
+    ///   - parent bubbles (`bubble(err)` raised) → Signal::Error
+    ///     wrapping a formatted violation; the program exits
+    ///     non-zero
+    ///   - no parent or no handler → Signal::Error directly
     fn deliver_violation(
         &mut self,
         child: LocusHandle,
@@ -960,33 +986,15 @@ impl Interpreter {
                         failure_decl.params.len()
                     )));
                 }
-                self.run_failure(
+                return self.run_failure(
                     parent.clone(),
                     &failure_decl,
                     Value::Locus(child),
                     violation,
-                )?;
-                return Ok(());
+                );
             }
         }
-        // No handler: print and continue (the violation isn't
-        // a hard runtime error in v0; future iterations may
-        // make absence-of-handler a process-exit-non-zero per
-        // F.9's "no parent → bubble to root → process exits").
-        if let Value::Struct { fields, .. } = &violation {
-            let f = fields.borrow();
-            let locus = f.get("locus").map(|v| v.display()).unwrap_or_default();
-            let closure = f.get("closure").map(|v| v.display()).unwrap_or_default();
-            let lt = f.get("left").map(|v| v.display()).unwrap_or_default();
-            let rt = f.get("right").map(|v| v.display()).unwrap_or_default();
-            let tol = f.get("tolerance").map(|v| v.display()).unwrap_or_default();
-            eprintln!(
-                "ClosureViolation: locus `{}` closure `{}` failed at dissolve: \
-                 {} ~~ {} within {}",
-                locus, closure, lt, rt, tol
-            );
-        }
-        Ok(())
+        Err(Signal::Error(format_violation(&violation)))
     }
 
     fn run_failure(
@@ -999,7 +1007,6 @@ impl Interpreter {
         self.self_stack.push(handle.clone());
         self.parent_stack.push(handle);
         self.env.push();
-        // Bind the two declared params positionally.
         self.env
             .define(&decl.params[0].name.name, child_handle);
         self.env.define(&decl.params[1].name.name, violation);
@@ -1009,6 +1016,7 @@ impl Interpreter {
         self.self_stack.pop();
         match result {
             Ok(()) | Err(Signal::Return(_)) => Ok(()),
+            Err(Signal::Bubble(v)) => Err(Signal::Error(format_violation(&v))),
             Err(other) => Err(other),
         }
     }
@@ -1084,6 +1092,23 @@ impl Interpreter {
 enum ClosureOutcome {
     Pass,
     Violation(Value),
+}
+
+fn format_violation(v: &Value) -> String {
+    if let Value::Struct { fields, .. } = v {
+        let f = fields.borrow();
+        let locus = f.get("locus").map(|v| v.display()).unwrap_or_default();
+        let closure = f.get("closure").map(|v| v.display()).unwrap_or_default();
+        let lt = f.get("left").map(|v| v.display()).unwrap_or_default();
+        let rt = f.get("right").map(|v| v.display()).unwrap_or_default();
+        let tol = f.get("tolerance").map(|v| v.display()).unwrap_or_default();
+        return format!(
+            "ClosureViolation: locus `{}` closure `{}` failed at dissolve: \
+             {} ~~ {} within {}",
+            locus, closure, lt, rt, tol
+        );
+    }
+    format!("bubble: {}", v.display())
 }
 
 fn lookup_failure(decl: &LocusDecl) -> Option<FailureDecl> {

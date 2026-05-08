@@ -1,0 +1,43 @@
+// 03c-closure-bubbled — explosion not absorbed.
+//
+// The third branch of F.9: the parent receives the violation
+// but chooses NOT to absorb it. Calling `bubble(err)` from
+// inside on_failure re-raises the violation up the call stack;
+// if no further handler catches it, the process exits non-zero
+// with the violation report on stderr.
+//
+// Compare:
+//   - 03-closure-test  : pass case → collapse, exit 0
+//   - 03b-closure-absorbed: fail + parent absorbs → exit 0
+//   - 03c-closure-bubbled : fail + parent bubbles → exit != 0
+
+locus CheckerL {
+    params {
+        x: Int = 5;
+        y: Int = 7;
+    }
+
+    closure xy_match {
+        self.x ~~ self.y within 0;
+    }
+}
+
+locus AuditL {
+    on_failure(c: CheckerL, err: ClosureViolation) {
+        println("AuditL saw violation on ", err.locus,
+                " closure=", err.closure,
+                "; bubbling.");
+        bubble(err);
+    }
+
+    run() {
+        CheckerL { x: 5, y: 7 };
+    }
+}
+
+fn main() {
+    AuditL { };
+    // This line never runs: AuditL bubbles, no further handler,
+    // process exits non-zero with the violation report.
+    println("never printed");
+}

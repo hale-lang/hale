@@ -55,6 +55,24 @@ fn closure_absorbed_runs() {
 }
 
 #[test]
+fn closure_bubbled_exits_nonzero() {
+    // F.9: bubble(err) from on_failure with no further handler
+    // produces a runtime error wrapping the formatted
+    // ClosureViolation. The interpreter surfaces that as
+    // Err(String) which the CLI maps to non-zero exit.
+    let result = parse_and_run("03c-closure-bubbled/main.lt");
+    let msg = match result {
+        Err(m) => m,
+        Ok(code) => panic!("expected runtime error; got clean exit {}", code),
+    };
+    assert!(
+        msg.contains("ClosureViolation") && msg.contains("xy_match"),
+        "expected formatted violation; got: {}",
+        msg
+    );
+}
+
+#[test]
 fn modes_runs() {
     assert_eq!(parse_and_run("04-modes/main.lt").unwrap(), 0);
 }
