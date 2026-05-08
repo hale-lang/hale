@@ -273,6 +273,20 @@ struct LocusInfo<'ctx> {
     /// (subject_str, self_ptr, handler_fn_ptr) into the global
     /// bus table.
     subscriptions: Vec<(String, String)>,
+    /// Closure declarations on this locus that fire at the
+    /// dissolve epoch (the default). v0 codegen lowers ONLY
+    /// dissolve-epoch closures; tick / duration / birth / explicit
+    /// epochs are typechecked but rejected at lowering time. Each
+    /// element is a `(name, ClosureAssertion)` pair carried over
+    /// from the AST so the synthetic `__closures` fn body can
+    /// re-lower the assertion expressions.
+    closures: Vec<(String, ClosureAssertion)>,
+    /// Synthetic `<Locus>.__closures(self_ptr)` fn that evaluates
+    /// every dissolve-epoch closure. None when `closures` is
+    /// empty — saves the indirect call when the locus has nothing
+    /// to check. Called between drain() and dissolve() per F.4 +
+    /// F.9.
+    closures_fn: Option<FunctionValue<'ctx>>,
 }
 
 /// Compiled user `type` (a plain data record). No methods, no
@@ -341,6 +355,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // global strings so the standard libc primitive applies.
         let strcmp_ty = i32_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
         self.module.add_function("strcmp", strcmp_ty, None);
+
+        // declare i32 @dprintf(i32 fd, ptr fmt, ...)
+        //
+        // POSIX libc; lets the closure-violation report go to fd 2
+        // (stderr) without needing a `stderr` global. Variadic.
+        let dprintf_ty =
+            i32_t.fn_type(&[i32_t.into(), ptr_t.into()], true);
+        self.module.add_function("dprintf", dprintf_ty, None);
+
+        // declare void @exit(i32) noreturn
+        //
+        // Used by closure-violation handler to abort with a non-zero
+        // exit status when an unabsorbed closure fail at dissolve.
+        // Mirrors the interpreter's "runtime error: ClosureViolation"
+        // path, which exits non-zero too.
+        let void_t = self.context.void_type();
+        let exit_ty = void_t.fn_type(&[i32_t.into()], false);
+        let exit_fn = self.module.add_function("exit", exit_ty, None);
+        // No `noreturn` attr in inkwell stable; the unreachable we
+        // emit after the call is enough for LLVM to optimize.
+        let _ = exit_fn;
     }
 
     /// LLVM struct type for one entry in the bus subscription
@@ -585,16 +620,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get(&locus_name)
                 .cloned()
                 .expect("deferred locus declared");
-            for kind in &["drain", "dissolve"] {
-                if let Some(method) = info.methods.get(kind) {
-                    self.builder
-                        .build_call(
-                            *method,
-                            &[self_ptr.into()],
-                            &format!("{}.{}.call", locus_name, kind),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
+            // drain → __closures → dissolve, mirroring the
+            // ephemeral-locus ordering. Long-lived loci dissolve
+            // here at scope-exit; the cascade itself ran each
+            // descendant's closures during the descendant's own
+            // ephemeral-dissolve / scope-exit.
+            if let Some(drain_fn) = info.methods.get("drain") {
+                self.builder
+                    .build_call(
+                        *drain_fn,
+                        &[self_ptr.into()],
+                        &format!("{}.drain.call", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            if let Some(closures_fn) = info.closures_fn {
+                self.builder
+                    .build_call(
+                        closures_fn,
+                        &[self_ptr.into()],
+                        &format!("{}.__closures.call", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            if let Some(dissolve_fn) = info.methods.get("dissolve") {
+                self.builder
+                    .build_call(
+                        *dissolve_fn,
+                        &[self_ptr.into()],
+                        &format!("{}.dissolve.call", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
         }
         Ok(())
@@ -1014,6 +1070,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 accept_param: None,
                 user_methods: BTreeMap::new(),
                 subscriptions: Vec::new(),
+                closures: Vec::new(),
+                closures_fn: None,
             },
         );
         Ok(())
@@ -1045,6 +1103,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut user_methods: BTreeMap<String, FunctionValue<'ctx>> =
             BTreeMap::new();
         let mut subscriptions: Vec<(String, String)> = Vec::new();
+        let mut closures: Vec<(String, ClosureAssertion)> = Vec::new();
         for member in &l.members {
             match member {
                 LocusMember::Params(_) | LocusMember::Contract(_) => {
@@ -1199,9 +1258,42 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     );
                     user_methods.insert(fd.name.name.clone(), func);
                 }
+                LocusMember::Closure(c) => {
+                    // Reject non-default-epoch closures at codegen
+                    // v0; only the dissolve-epoch closures lower to
+                    // a synthetic __closures fn fired between drain
+                    // and dissolve. Tick / duration / birth /
+                    // explicit epochs need the runtime epoch
+                    // engine.
+                    let mut explicit_epoch = false;
+                    for clause in &c.clauses {
+                        match clause {
+                            ClosureClause::Epoch(EpochSpec::Dissolve) => {
+                                explicit_epoch = true;
+                            }
+                            ClosureClause::Epoch(_) => {
+                                return Err(CodegenError::Unsupported(
+                                    format!(
+                                        "closure `{}` on `{}`: only \
+                                         dissolve-epoch closures are \
+                                         lowered in codegen v0",
+                                        c.name.name, l.name.name
+                                    ),
+                                ));
+                            }
+                            ClosureClause::PersistsThrough(_)
+                            | ClosureClause::ResetsOn(_) => {
+                                // Recovery-event hooks; relevant
+                                // when accumulators land. No effect
+                                // on the v0 single-shot path.
+                            }
+                        }
+                    }
+                    let _ = explicit_epoch;
+                    closures.push((c.name.name.clone(), c.assertion.clone()));
+                }
                 LocusMember::Mode(_)
                 | LocusMember::Failure(_)
-                | LocusMember::Closure(_)
                 | LocusMember::Const(_)
                 | LocusMember::Type(_) => {
                     return Err(CodegenError::Unsupported(format!(
@@ -1211,6 +1303,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         }
+
+        // If this locus has any dissolve-epoch closures, declare
+        // its synthetic __closures fn here so call sites in
+        // lower_locus_instantiation / flush_dissolve_frame can
+        // resolve it. Body is lowered alongside lifecycle bodies
+        // in pass C.
+        let closures_fn = if !closures.is_empty() {
+            let fn_ty = void_t.fn_type(&[ptr_t.into()], false);
+            Some(self.module.add_function(
+                &format!("{}.__closures", l.name.name),
+                fn_ty,
+                None,
+            ))
+        } else {
+            None
+        };
 
         // Stash the methods + accept_param onto the existing
         // LocusInfo.
@@ -1222,6 +1330,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         info.accept_param = accept_param;
         info.user_methods = user_methods;
         info.subscriptions = subscriptions;
+        info.closures = closures;
+        info.closures_fn = closures_fn;
         Ok(())
     }
 
@@ -1314,6 +1424,49 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.current_fn = None;
                 self.current_self = None;
             }
+        }
+
+        // Synthetic __closures fn: evaluate every dissolve-epoch
+        // closure assertion in declaration order. Each assertion
+        // computes |left - right| <= tolerance; on fail, write a
+        // ClosureViolation report to stderr (fd 2 via dprintf) and
+        // exit non-zero. Pass paths flow through silently.
+        if !info.closures.is_empty() {
+            let func = info
+                .closures_fn
+                .expect("closures non-empty implies closures_fn declared");
+            let entry = self.context.append_basic_block(func, "entry");
+            self.builder.position_at_end(entry);
+            let self_ptr = func
+                .get_nth_param(0)
+                .expect("self_ptr param")
+                .into_pointer_value();
+            self.current_fn = Some(func);
+            self.current_user_fn_ret = None;
+            self.current_self = Some(SelfCx {
+                locus_name: l.name.name.clone(),
+                struct_ty: info.struct_ty,
+                self_ptr,
+                fields: info.fields.clone(),
+            });
+            self.loops.clear();
+            // No deferred-dissolve frame here — closures don't
+            // instantiate child loci, and even if a typo'd
+            // assertion expression did, the synchronous-instantiate
+            // path would handle it the same way as any lifecycle
+            // body.
+            self.push_dissolve_frame();
+
+            for (cname, assertion) in &info.closures {
+                self.lower_closure_check(&l.name.name, cname, assertion)?;
+            }
+
+            self.flush_dissolve_frame()?;
+            self.builder
+                .build_return(None)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.current_fn = None;
+            self.current_self = None;
         }
 
         // Locus user-fns (`fn` members): same body lowering as
@@ -3009,16 +3162,36 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
         if !is_long_lived {
-            for kind in &["drain", "dissolve"] {
-                if let Some(method) = info.methods.get(kind) {
-                    self.builder
-                        .build_call(
-                            *method,
-                            &[self_ptr.into()],
-                            &format!("{}.{}.call", locus_name, kind),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
+            // drain → __closures → dissolve. Mirrors the
+            // interpreter ordering in eval.rs::dissolve_locus:
+            // drain body fires first, then dissolve-epoch closures
+            // are evaluated, then the user's dissolve() body.
+            if let Some(drain_fn) = info.methods.get("drain") {
+                self.builder
+                    .build_call(
+                        *drain_fn,
+                        &[self_ptr.into()],
+                        &format!("{}.drain.call", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            if let Some(closures_fn) = info.closures_fn {
+                self.builder
+                    .build_call(
+                        closures_fn,
+                        &[self_ptr.into()],
+                        &format!("{}.__closures.call", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            if let Some(dissolve_fn) = info.methods.get("dissolve") {
+                self.builder
+                    .build_call(
+                        *dissolve_fn,
+                        &[self_ptr.into()],
+                        &format!("{}.dissolve.call", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
         } else if let Some(top) = self.deferred_dissolves.last_mut() {
             top.push((self_ptr, locus_name.to_string()));
@@ -3128,6 +3301,179 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(Some((v, rt)))
             }
         }
+    }
+
+    /// Lower one closure assertion `left ~~ right within tol` as
+    /// the body of the synthetic `<Locus>.__closures` fn:
+    ///
+    /// ```text
+    ///   diff = abs(left - right)
+    ///   pass = diff <= tolerance
+    ///   if pass: continue
+    ///   else:
+    ///     dprintf(2, "ClosureViolation: locus `L` closure `C` failed at dissolve\n")
+    ///     exit(1)
+    /// ```
+    ///
+    /// Operand types must match each other AND the tolerance type.
+    /// v0 supports Int / Duration / Float / Decimal closures.
+    /// String / Bool / record-typed closures are rejected (would
+    /// need a domain-specific approx-equal operator anyway).
+    fn lower_closure_check(
+        &mut self,
+        locus_name: &str,
+        closure_name: &str,
+        ass: &ClosureAssertion,
+    ) -> Result<(), CodegenError> {
+        let scope = Scope::default();
+        let (lv, lt) = self.lower_expr(&ass.left, &scope)?;
+        let (rv, rt) = self.lower_expr(&ass.right, &scope)?;
+        if lt != rt {
+            return Err(CodegenError::Unsupported(format!(
+                "closure `{}` on `{}`: left/right types differ ({:?} vs {:?})",
+                closure_name, locus_name, lt, rt
+            )));
+        }
+        let (tv, tt) = self.lower_expr(&ass.tolerance, &scope)?;
+        if tt != lt {
+            return Err(CodegenError::Unsupported(format!(
+                "closure `{}` on `{}`: tolerance type differs ({:?} vs operand {:?})",
+                closure_name, locus_name, tt, lt
+            )));
+        }
+
+        let pass = match &lt {
+            LotusType::Int | LotusType::Duration => {
+                let l = lv.into_int_value();
+                let r = rv.into_int_value();
+                let t = tv.into_int_value();
+                let diff = self
+                    .builder
+                    .build_int_sub(l, r, "diff")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let zero = self.context.i64_type().const_int(0, false);
+                let neg = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::SLT,
+                        diff,
+                        zero,
+                        "diff.neg",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let neg_diff = self
+                    .builder
+                    .build_int_sub(zero, diff, "diff.neg.val")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let abs = self
+                    .builder
+                    .build_select(neg, neg_diff, diff, "abs")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_int_value();
+                self.builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::SLE,
+                        abs,
+                        t,
+                        "closure.pass",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            }
+            LotusType::Float | LotusType::Decimal => {
+                let l = lv.into_float_value();
+                let r = rv.into_float_value();
+                let t = tv.into_float_value();
+                let diff = self
+                    .builder
+                    .build_float_sub(l, r, "fdiff")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let neg_diff = self
+                    .builder
+                    .build_float_neg(diff, "fdiff.neg")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let zero = self.context.f64_type().const_float(0.0);
+                let is_neg = self
+                    .builder
+                    .build_float_compare(
+                        inkwell::FloatPredicate::OLT,
+                        diff,
+                        zero,
+                        "fdiff.neg",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let abs = self
+                    .builder
+                    .build_select(is_neg, neg_diff, diff, "fabs")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_float_value();
+                self.builder
+                    .build_float_compare(
+                        inkwell::FloatPredicate::OLE,
+                        abs,
+                        t,
+                        "closure.pass",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            }
+            other => {
+                return Err(CodegenError::Unsupported(format!(
+                    "closure `{}` on `{}`: ~~ not defined for {:?}",
+                    closure_name, locus_name, other
+                )));
+            }
+        };
+
+        let func = self
+            .current_fn
+            .expect("current_fn set in __closures body");
+        let cont_bb = self
+            .context
+            .append_basic_block(func, "closure.cont");
+        let fail_bb = self
+            .context
+            .append_basic_block(func, "closure.fail");
+        self.builder
+            .build_conditional_branch(pass, cont_bb, fail_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // fail_bb: report + exit(1).
+        self.builder.position_at_end(fail_bb);
+        let msg = format!(
+            "ClosureViolation: locus `{}` closure `{}` failed at dissolve\n",
+            locus_name, closure_name
+        );
+        let msg_ptr = self.global_string(&msg);
+        let dprintf_fn = self
+            .module
+            .get_function("dprintf")
+            .expect("dprintf declared in declare_builtins");
+        let i32_t = self.context.i32_type();
+        let stderr_fd = i32_t.const_int(2, false);
+        self.builder
+            .build_call(
+                dprintf_fn,
+                &[stderr_fd.into(), msg_ptr.into()],
+                "closure.dprintf",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let exit_fn = self
+            .module
+            .get_function("exit")
+            .expect("exit declared in declare_builtins");
+        self.builder
+            .build_call(
+                exit_fn,
+                &[i32_t.const_int(1, false).into()],
+                "closure.exit",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unreachable()
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // cont_bb: continue with next closure (or fall off body).
+        self.builder.position_at_end(cont_bb);
+        Ok(())
     }
 
     /// Lower a `subject <- payload;` statement to a call into the
