@@ -415,6 +415,96 @@ fn build_duration_param_prints_as_ns() {
 }
 
 #[test]
+fn build_user_fn_with_int_return() {
+    let src = r#"
+        fn add(a: Int, b: Int) -> Int {
+            return a + b;
+        }
+        fn main() {
+            println("2+3=", add(2, 3));
+        }
+    "#;
+    let (stdout, status) = build_and_run("user_fn_int", src);
+    assert!(status.success());
+    assert!(stdout.contains("2+3=5"), "got: {:?}", stdout);
+}
+
+#[test]
+fn build_void_user_fn() {
+    let src = r#"
+        fn greet(name: String) {
+            println("hello ", name);
+        }
+        fn main() {
+            greet("world");
+        }
+    "#;
+    let (stdout, status) = build_and_run("user_fn_void", src);
+    assert!(status.success());
+    assert!(stdout.contains("hello world"), "got: {:?}", stdout);
+}
+
+#[test]
+fn build_recursive_fib() {
+    // Recursion: each call site can resolve `fib` because the
+    // declare/lower split puts every fn in the user_fns table
+    // before any body is lowered.
+    let src = r#"
+        fn fib(n: Int) -> Int {
+            if n < 2 {
+                return n;
+            }
+            return fib(n - 1) + fib(n - 2);
+        }
+        fn main() {
+            println("fib(10)=", fib(10));
+        }
+    "#;
+    let (stdout, status) = build_and_run("user_fn_fib", src);
+    assert!(status.success());
+    assert!(stdout.contains("fib(10)=55"), "got: {:?}", stdout);
+}
+
+#[test]
+fn build_fn_calls_fn_calls_fn() {
+    // a → b → c, with each carrying values and accumulating.
+    let src = r#"
+        fn c(x: Int) -> Int { return x * 2; }
+        fn b(x: Int) -> Int { return c(x) + 1; }
+        fn a(x: Int) -> Int { return b(x) - 1; }
+        fn main() {
+            println("a(3)=", a(3));
+        }
+    "#;
+    // a(3) → b(3) → c(3)=6 → +1 = 7 → -1 = 6
+    let (stdout, status) = build_and_run("user_fn_chain", src);
+    assert!(status.success());
+    assert!(stdout.contains("a(3)=6"), "got: {:?}", stdout);
+}
+
+#[test]
+fn build_fn_with_float_and_bool() {
+    let src = r#"
+        fn scale(x: Float, by: Float) -> Float {
+            return x * by;
+        }
+        fn is_positive(x: Int) -> Bool {
+            return x > 0;
+        }
+        fn main() {
+            println("2.5*4.0=", scale(2.5, 4.0));
+            println("pos(7)=", is_positive(7));
+            println("pos(-3)=", is_positive(-3));
+        }
+    "#;
+    let (stdout, status) = build_and_run("user_fn_typed", src);
+    assert!(status.success());
+    assert!(stdout.contains("2.5*4.0=10"), "got: {:?}", stdout);
+    assert!(stdout.contains("pos(7)=true"), "got: {:?}", stdout);
+    assert!(stdout.contains("pos(-3)=false"), "got: {:?}", stdout);
+}
+
+#[test]
 fn control_flow_example_builds_and_runs() {
     let mut src_path = examples_dir();
     src_path.push("07-control-flow");
@@ -467,6 +557,33 @@ fn monotonic_sleep_example_builds_and_runs() {
         elapsed.as_millis() >= 150,
         "example returned too early: {:?}",
         elapsed
+    );
+}
+
+#[test]
+fn functions_example_builds_and_runs() {
+    let mut src_path = examples_dir();
+    src_path.push("09-functions");
+    src_path.push("main.lt");
+    let source = std::fs::read_to_string(&src_path).expect("read source");
+    let program = lotus_syntax::parse_source(&source).expect("parse");
+
+    let temp_dir = std::env::temp_dir();
+    let mut bin_path = temp_dir.clone();
+    bin_path.push("lotus_test_09_functions");
+
+    build_executable(&program, &bin_path).expect("build");
+    let output = Command::new(&bin_path).output().expect("run");
+    let _ = std::fs::remove_file(&bin_path);
+
+    assert!(output.status.success(), "non-zero: {:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("square(7)=49"), "got: {:?}", stdout);
+    assert!(stdout.contains("fib(12)=144"), "got: {:?}", stdout);
+    assert!(
+        stdout.contains("square(square(3))=81"),
+        "got: {:?}",
+        stdout
     );
 }
 

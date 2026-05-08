@@ -93,7 +93,9 @@ pub fn build_executable(
         builder,
         program,
         current_fn: None,
+        current_user_fn_ret: None,
         loops: Vec::new(),
+        user_fns: BTreeMap::new(),
     };
 
     cx.declare_builtins();
@@ -145,9 +147,27 @@ struct Cx<'ctx, 'p> {
     /// Set while lowering a function's body so that `if` / `while`
     /// can `append_basic_block` onto it.
     current_fn: Option<FunctionValue<'ctx>>,
+    /// Return type of the user-defined fn currently being lowered,
+    /// for typechecking `return` statements at codegen time. Outer
+    /// `None` means we're in `main` (the C entry point) or outside
+    /// any user fn — `return` is rejected there. Inner `None` means
+    /// the user fn has no return type (void return).
+    current_user_fn_ret: Option<Option<LotusType>>,
     /// Stack of enclosing loops so `break` / `continue` can find
     /// their target blocks.
     loops: Vec<LoopFrame<'ctx>>,
+    /// User-defined fns indexed by name. Filled in pass 1 of
+    /// `lower_program` so call sites can refer to fns declared
+    /// later in the same file.
+    user_fns: BTreeMap<String, FnSig<'ctx>>,
+}
+
+#[derive(Debug, Clone)]
+struct FnSig<'ctx> {
+    func: FunctionValue<'ctx>,
+    params: Vec<LotusType>,
+    /// `None` = void (no return type in the lotus declaration).
+    ret: Option<LotusType>,
 }
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
@@ -188,20 +208,45 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .items
             .iter()
             .find_map(|item| match item {
-                TopDecl::Fn(f) if f.name.name == "main" => Some(f),
+                TopDecl::Fn(f) if f.name.name == "main" => Some(f.clone()),
                 _ => None,
             })
             .ok_or_else(|| {
                 CodegenError::Unsupported("program has no `fn main()`".to_string())
             })?;
 
-        // Define the C entry point: i32 @main()
+        // Pass 1: declare every user-defined function so call sites
+        // can refer to fns declared later in the file.
+        let user_fn_decls: Vec<FnDecl> = self
+            .program
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                TopDecl::Fn(f) if f.name.name != "main" => Some(f.clone()),
+                _ => None,
+            })
+            .collect();
+        for f in &user_fn_decls {
+            self.declare_user_fn(f)?;
+        }
+
+        // Pass 2: lower bodies of user-defined fns.
+        for f in &user_fn_decls {
+            self.lower_user_fn_body(f)?;
+        }
+
+        // Pass 3: the C entry point — i32 @main(). Always void-arg
+        // and i32-return at the LLVM ABI level, regardless of what
+        // the user wrote (lotus's "main returns Int = exit code"
+        // semantics map onto this; explicit `return` from main is
+        // not yet implemented in codegen).
         let i32_t = self.context.i32_type();
         let main_ty = i32_t.fn_type(&[], false);
         let main_fn = self.module.add_function("main", main_ty, None);
         let entry = self.context.append_basic_block(main_fn, "entry");
         self.builder.position_at_end(entry);
         self.current_fn = Some(main_fn);
+        self.current_user_fn_ret = None;
 
         let mut scope = Scope::default();
         let end = self.lower_block(&main_decl.body, &mut scope)?;
@@ -232,6 +277,197 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
         Ok(BlockEnd::Open)
+    }
+
+    /// Map a `TypeExpr` to the codegen's `LotusType`. Only the
+    /// scalar primitives are supported; arrays / tuples / locus
+    /// types / generics wait on the locus-as-struct ABI work.
+    fn type_expr_to_lotus(
+        &self,
+        t: &TypeExpr,
+    ) -> Result<LotusType, CodegenError> {
+        match t {
+            TypeExpr::Primitive(p, _) => match p {
+                PrimType::Int => Ok(LotusType::Int),
+                PrimType::Float => Ok(LotusType::Float),
+                PrimType::Bool => Ok(LotusType::Bool),
+                PrimType::String => Ok(LotusType::String),
+                PrimType::Duration => Ok(LotusType::Duration),
+                other => Err(CodegenError::Unsupported(format!(
+                    "type primitive `{:?}` in fn signature",
+                    other
+                ))),
+            },
+            other => Err(CodegenError::Unsupported(format!(
+                "type form {:?} in fn signature",
+                std::mem::discriminant(other)
+            ))),
+        }
+    }
+
+    /// Declare a user-defined fn's LLVM function value and signature.
+    /// Body lowering happens in a separate pass so calls in pass 2
+    /// can resolve to fns declared anywhere in the program.
+    fn declare_user_fn(&mut self, f: &FnDecl) -> Result<(), CodegenError> {
+        if !f.generics.is_empty() {
+            return Err(CodegenError::Unsupported(format!(
+                "generic fn `{}`",
+                f.name.name
+            )));
+        }
+        let mut param_tys = Vec::with_capacity(f.params.len());
+        let mut llvm_param_tys: Vec<inkwell::types::BasicMetadataTypeEnum> =
+            Vec::with_capacity(f.params.len());
+        for p in &f.params {
+            if p.default.is_some() {
+                return Err(CodegenError::Unsupported(format!(
+                    "fn `{}` param `{}` default values not yet lowered",
+                    f.name.name, p.name.name
+                )));
+            }
+            let lt = self.type_expr_to_lotus(&p.ty)?;
+            param_tys.push(lt);
+            llvm_param_tys.push(self.llvm_basic_type(lt).into());
+        }
+        let ret_ty = match &f.ret {
+            Some(t) => Some(self.type_expr_to_lotus(t)?),
+            None => None,
+        };
+        let fn_ty = match ret_ty {
+            Some(LotusType::Int) | Some(LotusType::Duration) => self
+                .context
+                .i64_type()
+                .fn_type(&llvm_param_tys, false),
+            Some(LotusType::Float) => {
+                self.context.f64_type().fn_type(&llvm_param_tys, false)
+            }
+            Some(LotusType::Bool) => {
+                self.context.bool_type().fn_type(&llvm_param_tys, false)
+            }
+            Some(LotusType::String) => self
+                .context
+                .ptr_type(AddressSpace::default())
+                .fn_type(&llvm_param_tys, false),
+            None => self
+                .context
+                .void_type()
+                .fn_type(&llvm_param_tys, false),
+        };
+        let func = self.module.add_function(&f.name.name, fn_ty, None);
+        self.user_fns.insert(
+            f.name.name.clone(),
+            FnSig {
+                func,
+                params: param_tys,
+                ret: ret_ty,
+            },
+        );
+        Ok(())
+    }
+
+    /// Lower a user fn's body. Each declared param is materialized
+    /// as an alloca in the entry block so reads through `Ident`
+    /// see the value-stored slot exactly the way `let`-bindings do.
+    fn lower_user_fn_body(&mut self, f: &FnDecl) -> Result<(), CodegenError> {
+        let sig = self
+            .user_fns
+            .get(&f.name.name)
+            .cloned()
+            .expect("fn declared in pass 1");
+        let func = sig.func;
+        let entry = self.context.append_basic_block(func, "entry");
+        self.builder.position_at_end(entry);
+        self.current_fn = Some(func);
+        self.current_user_fn_ret = Some(sig.ret);
+        self.loops.clear();
+
+        let mut scope = Scope::default();
+        for (i, p) in f.params.iter().enumerate() {
+            let lt = sig.params[i];
+            let alloca = self.alloca_for(lt, &p.name.name)?;
+            let v = func
+                .get_nth_param(i as u32)
+                .expect("param index in range");
+            self.builder
+                .build_store(alloca, v)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            scope.locals.insert(p.name.name.clone(), (alloca, lt));
+        }
+
+        let end = self.lower_block(&f.body, &mut scope)?;
+        if end == BlockEnd::Open {
+            match sig.ret {
+                None => {
+                    self.builder
+                        .build_return(None)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Some(_) => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "fn `{}` falls through without returning a value",
+                        f.name.name
+                    )));
+                }
+            }
+        }
+
+        self.current_fn = None;
+        self.current_user_fn_ret = None;
+        Ok(())
+    }
+
+    /// Emit a call to a user-defined fn. Returns the lowered value
+    /// + type when the fn has a return type, or `None` for void
+    /// fns. Used from both expression-position and statement-position
+    /// call sites.
+    fn lower_user_fn_call(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        self_state: &BTreeMap<String, ParamValue>,
+    ) -> Result<Option<(BasicValueEnum<'ctx>, LotusType)>, CodegenError> {
+        let sig = self
+            .user_fns
+            .get(name)
+            .cloned()
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!("call to unknown fn `{}`", name))
+            })?;
+        if args.len() != sig.params.len() {
+            return Err(CodegenError::Unsupported(format!(
+                "fn `{}` expects {} args, got {}",
+                name,
+                sig.params.len(),
+                args.len()
+            )));
+        }
+        let mut llvm_args: Vec<BasicMetadataValueEnum> =
+            Vec::with_capacity(args.len());
+        for (i, a) in args.iter().enumerate() {
+            let (v, ty) = self.lower_expr(a, scope, self_state)?;
+            if ty != sig.params[i] {
+                return Err(CodegenError::Unsupported(format!(
+                    "fn `{}` arg {} type mismatch: expected {:?}, got {:?}",
+                    name, i, sig.params[i], ty
+                )));
+            }
+            llvm_args.push(v.into());
+        }
+        let call = self
+            .builder
+            .build_call(sig.func, &llvm_args, &format!("{}.call", name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        match sig.ret {
+            None => Ok(None),
+            Some(lt) => {
+                let v = call
+                    .try_as_basic_value()
+                    .left()
+                    .expect("non-void fn returns a basic value");
+                Ok(Some((v, lt)))
+            }
+        }
     }
 
     fn lower_stmt(
@@ -272,12 +508,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Stmt::Expr(Expr::Call { callee, args, .. }) => {
                 match callee.as_ref() {
                     Expr::Ident(i) => {
-                        self.lower_print_call(
-                            i.name.as_str(),
-                            args,
-                            scope,
-                            &BTreeMap::new(),
-                        )?;
+                        let name = i.name.as_str();
+                        if self.user_fns.contains_key(name) {
+                            // Discard return value; statement-position
+                            // call.
+                            let _ = self.lower_user_fn_call(
+                                name,
+                                args,
+                                scope,
+                                &BTreeMap::new(),
+                            )?;
+                        } else {
+                            self.lower_print_call(
+                                name,
+                                args,
+                                scope,
+                                &BTreeMap::new(),
+                            )?;
+                        }
                     }
                     Expr::Path(qn) => {
                         self.lower_path_call(qn, args, scope)?;
@@ -363,6 +611,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Stmt::Break(_) => self.lower_break(),
             Stmt::Continue(_) => self.lower_continue(),
             Stmt::Block(b) => self.lower_block(b, scope),
+            Stmt::Return(expr_opt, _) => self.lower_return(expr_opt.as_ref(), scope),
             Stmt::Expr(_) => Err(CodegenError::Unsupported(
                 "expression statement other than locus literal or builtin call"
                     .to_string(),
@@ -500,6 +749,54 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(BlockEnd::Terminated)
     }
 
+    fn lower_return(
+        &mut self,
+        expr: Option<&Expr>,
+        scope: &Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let ret_ty = self.current_user_fn_ret.ok_or_else(|| {
+            CodegenError::Unsupported(
+                "`return` outside a user fn (main return values not yet \
+                 supported in codegen)"
+                    .to_string(),
+            )
+        })?;
+        match (expr, ret_ty) {
+            (None, None) => {
+                self.builder
+                    .build_return(None)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            (Some(e), Some(declared_ty)) => {
+                let (v, got_ty) =
+                    self.lower_expr(e, scope, &BTreeMap::new())?;
+                if got_ty != declared_ty {
+                    return Err(CodegenError::Unsupported(format!(
+                        "return type mismatch: declared {:?}, got {:?}",
+                        declared_ty, got_ty
+                    )));
+                }
+                self.builder
+                    .build_return(Some(&v))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            (None, Some(declared)) => {
+                return Err(CodegenError::Unsupported(format!(
+                    "fn declared to return {:?} but `return;` carries no value",
+                    declared
+                )));
+            }
+            (Some(_), None) => {
+                return Err(CodegenError::Unsupported(
+                    "fn declared with no return type but `return e;` \
+                     carries a value"
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(BlockEnd::Terminated)
+    }
+
     fn lower_continue(&mut self) -> Result<BlockEnd, CodegenError> {
         let frame = self.loops.last().copied().ok_or_else(|| {
             CodegenError::Unsupported(
@@ -607,6 +904,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let (v, t) = self.lower_expr(operand, scope, self_state)?;
                 self.lower_unop(*op, v, t)
             }
+            Expr::Call { callee, args, .. } => match callee.as_ref() {
+                Expr::Ident(i) if self.user_fns.contains_key(&i.name) => {
+                    let result = self.lower_user_fn_call(
+                        i.name.as_str(),
+                        args,
+                        scope,
+                        self_state,
+                    )?;
+                    result.ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "fn `{}` returns no value but is used in \
+                             expression position",
+                            i.name
+                        ))
+                    })
+                }
+                _ => Err(CodegenError::Unsupported(format!(
+                    "non-user-fn call in expression position: {:?}",
+                    std::mem::discriminant(callee.as_ref())
+                ))),
+            },
             _ => Err(CodegenError::Unsupported(format!(
                 "expression form {:?}",
                 std::mem::discriminant(e)

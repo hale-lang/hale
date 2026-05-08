@@ -104,6 +104,14 @@ fn monotonic_sleep_runs() {
 }
 
 #[test]
+fn functions_runs() {
+    assert_eq!(
+        parse_and_run("09-functions/main.lt").unwrap(),
+        0
+    );
+}
+
+#[test]
 fn bus_runs() {
     assert_eq!(parse_and_run("05-bus/main.lt").unwrap(), 0);
 }

@@ -1,0 +1,28 @@
+// 09-functions — user-defined fns via the codegen path.
+//
+// Demonstrates: typed parameters, typed return, void fns, calls
+// in both expression and statement position, and recursion (each
+// call site resolves because every fn is declared in pass 1
+// before any body is lowered in pass 2).
+
+fn square(x: Int) -> Int {
+    return x * x;
+}
+
+fn fib(n: Int) -> Int {
+    if n < 2 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn announce(label: String, value: Int) {
+    println(label, "=", value);
+}
+
+fn main() {
+    announce("square(7)", square(7));
+    announce("fib(12)", fib(12));
+    let n = square(square(3));
+    announce("square(square(3))", n);
+}
