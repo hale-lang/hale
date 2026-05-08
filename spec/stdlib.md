@@ -143,11 +143,16 @@ Testing primitives (referenced in `testing.md`):
 
 ### `std::ffi`
 
-Foreign function interface:
+Foreign function interface — generic, language-agnostic. No
+specific external runtime is favored.
+
 - `extern fn` declaration syntax (TBD: grammar extension)
 - `c::Callable` for calling into C libraries
-- `go::Callable` for calling into Go via cgo (for grease)
 - Marshalling helpers for common types
+- Adapters for other runtimes (Go, Rust, etc.) live as
+  third-party modules, not stdlib. Lotus stdlib provides the
+  generic primitives; team-specific bindings (e.g. grease's
+  typed messages) live in their own packages.
 
 ### `std::random`
 
@@ -186,21 +191,17 @@ package ecosystem (TBD: how packages work, where they live).
 
 ## Open decisions
 
-1. **`grease::*` interop** — is this a stdlib module or a
-   third-party? Probably stdlib for now, since the team needs
-   it and it's the load-bearing FFI use case. Could spin out
-   later.
-2. **Module organization** — flat (`std::collections`,
+1. **Module organization** — flat (`std::collections`,
    `std::string`) vs. hierarchical (`std::collections::Map`).
    The Go-style middle ground (`std/collections/map.go`) is
    probably right.
-3. **What's exported by default vs. what's deep-imported.**
+2. **What's exported by default vs. what's deep-imported.**
    `import std;` for everything? `import std::time;` only?
    Probably the latter: explicit per-module imports.
-4. **API stability commitments.** Go's stdlib is famously
+3. **API stability commitments.** Go's stdlib is famously
    stable. We'd want similar. v0 stdlib is *unstable*; v1
    marks specific APIs as `stable`; only stable APIs survive.
-5. **Versioning.** Stdlib is versioned with the language? Or
+4. **Versioning.** Stdlib is versioned with the language? Or
    independently? Probably with the language for v0; consider
    independent versioning when stable.
 

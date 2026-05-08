@@ -40,19 +40,52 @@ the model: runtime is automatic; stdlib is explicit.
   all language keywords; runtime implements the actual
   effects.
 
-### Scheduler
+### Scheduler — multi-scheduler cooperative
 
-- **Lotus-aware preemption.** The substrate-cell at a locus's
-  depth is atomic at that depth; the scheduler doesn't preempt
-  inside a substrate-cell. This is the framework's
-  observer-resolution-conditioning enforced at the runtime
-  layer.
-- **Per-locus task ownership.** A locus's `run` body runs as
-  a single logical unit of execution (a goroutine-equivalent).
-  Multiple loci run concurrently.
-- **Failure-traversal at scheduling level.** A panic in a
-  locus's `run` traps to the parent's `on_failure`, never
-  laterally to siblings.
+Lotus uses a **multi-scheduler cooperative** model (closest
+existing analog: Erlang BEAM, *not* Go's M:N). The reasons are
+framework-discipline:
+
+- **Lateral-access prohibition is physical, not just typed.**
+  Within a single cooperative scheduler, sibling loci cannot
+  run concurrently — only one locus is executing at a time per
+  scheduler. There is no thread of execution that could attempt
+  a lateral memory reference. The compile-time type rule
+  ("vertical-only flow") is reinforced by the substrate.
+- **Substrate-cell atomicity is naturally aligned.** Cooperative
+  yield points — between message-handler invocations, between
+  lifecycle phases, on bus dispatch — are exactly where the
+  substrate-cell boundary lives. No preemption inside a
+  substrate-cell because the runtime can't preempt at all;
+  it only switches at yield points.
+- **Per-scheduler region allocators.** Each scheduler is
+  single-threaded, so its allocator state is naturally
+  per-scheduler with no synchronization. Lock-free by
+  construction.
+- **Failure-traversal is a call-stack walk on one scheduler.**
+  No cross-thread synchronization for parent-catches-child
+  failure when both are on the same scheduler.
+
+Concurrency comes from running **multiple cooperative schedulers
+in parallel** (one per CPU core, by default). Loci belong to a
+specific scheduler; cross-scheduler communication uses the bus
+just like cross-process communication. Loci may be migrated
+between schedulers transparently for load balancing because all
+their communication is bus-mediated already.
+
+Specifically:
+
+- **One scheduler per CPU core** at startup, configurable.
+- **Cooperative yield points**: between handler invocations,
+  between lifecycle transitions, on bus message dispatch, on
+  explicit `yield` (rare, for long-running computations).
+- **No preemption within a scheduler.** A locus's handler runs
+  to completion or an explicit yield.
+- **Cross-scheduler is bus.** No shared memory; no locks.
+- **Failure-traversal**: if parent and child are on the same
+  scheduler, failure-traversal is a stack walk. If different
+  schedulers, the failure is delivered as a typed bus message
+  to the parent's scheduler, which dispatches to `on_failure`.
 
 ### Bus message router
 
@@ -156,22 +189,19 @@ Erlang.
 
 ## Open questions for runtime
 
-- **Threading model under the hood.** OS threads, M:N
-  scheduler (Go-style), single-threaded with cooperative
-  yielding (Erlang BEAM-style)? Probably M:N for best ergonomic
-  match with grease's existing patterns.
 - **Async / await integration.** Reserved keywords, no v0
-  semantics. The lifecycle state machine subsumes most of
-  what async is for; explicit async/await may not be
-  necessary.
-- **FFI to existing languages.** Critical for grease interop;
-  TBD how to call into existing C/Go code (lotus emits a
-  language-native FFI; stdlib `std::ffi` provides higher-level
-  wrappers).
+  semantics. The lifecycle state machine + cooperative yield
+  points subsume most of what async is for; explicit
+  async/await may not be necessary.
+- **FFI to existing languages.** Generic FFI in stdlib;
+  team-specific bindings (e.g. grease's typed messages) live
+  as third-party packages. Marshalling helpers in stdlib.
 - **Hot-reload of code (not just perspectives).** Erlang
   supports module-level hot reload. Lotus's perspective
   hot-reload is more granular and addresses most of the use
   case; full code hot-reload may not be needed.
 - **Determinism mode for tests.** Discussed in `testing.md`;
   runtime needs to support deterministic scheduling when
-  requested.
+  requested. The cooperative scheduler makes this easier than
+  M:N would have — single-scheduler test mode is fully
+  deterministic by construction.

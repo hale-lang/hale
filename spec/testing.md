@@ -96,46 +96,47 @@ the developer must explicitly accept.
 
 #### Comparative benchmarks (lotus vs. other languages)
 
-This is the harder problem. Three approaches, all supported:
+These are **internal development tools**, not published results.
+Their purpose is to give the team visibility into the language's
+performance shape as it evolves — to catch regressions, validate
+that framework-discipline overhead is in the expected range, and
+spot when a design choice is costing us order-of-magnitude
+throughput.
 
-1. **External-equivalent annotation.** A benchmark file declares
-   its equivalent in another language as a sibling:
+A benchmark file declares its equivalent in another language as
+a sibling:
 
-   ```
-   // bench_message_passing_test.lt
-   //
-   // @external_equivalents:
-   //   - lang: go
-   //     path: ./equivalents/message_passing.go
-   //   - lang: rust
-   //     path: ./equivalents/message_passing.rs
-   //   - lang: erlang
-   //     path: ./equivalents/message_passing.erl
-   ```
+```
+// bench_message_passing_test.lt
+//
+// @external_equivalents:
+//   - lang: go
+//     path: ./equivalents/message_passing.go
+//   - lang: rust
+//     path: ./equivalents/message_passing.rs
+```
 
-   The runner builds and runs each; reports a comparison table.
-   Idiomatic implementation in each language, not a literal
-   port. Dev declares the comparison set; CI runs the whole
-   matrix.
+The runner builds and runs each; reports a comparison table.
+The author writes the equivalent however they think is fair for
+the comparison they want — there is no "fairness review,"
+because nothing is being published. The numbers are useful to
+us; they don't need to be defensible to outsiders.
 
-2. **The Computer Language Benchmarks Game** (CLBG) approach.
-   A small set of well-known algorithms (n-body, fasta,
-   spectral-norm, etc.) implemented in each language under
-   identical input. Standard, cross-validated, criticized.
-   Lotus implements the standard set; reports against the
-   CLBG corpus.
+Useful comparative-perf categories for internal use:
 
-3. **Domain-specific benchmark suites.**
-   - **Coordination-overhead.** Million-message-passing
-     scenarios. Compared against Erlang (our closest
-     existing analog) and Go (our team's reference).
-   - **Region-allocation throughput.** Allocation /
-     deallocation rate compared to GC'd languages.
-   - **Closure-test overhead.** Same program with closure
-     tests on / off / probabilistic.
-   - **Mode-projection.** Same kernel computed three ways
-     (bulk / harmonic / resolution) — comparing against a
-     hand-written N-implementation in another language.
+- **Coordination-overhead.** Many-message-passing scenarios
+  vs. Erlang / Go.
+- **Region-allocation throughput.** Allocation / deallocation
+  rate vs. GC'd languages.
+- **Closure-test overhead.** Same program with closure tests
+  on / off — measures the cost of the framework discipline.
+- **Mode-projection.** Same kernel computed three ways
+  (bulk / harmonic / resolution) vs. a hand-written
+  per-N-implementation in another language.
+
+Comparative results are not gatekept; any branch can produce
+them and stash them in `bench-results/` (gitignored). A regression
+in lotus-vs-X ratio is a developer signal, not a CI gate.
 
 #### Performance regressions in CI
 
@@ -236,16 +237,11 @@ Actions annotations, etc.) are downstream conversions.
    neither attributes nor magic-name conventions yet. Decision
    pending; probably an attribute (`@bench fn ...`) added to
    the grammar in v0.2.
-2. **What "idiomatic" means for external equivalents.** Who
-   judges? The dev who writes the comparison? A community
-   convention? CLBG-style "first-author submits, others may
-   challenge"? Probably author-decides for v0; community
-   review later.
-3. **Determinism.** For benchmarks, the runtime should be
+2. **Determinism.** For benchmarks, the runtime should be
    isolatable (no GC pauses to confound; we don't have GC, so
    that's free). Does the runtime need deterministic
    scheduling for benchmark consistency? Probably yes for some
    benchmark classes; opt-in.
-4. **External-language toolchain access.** `lotus bench
+3. **External-language toolchain access.** `lotus bench
    -compare` needs `go`, `rustc`, `erlc`, etc. on PATH.
    Documenting this clearly is dev-experience work.
