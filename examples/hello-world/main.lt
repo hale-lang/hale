@@ -1,0 +1,19 @@
+// hello-world — the minimal lotus program.
+//
+// One locus, one lifecycle method, one builtin call. Demonstrates
+// the smallest set of language primitives that is recognizably
+// "lotus" rather than just "a program that prints."
+
+locus HelloL {
+    params {
+        greeting: string = "hello, world";
+    }
+
+    birth() {
+        println(self.greeting);
+    }
+}
+
+fn main() {
+    HelloL { };
+}

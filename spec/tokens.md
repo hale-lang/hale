@@ -111,8 +111,13 @@ stable_when     serialize_as
 let             if              else            match
 for             in              while           return
 break           continue        true            false
-nil             tier
+nil             tier            self
 ```
+
+`self` is meaningful only inside a lifecycle block, mode block,
+or closure block. It refers to the enclosing locus's own params
+and contract-exposed state. Outside such a block, `self` is a
+parse error.
 
 ### Type keywords (built-in primitives)
 
@@ -254,7 +259,13 @@ B               c               sigma           phi
 k_max           span_max
 sum             prod            min             max
 length          empty
+print           println
 ```
+
+`print` and `println` are built-in functions, always in scope
+without an `import`. They write to stdout. `print` does not
+emit a trailing newline; `println` does. They accept any number
+of arguments of any displayable type and concatenate.
 
 The framework names `(B, c, σ, φ)` use ASCII spellings in source:
 `B`, `c`, `sigma`, `phi`. The framework's `k_max` is `k_max` or

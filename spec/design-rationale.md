@@ -552,6 +552,87 @@ function compiles to three.
 
 ---
 
+## A. Locus instantiation and handles
+
+(Added in v0.1.1, after the hello-world example surfaced this.)
+
+A locus is instantiated using struct-literal syntax:
+
+```
+let h = HelloL { greeting: "hi" };
+HelloL { };  // unbound; locus dissolves at statement end
+```
+
+The compiler distinguishes locus instantiation from struct
+construction by what `HelloL` is declared as. The semantic
+difference is significant:
+
+- A struct literal allocates the value and assigns its fields.
+- A locus instantiation allocates a *region* inside the
+  enclosing locus's region, invokes `birth()` synchronously,
+  and returns a typed handle.
+
+`birth()` runs to completion before the instantiation expression
+returns. If `birth()` panics, the runtime emits a failure event
+that the parent's `on_failure` handles (or defaults to process
+exit at the runtime root).
+
+When the handle is bound (`let h = ...`), the locus lives until
+`h` goes out of scope (at which point default `drain` and
+`dissolve` are invoked). When the handle is unbound (`HelloL { };`
+as a statement-expression), the locus's lifetime ends at the
+enclosing statement boundary. This is RAII-shaped: locus
+lifetime is bounded by the lifetime of any handle that holds
+it.
+
+Multiple bindings of a handle are not yet specified. v0 punts;
+expected: handles are move-only (Rust-shaped), so `let h2 = h;`
+transfers ownership and `h` is no longer usable. Reference
+counting is rejected (no GC, no ARC).
+
+## B. The `self` keyword
+
+(Added in v0.1.1.)
+
+Inside a lifecycle block (`birth`, `accept`, `run`, `drain`,
+`dissolve`), a mode block (`mode bulk`, etc.), or a closure
+block, the keyword `self` refers to the enclosing locus.
+`self.greeting` accesses the `greeting` param; `self.position`
+accesses a contract-exposed field; etc.
+
+Outside these contexts (in free `fn` bodies, in `const` decls,
+in top-level expressions), `self` is a parse error.
+
+Considered and rejected:
+
+- *Implicit access to params by name.* `greeting` instead of
+  `self.greeting` from inside a lifecycle. Reject; risks
+  collision with locals; agent-first prefers explicit.
+- *`this` instead of `self`.* Reject; `self` is more aligned
+  with Rust / Python and avoids the C++/Java baggage.
+
+## C. Default lifecycle methods
+
+(Added in v0.1.1.)
+
+When a locus omits a lifecycle keyword, the compiler supplies
+a default:
+
+- `birth()` default: no-op.
+- `accept(c)` default: register the coordinatee in the locus's
+  registry; no policy.
+- `run()` default: empty steady-state — wait for messages or
+  signals, dispatch to handlers as declared.
+- `drain()` default: stop accepting new work; wait for
+  in-flight to complete.
+- `dissolve()` default: free the locus's region wholesale.
+- `on_failure(c, err)` default: `bubble(err)`. The runtime
+  root's default `on_failure` is process exit with stack
+  trace.
+
+A locus with only `params` and `birth` (like the hello-world
+program) is fully valid; the compiler fills in the rest.
+
 ## 16. What's deferred
 
 The grammar in v0 does **not** specify:
