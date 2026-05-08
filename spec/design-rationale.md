@@ -1016,6 +1016,65 @@ what conditions — more flexible than the return-value-as-publish
 pattern (which v0 doesn't have but a future version might add
 for the simple single-response case).
 
+### F.14 Three-way interface: locus + parent + contract
+
+(Added in v0.1.7 as a structural design direction; sharpened
+through conversation but not yet given dedicated syntax.)
+
+The contract between a locus L at depth D and its parent at
+depth D-1 is **three entities, not two**:
+
+1. **L** owns its arena, its state, and its translation
+   *implementations*.
+2. **The parent at D-1** receives translated values through
+   the contract; cannot see L's internal state directly.
+3. **The contract** is itself first-class — declares the typed
+   surface that crosses the D/D-1 boundary; mediates between
+   implementation and observer.
+
+The constraint: **any function injected by L into its arena
+that satisfies a contract entry must return a type permitted
+by the contract.** Translation implementations cannot route
+around the contract; they bound their return shapes by it.
+
+This is the interface / implementation split, framework-aligned:
+
+- Contract = interface (declares typed surface)
+- Translation = implementation (code producing contracted values
+  from local state)
+- Multiple implementations of the same interface field can
+  coexist (e.g., bulk vs. chunked vs. recognition projections
+  of the same value); the contract bounds them all
+- Cost reflects projection class; arena cascade gives
+  hierarchical access without crossing contracts
+
+What it gives us:
+
+- Translation functions are not a backdoor. Contract is the
+  source of truth for visible flow.
+- Multiple projections of the same contract field are
+  first-class (`ProjectionClass = any` from F.2 gets a runtime
+  substrate; ask for rich → call rich translation; ask for
+  recognition → call recognition translation; same contract
+  type returned in both).
+- Substrate-derivation discipline propagates: parent sees only
+  what translation produces from L's state; anchor-isolation is
+  preserved by the typing rule.
+- Vertical-only flow preserved at the query level: D-1 calls
+  into L's arena via cascade; never lateral; never D-2 reaching
+  past D-1 directly.
+
+For v0, the commitment is the **typing rule** only: a function
+satisfying a contract entry must return the contract's typed
+surface. Multiple-implementations-per-field syntax (e.g.,
+`@projection rich fn greeting_rich() -> string` annotations) is
+deferred to a future version when an example forces it.
+
+For now: a locus's `params` provide a default implementation
+for each contract field (read the field directly). User-defined
+fns can add additional implementations as long as they return
+the contract's typed surface.
+
 ### F.5 Mode-projections share the locus's arena
 
 A locus may declare any subset of `mode bulk`, `mode harmonic`,

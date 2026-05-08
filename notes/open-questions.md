@@ -119,6 +119,30 @@ when the type-system / operational-semantics docs are drafted.
     arithmetic, decimal arithmetic, common collections,
     bus-transport adapters all live there.
 
+## Structural direction (deferred to v0.5+)
+
+**Arena-stored translation functions / three-way interface.**
+Conceptual move surfaced in design conversation: the locus +
+parent + contract is genuinely three entities, with the contract
+mediating between L's translation implementations (in its arena)
+and the parent's reads. Translation functions are bounded above
+by the contract's typed surface (F.14 typing rule); multiple
+implementations per contract field can coexist (rich/chunked/
+recognition projections of the same value); cost reflects
+projection class.
+
+For v0: the typing rule is locked (F.14); current `params`
+provide default-implementation-per-contract-field. Multi-
+implementation syntax (per-projection-class translations,
+`@projection rich fn ...` annotations, runtime injection of
+new translations) is deferred until an example forces it.
+
+When to pull forward: when trellis-pair (or a comparable
+substantive program) shows that single-implementation-per-field
+is hitting limits — most likely when projection-class-specific
+projections of the same contracted value start being needed at
+runtime.
+
 ## Tooling
 
 20. **Editor / IDE support.** Tree-sitter grammar derived from
