@@ -1,0 +1,44 @@
+# deployment.yaml — transport bindings for the trellis pair.
+#
+# Both binaries (analyst, executor) consume "trellis.book" from
+# the same UDP multicast group; this is the framework's
+# substrate-derivation honesty by architecture: both observers
+# look at the same upstream data, but the executor cannot fit
+# on the data it's trading because it's a separate process
+# with no path back to the analyst's fitting state.
+#
+# trellis.kernel uses NATS (reliable, ordered) — analyst ships
+# stable perspectives slowly, executor must receive them.
+#
+# trellis.intent / trellis.fill use NATS — control-plane
+# messaging with the gateway.
+
+channels:
+  # Market data: line-rate, lossy-acceptable, broadcast to many.
+  "trellis.book":
+    transport: udp_multicast
+    group: "239.7.7.7"
+    port: 9000
+
+  # Kernel updates: slow cadence, reliable delivery required,
+  # ordered per analyst.
+  "trellis.kernel":
+    transport: nats
+    url: "nats://nats-control:4222"
+
+  # Order intents from executor to gateway.
+  "trellis.intent":
+    transport: nats
+    url: "nats://nats-control:4222"
+
+  # Fills from gateway back to executor.
+  "trellis.fill":
+    transport: nats
+    url: "nats://nats-control:4222"
+
+# For testing: swap the whole map to in-memory.
+# Uncomment to use:
+#
+# channels:
+#   "trellis.*":
+#     transport: in_memory

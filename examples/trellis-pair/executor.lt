@@ -1,0 +1,81 @@
+// executor.lt — the executor binary.
+//
+// Consumes Book messages (from grease, via UDP multicast).
+// Consumes TradeKernel updates from the analyst (via NATS or
+// equivalent). Applies the current kernel to each incoming
+// book, emits Intent messages to the gateway, receives Fill
+// messages back.
+//
+// Runs in bulk-mode regime: line-rate, hot loop, no fitting,
+// just kernel application. The analyst's job is to find the
+// kernel; the executor's job is to apply it.
+//
+// Closure check at the executor↔analyst boundary: every
+// intent the executor emits should eventually correspond to a
+// fill (within tolerance for in-flight). This is the audit
+// surface that catches kernel-vs-prod divergence.
+
+import "trellis-pair/shared";
+
+locus ExecutorL {
+    params {
+        B: int = 10000;
+        c: int = 1;
+        sigma: int = 1;
+        phi: float = 1.0;
+
+        current_kernel: TradeKernel = TradeKernel {
+            multiplier: 1.0d,
+            valid_after: `2026-01-01T00:00:00Z`,
+            perspective_id: 0,
+        };
+        intents_emitted: int = 0;
+        fills_received: int = 0;
+        next_intent_id: int = 1;
+        kernels_received: int = 0;
+    }
+
+    bus {
+        subscribe "trellis.book"   as on_book   of type Book;
+        subscribe "trellis.kernel" as on_kernel of type TradeKernel;
+        subscribe "trellis.fill"   as on_fill   of type Fill;
+        publish   "trellis.intent"             of type Intent;
+    }
+
+    fn on_book(book: Book) {
+        let i = Intent {
+            side: "buy",
+            price: book.bid_price * self.current_kernel.multiplier,
+            quantity: 1.0d,
+            intent_id: self.next_intent_id,
+        };
+        self.next_intent_id = self.next_intent_id + 1;
+        self.intents_emitted = self.intents_emitted + 1;
+        publish("trellis.intent", i);
+    }
+
+    fn on_kernel(k: TradeKernel) {
+        // Hot-load: replace current kernel atomically. Per
+        // F.7 and the perspective hot-load mechanism, the
+        // swap is torn-read-free.
+        self.current_kernel = k;
+        self.kernels_received = self.kernels_received + 1;
+    }
+
+    fn on_fill(f: Fill) {
+        self.fills_received = self.fills_received + 1;
+    }
+
+    // Closure: every emitted intent eventually becomes a fill.
+    // Tolerance of 5 for in-flight intents at any moment.
+    // Failure → explosion at dissolve → on_failure on parent
+    // → ClosureViolation event with named locus + diff.
+    closure intent_fill_balance {
+        self.intents_emitted ~~ self.fills_received within 5;
+        epoch dissolve;
+    }
+}
+
+fn main() {
+    ExecutorL { };
+}

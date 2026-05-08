@@ -1,0 +1,51 @@
+// shared.lt — types compiled into both analyst and executor
+// binaries.
+//
+// Per F.14 (three-way interface) and the analyst/executor split:
+// both binaries compile from the same source for these types,
+// guaranteeing schema agreement at the type level. The bus
+// carries only parameter-bundle values; no separate
+// serialization protocol is needed because the schema is the
+// source.
+
+type Book {
+    bid_price: decimal;
+    ask_price: decimal;
+    timestamp: time;
+}
+
+type TradeKernel {
+    multiplier: decimal;
+    valid_after: time;
+    perspective_id: int;
+}
+
+type Intent {
+    side: string;            // "buy" or "sell"
+    price: decimal;
+    quantity: decimal;
+    intent_id: int;
+}
+
+type Fill {
+    intent_id: int;
+    fill_price: decimal;
+    fill_quantity: decimal;
+}
+
+// A serializable parameter bundle within the shared schema.
+// stable_when says: only ship when at least three independent
+// perspectives have validated the kernel (multi-perspective
+// stability commit-rule from the framework).
+perspective TradeKernelPerspective {
+    params {
+        kernel: TradeKernel;
+        validation_count: int = 0;
+    }
+
+    stable_when {
+        return self.validation_count >= 3;
+    }
+
+    serialize_as TradeKernel;
+}
