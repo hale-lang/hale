@@ -258,9 +258,7 @@ impl Interpreter {
                 self.dispatch_bus(&subject_str, payload)
             }
             Stmt::If(if_stmt) => self.exec_if(if_stmt),
-            Stmt::Match(_) => Err(Signal::Error(
-                "match expressions not yet implemented in v0 interpreter".to_string(),
-            )),
+            Stmt::Match(m) => self.exec_match(m),
             Stmt::For { name, iter, body, .. } => {
                 let iter_val = self.eval_expr(iter)?;
                 let items: Vec<Value> = match iter_val {
@@ -344,6 +342,40 @@ impl Interpreter {
         } else {
             Ok(())
         }
+    }
+
+    fn exec_match(&mut self, stmt: &MatchStmt) -> Result<(), Signal> {
+        let scrutinee = self.eval_expr(&stmt.scrutinee)?;
+        for arm in &stmt.arms {
+            let mut bindings: BTreeMap<String, Value> = BTreeMap::new();
+            if !pattern_match(&arm.pattern, &scrutinee, &mut bindings) {
+                continue;
+            }
+            self.env.push();
+            for (name, value) in &bindings {
+                self.env.define(name, value.clone());
+            }
+            // Evaluate guard, if any.
+            if let Some(guard) = &arm.guard {
+                let g = self.eval_expr(guard)?;
+                if !g.truthy() {
+                    self.env.pop();
+                    continue;
+                }
+            }
+            let result = match &arm.body {
+                MatchArmBody::Expr(e) => {
+                    self.eval_expr(e).map(|_| ())
+                }
+                MatchArmBody::Block(b) => self.exec_block(b),
+            };
+            self.env.pop();
+            return result;
+        }
+        // No arm matched. v0 cut: silently no-op (Rust would
+        // panic on non-exhaustive; lotus's match is statement-
+        // shape so falling through is the natural choice).
+        Ok(())
     }
 
     fn assign_lvalue(
@@ -639,9 +671,10 @@ impl Interpreter {
                 self.exec_if(s)?;
                 Ok(Value::Unit)
             }
-            Expr::Match(_) => Err(Signal::Error(
-                "match expressions not yet implemented in v0 interpreter".to_string(),
-            )),
+            Expr::Match(m) => {
+                self.exec_match(m)?;
+                Ok(Value::Unit)
+            }
             Expr::Sum(inner, _) => {
                 let v = self.eval_expr(inner)?;
                 reduction(&v, BinOp::Add).map_err(Signal::Error)
@@ -1119,6 +1152,60 @@ impl Interpreter {
 enum ClosureOutcome {
     Pass,
     Violation(Value),
+}
+
+/// Try to match a pattern against a value. On success, populate
+/// `bindings` with any names the pattern binds and return true.
+/// On failure, return false (and the bindings map's content is
+/// not meaningful — the caller discards it).
+fn pattern_match(
+    pat: &Pattern,
+    val: &Value,
+    bindings: &mut BTreeMap<String, Value>,
+) -> bool {
+    match pat {
+        Pattern::Wildcard(_) => true,
+        Pattern::Binding(ident) => {
+            bindings.insert(ident.name.clone(), val.clone());
+            true
+        }
+        Pattern::Literal(lit, _) => literal_matches(lit, val),
+        Pattern::Tuple(parts, _) => match val {
+            Value::Tuple(vs) if vs.len() == parts.len() => parts
+                .iter()
+                .zip(vs.iter())
+                .all(|(p, v)| pattern_match(p, v, bindings)),
+            _ => false,
+        },
+        Pattern::Constructor { path, args, .. } => {
+            // v0: empty-args constructor matches a struct
+            // value by struct name (last path segment).
+            // Non-empty args require enum-variant support
+            // and aren't wired in v0.
+            let last = match path.segments.last() {
+                Some(s) => &s.name,
+                None => return false,
+            };
+            if !args.is_empty() {
+                return false;
+            }
+            match val {
+                Value::Struct { name, .. } => name == last,
+                _ => false,
+            }
+        }
+    }
+}
+
+fn literal_matches(lit: &Literal, val: &Value) -> bool {
+    match (lit, val) {
+        (Literal::Int(a), Value::Int(b)) => a == b,
+        (Literal::Float(a), Value::Float(b)) => a == b,
+        (Literal::String(a), Value::String(b)) => a == b,
+        (Literal::Bool(a), Value::Bool(b)) => a == b,
+        (Literal::Nil, Value::Nil) => true,
+        _ => false,
+    }
 }
 
 fn format_violation(v: &Value) -> String {

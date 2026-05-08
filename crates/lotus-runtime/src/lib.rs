@@ -52,6 +52,54 @@ mod tests {
     }
 
     #[test]
+    fn match_dispatches_on_literal() {
+        let src = r#"
+            fn main() {
+                let x = 2;
+                match x {
+                    1 -> println("one"),
+                    2 -> println("two"),
+                    _ -> println("other"),
+                }
+            }
+        "#;
+        let program = parse_source(src).unwrap();
+        assert_eq!(run_program(&program).unwrap(), 0);
+    }
+
+    #[test]
+    fn match_binds_wildcard_value() {
+        // The binding pattern captures the scrutinee. Used as
+        // a catch-all that names the value for the body.
+        let src = r#"
+            fn main() {
+                let x = 42;
+                match x {
+                    1 -> println("one"),
+                    n -> println("got: ", n),
+                }
+            }
+        "#;
+        let program = parse_source(src).unwrap();
+        assert_eq!(run_program(&program).unwrap(), 0);
+    }
+
+    #[test]
+    fn match_with_guard() {
+        let src = r#"
+            fn main() {
+                let x = 7;
+                match x {
+                    n if n > 5 -> println("big: ", n),
+                    n -> println("small: ", n),
+                }
+            }
+        "#;
+        let program = parse_source(src).unwrap();
+        assert_eq!(run_program(&program).unwrap(), 0);
+    }
+
+    #[test]
     fn long_lived_closure_fails_at_program_end() {
         let src = r#"
             locus L {
