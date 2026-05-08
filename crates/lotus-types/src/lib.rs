@@ -190,6 +190,44 @@ mod tests {
     }
 
     #[test]
+    fn err_typo_in_self_field() {
+        let src = r#"
+            locus L {
+                params { x: Int = 5; }
+                closure typo_check {
+                    self.greting ~~ self.x within 0;
+                }
+            }
+            fn main() { L { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("no field `greting`")),
+            "expected typo detection; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_typo_on_struct_value() {
+        let src = r#"
+            type Point { x: Int; y: Int; }
+            fn main() {
+                let p = Point { x: 1, y: 2 };
+                let _q = p.zee;
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| d.message.contains("no field `zee`")),
+            "expected typo detection; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
     fn ok_contract_compatible() {
         let src = r#"
             locus ChildL {

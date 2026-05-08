@@ -60,7 +60,18 @@ pub struct LocusInfo {
     /// coordinatees. Each entry must match an `expose` on
     /// the accept-param child type.
     pub contract_consume: Vec<ContractEntry>,
+    /// Methods callable as `handle.name(...)`: free `fn`
+    /// members + the three mode declarations (bulk /
+    /// harmonic / resolution).
+    pub methods: Vec<MethodInfo>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct MethodInfo {
+    pub name: String,
+    pub params: Vec<Ty>,
+    pub ret: Ty,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +144,7 @@ pub struct PerspectiveInfo {
     pub name: String,
     pub params: Vec<ParamInfo>,
     pub serialize_as: Option<Ty>,
+    pub methods: Vec<MethodInfo>,
     pub span: Span,
 }
 

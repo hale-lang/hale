@@ -29,6 +29,13 @@ use crate::resolve::{resolve_type_expr, TopScope};
 use crate::symbol::*;
 use crate::ty::Ty;
 
+fn method_to_fn_ty(m: &MethodInfo) -> Ty {
+    Ty::Function {
+        params: m.params.clone(),
+        ret: Box::new(m.ret.clone()),
+    }
+}
+
 pub fn check_bundle(bundle: &Bundle<'_>, top: &TopScope) -> Vec<Diag> {
     let mut diags = Vec::new();
     let known = collect_known_names(top);
@@ -587,16 +594,23 @@ impl<'a> Checker<'a> {
                             None => Ty::Array(Box::new(Ty::Unknown), None),
                         });
                     }
-                    info.params
+                    if let Some(p) = info.params.iter().find(|p| p.name == name) {
+                        return Some(p.ty.clone());
+                    }
+                    info.methods
                         .iter()
-                        .find(|p| p.name == name)
-                        .map(|p| p.ty.clone())
+                        .find(|m| m.name == name)
+                        .map(method_to_fn_ty)
                 }
-                TopSymbol::Perspective(info) => info
-                    .params
-                    .iter()
-                    .find(|p| p.name == name)
-                    .map(|p| p.ty.clone()),
+                TopSymbol::Perspective(info) => {
+                    if let Some(p) = info.params.iter().find(|p| p.name == name) {
+                        return Some(p.ty.clone());
+                    }
+                    info.methods
+                        .iter()
+                        .find(|m| m.name == name)
+                        .map(method_to_fn_ty)
+                }
                 _ => None,
             },
             Ty::Unknown => Some(Ty::Unknown),
@@ -660,9 +674,30 @@ impl<'a> Checker<'a> {
                     _ => Ty::Unknown,
                 }
             }
-            Expr::Field { receiver, name, .. } => {
+            Expr::Field { receiver, name, span } => {
                 let rt = self.check_expr(receiver);
-                self.field_ty(&rt, &name.name).unwrap_or(Ty::Unknown)
+                match self.field_ty(&rt, &name.name) {
+                    Some(t) => t,
+                    None => {
+                        // Permissive on Unknown — stdlib paths
+                        // and externally-typed values pass
+                        // through. Strict when the receiver
+                        // is a known type and the field
+                        // doesn't exist on it: catches typos
+                        // statically.
+                        if !matches!(rt, Ty::Unknown) {
+                            self.diags.push(Diag::ty(
+                                *span,
+                                format!(
+                                    "no field `{}` on `{}`",
+                                    name.name,
+                                    rt.display()
+                                ),
+                            ));
+                        }
+                        Ty::Unknown
+                    }
+                }
             }
             Expr::Index { receiver, index, .. } => {
                 let rt = self.check_expr(receiver);

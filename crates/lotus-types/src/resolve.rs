@@ -118,6 +118,7 @@ fn register_locus(
     let mut annotations = Annotations::default();
     let mut contract_expose: Vec<ContractEntry> = Vec::new();
     let mut contract_consume: Vec<ContractEntry> = Vec::new();
+    let mut methods: Vec<MethodInfo> = Vec::new();
 
     for ann in &decl.annotations {
         match ann {
@@ -183,7 +184,36 @@ fn register_locus(
                     Some(te) => resolve_type_expr(te, known),
                     None => Ty::Unit,
                 };
-                mode_returns.insert(md.kind, ret);
+                mode_returns.insert(md.kind, ret.clone());
+                let mname = match md.kind {
+                    ModeKind::Bulk => "bulk",
+                    ModeKind::Harmonic => "harmonic",
+                    ModeKind::Resolution => "resolution",
+                };
+                methods.push(MethodInfo {
+                    name: mname.to_string(),
+                    params: md
+                        .params
+                        .iter()
+                        .map(|p| resolve_type_expr(&p.ty, known))
+                        .collect(),
+                    ret,
+                });
+            }
+            LocusMember::Fn(f) => {
+                let ret = match &f.ret {
+                    Some(te) => resolve_type_expr(te, known),
+                    None => Ty::Unit,
+                };
+                methods.push(MethodInfo {
+                    name: f.name.name.clone(),
+                    params: f
+                        .params
+                        .iter()
+                        .map(|p| resolve_type_expr(&p.ty, known))
+                        .collect(),
+                    ret,
+                });
             }
             LocusMember::Contract(cb) => {
                 if let ContractKind::Members(members) = &cb.kind {
@@ -222,6 +252,7 @@ fn register_locus(
         annotations,
         contract_expose,
         contract_consume,
+        methods,
         span: decl.span,
     };
 
@@ -276,6 +307,7 @@ fn register_perspective(
 ) {
     let mut params = Vec::new();
     let mut serialize_as = None;
+    let mut methods: Vec<MethodInfo> = Vec::new();
     for member in &decl.members {
         match member {
             PerspectiveMember::Params(pb) => {
@@ -298,13 +330,37 @@ fn register_perspective(
             PerspectiveMember::SerializeAs(te) => {
                 serialize_as = Some(resolve_type_expr(te, known));
             }
-            _ => {}
+            PerspectiveMember::Fn(f) => {
+                let ret = match &f.ret {
+                    Some(te) => resolve_type_expr(te, known),
+                    None => Ty::Unit,
+                };
+                methods.push(MethodInfo {
+                    name: f.name.name.clone(),
+                    params: f
+                        .params
+                        .iter()
+                        .map(|p| resolve_type_expr(&p.ty, known))
+                        .collect(),
+                    ret,
+                });
+            }
+            PerspectiveMember::StableWhen(_) => {
+                // stable_when is a built-in method on every
+                // perspective: `p.is_stable() -> Bool`.
+                methods.push(MethodInfo {
+                    name: "is_stable".to_string(),
+                    params: Vec::new(),
+                    ret: Ty::Prim(PrimType::Bool),
+                });
+            }
         }
     }
     let info = PerspectiveInfo {
         name: decl.name.name.clone(),
         params,
         serialize_as,
+        methods,
         span: decl.span,
     };
     register_symbol(
