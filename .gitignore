@@ -1,0 +1,19 @@
+# Generated parsers / compiler output
+build/
+target/
+*.o
+*.so
+*.dylib
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Working notes (untracked by default; promote to notes/ when stable)
+.scratch/

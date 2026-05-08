@@ -1,0 +1,446 @@
+(* ===================================================================
+   lotus — formal grammar
+   ===================================================================
+   Version: v0.1, 2026-05-08
+   Format: EBNF, ISO/IEC 14977 conventions:
+     =       definition
+     ,       concatenation (often elided where unambiguous)
+     |       alternation
+     [ X ]   optional (zero or one)
+     { X }   repetition (zero or more)
+     ( X )   grouping
+     "X"     literal terminal
+     ?X?     special / extra-grammatical (e.g., lexical class)
+   Capitalized identifiers refer to lexical classes defined in
+   tokens.md (e.g., IDENTIFIER, INT_LIT). Lowercase identifiers
+   are non-terminals defined here.
+   =================================================================== *)
+
+
+(* === 1. Top level ============================================== *)
+
+program           = { import_decl } , { top_decl } ;
+
+import_decl       = "import" , STRING_LIT , [ "as" , IDENTIFIER ] , ";" ;
+
+top_decl          = locus_decl
+                  | perspective_decl
+                  | type_decl
+                  | const_decl
+                  | function_decl
+                  | module_decl
+                  ;
+
+module_decl       = "module" , IDENTIFIER , "{" , { top_decl } , "}" ;
+
+
+(* === 2. Locus declaration ====================================== *)
+
+locus_decl        = "locus" , IDENTIFIER , [ locus_annotations ] ,
+                    "{" , { locus_member } , "}" ;
+
+locus_annotations = ":" , locus_annotation , { "," , locus_annotation } ;
+locus_annotation  = "tier" , INT_LIT
+                  | "projection" , projection_class
+                  ;
+projection_class  = "rich" | "chunked" | "recognition" ;
+
+locus_member      = params_block
+                  | contract_block
+                  | bus_block
+                  | lifecycle_decl
+                  | mode_decl
+                  | failure_decl
+                  | closure_decl
+                  | function_decl
+                  | const_decl
+                  | type_decl
+                  ;
+
+
+(* === 3. Params block =========================================== *)
+
+(* The `(B, c, σ, φ)` of the framework. Names are spelled in
+   ASCII (B, c, sigma, phi). Values may be literals or const
+   expressions evaluated at compile time. Any param may be
+   declared `inferred`, in which case the compiler / runtime
+   determines its value. *)
+
+params_block      = "params" , "{" , { param_decl } , "}" ;
+param_decl        = IDENTIFIER , [ ":" , type_expr ] ,
+                    ( "=" , expression , ";"
+                    | ":" , "inferred" , ";"
+                    ) ;
+
+
+(* === 4. Contract block ========================================= *)
+
+(* A contract declares which fields a locus exposes upward to
+   coordinators and which fields it consumes downward from
+   coordinatees. May be fully explicit, fully inferred, or a
+   mix. *)
+
+contract_block    = "contract" ,
+                    ( ":" , "inferred" , ";"
+                    | "{" , { contract_member } "}"
+                    ) ;
+contract_member   = ( "expose" | "consume" ) ,
+                    ( IDENTIFIER , ":" , type_expr , ";"
+                    | "inferred" , ";"
+                    ) ;
+
+
+(* === 5. Bus block ============================================== *)
+
+(* Declares the locus's interface to an external typed message
+   bus. Subscribe binds incoming messages to a handler;
+   publish declares an outbound subject and the type of message
+   that will flow on it. *)
+
+bus_block         = "bus" , "{" , { bus_member } , "}" ;
+bus_member        = bus_subscribe
+                  | bus_publish
+                  ;
+bus_subscribe     = "subscribe" , STRING_LIT , "as" , IDENTIFIER ,
+                    [ "of" , "type" , type_expr ] , ";" ;
+bus_publish       = "publish" , STRING_LIT , "of" , "type" , type_expr ,
+                    [ "as" , IDENTIFIER ] , ";" ;
+
+
+(* === 6. Lifecycle blocks ======================================= *)
+
+(* Lifecycle keywords name state-machine transitions the parent
+   policy can invoke. `birth` is invoked once at locus
+   creation; `accept` whenever a coordinatee is added; `run` is
+   the steady-state loop; `drain` halts new work; `dissolve`
+   frees the locus. None are required; missing transitions use
+   compiler-supplied defaults. *)
+
+lifecycle_decl    = lifecycle_keyword , [ "(" , [ param_list ] , ")" ] ,
+                    [ "->" , type_expr ] , block ;
+lifecycle_keyword = "birth"
+                  | "accept"
+                  | "run"
+                  | "drain"
+                  | "dissolve"
+                  ;
+
+
+(* === 7. Mode declarations ===================================== *)
+
+(* Three modes (bulk / harmonic / resolution) project the same
+   underlying kernel three ways. A locus may declare any subset.
+   The compiler emits one implementation per declared mode. *)
+
+mode_decl         = "mode" , mode_name , [ "(" , [ param_list ] , ")" ] ,
+                    [ "->" , type_expr ] , block ;
+mode_name         = "bulk"
+                  | "harmonic"
+                  | "resolution"
+                  ;
+
+
+(* === 8. Failure handler ======================================= *)
+
+(* The parent's policy when a coordinatee fails. The handler
+   chooses among recovery primitives. Failure handlers are
+   locus-attached; per-coordinatee-class overrides may live in
+   contracts (see contract_member.consume). *)
+
+failure_decl      = "on_failure" , "(" , param_list , ")" , block ;
+
+
+(* === 9. Closure tests ========================================= *)
+
+(* A closure test is a structural audit declared at a locus.
+   The compiler verifies the cycle exists; the runtime checks
+   the band. Epoch annotations control how the test handles
+   coordinatee churn and recovery events. *)
+
+closure_decl      = "closure" , IDENTIFIER , "{" ,
+                    closure_assertion , ";" ,
+                    { closure_clause } ,
+                    "}" ;
+
+closure_assertion = expression , ( "~~" | "approx" ) , expression ,
+                    "within" , expression ;
+
+closure_clause    = "epoch" , epoch_spec , ";"
+                  | "persists_through" , "(" , identifier_list , ")" , ";"
+                  | "resets_on" , "(" , identifier_list , ")" , ";"
+                  ;
+
+epoch_spec        = "tick"
+                  | "duration" , "(" , expression , ")"
+                  | "explicit"
+                  ;
+
+
+(* === 10. Perspective declaration ============================== *)
+
+(* A perspective is a serializable parameter bundle within a
+   compiled-in shared schema. Both analyst and executor binaries
+   compile from the same lotus source, so the perspective type
+   is the contract. The bus carries only parameter values. *)
+
+perspective_decl  = "perspective" , IDENTIFIER , [ generic_params ] ,
+                    "{" , { perspective_member } , "}" ;
+
+perspective_member= params_block
+                  | "stable_when" , block
+                  | "serialize_as" , type_expr , ";"
+                  | function_decl
+                  ;
+
+
+(* === 11. Type declarations ==================================== *)
+
+type_decl         = "type" , IDENTIFIER , [ generic_params ] , "=" ,
+                    type_expr , ";"
+                  | "type" , IDENTIFIER , [ generic_params ] , "{" ,
+                    { struct_field } , "}"
+                  | "type" , IDENTIFIER , [ generic_params ] , "=" ,
+                    "enum" , "{" , enum_variant , { "," , enum_variant } , "}" , ";"
+                  ;
+
+struct_field      = IDENTIFIER , ":" , type_expr , [ "=" , expression ] , ";" ;
+
+enum_variant      = IDENTIFIER , [ "(" , type_expr , { "," , type_expr } , ")" ] ;
+
+generic_params    = "<" , generic_param , { "," , generic_param } , ">" ;
+generic_param     = IDENTIFIER , [ ":" , type_expr ] ;
+
+generic_args      = "<" , type_expr , { "," , type_expr } , ">" ;
+
+
+(* === 12. Type expressions ===================================== *)
+
+type_expr         = primitive_type
+                  | named_type
+                  | projection_type
+                  | array_type
+                  | tuple_type
+                  | function_type
+                  | "(" , type_expr , ")"
+                  ;
+
+primitive_type    = "int"
+                  | "uint"
+                  | "float"
+                  | "decimal"
+                  | "string"
+                  | "bool"
+                  | "time"
+                  | "duration"
+                  | "bytes"
+                  ;
+
+named_type        = qualified_name , [ generic_args ] ;
+qualified_name    = IDENTIFIER , { "::" , IDENTIFIER } ;
+
+projection_type   = ( "Rich" | "Chunked" | "Recognition" ) ,
+                    "<" , type_expr , ">" ;
+
+array_type        = "[" , type_expr , [ ";" , expression ] , "]" ;
+
+tuple_type        = "(" , type_expr , "," , type_expr , { "," , type_expr } , ")" ;
+
+function_type     = "fn" , "(" , [ type_expr , { "," , type_expr } ] , ")" ,
+                    [ "->" , type_expr ] ;
+
+
+(* === 13. Const and function decls ============================= *)
+
+const_decl        = "const" , IDENTIFIER , ":" , type_expr , "=" ,
+                    expression , ";" ;
+
+function_decl     = "fn" , IDENTIFIER , [ generic_params ] ,
+                    "(" , [ param_list ] , ")" ,
+                    [ "->" , type_expr ] , block ;
+
+param_list        = parameter , { "," , parameter } ;
+parameter         = IDENTIFIER , ":" , type_expr , [ "=" , expression ] ;
+
+
+(* === 14. Statements =========================================== *)
+
+block             = "{" , { statement } , "}" ;
+
+statement         = let_stmt
+                  | assign_stmt
+                  | if_stmt
+                  | match_stmt
+                  | for_stmt
+                  | while_stmt
+                  | return_stmt
+                  | break_stmt
+                  | continue_stmt
+                  | recovery_stmt
+                  | block
+                  | expr_stmt
+                  ;
+
+let_stmt          = "let" , IDENTIFIER , [ ":" , type_expr ] , "=" ,
+                    expression , ";" ;
+
+assign_stmt       = lvalue , assign_op , expression , ";" ;
+assign_op         = "=" | "+=" | "-=" | "*=" | "/=" | "%="
+                  | "&=" | "|=" | "^=" ;
+lvalue            = IDENTIFIER , { "." , IDENTIFIER
+                                 | "[" , expression , "]" } ;
+
+if_stmt           = "if" , expression , block ,
+                    { "else" , "if" , expression , block } ,
+                    [ "else" , block ] ;
+
+match_stmt        = "match" , expression , "{" , match_arm ,
+                    { "," , match_arm } , [ "," ] , "}" ;
+match_arm         = pattern , [ "if" , expression ] , "->" ,
+                    ( expression | block ) ;
+
+pattern           = literal_pattern
+                  | wildcard_pattern
+                  | binding_pattern
+                  | constructor_pattern
+                  | tuple_pattern
+                  ;
+literal_pattern   = INT_LIT | FLOAT_LIT | STRING_LIT
+                  | "true" | "false" | "nil" ;
+wildcard_pattern  = "_" ;
+binding_pattern   = IDENTIFIER ;
+constructor_pattern = qualified_name , [ "(" , pattern_list , ")" ] ;
+tuple_pattern     = "(" , pattern , "," , pattern , { "," , pattern } , ")" ;
+pattern_list      = pattern , { "," , pattern } ;
+
+for_stmt          = "for" , IDENTIFIER , "in" , expression , block ;
+
+while_stmt        = "while" , expression , block ;
+
+return_stmt       = "return" , [ expression ] , ";" ;
+break_stmt        = "break" , ";" ;
+continue_stmt     = "continue" , ";" ;
+
+(* Recovery primitives. Statement-level only. *)
+recovery_stmt     = recovery_op , "(" , [ argument_list ] , ")" ,
+                    [ recovery_modifier ] , ";" ;
+recovery_op       = "restart"
+                  | "restart_in_place"
+                  | "drain"
+                  | "dissolve"
+                  | "quarantine"
+                  | "reorganize"
+                  | "bubble"
+                  ;
+recovery_modifier = "for" , expression
+                  | "until" , expression
+                  ;
+
+expr_stmt         = expression , ";" ;
+
+
+(* === 15. Expressions ========================================== *)
+
+(* Expression productions follow the precedence table in
+   precedence.md. The grammar below is presented top-down for
+   readability; an LL(*) or PEG implementation will encode
+   precedence via separate non-terminals per level. *)
+
+expression        = assignment_expr ;
+
+assignment_expr   = logical_or_expr , [ assign_op , assignment_expr ] ;
+
+logical_or_expr   = logical_and_expr , { "||" , logical_and_expr } ;
+
+logical_and_expr  = approx_expr , { "&&" , approx_expr } ;
+
+(* Approx is non-associative; only one ~~ in a chain. *)
+approx_expr       = equality_expr , [ "~~" , equality_expr , "within" , equality_expr ] ;
+
+equality_expr     = comparison_expr , [ ( "==" | "!=" ) , comparison_expr ] ;
+
+comparison_expr   = bit_or_expr ,
+                    [ ( "<" | ">" | "<=" | ">=" ) , bit_or_expr ] ;
+
+bit_or_expr       = bit_xor_expr , { "|" , bit_xor_expr } ;
+bit_xor_expr      = bit_and_expr , { "^" , bit_and_expr } ;
+bit_and_expr      = shift_expr , { "&" , shift_expr } ;
+
+shift_expr        = additive_expr , { ( "<<" | ">>" ) , additive_expr } ;
+
+additive_expr     = multiplicative_expr , { ( "+" | "-" ) , multiplicative_expr } ;
+
+multiplicative_expr = unary_expr , { ( "*" | "/" | "%" ) , unary_expr } ;
+
+unary_expr        = [ "-" | "!" | "~" ] , postfix_expr ;
+
+postfix_expr      = primary_expr , { postfix_op } ;
+postfix_op        = "." , IDENTIFIER
+                  | "::" , IDENTIFIER
+                  | "(" , [ argument_list ] , ")"
+                  | "[" , expression , "]"
+                  ;
+
+primary_expr      = literal
+                  | qualified_name [ generic_args ]
+                  | "(" , expression , ")"
+                  | tuple_expr
+                  | array_expr
+                  | struct_expr
+                  | block_expr
+                  | if_expr
+                  | match_expr
+                  | sum_expr
+                  | prod_expr
+                  ;
+
+literal           = INT_LIT
+                  | FLOAT_LIT
+                  | DECIMAL_LIT
+                  | STRING_LIT
+                  | BYTES_LIT
+                  | DURATION_LIT
+                  | TIME_LIT
+                  | "true"
+                  | "false"
+                  | "nil"
+                  ;
+
+tuple_expr        = "(" , expression , "," , expression ,
+                    { "," , expression } , ")" ;
+
+array_expr        = "[" , [ expression , { "," , expression } ] , "]" ;
+
+struct_expr       = qualified_name , "{" ,
+                    [ struct_init , { "," , struct_init } , [ "," ] ] ,
+                    "}" ;
+struct_init       = IDENTIFIER , ":" , expression ;
+
+block_expr        = block ;
+if_expr           = if_stmt ;
+match_expr        = match_stmt ;
+
+(* Reduction expressions are language-native because they
+   appear in closure assertions and capacity computations.
+   Adding them to the grammar (rather than the stdlib) keeps
+   their precedence well-defined. *)
+sum_expr          = "sum" , "(" , expression , ")" ;
+prod_expr         = "prod" , "(" , expression , ")" ;
+
+argument_list     = expression , { "," , expression } ;
+
+identifier_list   = IDENTIFIER , { "," , IDENTIFIER } ;
+
+
+(* === 16. Lexical tokens (referenced) ========================== *)
+
+(* These are produced by the lexer; their full rules live in
+   tokens.md. Listed here for completeness. *)
+
+(* IDENTIFIER     = ?[a-zA-Z_][a-zA-Z0-9_]*?  excluding keywords *)
+(* INT_LIT        = ?decimal | 0x... | 0o... | 0b...?            *)
+(* FLOAT_LIT      = ?...with exponent and optional suffix?       *)
+(* DECIMAL_LIT    = ?... 'd' suffix?                             *)
+(* STRING_LIT     = ?"..." with escapes; r"..." raw; """..."""?  *)
+(* BYTES_LIT      = ?b"..."?                                     *)
+(* DURATION_LIT   = ?<int>("ns"|"us"|"ms"|"s"|"m"|"h"|"d")+?     *)
+(* TIME_LIT       = ?`<iso-8601>`?                               *)
