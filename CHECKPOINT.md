@@ -62,11 +62,12 @@ cooperative queue pointer to the C runtime so reader threads
 can dispatch into the same handler set in-process publishers
 reach. Wire format stays **raw struct bytes** at v0.1: same
 arch + same compiler version means identical layout on both
-sides, which is correct for the trellis-pair scope. The
-field-by-field little-endian serializer (defending against
-padding drift across binary versions, enabling heterogeneous
-hosts) is deferred to m60 — this is now bundled with the
-multi-binary build orchestration. The m59 integration test
+sides, which is correct at v0.1 — the wire-format
+choice (field-by-field little-endian for layout robustness
+across binary versions, length-prefixed Strings, schema
+versioning) is deferred to a workload-driven future
+milestone. m60 installed the serializer shape so that swap
+is body-only when it lands. The m59 integration test
 in `crates/lotus-codegen/tests/bus_subscriber.rs` builds two
 **lotus** binaries from inline sources (one subscriber, one
 publisher), wires them via opposite-role configs to the same
@@ -2368,56 +2369,68 @@ capacity ceiling — the m45 quickfix `× 32` multiplier is gone.
 
 ### RESUME HERE (next session)
 
-**Start with m61: multi-binary build orchestration +
-trellis-pair.** Final session of the cross-process bus arc.
-m57 (kernel transport), m58 (deployment-config publisher
-fanout), m59 (subscriber reader thread), m60 (serializer
-shape) all close the cross-process bus loop substrate.
-What's left is the production-readiness layer that makes
-`examples/trellis-pair/` the v1 acceptance test it's supposed
-to be. Two threads:
+**Cross-process bus substrate arc is closed.** m57 (kernel
+transport) + m58 (publisher fanout) + m59 (subscriber reader
+thread) + m60 (serializer shape) shipped the substrate for
+cross-process coordination per
+notes/open-questions #8/#9/#10. Trellis-pair is a v1
+acceptance test, not a development driver — per the user's
+hard rule, **no code towards trellis-pair until v1 language
+is done.** Multi-binary `lotus build --manifest` is post-v1
+deployment tooling, not language, and waits with it.
 
-(a) **Multi-binary build orchestration.** `lotus build` today
-takes one `.lt` entry file and emits one binary. trellis-pair
-needs two binaries (analyst + executor) sharing a `shared.lt`
-type module. Either: (1) `lotus build` accepts a list of
-entries (ergonomically: a `Lotus.toml`-like manifest listing
-binaries + their entrypoints + their bus configs); or (2) a
-small shell wrapper / Makefile pattern. (1) feels more
-substrate-aligned. Concrete deliverable: `lotus build
---manifest examples/trellis-pair/Lotus.toml` produces
-`analyst` and `executor` binaries side-by-side with their
-per-binary bus configs.
+**Next: close the v1 language gaps surface-up.** The CHECKPOINT
+already names "Generics" as the biggest visible 'feels v1'
+surface gap; it's the natural next arc.
 
-(b) **trellis-pair end-to-end test.** With (a) in place, the
-CHECKPOINT verify recipe gains a line that builds the
-manifest, runs the two binaries with a deployment-config
-that wires their subjects together, and asserts the same
-trellis-demo behavior playing out across two processes.
-Actually flips trellis-pair from "stub" to v1 acceptance
-gate.
+**Start with m61: generics — first session.** Design is locked
+(m56): compile-time monomorphization, `ProjectionClass`
+bounds, plus `Numeric` bound for v1 (notes/open-questions #2).
+Sub-milestones (each its own session, ~4-5 sessions total):
 
-The actual wire-format choice that m60 explicitly deferred
-(field-by-field little-endian for scalars, length-prefixed
-Strings, schema fingerprinting + version-mismatch detection
-per notes/open-questions #13) sits behind m61 in priority —
-identity bodies are correct for the trellis-pair scope, and
-swapping in a real wire format only becomes load-bearing once
-binary-version drift or heterogeneous hosts enter the
-picture. Punt to a workload-driven later milestone; the m60
-substrate makes that swap a body-only change.
+- **m61 generic struct + enum monomorphization** — `type Box<T>
+  { value: T }`, `type Result<T, E> = enum { Ok(T), Err(E) }`.
+  Codegen instantiates one struct/enum per used type
+  combination. Wire up the typechecker's existing generic
+  bookkeeping (lotus-types already has the design).
+- **m62 generic free fns** — `fn first<T>(xs: [T; 4]) -> T`.
+  Per-callsite-type-tuple monomorphization.
+- **m63 generic loci** — same shape lifted to locus
+  declarations.
+- **m64 `Numeric` bound + generic closures** — `T: Numeric`
+  bound permits arithmetic on generic params; closures over
+  generic loci.
+- **m65 stdlib `Result<T,E>` / `Option<T>`** — the canonical
+  payoff types that motivate generics in the first place; ship
+  as built-ins.
 
-The cross-process bus arc was chosen as the next multi-session
+After generics, scan for any remaining v1 punch-list items:
+- Multi-peer fanout per subject (m58 hardcodes one peer)
+- String fields in cross-process bus payloads (m60's identity
+  serializer can't follow String pointers across process
+  boundaries; would need real wire format)
+- The handful of workload-pending items (count() / mean() /
+  rolling-window accumulators, reorganize impl, recognition-
+  class real bitmap pool)
+
+Once those gaps that v1 actually *requires* are closed —
+**call v1**, then trellis-pair / multi-binary build /
+release artifacts come next, in that order.
+
+The cross-process bus arc was chosen as a multi-session
 commitment per The Design's delivery-lotus framing: it's the
 substrate-root layer of the v1 trajectory, the runtime/stdlib
 split is locked (m56), and the design questions for #8/#9/#10
-are resolved. Memory note holds: trellis-pair is the
-acceptance test, not the development driver — m60 ships
-because the substrate needs it, not to make trellis-pair
-pass; trellis-pair just happens to be the natural test that
-exercises the assembled substrate.
+are resolved. Memory note holds (and the user re-affirmed
+2026-05-09): trellis-pair is the acceptance test, not the
+development driver — every substrate milestone in this arc
+was substrate-justified, not trellis-justified, and the arc
+closed at m60 without compiling trellis-pair, which is the
+right shape. Multi-binary build + trellis-pair sit behind v1
+done; the user's hard rule is "no code towards trellis until
+v1 language is done."
 
-### Cross-process bus arc (substrate, ~3-4 sessions)
+### Cross-process bus arc (substrate, COMPLETE at m60)
 
 - **m57 AF_UNIX transport in C runtime — DONE** —
   `lotus_transport_*` fns over SOCK_SEQPACKET, raw bytes, no
@@ -2457,21 +2470,21 @@ exercises the assembled substrate.
   `@__deserialize_T` symbols) plus continued passing of
   `bus_subscriber.rs` (operational proof that identity bodies
   preserve byte semantics through the pipeline).
-- **m61 Multi-binary build orchestration + trellis-pair** —
-  `lotus build --manifest` for two-binary builds (analyst +
-  executor sharing shared.lt); trellis-pair flips from stub
-  to v1 acceptance gate. Closes the cross-process bus arc
-  with the workload that originally motivated it.
+**Substrate complete at m60.** Multi-binary build orchestration
+and trellis-pair end-to-end are POST-v1 — they're the v1
+acceptance test artifact and the deployment tooling around it,
+not language work. They sit behind whatever closes v1
+(generics + any v1-required substrate gaps); see RESUME HERE.
 
-### Other multi-session arcs (no current commitment)
+### Generics arc (~4-5 sessions, current commitment)
 
-- **Generics** (~4-5 sessions). Design now locked (m56):
-  compile-time monomorphization, `ProjectionClass` + `Numeric`
-  bounds. Sub-milestones: generic struct/enum monomorphization
-  → generic free fns → generic loci → `Numeric` bound +
-  generic closures → `Result<T,E>` / `Option<T>` in stdlib.
-  Biggest visible "feels v1" surface gap; no specific
-  workload demands it.
+The biggest "feels v1" surface gap. Design locked (m56):
+compile-time monomorphization, `ProjectionClass` bounds,
+`Numeric` bound for v1 (notes/open-questions #2). Sub-
+milestones m61-m65 expanded in RESUME HERE above. After this
+arc, scan v1 punch-list for any remaining gaps the substrate
+exposes (multi-peer fanout, Strings cross-process, etc.) and
+close those before calling v1 done.
 
 ### Single-session implementations (workload-pending)
 
