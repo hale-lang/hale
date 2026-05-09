@@ -2665,6 +2665,10 @@ fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::Bool(a), Value::Bool(b)) => a == b,
         (Value::Duration(a), Value::Duration(b)) => a == b,
         (Value::Time(a), Value::Time(b)) => a == b,
+        (
+            Value::EnumVariant { enum_name: ea, variant_name: va },
+            Value::EnumVariant { enum_name: eb, variant_name: vb },
+        ) => ea == eb && va == vb,
         (Value::Nil, Value::Nil) => true,
         (Value::Unit, Value::Unit) => true,
         _ => false,

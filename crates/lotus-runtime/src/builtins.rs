@@ -217,6 +217,9 @@ fn builtin_to_string(args: &[Value]) -> Result<Value, String> {
         Value::Duration(ns) => format!("{}ns", ns),
         Value::String(s) => s.clone(),
         Value::Time(s) => s.clone(),
+        Value::EnumVariant { enum_name, variant_name } => {
+            format!("{}::{}", enum_name, variant_name)
+        }
         other => {
             return Err(format!(
                 "`to_string` not supported for {}",

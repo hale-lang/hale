@@ -4629,6 +4629,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((res, LotusType::String))
             }
+            LotusType::Enum(enum_name) => {
+                // m47-followup: same names-array lookup that
+                // println uses. Returns a const ptr — caller
+                // can compare-by-pointer or use as %s, but
+                // to_string is documented to return a String,
+                // so treat the const ptr as the result.
+                let names_g = self.enum_names_array(&enum_name)?;
+                let array_ty = names_g.get_value_type().into_array_type();
+                let tag = v.into_int_value();
+                let i32_t = self.context.i32_type();
+                let zero = i32_t.const_int(0, false);
+                let elem_ptr = unsafe {
+                    self.builder
+                        .build_in_bounds_gep(
+                            array_ty,
+                            names_g.as_pointer_value(),
+                            &[zero, tag],
+                            "ts.enum.name.ptr",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                };
+                let ptr_t = self.context.ptr_type(AddressSpace::default());
+                let label = self
+                    .builder
+                    .build_load(ptr_t, elem_ptr, "ts.enum.name")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((label, LotusType::String))
+            }
             other => Err(CodegenError::Unsupported(format!(
                 "`to_string` not supported for type {:?}",
                 other
@@ -6533,6 +6561,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let v = self
                     .builder
                     .build_float_compare(pred, l, r, "fcmp")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((v.into(), LotusType::Bool))
+            }
+            // m47-followup: enum equality is tag equality. Ord-style
+            // operators (<, >, <=, >=) on enum values aren't supported
+            // — declaration order isn't a meaningful ordering.
+            (BinOp::Eq | BinOp::NotEq, LotusType::Enum(_)) => {
+                let pred = match op {
+                    BinOp::Eq => IP::EQ,
+                    BinOp::NotEq => IP::NE,
+                    _ => unreachable!(),
+                };
+                let v = self
+                    .builder
+                    .build_int_compare(
+                        pred,
+                        lv.into_int_value(),
+                        rv.into_int_value(),
+                        "enumcmp",
+                    )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((v.into(), LotusType::Bool))
             }
