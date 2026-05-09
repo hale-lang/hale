@@ -378,6 +378,19 @@ struct LocusInfo<'ctx> {
     /// at m39 when birth-epoch shipped so each epoch's fn has
     /// an unambiguous slot.)
     dissolve_closures_fn: Option<FunctionValue<'ctx>>,
+    /// m42: Synthetic `<Locus>.__tick_closures(self_ptr,
+    /// parent_self_or_null, on_failure_fn_or_null)` fn that
+    /// evaluates every tick-epoch closure. Called after
+    /// `run()` returns and after each bus handler invocation.
+    /// None when no tick-epoch closures exist.
+    tick_closures_fn: Option<FunctionValue<'ctx>>,
+    /// m42: Synthetic `<Locus>.__tick_closures_wrapper(self_ptr)`
+    /// thunk that loads `__parent_self` + `__parent_on_failure`
+    /// from the struct and tail-calls `__tick_closures`. Used
+    /// from bus-handler thunks (which only have `self`,
+    /// `payload` in scope, not parent context). Always paired
+    /// with `tick_closures_fn`.
+    tick_wrapper_fn: Option<FunctionValue<'ctx>>,
     /// `on_failure(child: ChildL, err: ClosureViolation)` handler
     /// declared on this locus, if any. Each parent has at most
     /// one handler (per FailureDecl AST shape); the handler's
@@ -419,6 +432,19 @@ struct LocusInfo<'ctx> {
     /// it after birth() + __birth_closures and skips `run()`
     /// if set. Drain / dissolve still fire unconditionally.
     quarantined_field_idx: u32,
+    /// m42: index of the synthetic `__parent_self: ptr` field.
+    /// Set at instantiation time to the resolved parent
+    /// self_ptr (from `resolve_failure_route`), or null if no
+    /// parent has a matching on_failure handler. Read by
+    /// `__tick_closures_wrapper` so tick-epoch fires can
+    /// route violations to the parent without a static call
+    /// site (bus drains don't have one).
+    parent_self_field_idx: u32,
+    /// m42: index of the synthetic `__parent_on_failure: ptr`
+    /// field. Paired with `parent_self_field_idx`. Holds the
+    /// parent's `on_failure` fn ptr (or null). Read by the
+    /// tick wrapper to decide whether to absorb-or-stderr.
+    parent_on_failure_field_idx: u32,
     /// Index of the synthetic `__mailbox: ptr` field carrying this
     /// locus's `lotus_mailbox_t*`. Only set for pinned-class loci
     /// that declare `bus subscribe` — those need a per-locus
@@ -2164,6 +2190,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let quarantined_field_idx = idx;
         llvm_field_tys.push(i64_t_struct.into());
         idx += 1;
+        // m42: synthetic `__parent_self: ptr` and
+        // `__parent_on_failure: ptr` fields. Always present
+        // (uniform struct shape — the alternative would be
+        // conditional layout that complicates bus dispatch's
+        // type-erased self_ptr access). Set at instantiation
+        // time from `resolve_failure_route`; read by
+        // `__tick_closures_wrapper` when firing tick-epoch
+        // closures from a non-static call site (the bus
+        // drain). Cost: 16 bytes of overhead per locus
+        // instance — negligible vs. the closure-routing
+        // capability they unlock.
+        let ptr_field_t = self.context.ptr_type(AddressSpace::default());
+        let parent_self_field_idx = idx;
+        llvm_field_tys.push(ptr_field_t.into());
+        idx += 1;
+        let parent_on_failure_field_idx = idx;
+        llvm_field_tys.push(ptr_field_t.into());
+        idx += 1;
         let _ = idx;
 
         let struct_ty = self
@@ -2184,12 +2228,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 closures: Vec::new(),
                 birth_closures_fn: None,
                 dissolve_closures_fn: None,
+                tick_closures_fn: None,
+                tick_wrapper_fn: None,
                 failure_handler: None,
                 children_field_idx,
                 child_count_field_idx,
                 arena_field_idx,
                 restart_count_field_idx,
                 quarantined_field_idx,
+                parent_self_field_idx,
+                parent_on_failure_field_idx,
                 mailbox_field_idx,
                 projection_class,
                 schedule_class,
@@ -2420,17 +2468,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     user_methods.insert(fd.name.name.clone(), func);
                 }
                 LocusMember::Closure(c) => {
-                    // m39: Birth + Dissolve epochs lower (each into
-                    // its own synthetic eval fn). Tick / Duration /
-                    // Explicit still reject — they need the runtime
-                    // epoch engine. Default (no epoch clause) =
-                    // Dissolve, matching pre-m39 semantics.
+                    // m39 + m42: Birth + Dissolve + Tick epochs
+                    // lower (each into its own synthetic eval
+                    // fn). Duration / Explicit still reject —
+                    // those need the runtime epoch engine
+                    // (Duration: per-locus duration timer
+                    // tied to time::monotonic; Explicit:
+                    // user-call escape hatch). Default (no
+                    // epoch clause) = Dissolve, matching
+                    // pre-m39 semantics.
                     let mut epoch = EpochSpec::Dissolve;
                     for clause in &c.clauses {
                         match clause {
                             ClosureClause::Epoch(spec) => {
                                 match spec {
-                                    EpochSpec::Birth | EpochSpec::Dissolve => {
+                                    EpochSpec::Birth
+                                    | EpochSpec::Dissolve
+                                    | EpochSpec::Tick => {
                                         epoch = spec.clone();
                                     }
                                     other => {
@@ -2438,9 +2492,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                             format!(
                                                 "closure `{}` on `{}`: \
                                                  epoch {:?} not yet \
-                                                 lowered (codegen v0 \
+                                                 lowered (codegen \
                                                  covers Birth + \
-                                                 Dissolve)",
+                                                 Dissolve + Tick)",
                                                 c.name.name,
                                                 l.name.name,
                                                 other
@@ -2591,6 +2645,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let has_dissolve = closures
             .iter()
             .any(|(_, _, ep)| matches!(ep, EpochSpec::Dissolve));
+        let has_tick = closures
+            .iter()
+            .any(|(_, _, ep)| matches!(ep, EpochSpec::Tick));
         let make_eval_fn = |name: &str| {
             let fn_ty = void_t.fn_type(
                 &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
@@ -2614,6 +2671,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         } else {
             None
         };
+        // m42: tick_closures_fn has the standard 3-arg shape
+        // (self, parent, on_failure); tick_wrapper_fn is a
+        // 1-arg adapter `(self) -> void` that loads parent +
+        // on_failure from the struct's __parent_self /
+        // __parent_on_failure fields and tail-calls the
+        // 3-arg fn. The wrapper is what bus-handler thunks
+        // call (they only have self in scope).
+        let tick_closures_fn = if has_tick {
+            Some(make_eval_fn(&format!(
+                "{}.__tick_closures",
+                l.name.name
+            )))
+        } else {
+            None
+        };
+        let tick_wrapper_fn = if has_tick {
+            let wrapper_ty = void_t.fn_type(&[ptr_t.into()], false);
+            Some(self.module.add_function(
+                &format!("{}.__tick_closures_wrapper", l.name.name),
+                wrapper_ty,
+                None,
+            ))
+        } else {
+            None
+        };
+        // m42: tick-call placement. An earlier draft wrapped
+        // each subscribed handler with a post-call thunk;
+        // that broke order because the handler's own tail
+        // `bus_queue_drain` (m26) recursively processed
+        // queued cells before the thunk's tick step ran.
+        // Final design inlines the tick call into the
+        // subscribed user-fn body just before its tail
+        // drain — see Pass C's user-fn body lowering.
 
         // Stash the methods + accept_param onto the existing
         // LocusInfo.
@@ -2628,6 +2718,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         info.closures = closures;
         info.birth_closures_fn = birth_closures_fn;
         info.dissolve_closures_fn = dissolve_closures_fn;
+        info.tick_closures_fn = tick_closures_fn;
+        info.tick_wrapper_fn = tick_wrapper_fn;
         info.failure_handler = failure_handler;
         Ok(())
     }
@@ -2815,10 +2907,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // passed a non-null handler. Pass paths flow through
         // silently. Same body shape per epoch — only the closure
         // subset differs — so we use a small helper closure.
-        for epoch in [EpochSpec::Birth, EpochSpec::Dissolve].iter() {
+        for epoch in [EpochSpec::Birth, EpochSpec::Dissolve, EpochSpec::Tick].iter() {
             let fn_slot = match epoch {
                 EpochSpec::Birth => info.birth_closures_fn,
                 EpochSpec::Dissolve => info.dissolve_closures_fn,
+                EpochSpec::Tick => info.tick_closures_fn,
                 _ => None,
             };
             let func = match fn_slot {
@@ -2864,12 +2957,93 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 )?;
             }
 
-            self.flush_dissolve_frame()?;
+            // m42: tick fires INSIDE the cooperative drain loop
+            // (per-substrate-cell), so we must NOT call
+            // flush_dissolve_frame here — its `emit_bus_drain`
+            // would recursively re-enter the drain and pull
+            // every remaining queued cell into a single tick's
+            // call stack. For Birth + Dissolve the drain is
+            // historically OK (those run outside the drain
+            // context). For Tick we just pop the frame manually
+            // and ret. Closure assertions can't instantiate
+            // loci anyway, so the deferred-dissolve frame is
+            // always empty here.
+            if matches!(epoch, EpochSpec::Tick) {
+                let _ = self.deferred_dissolves.pop();
+            } else {
+                self.flush_dissolve_frame()?;
+            }
             self.builder
                 .build_return(None)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.current_fn = None;
             self.current_self = None;
+        }
+
+        // m42: tick_wrapper body. The bus drain loop calls
+        // tick_wrapper(self) after each handler returns; the
+        // wrapper loads the parent fields baked onto the struct
+        // at instantiation time and forwards to the 3-arg
+        // __tick_closures fn. This indirection lets us route
+        // tick violations through the same parent on_failure
+        // handler the birth/dissolve epochs use, without
+        // changing the bus drain loop's signature.
+        if let (Some(wrapper_fn), Some(tick_fn)) =
+            (info.tick_wrapper_fn, info.tick_closures_fn)
+        {
+            let entry = self.context.append_basic_block(wrapper_fn, "entry");
+            self.builder.position_at_end(entry);
+            let self_ptr = wrapper_fn
+                .get_nth_param(0)
+                .expect("self_ptr param")
+                .into_pointer_value();
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let parent_self_slot = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    self_ptr,
+                    info.parent_self_field_idx,
+                    "parent_self.ptr",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let parent_self = self
+                .builder
+                .build_load(ptr_t, parent_self_slot, "parent_self")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value();
+            let parent_handler_slot = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    self_ptr,
+                    info.parent_on_failure_field_idx,
+                    "parent_handler.ptr",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let parent_handler = self
+                .builder
+                .build_load(
+                    ptr_t,
+                    parent_handler_slot,
+                    "parent_handler",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value();
+            self.builder
+                .build_call(
+                    tick_fn,
+                    &[
+                        self_ptr.into(),
+                        parent_self.into(),
+                        parent_handler.into(),
+                    ],
+                    "tick.closures.call",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_return(None)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
 
         // Locus user-fns (`fn` members): same body lowering as
@@ -2916,8 +3090,134 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     scope.locals.insert(p.name.name.clone(), (alloca, lt));
                 }
 
+                // m42: gate subscribed bus-handler bodies on the
+                // __quarantined flag at entry. m41b nulls
+                // bus.entries subjects so future publishes skip
+                // a quarantined subscriber, but cells enqueued
+                // before quarantine remain in the queue and
+                // would otherwise still fire. This entry gate
+                // matches the interpreter's
+                // `delivery.subscription.locus.quarantined`
+                // check in dispatch_bus, so already-queued
+                // deliveries observe the stop-trying signal.
+                let is_subscribed_handler = info
+                    .subscriptions
+                    .iter()
+                    .any(|(_, h)| h == &fd.name.name);
+                if is_subscribed_handler {
+                    let i64_t = self.context.i64_type();
+                    let q_slot = self
+                        .builder
+                        .build_struct_gep(
+                            info.struct_ty,
+                            self_ptr,
+                            info.quarantined_field_idx,
+                            "handler.quarantined.ptr",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let q_val = self
+                        .builder
+                        .build_load(i64_t, q_slot, "handler.quarantined")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_int_value();
+                    let is_q = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::NE,
+                            q_val,
+                            i64_t.const_int(0, false),
+                            "handler.is_quarantined",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let skip_bb = self
+                        .context
+                        .append_basic_block(func, "handler.skip");
+                    let body_bb = self
+                        .context
+                        .append_basic_block(func, "handler.body");
+                    self.builder
+                        .build_conditional_branch(is_q, skip_bb, body_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(skip_bb);
+                    self.builder
+                        .build_return(None)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(body_bb);
+                }
+
                 let end = self.lower_block(&fd.body, &mut scope)?;
                 if end == BlockEnd::Open {
+                    // m42: if this user fn is a registered bus
+                    // handler AND the locus has tick closures,
+                    // fire __tick_closures HERE — after the
+                    // body's effects but BEFORE the tail
+                    // bus_queue_drain. The tail drain (m26)
+                    // would otherwise recursively process the
+                    // next queued cell first, and tick would
+                    // see the next cell's state instead of
+                    // this handler's. Tick is the natural
+                    // "between substrate cells" point and
+                    // belongs inline with the cell's body
+                    // termination, ahead of any cooperative
+                    // yield.
+                    let is_subscribed_handler = info
+                        .subscriptions
+                        .iter()
+                        .any(|(_, h)| h == &fd.name.name);
+                    if is_subscribed_handler {
+                        if let Some(tick_fn) = info.tick_closures_fn {
+                            let parent_self_slot = self
+                                .builder
+                                .build_struct_gep(
+                                    info.struct_ty,
+                                    self_ptr,
+                                    info.parent_self_field_idx,
+                                    "tick.parent_self.ptr",
+                                )
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                            let parent_self_v = self
+                                .builder
+                                .build_load(
+                                    self.context.ptr_type(AddressSpace::default()),
+                                    parent_self_slot,
+                                    "tick.parent_self",
+                                )
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                                .into_pointer_value();
+                            let parent_handler_slot = self
+                                .builder
+                                .build_struct_gep(
+                                    info.struct_ty,
+                                    self_ptr,
+                                    info.parent_on_failure_field_idx,
+                                    "tick.parent_handler.ptr",
+                                )
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                            let parent_handler_v = self
+                                .builder
+                                .build_load(
+                                    self.context.ptr_type(AddressSpace::default()),
+                                    parent_handler_slot,
+                                    "tick.parent_handler",
+                                )
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                                .into_pointer_value();
+                            self.builder
+                                .build_call(
+                                    tick_fn,
+                                    &[
+                                        self_ptr.into(),
+                                        parent_self_v.into(),
+                                        parent_handler_v.into(),
+                                    ],
+                                    &format!(
+                                        "{}.{}.tick.post_handler.call",
+                                        l.name.name, fd.name.name
+                                    ),
+                                )
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        }
+                    }
                     self.flush_dissolve_frame()?;
                     match ret_ty {
                         None => {
@@ -6506,6 +6806,41 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_store(q_ptr, zero)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
+        // m42: init the synthetic __parent_self / __parent_on_failure
+        // fields. Resolve the (parent_self, on_failure_fn) pair via
+        // the same routing the birth/dissolve epochs use; the bus
+        // drain loop's tick wrapper reads these later when firing
+        // tick-epoch closures (it has no static call-site context
+        // for parent routing, so we bake it onto the struct here).
+        // Loci without tick closures still pay the 16 bytes — the
+        // uniform layout is worth more than the overhead.
+        let (parent_self_val, parent_handler_val) =
+            self.resolve_failure_route(locus_name);
+        let parent_self_slot = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                info.parent_self_field_idx,
+                &format!("{}.__parent_self.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(parent_self_slot, parent_self_val)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let parent_handler_slot = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                info.parent_on_failure_field_idx,
+                &format!("{}.__parent_on_failure.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(parent_handler_slot, parent_handler_val)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
         // F.7 ordering: if we're inside a parent locus's lifecycle
         // method AND the parent has an accept(child: ThisLocus) that
         // matches our type, call parent.accept(parent_self, child)
@@ -6786,6 +7121,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| {
                             CodegenError::LlvmEmit(e.to_string())
                         })?;
+                    // m42: tick fires after run() on the pinned
+                    // thread too. Use the wrapper here (it loads
+                    // parent fields from the struct) since we're
+                    // off the main thread and resolve_failure_route
+                    // wouldn't see the right `current_self`.
+                    if *kind == "run" {
+                        if let Some(wrapper) = info.tick_wrapper_fn {
+                            self.builder
+                                .build_call(
+                                    wrapper,
+                                    &[thread_self.into()],
+                                    &format!(
+                                        "{}.tick.post_run.thread_call",
+                                        locus_name
+                                    ),
+                                )
+                                .map_err(|e| {
+                                    CodegenError::LlvmEmit(e.to_string())
+                                })?;
+                        }
+                    }
                 }
             }
             // m28b: mailbox loop. Reload the mailbox ptr from the
@@ -7020,6 +7376,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     &format!("{}.run.call", locus_name),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // m42: tick fires after run() returns — run() is a
+            // substrate cell just like a bus handler. Place the
+            // call in the active branch so it doesn't fire on a
+            // skipped (quarantined) run().
+            if let Some(tick_fn) = info.tick_closures_fn {
+                let (parent_self_t, handler_ptr_t) =
+                    self.resolve_failure_route(&locus_name);
+                self.builder
+                    .build_call(
+                        tick_fn,
+                        &[
+                            self_ptr.into(),
+                            parent_self_t.into(),
+                            handler_ptr_t.into(),
+                        ],
+                        &format!(
+                            "{}.__tick_closures.post_run.call",
+                            locus_name
+                        ),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
             self.builder
                 .build_unconditional_branch(after_run_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

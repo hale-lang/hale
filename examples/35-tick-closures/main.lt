@@ -1,0 +1,85 @@
+// 35-tick-closures — m42: tick-epoch closures.
+//
+// Closures with `epoch tick;` evaluate after every substrate
+// cell on the locus — concretely, after every bus handler
+// invocation AND after run() returns. Birth and Dissolve are
+// the lifecycle bookends; tick is the steady-state pulse
+// between them.
+//
+// Where birth-epoch closures audit "is the locus born into
+// a valid state?" and dissolve-epoch closures audit "did the
+// locus end in a valid state?", tick-epoch closures audit
+// "does the invariant still hold AT EACH STEP?" — useful for
+// monitoring drift, accumulator overflow, or any property
+// that can be violated mid-life by a single handler.
+//
+// F.9 routing reused unchanged: a tick-epoch violation
+// reaches the parent's on_failure(child, err) — the parent
+// can absorb (no-op return), bubble (raise), or quarantine
+// (sticky stop-trying flag). m41/m41b's quarantine surface
+// applies: a parent who quarantines on tick violation
+// silences the locus from receiving further bus messages.
+
+type Sample {
+    value: Int;
+}
+
+locus Counter {
+    params {
+        n: Int = 0;
+    }
+
+    closure under_cap {
+        // |n - 0| <= 5 → n must stay in [-5, 5].
+        // tick fires after each on_inc invocation, so the
+        // assertion sees n in its post-handler state.
+        self.n ~~ 0 within 5;
+        epoch tick;
+    }
+
+    bus {
+        subscribe "increment" as on_inc of type Sample;
+    }
+
+    fn on_inc(s: Sample) {
+        self.n = self.n + s.value;
+        println("Counter.on_inc: n now ", self.n);
+    }
+}
+
+locus Auditor {
+    on_failure(c: Counter, err: ClosureViolation) {
+        println("Auditor: tick violation in ", err.closure,
+                " (diff=", err.diff, ") — quarantining");
+        quarantine(c);
+    }
+
+    bus {
+        publish "increment" of type Sample;
+    }
+
+    run() {
+        // Counter starts at n=0, cap=5. Tick fires after
+        // each on_inc; closure passes while |n| <= 5.
+        Counter { };
+
+        println("--- under cap ---");
+        "increment" <- Sample { value: 1 };  // n=1, tick passes
+        "increment" <- Sample { value: 2 };  // n=3, tick passes
+        "increment" <- Sample { value: 1 };  // n=4, tick passes
+
+        println("--- pushing past cap ---");
+        "increment" <- Sample { value: 3 };  // n=7, tick fails
+                                              // Auditor quarantines
+
+        println("--- after quarantine: silenced ---");
+        "increment" <- Sample { value: 1 };  // skipped
+        "increment" <- Sample { value: 1 };  // skipped
+
+        println("done");
+    }
+}
+
+fn main() {
+    Auditor { };
+}

@@ -39,6 +39,12 @@ use crate::value::{LocusHandle, Value};
 pub struct Subscription {
     pub locus: LocusHandle,
     pub handler: String,
+    /// m42: the locus's parent at subscribe time, captured so
+    /// tick-epoch closures fired at bus-handler completion can
+    /// route violations to the parent's `on_failure(child, err)`
+    /// without walking parent_stack (which during a bus dispatch
+    /// has the subscriber itself on top, not the actual parent).
+    pub parent: Option<LocusHandle>,
 }
 
 /// One pending delivery: the subscription that should receive
@@ -279,13 +285,23 @@ impl BusRouter {
         }
     }
 
-    pub fn subscribe(&self, subject: String, locus: LocusHandle, handler: String) {
+    pub fn subscribe(
+        &self,
+        subject: String,
+        locus: LocusHandle,
+        handler: String,
+        parent: Option<LocusHandle>,
+    ) {
         self.ensure(&subject);
         self.transports
             .borrow_mut()
             .get_mut(&subject)
             .expect("subject ensured")
-            .subscribe(Subscription { locus, handler });
+            .subscribe(Subscription {
+                locus,
+                handler,
+                parent,
+            });
     }
 
     pub fn publish(&self, subject: &str, payload: Value) {
@@ -350,6 +366,7 @@ mod tests {
                 quarantined: Rc::new(std::cell::Cell::new(false)),
             },
             handler: handler.to_string(),
+            parent: None,
         }
     }
 
@@ -422,7 +439,7 @@ mod tests {
     #[test]
     fn router_default_is_sync() {
         let router = BusRouter::new();
-        router.subscribe("s".into(), fake_subscription("A", "h").locus, "h".into());
+        router.subscribe("s".into(), fake_subscription("A", "h").locus, "h".into(), None);
         router.publish("s", Value::Int(7));
         let deliveries = router.drain_all();
         assert_eq!(deliveries.len(), 1);
@@ -433,7 +450,7 @@ mod tests {
     fn router_per_subject_ring_override() {
         let mut router = BusRouter::new();
         router.with_transport("hot", TransportKind::Ring { capacity: 16 });
-        router.subscribe("hot".into(), fake_subscription("A", "h").locus, "h".into());
+        router.subscribe("hot".into(), fake_subscription("A", "h").locus, "h".into(), None);
         router.publish("hot", Value::Int(1));
         router.publish("hot", Value::Int(2));
         let deliveries = router.drain_all();

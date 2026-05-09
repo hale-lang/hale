@@ -1122,7 +1122,11 @@ impl Interpreter {
             quarantined: Rc::new(std::cell::Cell::new(false)),
         };
 
-        // Register every bus subscription on the router.
+        // Register every bus subscription on the router. m42:
+        // capture the locus's parent at subscribe time so
+        // tick-epoch closures fired after a bus handler can
+        // route violations to the correct on_failure handler.
+        let subscribe_parent = self.parent_stack.last().cloned();
         for member in &decl.members {
             if let LocusMember::Bus(bb) = member {
                 for bm in &bb.members {
@@ -1131,6 +1135,7 @@ impl Interpreter {
                             subject.clone(),
                             handle.clone(),
                             handler.name.clone(),
+                            subscribe_parent.clone(),
                         );
                     }
                 }
@@ -1227,6 +1232,13 @@ impl Interpreter {
                 lookup_lifecycle(&decl, LifecycleKind::Run)
             {
                 self.run_lifecycle(handle.clone(), &run_decl, &[])?;
+                // m42: tick fires after run() returns — run()
+                // is a substrate cell just like a bus handler.
+                // Look up the parent at instantiation time
+                // (parent_stack still holds it; the lifecycle
+                // method's push has been popped by run_lifecycle).
+                let parent = self.parent_stack.last().cloned();
+                self.fire_tick_closures(handle.clone(), parent)?;
             }
         }
 
@@ -1500,6 +1512,54 @@ impl Interpreter {
         Ok(ClosureOutcome::Violation(violation))
     }
 
+    /// m42: evaluate every tick-epoch closure on `handle` and
+    /// route violations through the given parent's
+    /// `on_failure` (if any). Called after each bus handler
+    /// invocation on this locus AND after run() returns.
+    /// Skips quarantined loci — once stop-trying is set,
+    /// tick-epoch checks are pointless (the locus's state is
+    /// frozen for substrate-purposes anyway).
+    fn fire_tick_closures(
+        &mut self,
+        handle: LocusHandle,
+        parent: Option<LocusHandle>,
+    ) -> Result<(), Signal> {
+        if handle.quarantined.get() {
+            return Ok(());
+        }
+        let tick_closures: Vec<ClosureDecl> = handle
+            .decl
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                LocusMember::Closure(c) if closure_fires_at_tick(c) => {
+                    Some(c.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        for closure in &tick_closures {
+            match self.evaluate_closure(handle.clone(), closure)? {
+                ClosureOutcome::Pass => {}
+                ClosureOutcome::Violation(v) => {
+                    self.deliver_violation(
+                        handle.clone(),
+                        parent.as_ref(),
+                        v,
+                    )?;
+                    // If on_failure called quarantine(self), the
+                    // remaining tick closures don't need to fire
+                    // this round — quarantined loci are silenced
+                    // until process exit.
+                    if handle.quarantined.get() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Publish a payload on a subject, then drain all pending
     /// deliveries until none remain. The drain loop catches
     /// re-entrant publishes from inside handlers — a handler
@@ -1520,11 +1580,20 @@ impl Interpreter {
                 if delivery.subscription.locus.quarantined.get() {
                     continue;
                 }
+                let sub_locus = delivery.subscription.locus.clone();
+                let sub_parent = delivery.subscription.parent.clone();
                 self.run_handler(
-                    delivery.subscription.locus,
+                    sub_locus.clone(),
                     &delivery.subscription.handler,
                     delivery.payload,
                 )?;
+                // m42: tick fires after each substrate cell on
+                // this locus. A bus handler IS one substrate
+                // cell — fire tick-epoch closures here so any
+                // invariant violated by the handler's state
+                // change reaches the parent's on_failure
+                // before the next cell starts.
+                self.fire_tick_closures(sub_locus, sub_parent)?;
             }
         }
         Ok(())
@@ -1679,6 +1748,17 @@ fn closure_fires_at_birth(c: &ClosureDecl) -> bool {
     // path on top.
     c.clauses.iter().any(|clause| {
         matches!(clause, ClosureClause::Epoch(EpochSpec::Birth))
+    })
+}
+
+fn closure_fires_at_tick(c: &ClosureDecl) -> bool {
+    // m42: closure fires at tick iff an explicit
+    // EpochSpec::Tick clause was declared. Tick is the
+    // "after every substrate cell" epoch — fires after
+    // each bus handler invocation on the locus, and after
+    // run() returns. Defaults stay dissolve-only.
+    c.clauses.iter().any(|clause| {
+        matches!(clause, ClosureClause::Epoch(EpochSpec::Tick))
     })
 }
 
