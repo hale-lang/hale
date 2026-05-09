@@ -1,7 +1,15 @@
 # Lotus — session checkpoint
 
-**Read this first** if you're picking up the lotus language work in a
-new session. State as of m47 (**enums** — `type X = enum { A, B };`
+**Read this first** if you're picking up the lotus language work
+in a new session. State as of m48 (**Decimal fixed-point** —
+exact i128-backed arithmetic in both backends; pre-m48 Decimal
+was f64-backed and round-tripped through `parse::<f64>()` /
+`%g`. Interpreter uses `DecimalVal { mantissa: i128, scale: u32 }`
+with per-value scale that round-trips source spelling; codegen
+uses i128 with fixed scale 9 and a C-runtime helper splits the
+i128 into hi:lo halves for printf, calling `lotus_decimal_to_string` —
+output trims trailing zeros so the two paths print identically).
+Before that was m47 (**enums** — `type X = enum { A, B };`
 declares a no-payload tagged union; `X::A` constructs a variant
 value; `match` arms accept `X::A -> ...` constructor patterns;
 the typechecker enforces variant-coverage exhaustiveness;
@@ -148,6 +156,50 @@ Phase status:
 - **Phase 2 v0** (interpreter + bus router) — 45 of 46 example
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
+- **Phase 3 milestone 48** (Decimal fixed-point) — complete.
+  v0 stored Decimal as a String (interpreter) / f64 (codegen) and
+  round-tripped through `parse::<f64>()` for arithmetic, masking
+  dust via `%g` formatting. m48 replaces both with exact i128
+  fixed-point. **Interpreter:** `DecimalVal { mantissa: i128,
+  scale: u32 }` with per-value scale — source spelling round-trips
+  (`100.40d` keeps scale=2). Add/Sub align to max scale; Mul
+  multiplies mantissas and adds scales; Div picks `max(a.scale,
+  b.scale, 9)` so `1d/3d` keeps useful precision (`0.333333333`)
+  rather than truncating. `display` strips trailing zeros so
+  `1.50d` prints `"1.5"`. `eval_binop` Decimal arms call
+  `DecimalVal::add/sub/mul/div/cmp` directly; `Value::Decimal`
+  stores the struct (not the string). **Codegen:** `LotusType::Decimal`
+  lowers to LLVM i128 with implicit fixed scale 9; per-value
+  scale would require an LLVM struct + per-op alignment, and one
+  fixed scale produces matching output after the trailing-zero
+  trim. Decimal literals lower via `parse_decimal_to_i128_scale9`
+  + `i128_const`; arithmetic uses `build_int_add`/`sub`/`mul`/
+  `signed_div` with the scale-9 adjustment in mul (divide by 10^9
+  after the multiply) and div (multiply numerator by 10^9 before
+  the divide); comparison uses signed integer predicates. Unary
+  `-` is `0 - x`. New C-runtime fns `lotus_decimal_to_string(hi,
+  lo, buf)` and `lotus_str_from_decimal(arena, hi, lo)` render
+  i128 → trimmed string; codegen splits the i128 into i64 hi:lo
+  via `lshr`/`trunc` (the i128 ABI for direct passing isn't
+  uniformly modeled by inkwell). `println` Decimal allocates a
+  64-byte stack buffer, calls the helper, and splices in as %s.
+  `to_string` Decimal calls the arena-allocating helper.
+  Closure-check (`~~ within`) for Decimal merges into the int-ops
+  arm with i128 zero. Mean accumulator for Decimal divides the
+  i128 sum-as-f64 by 10^9 before the count division. ParamValue
+  carries i128 mantissa instead of f64. Violation `diff` field
+  stays i64 — Decimal closures truncate i128 → i64 for the
+  diagnostic store (precision loss past 2^63 mantissa-units is
+  acceptable since diff is never recomputed). New
+  `examples/44-decimal-exact/` exercises arithmetic that
+  previously diverged from interpreter or hit f64 dust:
+  `0.1d - 0.05d → 0.05`, `1d / 3d → 0.333333333`, compound
+  `1000 × 1.05^2 → 1102.5`, `1.5d - 10.25d → -8.75`. Both
+  backends produce identical output. Overflow at v0.1 is
+  unchecked — same policy as Int. i128 fits operands up to
+  ~10^19 cleanly through mul/div; per-value-scale operands
+  pushing past that would need wider intermediates which v0.1
+  defers.
 - **Phase 3 milestone 47** (enums — tagged union + match) —
   complete. v0.1 ships no-payload variants only; payload-bearing
   variant decls are rejected upstream at typecheck/codegen

@@ -115,14 +115,13 @@ fn binop_choose(
             if pick_smaller { *a.min(b) } else { *a.max(b) },
         )),
         (Value::Decimal(a), Value::Decimal(b)) => {
-            // Decimal stored as a string in fmt_decimal shape;
-            // parse, compare, return the chosen original.
-            let af = crate::eval::parse_decimal_pub(a)
-                .ok_or_else(|| format!("decimal parse failed: `{}`", a))?;
-            let bf = crate::eval::parse_decimal_pub(b)
-                .ok_or_else(|| format!("decimal parse failed: `{}`", b))?;
-            let pick_a = if pick_smaller { af <= bf } else { af >= bf };
-            Ok(Value::Decimal(if pick_a { a.clone() } else { b.clone() }))
+            let ord = crate::value::DecimalVal::cmp(*a, *b);
+            let pick_a = if pick_smaller {
+                ord != std::cmp::Ordering::Greater
+            } else {
+                ord != std::cmp::Ordering::Less
+            };
+            Ok(Value::Decimal(if pick_a { *a } else { *b }))
         }
         (l, r) => Err(format!(
             "`{}` not supported for {} and {}",
@@ -144,10 +143,12 @@ fn builtin_abs(args: &[Value]) -> Result<Value, String> {
         Value::Int(n) => Ok(Value::Int(n.abs())),
         Value::Float(f) => Ok(Value::Float(f.abs())),
         Value::Duration(n) => Ok(Value::Duration(n.abs())),
-        Value::Decimal(s) => {
-            let f = crate::eval::parse_decimal_pub(s)
-                .ok_or_else(|| format!("decimal parse failed: `{}`", s))?;
-            Ok(Value::Decimal(crate::eval::fmt_decimal_pub(f.abs())))
+        Value::Decimal(d) => {
+            let abs = crate::value::DecimalVal {
+                mantissa: d.mantissa.abs(),
+                scale: d.scale,
+            };
+            Ok(Value::Decimal(abs))
         }
         other => Err(format!("`abs` not supported for {}", other.type_name())),
     }
@@ -204,14 +205,8 @@ fn builtin_to_string(args: &[Value]) -> Result<Value, String> {
     // Int / Bool / Duration / String are direct conversions.
     let s = match &args[0] {
         Value::Int(n) => n.to_string(),
-        Value::Float(f) => crate::eval::fmt_decimal_pub(*f),
-        Value::Decimal(s) => {
-            // Decimal stored as a string already in fmt_decimal
-            // shape (set by every arithmetic op that produces a
-            // Decimal). Strip a stray `d` suffix if present
-            // (literals carry it; results don't).
-            s.strip_suffix('d').unwrap_or(s).to_string()
-        }
+        Value::Float(f) => crate::eval::fmt_float(*f),
+        Value::Decimal(d) => d.display(),
         Value::Bool(b) => {
             if *b {
                 "true".to_string()

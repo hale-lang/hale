@@ -819,6 +819,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_str_contains", str_predicate_ty, None);
 
+        // m48: render a Decimal (i128 mantissa, implicit scale 9)
+        // into a NUL-terminated string buffer.
+        // declare void @lotus_decimal_to_string(i64 hi, i64 lo, ptr buf)
+        let dec_to_str_ty = self.context.void_type().fn_type(
+            &[i64_t.into(), i64_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_decimal_to_string", dec_to_str_ty, None);
+        // declare ptr @lotus_str_from_decimal(ptr arena, i64 hi, i64 lo)
+        let dec_str_arena_ty =
+            ptr_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false);
+        self.module
+            .add_function("lotus_str_from_decimal", dec_str_arena_ty, None);
+
         // The single program-wide arena pointer. Initialized in
         // the prelude of main; consulted by every arena-allocated
         // user-type literal and ClosureViolation. m20 makes this
@@ -2420,9 +2435,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     .context
                                     .i64_type()
                                     .fn_type(&llvm_param_tys, false),
-                                LotusType::Float | LotusType::Decimal => self
+                                LotusType::Float => self
                                     .context
                                     .f64_type()
+                                    .fn_type(&llvm_param_tys, false),
+                                LotusType::Decimal => self
+                                    .context
+                                    .i128_type()
                                     .fn_type(&llvm_param_tys, false),
                                 LotusType::Bool => self
                                     .context
@@ -2555,9 +2574,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     .context
                                     .i64_type()
                                     .fn_type(&llvm_param_tys, false),
-                                LotusType::Float | LotusType::Decimal => self
+                                LotusType::Float => self
                                     .context
                                     .f64_type()
+                                    .fn_type(&llvm_param_tys, false),
+                                LotusType::Decimal => self
+                                    .context
+                                    .i128_type()
                                     .fn_type(&llvm_param_tys, false),
                                 LotusType::Bool => self
                                     .context
@@ -3568,8 +3591,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .context
                 .i64_type()
                 .fn_type(&llvm_param_tys, false),
-            Some(LotusType::Float) | Some(LotusType::Decimal) => {
+            Some(LotusType::Float) => {
                 self.context.f64_type().fn_type(&llvm_param_tys, false)
+            }
+            Some(LotusType::Decimal) => {
+                self.context.i128_type().fn_type(&llvm_param_tys, false)
             }
             Some(LotusType::Bool) => {
                 self.context.bool_type().fn_type(&llvm_param_tys, false)
@@ -4299,7 +4325,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         match at {
-            LotusType::Int | LotusType::Duration => {
+            LotusType::Int | LotusType::Duration | LotusType::Decimal => {
                 let pred = match name {
                     "min" => inkwell::IntPredicate::SLT,
                     "max" => inkwell::IntPredicate::SGT,
@@ -4320,7 +4346,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((v, at))
             }
-            LotusType::Float | LotusType::Decimal => {
+            LotusType::Float => {
                 let pred = match name {
                     "min" => inkwell::FloatPredicate::OLT,
                     "max" => inkwell::FloatPredicate::OGT,
@@ -4354,9 +4380,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         ty: &LotusType,
     ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
         match ty {
-            LotusType::Int | LotusType::Duration => {
-                let i64_t = self.context.i64_type();
-                let zero = i64_t.const_int(0, true);
+            LotusType::Int | LotusType::Duration | LotusType::Decimal => {
+                // m48: Decimal lives in i128 so the int-abs path
+                // works for it directly — same neg + select shape
+                // as Int / Duration, just with the i128 zero
+                // constant instead of i64.
+                let zero: inkwell::values::IntValue<'ctx> =
+                    if matches!(ty, LotusType::Decimal) {
+                        i128_const(self.context, 0)
+                    } else {
+                        self.context.i64_type().const_int(0, true)
+                    };
                 let iv = v.into_int_value();
                 let neg = self
                     .builder
@@ -4377,7 +4411,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((chosen, ty.clone()))
             }
-            LotusType::Float | LotusType::Decimal => {
+            LotusType::Float => {
                 let fv = v.into_float_value();
                 let neg = self
                     .builder
@@ -4522,7 +4556,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("lotus_str_from_duration returns ptr");
                 Ok((res, LotusType::String))
             }
-            LotusType::Float | LotusType::Decimal => {
+            LotusType::Float => {
                 let arena_ptr = self.current_arena_ptr()?;
                 let f = self
                     .module
@@ -4539,6 +4573,43 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("lotus_str_from_float returns ptr");
+                Ok((res, LotusType::String))
+            }
+            LotusType::Decimal => {
+                // m48: split the i128 into hi:lo i64 halves and
+                // call the arena-allocating helper. Returns a
+                // pointer into the current arena.
+                let arena_ptr = self.current_arena_ptr()?;
+                let i128_v = v.into_int_value();
+                let i64_t = self.context.i64_type();
+                let lo = self
+                    .builder
+                    .build_int_truncate(i128_v, i64_t, "ts_dec_lo")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let shift = self.context.i128_type().const_int(64, false);
+                let hi_wide = self
+                    .builder
+                    .build_right_shift(i128_v, shift, true, "ts_dec_hi_w")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let hi = self
+                    .builder
+                    .build_int_truncate(hi_wide, i64_t, "ts_dec_hi")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let f = self
+                    .module
+                    .get_function("lotus_str_from_decimal")
+                    .expect("lotus_str_from_decimal declared");
+                let res = self
+                    .builder
+                    .build_call(
+                        f,
+                        &[arena_ptr.into(), hi.into(), lo.into()],
+                        "to_string.decimal",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_str_from_decimal returns ptr");
                 Ok((res, LotusType::String))
             }
             LotusType::Bool => {
@@ -4579,7 +4650,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         name: &str,
     ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
         match ty {
-            LotusType::Int | LotusType::Duration | LotusType::Bool => self
+            LotusType::Int | LotusType::Duration | LotusType::Bool | LotusType::Decimal => self
                 .builder
                 .build_int_compare(
                     inkwell::IntPredicate::EQ,
@@ -4588,7 +4659,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     name,
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
-            LotusType::Float | LotusType::Decimal => self
+            LotusType::Float => self
                 .builder
                 .build_float_compare(
                     inkwell::FloatPredicate::OEQ,
@@ -5571,9 +5642,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .builder
                 .build_alloca(self.context.i64_type(), name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
-            LotusType::Float | LotusType::Decimal => self
+            LotusType::Float => self
                 .builder
                 .build_alloca(self.context.f64_type(), name)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
+            LotusType::Decimal => self
+                .builder
+                .build_alloca(self.context.i128_type(), name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
             LotusType::Bool => self
                 .builder
@@ -5640,18 +5715,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((v.into(), LotusType::Duration))
             }
             Expr::Literal(Literal::Decimal(s), _) => {
-                // v0 codegen mirrors the interpreter's
-                // `parse_decimal`: strip optional `d` suffix, parse
-                // as f64. Real fixed-point lands later when Decimal
-                // precision actually matters for trellis production.
-                let stripped = s.strip_suffix('d').unwrap_or(s);
-                let f = stripped.parse::<f64>().map_err(|e| {
+                // m48: lower Decimal literals to i128 mantissa
+                // with fixed scale 9 (mantissa × 10^-9). Per-value
+                // scale lives only in the interpreter; codegen
+                // picks one fixed scale so add/sub stay i128 ops
+                // without mantissa alignment, and mul/div compose
+                // via single division by 10^9. Source spelling
+                // round-trips through the runtime print helper
+                // because trailing zeros are trimmed at display.
+                let mantissa = parse_decimal_to_i128_scale9(s).ok_or_else(|| {
                     CodegenError::Unsupported(format!(
-                        "Decimal literal `{}` failed to parse: {}",
-                        s, e
+                        "Decimal literal `{}` failed to parse",
+                        s
                     ))
                 })?;
-                let v = self.context.f64_type().const_float(f);
+                let v = i128_const(self.context, mantissa);
                 Ok((v.into(), LotusType::Decimal))
             }
             Expr::Literal(Literal::Time(s), _) => {
@@ -6213,8 +6291,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.context.i64_type().const_int(*ns as u64, true).into(),
                 LotusType::Duration,
             ),
-            ParamValue::Decimal(f) => (
-                self.context.f64_type().const_float(*f).into(),
+            ParamValue::Decimal(m) => (
+                i128_const(self.context, *m).into(),
                 LotusType::Decimal,
             ),
             ParamValue::Time(s) => {
@@ -6231,8 +6309,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             LotusType::Int | LotusType::Duration => {
                 self.context.i64_type().into()
             }
-            LotusType::Float | LotusType::Decimal => {
-                self.context.f64_type().into()
+            LotusType::Float => self.context.f64_type().into(),
+            LotusType::Decimal => {
+                // m48: Decimal is an i128 mantissa with implicit
+                // scale 9 (mantissa × 10^-9). Distinct from Float
+                // at the type level so type-checking stays strict
+                // AND distinct at the LLVM level so arithmetic
+                // goes through integer ops with the scale-9
+                // adjustment in mul/div, not f64.
+                self.context.i128_type().into()
             }
             LotusType::Bool => self.context.bool_type().into(),
             LotusType::Enum(_) => self.context.i32_type().into(),
@@ -6357,13 +6442,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((v.into(), LotusType::Float))
             }
             (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, LotusType::Decimal) => {
-                let l = lv.into_float_value();
-                let r = rv.into_float_value();
+                // m48: Decimal arithmetic on i128 mantissa with
+                // implicit scale 9. Add/Sub: direct i128 ops.
+                // Mul: (a × b) is mantissa scale 18; divide by
+                // 10^9 to bring back to scale 9. Div: scale a's
+                // mantissa up by 10^9 first so (a × 10^9) / b
+                // lands at scale 9. Both mul and div risk i128
+                // overflow on the intermediate product when
+                // operands exceed ~10^19; v0.1 accepts the same
+                // wrap-around policy as Int multiplication.
+                let l = lv.into_int_value();
+                let r = rv.into_int_value();
+                let pow9 = i128_const(self.context, 1_000_000_000i128);
                 let v = match op {
-                    BinOp::Add => self.builder.build_float_add(l, r, "decadd"),
-                    BinOp::Sub => self.builder.build_float_sub(l, r, "decsub"),
-                    BinOp::Mul => self.builder.build_float_mul(l, r, "decmul"),
-                    BinOp::Div => self.builder.build_float_div(l, r, "decdiv"),
+                    BinOp::Add => self.builder.build_int_add(l, r, "decadd"),
+                    BinOp::Sub => self.builder.build_int_sub(l, r, "decsub"),
+                    BinOp::Mul => {
+                        let prod = self
+                            .builder
+                            .build_int_mul(l, r, "decmul_raw")
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        self.builder.build_int_signed_div(prod, pow9, "decmul")
+                    }
+                    BinOp::Div => {
+                        let scaled = self
+                            .builder
+                            .build_int_mul(l, pow9, "decdiv_scale")
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        self.builder.build_int_signed_div(scaled, r, "decdiv")
+                    }
                     _ => unreachable!(),
                 };
                 let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -6390,7 +6497,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((v.into(), LotusType::Bool))
             }
             (BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq,
-                LotusType::Float | LotusType::Decimal) =>
+                LotusType::Decimal) =>
+            {
+                let l = lv.into_int_value();
+                let r = rv.into_int_value();
+                let pred = match op {
+                    BinOp::Eq => IP::EQ,
+                    BinOp::NotEq => IP::NE,
+                    BinOp::Lt => IP::SLT,
+                    BinOp::Gt => IP::SGT,
+                    BinOp::LtEq => IP::SLE,
+                    BinOp::GtEq => IP::SGE,
+                    _ => unreachable!(),
+                };
+                let v = self
+                    .builder
+                    .build_int_compare(pred, l, r, "deccmp")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((v.into(), LotusType::Bool))
+            }
+            (BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq,
+                LotusType::Float) =>
             {
                 let l = lv.into_float_value();
                 let r = rv.into_float_value();
@@ -6521,9 +6648,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((r.into(), LotusType::Float))
             }
             (UnaryOp::Neg, LotusType::Decimal) => {
+                // m48: Decimal lives in i128; negate via subtract
+                // from i128 zero, mirroring Int's neg lowering.
+                let zero = i128_const(self.context, 0);
                 let r = self
                     .builder
-                    .build_float_neg(v.into_float_value(), "decneg")
+                    .build_int_sub(zero, v.into_int_value(), "decneg")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((r.into(), LotusType::Decimal))
             }
@@ -6576,10 +6706,60 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     format.push_str("%lld");
                     printf_args.push(BasicMetadataValueEnum::IntValue(val.into_int_value()));
                 }
-                LotusType::Float | LotusType::Decimal => {
+                LotusType::Float => {
                     format.push_str("%g");
                     printf_args
                         .push(BasicMetadataValueEnum::FloatValue(val.into_float_value()));
+                }
+                LotusType::Decimal => {
+                    // m48: render the i128 mantissa via the
+                    // C runtime helper into a stack buffer, then
+                    // splice the buffer in as %s. Splitting i128
+                    // → (hi, lo) via lshr/trunc keeps the FFI
+                    // call ABI-portable (passing __int128
+                    // directly relies on the platform's i128
+                    // calling convention, which inkwell doesn't
+                    // model uniformly).
+                    let i128_v = val.into_int_value();
+                    let i64_t = self.context.i64_type();
+                    let lo = self
+                        .builder
+                        .build_int_truncate(i128_v, i64_t, "dec_lo")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let shift = self
+                        .context
+                        .i128_type()
+                        .const_int(64, false);
+                    let hi_wide = self
+                        .builder
+                        .build_right_shift(i128_v, shift, true, "dec_hi_wide")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let hi = self
+                        .builder
+                        .build_int_truncate(hi_wide, i64_t, "dec_hi")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let buf_ty = self.context.i8_type().array_type(64);
+                    let buf = self
+                        .builder
+                        .build_alloca(buf_ty, "dec_buf")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let dec_to_str = self
+                        .module
+                        .get_function("lotus_decimal_to_string")
+                        .ok_or_else(|| {
+                            CodegenError::LlvmEmit(
+                                "lotus_decimal_to_string undeclared".into(),
+                            )
+                        })?;
+                    self.builder
+                        .build_call(
+                            dec_to_str,
+                            &[hi.into(), lo.into(), buf.into()],
+                            "dec_render",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    format.push_str("%s");
+                    printf_args.push(BasicMetadataValueEnum::PointerValue(buf));
                 }
                 LotusType::Bool => {
                     // No printf %b; widen to a string at format
@@ -8195,8 +8375,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_store(slot_ptr, z)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-            LotusType::Float | LotusType::Decimal => {
+            LotusType::Float => {
                 let z = self.context.f64_type().const_float(0.0);
+                self.builder
+                    .build_store(slot_ptr, z)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            LotusType::Decimal => {
+                let z = i128_const(self.context, 0);
                 self.builder
                     .build_store(slot_ptr, z)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -8331,7 +8517,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_store(slot_ptr, next)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-            LotusType::Float | LotusType::Decimal => {
+            LotusType::Float => {
                 let f64_t = self.context.f64_type();
                 let prev = self
                     .builder
@@ -8343,6 +8529,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_float_add(
                         prev,
                         sample_val.into_float_value(),
+                        &format!("{}.next", name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(slot_ptr, next)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            LotusType::Decimal => {
+                let i128_t = self.context.i128_type();
+                let prev = self
+                    .builder
+                    .build_load(i128_t, slot_ptr, &format!("{}.prev", name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_int_value();
+                let next = self
+                    .builder
+                    .build_int_add(
+                        prev,
+                        sample_val.into_int_value(),
                         &format!("{}.next", name),
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -8453,8 +8658,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| {
                             CodegenError::LlvmEmit(e.to_string())
                         })?,
-                    LotusType::Float | LotusType::Decimal => {
-                        sum_v.into_float_value()
+                    LotusType::Float => sum_v.into_float_value(),
+                    LotusType::Decimal => {
+                        // Decimal sum is i128 with implicit scale 9.
+                        // Cast to f64 then divide by 10^9 so the
+                        // result is in real units before the
+                        // count division. Loses some precision but
+                        // mean is inherently real-valued so f64
+                        // is the natural output type anyway.
+                        let raw = self
+                            .builder
+                            .build_signed_int_to_float(
+                                sum_v.into_int_value(),
+                                f64_t,
+                                "mean.sum.dec.raw",
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?;
+                        let scale = f64_t.const_float(1_000_000_000.0);
+                        self.builder
+                            .build_float_div(raw, scale, "mean.sum.dec.f")
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?
                     }
                     ref other => {
                         return Err(CodegenError::Unsupported(format!(
@@ -8502,9 +8729,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .builder
                 .build_load(self.context.i64_type(), slot_ptr, name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
-            LotusType::Float | LotusType::Decimal => self
+            LotusType::Float => self
                 .builder
                 .build_load(self.context.f64_type(), slot_ptr, name)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
+            LotusType::Decimal => self
+                .builder
+                .build_load(self.context.i128_type(), slot_ptr, name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
             other => {
                 return Err(CodegenError::Unsupported(format!(
@@ -8602,7 +8833,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut int_diff: Option<inkwell::values::IntValue<'ctx>> = None;
 
         let pass = match &lt {
-            LotusType::Int | LotusType::Duration => {
+            LotusType::Int | LotusType::Duration | LotusType::Decimal => {
                 let l = lv.into_int_value();
                 let r = rv.into_int_value();
                 let t = tv.into_int_value();
@@ -8611,7 +8842,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_int_sub(l, r, "diff")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 int_diff = Some(diff);
-                let zero = self.context.i64_type().const_int(0, false);
+                let zero: inkwell::values::IntValue<'ctx> =
+                    if matches!(lt, LotusType::Decimal) {
+                        i128_const(self.context, 0)
+                    } else {
+                        self.context.i64_type().const_int(0, false)
+                    };
                 let neg = self
                     .builder
                     .build_int_compare(
@@ -8639,7 +8875,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             }
-            LotusType::Float | LotusType::Decimal => {
+            LotusType::Float => {
                 let l = lv.into_float_value();
                 let r = rv.into_float_value();
                 let t = tv.into_float_value();
@@ -8769,6 +9005,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let i64_t = self.context.i64_type();
         let diff_val = int_diff.unwrap_or_else(|| i64_t.const_int(0, false));
+        // m48: Decimal closures produce an i128 diff; the violation's
+        // diff field is i64 (carries the natural domain's diff for
+        // Int / Duration). Truncate i128 → i64 — diff is diagnostic
+        // only, never recomputed against the original mantissa, so
+        // precision loss past 2^63 ns / mantissa-units is acceptable
+        // for v0.1.
+        let diff_val = if diff_val.get_type().get_bit_width() != 64 {
+            self.builder
+                .build_int_truncate(diff_val, i64_t, "diff.trunc")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        } else {
+            diff_val
+        };
         self.builder
             .build_store(f2, diff_val)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -9810,7 +10059,7 @@ enum ParamValue {
     Float(f64),
     Bool(bool),
     Duration(i64),
-    Decimal(f64),
+    Decimal(i128),
     /// Time literal stored as its source spelling.
     Time(String),
 }
@@ -9823,14 +10072,13 @@ fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
         Expr::Literal(Literal::Bool(b), _) => Ok(ParamValue::Bool(*b)),
         Expr::Literal(Literal::Duration(ns), _) => Ok(ParamValue::Duration(*ns)),
         Expr::Literal(Literal::Decimal(s), _) => {
-            let stripped = s.strip_suffix('d').unwrap_or(s);
-            let f = stripped.parse::<f64>().map_err(|e| {
+            let m = parse_decimal_to_i128_scale9(s).ok_or_else(|| {
                 CodegenError::Unsupported(format!(
-                    "Decimal literal `{}` failed to parse: {}",
-                    s, e
+                    "Decimal literal `{}` failed to parse",
+                    s
                 ))
             })?;
-            Ok(ParamValue::Decimal(f))
+            Ok(ParamValue::Decimal(m))
         }
         Expr::Literal(Literal::Time(s), _) => Ok(ParamValue::Time(s.clone())),
         _ => Err(CodegenError::Unsupported(
@@ -9841,6 +10089,66 @@ fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
 
 fn escape_format(s: &str) -> String {
     s.replace('%', "%%")
+}
+
+/// m48: parse a Decimal literal source spelling (e.g. `"100.40d"`,
+/// `"0.001"`) into the i128 mantissa with implicit scale 9.
+/// Strips an optional trailing `d`, an optional leading sign,
+/// underscores. Returns None on malformed input.
+fn parse_decimal_to_i128_scale9(s: &str) -> Option<i128> {
+    let s = s.strip_suffix('d').unwrap_or(s);
+    let (sign, rest) = match s.as_bytes().first() {
+        Some(b'-') => (-1i128, &s[1..]),
+        Some(b'+') => (1i128, &s[1..]),
+        _ => (1i128, s),
+    };
+    if rest.is_empty() {
+        return None;
+    }
+    let mut mantissa: i128 = 0;
+    let mut frac_digits: u32 = 0;
+    let mut seen_dot = false;
+    let mut seen_digit = false;
+    for c in rest.chars() {
+        match c {
+            '0'..='9' => {
+                seen_digit = true;
+                if !seen_dot || frac_digits < 9 {
+                    mantissa = mantissa.checked_mul(10)?;
+                    mantissa = mantissa.checked_add((c as u8 - b'0') as i128)?;
+                    if seen_dot {
+                        frac_digits += 1;
+                    }
+                }
+                // Drops digits past 9 fractional places (codegen
+                // truncates at scale 9; no rounding for v0.1).
+            }
+            '.' if !seen_dot => seen_dot = true,
+            '_' => {}
+            _ => return None,
+        }
+    }
+    if !seen_digit {
+        return None;
+    }
+    while frac_digits < 9 {
+        mantissa = mantissa.checked_mul(10)?;
+        frac_digits += 1;
+    }
+    Some(sign * mantissa)
+}
+
+/// Build an i128 LLVM constant from a Rust i128. inkwell's
+/// `const_int_arbitrary_precision` takes a slice of i64 limbs;
+/// pack the i128 as low/high halves so the constant matches the
+/// host i128 bit pattern.
+fn i128_const<'ctx>(
+    ctx: &'ctx inkwell::context::Context,
+    v: i128,
+) -> inkwell::values::IntValue<'ctx> {
+    let lo = (v as u128) as u64;
+    let hi = ((v as u128) >> 64) as u64;
+    ctx.i128_type().const_int_arbitrary_precision(&[lo, hi])
 }
 
 /// m46 / m46-vocab (closure accumulators): walk an expression

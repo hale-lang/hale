@@ -803,3 +803,73 @@ int lotus_str_contains(const char *s, const char *sub) {
     if (*sub == '\0') return 1;
     return strstr(s, sub) ? 1 : 0;
 }
+
+/*
+ * m48: render a Decimal value (i128 mantissa with implicit
+ * scale 9 — i.e., mantissa × 10^-9) into a NUL-terminated
+ * string. The i128 is passed as two i64 halves (hi:lo) since
+ * the LLVM/C ABI for __int128 is awkward to wire; codegen
+ * splits the value before the call.
+ *
+ * Output format trims trailing zeros + dangling decimal point,
+ * matching the interpreter's DecimalVal::display so both
+ * backends print identically. Caller passes a buffer of at
+ * least LOTUS_DECIMAL_BUF_LEN bytes.
+ */
+#define LOTUS_DECIMAL_BUF_LEN 64
+
+/* Helper used internally — exposed forward-decl form so the
+ * arena-allocating sibling can call it. */
+void lotus_decimal_to_string(int64_t hi, uint64_t lo, char *buf);
+
+/*
+ * Variant of lotus_decimal_to_string that allocates the buffer
+ * inside the caller's arena and returns a pointer to it.
+ * Mirrors lotus_str_from_float for the Float case.
+ */
+char *lotus_str_from_decimal(lotus_arena_t *a, int64_t hi, uint64_t lo) {
+    char *out = (char *)lotus_arena_alloc(a, LOTUS_DECIMAL_BUF_LEN, 1);
+    if (!out) return NULL;
+    lotus_decimal_to_string(hi, lo, out);
+    return out;
+}
+
+void lotus_decimal_to_string(int64_t hi, uint64_t lo, char *buf) {
+    __int128 m = ((__int128)hi << 64) | (__int128)lo;
+    int neg = m < 0;
+    unsigned __int128 abs = neg ? (unsigned __int128)(-m) : (unsigned __int128)m;
+    unsigned __int128 pow9 = 1000000000ULL;
+    unsigned __int128 int_part = abs / pow9;
+    unsigned __int128 frac_part = abs % pow9;
+    char *p = buf;
+    if (neg) {
+        *p++ = '-';
+    }
+    /* int_part may exceed 64 bits when the mantissa's integer
+     * part is over 10^19. The simple fast path covers the
+     * common case; the fallback decomposes into 10^18 chunks. */
+    if ((int_part >> 64) == 0) {
+        p += snprintf(p, 32, "%llu", (unsigned long long)int_part);
+    } else {
+        unsigned __int128 base = 1000000000000000000ULL;
+        unsigned __int128 hi_part = int_part / base;
+        unsigned __int128 lo_part = int_part % base;
+        p += snprintf(p, 48, "%llu%018llu",
+            (unsigned long long)hi_part,
+            (unsigned long long)lo_part);
+    }
+    if (frac_part != 0) {
+        char fb[16];
+        snprintf(fb, sizeof(fb), "%09llu", (unsigned long long)frac_part);
+        size_t end = strlen(fb);
+        while (end > 0 && fb[end - 1] == '0') {
+            end--;
+        }
+        if (end > 0) {
+            *p++ = '.';
+            memcpy(p, fb, end);
+            p += end;
+        }
+    }
+    *p = '\0';
+}

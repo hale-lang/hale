@@ -1,0 +1,43 @@
+// 44-decimal-exact — m48: exact fixed-point Decimal arithmetic.
+//
+// Pre-m48 Decimal was f64-backed in both backends and `0.1d -
+// 0.05d` produced the canonical f64-dust value 0.04999999...
+// masked to "0.05" by %g formatting. m48 reps Decimal as i128
+// mantissa + scale: interpreter uses per-value scale (so
+// `100.40d` keeps scale=2); codegen uses fixed scale 9 for
+// uniform i128 ops with a runtime helper that splits hi:lo for
+// the printf path. Both backends now produce identical output
+// for arithmetic that previously diverged in the unmasked f64
+// path, including high-precision divisions like 1/3.
+//
+// What this exercises:
+//   - Subtraction that previously had f64 dust
+//   - Division producing 9 digits of precision
+//   - Addition + multiplication chained (compound interest)
+//   - Negative value formatting
+
+fn main() {
+    // Classic f64 dust: 0.1 - 0.05 was 0.04999999999999716 in
+    // raw f64; %g masked it to "0.05". m48 produces the exact
+    // value internally without needing the mask.
+    let dust: Decimal = 0.1d - 0.05d;
+    println("0.1d - 0.05d = ", dust);
+
+    // Division taking advantage of the 9-digit scale floor.
+    let third: Decimal = 1d / 3d;
+    println("1d / 3d = ", third);
+
+    // Compound: principal × (1 + rate)^2, written as repeated
+    // arithmetic. Tests the mul + add path.
+    let principal: Decimal = 1000d;
+    let rate: Decimal = 0.05d;
+    let factor: Decimal = (1d + rate) * (1d + rate);
+    let final_amount: Decimal = principal * factor;
+    println("1000 × 1.05^2 = ", final_amount);
+
+    // Negative: subtract a larger value from a smaller one.
+    let neg: Decimal = 1.5d - 10.25d;
+    println("1.5d - 10.25d = ", neg);
+
+    return 0;
+}

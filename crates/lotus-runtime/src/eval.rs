@@ -15,7 +15,7 @@ use lotus_syntax::ast::*;
 use crate::builtins;
 use crate::bus::BusRouter;
 use crate::env::Env;
-use crate::value::{FnRef, LocusHandle, Value};
+use crate::value::{DecimalVal, FnRef, LocusHandle, Value};
 
 /// A non-local control-flow signal raised by `return`,
 /// `break`, `continue`, `bubble(err)`, or a runtime error.
@@ -2249,7 +2249,7 @@ fn numeric_to_f64(v: &Value) -> Option<f64> {
         Value::Int(n) => Some(*n as f64),
         Value::Float(f) => Some(*f),
         Value::Duration(ns) => Some(*ns as f64),
-        Value::Decimal(s) => parse_decimal_pub(s),
+        Value::Decimal(d) => Some(d.to_f64()),
         _ => None,
     }
 }
@@ -2263,7 +2263,7 @@ fn zero_value_of_same_type(v: &Value) -> Value {
     match v {
         Value::Int(_) => Value::Int(0),
         Value::Float(_) => Value::Float(0.0),
-        Value::Decimal(_) => Value::Decimal("0d".to_string()),
+        Value::Decimal(_) => Value::Decimal(DecimalVal::zero()),
         Value::Duration(_) => Value::Duration(0),
         // Anything non-numeric falls through to Int(0); the
         // codegen-side type check rejects this case at struct-
@@ -2355,7 +2355,7 @@ fn numeric(v: Option<&Value>) -> Option<f64> {
     match v? {
         Value::Int(n) => Some(*n as f64),
         Value::Float(f) => Some(*f),
-        Value::Decimal(s) => parse_decimal(s),
+        Value::Decimal(d) => Some(d.to_f64()),
         _ => None,
     }
 }
@@ -2372,9 +2372,7 @@ fn diff_value(l: &Value, r: &Value) -> Value {
         (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
         (Value::Float(a), Value::Float(b)) => Value::Float(a - b),
         (Value::Decimal(a), Value::Decimal(b)) => {
-            let af = parse_decimal(a).unwrap_or(0.0);
-            let bf = parse_decimal(b).unwrap_or(0.0);
-            Value::Decimal(fmt_decimal(af - bf))
+            Value::Decimal(DecimalVal::sub(*a, *b))
         }
         _ => Value::Nil,
     }
@@ -2551,60 +2549,35 @@ fn path_segments(recv: &Expr, name: &Ident) -> Option<Vec<String>> {
     }
 }
 
-fn eval_literal(lit: &Literal) -> Value {
-    match lit {
-        Literal::Int(n) => Value::Int(*n),
-        Literal::Float(f) => Value::Float(*f),
-        Literal::Decimal(s) => Value::Decimal(s.clone()),
-        Literal::String(s) => Value::String(s.clone()),
-        Literal::Bool(b) => Value::Bool(*b),
-        Literal::Nil => Value::Nil,
-        Literal::Duration(ns) => Value::Duration(*ns),
-        Literal::Time(s) => Value::Time(s.clone()),
-        Literal::Bytes(b) => Value::Bytes(b.clone()),
-    }
-}
-
-fn parse_decimal(s: &str) -> Option<f64> {
-    // Strip a trailing `d` if the source spelling carried it.
-    let s = s.strip_suffix('d').unwrap_or(s);
-    s.parse::<f64>().ok()
-}
-
-/// Public alias for the in-crate `fmt_decimal` helper. Used by
-/// the `to_string` builtin (m37) so its Float / Decimal output
-/// matches codegen's printf-%g rendering exactly. Renaming
-/// `fmt_decimal` to be pub directly would touch every call
-/// site; this one-liner alias keeps the surface contained.
-pub(crate) fn fmt_decimal_pub(f: f64) -> String {
-    fmt_decimal(f)
-}
-
-/// Public alias for `parse_decimal` (m38). Used by the
-/// `min` / `max` / `abs` builtins so they can compare /
-/// transform Decimal values stored as strings without
-/// duplicating the strip-`d`-then-parse-f64 logic.
-pub(crate) fn parse_decimal_pub(s: &str) -> Option<f64> {
-    parse_decimal(s)
-}
-
-fn fmt_decimal(f: f64) -> String {
-    // Match codegen's printf("%g", ...) behavior: at most 6
-    // fractional digits, trailing zeros + dangling `.` stripped.
-    // This masks the f64 dust that bubbles up through arithmetic
-    // (`0.1 - 0.05 = 0.04999999999999716` becomes `0.05`) so
-    // interpreter output matches the codegen path. lotus's
-    // Decimal is f64-backed for v0; once we swap in a real
-    // arbitrary-precision library, this function goes away.
-    //
-    // Format without the trailing `d` suffix — the suffix is
-    // part of literal syntax, not the value's printed form.
+/// %g-equivalent Float formatter: 6 fractional digits, trailing
+/// zeros + dangling `.` stripped. Mirrors codegen's
+/// `printf("%g", f)` so interpreter and codegen Float output
+/// agree byte-for-byte. Pre-m48 this was named `fmt_decimal`
+/// because Decimal was f64-backed too; with Decimal now exact
+/// the function only formats Floats.
+pub(crate) fn fmt_float(f: f64) -> String {
     let s = format!("{:.6}", f);
     if s.contains('.') {
         let trimmed = s.trim_end_matches('0').trim_end_matches('.');
         trimmed.to_string()
     } else {
         s
+    }
+}
+
+fn eval_literal(lit: &Literal) -> Value {
+    match lit {
+        Literal::Int(n) => Value::Int(*n),
+        Literal::Float(f) => Value::Float(*f),
+        Literal::Decimal(s) => Value::Decimal(
+            DecimalVal::parse(s).unwrap_or(DecimalVal::zero()),
+        ),
+        Literal::String(s) => Value::String(s.clone()),
+        Literal::Bool(b) => Value::Bool(*b),
+        Literal::Nil => Value::Nil,
+        Literal::Duration(ns) => Value::Duration(*ns),
+        Literal::Time(s) => Value::Time(s.clone()),
+        Literal::Bytes(b) => Value::Bytes(b.clone()),
     }
 }
 
@@ -2623,46 +2596,24 @@ fn eval_binop(op: BinOp, l: &Value, r: &Value) -> Result<Value, String> {
         (Mul, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
         (Div, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
         (Add, Value::Decimal(a), Value::Decimal(b)) => {
-            let af = parse_decimal(a)
-                .ok_or_else(|| format!("decimal parse failed: `{}`", a))?;
-            let bf = parse_decimal(b)
-                .ok_or_else(|| format!("decimal parse failed: `{}`", b))?;
-            Ok(Value::Decimal(fmt_decimal(af + bf)))
+            Ok(Value::Decimal(DecimalVal::add(*a, *b)))
         }
         (Sub, Value::Decimal(a), Value::Decimal(b)) => {
-            let af = parse_decimal(a)
-                .ok_or_else(|| format!("decimal parse failed: `{}`", a))?;
-            let bf = parse_decimal(b)
-                .ok_or_else(|| format!("decimal parse failed: `{}`", b))?;
-            Ok(Value::Decimal(fmt_decimal(af - bf)))
+            Ok(Value::Decimal(DecimalVal::sub(*a, *b)))
         }
         (Mul, Value::Decimal(a), Value::Decimal(b)) => {
-            let af = parse_decimal(a)
-                .ok_or_else(|| format!("decimal parse failed: `{}`", a))?;
-            let bf = parse_decimal(b)
-                .ok_or_else(|| format!("decimal parse failed: `{}`", b))?;
-            Ok(Value::Decimal(fmt_decimal(af * bf)))
+            Ok(Value::Decimal(DecimalVal::mul(*a, *b)))
         }
         (Div, Value::Decimal(a), Value::Decimal(b)) => {
-            let af = parse_decimal(a)
-                .ok_or_else(|| format!("decimal parse failed: `{}`", a))?;
-            let bf = parse_decimal(b)
-                .ok_or_else(|| format!("decimal parse failed: `{}`", b))?;
-            if bf == 0.0 {
-                return Err("decimal division by zero".to_string());
-            }
-            Ok(Value::Decimal(fmt_decimal(af / bf)))
+            DecimalVal::div(*a, *b).map(Value::Decimal)
         }
         (Lt | Gt | LtEq | GtEq, Value::Decimal(a), Value::Decimal(b)) => {
-            let af = parse_decimal(a)
-                .ok_or_else(|| format!("decimal parse failed: `{}`", a))?;
-            let bf = parse_decimal(b)
-                .ok_or_else(|| format!("decimal parse failed: `{}`", b))?;
+            let ord = DecimalVal::cmp(*a, *b);
             Ok(Value::Bool(match op {
-                Lt => af < bf,
-                Gt => af > bf,
-                LtEq => af <= bf,
-                GtEq => af >= bf,
+                Lt => ord == std::cmp::Ordering::Less,
+                Gt => ord == std::cmp::Ordering::Greater,
+                LtEq => ord != std::cmp::Ordering::Greater,
+                GtEq => ord != std::cmp::Ordering::Less,
                 _ => unreachable!(),
             }))
         }
@@ -2724,6 +2675,7 @@ fn eval_unop(op: UnaryOp, v: &Value) -> Result<Value, String> {
     match (op, v) {
         (UnaryOp::Neg, Value::Int(n)) => Ok(Value::Int(-n)),
         (UnaryOp::Neg, Value::Float(f)) => Ok(Value::Float(-f)),
+        (UnaryOp::Neg, Value::Decimal(d)) => Ok(Value::Decimal(d.neg())),
         (UnaryOp::Not, v) => Ok(Value::Bool(!v.truthy())),
         (UnaryOp::BitNot, Value::Int(n)) => Ok(Value::Int(!n)),
         _ => Err(format!(
