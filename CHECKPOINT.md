@@ -85,7 +85,7 @@ m14 Codegen milestone 14: Decimal + return-from-main exit code  (b036c7f)
 m15 Codegen milestone 15: closures (collapse-only path)         (9bf21c1)
 m16 Codegen milestone 16: Time + composite defaults + heap lits (e33e8ee)
                           ⇒ trellis-demo builds to native ELF
-m17 Codegen milestone 17: on_failure routing (absorb / bubble)  (this commit)
+m17 Codegen milestone 17: on_failure routing (absorb / bubble)  (4bf84e3)
                           ⇒ 03b / 03c build to native ELF
 ```
 
