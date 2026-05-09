@@ -1966,7 +1966,16 @@ impl Interpreter {
                 // recovery primitive's "stop trying" signal
                 // extends to bus dispatch, so a quarantined
                 // locus stops receiving messages.
-                if delivery.subscription.locus.quarantined.get() {
+                // m46-followup: skip dissolved subscribers too —
+                // a locus that has already run dissolve() is
+                // logically gone; firing handlers on it would
+                // touch post-dissolve state. Mirrors the codegen
+                // path's deregister-on-dissolve via
+                // `lotus_bus_quarantine_self` from
+                // emit_locus_arena_destroy.
+                if delivery.subscription.locus.quarantined.get()
+                    || delivery.subscription.locus.dissolved.get()
+                {
                     continue;
                 }
                 let sub_locus = delivery.subscription.locus.clone();

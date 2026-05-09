@@ -9247,6 +9247,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         locus_name: &str,
     ) -> Result<(), CodegenError> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
+        // Deregister from the bus router BEFORE freeing the arena.
+        // Without this step, a stale entry in the C-runtime entries
+        // vec would point self_ptr at memory whose arena is about
+        // to be freed; a subsequent `<-` to one of this locus's
+        // subscriptions would have dispatch read `*(arena_t **)
+        // self_ptr` after free, then memcpy a payload into freed
+        // chunks. Today's programs don't publish post-dissolve,
+        // but the invariant is fragile — close it here using the
+        // same null-subject-sentinel mechanism `quarantine(c)`
+        // already uses (m41b / m45-followup-2). No-op when the
+        // program has no subscribes.
+        if self.bus_state.is_some() {
+            let unsub_fn = self
+                .module
+                .get_function("lotus_bus_quarantine_self")
+                .expect("lotus_bus_quarantine_self declared");
+            self.builder
+                .build_call(
+                    unsub_fn,
+                    &[self_ptr.into()],
+                    &format!("{}.bus.deregister.call", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         let arena_field_ptr = self
             .builder
             .build_struct_gep(
