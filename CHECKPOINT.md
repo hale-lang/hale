@@ -1,8 +1,19 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work
-in a new session. State as of **m53: free-fn implicit-locus
-handle-rooting** — closes the second half of spec/memory.md
+in a new session. State as of **m54: default params on mode
+methods** — closes the m34 deferral that left modes unable to
+declare defaulted params. The codegen-declare rejection is
+replaced with the same suffix-only ordering check the locus
+`fn` path uses; `lower_self_method_call` already routes Fn and
+Mode through the same call-site default-fill-in flow, so no
+call-site changes were needed. Bus handlers stay correctly
+rejected (their single payload param is always provided by
+dispatch — defaults on it would never fire). New
+`examples/50-mode-defaults` exercises a `mode bulk(scale: Int =
+10) -> Int` called both with and without the override; both
+backends produce identical output. State before that was
+**m53: free-fn implicit-locus handle-rooting** — closes the second half of spec/memory.md
 "Free `fn` functions": "the function returns when (a) body's
 last statement completes, AND (b) all children of the implicit
 locus have dissolved." m49 shipped (a) for the arena boundary;
@@ -188,7 +199,7 @@ post-m46 hardening — `emit_locus_arena_destroy` now calls
 `lotus_bus_quarantine_self(self_ptr)` before destroying the
 arena, mirroring the m41b deregistration path so a stale
 entries-vec entry can never direct dispatch into freed
-memory after dissolution. **53 of 54 examples build to
+memory after dissolution. **54 of 55 examples build to
 native ELF — every single-binary example.** Only
 `trellis-pair` (multi-binary, cross-process bus) remains.
 
@@ -247,7 +258,7 @@ greeting from child: yo
 Phase status:
 - **Phase 0** (spec stabilization) — complete
 - **Phase 1** (lex / parse / typecheck) — complete; F.1–F.18 enforced
-- **Phase 2 v0** (interpreter + bus router) — 53 of 54 example
+- **Phase 2 v0** (interpreter + bus router) — 54 of 55 example
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
 - **Enums arc complete** (m47 base + m47-followups + m47-payloads
@@ -333,6 +344,34 @@ Phase status:
   Event mixing no-payload Halt, single-arg Tick, multi-arg
   Trade(Decimal, Int); exercises match, direct println,
   deep ==).
+
+- **Phase 3 milestone 54** (default params on mode methods) —
+  complete. Closes the m34 deferral. m32 shipped defaults on
+  free fns, m34 extended them to locus `fn` methods called via
+  `self.method(...)`; modes were left out at codegen-declare
+  time with a "not yet lowered" rejection on any defaulted
+  param. The CHECKPOINT polish entry blamed F.10 for a
+  "tighter param surface", but design-rationale F.10 only
+  governs mode-keyword-as-member-name parsing — not param
+  shape. m54 lifts the rejection and replaces it with the same
+  suffix-only ordering check the locus `fn` path uses.
+  `lower_self_method_call` already dispatches Fn and Mode
+  through the same MethodSig-based default-fill-in path
+  (program-walk that returns a uniform `(params, ret)` tuple
+  whether the source was LocusMember::Fn or LocusMember::Mode),
+  so no call-site changes were required. Interpreter parity is
+  automatic: `lookup_method` synthesizes an FnDecl from a Mode
+  decl carrying its full `params` (with defaults), and standard
+  fn-call evaluation handles the omit-trailing-args path.
+  Bus-subscribed handlers stay correctly rejected: their
+  single payload param is always provided by dispatch, so a
+  default on it would never fire — keeping the rejection
+  documents the constraint rather than introducing dead
+  syntax. New `examples/50-mode-defaults/`: `mode bulk(scale:
+  Int = 10) -> Int` called both bare (`self.bulk()` → 100) and
+  overridden (`self.bulk(2)` → 20). Both backends
+  byte-identical. 96 unit tests pass; 54 examples build
+  native + same 11 known scheduler-ordering diffs as pre-m54.
 
 - **Phase 3 milestone 53** (free-fn handle-rooting) —
   complete. Closes the second clause of spec/memory.md "Free
@@ -2148,12 +2187,12 @@ ephemeral cascade — design needed before lowering.
   real enum-value representation first; struct-by-name
   was the v0 shape but no example exercised it). Tuple
   patterns shipped in m35.
-- Default param values on bus-subscribed handlers + mode
-  methods (locus `fn` methods called via `self.method(...)`
-  work as of m34; bus dispatch is fixed-arity at the
-  C-runtime level so defaults there'd need dispatch-side
-  default evaluation; modes take a tighter param surface
-  per F.10).
+- Default param values: locus `fn` methods called via
+  `self.method(...)` shipped in m34; modes shipped in m54
+  via the same MethodSig path. Bus-subscribed handlers stay
+  rejected by design — the single payload param is always
+  provided by dispatch, so a default on it would never
+  fire (rejection documents the constraint).
 - Recognition-class real bitmap-pool (currently chunked-
   equivalent stub per spec/memory.md). Workload-pending.
 - Decimal precision tightening (printf %g vs Display).
@@ -2347,6 +2386,9 @@ rm examples/48-publish-during-dissolve/main
 cargo run --bin lotus -- build examples/49-fn-handle-rooting/main.lt
 ./examples/49-fn-handle-rooting/main         # m53: handles bound in a returning free fn drain + dissolve at fn.exit
 rm examples/49-fn-handle-rooting/main
+cargo run --bin lotus -- build examples/50-mode-defaults/main.lt
+./examples/50-mode-defaults/main             # m54: mode bulk(scale = 10) callable bare or with override
+rm examples/50-mode-defaults/main
 ```
 
 If all of these work, the checkpoint is intact.
