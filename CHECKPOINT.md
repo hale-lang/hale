@@ -1,7 +1,20 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work
-in a new session. State as of **m49: free-fn implicit-locus
+in a new session. State as of **m50: immutable-binding
+enforcement**: `let x = 0; x = 1;` is now the compile-time
+error spec/types.md "Mutability" + design-rationale §E always
+said it should be. The typechecker tracks `is_mut` on every
+local symbol — `let mut` propagates true, plain `let`
+propagates false, and fn params / loop vars / pattern bindings
+default to false. `Stmt::Assign` to a bare-head non-mut local
+(no `.field` / `[i]` segments, head ≠ `self`) raises a clear
+diagnostic; field / index reassignment THROUGH an immutable
+head stays allowed (mutates state, doesn't rebind). All 50
+examples continued to build clean — the corpus already wrote
+`let mut` discipline correctly; m50 closes the spec/impl drift
+without breaking anyone. notes/open-questions #23 marked
+resolved. State before that was **m49: free-fn implicit-locus
 arenas**: every non-main free fn now opens a per-call subregion
 of its caller's arena at body entry; body allocations route
 through it; heap-typed return values are deep-copied into the
@@ -274,6 +287,41 @@ Phase status:
   Event mixing no-payload Halt, single-arg Tick, multi-arg
   Trade(Decimal, Int); exercises match, direct println,
   deep ==).
+
+- **Phase 3 milestone 50** (immutable-binding enforcement) —
+  complete. Closes notes/open-questions #23, the documented
+  spec-vs-impl drift on `let` immutability. Spec/types.md
+  "Mutability" + design-rationale §E always said `let x = 0;
+  x = 1;` should be a compile-time error and only `let mut x`
+  should permit reassignment; the typechecker silently allowed
+  the violation through m49. m50 tightens the typechecker:
+  `LocalSym` (in `crates/lotus-types/src/check.rs`) now
+  carries `is_mut: bool`; `Stmt::Let` and `Stmt::LetTuple`
+  propagate the AST `is_mut` flag; the four other
+  symbol-insertion sites (locus lifecycle params, mode params,
+  `on_failure` params, free-fn / locus-method params, and
+  `for x in ...` loop vars) default to false per spec —
+  params are immutable bindings (F.10); loop vars rebind
+  fresh each iteration. `Stmt::Assign` to a bare-head local
+  (target.tail.is_empty() && head ≠ "self") looks up the
+  symbol's is_mut and pushes a diagnostic when false. Field
+  and index reassignment through an immutable head stays
+  allowed: `let s = Point { x: 0, y: 0 }; s.x = 7;` is fine
+  because the head binding isn't being rebound; only locus
+  state is being mutated. `self.field = ...` in lifecycle
+  methods is also allowed unconditionally (locus state is
+  mutable by design, separate from any binding's is_mut).
+  Diagnostic format: `cannot assign to ` + name + `: binding
+  is immutable. Declare with let mut ` + name + ` to permit
+  reassignment.` Five new unit tests cover the matrix (immut
+  bare reassign / let mut reassign / fn-param reassign /
+  for-loop-var reassign / self.field through immut). All 96
+  workspace tests pass (was 91 + 5 new); 50 examples still
+  build native + same 11 known scheduler-ordering diffs as
+  pre-m50 — the corpus already wrote `let mut` discipline
+  correctly so no source updates were needed. Codegen and
+  interpreter unchanged: enforcement is purely at the type
+  layer. Spec parity is now restored at the binding boundary.
 
 - **Phase 3 milestone 49** (free-fn implicit-locus arenas) —
   complete. Closes the m20 deferral that kept all free-fn

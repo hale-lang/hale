@@ -165,16 +165,21 @@ up to. Not bugs — the spec is forward content; the implementation
 fills in incrementally — but tracking them avoids silent drift.
 
 23. **Immutable-binding compile-time enforcement.**
-    Spec (`design-rationale.md` §E,
+    **Resolved (m50).** Spec (`design-rationale.md` §E,
     `types.md` "Mutability") commits: `let x = 0; x = 1;` is
     a compile-time error; only `let mut x` permits
-    reassignment. The current typechecker (`crates/lotus-types/`)
-    does not enforce this — both interpreter and codegen accept
-    reassignment to a non-mut binding without diagnostic. Should
-    land alongside the next typechecker pass that touches
-    expression-statement / assignment resolution. Low-risk fix
-    (track is_mut on the symbol table entry; raise diagnostic
-    on Stmt::Assign if the resolved symbol is not mut).
+    reassignment. m50 lands the enforcement in
+    `crates/lotus-types/src/check.rs`: `LocalSym` now carries
+    `is_mut: bool`; `Stmt::Let` / `Stmt::LetTuple` propagate
+    the AST flag; fn params, loop vars, and pattern bindings
+    default to `false`; `Stmt::Assign` raises a diagnostic when
+    the target is a bare-head local (no `.field` / `[i]`
+    segments, head ≠ `self`) bound without `mut`. Field /
+    index reassignment through an immutable head stays allowed
+    (the head isn't being rebound — state is being mutated
+    through it). `self.field = ...` in lifecycle methods stays
+    allowed unconditionally (locus state is mutable
+    independently of any binding).
 
 ---
 
