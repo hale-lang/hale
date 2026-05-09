@@ -1,7 +1,28 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work
-in a new session. State as of **m54: default params on mode
+in a new session. State as of **m55 + m56 (design-decision
+substrate cleanup)** — applies The Design's calls on the
+deferred recovery vocabulary, generics direction, and several
+spec-vs-impl drifts. m55: removes `drain` / `dissolve` from
+the `RecoveryOp` enum (vocabulary becomes restart /
+restart_in_place / quarantine / bubble + reorganize — five
+primitives, no overlap with lifecycle methods); they remain
+lifecycle methods only, callable via lifecycle declarations
+in the locus body. m56: docs-only — resolves notes/
+open-questions #8 (bus subject → transport via deployment
+config), #9 (same-subject = runtime fan-out), #10 (bus
+messages cross arena boundary as copies), #16 (`reorganize`
+= restart-in-place lifted to substructure level, preserving
+children), #17 (drain/dissolve as recovery ops removed), #2
+(extends ProjectionClass with `Numeric` bound for v1; defines
+generic + bus payload + closure interactions); spec/memory
+"Region size tuning" rewrites the panic-on-exceed language
+to reflect that arenas grow linked-list chunks indefinitely
+(declared params are sizing hints, not ceilings); + a new
+"Bus handler shape" doc-section locking m54's rejection of
+defaults on bus handler payload params as the spec position.
+State before that was **m54: default params on mode
 methods** — closes the m34 deferral that left modes unable to
 declare defaulted params. The codegen-declare rejection is
 replaced with the same suffix-only ordering check the locus
@@ -344,6 +365,62 @@ Phase status:
   Event mixing no-payload Halt, single-arg Tick, multi-arg
   Trade(Decimal, Int); exercises match, direct println,
   deep ==).
+
+- **Phase 3 milestone 56** (design-decision documentation
+  pass) — complete. Resolves seven notes/open-questions
+  entries via doc-only updates that lock The Design's calls
+  before further implementation work. (#8) bus subject →
+  transport: deployment config maps subjects to transport
+  URLs; runtime owns kernel-level transports (shared memory,
+  AF_UNIX, TCP, UDP); stdlib owns protocol adapters (NATS,
+  MQTT, gRPC, TLS); source stays transport-agnostic — this
+  is the runtime/stdlib split as a Design commitment. (#9)
+  same-subject-by-multiple-loci = runtime fan-out; subjects
+  are coordination points, not single-owner channels.
+  (#10) cross-process payload semantics = copy-into-arena;
+  the wire is just a longer copy path; transport adapters
+  define their own wire format. (#16) `reorganize` =
+  `restart_in_place` lifted to substructure level; parent's
+  params reset, children re-attach to the new instance,
+  nothing migrates laterally (locks vertical-only-flow at
+  the failure-recovery boundary; impl deferred until a
+  workload exercises it). (#17) drain/dissolve as recovery
+  ops resolved by m55's removal — see below. Generics
+  direction: extends ProjectionClass with `Numeric` bound
+  (Int / Float / Decimal / Duration) for v1; locks generic
+  + bus-payload (monomorphize, no special handling), generic
+  + closure (T: Numeric for tolerance, otherwise literal-
+  only) interactions. New "Bus handler shape" §: payload
+  defaults stay rejected as spec position (codegen has done
+  this since m34; m54 confirmed the design call). spec/
+  memory "Region size tuning" rewritten: declared params
+  are sizing hints, not ceilings; arenas grow linked-list
+  chunks indefinitely (matches actual C-runtime behavior,
+  drops the stale "panic on exceed" language). 96 unit
+  tests pass; 54 examples build native + same 11 known
+  scheduler-ordering diffs. Codegen / interpreter / runtime
+  unchanged.
+
+- **Phase 3 milestone 55** (recovery vocabulary cleanup) —
+  complete. Removes `Drain` and `Dissolve` from
+  `RecoveryOp` enum per The Design call: drain and dissolve
+  are *lifecycle methods*, not recovery operations; their
+  recovery-context spelling overlapped with `bubble(err)`
+  semantically (failure propagates up, runs the locus's
+  drain → dissolve → arena_destroy lifecycle). Two
+  spellings for one concept violates substrate-invariance.
+  Recovery vocabulary is now `restart` / `restart_in_place`
+  / `quarantine` / `bubble` + `reorganize` — five
+  primitives. Parser dispatch + parse_recovery_stmt match
+  arm + AST enum updated. `drain;` / `dissolve;` at
+  statement position now produces a clean parse error
+  ("expected expression, got Drain" — falls through to
+  parse_expr). Lifecycle method declarations
+  (`drain() { ... }` / `dissolve() { ... }`) unaffected —
+  the corpus only ever used drain/dissolve in declaration
+  position, so no source updates were required. 96 unit
+  tests pass; 54 examples build native + same 11 known
+  scheduler-ordering diffs.
 
 - **Phase 3 milestone 54** (default params on mode methods) —
   complete. Closes the m34 deferral. m32 shipped defaults on
@@ -2175,12 +2252,13 @@ in the interpreter) but speculative without a workload
 example. Rolling windows need a fixed-cap storage decision
 that interacts with the arena lifetime — defer further.
 
-**2. Recovery primitives: `reorganize` + `drain` /
-`dissolve` as recovery ops.** All parsed; `reorganize`
-needs a child-tree restructuring semantic (defer until a
-workload exercises it); `drain` / `dissolve` as recovery
-ops (vs lifecycle methods) overlap with quarantine + the
-ephemeral cascade — design needed before lowering.
+**2. `reorganize` recovery primitive.** Semantic locked in
+m56 per The Design (= `restart_in_place` lifted to
+substructure level: parent's params reset, children re-attach
+to the new instance, no lateral migration). Implementation
+deferred until a workload exercises it. `drain` / `dissolve`
+as recovery ops removed in m55 — they're lifecycle methods
+only.
 
 **Polish (any time):**
 - Constructor patterns in `match` (enum variants need a

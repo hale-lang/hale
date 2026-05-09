@@ -17,8 +17,26 @@ when the type-system / operational-semantics docs are drafted.
    **Resolved (delivery plan, commitment 2):** `ProjectionClass`
    is a built-in "any-of-three" constraint, analogous to Go's
    `any`. `<T: ProjectionClass>` requires T ∈ {Rich, Chunked,
-   Recognition}. No full trait system in v0; can grow later if
-   needed.
+   Recognition}.
+
+   **v1 extension (per The Design — minimal surface):** add
+   one more built-in bound, `Numeric` (Int / Float / Decimal /
+   Duration). Unlocks generic accumulators, generic comparison
+   operators, and tolerance values in generic closures. No
+   other bounds for v1: substrate-invariance argues for the
+   smallest surface that unblocks the next concrete workload.
+   Eq/Ord/Display can come post-v1 if a workload demands.
+
+   Generic interactions:
+   - **+ bus payloads:** no special handling. Generic types
+     monomorphize at codegen; `Result<Int, String>` becomes a
+     concrete struct with a mangled name; the bus copies it
+     like any other concrete payload.
+   - **+ closures:** generic closures over `T` work if T has
+     the operations the assertion needs. Tolerance requires
+     `T: Numeric`; without Numeric, tolerance must be a
+     literal. F.9 closures audit runtime-varying state — the
+     comparison must be defined for T.
 
 3. **Refinement types for k_max bounds?**
    **Resolved (delivery plan, commitment 3):** Deferred. k_max is
@@ -57,18 +75,36 @@ when the type-system / operational-semantics docs are drafted.
 
 8. **How does the runtime bind `bus subscribe "..."` to a
    transport at link time?**
-   Probably: the binary takes a config arg specifying transport
-   (NATS URL, UDP multicast group, etc.), and the runtime maps
-   subjects to transport channels.
+   **Resolved (per The Design — runtime/stdlib split):**
+   deployment-config maps subjects to transport URLs. Source
+   stays transport-agnostic. Runtime owns kernel-level
+   transports (shared memory, AF_UNIX, TCP, UDP); stdlib owns
+   protocol adapters (NATS, MQTT, gRPC, TLS). The binary takes
+   a startup config (file or CLI flags) that routes each
+   declared subject to a transport URL. Source-level transport
+   annotations would couple coordination semantics to deployment
+   topology — exactly what the abstraction prevents.
 
 9. **What happens if the same subject is declared by two loci in
    the same binary?** Compile error or runtime fan-out?
-   Probably runtime fan-out (matching grease's behavior).
+   **Resolved (per The Design — emergent cardinality):**
+   runtime fan-out. Multiple publishers + multiple subscribers
+   = MPMC; all subscribers receive every published message
+   regardless of source locus. Subjects are coordination
+   points, not single-owner channels. Cardinality is emergent
+   from connectivity, not a runtime configuration.
 
 10. **How do bus messages cross the locus region boundary?**
-    Probably copy (vertical-only-flow at the memory level: lateral
-    references = copies). The bus adapter copies into the locus's
-    arena.
+    **Resolved (already implemented per spec/memory.md):**
+    copy. Vertical-only-flow at the memory level says lateral
+    references = copies. The bus adapter `memcpy`s the payload
+    into the subscriber's arena (m20 ships this for in-memory
+    transport). For cross-process: each transport defines its
+    own wire format; lotus's contract stays "the receiver's
+    arena gets a fresh copy of the payload struct." Codegen
+    emits a default per-payload-type serializer; transport
+    adapters override when needed. The wire is just a longer
+    copy path — semantics don't change at the arena boundary.
 
 ## Closure tests
 
@@ -100,13 +136,39 @@ when the type-system / operational-semantics docs are drafted.
     Probably: process exit; the framework's vertical-only-flow
     means failures bubble to the OS at the root.
 
-16. **`reorganize(...)` semantics.** Move children from failed
-    parent to a sibling? Spawn a new sibling and migrate? The
-    grammar reserves the keyword; semantics are TBD.
+16. **`reorganize(...)` semantics.**
+    **Resolved (per The Design — vertical-only-flow):**
+    `reorganize` is `restart_in_place` lifted from a single
+    locus's state to its substructural role. The parent's
+    failure invalidates the parent's *configuration* but not
+    its *role* in the tree: parent's params reset to declared
+    defaults, children are re-attached to the new instance,
+    nothing migrates laterally. (Lateral migration between
+    siblings would violate vertical-only-flow.) Implementation
+    deferred until a workload exercises it; semantic locked.
 
 17. **Ordering of `drain` and `dissolve` after a failure.**
-    Always drain-then-dissolve? Or can policy skip drain?
-    Probably: policy choice; defaults to drain-then-dissolve.
+    **Resolved (per The Design — coherent vocabulary):**
+    `drain` and `dissolve` are lifecycle methods, not recovery
+    operations. m55 removes them from the `RecoveryOp` enum.
+    To end a locus's role on failure, use `bubble(err)`:
+    failure propagates up through vertical-only-flow, runs
+    the locus's drain → dissolve → arena_destroy lifecycle as
+    a side effect of teardown. The recovery vocabulary is
+    `restart` / `restart_in_place` / `quarantine` / `bubble` +
+    `reorganize` (per #16) — five primitives, no overlap.
+
+## Bus handler shape
+
+**Bus handler default-param policy.**
+**Resolved (per The Design — coordination primitives have
+fixed shapes):** bus handlers take exactly one payload param;
+defaults on it are rejected at codegen. Reasons: (a) the
+payload param is always provided by dispatch, so a default
+would never fire — dead syntax; (b) extras would break the
+fixed-arity dispatch contract. Codegen emits a clear error
+pointing at this constraint. Modes (m54) and locus `fn`
+methods (m34) accept defaults as normal.
 
 ## Imports / modules
 

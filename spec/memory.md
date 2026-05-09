@@ -612,11 +612,16 @@ which create variant was used.
   functions replace the old. v0 specifies the perspective hot-
   load mechanism (runtime.md); the memory-level interaction is
   TBD.
-- **Region size tuning.** Initial region sizes per locus are
-  set by the compiler from declared params. Runtime growth /
-  shrinkage of regions is currently not supported (a locus
-  exceeding its region is a runtime panic). Future versions may
-  add growable regions for chunked-class loci.
+- **Region size hints.** Initial chunk sizes per locus are
+  taken from declared params. Per The Design's locus-as-region
+  invariant, the load-bearing property is *lifetime* (wholesale
+  free at dissolve), not *fixed size*. The C-runtime arena
+  grows linked-list chunks on demand: when the head chunk
+  can't fit a request, a fresh chunk is allocated and pushed
+  on the front. Declared params are sizing hints, not
+  ceilings — a locus that out-allocates its declared budget
+  doesn't panic, it just adds chunks. Compaction across
+  long-lived chunked loci stays deferred (see below).
 - **Compaction passes.** For long-running chunked-class loci
   with high churn, periodic compaction may be needed. Currently
   free-list reclamation is sufficient for v0; compaction passes
