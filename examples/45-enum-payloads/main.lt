@@ -41,6 +41,9 @@ type Result = enum {
 
 fn handle(e: Event) {
     match e {
+        // Literal sub-pattern: matches Tick(0) specifically
+        // before the catch-all Tick(n).
+        Event::Tick(0)            -> println("tick zero"),
         Event::Tick(n)            -> println("tick #", n),
         Event::Trade(price, size) -> println("trade ", size, " @ ", price),
         Event::Halt               -> println("halt"),
@@ -55,6 +58,7 @@ fn report(r: Result) {
 }
 
 fn main() {
+    handle(Event::Tick(0));
     handle(Event::Tick(7));
     handle(Event::Trade(99.95d, 100));
     handle(Event::Halt);
