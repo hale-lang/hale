@@ -325,10 +325,6 @@ impl Parser {
                         self.bump();
                         ScheduleClass::Cooperative
                     }
-                    TokenKind::Greedy => {
-                        self.bump();
-                        ScheduleClass::Greedy
-                    }
                     TokenKind::Pinned => {
                         self.bump();
                         ScheduleClass::Pinned
@@ -336,7 +332,11 @@ impl Parser {
                     other => {
                         return Err(Diag::parse(
                             self.peek_token().span,
-                            format!("expected schedule class, got {:?}", other),
+                            format!(
+                                "expected schedule class \
+                                 (cooperative | pinned), got {:?}",
+                                other
+                            ),
                         ));
                     }
                 };

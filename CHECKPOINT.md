@@ -11,13 +11,19 @@ cross-process bus) remains, gated on substantial new
 infrastructure.
 
 **Schedule-class arc opened.** Per The Design / lotus, schedule
-class is to execution what projection class is to memory: same
-source, three runtime shapes. m25 wires the annotation through
-parse / typecheck / codegen — `: schedule cooperative | greedy
-| pinned`. Runtime semantics not yet branched on it (today's
-sync-everywhere behavior is effectively greedy-everywhere).
+class is to execution what projection class is to memory —
+substrate-invariance applied to time. Kept honestly **bimodal**:
+`: schedule cooperative | pinned`. Either you share a scheduler
+thread (cooperative; handler-atomic; yields between substrate
+cells) or you own one (pinned; own thread; cross-thread mailbox
+posts). No third "greedy" position — cooperative already gives
+handler-level atomicity, and the only thing greedy would add is
+"don't yield between cells either," which means leaving the
+shared scheduler entirely. The place you go when you leave is
+your own thread — that's pinned. m25 wires the surface through
+parse / typecheck / codegen with no runtime branch yet.
 m26 ships cooperative semantics (deferred bus dispatch +
-scheduler loop); m27 ships pinned threads. Default: cooperative.
+scheduler loop); m27 ships pinned threads.
 
 Two design decisions landed in the prior session and are now
 guiding the substrate work: the runtime/stdlib split for bus
@@ -71,20 +77,21 @@ Phase status:
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
 - **Phase 3 milestone 25** (schedule-class annotation
-  infrastructure) — complete. New keywords `schedule`,
-  `cooperative`, `greedy`, `pinned` in lexer; `LocusAnnotation::
-  Schedule(ScheduleClass)` in AST; parser recognizes the
-  `: schedule X` annotation alongside `tier N` and `projection
-  X`; typechecker stores it on `Annotations`; codegen resolves
-  it onto `LocusInfo.schedule_class` (default cooperative).
-  Runtime today still runs everything synchronously — no
-  semantic branch on the class yet. m26 will introduce
-  deferred bus dispatch + a scheduler loop for cooperative
-  loci while keeping greedy loci on the synchronous path; m27
-  spawns dedicated threads for pinned loci. New
-  `examples/16-schedule-classes/` exercises all three classes;
+  infrastructure, bimodal) — complete. New keywords
+  `schedule`, `cooperative`, `pinned` in lexer (no `greedy` —
+  see preamble); `LocusAnnotation::Schedule(ScheduleClass)` in
+  AST; parser recognizes the `: schedule X` annotation alongside
+  `tier N` and `projection X`; typechecker stores it on
+  `Annotations`; codegen resolves it onto
+  `LocusInfo.schedule_class` (default cooperative). Runtime
+  today still runs everything synchronously — no semantic
+  branch on the class yet. m26 will introduce deferred bus
+  dispatch + a scheduler loop on the main thread; m27 spawns
+  dedicated threads for pinned loci.
+  `examples/16-schedule-classes/` exercises both classes;
   spec/runtime.md gets a "Schedule classes" section
-  documenting the surface and the implementation status.
+  documenting the surface, the explicit bimodality reasoning
+  ("Why no greedy class"), and the implementation status.
 - **Phase 3 milestone 24** (`match` expressions) — complete.
   Match statements lower to LLVM as a chain of test-blocks +
   body-blocks, falling through to the next arm on mismatch.
@@ -282,11 +289,14 @@ m24 Codegen milestone 24: match expressions                    (bb948c6)
                             F.18 exhaustiveness still enforced at
                             typecheck
                           + examples/15-match
-m25 Codegen milestone 25: schedule-class annotation infra      (this commit)
-                          ⇒ `: schedule cooperative | greedy
-                            | pinned` parses, typechecks, resolves
-                            on LocusInfo; default cooperative;
-                            no runtime semantic branch yet
+m25 Codegen milestone 25: schedule-class annotation infra      (bbe2731 +
+                                                                this commit)
+                          ⇒ `: schedule cooperative | pinned`
+                            parses, typechecks, resolves on
+                            LocusInfo; default cooperative; no
+                            runtime semantic branch yet.
+                            Bimodal-only: greedy dropped on
+                            review as a bimodality violation.
                           + examples/16-schedule-classes
 ```
 

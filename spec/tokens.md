@@ -76,7 +76,7 @@ projection      rich            chunked         recognition
 ### Schedule-class keywords
 
 ```
-schedule        cooperative     greedy          pinned
+schedule        cooperative     pinned
 ```
 
 ### Closure keywords

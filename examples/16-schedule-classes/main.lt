@@ -1,25 +1,34 @@
 // 16-schedule-classes — explicit schedule annotations.
 //
 // Per The Design / lotus, schedule class is to execution what
-// projection class is to memory: same source, three runtime
-// shapes. m25 wires the annotation through parse/resolve. m26
-// will branch on it for actual semantics (deferred bus dispatch
-// for cooperative; sync for greedy); m27 will spawn dedicated
-// threads for pinned loci. Today: parses + resolves; behaves
-// identically to today's synchronous-everywhere runtime.
+// projection class is to memory: same source, two runtime shapes,
+// kept honestly bimodal.
 //
-// Three loci, one per class. Each does a small piece of work
-// and prints which class it's running under.
+//   Cooperative — shared scheduler thread; yields between
+//                 substrate cells (handler exits, lifecycle
+//                 transitions, bus dispatches). Handler bodies
+//                 are atomic. Default.
+//
+//   Pinned     — owns its own OS thread, optionally a CPU core.
+//                Bus events to/from it cross thread boundaries
+//                via formal mailbox post. For latency-critical
+//                paths or work in deeper layers of the lotus.
+//
+// No third "greedy" class: cooperative already guarantees
+// handler-atomicity, so the only thing greedy could add was
+// "don't yield BETWEEN cells either" — which is leaving the
+// cooperative scheduler entirely. The place you go when you
+// leave is your own thread. That's pinned.
+//
+// m25 wires the annotation through parse + resolve. m26 will
+// ship cooperative semantics (deferred bus dispatch + scheduler
+// loop); m27 will spawn dedicated threads for pinned loci.
+// Today: parses + resolves; behaves identically to today's
+// synchronous-everywhere runtime.
 
 locus CooperativeWorker : schedule cooperative {
     run() {
-        println("cooperative: a polite citizen");
-    }
-}
-
-locus GreedyWorker : schedule greedy {
-    run() {
-        println("greedy: runs to completion, no apologies");
+        println("cooperative: shared thread, handler-atomic");
     }
 }
 
@@ -31,6 +40,5 @@ locus PinnedWorker : schedule pinned {
 
 fn main() {
     CooperativeWorker { };
-    GreedyWorker { };
     PinnedWorker { };
 }

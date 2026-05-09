@@ -73,13 +73,14 @@ pub enum TokenKind {
 
     // Keywords — schedule class (m25). Per The Design / lotus,
     // schedule class is to execution what projection class is to
-    // memory: same source, three runtime shapes. Cooperative is
-    // the default (BEAM-shape; yields at substrate cells); greedy
-    // runs handlers to completion without yielding; pinned owns
-    // its own thread.
+    // memory: same source, two runtime shapes. Cooperative is the
+    // default (BEAM-shape; shared scheduler thread; yields between
+    // substrate cells; handler-atomic). Pinned owns its own
+    // thread, optionally pinned to a CPU core. Two classes only,
+    // per bimodality — anything in-between is a layering choice
+    // about how deep the locus sits, not a third scheduling regime.
     Schedule,
     Cooperative,
-    Greedy,
     Pinned,
 
     // Keywords — closure
@@ -384,7 +385,6 @@ impl<'a> Lexer<'a> {
             // Schedule class (m25)
             "schedule" => TokenKind::Schedule,
             "cooperative" => TokenKind::Cooperative,
-            "greedy" => TokenKind::Greedy,
             "pinned" => TokenKind::Pinned,
 
             // Closure

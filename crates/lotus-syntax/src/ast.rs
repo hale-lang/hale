@@ -66,27 +66,32 @@ pub enum ProjectionClass {
     Recognition,
 }
 
-/// Per-locus execution strategy. Same source, three runtime
-/// shapes — substrate-invariance applied to time the way
-/// projection class applies it to space.
+/// Per-locus execution strategy. Same source, two runtime
+/// shapes — substrate-invariance applied to time, kept honestly
+/// bimodal: either you share a scheduler thread or you own one.
+/// Anything between (the temptation called "greedy" — sharing
+/// but refusing to yield) is a bimodality violation: cooperative
+/// already gives handler-level atomicity (no preemption within a
+/// substrate cell), so the only thing "greedy" added was "don't
+/// yield BETWEEN cells either" — which means leaving the shared
+/// scheduler entirely. The place you go when you leave is your
+/// own thread. That's pinned. Two classes; no third position.
 ///
-/// - `Cooperative`: yields at substrate cells (handler exits,
-///   lifecycle transitions, bus dispatches, `time::sleep`).
-///   Multiple cooperative loci share a scheduler thread. Default.
-/// - `Greedy`: runs handlers to completion without yielding.
-///   While a greedy locus's handler is executing, cooperative
-///   siblings on the same thread wait. Useful for time-bounded
-///   batch work or atomic checkpoints.
-/// - `Pinned`: owns its own OS thread (and optionally a CPU
-///   core). Bus events to/from it cross thread boundaries.
-///   For latency-critical paths.
+/// - `Cooperative`: shared scheduler thread; yields between
+///   substrate cells (handler exits, lifecycle transitions, bus
+///   dispatches, `time::sleep`). Handler bodies are atomic.
+///   Default.
+/// - `Pinned`: owns its own OS thread, optionally pinned to a
+///   CPU core. Bus events to/from cross thread boundaries via
+///   formal mailbox post. For latency-critical paths or work
+///   that genuinely belongs in a deeper layer of the lotus.
 ///
-/// m25 wires the annotation through parse/resolve. m26 ships
-/// cooperative semantics; m27 ships pinned threads.
+/// m25 wires the annotation through parse / resolve. m26 ships
+/// cooperative semantics (deferred bus dispatch + scheduler
+/// loop). m27 ships pinned threads.
 #[derive(Debug, Clone, PartialEq, Copy)]
 pub enum ScheduleClass {
     Cooperative,
-    Greedy,
     Pinned,
 }
 
