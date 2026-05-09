@@ -367,4 +367,104 @@ mod tests {
             diags
         );
     }
+
+    // m50: immutable-binding enforcement.
+    #[test]
+    fn err_assign_to_immutable_let() {
+        let src = r#"
+            fn main() {
+                let x: Int = 0;
+                x = 1;
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| {
+                d.message.contains("cannot assign to `x`")
+                    && d.message.contains("immutable")
+            }),
+            "expected immutable-binding error on `x = 1;`, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_assign_to_let_mut() {
+        let src = r#"
+            fn main() {
+                let mut n: Int = 0;
+                n = 1;
+                n = n + 2;
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "expected clean check on let mut + reassignment; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_assign_to_fn_param() {
+        let src = r#"
+            fn bump(n: Int) {
+                n = n + 1;
+            }
+            fn main() { bump(0); }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| {
+                d.message.contains("cannot assign to `n`")
+                    && d.message.contains("immutable")
+            }),
+            "expected immutable-binding error on fn-param reassignment, \
+             got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_assign_to_for_loop_var() {
+        let src = r#"
+            fn main() {
+                for i in 0..3 {
+                    i = 99;
+                }
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| {
+                d.message.contains("cannot assign to `i`")
+                    && d.message.contains("immutable")
+            }),
+            "expected immutable-binding error on for-loop-var \
+             reassignment, got: {:?}",
+            diags
+        );
+    }
+
+    // Field/index reassignment THROUGH an immutable head still
+    // allowed — `x.field = ...` mutates state, doesn't rebind x.
+    #[test]
+    fn ok_field_assign_through_immutable_self() {
+        let src = r#"
+            locus L {
+                params { count: Int = 0; }
+                run() {
+                    self.count = 7;
+                }
+            }
+            fn main() { L { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "expected clean check on `self.field = ...` in lifecycle; \
+             got: {:?}",
+            diags
+        );
+    }
 }

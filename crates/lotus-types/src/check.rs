@@ -171,6 +171,18 @@ struct ScopeStack {
 #[derive(Debug, Clone)]
 struct LocalSym {
     ty: Ty,
+    /// m50: tracks whether the binding was declared with `mut`.
+    /// `let x = ...` is immutable; `let mut x = ...` permits
+    /// reassignment. Per spec/types.md "Mutability" + design-
+    /// rationale §E. Locus state on `self` is mutable
+    /// independently (locus fields aren't bindings — they're
+    /// state — and lifecycle methods update them through
+    /// `self.field = ...` regardless of any binding's is_mut).
+    /// Fn params, loop variables, and pattern bindings default
+    /// to false: the surface spec says params are immutable,
+    /// loop vars rebind fresh each iteration, and pattern arm
+    /// bindings exist only for the duration of the arm body.
+    is_mut: bool,
 }
 
 impl ScopeStack {
@@ -355,7 +367,7 @@ impl<'a> Checker<'a> {
                 self.locals.push();
                 for p in &lc.params {
                     let ty = resolve_type_expr(&p.ty, self.known);
-                    self.locals.insert(&p.name.name, LocalSym { ty });
+                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
                 self.check_block(&lc.body);
                 self.locals.pop();
@@ -366,7 +378,7 @@ impl<'a> Checker<'a> {
                 self.locals.push();
                 for p in &md.params {
                     let ty = resolve_type_expr(&p.ty, self.known);
-                    self.locals.insert(&p.name.name, LocalSym { ty });
+                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
                 self.check_block(&md.body);
                 self.locals.pop();
@@ -377,7 +389,7 @@ impl<'a> Checker<'a> {
                 self.locals.push();
                 for p in &fd.params {
                     let ty = resolve_type_expr(&p.ty, self.known);
-                    self.locals.insert(&p.name.name, LocalSym { ty });
+                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
                 self.check_block(&fd.body);
                 self.locals.pop();
@@ -454,7 +466,7 @@ impl<'a> Checker<'a> {
         self.locals.push();
         for p in &decl.params {
             let ty = resolve_type_expr(&p.ty, self.known);
-            self.locals.insert(&p.name.name, LocalSym { ty });
+            self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
         }
         self.check_block(&decl.body);
         self.locals.pop();
@@ -471,7 +483,7 @@ impl<'a> Checker<'a> {
 
     fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let { name, ty, value, .. } => {
+            Stmt::Let { is_mut, name, ty, value, .. } => {
                 let got = self.check_expr(value);
                 let bound = match ty {
                     Some(te) => {
@@ -491,9 +503,12 @@ impl<'a> Checker<'a> {
                     }
                     None => got,
                 };
-                self.locals.insert(&name.name, LocalSym { ty: bound });
+                self.locals.insert(
+                    &name.name,
+                    LocalSym { ty: bound, is_mut: *is_mut },
+                );
             }
-            Stmt::LetTuple { names, ty, value, .. } => {
+            Stmt::LetTuple { is_mut, names, ty, value, .. } => {
                 let got = self.check_expr(value);
                 let elem_tys: Vec<Ty> = match (&got, ty) {
                     (Ty::Tuple(parts), _) if parts.len() == names.len() => {
@@ -526,10 +541,13 @@ impl<'a> Checker<'a> {
                     }
                 };
                 for (n, t) in names.iter().zip(elem_tys.iter()) {
-                    self.locals.insert(&n.name, LocalSym { ty: t.clone() });
+                    self.locals.insert(
+                        &n.name,
+                        LocalSym { ty: t.clone(), is_mut: *is_mut },
+                    );
                 }
             }
-            Stmt::Assign { target, value, .. } => {
+            Stmt::Assign { target, value, span, .. } => {
                 let got = self.check_expr(value);
                 let want = self.lvalue_ty(target);
                 if !want.assignable_from(&got) {
@@ -542,6 +560,29 @@ impl<'a> Checker<'a> {
                         ),
                     ));
                 }
+                // m50: bare-head reassignment to a non-mut local is
+                // a compile-time error per spec/types.md "Mutability"
+                // + design-rationale §E. Field/index segments
+                // (`x.field = ...`, `x[i] = ...`) don't rebind the
+                // local — they mutate state through it — so they
+                // stay allowed even when the head binding is
+                // immutable. `self.field = ...` is also allowed
+                // because `self` is locus state, not a binding.
+                if target.tail.is_empty() && target.head.name != "self" {
+                    if let Some(sym) = self.locals.lookup(&target.head.name) {
+                        if !sym.is_mut {
+                            self.diags.push(Diag::ty(
+                                *span,
+                                format!(
+                                    "cannot assign to `{}`: binding is \
+                                     immutable. Declare with `let mut {}` \
+                                     to permit reassignment.",
+                                    target.head.name, target.head.name
+                                ),
+                            ));
+                        }
+                    }
+                }
             }
             Stmt::Send { subject, value, span } => {
                 self.check_send(subject, value, *span);
@@ -551,7 +592,7 @@ impl<'a> Checker<'a> {
             Stmt::For { name, iter, body, .. } => {
                 let _ = self.check_expr(iter);
                 self.locals.push();
-                self.locals.insert(&name.name, LocalSym { ty: Ty::Unknown });
+                self.locals.insert(&name.name, LocalSym { ty: Ty::Unknown, is_mut: false });
                 self.check_block(body);
                 self.locals.pop();
             }
