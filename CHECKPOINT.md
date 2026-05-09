@@ -1193,69 +1193,77 @@ substrate-complete across run() + bus dispatch).
 
 ## Next steps in priority order
 
-Substrate is now in good shape. The remaining v1 work is one
-substantial substrate piece (m28) followed by the application
-exercise (trellis-pair) that proves it. Everything else is
-polish.
+The bimodal scheduler (m28a/b/c), the surface-completeness
+arc (m29 → m38), and the F.9 invariant-and-repair pair
+(m39 birth-epoch closures + m40 restart + m41 quarantine +
+m41b bus-dispatch quarantine gating) all shipped this
+session. The substrate is in strong shape; remaining work
+divides into substrate-deepening, application proof, and
+contained polish.
 
-**1. m28 — pinned full lifecycle + cross-thread bus mailbox.**
-The other half of the bimodal cut. Pinned loci can today only
-declare `run()`; m28 lifts that restriction. Specifically:
-
-- Pinned loci can declare birth / drain / dissolve, all running
-  on the pinned thread.
-- Pinned loci can declare bus subscribe / publish.
-- Cross-thread bus dispatch ("any → pinned" per
-  `spec/runtime.md::Schedule classes`) posts to a per-pinned-
-  locus mailbox via mutex; the pinned-thread event loop polls
-  the mailbox between cells. Pinned → any goes through the
-  existing program-wide queue (drained on main-thread side).
-- Coordinated shutdown: signal pinned thread → drain its
-  mailbox → run its drain/dissolve → pthread_join.
-- Optional: `: schedule pinned(core=N)` syntax for explicit
-  `sched_setaffinity` core pinning.
-
-This is a meaningful threading milestone with real cross-thread
-synchronization. Worth designing carefully — particularly the
-arena ownership model for cross-thread payload copies. (Today
-m20 memcpy's at enqueue time on the publisher's frame; for
-cross-thread, the publisher writes into the pinned subscriber's
-arena which is otherwise that thread's exclusive territory →
-needs either arena-level locking or a cross-thread bounce
-buffer.)
+**1. Closure tick/duration/explicit epochs.** The most
+"bottom" remaining substrate item per the user's
+"locus-of-design" framing. Today only Birth + Dissolve
+epochs lower (m39); Tick / Duration / Explicit reject with
+a clear "covers Birth + Dissolve" diagnostic. Lighting
+these up needs:
+- A runtime epoch engine: a tick clock tied to the
+  scheduler, plus a way for pinned loci to register
+  duration timers
+- Codegen wiring per epoch (synthesize __tick_closures /
+  __duration_closures fns, call them at the right spot
+  in the lifecycle)
+- F.9 routing reused unchanged (already proven in
+  m39/m40/m41)
+This is the substrate piece that lights up "monitor an
+invariant continuously while the locus is alive" — the
+spec's idiomatic use of closures.
 
 **2. trellis-pair** (multi-binary, cross-process bus +
 entry-point selection). The only remaining example in the
 ladder. Two pieces:
 - `lotus build --bin <locus>` entry-point selection
-- Cross-process bus transport. Decided last session:
-  shared-memory ring buffer (most production-shaped; matches
-  the existing in-process LMAX disruptor), per the
-  runtime/stdlib transport split documented above.
+- Cross-process bus transport. Prior decision: shared-
+  memory ring buffer (matches the in-process LMAX
+  disruptor), per the runtime/stdlib transport split
+  documented above. With m39+m40+m41 in place, the
+  application can now exercise the F.9 closure +
+  recovery surface end-to-end.
 
 **Polish (any time):**
 
-- Constructor patterns in match (enum variants need a real
-  enum-value representation first; struct-by-name was the v0
-  shape but no example exercised it). Tuple patterns shipped
-  in m35.
-- Default param values on bus-subscribed handlers + mode methods
-  (locus `fn` methods called via `self.method(...)` work as of
-  m34; bus dispatch is fixed-arity at the C-runtime level so
-  defaults there'd need dispatch-side default evaluation;
-  modes take a tighter param surface per F.10)
-- Recovery primitives execution (restart / quarantine /
-  reorganize — interpreter parses, neither runs)
+- `bus.entries` dynamic capacity. Pre-existing bug surfaced
+  by m41b's flex example: the array is sized per-locus-type
+  at compile time, but each instance registers its own
+  runtime entry. Two instances of the same subscriber
+  type → buffer overflow. Today's workaround is "use
+  distinct types"; the proper fix is heap-resize on register
+  or a static cap >> instance count.
+- `restart_in_place` recovery primitive. Variant of
+  `restart(c)` that zeros user fields back to declared
+  defaults before re-running birth. Complements the
+  existing m40 restart's "give birth another shot on
+  dirty state" semantic with a "factory reset" alternative.
+  Small compared to m40 once `restart` is in place.
+- Constructor patterns in `match` (enum variants need a
+  real enum-value representation first; struct-by-name
+  was the v0 shape but no example exercised it). Tuple
+  patterns shipped in m35.
+- Default param values on bus-subscribed handlers + mode
+  methods (locus `fn` methods called via `self.method(...)`
+  work as of m34; bus dispatch is fixed-arity at the
+  C-runtime level so defaults there'd need dispatch-side
+  default evaluation; modes take a tighter param surface
+  per F.10).
 - Recognition-class real bitmap-pool (currently chunked-
-  equivalent stub per spec/memory.md)
-- Decimal precision tightening (printf %g vs Display)
+  equivalent stub per spec/memory.md).
+- Decimal precision tightening (printf %g vs Display).
 - Free-fn implicit-locus arenas (spec is fuzzy on
-  return-value-copy semantics)
+  return-value-copy semantics).
 
 **Long-deferred:**
 
 - Generic instantiation (records args, no substitution)
-- Module / import resolution (parsed only)
 - Tree-sitter grammar derivation from EBNF
 - LSP server
 - Self-hosting (Phase 6, distant)
