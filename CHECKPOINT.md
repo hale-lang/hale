@@ -1407,7 +1407,7 @@ m7 builds on the struct ABI.
 | Contracts (typecheck only — F.8) | ✅ | ✅ (skipped at codegen) |
 | `match` (Literal / Wildcard / Binding patterns) | ✅ | ✅ |
 | `match` arm guards (`pat if cond -> body`) | ✅ | ✅ |
-| `match` (Tuple / Constructor patterns) | ✅ | — |
+| `match` (Constructor patterns — enum variants) | ✅ | — |
 | Array literals `[T; N]` + indexing | ✅ | ✅ |
 | `for x in arr` over fixed-size arrays | ✅ | ✅ |
 | Indexed local-array assignment `arr[i] = v` | ✅ | ✅ |
