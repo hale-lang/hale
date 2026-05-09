@@ -1,0 +1,86 @@
+// 30-stats — running min/max/sum aggregator over a bus stream,
+// emitting formatted summaries via concat + to_string.
+//
+// This flex app combines the recently-shipped surface:
+//   - locus state mutation (m10, m20)
+//   - bus subscribe + dispatch (m12)
+//   - string concat + to_string (m36, m37)
+//   - min / max helpers (m38)
+//   - typed payload (Sample carries int data)
+//
+// What it does:
+//   - Producer publishes 6 numeric samples on `stats.sample`.
+//   - Aggregator subscribes; each sample updates running
+//     count / sum / min / max stored in self-state.
+//   - On every receipt, the aggregator prints a labeled
+//     one-line summary built via concat + to_string. No
+//     println-with-mixed-args; the message is composed
+//     ahead of time so it could equally well be returned,
+//     republished on a downstream subject, or written to
+//     a log perspective once `std::io` lands.
+//
+// Per The Design / lotus, the aggregator's state lives in
+// its own arena; bus dispatch copies the payload into that
+// arena before invoking on_sample (m20 spec). The substrate
+// cost is at the layer boundary; the aggregator's read +
+// arithmetic pattern stays single-threaded inside its own
+// arena territory.
+
+type Sample {
+    value: Int;
+}
+
+locus Aggregator {
+    params {
+        count: Int = 0;
+        sum: Int = 0;
+        lo: Int = 100000;
+        hi: Int = -100000;
+    }
+    bus {
+        subscribe "stats.sample" as on_sample of type Sample;
+    }
+
+    fn on_sample(s: Sample) {
+        self.count = self.count + 1;
+        self.sum = self.sum + s.value;
+        self.lo = min(self.lo, s.value);
+        self.hi = max(self.hi, s.value);
+
+        // Average so far. Integer arithmetic for the v0
+        // representation; a real aggregator would track a
+        // float average alongside.
+        let avg = self.sum / self.count;
+
+        let msg = "n=" + to_string(self.count)
+            + " sum=" + to_string(self.sum)
+            + " min=" + to_string(self.lo)
+            + " max=" + to_string(self.hi)
+            + " avg=" + to_string(avg);
+        println(msg);
+    }
+}
+
+locus Producer {
+    bus {
+        publish "stats.sample" of type Sample;
+    }
+
+    birth() {
+        "stats.sample" <- Sample { value: 12 };
+        "stats.sample" <- Sample { value: 4 };
+        "stats.sample" <- Sample { value: 27 };
+        "stats.sample" <- Sample { value: 8 };
+        "stats.sample" <- Sample { value: 19 };
+        "stats.sample" <- Sample { value: 3 };
+    }
+}
+
+fn main() {
+    // Subscriber first so it's ready when the producer's
+    // birth() publishes (cooperative scheduler defers
+    // dispatch to the program-wide queue, drained at
+    // dissolve).
+    Aggregator { };
+    Producer { };
+}
