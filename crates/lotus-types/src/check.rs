@@ -837,6 +837,18 @@ impl<'a> Checker<'a> {
                 let _ = self.check_expr(tolerance);
                 Ty::Prim(PrimType::Bool)
             }
+            Expr::Range { lo, hi, .. } => {
+                // v0 ranges are integer iterators only. Both sides
+                // must be Int. The expression itself doesn't have a
+                // first-class type beyond "iterator over Int" — the
+                // for-stmt handler is the only consumer that
+                // recognizes it. Returning Unknown lets callers in
+                // non-iterator positions still typecheck without
+                // the result being used as a value.
+                let _ = self.check_expr(lo);
+                let _ = self.check_expr(hi);
+                Ty::Unknown
+            }
         }
     }
 

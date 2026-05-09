@@ -3618,13 +3618,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         body: &Block,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
-        // Two iterator shapes today: `self.children` (built-in
-        // fixed-cap array on accept-declaring loci) and arbitrary
-        // expressions of LotusType::Array. Range / iterator-trait
-        // shapes wait on later milestones.
+        // Three iterator shapes today: `self.children` (built-in
+        // fixed-cap array on accept-declaring loci),
+        // `lo..hi` / `lo..=hi` integer ranges (counted loop), and
+        // arbitrary expressions of LotusType::Array.
         let is_self_children = matches!(iter, Expr::Field { receiver, name, .. }
             if matches!(receiver.as_ref(), Expr::KwSelf(_))
                 && name.name == "children");
+        if let Expr::Range { lo, hi, inclusive, .. } = iter {
+            return self.lower_for_range(var_name, lo, hi, *inclusive, body, scope);
+        }
         if !is_self_children {
             return self.lower_for_array(var_name, iter, body, scope);
         }
@@ -3779,6 +3782,132 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let i_next = self
             .builder
             .build_int_add(i_now, i64_t.const_int(1, false), "for.i.next")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(i_slot, i_next)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(exit_bb);
+        Ok(BlockEnd::Open)
+    }
+
+    /// `for i in lo..hi` (exclusive) or `lo..=hi` (inclusive)
+    /// integer range. Lowers as a counted loop: i = lo; while
+    /// i < hi (or <=); body; i = i + 1. Both bounds are
+    /// evaluated once at loop entry — modifying lo/hi inside the
+    /// body has no effect on the iteration count.
+    fn lower_for_range(
+        &mut self,
+        var_name: &Ident,
+        lo: &Expr,
+        hi: &Expr,
+        inclusive: bool,
+        body: &Block,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let (lo_val, lo_ty) = self.lower_expr(lo, scope)?;
+        let (hi_val, hi_ty) = self.lower_expr(hi, scope)?;
+        if lo_ty != LotusType::Int || hi_ty != LotusType::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "for-range bounds must be Int (got {:?}..{:?})",
+                lo_ty, hi_ty
+            )));
+        }
+
+        let i64_t = self.context.i64_type();
+        let func = self
+            .current_fn
+            .expect("current_fn set while lowering a for");
+        let header_bb = self.context.append_basic_block(func, "for.range.cond");
+        let body_bb = self.context.append_basic_block(func, "for.range.body");
+        let inc_bb = self.context.append_basic_block(func, "for.range.inc");
+        let exit_bb = self.context.append_basic_block(func, "for.range.end");
+
+        let i_slot = self
+            .builder
+            .build_alloca(i64_t, "for.range.i.slot")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(i_slot, lo_val.into_int_value())
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // Stash the upper bound in a slot too so the user binding
+        // for `i` doesn't share a name with our loop's bookkeeping.
+        let hi_slot = self
+            .builder
+            .build_alloca(i64_t, "for.range.hi.slot")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(hi_slot, hi_val.into_int_value())
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(header_bb);
+        let i = self
+            .builder
+            .build_load(i64_t, i_slot, "for.range.i")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let hi_v = self
+            .builder
+            .build_load(i64_t, hi_slot, "for.range.hi")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let pred = if inclusive {
+            inkwell::IntPredicate::SLE
+        } else {
+            inkwell::IntPredicate::SLT
+        };
+        let in_range = self
+            .builder
+            .build_int_compare(pred, i, hi_v, "for.range.in")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(in_range, body_bb, exit_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(body_bb);
+        let local_slot = self.alloca_for(&LotusType::Int, &var_name.name)?;
+        self.builder
+            .build_store(local_slot, i)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let prev = scope
+            .locals
+            .insert(var_name.name.clone(), (local_slot, LotusType::Int));
+        self.loops.push(LoopFrame {
+            continue_bb: inc_bb,
+            break_bb: exit_bb,
+        });
+        let body_end = self.lower_block(body, scope)?;
+        self.loops.pop();
+        if body_end == BlockEnd::Open {
+            self.builder
+                .build_unconditional_branch(inc_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        if let Some(prev) = prev {
+            scope.locals.insert(var_name.name.clone(), prev);
+        } else {
+            scope.locals.remove(&var_name.name);
+        }
+
+        self.builder.position_at_end(inc_bb);
+        let i_now = self
+            .builder
+            .build_load(i64_t, i_slot, "for.range.i.now")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let i_next = self
+            .builder
+            .build_int_add(
+                i_now,
+                i64_t.const_int(1, false),
+                "for.range.i.next",
+            )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
             .build_store(i_slot, i_next)

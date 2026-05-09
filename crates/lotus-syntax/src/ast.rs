@@ -624,6 +624,16 @@ pub enum Expr {
         tolerance: Box<Expr>,
         span: Span,
     },
+    /// Integer range `lo..hi` (exclusive) or `lo..=hi`
+    /// (inclusive). v0 surface only allows ranges in for-loop
+    /// iterator position; using one elsewhere lowers to nothing
+    /// useful in codegen and is rejected at typecheck.
+    Range {
+        lo: Box<Expr>,
+        hi: Box<Expr>,
+        inclusive: bool,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -648,6 +658,7 @@ impl Expr {
             Expr::Sum(_, s) => *s,
             Expr::Prod(_, s) => *s,
             Expr::Approx { span, .. } => *span,
+            Expr::Range { span, .. } => *span,
         }
     }
 }

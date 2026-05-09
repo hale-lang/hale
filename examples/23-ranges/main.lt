@@ -1,0 +1,50 @@
+// 23-ranges — `for i in lo..hi` and `for i in lo..=hi`.
+//
+// Range expressions are surfaced ONLY in for-loop iterator
+// position in v0. `for i in 0..n` lowers as a counted loop:
+// i = 0; while i < n; body; i = i + 1. The bounds are
+// evaluated once at loop entry, so mutating them inside the
+// body has no effect on the iteration count.
+//
+// Two forms:
+//   - `lo..hi`   — exclusive: i takes lo, lo+1, ..., hi-1
+//   - `lo..=hi`  — inclusive: i takes lo, lo+1, ..., hi
+//
+// Range expressions outside a for-loop iterator are rejected
+// (interpreter raises, codegen errors). They're an iterator
+// shape, not a first-class collection — the spec's region
+// allocator has no good story for materialised range values
+// without baking in a separate Range type, so v0 keeps them
+// purely as for-loop sugar.
+
+fn factorial(n: Int) -> Int {
+    let mut acc = 1;
+    for i in 1..=n {
+        acc = acc * i;
+    }
+    return acc;
+}
+
+fn triangular(n: Int) -> Int {
+    let mut acc = 0;
+    for i in 0..n {
+        acc = acc + i;
+    }
+    return acc;
+}
+
+fn main() {
+    println("triangular(10) = ", triangular(10));     // 0+1+...+9 = 45
+    println("factorial(5)   = ", factorial(5));       // 5! = 120
+    println("factorial(7)   = ", factorial(7));       // 7! = 5040
+
+    // Loop with break inside a range.
+    let mut first_square_above_50 = 0;
+    for i in 1..1000 {
+        if i * i > 50 {
+            first_square_above_50 = i;
+            break;
+        }
+    }
+    println("first i with i*i > 50: ", first_square_above_50);  // 8 (64 > 50)
+}

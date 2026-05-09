@@ -1547,7 +1547,26 @@ impl Parser {
     // === expressions: Pratt parser =======================
 
     fn parse_expr(&mut self) -> Result<Expr, Diag> {
-        self.parse_expr_bp(0)
+        let lhs = self.parse_expr_bp(0)?;
+        // Range operator binds at the lowest precedence: `for i in
+        // 0 .. n + 1` should parse as `0 .. (n + 1)`. v0 only
+        // surfaces ranges in for-loop iterator position; the
+        // typechecker / codegen rejects them elsewhere.
+        let inclusive = if self.eat(&TokenKind::DotDot) {
+            false
+        } else if self.eat(&TokenKind::DotDotEq) {
+            true
+        } else {
+            return Ok(lhs);
+        };
+        let rhs = self.parse_expr_bp(0)?;
+        let span = lhs.span().merge(rhs.span());
+        Ok(Expr::Range {
+            lo: Box::new(lhs),
+            hi: Box::new(rhs),
+            inclusive,
+            span,
+        })
     }
 
     /// Pratt-style parse with a minimum binding power. Returns

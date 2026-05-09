@@ -20,7 +20,7 @@ pinned(core = N)` for `pthread_setaffinity_np` core pinning),
 m29 (match arm guards — `pat if cond -> body` lowering with
 binding installed for the guard expr to reference), m30
 (fixed-size arrays — `[T; N]` literal, `arr[i]` indexing,
-`for x in arr` iteration, arena-backed storage). **26 of 27
+`for x in arr` iteration, arena-backed storage). **27 of 28
 examples build to native ELF — every single-binary example.**
 Only `trellis-pair` (multi-binary, cross-process bus) remains.
 
@@ -498,13 +498,21 @@ m30    m30: arrays — literal + indexing + for-over-array       (2bc3fbb)
                             arr lowers to indexed loop; arrays
                             pass through fn params (as ptrs)
                           + examples/21-arrays
-m30b   m30 follow-up: indexed local-array assignment           (pending)
+m30b   m30 follow-up: indexed local-array assignment           (78ea6e7)
                           ⇒ `arr[i] = v` lowers via GEP-into-
                             local-array-storage + store; rest
                             of LValue surface unchanged
                           + examples/22-moving-average (real
                             flex: bus-driven sliding-window
                             mean over a [Int; 4] state array)
+m31    m31: integer ranges in for-loop iterators               (pending)
+                          ⇒ Expr::Range { lo, hi, inclusive }
+                            in AST; parser tail-attaches at
+                            lowest precedence; for-stmt
+                            handlers (interp + codegen) special-
+                            case Range as a counted loop; range
+                            outside iterator position rejects
+                          + examples/23-ranges
 ```
 
 The architectural pivots are **m7** (locus → LLVM struct,
@@ -559,7 +567,7 @@ m7 builds on the struct ABI.
 | Array literals `[T; N]` + indexing | ✅ | ✅ |
 | `for x in arr` over fixed-size arrays | ✅ | ✅ |
 | Indexed local-array assignment `arr[i] = v` | ✅ | ✅ |
-| generic `for` (over ranges) | ✅ | — |
+| `for i in lo..hi` / `lo..=hi` range loops | ✅ | ✅ |
 | Schedule-class annotation (`: schedule cooperative \| pinned`) | — | ✅ (resolved on LocusInfo) |
 | Cooperative scheduler (deferred bus + drain loop) | — | ✅ |
 | Explicit `yield` primitive | ✅ (no-op) | ✅ (drains queue) |
@@ -713,7 +721,7 @@ d5afffd Codegen milestone 8: accept() lifecycle + parent-child wiring
 929efa2 Codegen milestone 5: time::sleep on CLOCK_MONOTONIC
 ```
 
-86 commits ahead of origin/master at checkpoint time.
+87 commits ahead of origin/master at checkpoint time.
 
 ## Next steps in priority order
 
@@ -761,8 +769,6 @@ ladder. Two pieces:
 
 - Tuple / Constructor patterns in match (needs tuple values
   in codegen first)
-- Generic `for` over ranges (arrays now lower; ranges need a
-  range type lowering)
 - Default param values on user fns (already in AST; declare
   time rejects today)
 - Recovery primitives execution (restart / quarantine /
@@ -879,6 +885,9 @@ rm examples/21-arrays/main
 cargo run --bin lotus -- build examples/22-moving-average/main.lt
 ./examples/22-moving-average/main        # 6 samples → smoothed averages 25/75/150/250/350/450
 rm examples/22-moving-average/main
+cargo run --bin lotus -- build examples/23-ranges/main.lt
+./examples/23-ranges/main                # triangular(10)=45, factorial(5)=120, factorial(7)=5040, square>50 at i=8
+rm examples/23-ranges/main
 ```
 
-If all twenty-six work, the checkpoint is intact.
+If all twenty-seven work, the checkpoint is intact.

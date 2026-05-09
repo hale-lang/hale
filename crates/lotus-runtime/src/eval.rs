@@ -272,6 +272,58 @@ impl Interpreter {
             Stmt::If(if_stmt) => self.exec_if(if_stmt),
             Stmt::Match(m) => self.exec_match(m),
             Stmt::For { name, iter, body, .. } => {
+                // Two iterator shapes: a Range expression
+                // (`lo..hi` / `lo..=hi`) integrates as a counted
+                // loop; everything else evaluates to a Value and
+                // must be iterable (Array for now). Range is
+                // handled here without going through eval_expr
+                // because eval_expr rejects ranges in non-iterator
+                // position.
+                if let Expr::Range { lo, hi, inclusive, span } = iter {
+                    let lo_v = self.eval_expr(lo)?;
+                    let hi_v = self.eval_expr(hi)?;
+                    let lo_i = match lo_v {
+                        Value::Int(n) => n,
+                        other => {
+                            return Err(Signal::Error(format!(
+                                "for: range bound must be Int, got {} \
+                                 (at {:?})",
+                                other.type_name(),
+                                span
+                            )));
+                        }
+                    };
+                    let hi_i = match hi_v {
+                        Value::Int(n) => n,
+                        other => {
+                            return Err(Signal::Error(format!(
+                                "for: range bound must be Int, got {} \
+                                 (at {:?})",
+                                other.type_name(),
+                                span
+                            )));
+                        }
+                    };
+                    let last = if *inclusive { hi_i } else { hi_i - 1 };
+                    let mut i = lo_i;
+                    while i <= last {
+                        self.env.push();
+                        self.env.define(&name.name, Value::Int(i));
+                        let r = self.exec_block(body);
+                        self.env.pop();
+                        match r {
+                            Ok(()) => {}
+                            Err(Signal::Continue) => {
+                                i += 1;
+                                continue;
+                            }
+                            Err(Signal::Break) => break,
+                            Err(other) => return Err(other),
+                        }
+                        i += 1;
+                    }
+                    return Ok(());
+                }
                 let iter_val = self.eval_expr(iter)?;
                 let items: Vec<Value> = match iter_val {
                     Value::Array(a) => a.borrow().clone(),
@@ -711,6 +763,11 @@ impl Interpreter {
                 let t = self.eval_expr(tolerance)?;
                 approx(&l, &r, &t).map_err(Signal::Error)
             }
+            Expr::Range { .. } => Err(Signal::Error(
+                "range expressions are only valid as a for-loop \
+                 iterator (e.g., `for i in 0..n`)"
+                    .into(),
+            )),
         }
     }
 
