@@ -1641,6 +1641,15 @@ fn parse_decimal(s: &str) -> Option<f64> {
     s.parse::<f64>().ok()
 }
 
+/// Public alias for the in-crate `fmt_decimal` helper. Used by
+/// the `to_string` builtin (m37) so its Float / Decimal output
+/// matches codegen's printf-%g rendering exactly. Renaming
+/// `fmt_decimal` to be pub directly would touch every call
+/// site; this one-liner alias keeps the surface contained.
+pub(crate) fn fmt_decimal_pub(f: f64) -> String {
+    fmt_decimal(f)
+}
+
 fn fmt_decimal(f: f64) -> String {
     // Match codegen's printf("%g", ...) behavior: at most 6
     // fractional digits, trailing zeros + dangling `.` stripped.

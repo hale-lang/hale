@@ -587,6 +587,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_str_slice", str_slice_ty, None);
 
+        // m37: to_string runtime helpers. Each renders one
+        // primitive into a fresh arena-owned NUL-terminated
+        // buffer using the same format println does.
+        // declare ptr @lotus_str_from_int(ptr arena, i64 n)
+        // declare ptr @lotus_str_from_float(ptr arena, double f)
+        // declare ptr @lotus_str_from_duration(ptr arena, i64 ns)
+        let f64_t = self.context.f64_type();
+        let str_from_int_ty =
+            ptr_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
+        self.module
+            .add_function("lotus_str_from_int", str_from_int_ty, None);
+        let str_from_float_ty =
+            ptr_t.fn_type(&[ptr_t.into(), f64_t.into()], false);
+        self.module
+            .add_function("lotus_str_from_float", str_from_float_ty, None);
+        let str_from_dur_ty =
+            ptr_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
+        self.module
+            .add_function("lotus_str_from_duration", str_from_dur_ty, None);
+
         // The single program-wide arena pointer. Initialized in
         // the prelude of main; consulted by every arena-allocated
         // user-type literal and ClosureViolation. m20 makes this
@@ -3588,6 +3608,109 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// m37: lower a `to_string(x)` builtin call. Routes by the
+    /// argument's LotusType to the right snprintf-backed runtime
+    /// helper; result is a fresh arena-owned NUL-terminated
+    /// buffer formatted exactly like `println` would render the
+    /// same value, so a value written via to_string + concat
+    /// reads identical to the same value passed to println.
+    /// String passes through (so `to_string` is the identity on
+    /// String — handy in generic-feeling helper fns).
+    fn lower_to_string_builtin(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "`to_string` expects exactly 1 argument, got {}",
+                args.len()
+            )));
+        }
+        let (v, ty) = self.lower_expr(&args[0], scope)?;
+        match ty {
+            LotusType::String => Ok((v, LotusType::String)),
+            LotusType::Int => {
+                let arena_ptr = self.current_arena_ptr()?;
+                let f = self
+                    .module
+                    .get_function("lotus_str_from_int")
+                    .expect("lotus_str_from_int declared");
+                let res = self
+                    .builder
+                    .build_call(
+                        f,
+                        &[arena_ptr.into(), v.into_int_value().into()],
+                        "to_string.int",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_str_from_int returns ptr");
+                Ok((res, LotusType::String))
+            }
+            LotusType::Duration => {
+                let arena_ptr = self.current_arena_ptr()?;
+                let f = self
+                    .module
+                    .get_function("lotus_str_from_duration")
+                    .expect("lotus_str_from_duration declared");
+                let res = self
+                    .builder
+                    .build_call(
+                        f,
+                        &[arena_ptr.into(), v.into_int_value().into()],
+                        "to_string.dur",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_str_from_duration returns ptr");
+                Ok((res, LotusType::String))
+            }
+            LotusType::Float | LotusType::Decimal => {
+                let arena_ptr = self.current_arena_ptr()?;
+                let f = self
+                    .module
+                    .get_function("lotus_str_from_float")
+                    .expect("lotus_str_from_float declared");
+                let res = self
+                    .builder
+                    .build_call(
+                        f,
+                        &[arena_ptr.into(), v.into_float_value().into()],
+                        "to_string.float",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_str_from_float returns ptr");
+                Ok((res, LotusType::String))
+            }
+            LotusType::Bool => {
+                // Use a constant-string select rather than a
+                // runtime call. "true" / "false" globals get
+                // de-duped by global_string.
+                let true_ptr = self.global_string("true");
+                let false_ptr = self.global_string("false");
+                let res = self
+                    .builder
+                    .build_select(
+                        v.into_int_value(),
+                        true_ptr,
+                        false_ptr,
+                        "to_string.bool",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((res, LotusType::String))
+            }
+            other => Err(CodegenError::Unsupported(format!(
+                "`to_string` not supported for type {:?}",
+                other
+            ))),
+        }
+    }
+
     /// Build the equality comparison used by Literal patterns
     /// (top-level and tuple sub-pattern). Int / Duration / Bool
     /// use integer EQ; Float / Decimal use ordered float EQ. Other
@@ -4777,6 +4900,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Expr::Call { callee, args, .. } => match callee.as_ref() {
                 Expr::Ident(i) if i.name == "len" => {
                     self.lower_len_builtin(args, scope)
+                }
+                Expr::Ident(i) if i.name == "to_string" => {
+                    self.lower_to_string_builtin(args, scope)
                 }
                 Expr::Ident(i) if self.user_fns.contains_key(&i.name) => {
                     let result =

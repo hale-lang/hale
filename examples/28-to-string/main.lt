@@ -1,0 +1,59 @@
+// 28-to-string — converting primitives to String for dynamic
+// composition.
+//
+// Before m37, strings were fundamentally println-shaped:
+// you could splice typed values directly into println as
+// separate args, but you couldn't BUILD a string and pass it
+// somewhere else (a return value, a bus payload, etc.)
+// without turning the value into a String first.
+//
+// `to_string(x)` covers that gap. It accepts the primitive
+// types and returns a String formatted exactly like println
+// would render the same value: i64 with %lld, Float / Decimal
+// with %g, Duration as `<n>ns`, Bool as `true`/`false`,
+// String passed through. Combined with `+` (m36), the
+// caller can compose any structured message.
+//
+// Use cases this unlocks:
+//   - Building error / log messages from typed data
+//   - Formatting bus payloads of String type from numeric
+//     state
+//   - Returning structured human-readable summaries
+//
+// Per spec/stdlib.md, richer formatting (split / join /
+// startswith / format-with-template) lives in `std::string`
+// and lands when the toolchain wires up stdlib resolution.
+// `to_string` is the language-native primitive those build on.
+
+fn label(name: String, value: Int) -> String {
+    return name + " = " + to_string(value);
+}
+
+fn summary(count: Int, ratio: Float, ok: Bool) -> String {
+    return "count=" + to_string(count)
+        + " ratio=" + to_string(ratio)
+        + " ok=" + to_string(ok);
+}
+
+fn main() {
+    // 1. Per-primitive coverage.
+    println(to_string(42));
+    println(to_string(3.14));
+    println(to_string(true));
+    println(to_string(false));
+    println(to_string(150ns));
+    println(to_string("already a string"));
+
+    // 2. Composition into a single message.
+    println(label("retries", 7));
+    println(label("queue_depth", 3));
+
+    // 3. Mixed-type structured summary.
+    println(summary(100, 0.95, true));
+    println(summary(5, 1.0, false));
+
+    // 4. Round-trip via concat — the result is the same as
+    //    if we'd passed the args to println directly.
+    let msg = "tick = " + to_string(99) + " (tick = " + to_string(100) + ")";
+    println(msg);
+}

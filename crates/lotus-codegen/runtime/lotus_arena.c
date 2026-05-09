@@ -30,6 +30,7 @@
 #define _GNU_SOURCE
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
@@ -644,5 +645,38 @@ char *lotus_str_slice(lotus_arena_t *a, const char *s,
         memcpy(out, s + lo, (size_t)len);
     }
     out[len] = '\0';
+    return out;
+}
+
+/*
+ * to_string helpers (m37). Each renders one primitive into a
+ * fresh NUL-terminated arena buffer using the same printf-style
+ * format that `println` uses, so a value written via to_string
+ * + concat reads identical to the same value passed to println.
+ *
+ * Buffer sizes:
+ *   - i64  → max 20 digits + sign + NUL = 22 bytes; round up.
+ *   - %g   → typical max ~24 chars for normal magnitudes; 32
+ *     covers headroom for denormals and -DBL_MAX.
+ *   - duration → i64 + "ns" suffix.
+ */
+char *lotus_str_from_int(lotus_arena_t *a, int64_t n) {
+    char *out = (char *)lotus_arena_alloc(a, 32, 1);
+    if (!out) return NULL;
+    snprintf(out, 32, "%lld", (long long)n);
+    return out;
+}
+
+char *lotus_str_from_float(lotus_arena_t *a, double f) {
+    char *out = (char *)lotus_arena_alloc(a, 32, 1);
+    if (!out) return NULL;
+    snprintf(out, 32, "%g", f);
+    return out;
+}
+
+char *lotus_str_from_duration(lotus_arena_t *a, int64_t ns) {
+    char *out = (char *)lotus_arena_alloc(a, 32, 1);
+    if (!out) return NULL;
+    snprintf(out, 32, "%lldns", (long long)ns);
     return out;
 }

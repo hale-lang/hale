@@ -39,6 +39,54 @@ pub fn install_builtins(env: &crate::env::Env) {
             func: Rc::new(builtin_len),
         }),
     );
+    env.define(
+        "to_string",
+        Value::Builtin(BuiltinRef {
+            name: "to_string",
+            func: Rc::new(builtin_to_string),
+        }),
+    );
+}
+
+fn builtin_to_string(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "`to_string` expects exactly 1 argument, got {}",
+            args.len()
+        ));
+    }
+    // Output must mirror codegen's printf-%g / %lld / %lldns
+    // formatting so the same flex app prints identically on
+    // both paths. fmt_decimal handles the %g-equivalent shape;
+    // Int / Bool / Duration / String are direct conversions.
+    let s = match &args[0] {
+        Value::Int(n) => n.to_string(),
+        Value::Float(f) => crate::eval::fmt_decimal_pub(*f),
+        Value::Decimal(s) => {
+            // Decimal stored as a string already in fmt_decimal
+            // shape (set by every arithmetic op that produces a
+            // Decimal). Strip a stray `d` suffix if present
+            // (literals carry it; results don't).
+            s.strip_suffix('d').unwrap_or(s).to_string()
+        }
+        Value::Bool(b) => {
+            if *b {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }
+        Value::Duration(ns) => format!("{}ns", ns),
+        Value::String(s) => s.clone(),
+        Value::Time(s) => s.clone(),
+        other => {
+            return Err(format!(
+                "`to_string` not supported for {}",
+                other.type_name()
+            ));
+        }
+    };
+    Ok(Value::String(s))
 }
 
 fn builtin_len(args: &[Value]) -> Result<Value, String> {
