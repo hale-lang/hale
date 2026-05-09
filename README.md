@@ -15,17 +15,18 @@ process exit code, the **full closure-test runtime** (collapse
 + absorb + bubble per F.9), built-in `ClosureViolation`,
 **modes** (`mode bulk()` / `harmonic()` / `resolution()`),
 **`self.children`** + `for child in self.children { ... }`,
-locus literals in expression position, and (m19→m23) the
+locus literals in expression position, (m19→m23) the
 **lotus region allocator** with **per-locus arenas**, **bus
-copy semantics**, and **per-projection-class strategies**: every
-locus carries a `__arena: ptr` field freed wholesale at
+copy semantics**, and **per-projection-class strategies** —
+every locus carries a `__arena: ptr` field freed wholesale at
 dissolve, chunked-class parents carve sub-regions for accepted
 children with free-list slot reuse, recognition is a documented
 stub behind the same path, and `<-` copies payloads from the
 publisher's arena into the subscriber's arena per
-spec/memory.md. **18 of 19 examples build to native ELF — every
-single-binary example is a build target.** Phase 3 (codegen) is
-at milestone 23: literals +
+spec/memory.md, and (m24) **match expressions** with Literal /
+Wildcard / Binding patterns. **19 of 20 examples build to native
+ELF — every single-binary example is a build target.** Phase 3
+(codegen) is at milestone 24: literals +
 arithmetic, `let`/`let mut` + assignment + compound ops,
 `if`/`else`/`while` + `break`/`continue`, `time::sleep` on
 `CLOCK_MONOTONIC` with EINTR retry, `time::monotonic()` +
@@ -260,11 +261,11 @@ crates/                   (Phase 1 + 2 v0 + Phase 3 milestones 0-18)
                           object file (m19 substrate).
 ```
 
-Example ladder: 19 projects from hello-world → trellis-pair;
-~870 lines of source + ~1,400+ lines of README walk-throughs.
-91 tests across the workspace; 18 of 19 projects run end-to-end
+Example ladder: 20 projects from hello-world → trellis-pair;
+~880 lines of source + ~1,400+ lines of README walk-throughs.
+91 tests across the workspace; 19 of 20 projects run end-to-end
 under `lotus run` (only multi-binary trellis-pair waits on the
-cross-process bus). **18 of 19 projects** also build to native
+cross-process bus). **19 of 20 projects** also build to native
 ELF via `lotus build` — every single-binary example. Only
 `trellis-pair` (cross-process bus + entry-point selection) is
 not a build target.
@@ -310,7 +311,7 @@ Per the delivery plan:
   Region allocator + cooperative scheduler are the remaining
   Phase 2 deep-pushes.
 - **Phase 3** — Codegen in Rust targeting LLVM. *In progress;
-  milestone 23 of N complete.* Working subset: literals, arithmetic,
+  milestone 24 of N complete.* Working subset: literals, arithmetic,
   `let`/`let mut` + assignment + compound ops, mixed-type println,
   if/else/while + break/continue, `time::sleep` + `time::monotonic`
   on `CLOCK_MONOTONIC` with EINTR retry, Duration / Decimal /
@@ -332,11 +333,13 @@ Per the delivery plan:
   chunked-class parents carve sub-regions for accepted children
   with free-list slot reuse, recognition is a documented stub
   behind the same path, and `<-` copies payloads between
-  publisher / subscriber arenas as the spec requires. **18 of 19
-  example projects compile to native ELF — every single-binary
-  example.** Only `trellis-pair` (cross-process bus +
-  entry-point selection) remains, gated on substantial new
-  infrastructure.
+  publisher / subscriber arenas as the spec requires, and
+  (m24) **match expressions** with Literal / Wildcard / Binding
+  patterns (Tuple / Constructor + guards remain interpreter-only).
+  **19 of 20 example projects compile to native ELF — every
+  single-binary example.** Only `trellis-pair` (cross-process
+  bus + entry-point selection) remains, gated on substantial
+  new infrastructure.
 - **Phase 4** — Stdlib v0 in lotus + Rust FFI shims. Overlaps
   Phase 3.
 - **Phase 5** — Toolchain. Overlaps Phase 3–4.

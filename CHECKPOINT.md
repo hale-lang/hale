@@ -1,15 +1,11 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work in a
-new session. State as of codegen milestone 23 (recognition-class
-stub) on top of m22 (chunked sub-regions), m20 (locus-owned
-arenas + bus copy), and m19 (arena substrate). The full F.3
-projection-class trio — rich / chunked / recognition — now flows
-through codegen end-to-end; recognition is a documented stub
-treated as chunked at v0 until a workload pushes on the bitmap-
-pool optimization. **18 of 19 examples build to native ELF —
-every single-binary example, including the new
-`14-projection-classes` smoke test.** Only `trellis-pair`
+new session. State as of codegen milestone 24 (`match` expressions
+in codegen) on top of the m19→m23 region-allocator arc. **19 of
+20 examples build to native ELF — every single-binary example,
+including `14-projection-classes` (m22+m23 smoke test) and
+`15-match` (m24 smoke test).** Only `trellis-pair`
 (multi-binary, cross-process bus) remains, gated on substantial
 new infrastructure.
 
@@ -64,6 +60,20 @@ Phase status:
 - **Phase 2 v0** (interpreter + bus router) — 17 of 18 example
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
+- **Phase 3 milestone 24** (`match` expressions) — complete.
+  Match statements lower to LLVM as a chain of test-blocks +
+  body-blocks, falling through to the next arm on mismatch.
+  Patterns supported: `Literal` (Int / Bool / Duration / Float /
+  Decimal), `Wildcard`, and `Binding(x)` (binds the scrutinee to
+  `x` for the arm body, with shadow/restore of any prior local
+  with the same name). `Tuple` / `Constructor` patterns + arm
+  guards remain interpreter-only. F.18 exhaustiveness is
+  enforced upstream by the typechecker, so the post-arms
+  fallthrough block is unreachable for well-typed programs.
+  Match arm bodies handle `Call` exprs by routing through
+  `lower_stmt` (so `println` / void-returning user fns work
+  identically to statement-position calls). New
+  `examples/15-match/` exercises Int + Bool + Binding patterns.
 - **Phase 3 milestones 22 + 23** (per-projection-class arena
   strategies) — complete. Each locus's projection class
   resolves from `: projection <class>` annotation or per-spec
@@ -231,12 +241,19 @@ m22 Codegen milestone 22: chunked-class sub-regions            (this commit)
                             children via lotus_arena_create_subregion;
                             free-list bookkeeping reuses slot
                             indices as children dissolve
-m23 Codegen milestone 23: recognition-class stub               (this commit)
+m23 Codegen milestone 23: recognition-class stub               (010db7a)
                           ⇒ recognition annotation parses /
                             resolves / dispatches; behaviorally
                             equivalent to chunked at v0; bitmap-
                             pool optimization deliberately deferred
                           + examples/14-projection-classes
+m24 Codegen milestone 24: match expressions                    (this commit)
+                          ⇒ Literal / Wildcard / Binding patterns
+                            in codegen; Tuple / Constructor +
+                            guards remain interpreter-only;
+                            F.18 exhaustiveness still enforced at
+                            typecheck
+                          + examples/15-match
 ```
 
 The architectural pivots are **m7** (locus → LLVM struct,
@@ -285,7 +302,9 @@ m7 builds on the struct ABI.
 | Nested field reads (self.x.y, expr-receiver-of-Field) | ✅ | ✅ |
 | Heap-allocated user-type literals (escape via bus) | ✅ | ✅ |
 | Contracts (typecheck only — F.8) | ✅ | ✅ (skipped at codegen) |
-| `for` / `match` | ✅ | — |
+| `match` (Literal / Wildcard / Binding patterns) | ✅ | ✅ |
+| `match` (Tuple / Constructor patterns + guards) | ✅ | — |
+| generic `for` (over arrays / ranges) | ✅ | — |
 | Closure runtime (collapse / absorb / bubble) | ✅ | — |
 | Modes as methods | ✅ | — |
 | Recovery primitives (bubble) | ✅ | — |

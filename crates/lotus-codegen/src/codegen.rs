@@ -2666,6 +2666,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.lower_send(subject, value, scope)?;
                 Ok(BlockEnd::Open)
             }
+            Stmt::Match(m) => self.lower_match_stmt(m, scope),
             Stmt::Expr(_) => Err(CodegenError::Unsupported(
                 "expression statement other than locus literal or builtin call"
                     .to_string(),
@@ -2790,6 +2791,193 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // The exit is reachable from the header (cond=false) and
         // any `break`s inside the body, so it's always Open.
         self.builder.position_at_end(exit_bb);
+        Ok(BlockEnd::Open)
+    }
+
+    /// Lower `match scrutinee { arms... }`. v0 patterns:
+    /// - `Literal` (Int / Bool / Duration / Decimal / Float / String) —
+    ///   compare scrutinee against literal value, branch.
+    /// - `Wildcard` — unconditional fallthrough into arm body.
+    /// - `Binding(x)` — unconditional fallthrough; binds the
+    ///   scrutinee value as a local named `x` for the arm body.
+    ///
+    /// Tuple / Constructor patterns + arm guards land later;
+    /// codegen rejects them today. F.18 exhaustiveness is checked
+    /// upstream by the typechecker, so a non-matching scrutinee
+    /// at runtime falls through with no behavior (interpreter
+    /// behaves the same — match is statement-shape, not a typed
+    /// expression that must produce a value).
+    fn lower_match_stmt(
+        &mut self,
+        m: &MatchStmt,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let (scrutinee_val, scrutinee_ty) = self.lower_expr(&m.scrutinee, scope)?;
+        let func = self.current_fn.expect("match outside function");
+        let after_bb = self.context.append_basic_block(func, "match.after");
+
+        let mut all_terminated = true;
+
+        for (i, arm) in m.arms.iter().enumerate() {
+            if arm.guard.is_some() {
+                return Err(CodegenError::Unsupported(
+                    "match arm guards not lowered (deferred)".into(),
+                ));
+            }
+            let body_bb = self
+                .context
+                .append_basic_block(func, &format!("match.arm{}.body", i));
+            let next_bb = self
+                .context
+                .append_basic_block(func, &format!("match.arm{}.next", i));
+
+            // Track an optional binding the arm body needs to see.
+            // (name, value-to-store, type) — applied after we
+            // position at body_bb.
+            let mut binding: Option<(String, BasicValueEnum<'ctx>, LotusType)> =
+                None;
+
+            match &arm.pattern {
+                Pattern::Wildcard(_) => {
+                    self.builder
+                        .build_unconditional_branch(body_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Pattern::Binding(ident) => {
+                    binding = Some((
+                        ident.name.clone(),
+                        scrutinee_val,
+                        scrutinee_ty.clone(),
+                    ));
+                    self.builder
+                        .build_unconditional_branch(body_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Pattern::Literal(lit, span) => {
+                    let (lit_val, lit_ty) =
+                        self.lower_expr(&Expr::Literal(lit.clone(), *span), scope)?;
+                    if lit_ty != scrutinee_ty {
+                        return Err(CodegenError::Unsupported(format!(
+                            "match arm pattern type {:?} doesn't match \
+                             scrutinee type {:?}",
+                            lit_ty, scrutinee_ty
+                        )));
+                    }
+                    let cond = match lit_ty {
+                        LotusType::Int | LotusType::Duration | LotusType::Bool => {
+                            self.builder
+                                .build_int_compare(
+                                    inkwell::IntPredicate::EQ,
+                                    scrutinee_val.into_int_value(),
+                                    lit_val.into_int_value(),
+                                    &format!("match.arm{}.cmp", i),
+                                )
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        }
+                        LotusType::Float | LotusType::Decimal => self
+                            .builder
+                            .build_float_compare(
+                                inkwell::FloatPredicate::OEQ,
+                                scrutinee_val.into_float_value(),
+                                lit_val.into_float_value(),
+                                &format!("match.arm{}.cmp", i),
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
+                        other => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "match on {:?} not supported in v0",
+                                other
+                            )));
+                        }
+                    };
+                    self.builder
+                        .build_conditional_branch(cond, body_bb, next_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Pattern::Tuple(_, _) | Pattern::Constructor { .. } => {
+                    return Err(CodegenError::Unsupported(
+                        "tuple / constructor patterns not lowered (deferred)"
+                            .into(),
+                    ));
+                }
+            }
+
+            // Emit arm body at body_bb. If a binding was declared,
+            // put it in scope just for this body. Saved so we can
+            // restore on exit (in case the binding name shadows an
+            // outer local).
+            self.builder.position_at_end(body_bb);
+            let saved: Option<(String, Option<(PointerValue<'ctx>, LotusType)>)> =
+                if let Some((bname, bval, bty)) = &binding {
+                    let alloca = self.alloca_for(bty, bname)?;
+                    self.builder
+                        .build_store(alloca, *bval)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let prior = scope.locals.insert(
+                        bname.clone(),
+                        (alloca, bty.clone()),
+                    );
+                    Some((bname.clone(), prior))
+                } else {
+                    None
+                };
+
+            let body_end = match &arm.body {
+                MatchArmBody::Expr(e) => {
+                    // Statement-position match: arm body is treated
+                    // like a Stmt::Expr (value discarded). Route
+                    // call exprs through `lower_stmt` so calls to
+                    // builtins (println) and void-returning user
+                    // fns are handled by the existing dispatch
+                    // table; other expressions go through
+                    // `lower_expr` and have their value dropped.
+                    if matches!(e, Expr::Call { .. }) {
+                        let s = Stmt::Expr(e.clone());
+                        self.lower_stmt(&s, scope)?
+                    } else {
+                        let _ = self.lower_expr(e, scope)?;
+                        BlockEnd::Open
+                    }
+                }
+                MatchArmBody::Block(b) => self.lower_block(b, scope)?,
+            };
+
+            // Restore the previous binding if we shadowed one;
+            // otherwise drop the binding entry entirely.
+            if let Some((bname, prior)) = saved {
+                match prior {
+                    Some(p) => {
+                        scope.locals.insert(bname, p);
+                    }
+                    None => {
+                        scope.locals.remove(&bname);
+                    }
+                }
+            }
+
+            if body_end == BlockEnd::Open {
+                self.builder
+                    .build_unconditional_branch(after_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                all_terminated = false;
+            }
+
+            // Continue lowering at next_bb (where the next arm's
+            // test will go, or — after the loop — the fallthrough).
+            self.builder.position_at_end(next_bb);
+        }
+
+        // Fallthrough: no arm matched. v0 mirrors the interpreter
+        // (silent no-op) — F.18 exhaustiveness is enforced at
+        // typecheck, so this path is unreachable for well-typed
+        // programs.
+        self.builder
+            .build_unconditional_branch(after_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // The fallthrough adds a path to after_bb, so the block
+        // is reachable even if every arm body terminated.
+        let _ = all_terminated;
+        self.builder.position_at_end(after_bb);
         Ok(BlockEnd::Open)
     }
 

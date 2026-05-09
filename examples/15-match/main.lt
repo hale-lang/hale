@@ -1,0 +1,42 @@
+// 15-match — match expressions in codegen.
+//
+// Three uses of match:
+//   - Int literal arms with a wildcard fallthrough  (classify)
+//   - Bool literal arms                              (status_label)
+//   - Binding pattern as the only arm                (echo)
+//
+// F.18 exhaustiveness is checked at typecheck (interpreter and
+// codegen share the typechecker), so the fallthrough path past
+// a non-matching scrutinee is unreachable for well-typed match
+// statements.
+
+fn classify(n: Int) {
+    match n {
+        0 -> println("zero"),
+        1 -> println("one"),
+        2 -> println("two"),
+        _ -> println("other"),
+    }
+}
+
+fn status_label(b: Bool) {
+    match b {
+        true  -> println("status: live"),
+        false -> println("status: dormant"),
+    }
+}
+
+fn echo(n: Int) {
+    match n {
+        v -> println("got value=", v),
+    }
+}
+
+fn main() {
+    classify(0);
+    classify(2);
+    classify(7);
+    status_label(true);
+    status_label(false);
+    echo(42);
+}
