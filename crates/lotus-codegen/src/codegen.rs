@@ -4587,8 +4587,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
+        let res = self.value_to_string(v, &ty)?;
+        Ok((res, LotusType::String))
+    }
+
+    /// m47-payloads-followup: convert any single value to a
+    /// String pointer, mirroring the interpreter's
+    /// Value::display semantics. Extracted from
+    /// lower_to_string_builtin so the has-payload enum branch can
+    /// recurse on each payload field's render. For has-payload
+    /// enums this emits a switch on the variant tag with
+    /// per-variant inline string assembly via lotus_str_concat.
+    fn value_to_string(
+        &mut self,
+        v: BasicValueEnum<'ctx>,
+        ty: &LotusType,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let ty = ty.clone();
         match ty {
-            LotusType::String => Ok((v, LotusType::String)),
+            LotusType::String => Ok(v),
             LotusType::Int => {
                 let arena_ptr = self.current_arena_ptr()?;
                 let f = self
@@ -4606,7 +4623,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("lotus_str_from_int returns ptr");
-                Ok((res, LotusType::String))
+                Ok(res)
             }
             LotusType::Duration => {
                 let arena_ptr = self.current_arena_ptr()?;
@@ -4625,7 +4642,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("lotus_str_from_duration returns ptr");
-                Ok((res, LotusType::String))
+                Ok(res)
             }
             LotusType::Float => {
                 let arena_ptr = self.current_arena_ptr()?;
@@ -4644,12 +4661,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("lotus_str_from_float returns ptr");
-                Ok((res, LotusType::String))
+                Ok(res)
             }
             LotusType::Decimal => {
-                // m48: split the i128 into hi:lo i64 halves and
-                // call the arena-allocating helper. Returns a
-                // pointer into the current arena.
                 let arena_ptr = self.current_arena_ptr()?;
                 let i128_v = v.into_int_value();
                 let i64_t = self.context.i64_type();
@@ -4681,12 +4695,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("lotus_str_from_decimal returns ptr");
-                Ok((res, LotusType::String))
+                Ok(res)
             }
             LotusType::Bool => {
-                // Use a constant-string select rather than a
-                // runtime call. "true" / "false" globals get
-                // de-duped by global_string.
                 let true_ptr = self.global_string("true");
                 let false_ptr = self.global_string("false");
                 let res = self
@@ -4698,13 +4709,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         "to_string.bool",
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((res, LotusType::String))
+                Ok(res)
             }
             LotusType::Enum(enum_name) => {
-                // m47-followup + payloads: same names-array
-                // lookup that println uses. Has-payload enums
-                // load their tag through the storage-struct
-                // pointer first.
                 let info = self
                     .user_enums
                     .get(&enum_name)
@@ -4715,37 +4722,197 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             enum_name
                         ))
                     })?;
-                let names_g = self.enum_names_array(&enum_name)?;
-                let array_ty = names_g.get_value_type().into_array_type();
-                let tag = if info.has_payload {
-                    self.load_enum_tag(&info, v.into_pointer_value())?
-                } else {
-                    v.into_int_value()
-                };
-                let i32_t = self.context.i32_type();
-                let zero = i32_t.const_int(0, false);
-                let elem_ptr = unsafe {
-                    self.builder
-                        .build_in_bounds_gep(
-                            array_ty,
-                            names_g.as_pointer_value(),
-                            &[zero, tag],
-                            "ts.enum.name.ptr",
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                };
-                let ptr_t = self.context.ptr_type(AddressSpace::default());
-                let label = self
-                    .builder
-                    .build_load(ptr_t, elem_ptr, "ts.enum.name")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((label, LotusType::String))
+                if !info.has_payload {
+                    // No-payload enum: simple names-array lookup
+                    // — same as a Bool select but indexed by tag.
+                    let names_g = self.enum_names_array(&enum_name)?;
+                    let array_ty =
+                        names_g.get_value_type().into_array_type();
+                    let i32_t = self.context.i32_type();
+                    let zero = i32_t.const_int(0, false);
+                    let elem_ptr = unsafe {
+                        self.builder
+                            .build_in_bounds_gep(
+                                array_ty,
+                                names_g.as_pointer_value(),
+                                &[zero, v.into_int_value()],
+                                "ts.enum.name.ptr",
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?
+                    };
+                    let ptr_t =
+                        self.context.ptr_type(AddressSpace::default());
+                    let label = self
+                        .builder
+                        .build_load(ptr_t, elem_ptr, "ts.enum.name")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    return Ok(label);
+                }
+                self.lower_enum_with_payload_to_string(&info, &enum_name, v)
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`to_string` not supported for type {:?}",
                 other
             ))),
         }
+    }
+
+    /// m47-payloads-followup: render a has-payload enum value to
+    /// a String. Per-variant block builds the rendering via
+    /// lotus_str_concat; results join in a PHI. Matches the
+    /// interpreter's Value::display: no-payload variant of a
+    /// has-payload enum → "EnumName::V"; with payload →
+    /// "EnumName::V(p0, p1, ...)".
+    fn lower_enum_with_payload_to_string(
+        &mut self,
+        info: &EnumInfo,
+        enum_name: &str,
+        v: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let func = self
+            .current_fn
+            .expect("value_to_string inside a function body");
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i32_t = self.context.i32_type();
+
+        // Entry block is whatever the caller is in. Load the tag
+        // there, then jump to a dispatch block that switches.
+        let entry_bb = self
+            .builder
+            .get_insert_block()
+            .expect("builder positioned at entry");
+        let enum_ptr = v.into_pointer_value();
+        let tag = self.load_enum_tag(info, enum_ptr)?;
+        let dispatch_bb =
+            self.context.append_basic_block(func, "enum.ts.dispatch");
+        let cont_bb = self.context.append_basic_block(func, "enum.ts.cont");
+        let default_bb =
+            self.context.append_basic_block(func, "enum.ts.default");
+
+        // entry → dispatch
+        self.builder.position_at_end(entry_bb);
+        self.builder
+            .build_unconditional_branch(dispatch_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Build per-variant blocks first so we can collect the
+        // (tag, block, rendered) tuples; the switch in dispatch_bb
+        // wires to them.
+        let mut variant_blocks: Vec<(
+            inkwell::values::IntValue<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
+            BasicValueEnum<'ctx>,
+        )> = Vec::new();
+        for (idx, vinfo) in info.variants.iter().enumerate() {
+            let vinfo = vinfo.clone();
+            let case_bb = self
+                .context
+                .append_basic_block(func, &format!("enum.ts.v{}", idx));
+            self.builder.position_at_end(case_bb);
+            let mut acc =
+                self.global_string(&format!("{}::{}", enum_name, vinfo.name));
+            if !vinfo.field_tys.is_empty() {
+                let open_paren = self.global_string("(");
+                acc = self
+                    .str_concat(acc.into(), open_paren.into())?
+                    .into_pointer_value();
+                let fields =
+                    self.load_enum_payload_fields(info, enum_ptr, idx)?;
+                for (j, (fv, fty)) in fields.iter().enumerate() {
+                    if j > 0 {
+                        let comma = self.global_string(", ");
+                        acc = self
+                            .str_concat(acc.into(), comma.into())?
+                            .into_pointer_value();
+                    }
+                    let rendered = self.value_to_string(*fv, fty)?;
+                    acc = self.str_concat(acc.into(), rendered)?.into_pointer_value();
+                }
+                let close = self.global_string(")");
+                acc = self
+                    .str_concat(acc.into(), close.into())?
+                    .into_pointer_value();
+            }
+            self.builder
+                .build_unconditional_branch(cont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let final_bb = self.builder.get_insert_block().unwrap();
+            variant_blocks.push((
+                i32_t.const_int(idx as u64, false),
+                final_bb,
+                acc.into(),
+            ));
+        }
+
+        // Default: unreachable for a well-typed program; use an
+        // empty string so the PHI is well-defined.
+        self.builder.position_at_end(default_bb);
+        let default_acc = self.global_string("");
+        self.builder
+            .build_unconditional_branch(cont_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Dispatch: switch on the tag.
+        self.builder.position_at_end(dispatch_bb);
+        let cases: Vec<(
+            inkwell::values::IntValue<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
+        )> = variant_blocks
+            .iter()
+            .map(|(c, bb, _)| (*c, *bb))
+            .collect();
+        self.builder
+            .build_switch(tag, default_bb, &cases)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // PHI in cont.
+        self.builder.position_at_end(cont_bb);
+        let phi = self
+            .builder
+            .build_phi(ptr_t, "enum.ts.phi")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let mut incoming: Vec<(
+            &dyn inkwell::values::BasicValue<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
+        )> = Vec::new();
+        for (_, bb, acc) in &variant_blocks {
+            incoming.push((acc, *bb));
+        }
+        incoming.push((&default_acc, default_bb));
+        phi.add_incoming(&incoming);
+        Ok(phi.as_basic_value())
+    }
+
+    /// Inline lotus_str_concat call. Caller's arena owns the
+    /// result.
+    fn str_concat(
+        &mut self,
+        a: BasicValueEnum<'ctx>,
+        b: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let arena_ptr = self.current_arena_ptr()?;
+        let f = self
+            .module
+            .get_function("lotus_str_concat")
+            .expect("lotus_str_concat declared");
+        let res = self
+            .builder
+            .build_call(
+                f,
+                &[
+                    arena_ptr.into(),
+                    a.into_pointer_value().into(),
+                    b.into_pointer_value().into(),
+                ],
+                "str.concat",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_str_concat returns ptr");
+        Ok(res)
     }
 
     /// Build the equality comparison used by Literal patterns
@@ -4780,6 +4947,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     name,
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
+            // m47-payloads-followup: String equality goes through
+            // the lotus_str_eq runtime helper. Used both by match
+            // arms with String literals and by enum-deep-eq when
+            // a payload field is String-typed.
+            LotusType::String | LotusType::Time => {
+                let eq_fn = self
+                    .module
+                    .get_function("lotus_str_eq")
+                    .expect("lotus_str_eq declared");
+                let raw = self
+                    .builder
+                    .build_call(
+                        eq_fn,
+                        &[
+                            scrut_val.into_pointer_value().into(),
+                            lit_val.into_pointer_value().into(),
+                        ],
+                        name,
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_str_eq returns i32");
+                let one = self.context.i32_type().const_int(1, false);
+                self.builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        raw.into_int_value(),
+                        one,
+                        &format!("{}.bool", name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))
+            }
             other => Err(CodegenError::Unsupported(format!(
                 "match on {:?} not supported in v0",
                 other
@@ -6742,14 +6942,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((v.into(), LotusType::Bool))
             }
-            // m47-followup + payloads: enum equality is tag
-            // equality. For has-payload enums, load each side's
-            // tag through the storage-struct pointer first; for
-            // pure no-payload enums, the values ARE i32 tags.
-            // Ord-style operators (<, >, <=, >=) on enum values
-            // aren't supported — declaration order isn't a
-            // meaningful ordering. Payload-equality (deep
-            // comparison) isn't either; v0.1 enum eq = tag eq.
+            // m47-followup + payloads: enum equality.
+            //   - No-payload enums: values are i32 tags; integer
+            //     compare directly.
+            //   - Has-payload enums: deep equality — tag match
+            //     AND per-variant per-field equality. Switch on
+            //     the tag, AND each variant's field comparisons
+            //     into a per-block result, PHI back at the join.
+            //     `!=` is the negation of the eq result.
+            // Ord-style operators (<, >, <=, >=) aren't supported
+            // — declaration order isn't a meaningful ordering.
             (BinOp::Eq | BinOp::NotEq, LotusType::Enum(name)) => {
                 let info = self
                     .user_enums
@@ -6761,25 +6963,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             name
                         ))
                     })?;
-                let pred = match op {
-                    BinOp::Eq => IP::EQ,
-                    BinOp::NotEq => IP::NE,
+                let eq_val: inkwell::values::IntValue<'ctx> = if info.has_payload
+                {
+                    self.lower_enum_deep_eq(
+                        &info,
+                        lv.into_pointer_value(),
+                        rv.into_pointer_value(),
+                    )?
+                } else {
+                    self.builder
+                        .build_int_compare(
+                            IP::EQ,
+                            lv.into_int_value(),
+                            rv.into_int_value(),
+                            "enumcmp",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                };
+                let v = match op {
+                    BinOp::Eq => eq_val,
+                    BinOp::NotEq => self
+                        .builder
+                        .build_not(eq_val, "enumneq")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
                     _ => unreachable!(),
                 };
-                let lhs_tag = if info.has_payload {
-                    self.load_enum_tag(&info, lv.into_pointer_value())?
-                } else {
-                    lv.into_int_value()
-                };
-                let rhs_tag = if info.has_payload {
-                    self.load_enum_tag(&info, rv.into_pointer_value())?
-                } else {
-                    rv.into_int_value()
-                };
-                let v = self
-                    .builder
-                    .build_int_compare(pred, lhs_tag, rhs_tag, "enumcmp")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((v.into(), LotusType::Bool))
             }
             (BinOp::And, LotusType::Bool) => {
@@ -7062,52 +7270,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     ));
                 }
                 LotusType::Enum(enum_name) => {
-                    // m47-followup + payloads: render the variant
-                    // name via a const `[N x ptr]` of
-                    // "EnumName::VariantName" strings, indexed by
-                    // tag. For has-payload enums the value is a
-                    // pointer; load the tag from the storage
-                    // struct first.
-                    let info = self
-                        .user_enums
-                        .get(enum_name)
-                        .cloned()
-                        .ok_or_else(|| {
-                            CodegenError::Unsupported(format!(
-                                "println: unknown enum `{}`",
-                                enum_name
-                            ))
-                        })?;
-                    let names_g = self.enum_names_array(enum_name)?;
-                    let array_ty = names_g
-                        .get_value_type()
-                        .into_array_type();
-                    let tag = if info.has_payload {
-                        let p = val.into_pointer_value();
-                        self.load_enum_tag(&info, p)?
-                    } else {
-                        val.into_int_value()
-                    };
-                    let i32_t = self.context.i32_type();
-                    let zero = i32_t.const_int(0, false);
-                    let elem_ptr = unsafe {
-                        self.builder
-                            .build_in_bounds_gep(
-                                array_ty,
-                                names_g.as_pointer_value(),
-                                &[zero, tag],
-                                "enum.name.ptr",
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    };
-                    let ptr_t = self.context.ptr_type(AddressSpace::default());
-                    let label = self
-                        .builder
-                        .build_load(ptr_t, elem_ptr, "enum.name")
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // m47-followup + payloads: render the enum
+                    // value via the shared value_to_string path —
+                    // for no-payload enums it returns a pointer
+                    // into the names-array global; for has-payload
+                    // enums it builds the rendering inline (per-
+                    // variant switch + per-field render). Splice
+                    // the resulting char* in as %s.
+                    let _ = enum_name;
+                    let s = self.value_to_string(val, &ty)?;
                     format.push_str("%s");
                     printf_args.push(BasicMetadataValueEnum::PointerValue(
-                        label.into_pointer_value(),
+                        s.into_pointer_value(),
                     ));
                 }
             }
@@ -10112,29 +10286,59 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (payload_val, payload_ty) = self.lower_expr(value, scope)?;
-        let payload_type_name = match &payload_ty {
-            LotusType::TypeRef(name) => name.clone(),
+        // m47-payloads-followup: bus payload is either a
+        // user-type struct pointer OR a has-payload enum
+        // pointer. Both lower to a ptr value + a size of the
+        // pointed-to storage struct; bus_dispatch memcpys those
+        // bytes into the cell. No-payload enums are i32 values
+        // — they'd need an alloca + pointer take to dispatch;
+        // not common enough at v0.1 to wire (wrap in a struct).
+        let payload_size = match &payload_ty {
+            LotusType::TypeRef(name) => {
+                let info = self
+                    .user_types
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "bus payload type `{}` not declared",
+                            name
+                        ))
+                    })?;
+                info.struct_ty
+                    .size_of()
+                    .expect("payload struct has known size")
+            }
+            LotusType::Enum(name) => {
+                let info = self
+                    .user_enums
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "bus payload enum `{}` not declared",
+                            name
+                        ))
+                    })?;
+                if !info.has_payload {
+                    return Err(CodegenError::Unsupported(format!(
+                        "bus send of no-payload enum `{}` not supported \
+                         at v0.1 — wrap in a struct or add a variant payload",
+                        name
+                    )));
+                }
+                self.enum_storage_struct(&info)
+                    .size_of()
+                    .expect("enum storage struct has known size")
+            }
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "bus send payload must be a user-type value; got {:?}",
+                    "bus send payload must be a user-type or has-payload \
+                     enum value; got {:?}",
                     other
                 )));
             }
         };
-        let payload_info = self
-            .user_types
-            .get(&payload_type_name)
-            .cloned()
-            .ok_or_else(|| {
-                CodegenError::Unsupported(format!(
-                    "bus payload type `{}` not declared",
-                    payload_type_name
-                ))
-            })?;
-        let payload_size = payload_info
-            .struct_ty
-            .size_of()
-            .expect("payload struct has known size");
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let queue_global = self
             .module
@@ -10361,6 +10565,146 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .into_int_value();
         Ok(tag)
+    }
+
+    /// m47-payloads: emit deep equality between two has-payload
+    /// enum values. Tag-equality is necessary; on a tag match we
+    /// dispatch via switch into per-variant per-field comparison.
+    /// String fields compare via `lotus_str_eq`; primitive fields
+    /// compare via the appropriate int / float predicate. Returns
+    /// an i1 holding the equality result.
+    ///
+    /// Sequencing: branch out of the current block into a fresh
+    /// `cont` block that PHIs the result; per-variant blocks
+    /// compute their own AND-chain and branch into `cont`. Caller
+    /// is responsible for picking up at `cont` and using the
+    /// returned i1.
+    fn lower_enum_deep_eq(
+        &mut self,
+        info: &EnumInfo,
+        lv_ptr: PointerValue<'ctx>,
+        rv_ptr: PointerValue<'ctx>,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        let func = self
+            .current_fn
+            .expect("lower_enum_deep_eq inside a function body");
+        let bool_t = self.context.bool_type();
+        let i32_t = self.context.i32_type();
+
+        let lt = self.load_enum_tag(info, lv_ptr)?;
+        let rt = self.load_enum_tag(info, rv_ptr)?;
+        let tag_eq = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::EQ, lt, rt, "enum.tag.eq")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let cont_bb = self.context.append_basic_block(func, "enum.eq.cont");
+        let dispatch_bb =
+            self.context.append_basic_block(func, "enum.eq.dispatch");
+        let mismatch_bb =
+            self.context.append_basic_block(func, "enum.eq.mismatch");
+        self.builder
+            .build_conditional_branch(tag_eq, dispatch_bb, mismatch_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Per-variant blocks: each computes its own AND-chain over
+        // field-eqs and branches into cont with that result.
+        // Default landing for the (impossible-after-tag-eq) tag-
+        // out-of-range case is `true` — same as having no
+        // remaining payload to compare.
+        let mut variant_blocks: Vec<(
+            inkwell::values::IntValue<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
+            inkwell::values::IntValue<'ctx>,
+        )> = Vec::new();
+        let default_bb =
+            self.context.append_basic_block(func, "enum.eq.default");
+
+        for (idx, v) in info.variants.iter().enumerate() {
+            let v = v.clone();
+            let case_bb = self
+                .context
+                .append_basic_block(func, &format!("enum.eq.v{}", idx));
+            self.builder.position_at_end(case_bb);
+            let mut acc: inkwell::values::IntValue<'ctx> =
+                bool_t.const_int(1, false);
+            if !v.field_tys.is_empty() {
+                let l_fields =
+                    self.load_enum_payload_fields(info, lv_ptr, idx)?;
+                let r_fields =
+                    self.load_enum_payload_fields(info, rv_ptr, idx)?;
+                for (j, ((lv_f, ty), (rv_f, _))) in
+                    l_fields.iter().zip(r_fields.iter()).enumerate()
+                {
+                    let cmp = self.lower_match_eq_cmp(
+                        *lv_f,
+                        *rv_f,
+                        ty,
+                        &format!("enum.eq.v{}.f{}", idx, j),
+                    )?;
+                    acc = self
+                        .builder
+                        .build_and(acc, cmp, &format!("enum.eq.v{}.acc", idx))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+            }
+            self.builder
+                .build_unconditional_branch(cont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            variant_blocks.push((
+                i32_t.const_int(idx as u64, false),
+                case_bb,
+                acc,
+            ));
+        }
+
+        // Default block: same shape — branch to cont with `true`.
+        self.builder.position_at_end(default_bb);
+        let default_acc = bool_t.const_int(1, false);
+        self.builder
+            .build_unconditional_branch(cont_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Mismatch block: result is false, branch to cont.
+        self.builder.position_at_end(mismatch_bb);
+        let mismatch_acc = bool_t.const_int(0, false);
+        self.builder
+            .build_unconditional_branch(cont_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Dispatch block: switch on lt into the per-variant blocks.
+        self.builder.position_at_end(dispatch_bb);
+        let cases: Vec<(
+            inkwell::values::IntValue<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
+        )> = variant_blocks
+            .iter()
+            .map(|(c, b, _)| (*c, *b))
+            .collect();
+        self.builder
+            .build_switch(lt, default_bb, &cases)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // cont: PHI over the per-block results.
+        self.builder.position_at_end(cont_bb);
+        let phi = self
+            .builder
+            .build_phi(bool_t, "enum.eq.phi")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let mut incoming: Vec<(
+            &dyn inkwell::values::BasicValue<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
+        )> = Vec::new();
+        // SAFETY: each `acc` has bool_t type; PHI accepts any
+        // BasicValue, so we coerce via &inkwell::values::IntValue
+        // which implements BasicValue.
+        for (_, bb, acc) in &variant_blocks {
+            incoming.push((acc, *bb));
+        }
+        incoming.push((&default_acc, default_bb));
+        incoming.push((&mismatch_acc, mismatch_bb));
+        phi.add_incoming(&incoming);
+        Ok(phi.as_basic_value().into_int_value())
     }
 
     /// m47-payloads: load each payload field of a variant from

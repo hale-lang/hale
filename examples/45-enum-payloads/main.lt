@@ -62,4 +62,20 @@ fn main() {
 
     report(Result::Ok(42));
     report(Result::Err("bad input"));
+
+    // Direct println of a has-payload enum — codegen renders
+    // each variant inline (per-variant switch + lotus_str_concat
+    // over per-field renders); interpreter renders via
+    // Value::display. Both produce the same string.
+    println("direct: ", Event::Trade(1.5d, 200));
+    println("direct: ", Event::Halt);
+    println("direct: ", Result::Ok(7));
+    println("direct: ", Result::Err("oops"));
+
+    // Equality: deep across tag + payload, both backends.
+    let a: Result = Result::Ok(1);
+    let b: Result = Result::Ok(1);
+    let c: Result = Result::Ok(2);
+    println("a == b: ", a == b);
+    println("a == c: ", a == c);
 }
