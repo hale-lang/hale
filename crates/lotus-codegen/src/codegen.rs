@@ -1175,11 +1175,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// Emit a call to destroy the bus queue. Used at every
-    /// main-exit point so the queue tears down cleanly. Cells
-    /// enqueued AFTER the last drain (e.g. by code in a
-    /// dissolve method that publishes after its own subscribers
-    /// have already dissolved) are leaked here — v0 limitation;
-    /// realistic programs don't publish during dissolve.
+    /// main-exit point so the queue tears down cleanly. m52:
+    /// `flush_dissolve_frame_kind` now drains the queue after
+    /// each dissolve in the loop, so cells enqueued by a
+    /// dissolve method get dispatched to still-alive
+    /// subscribers before those subscribers themselves
+    /// dissolve. By the time we reach this destroy call, the
+    /// queue is empty in well-formed programs (any residual
+    /// cells would target dissolved subscribers, which the
+    /// deregister-on-dissolve invariant prevents from being
+    /// enqueued in the first place).
     /// m45-followup: also tears down the C-runtime bus router's
     /// entries vec so the heap allocation is freed alongside the
     /// queue's. Bus state lives entirely in the C runtime now.
@@ -1400,6 +1405,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // run. Symmetric with the ephemeral path in
             // lower_locus_instantiation.
             self.emit_locus_arena_destroy(&info, self_ptr, &locus_name)?;
+            // m52: drain again after each dissolve. The dissolve
+            // method may publish — those cells enqueue for
+            // still-alive subscribers later in the reverse-iter
+            // order. Without this in-loop drain they'd sit until
+            // emit_bus_queue_destroy, by which point all
+            // subscribers have dissolved and the cells are
+            // leaked (use-after-free if dispatched). Drain here
+            // dispatches them while their targets are still
+            // alive; the deregister-on-dissolve invariant
+            // (m45-followup-2) means cells never target the
+            // just-dissolved locus. The drain loop in the
+            // C-runtime keeps popping until the queue is empty
+            // at pop time, so chain-reactions where a fired
+            // handler publishes more get caught in the same
+            // drain pass.
+            if drain_queue {
+                self.emit_bus_drain()?;
+            }
         }
         Ok(())
     }

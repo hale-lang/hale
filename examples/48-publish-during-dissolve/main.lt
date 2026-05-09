@@ -1,0 +1,66 @@
+// 48-publish-during-dissolve — m52: cells enqueued during dissolve
+// no longer leak.
+//
+// Pre-m52: the cooperative bus queue drained ONCE at the top of
+// `flush_dissolve_frame`, then the dissolve loop ran. If a
+// dissolve method published, cells went into the queue, sat
+// unflushed, and were freed wholesale by emit_bus_queue_destroy
+// at main exit — the receiving subscriber's handler never fired.
+// CHECKPOINT logged it as a v0 limit ("realistic programs don't
+// publish during dissolve") and noted the fix would be a
+// drain-loop-until-empty wrapper. m52 ships exactly that, with
+// the design call resolved as: drain after EACH locus's
+// dissolve, so cells targeting still-alive subscribers fire
+// before those subscribers themselves dissolve. The
+// deregister-on-dissolve invariant (m45-followup-2) means cells
+// never target the just-dissolved locus, so the drain is safe
+// — every cell it pops goes to a still-registered subscriber.
+//
+// This example exercises the path: a Sender locus publishes a
+// "farewell" message in its dissolve method. A Receiver locus
+// (still alive when Sender dissolves, because we instantiate
+// it FIRST so it sits at the bottom of the deferred-dissolve
+// stack and dissolves LAST) subscribes to "farewell" and
+// prints what it gets. With m52, the message gets through. Both
+// backends produce the same output.
+
+type Farewell {
+    msg: String;
+}
+
+locus Receiver {
+    bus {
+        subscribe "farewell" as on_farewell of type Farewell;
+    }
+
+    fn on_farewell(f: Farewell) {
+        println("receiver: got farewell: ", f.msg);
+    }
+}
+
+locus Sender {
+    bus {
+        publish "farewell" of type Farewell;
+    }
+
+    dissolve() {
+        // m52: this publish enqueues a cell for Receiver.
+        // Pre-m52 the cell would sit until queue_destroy and
+        // never fire. Post-m52 the in-loop drain after this
+        // dissolve dispatches it to Receiver before
+        // Receiver itself dissolves.
+        println("sender: dissolving — publishing farewell");
+        "farewell" <- Farewell { msg: "goodbye" };
+    }
+}
+
+fn main() {
+    // Receiver instantiates first → goes to the bottom of the
+    // deferred-dissolve stack → dissolves LAST. Sender
+    // instantiates second → top of stack → dissolves FIRST.
+    // So at the moment Sender's dissolve publishes,
+    // Receiver is still alive and registered.
+    Receiver { };
+    Sender { };
+    println("main: returning");
+}
