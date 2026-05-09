@@ -18,11 +18,11 @@
 type Light = enum { Red, Yellow, Green };
 
 fn report(l: Light) {
-    match l {
-        Light::Red    -> println("light: red"),
-        Light::Yellow -> println("light: yellow"),
-        Light::Green  -> println("light: green"),
-    }
+    // m47-followup: enum values can be printed directly. Codegen
+    // looks up the variant label in a const `[N x ptr]` keyed by
+    // tag; the interpreter renders Value::EnumVariant via its
+    // display impl. Both produce "Light::Red" / etc.
+    println("light: ", l);
 }
 
 fn next(l: Light) -> Light {

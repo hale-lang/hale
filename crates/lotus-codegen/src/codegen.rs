@@ -6815,12 +6815,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                          components via .0 / .1 / let-destructure".into(),
                     ));
                 }
-                LotusType::Enum(name) => {
-                    return Err(CodegenError::Unsupported(format!(
-                        "println of an enum value (`{}`) — match on \
-                         the variant and print labels per arm",
-                        name
-                    )));
+                LotusType::Enum(enum_name) => {
+                    // m47-followup: render the variant name via a
+                    // const `[N x ptr]` of "EnumName::VariantName"
+                    // strings, indexed by tag. Matches the
+                    // interpreter's Value::EnumVariant::display
+                    // output exactly.
+                    let names_g = self.enum_names_array(enum_name)?;
+                    let array_ty = names_g
+                        .get_value_type()
+                        .into_array_type();
+                    let tag = val.into_int_value();
+                    let i32_t = self.context.i32_type();
+                    let zero = i32_t.const_int(0, false);
+                    let elem_ptr = unsafe {
+                        self.builder
+                            .build_in_bounds_gep(
+                                array_ty,
+                                names_g.as_pointer_value(),
+                                &[zero, tag],
+                                "enum.name.ptr",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    };
+                    let ptr_t = self.context.ptr_type(AddressSpace::default());
+                    let label = self
+                        .builder
+                        .build_load(ptr_t, elem_ptr, "enum.name")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    format.push_str("%s");
+                    printf_args.push(BasicMetadataValueEnum::PointerValue(
+                        label.into_pointer_value(),
+                    ));
                 }
             }
         }
@@ -9903,6 +9929,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_global_string_ptr(s, "s")
             .expect("build_global_string_ptr");
         g.as_pointer_value()
+    }
+
+    /// m47-followup: lazily build (or look up) a `[N x ptr]`
+    /// global of "EnumName::VariantName" string pointers for an
+    /// enum, indexed by variant tag. Used by `println` so an
+    /// enum value renders the same string the interpreter's
+    /// `Value::EnumVariant::display` produces. Returns the
+    /// global's address so a single GEP + load reads any
+    /// variant's name.
+    fn enum_names_array(
+        &mut self,
+        enum_name: &str,
+    ) -> Result<inkwell::values::GlobalValue<'ctx>, CodegenError> {
+        let global_name = format!("lotus.enum.{}.names", enum_name);
+        if let Some(g) = self.module.get_global(&global_name) {
+            return Ok(g);
+        }
+        let info = self
+            .user_enums
+            .get(enum_name)
+            .cloned()
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "enum `{}` not registered",
+                    enum_name
+                ))
+            })?;
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let mut entries: Vec<inkwell::values::PointerValue<'ctx>> = Vec::new();
+        for v in &info.variants {
+            let label = format!("{}::{}", enum_name, v);
+            entries.push(self.global_string(&label));
+        }
+        let array_ty = ptr_t.array_type(entries.len() as u32);
+        let init = ptr_t.const_array(&entries);
+        let g = self.module.add_global(array_ty, None, &global_name);
+        g.set_initializer(&init);
+        g.set_linkage(inkwell::module::Linkage::Internal);
+        g.set_constant(true);
+        Ok(g)
     }
 
     /// Allocate `size` bytes through the lotus region allocator.
