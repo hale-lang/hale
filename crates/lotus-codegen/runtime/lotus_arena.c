@@ -551,6 +551,108 @@ void lotus_mailbox_destroy(lotus_mailbox_t *mb) {
 }
 
 /*
+ * Process-wide bus router (m45-followup proper-fix).
+ *
+ * Replaces the per-program LLVM-side {bus.entries, bus.count,
+ * lotus.bus_dispatch} triple. Storage is a heap-allocated dynamic
+ * vec that grows on demand, so adding a new subscription has no
+ * compile-time-known capacity ceiling. Multiple instances of the
+ * same subscribed locus type each get their own entry without
+ * needing the m45 quickfix's INSTANCES_PER_TYPE multiplier.
+ *
+ * Entry shape mirrors the prior LLVM struct exactly: subject (NUL
+ * marks deregistered, courtesy of `lotus_bus_quarantine_self`),
+ * subscriber's locus self pointer, handler fn pointer, and an
+ * optional mailbox (null = cooperative subscriber → cells go to
+ * the program-wide queue; non-null = pinned subscriber → cells
+ * post to that locus's mailbox).
+ *
+ * No mutex on the router itself: registration runs inside
+ * single-threaded instantiation paths, dispatch's payload-copy
+ * happens through the queue/mailbox locks, and quarantine runs on
+ * the cooperative thread (pinned loci don't have closures so
+ * never quarantine). If pinned-side registration ever lands, this
+ * acquires a mutex.
+ */
+
+typedef struct lotus_bus_entry {
+    const char       *subject;
+    void             *self_ptr;
+    void             *handler;
+    lotus_mailbox_t  *mailbox;
+} lotus_bus_entry_t;
+
+static lotus_bus_entry_t *g_bus_entries = NULL;
+static size_t             g_bus_count   = 0;
+static size_t             g_bus_cap     = 0;
+
+#define LOTUS_BUS_ROUTER_INITIAL_CAP 16
+
+void lotus_bus_register(const char *subject,
+                        void *self_ptr,
+                        void *handler,
+                        lotus_mailbox_t *mailbox) {
+    if (g_bus_count == g_bus_cap) {
+        size_t new_cap = g_bus_cap == 0
+            ? LOTUS_BUS_ROUTER_INITIAL_CAP
+            : g_bus_cap * 2;
+        lotus_bus_entry_t *grown = (lotus_bus_entry_t *)
+            realloc(g_bus_entries, new_cap * sizeof(lotus_bus_entry_t));
+        if (!grown) return;     /* drop on OOM — graceful degrade */
+        g_bus_entries = grown;
+        g_bus_cap     = new_cap;
+    }
+    lotus_bus_entry_t *e = &g_bus_entries[g_bus_count++];
+    e->subject  = subject;
+    e->self_ptr = self_ptr;
+    e->handler  = handler;
+    e->mailbox  = mailbox;
+}
+
+/* Dispatch a published message to every subscriber of `subject`.
+ * `queue` is the program-wide cooperative queue (passed in by
+ * codegen rather than C-runtime-owned because the queue's
+ * lifecycle is bound to main's prelude/exit, not to whatever
+ * first triggers a register). Pinned subscribers route via their
+ * mailbox; cooperative subscribers enqueue onto `queue`. */
+void lotus_bus_dispatch(lotus_bus_queue_t *queue,
+                        const char *subject,
+                        const void *payload,
+                        size_t payload_size) {
+    if (!subject) return;
+    for (size_t i = 0; i < g_bus_count; i++) {
+        lotus_bus_entry_t *e = &g_bus_entries[i];
+        if (!e->subject) continue;          /* deregistered */
+        if (strcmp(e->subject, subject) != 0) continue;
+        if (e->mailbox) {
+            lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
+                               payload, payload_size);
+        } else if (queue) {
+            lotus_bus_queue_enqueue(queue, e->handler, e->self_ptr,
+                                    payload, payload_size);
+        }
+    }
+}
+
+/* m41b semantic: null-out subject for any entry whose self
+ * matches `self_ptr`. Subsequent `lotus_bus_dispatch` calls skip
+ * those slots — quarantined subscribers stop receiving messages. */
+void lotus_bus_quarantine_self(void *self_ptr) {
+    for (size_t i = 0; i < g_bus_count; i++) {
+        if (g_bus_entries[i].self_ptr == self_ptr) {
+            g_bus_entries[i].subject = NULL;
+        }
+    }
+}
+
+void lotus_bus_router_destroy(void) {
+    if (g_bus_entries) free(g_bus_entries);
+    g_bus_entries = NULL;
+    g_bus_count   = 0;
+    g_bus_cap     = 0;
+}
+
+/*
  * Pinned-thread CPU affinity helper (m28c).
  *
  * `: schedule pinned(core=N)` annotations route through here:

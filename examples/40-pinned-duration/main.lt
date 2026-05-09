@@ -1,0 +1,71 @@
+// 40-pinned-duration — m43-followup: closes the v0 limit where
+// pinned post-run() didn't fire duration-epoch closures.
+//
+// Pre-fix: the pinned thread's main loop ran birth → run →
+// (mailbox loop) → drain → dissolve, with a tick_wrapper call
+// inserted after run(). Duration had no matching wrapper, so its
+// post-run cell-boundary fire was simply missing on pinned —
+// cooperative + post-handler bus paths fired duration correctly,
+// but a pinned locus's run() returning was a silent gap.
+//
+// Post-fix: a sibling `__duration_closures_wrapper(self_ptr)` is
+// synthesized for every locus that declares duration closures.
+// The pinned __pinned_main calls both wrappers after run() in
+// sequence, so duration violations now reach the parent's
+// on_failure on the pinned thread (just like tick already did).
+//
+// Shape: a pinned Heartbeat whose run() sleeps long enough for
+// the duration interval to elapse. The closure ALWAYS fails
+// (used as a "fired-here" signal), so each fire surfaces as a
+// visible violation absorbed by Coordinator's on_failure. The
+// parent counts fires so the test reads as a single count, not
+// a stream.
+
+import "std/time";
+
+locus Heartbeat : schedule pinned {
+    params {
+        magic: Int = 0;
+    }
+
+    closure beat {
+        // Always-fail self-assertion (|0 - 1| > 0). Acts as a
+        // "duration fired post-run" signal — the parent's
+        // on_failure absorbs and counts.
+        self.magic ~~ 1 within 0;
+        epoch duration(20ms);
+    }
+
+    run() {
+        // Sleep so post-run duration sees ample elapsed time
+        // (well past 20ms). The fire happens when run() returns
+        // and the pinned thread invokes __duration_closures_wrapper.
+        time::sleep(50ms);
+    }
+}
+
+locus Coordinator {
+    params {
+        post_run_fires: Int = 0;
+    }
+
+    on_failure(h: Heartbeat, err: ClosureViolation) {
+        self.post_run_fires = self.post_run_fires + 1;
+        println("Coordinator: duration fired post-run on pinned (#",
+                self.post_run_fires, ")");
+    }
+
+    run() {
+        Heartbeat { };
+        // Coordinator.run() returns immediately. The pinned
+        // thread is now sleeping inside Heartbeat.run(); the
+        // deferred-dissolve flush at scope exit pthread_joins it.
+        // During that join window, post-run fires the duration
+        // wrapper, the closure violates, on_failure routes here.
+    }
+}
+
+fn main() {
+    Coordinator { };
+    println("done");
+}

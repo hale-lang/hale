@@ -91,6 +91,25 @@ struct Interpreter {
     /// Their closures fire at program end via the dissolve
     /// cascade — the F.4 / F.9 endpoint of the audit graph.
     top_level_loci: Vec<LocusHandle>,
+    /// m46: closure-accumulator substitution context. Set by
+    /// `evaluate_closure` right before lowering the assertion
+    /// expressions; cleared after. When set, `eval_expr`'s
+    /// `Expr::Sum` arm reads from the next accumulator slot
+    /// instead of computing an array reduction. Slots are
+    /// occurrence-ordered (left expr's sums first, then
+    /// right's, then tolerance's) and the index advances per
+    /// `sum(...)` encountered during lowering.
+    accumulator_ctx: Option<AccumulatorEvalCtx>,
+}
+
+/// m46: per-closure accumulator substitution context for the
+/// interpreter. Held in `Interpreter::accumulator_ctx` while a
+/// closure assertion is being evaluated.
+#[derive(Debug, Clone)]
+struct AccumulatorEvalCtx {
+    handle: LocusHandle,
+    closure_name: String,
+    next_idx: std::cell::Cell<usize>,
 }
 
 impl Interpreter {
@@ -105,6 +124,7 @@ impl Interpreter {
             parent_stack: Vec::new(),
             bus: BusRouter::new(),
             top_level_loci: Vec::new(),
+            accumulator_ctx: None,
         }
     }
 
@@ -457,6 +477,9 @@ impl Interpreter {
                             Value::Locus(handle) => {
                                 let cur = handle.restart_count.get();
                                 handle.restart_count.set(cur + 1);
+                                self.reset_accumulators_for_event(
+                                    &handle, "restart",
+                                );
                                 Ok(())
                             }
                             other => Err(Signal::Error(format!(
@@ -480,6 +503,9 @@ impl Interpreter {
                         match target {
                             Value::Locus(handle) => {
                                 handle.quarantined.set(true);
+                                self.reset_accumulators_for_event(
+                                    &handle, "quarantine",
+                                );
                                 Ok(())
                             }
                             other => Err(Signal::Error(format!(
@@ -508,6 +534,9 @@ impl Interpreter {
                                 let cur = handle.restart_count.get();
                                 handle.restart_count.set(cur + 1);
                                 handle.restart_in_place_pending.set(true);
+                                self.reset_accumulators_for_event(
+                                    &handle, "restart_in_place",
+                                );
                                 Ok(())
                             }
                             other => Err(Signal::Error(format!(
@@ -956,6 +985,35 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
             Expr::Sum(inner, _) => {
+                // m46: when an accumulator-eval ctx is active
+                // (we're inside a closure assertion's
+                // left/right/tolerance), `sum(...)` reads from
+                // the next accumulator slot — sample-update
+                // already ran. Outside a closure assertion,
+                // fall through to the existing array-reduction
+                // semantic (`sum([1,2,3])` → 6).
+                if let Some(ctx) = self.accumulator_ctx.clone() {
+                    let idx = ctx.next_idx.get();
+                    ctx.next_idx.set(idx + 1);
+                    let map = ctx.handle.accumulators.borrow();
+                    let slots = map.get(&ctx.closure_name).ok_or_else(|| {
+                        Signal::Error(format!(
+                            "internal: closure `{}` accumulator slots missing \
+                             at substitution time",
+                            ctx.closure_name
+                        ))
+                    })?;
+                    let v = slots.get(idx).cloned().ok_or_else(|| {
+                        Signal::Error(format!(
+                            "internal: closure `{}` accumulator slot {} \
+                             out of range (have {})",
+                            ctx.closure_name,
+                            idx,
+                            slots.len()
+                        ))
+                    })?;
+                    return Ok(v);
+                }
                 let v = self.eval_expr(inner)?;
                 reduction(&v, BinOp::Add).map_err(Signal::Error)
             }
@@ -1203,6 +1261,13 @@ impl Interpreter {
             duration_last_fire: Rc::new(RefCell::new(vec![now_ns; duration_count])),
             parent: Rc::new(RefCell::new(parent_at_birth)),
             restart_in_place_pending: Rc::new(std::cell::Cell::new(false)),
+            // m46: accumulators lazy-init at first sample. Empty
+            // map starts off; `update_accumulators_for_closure`
+            // creates per-closure entries on demand using the
+            // sample's runtime type to choose the zero. Avoids a
+            // separate type-from-AST inference pass for the
+            // interpreter (codegen's pass already validates types).
+            accumulators: Rc::new(RefCell::new(BTreeMap::new())),
         };
 
         // Register every bus subscription on the router. m42:
@@ -1577,6 +1642,83 @@ impl Interpreter {
         }
     }
 
+    /// m46: evaluate each accumulator's inner expression in
+    /// `handle`'s scope and add the result to the matching slot
+    /// in `handle.accumulators[closure_name]`. Lazy-initializes
+    /// the slot list on first fire, using each sample's runtime
+    /// type to choose the zero. Self is already on the
+    /// `self_stack` when we get here (pushed by
+    /// `evaluate_closure`), so `eval_expr` of `self.X` resolves
+    /// correctly.
+    fn update_closure_accumulators(
+        &mut self,
+        handle: &LocusHandle,
+        closure_name: &str,
+        inner_exprs: &[Expr],
+    ) -> Result<(), Signal> {
+        // Evaluate each inner expr first (no borrow on accumulators).
+        let mut samples: Vec<Value> = Vec::with_capacity(inner_exprs.len());
+        for inner in inner_exprs {
+            samples.push(self.eval_expr(inner)?);
+        }
+        // Now grab the accumulators map and update.
+        let mut map = handle.accumulators.borrow_mut();
+        let slots = map
+            .entry(closure_name.to_string())
+            .or_insert_with(Vec::new);
+        // Pad with zeros to match the inner_exprs count, using each
+        // sample's type for the zero.
+        while slots.len() < samples.len() {
+            let i = slots.len();
+            slots.push(zero_value_of_same_type(&samples[i]));
+        }
+        for (slot, sample) in slots.iter_mut().zip(samples.into_iter()) {
+            let next = eval_binop(BinOp::Add, slot, &sample)
+                .map_err(Signal::Error)?;
+            *slot = next;
+        }
+        Ok(())
+    }
+
+    /// m46: zero each closure's accumulators on `handle` whose
+    /// `persists_through(...)` clause does not name `event`.
+    /// Default = reset; opting into preservation requires the
+    /// explicit clause. Called from restart / restart_in_place /
+    /// quarantine recovery dispatch.
+    fn reset_accumulators_for_event(
+        &mut self,
+        handle: &LocusHandle,
+        event: &str,
+    ) {
+        let closures: Vec<ClosureDecl> = handle
+            .decl
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                LocusMember::Closure(c) => Some(c.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut map = handle.accumulators.borrow_mut();
+        for c in &closures {
+            let persists = c.clauses.iter().any(|cl| {
+                if let ClosureClause::PersistsThrough(events) = cl {
+                    events.iter().any(|e| e.name == event)
+                } else {
+                    false
+                }
+            });
+            if persists {
+                continue;
+            }
+            if let Some(slots) = map.get_mut(&c.name.name) {
+                for slot in slots.iter_mut() {
+                    *slot = zero_value_of_same_type(slot);
+                }
+            }
+        }
+    }
+
     /// Evaluate one closure assertion. Returns
     /// [`ClosureOutcome::Pass`] when the band holds, or
     /// [`ClosureOutcome::Violation`] carrying a structured
@@ -1590,6 +1732,27 @@ impl Interpreter {
         self.self_stack.push(handle.clone());
         self.env.push();
 
+        // m46: sample-update each accumulator slot for this
+        // closure BEFORE evaluating the assertion. The slot list
+        // for this closure is computed from the AST shape (every
+        // `sum(...)` in left/right/tolerance, in occurrence
+        // order). On first fire, slots lazy-init to zero of the
+        // sample's type. The assertion's `sum(...)` references
+        // then read the post-update running totals.
+        let acc_inner_exprs = collect_sum_inner_exprs(&closure.assertion);
+        if !acc_inner_exprs.is_empty() {
+            self.update_closure_accumulators(
+                &handle,
+                &closure.name.name,
+                &acc_inner_exprs,
+            )?;
+            self.accumulator_ctx = Some(AccumulatorEvalCtx {
+                handle: handle.clone(),
+                closure_name: closure.name.name.clone(),
+                next_idx: std::cell::Cell::new(0),
+            });
+        }
+
         let result: Result<(Value, Value, Value), Signal> = (|| {
             let lt = self.eval_expr(&closure.assertion.left)?;
             let rt = self.eval_expr(&closure.assertion.right)?;
@@ -1597,6 +1760,7 @@ impl Interpreter {
             Ok((lt, rt, tol))
         })();
 
+        self.accumulator_ctx = None;
         self.env.pop();
         self.self_stack.pop();
 
@@ -1834,6 +1998,62 @@ impl Interpreter {
 enum ClosureOutcome {
     Pass,
     Violation(Value),
+}
+
+/// m46: walk a closure assertion's left + right + tolerance
+/// in declaration order, collect every `sum(inner)` call's
+/// inner expression. Same shape as the codegen helper of the
+/// same name (kept duplicated rather than shared because the
+/// two crates have different Expr import paths and the helper
+/// is small).
+fn collect_sum_inner_exprs(ass: &ClosureAssertion) -> Vec<Expr> {
+    let mut out = Vec::new();
+    walk_collect_sum_inner(&ass.left, &mut out);
+    walk_collect_sum_inner(&ass.right, &mut out);
+    walk_collect_sum_inner(&ass.tolerance, &mut out);
+    out
+}
+
+fn walk_collect_sum_inner(e: &Expr, out: &mut Vec<Expr>) {
+    match e {
+        Expr::Sum(inner, _) => out.push((**inner).clone()),
+        Expr::Call { callee, args, .. } => {
+            walk_collect_sum_inner(callee, out);
+            for a in args {
+                walk_collect_sum_inner(a, out);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            walk_collect_sum_inner(left, out);
+            walk_collect_sum_inner(right, out);
+        }
+        Expr::Unary { operand, .. } => walk_collect_sum_inner(operand, out),
+        Expr::Field { receiver, .. } => walk_collect_sum_inner(receiver, out),
+        Expr::Index { receiver, index, .. } => {
+            walk_collect_sum_inner(receiver, out);
+            walk_collect_sum_inner(index, out);
+        }
+        _ => {}
+    }
+}
+
+/// m46: produce a zero value of the same numeric type as `v`.
+/// Used at lazy accumulator init (first sample) and at recovery
+/// reset. Decimal stores as a string, so the "zero" is the
+/// canonical "0d" literal so subsequent `eval_binop(Add, ...)`
+/// produces a syntactically-clean Decimal sum.
+fn zero_value_of_same_type(v: &Value) -> Value {
+    match v {
+        Value::Int(_) => Value::Int(0),
+        Value::Float(_) => Value::Float(0.0),
+        Value::Decimal(_) => Value::Decimal("0d".to_string()),
+        Value::Duration(_) => Value::Duration(0),
+        // Anything non-numeric falls through to Int(0); the
+        // codegen-side type check rejects this case at struct-
+        // decl time, so the interpreter only sees it for
+        // closures that bypassed type validation.
+        _ => Value::Int(0),
+    }
 }
 
 /// Try to match a pattern against a value. On success, populate

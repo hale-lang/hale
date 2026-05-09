@@ -99,6 +99,17 @@ pub struct LocusHandle {
     /// references parent) but the cycle only matters at
     /// process exit; v0 accepts the leak.
     pub parent: Rc<RefCell<Option<LocusHandle>>>,
+    /// m46: per-closure accumulator state. Keyed by closure name;
+    /// the inner Vec parallels the closure's `sum(...)` calls in
+    /// occurrence order (left expr's sums first, then right's,
+    /// then tolerance's). Initialized at instantiation. Each
+    /// epoch fire samples-and-updates each slot before the
+    /// closure's assertion is evaluated, so `sum(...)` references
+    /// in the assertion read the post-update running total.
+    /// Cleared on recovery events (restart / restart_in_place /
+    /// quarantine) unless the closure's `persists_through(...)`
+    /// clause names the event.
+    pub accumulators: Rc<RefCell<BTreeMap<String, Vec<Value>>>>,
 }
 
 #[derive(Debug, Clone)]

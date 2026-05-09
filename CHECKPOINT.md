@@ -1,23 +1,34 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work in a
-new session. State as of m45 (`restart_in_place` recovery primitive —
-factory-reset variant of m40's restart that zeros user fields back
-to declared defaults before re-running birth; shares the cap-2
-budget with plain restart). Also bumped bus.entries cap × 32 so
-multiple instances of the same subscribed locus type can register
-their own bus entries (was a pre-existing m41b limit; workaround
-documented in 34-quarantine-bus). Surface-completeness arc through m38, then the
-substrate-foundation arc with m39 (trigger half: birth-epoch
-closures), m40 (response half: restart with cap-2 default), m41
-(quarantine — stop-trying flag, gates run()), m41b (quarantine
-extends to bus dispatch), m42 (tick — steady-state pulse), m43
-(duration — every-N-of-monotonic-time gate), m44 (explicit —
-user-triggered checkpoint via `check_closures();`), m45
-(`restart_in_place` recovery primitive). The F.9
-invariant-and-repair substrate is closure-epoch-complete and
-the recovery primitive set covers restart / restart_in_place
-/ quarantine / bubble.
+new session. State as of m46 (**closure accumulators** — the
+streaming-fold half of F.9: `sum(self.X)` calls inside a closure
+assertion accumulate `self.X` across every epoch fire and the
+assertion reads the running total; recovery events zero the
+accumulators by default, opt-out via `persists_through(...)`).
+This session also shipped (a) **bus.entries proper fix**
+(m45-followup-2) — bus storage migrated out of fixed-cap LLVM
+globals into a heap-grown C-runtime dynamic vec, removing the
+`× 32` ceiling entirely; LLVM-side linear-scan dispatch fn is
+gone, replaced by `lotus_bus_register` / `lotus_bus_dispatch`
+/ `lotus_bus_quarantine_self` / `lotus_bus_router_destroy`
+C-runtime fns, and (b) **pinned-duration fix** (m43-followup) —
+synthesized `__duration_closures_wrapper` paired with the
+existing `__tick_closures_wrapper`, called from
+`__pinned_main_<Locus>` after `run()` so duration-epoch closures
+fire post-run on the pinned thread (closes the m43 v0 limit).
+The F.9 invariant-and-repair substrate is now both
+closure-epoch-complete (5/5: Birth + Dissolve + Tick + Duration +
+Explicit) AND closure-accumulator-complete (the streaming-fold
+half — `sum(...)` only at v0.1; count/mean/window deferred).
+Recovery primitive set covers restart / restart_in_place /
+quarantine / bubble. Surface-completeness arc through m38, then
+the substrate-foundation arc m39 (birth-epoch trigger), m40
+(restart response, cap-2), m41 (quarantine — stop-trying flag),
+m41b (quarantine extends to bus dispatch), m42 (tick — steady-state
+pulse), m43 (duration — every-N-of-monotonic-time gate), m44
+(explicit — user-triggered via `check_closures();`), m45
+(`restart_in_place` recovery primitive), m46 (accumulators).
 Substrate arc: m19→m23 (region allocator with
 rich/chunked/recognition + per-locus arenas + bus copy), m24
 (`match`), m25 (bimodal schedule-class annotation), m26
@@ -56,11 +67,15 @@ cooperative scheduler's substrate-cell boundary), m43
 (duration-epoch closures — every-N-of-monotonic-time gate
 on top of the tick cadence), m44 (explicit-epoch closures —
 user-triggered checkpoint via `check_closures();`), m45
-(`restart_in_place` factory-reset recovery + bus.entries
-cap × 32 for multi-instance subscribers). **43 of 44
-examples build to native ELF — every single-binary
-example.** Only `trellis-pair` (multi-binary, cross-process
-bus) remains.
+(`restart_in_place` factory-reset recovery), m45-followup-2
+(bus.entries proper-fix — C-runtime dynamic vec replaces the
+fixed-cap LLVM-side table + linear-scan dispatch fn),
+m43-followup (pinned post-run duration via the new
+`__duration_closures_wrapper`), and m46 (closure accumulators
+— `sum(self.X)` running totals across epoch fires +
+`persists_through(...)` recovery gating). **45 of 46 examples
+build to native ELF — every single-binary example.** Only
+`trellis-pair` (multi-binary, cross-process bus) remains.
 
 **The bimodal scheduler is fully complete.** Cooperative loci
 yield between substrate cells via the inline-payload deferred
@@ -117,9 +132,102 @@ greeting from child: yo
 Phase status:
 - **Phase 0** (spec stabilization) — complete
 - **Phase 1** (lex / parse / typecheck) — complete; F.1–F.18 enforced
-- **Phase 2 v0** (interpreter + bus router) — 43 of 44 example
+- **Phase 2 v0** (interpreter + bus router) — 45 of 46 example
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
+- **Phase 3 milestone 46** (closure accumulators) — complete.
+  Closes the streaming-fold half of F.9: `closure C { sum(self.X)
+  ~~ Y within Z; ... }` accumulates `self.X` across every epoch
+  fire and the assertion reads the running total. Each `sum(expr)`
+  detected in left/right/tolerance gets one struct field on the
+  locus (`__acc_<n>: T`); on each epoch fire the synthesized
+  closure-eval fn re-evaluates the inner expr, adds to the slot,
+  and only THEN evaluates the assertion (so the assertion observes
+  the post-update total — natural reading of "sum across cells
+  through this moment"). Detection walks the assertion AST in
+  declaration order — `Expr::Sum(Box<Expr>, Span)` is a dedicated
+  AST variant the parser already produces. Recovery interaction
+  matches the spec example: by default a recovery event
+  (restart / restart_in_place / quarantine) zeroes accumulators;
+  `persists_through(restart_in_place, quarantine)` opts that
+  closure's accumulators out of zeroing for the named events.
+  Codegen: `AccumulatorSlot { inner_expr, ty, field_idx }` per
+  slot, stored on `LocusInfo.accumulators_per_closure`; new
+  `accumulator_ctx: Option<AccumulatorCtx>` on Codegen state set
+  during assertion lowering so `Expr::Sum` substitutes a load
+  from the next slot instead of re-evaluating; recovery dispatch
+  in `lower_restart_call_kind` and `lower_quarantine_call`
+  invokes `emit_accumulator_reset_for_event` after their existing
+  bookkeeping. Interpreter parity via `LocusHandle.accumulators`
+  (`Rc<RefCell<BTreeMap<String, Vec<Value>>>>`) — slots lazy-init
+  on first sample using each sample's runtime type for the zero;
+  `Interpreter::accumulator_ctx` enables the same substitution
+  in `Expr::Sum`'s eval arm; `reset_accumulators_for_event`
+  fires from RecoveryOp dispatch. Vocabulary at v0.1: `sum(self.X)`
+  for Int / Float / Decimal / Duration. Inner expr restricted to
+  `self.X` reads — type comes straight from the locus's params,
+  no AST-time inference pass needed. count() / mean() / rolling
+  windows deferred until a workload calls for them. Parser
+  extended to accept recovery-event keyword tokens (restart,
+  restart_in_place, quarantine, dissolve) as bare names inside
+  `persists_through(...)` / `resets_on(...)` — the spec example
+  spelled them as bare keywords and the prior identifier-only
+  parser rejected them. New `examples/41-closure-accumulator/`
+  exercises a Tracker locus where running-total drift past a
+  band of 100 trips the closure; Coordinator absorbs the
+  violation and quarantines.
+- **Phase 3 m45-followup-2 + m43-followup** (bus router
+  proper-fix + pinned-duration wrapper) — complete. Two
+  substrate fixes that close prior v0 limits without adding new
+  surface. (a) **bus.entries proper fix.** The m45-followup
+  quickfix bumped the LLVM-side bus table to `decl_subs × 32`
+  to unblock multi-instance subscribers; this swap migrates
+  bus storage out of LLVM entirely. New C-runtime fns
+  `lotus_bus_register` / `lotus_bus_dispatch` /
+  `lotus_bus_quarantine_self` / `lotus_bus_router_destroy`
+  back a heap-grown dynamic vec (initial cap 16, doubles on
+  demand). The hand-rolled LLVM dispatch fn body (~330 lines:
+  header / strcmp / call / mailbox-post / enqueue / inc) is
+  gone. `bus_entry_type` is gone. `BusState` shrinks from
+  `{entries, count, capacity, dispatch_fn}` to a unit marker
+  that just records "program contains at least one
+  subscribe." `init_bus_state` no longer takes a capacity.
+  `emit_bus_register` is one C-runtime call.
+  `lower_quarantine_call`'s 130-line entries walk is one
+  C-runtime call. `lower_send` calls
+  `lotus_bus_dispatch(queue, subject, payload, size)` — the
+  queue still lives in LLVM (its lifecycle is bound to main's
+  prelude/exit) but the entries vec lives in the C runtime.
+  Net delta: codegen.rs lost ~450 lines; lotus_arena.c gained
+  ~95. There's no compile-time capacity ceiling anymore.
+  `emit_bus_queue_destroy` also calls
+  `lotus_bus_router_destroy` so the entries vec frees at
+  process exit alongside the queue. (b) **Pinned-duration
+  wrapper.** m43 documented "v0 limit: pinned-thread
+  post-run() doesn't fire duration; cooperative + post-handler
+  bus paths fire duration correctly." Cooperative was fine
+  because lifecycle dispatch in `lower_locus_instantiation`
+  calls `duration_closures_fn(self, parent, on_failure)`
+  directly with parent fields from `resolve_failure_route`.
+  Pinned post-run() ran on the pinned thread, where there's
+  no `current_self` for that helper, so duration was simply
+  skipped. Tick had the same problem and m42 solved it via
+  `__tick_closures_wrapper(self_ptr)` — a 1-arg adapter that
+  loads `__parent_self` + `__parent_on_failure` from the
+  struct (baked at instantiation by the parent) and forwards
+  to the 3-arg fn. The fix mirrors that exactly: new
+  `duration_wrapper_fn` field on LocusInfo,
+  `__duration_closures_wrapper` synthesized when the locus
+  has any duration closure, called from `__pinned_main_<Locus>`
+  after `run()` alongside the tick wrapper. The wrapper
+  bodies are now generated by a shared 2-iteration loop over
+  `(tick, duration)` pairs in pass C. New
+  `examples/40-pinned-duration/` exercises the path: a
+  `Heartbeat : schedule pinned` whose `run()` sleeps 50ms,
+  with an always-fail duration(20ms) closure absorbed by
+  `Coordinator.on_failure` — pre-fix the violation was silent
+  because the wrapper never ran; post-fix Coordinator prints
+  "duration fired post-run on pinned (#1)".
 - **Phase 3 milestone 45** (restart_in_place recovery primitive
   + bus.entries multi-instance fix) — complete. Two related
   fixes shipped together. (1) `restart_in_place(c)` is a
@@ -202,9 +310,9 @@ Phase status:
   `duration_expr_for(c)` accessor +
   `fire_duration_closures` helper. Duration expression
   evaluated in self-scope at fire-check time so
-  `duration(self.poll_interval)` works. Known v0 limit:
-  pinned-thread post-run() doesn't fire duration; cooperative
-  + post-handler bus paths fire duration correctly. New
+  `duration(self.poll_interval)` works. The original m43 v0
+  limit (pinned post-run() didn't fire duration) was closed
+  by m43-followup via `__duration_closures_wrapper`. New
   `examples/36-duration-closures/`.
 - **Phase 3 milestone 42** (tick-epoch closures — F.9 substrate
   steady-state pulse) — complete. Where m39 audits at birth and
@@ -1100,6 +1208,61 @@ m45fix m45 follow-up: bus.entries cap × 32                  (fc72504)
                             dynamic vec) deferred to future
                             polish.
                           + examples/39-multi-instance-bus
+m45fix2 m45 follow-up #2: bus router → C-runtime dynamic vec
+                          ⇒ Bus storage migrated out of LLVM
+                            entirely. New C runtime fns
+                            lotus_bus_register / _dispatch /
+                            _quarantine_self / _router_destroy
+                            back a heap-grown vec (init 16,
+                            doubles). LLVM-side state shrinks
+                            to a presence marker; the hand-
+                            rolled dispatch fn body is gone;
+                            emit_bus_register and the
+                            quarantine entries-walk are each
+                            one C-runtime call now. lower_send
+                            calls lotus_bus_dispatch(queue,
+                            subject, payload, size). No
+                            compile-time capacity ceiling.
+                            Net: codegen.rs −450, runtime +95.
+m43fix m43 follow-up: pinned post-run duration wrapper
+                          ⇒ Closes m43 v0 limit. New
+                            duration_wrapper_fn on LocusInfo
+                            mirrors tick_wrapper_fn (1-arg
+                            adapter loading __parent_self /
+                            __parent_on_failure from struct,
+                            tail-calls 3-arg
+                            __duration_closures). Synthesized
+                            for every locus with at least
+                            one duration closure. Called from
+                            __pinned_main_<Locus> after run()
+                            alongside the tick wrapper.
+                            Wrapper bodies for tick + duration
+                            generated by a shared 2-iteration
+                            loop in pass C.
+                          + examples/40-pinned-duration
+m46    m46: closure accumulators (sum streaming-fold)
+                          ⇒ `sum(self.X)` inside a closure
+                            assertion accumulates self.X across
+                            every epoch fire; the assertion
+                            reads the running total. Per
+                            `sum(...)` detected: one struct
+                            field (Int/Float/Decimal/Duration),
+                            re-evaluated + added to slot at
+                            each fire BEFORE the assertion runs.
+                            `persists_through(...)` opts out of
+                            recovery-zero (default = reset on
+                            restart/restart_in_place/quarantine).
+                            Parser extended to accept recovery-
+                            event keyword tokens as bare names.
+                            Vocabulary v0.1: sum only; inner
+                            expr restricted to `self.X` reads.
+                            Interpreter parity via
+                            LocusHandle.accumulators (lazy-init
+                            on first sample) +
+                            Interpreter::accumulator_ctx for
+                            Expr::Sum substitution in
+                            evaluate_closure.
+                          + examples/41-closure-accumulator
 m43    m43: duration-epoch closures (per-N-monotonic gate)   (c115829)
                           ⇒ EpochSpec::Duration lowers
                             alongside Birth + Dissolve + Tick.
@@ -1261,6 +1424,8 @@ m7 builds on the struct ABI.
 | Tick-epoch closures (fire after each handler + run() return) | ✅ | ✅ |
 | Duration-epoch closures (fire when N monotonic elapsed) | ✅ | ✅ |
 | Explicit-epoch closures (fire on `check_closures();`) | ✅ | ✅ |
+| Closure accumulators (`sum(self.X)` streaming fold) | ✅ | ✅ |
+| Accumulator `persists_through(...)` recovery gating | ✅ | ✅ |
 | `restart(child)` recovery (cap-2 birth re-run) | ✅ | ✅ |
 | `restart_in_place(child)` recovery (factory-reset re-run) | ✅ | ✅ |
 | `quarantine(child)` recovery (sticky flag, gates run + bus) | ✅ | ✅ |
@@ -1273,7 +1438,7 @@ m7 builds on the struct ABI.
 | Region allocator — chunked sub-regions + free-list | — | ✅ |
 | Region allocator — recognition bitmap-pool | — | — (chunked-equivalent stub) |
 | Recovery primitives (bubble) | ✅ | ✅ |
-| Recovery primitives (restart / quarantine / reorganize) | parsed | — |
+| Recovery primitive (`reorganize`) | parsed | — |
 
 ## Locked design commitments (F.1–F.18)
 
@@ -1454,57 +1619,46 @@ d5afffd Codegen milestone 8: accept() lifecycle + parent-child wiring
 929efa2 Codegen milestone 5: time::sleep on CLOCK_MONOTONIC
 ```
 
-15 commits ahead of origin/master at checkpoint time. This
-session shipped m42 + m43 + m44 + m45 (+ a bus.entries
-multi-instance follow-up). The F.9 substrate is now
-closure-epoch-complete (all 5 epochs: Birth + Dissolve +
-Tick + Duration + Explicit) AND has both restart variants
-(plain restart preserves state, restart_in_place factory-
-resets to defaults). With this session's work the locus-
-of-design substrate covers the F.9 invariant-and-repair
-pair end-to-end: detect-at-any-epoch, route-via-on_failure,
-respond-via-restart-or-quarantine. Prior sessions shipped
-m30 → m41b. Multi-instance bus subscribers now work
-without the "use distinct types" workaround.
+15 commits ahead of origin/master at last commit; this
+session has 3 additional uncommitted milestones in working
+tree: (a) m45-followup-2 bus router proper-fix, (b) m43-followup
+pinned-duration wrapper, (c) m46 closure accumulators. The F.9
+substrate stays closure-epoch-complete (all 5 epochs: Birth +
+Dissolve + Tick + Duration + Explicit) on both cooperative AND
+pinned dispatch paths AND has both restart variants AND has the
+streaming-fold accumulator half (sum-only at v0.1). The
+locus-of-design substrate covers the F.9 invariant-and-repair
+pair end-to-end: detect-at-any-epoch (5 epochs × snapshot
+or running-total), route-via-on_failure, respond-via-restart-
+or-quarantine. Bus storage no longer has a compile-time
+capacity ceiling — the m45 quickfix `× 32` multiplier is gone.
+45 of 46 examples build to native ELF.
 
 ## Next steps in priority order
 
 The bimodal scheduler (m28a/b/c), the surface-completeness
-arc (m29 → m38), and the full F.9 invariant-and-repair
-substrate (m39 birth + m40 restart + m41 quarantine + m41b
-bus-dispatch gating + m42 tick + m43 duration + m44 explicit
-+ m45 restart_in_place) have shipped. With m45 landed, the
-recovery primitive set covers restart / restart_in_place /
-quarantine / bubble; the closure-epoch lowering arc is
-already complete. What's left in the locus-of-design tower
-is closure accumulators (parsed-but-unused language surface),
-spec-aligned recovery primitives that haven't been wired
-(reorganize, drain/dissolve as recovery), and proper-fix
-polish on top of the v0 unblocks.
+arc (m29 → m38), the full F.9 invariant-and-repair substrate
+(m39 birth + m40 restart + m41 quarantine + m41b bus-dispatch
+gating + m42 tick + m43 duration + m44 explicit + m45
+restart_in_place + m46 sum-accumulators), and the bus router
+proper-fix (m45-followup-2: C-runtime dynamic vec replaces
+the fixed-cap LLVM-side table) have shipped. The recovery
+primitive set covers restart / restart_in_place / quarantine
+/ bubble; the closure-epoch lowering arc is complete on both
+cooperative and pinned (m43-followup added the duration
+wrapper for pinned post-run); the closure-accumulator
+streaming-fold half is complete for sum() at v0.1.
 
-**1. Closure accumulator clauses.** `persists_through(...)`
-and `resets_on(...)` clauses are parsed today but ignored
-at lowering. They'd let closures track running statistics
-that survive (or reset on) recovery events. Pairs naturally
-with the duration-epoch surface m43 just landed — duration-
-sampled accumulators are the canonical "drift detection"
-shape. Bigger lift: requires designing the accumulator
-state surface (what kinds of accumulators? sum / mean /
-rolling window?) before the persists_through / resets_on
-clauses have anything to govern.
+**1. Accumulator vocabulary extension** — workload-pending.
+Add `count()` and `mean(x)` once a workload calls for them.
+`count()` is one i64 slot bumped at each fire; `mean(x)` is
+sum/count derived. Both build directly on the m46 slot
+machinery — adding them is small (~80 lines codegen + parity
+in the interpreter) but speculative without a workload
+example. Rolling windows need a fixed-cap storage decision
+that interacts with the arena lifetime — defer further.
 
-**2. `bus.entries` dynamic capacity (proper fix).** m45
-follow-up bumped the static cap × 32 to unblock multi-
-instance subscribers. Proper fix: migrate bus storage from
-the LLVM-side global array to a C-runtime-owned dynamic
-vec so capacity grows on demand. Approx 200-line refactor:
-new C-runtime register/dispatch/unregister fns; replace
-init_bus_state's LLVM dispatch fn with extern decls; replace
-emit_bus_register's GEP+store with a single call; replace
-the unregister-self walk in lower_quarantine_call with a
-single call.
-
-**3. Recovery primitives: `reorganize` + `drain` /
+**2. Recovery primitives: `reorganize` + `drain` /
 `dissolve` as recovery ops.** All parsed; `reorganize`
 needs a child-tree restructuring semantic (defer until a
 workload exercises it); `drain` / `dissolve` as recovery
@@ -1512,12 +1666,6 @@ ops (vs lifecycle methods) overlap with quarantine + the
 ephemeral cascade — design needed before lowering.
 
 **Polish (any time):**
-- `restart_in_place` recovery primitive. Variant of
-  `restart(c)` that zeros user fields back to declared
-  defaults before re-running birth. Complements the
-  existing m40 restart's "give birth another shot on
-  dirty state" semantic with a "factory reset" alternative.
-  Small compared to m40 once `restart` is in place.
 - Constructor patterns in `match` (enum variants need a
   real enum-value representation first; struct-by-name
   was the v0 shape but no example exercised it). Tuple
@@ -1529,10 +1677,15 @@ ephemeral cascade — design needed before lowering.
   default evaluation; modes take a tighter param surface
   per F.10).
 - Recognition-class real bitmap-pool (currently chunked-
-  equivalent stub per spec/memory.md).
+  equivalent stub per spec/memory.md). Workload-pending.
 - Decimal precision tightening (printf %g vs Display).
 - Free-fn implicit-locus arenas (spec is fuzzy on
   return-value-copy semantics).
+- Cells enqueued during dissolves are leaked (m26 v0
+  limit). Realistic programs don't publish during dissolve;
+  fix would be a drain-loop-until-empty wrapper around the
+  flush, but the "subscriber dissolved before its handler
+  fires" ordering question needs a design call first.
 
 **Long-deferred:**
 
@@ -1690,6 +1843,12 @@ rm examples/38-restart-in-place/main
 cargo run --bin lotus -- build examples/39-multi-instance-bus/main.lt
 ./examples/39-multi-instance-bus/main    # 3 Watcher instances all receive 3 published Samples
 rm examples/39-multi-instance-bus/main
+cargo run --bin lotus -- build examples/40-pinned-duration/main.lt
+./examples/40-pinned-duration/main       # Coordinator absorbs duration violation fired post-run on pinned thread
+rm examples/40-pinned-duration/main
+cargo run --bin lotus -- build examples/41-closure-accumulator/main.lt
+./examples/41-closure-accumulator/main   # sum(self.delta) running total trips band of 100 at 4th cell; quarantined
+rm examples/41-closure-accumulator/main
 ```
 
-If all forty-three work, the checkpoint is intact.
+If all forty-five work, the checkpoint is intact.

@@ -802,13 +802,13 @@ impl Parser {
             }
             TokenKind::PersistsThrough => {
                 self.bump();
-                let names = self.parse_paren_ident_list()?;
+                let names = self.parse_paren_recovery_event_list()?;
                 self.expect(TokenKind::Semi, ";")?;
                 Ok(ClosureClause::PersistsThrough(names))
             }
             TokenKind::ResetsOn => {
                 self.bump();
-                let names = self.parse_paren_ident_list()?;
+                let names = self.parse_paren_recovery_event_list()?;
                 self.expect(TokenKind::Semi, ";")?;
                 Ok(ClosureClause::ResetsOn(names))
             }
@@ -851,17 +851,42 @@ impl Parser {
         }
     }
 
-    fn parse_paren_ident_list(&mut self) -> Result<Vec<Ident>, Diag> {
+    /// Parses a comma-separated paren list of recovery-event
+    /// names. The closure clauses `persists_through(...)` and
+    /// `resets_on(...)` take these names as bare keywords per
+    /// the spec example `persists_through(restart_in_place,
+    /// quarantine);` — each event spelling is a reserved
+    /// keyword token, not a plain identifier. Each keyword
+    /// surfaces here as an `Ident` whose `name` matches the
+    /// keyword spelling so downstream code can match on the
+    /// string.
+    fn parse_paren_recovery_event_list(&mut self) -> Result<Vec<Ident>, Diag> {
         self.expect(TokenKind::LParen, "(")?;
         let mut names = Vec::new();
         if !self.at(&TokenKind::RParen) {
-            names.push(self.expect_ident("identifier")?);
+            names.push(self.parse_recovery_event_name()?);
             while self.eat(&TokenKind::Comma) {
-                names.push(self.expect_ident("identifier")?);
+                names.push(self.parse_recovery_event_name()?);
             }
         }
         self.expect(TokenKind::RParen, ")")?;
         Ok(names)
+    }
+
+    fn parse_recovery_event_name(&mut self) -> Result<Ident, Diag> {
+        let tok = self.peek_token().clone();
+        let name: &'static str = match tok.kind {
+            TokenKind::Restart => "restart",
+            TokenKind::RestartInPlace => "restart_in_place",
+            TokenKind::Quarantine => "quarantine",
+            TokenKind::Dissolve => "dissolve",
+            _ => return self.expect_ident("recovery event name"),
+        };
+        self.bump();
+        Ok(Ident {
+            name: name.to_string(),
+            span: tok.span,
+        })
     }
 
     fn parse_perspective_decl(&mut self) -> Result<PerspectiveDecl, Diag> {

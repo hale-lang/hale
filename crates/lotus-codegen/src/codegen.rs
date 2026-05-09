@@ -144,6 +144,7 @@ pub fn build_executable(
         deferred_dissolves: Vec::new(),
         in_main: false,
         current_arena_override: None,
+        accumulator_ctx: None,
     };
 
     cx.declare_builtins();
@@ -257,11 +258,11 @@ struct Cx<'ctx, 'p> {
     /// Used for type literals like `Point { x: 3, y: 4 }`.
     user_types: BTreeMap<String, TypeInfo<'ctx>>,
     /// Bus state generated when any locus declares a subscribe.
-    /// `entries` is a fixed-size array global of `(subject_ptr,
-    /// self_ptr, handler_ptr)` triples; `count` tracks how many
-    /// have been registered at runtime. None means no subscribes
-    /// in the program — `<-` becomes a no-op.
-    bus_state: Option<BusState<'ctx>>,
+    /// `Some` iff the program contains at least one `bus subscribe`
+    /// declaration. Bus storage itself lives in the C runtime
+    /// (m45-followup); this is just a presence flag so a `<-` send
+    /// in a program without subscribers errors clearly.
+    bus_state: Option<BusState>,
     /// Stack of "deferred-dissolve" frames: each enclosing fn
     /// body / lifecycle method body opens one. Long-lived loci
     /// (any locus with a `bus subscribe` declaration) instantiated
@@ -288,19 +289,54 @@ struct Cx<'ctx, 'p> {
     /// rather than the parent's. Restored after the field-init
     /// loop completes.
     current_arena_override: Option<PointerValue<'ctx>>,
+    /// m46: closure-accumulator substitution context. Set by
+    /// `lower_closure_check` right before lowering the assertion
+    /// expressions; cleared after. When set, `lower_expr`'s Call
+    /// match arm intercepts `sum(...)` calls and emits a load
+    /// from the next accumulator slot (per `next_idx`) instead
+    /// of doing the call. Slot order matches `collect_sum_calls`
+    /// order in declare_locus_struct, so the Nth `sum` encountered
+    /// during lowering corresponds to the Nth slot.
+    accumulator_ctx: Option<AccumulatorCtx<'ctx>>,
 }
 
+/// m46: substitution context for `sum(...)` lowering inside a
+/// closure assertion. See `Codegen::accumulator_ctx`.
+#[derive(Debug, Clone)]
+struct AccumulatorCtx<'ctx> {
+    slots: Vec<AccumulatorSlot>,
+    next_idx: usize,
+    self_ptr: PointerValue<'ctx>,
+    struct_ty: inkwell::types::StructType<'ctx>,
+}
+
+/// Marker that the program contains at least one `bus subscribe`
+/// declaration, so dispatch + register call sites can fail clearly
+/// when a `<-` send is emitted in a program without subscribers.
+/// Storage moved to the C runtime (m45-followup), so all the
+/// LLVM-side handles the prior `BusState` carried are gone.
 #[derive(Debug, Clone, Copy)]
-struct BusState<'ctx> {
-    /// `[N x { ptr, ptr, ptr }]` global, all-zero-initialized.
-    entries: inkwell::values::GlobalValue<'ctx>,
-    /// `i64` global, initialized to 0; tracks current entry count.
-    count: inkwell::values::GlobalValue<'ctx>,
-    /// Capacity baked into `entries` array.
-    capacity: u64,
-    /// `void (ptr subject, ptr payload)` — the per-program dispatch
-    /// fn body emitted once after pass A.
-    dispatch_fn: FunctionValue<'ctx>,
+struct BusState;
+
+/// m46 (closure accumulators): one slot per `sum(expr)` call
+/// detected in a closure's assertion. Each slot owns one struct
+/// field on the locus and accumulates `expr` across epoch fires.
+///
+/// `inner_expr` is the AST expression inside `sum(...)` — the
+/// thing being summed. Re-lowered at sample time (each epoch
+/// fire) into the slot's struct field.
+///
+/// `ty` is the LotusType of `inner_expr` — also the slot field's
+/// type and the type of the substituted load when the assertion
+/// references this `sum(...)` call.
+///
+/// `field_idx` is the slot's index in the locus struct, fixed
+/// at struct-decl time.
+#[derive(Debug, Clone)]
+struct AccumulatorSlot {
+    inner_expr: Expr,
+    ty: LotusType,
+    field_idx: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -355,16 +391,30 @@ struct LocusInfo<'ctx> {
     /// (subject_str, self_ptr, handler_fn_ptr) into the global
     /// bus table.
     subscriptions: Vec<(String, String)>,
-    /// Closure declarations on this locus that fire at the
-    /// dissolve epoch (the default). v0 codegen lowers ONLY
-    /// dissolve-epoch closures; tick / duration / birth / explicit
-    /// epochs are typechecked; Birth + Dissolve lower (m39),
-    /// Tick / Duration / Explicit still reject pending the
-    /// runtime epoch engine. Each element is `(name, assertion,
-    /// epoch)` carried over from the AST so the synthetic
-    /// closure-eval fns can re-lower the assertion expressions
-    /// and the synthesis pass can partition by epoch.
+    /// Closure declarations on this locus. All five epochs lower
+    /// (Birth m39, Dissolve, Tick m42, Duration m43, Explicit m44).
+    /// Each element is `(name, assertion, epoch)` carried over from
+    /// the AST so the synthetic closure-eval fns can re-lower the
+    /// assertion expressions and the synthesis pass can partition
+    /// by epoch.
     closures: Vec<(String, ClosureAssertion, EpochSpec)>,
+    /// m46 (closure accumulators): per-closure accumulator slots.
+    /// Each `sum(expr)` call detected in a closure assertion's
+    /// left/right/tolerance produces one slot. The slots are
+    /// occurrence-ordered (left expr's sums first, then right's,
+    /// then tolerance's) so the lowering pass can match each
+    /// `sum(...)` in the lowered assertion to the right slot via
+    /// a counter. Slot fields live on the locus struct after
+    /// the user fields, before the synthetic flags.
+    accumulators_per_closure: BTreeMap<String, Vec<AccumulatorSlot>>,
+    /// m46: per-closure list of recovery-event names listed in
+    /// `persists_through(...)`. Default is reset (zero the
+    /// accumulators on the event); a name in this list opts that
+    /// closure's accumulators out of reset for that event.
+    /// Recognized event names: `restart`, `restart_in_place`,
+    /// `quarantine`, `dissolve`. (`replace` from the spec example
+    /// awaits perspective hot-load.)
+    persists_through_per_closure: BTreeMap<String, Vec<String>>,
     /// Synthetic `<Locus>.__birth_closures(self_ptr,
     /// parent_self_or_null, on_failure_fn_or_null)` fn that
     /// evaluates every birth-epoch closure right after birth()
@@ -473,6 +523,16 @@ struct LocusInfo<'ctx> {
     /// returns) — duration shares the cell-boundary cadence
     /// but gates each closure on elapsed-since-last-fire.
     duration_closures_fn: Option<FunctionValue<'ctx>>,
+    /// m43-followup: 1-arg adapter mirroring `tick_wrapper_fn`
+    /// for duration. `<Locus>.__duration_closures_wrapper(self_ptr)`
+    /// loads the struct's `__parent_self` + `__parent_on_failure`
+    /// fields and tail-calls the 3-arg `__duration_closures`.
+    /// Used from the pinned thread's post-`run()` path, where
+    /// `resolve_failure_route` can't see the right `current_self`
+    /// (we're off the main thread). Always paired with
+    /// `duration_closures_fn`. Closes the documented v0 limit
+    /// where pinned post-run() didn't fire duration.
+    duration_wrapper_fn: Option<FunctionValue<'ctx>>,
     /// m44: synthetic `<Locus>.__explicit_closures(self,
     /// parent_self_or_null, on_failure_or_null)` fn. Called
     /// only by the `check_closures();` builtin from inside a
@@ -800,6 +860,43 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_mailbox_destroy", mailbox_destroy_ty, None);
 
+        // m45-followup: process-wide bus router living in the C
+        // runtime. Replaces the per-program LLVM-side
+        // {bus.entries, bus.count, lotus.bus_dispatch} triple
+        // with a heap-grown dynamic vec; capacity is no longer
+        // a compile-time-fixed multiple of the declared
+        // subscription count.
+        // declare void @lotus_bus_register(ptr subject, ptr self,
+        //                                  ptr handler, ptr mailbox)
+        // declare void @lotus_bus_dispatch(ptr queue, ptr subject,
+        //                                  ptr payload, i64 size)
+        // declare void @lotus_bus_quarantine_self(ptr self)
+        // declare void @lotus_bus_router_destroy()
+        let bus_register_ty = void_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_bus_register", bus_register_ty, None);
+        let bus_dispatch_ty = void_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), ptr_t.into(), i64_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_bus_dispatch", bus_dispatch_ty, None);
+        let bus_quarantine_ty = void_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_bus_quarantine_self",
+            bus_quarantine_ty,
+            None,
+        );
+        let bus_router_destroy_ty = void_t.fn_type(&[], false);
+        self.module.add_function(
+            "lotus_bus_router_destroy",
+            bus_router_destroy_ty,
+            None,
+        );
+
         // m28c: optional CPU-core affinity. Pinned loci that
         // declare `: schedule pinned(core = N)` emit a call to
         // this helper right after pthread_create — it wraps
@@ -871,358 +968,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function("memcpy", memcpy_ty, None);
     }
 
-    /// LLVM struct type for one entry in the bus subscription
-    /// table: `{ ptr subject, ptr self, ptr handler, ptr mailbox }`.
-    /// `mailbox` is null for cooperative subscribers (route to
-    /// global queue) and a `lotus_mailbox_t*` for pinned
-    /// subscribers (route to that locus's mailbox). With LLVM 18
-    /// opaque pointers the per-element type only matters for
-    /// allocation + GEP indexing.
-    fn bus_entry_type(&self) -> inkwell::types::StructType<'ctx> {
-        let ptr_t = self.context.ptr_type(AddressSpace::default());
-        self.context.struct_type(
-            &[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into()],
-            false,
-        )
-    }
-
-    /// Emit the bus subscription table + counter + dispatch fn.
-    /// Called once per module after we know the total subscription
-    /// count. Capacity is fixed at compile time — every subscribe
-    /// declaration in source contributes one slot, and registration
-    /// at locus instantiation just bumps the counter to fill it.
-    fn init_bus_state(&mut self, capacity: u64) -> Result<(), CodegenError> {
-        let i32_t = self.context.i32_type();
-        let i64_t = self.context.i64_type();
-        let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let void_t = self.context.void_type();
-        let entry_ty = self.bus_entry_type();
-        let table_ty = entry_ty.array_type(capacity as u32);
-
-        let entries_global = self.module.add_global(table_ty, None, "bus.entries");
-        entries_global.set_initializer(&table_ty.const_zero());
-        entries_global.set_linkage(inkwell::module::Linkage::Internal);
-
-        let count_global = self.module.add_global(i64_t, None, "bus.count");
-        count_global.set_initializer(&i64_t.const_int(0, false));
-        count_global.set_linkage(inkwell::module::Linkage::Internal);
-
-        // void @bus_dispatch(ptr %subject, ptr %payload, i64 %size):
-        //   for (i = 0; i < bus.count; i++)
-        //     if (strcmp(bus.entries[i].subject, %subject) == 0)
-        //       sub_self  = bus.entries[i].self
-        //       sub_arena = load (sub_self + 0)             ; arena field is slot 0
-        //       copy      = lotus_arena_alloc(sub_arena, size, 8)
-        //       memcpy(copy, %payload, %size)
-        //       bus.entries[i].handler(sub_self, copy)
-        //
-        // Per spec/memory.md: "A typed message crossing a locus
-        // boundary is a copy, not a pointer." The publisher owns
-        // the original payload (in its arena); the subscriber gets
-        // a copy in its own arena, freed when the subscriber
-        // dissolves. This decouples publisher / subscriber
-        // lifetimes — exactly what trellis-demo's
-        // `self.current_kernel = msg` pattern needs to be safe.
-        let dispatch_ty = void_t.fn_type(
-            &[ptr_t.into(), ptr_t.into(), i64_t.into()],
-            false,
-        );
-        let dispatch_fn = self
-            .module
-            .add_function("lotus.bus_dispatch", dispatch_ty, None);
-        let entry_bb = self.context.append_basic_block(dispatch_fn, "entry");
-        let header_bb =
-            self.context.append_basic_block(dispatch_fn, "loop.header");
-        let check_bb =
-            self.context.append_basic_block(dispatch_fn, "loop.check");
-        let call_bb =
-            self.context.append_basic_block(dispatch_fn, "loop.call");
-        let post_bb =
-            self.context.append_basic_block(dispatch_fn, "loop.post");
-        let enqueue_bb =
-            self.context.append_basic_block(dispatch_fn, "loop.enqueue");
-        let inc_bb = self.context.append_basic_block(dispatch_fn, "loop.inc");
-        let done_bb = self.context.append_basic_block(dispatch_fn, "done");
-
-        self.builder.position_at_end(entry_bb);
-        let i_slot = self
-            .builder
-            .build_alloca(i64_t, "i.slot")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(i_slot, i64_t.const_int(0, false))
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_unconditional_branch(header_bb)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        self.builder.position_at_end(header_bb);
-        let count = self
-            .builder
-            .build_load(i64_t, count_global.as_pointer_value(), "count")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_int_value();
-        let i = self
-            .builder
-            .build_load(i64_t, i_slot, "i")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_int_value();
-        let in_range = self
-            .builder
-            .build_int_compare(
-                inkwell::IntPredicate::ULT,
-                i,
-                count,
-                "in.range",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_conditional_branch(in_range, check_bb, done_bb)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        // check_bb: load entry[i].subject; strcmp; branch
-        self.builder.position_at_end(check_bb);
-        let subj_param = dispatch_fn
-            .get_nth_param(0)
-            .expect("subject param")
-            .into_pointer_value();
-        let subj_slot_ptr = unsafe {
-            self.builder
-                .build_gep(
-                    table_ty,
-                    entries_global.as_pointer_value(),
-                    &[i64_t.const_int(0, false), i, i32_t.const_int(0, false)],
-                    "entry.subject.ptr",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-        };
-        let subj_loaded = self
-            .builder
-            .build_load(ptr_t, subj_slot_ptr, "entry.subject")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_pointer_value();
-        // m41b: null-subject sentinel marks a deregistered entry
-        // (set by `quarantine(c)` so quarantined subscribers stop
-        // receiving bus messages). Skip the slot before strcmp,
-        // which is UB on NULL inputs.
-        let subj_int = self
-            .builder
-            .build_ptr_to_int(subj_loaded, i64_t, "subj.as.int")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let subj_nonnull = self
-            .builder
-            .build_int_compare(
-                inkwell::IntPredicate::NE,
-                subj_int,
-                i64_t.const_int(0, false),
-                "subj.nonnull",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let strcmp_bb =
-            self.context.append_basic_block(dispatch_fn, "loop.strcmp");
-        self.builder
-            .build_conditional_branch(subj_nonnull, strcmp_bb, inc_bb)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder.position_at_end(strcmp_bb);
-        let strcmp_fn = self
-            .module
-            .get_function("strcmp")
-            .expect("strcmp declared in declare_builtins");
-        let cmp = self
-            .builder
-            .build_call(
-                strcmp_fn,
-                &[subj_loaded.into(), subj_param.into()],
-                "subj.cmp",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let cmp_int = cmp
-            .try_as_basic_value()
-            .left()
-            .expect("strcmp returns i32")
-            .into_int_value();
-        let is_match = self
-            .builder
-            .build_int_compare(
-                inkwell::IntPredicate::EQ,
-                cmp_int,
-                i32_t.const_int(0, false),
-                "is.match",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_conditional_branch(is_match, call_bb, inc_bb)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        // call_bb: load self + handler, call handler(self, payload)
-        self.builder.position_at_end(call_bb);
-        let self_slot_ptr = unsafe {
-            self.builder
-                .build_gep(
-                    table_ty,
-                    entries_global.as_pointer_value(),
-                    &[i64_t.const_int(0, false), i, i32_t.const_int(1, false)],
-                    "entry.self.ptr",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-        };
-        let entry_self = self
-            .builder
-            .build_load(ptr_t, self_slot_ptr, "entry.self")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_pointer_value();
-        let handler_slot_ptr = unsafe {
-            self.builder
-                .build_gep(
-                    table_ty,
-                    entries_global.as_pointer_value(),
-                    &[i64_t.const_int(0, false), i, i32_t.const_int(2, false)],
-                    "entry.handler.ptr",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-        };
-        let handler = self
-            .builder
-            .build_load(ptr_t, handler_slot_ptr, "entry.handler")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_pointer_value();
-        let payload_param = dispatch_fn
-            .get_nth_param(1)
-            .expect("payload param")
-            .into_pointer_value();
-        let size_param = dispatch_fn
-            .get_nth_param(2)
-            .expect("size param")
-            .into_int_value();
-
-        // m28b stage 2: load entry.mailbox. If null, route this
-        // cell to the global cooperative queue (handler runs on
-        // the cooperative thread). If non-null, post to the
-        // pinned subscriber's mailbox (handler runs on its pinned
-        // thread). The publisher doesn't care which kind of
-        // subscriber it's hitting — the subscriber's registration
-        // determined that at instantiation time.
-        let mailbox_slot_ptr = unsafe {
-            self.builder
-                .build_gep(
-                    table_ty,
-                    entries_global.as_pointer_value(),
-                    &[i64_t.const_int(0, false), i, i32_t.const_int(3, false)],
-                    "entry.mailbox.ptr",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-        };
-        let mailbox = self
-            .builder
-            .build_load(ptr_t, mailbox_slot_ptr, "entry.mailbox")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_pointer_value();
-        let mailbox_int = self
-            .builder
-            .build_ptr_to_int(mailbox, i64_t, "mailbox.as.int")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let mailbox_nonnull = self
-            .builder
-            .build_int_compare(
-                inkwell::IntPredicate::NE,
-                mailbox_int,
-                i64_t.const_int(0, false),
-                "mailbox.nonnull",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_conditional_branch(mailbox_nonnull, post_bb, enqueue_bb)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        // post_bb: cross-thread mailbox post. lotus_mailbox_post
-        // memcpy's payload_src into the mailbox cell's inline
-        // buffer + signals the pinned thread's condvar.
-        self.builder.position_at_end(post_bb);
-        let post_fn = self
-            .module
-            .get_function("lotus_mailbox_post")
-            .expect("lotus_mailbox_post declared");
-        self.builder
-            .build_call(
-                post_fn,
-                &[
-                    mailbox.into(),
-                    handler.into(),
-                    entry_self.into(),
-                    payload_param.into(),
-                    size_param.into(),
-                ],
-                "bus.mailbox.post",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_unconditional_branch(inc_bb)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        // enqueue_bb: cooperative subscriber. Same path as m28b
-        // stage 1 — enqueue (handler, self, payload_src, size)
-        // onto the program-wide bus queue. Drain on the cooperative
-        // thread copies inline → subscriber's arena before invoke.
-        self.builder.position_at_end(enqueue_bb);
-        let queue_global = self
-            .module
-            .get_global("lotus.bus_queue.global")
-            .expect("bus queue global declared");
-        let queue_ptr = self
-            .builder
-            .build_load(ptr_t, queue_global.as_pointer_value(), "queue.cur")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let enqueue_fn = self
-            .module
-            .get_function("lotus_bus_queue_enqueue")
-            .expect("lotus_bus_queue_enqueue declared");
-        self.builder
-            .build_call(
-                enqueue_fn,
-                &[
-                    queue_ptr.into(),
-                    handler.into(),
-                    entry_self.into(),
-                    payload_param.into(),
-                    size_param.into(),
-                ],
-                "bus.enqueue",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_unconditional_branch(inc_bb)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        // inc_bb: i++; branch to header
-        self.builder.position_at_end(inc_bb);
-        let i_now = self
-            .builder
-            .build_load(i64_t, i_slot, "i.now")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_int_value();
-        let i_next = self
-            .builder
-            .build_int_add(i_now, i64_t.const_int(1, false), "i.next")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(i_slot, i_next)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_unconditional_branch(header_bb)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        // done_bb: ret
-        self.builder.position_at_end(done_bb);
-        self.builder
-            .build_return(None)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        self.bus_state = Some(BusState {
-            entries: entries_global,
-            count: count_global,
-            capacity,
-            dispatch_fn,
-        });
+    /// Mark the program as containing at least one `bus subscribe`
+    /// declaration. m45-followup migrated bus storage out of LLVM
+    /// (a fixed-cap `[N x { ptr, ptr, ptr, ptr }]` global plus a
+    /// linear-scan dispatch fn) into the C runtime
+    /// (`lotus_bus_register` / `_dispatch` / `_quarantine_self`),
+    /// so the only remaining LLVM-side state is this presence
+    /// marker. Without it, a stray `<-` in a program with no
+    /// subscribers would silently call the C-runtime dispatch on
+    /// an empty table; with it, `lower_send` errors out at compile
+    /// time, preserving the prior diagnostic.
+    fn init_bus_state(&mut self) -> Result<(), CodegenError> {
+        self.bus_state = Some(BusState);
         Ok(())
     }
 
@@ -1313,6 +1070,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// dissolve method that publishes after its own subscribers
     /// have already dissolved) are leaked here — v0 limitation;
     /// realistic programs don't publish during dissolve.
+    /// m45-followup: also tears down the C-runtime bus router's
+    /// entries vec so the heap allocation is freed alongside the
+    /// queue's. Bus state lives entirely in the C runtime now.
     fn emit_bus_queue_destroy(&mut self) -> Result<(), CodegenError> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let queue_global = self
@@ -1336,6 +1096,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 destroy_fn,
                 &[queue_ptr.into()],
                 "bus.queue.destroy.call",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let router_destroy_fn = self
+            .module
+            .get_function("lotus_bus_router_destroy")
+            .expect("lotus_bus_router_destroy declared");
+        self.builder
+            .build_call(
+                router_destroy_fn,
+                &[],
+                "bus.router.destroy.call",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
@@ -1503,14 +1274,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
-    /// Emit a single subscription registration:
-    ///   bus.entries[bus.count] = { subject_str, self_ptr, handler_fn, mailbox_or_null }
-    ///   bus.count += 1
-    /// Called once per `bus subscribe` declaration when its locus
-    /// is instantiated.
+    /// Emit a single subscription registration as one call to
+    /// `lotus_bus_register(subject, self, handler, mailbox)`.
+    /// The C runtime owns the entries vec and grows it on demand,
+    /// so there's no compile-time-fixed capacity ceiling.
     /// `mailbox_or_null` is `Some(mb_ptr)` for pinned subscribers
-    /// (cells routed to that locus's mailbox) and `None` for
-    /// cooperative subscribers (cells routed to the global queue).
+    /// (cells route to that locus's mailbox) and `None` for
+    /// cooperative subscribers (cells route to the global queue).
     fn emit_bus_register(
         &mut self,
         subject: &str,
@@ -1518,88 +1288,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         handler_fn: FunctionValue<'ctx>,
         mailbox_or_null: Option<PointerValue<'ctx>>,
     ) -> Result<(), CodegenError> {
-        let bus = self
+        let _ = self
             .bus_state
             .expect("subscriptions registered ⇒ bus_state initialized");
-        let i32_t = self.context.i32_type();
-        let i64_t = self.context.i64_type();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let entry_ty = self.bus_entry_type();
-        let table_ty = entry_ty.array_type(bus.capacity as u32);
-
-        let count = self
-            .builder
-            .build_load(i64_t, bus.count.as_pointer_value(), "bus.count.cur")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_int_value();
         let subj_str = self.global_string(subject);
         let handler_ptr = handler_fn.as_global_value().as_pointer_value();
-
-        // entries[count].subject = subj_str
-        let subj_slot = unsafe {
-            self.builder
-                .build_gep(
-                    table_ty,
-                    bus.entries.as_pointer_value(),
-                    &[i64_t.const_int(0, false), count, i32_t.const_int(0, false)],
-                    "reg.subject.ptr",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-        };
+        let mailbox_val = mailbox_or_null.unwrap_or_else(|| ptr_t.const_null());
+        let register_fn = self
+            .module
+            .get_function("lotus_bus_register")
+            .expect("lotus_bus_register declared in declare_builtins");
         self.builder
-            .build_store(subj_slot, subj_str)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        // entries[count].self = self_ptr
-        let self_slot = unsafe {
-            self.builder
-                .build_gep(
-                    table_ty,
-                    bus.entries.as_pointer_value(),
-                    &[i64_t.const_int(0, false), count, i32_t.const_int(1, false)],
-                    "reg.self.ptr",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-        };
-        self.builder
-            .build_store(self_slot, self_ptr)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        // entries[count].handler = handler_ptr
-        let handler_slot = unsafe {
-            self.builder
-                .build_gep(
-                    table_ty,
-                    bus.entries.as_pointer_value(),
-                    &[i64_t.const_int(0, false), count, i32_t.const_int(2, false)],
-                    "reg.handler.ptr",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-        };
-        self.builder
-            .build_store(handler_slot, handler_ptr)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        // entries[count].mailbox = mailbox_or_null
-        let mailbox_slot = unsafe {
-            self.builder
-                .build_gep(
-                    table_ty,
-                    bus.entries.as_pointer_value(),
-                    &[i64_t.const_int(0, false), count, i32_t.const_int(3, false)],
-                    "reg.mailbox.ptr",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-        };
-        let mailbox_val = mailbox_or_null
-            .unwrap_or_else(|| ptr_t.const_null());
-        self.builder
-            .build_store(mailbox_slot, mailbox_val)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        // bus.count = count + 1
-        let next = self
-            .builder
-            .build_int_add(count, i64_t.const_int(1, false), "bus.count.next")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(bus.count.as_pointer_value(), next)
+            .build_call(
+                register_fn,
+                &[
+                    subj_str.into(),
+                    self_ptr.into(),
+                    handler_ptr.into(),
+                    mailbox_val.into(),
+                ],
+                "bus.register.call",
+            )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
@@ -1674,34 +1384,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.declare_locus_methods(l)?;
         }
 
-        // After A2: if any locus declared a `bus subscribe`,
-        // emit the bus globals + the linear-scan dispatch fn.
-        // The dispatch fn body is generated before any call site
-        // can need it; the globals' capacity is baked from the
-        // total subscription count across all loci.
-        // m45 (companion fix): cap the table at
-        // total_subs × INSTANCES_PER_TYPE so multiple instances
-        // of the same locus type can each register their own
-        // entry without overflowing a per-type-of-1 sized
-        // global. Pre-fix, two instances of a subscribed locus
-        // type → buffer overflow; the workaround was "use
-        // distinct types." 32 is comfortable for v0 (trellis-
-        // demo's hottest subject has 1 publisher / 1 subscriber;
-        // 32 instances per subscription type covers any
-        // reasonable single-process locus topology). Proper
-        // fix is to move bus storage to a C-runtime dynamic
-        // vec so capacity grows on demand — captured in
-        // CHECKPOINT next-steps; this multiplier is the v0
-        // unblock.
+        // After A2: if any locus declared a `bus subscribe`, mark
+        // the program as bus-active. m45-followup: bus storage
+        // moved to the C runtime, so this is a presence flag now —
+        // there's no LLVM-side table to size, no compile-time cap
+        // to budget, and no dispatch-fn body to emit. `lower_send`
+        // checks the flag so a stray `<-` in a subscriber-less
+        // program errors at compile time (preserving the prior
+        // diagnostic) rather than calling `lotus_bus_dispatch` on
+        // an empty C-runtime table at runtime.
         let decl_subs: u64 = self
             .user_loci
             .values()
             .map(|info| info.subscriptions.len() as u64)
             .sum();
-        const INSTANCES_PER_TYPE: u64 = 32;
-        let total_subs = decl_subs.saturating_mul(INSTANCES_PER_TYPE);
         if decl_subs > 0 {
-            self.init_bus_state(total_subs)?;
+            self.init_bus_state()?;
         }
 
         // Pass B: declare every user-defined function so call sites
@@ -2286,6 +1984,64 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         }
+
+        // m46: closure accumulators. For each `sum(expr)` call
+        // detected in a closure's assertion (left/right/tolerance,
+        // in that order), append one struct field of `expr`'s type.
+        // v0 restricts inner exprs to `self.X` reads — type comes
+        // straight from the locus's params. Anything else errors
+        // with a clear message at struct-decl time. Per-closure
+        // persists_through clauses are also stashed here for the
+        // recovery-reset gating.
+        let mut accumulators_per_closure: BTreeMap<
+            String,
+            Vec<AccumulatorSlot>,
+        > = BTreeMap::new();
+        let mut persists_through_per_closure: BTreeMap<String, Vec<String>> =
+            BTreeMap::new();
+        for member in &l.members {
+            let LocusMember::Closure(c) = member else {
+                continue;
+            };
+            let mut sums: Vec<Expr> = Vec::new();
+            collect_sum_calls(&c.assertion.left, &mut sums);
+            collect_sum_calls(&c.assertion.right, &mut sums);
+            collect_sum_calls(&c.assertion.tolerance, &mut sums);
+            let mut slots: Vec<AccumulatorSlot> = Vec::new();
+            for inner in sums {
+                let ty = infer_accumulator_inner_type(
+                    &l.name.name,
+                    &c.name.name,
+                    &inner,
+                    &fields,
+                )?;
+                let llvm_ty: inkwell::types::BasicTypeEnum =
+                    self.llvm_basic_type(&ty);
+                llvm_field_tys.push(llvm_ty);
+                slots.push(AccumulatorSlot {
+                    inner_expr: inner,
+                    ty,
+                    field_idx: idx,
+                });
+                idx += 1;
+            }
+            if !slots.is_empty() {
+                accumulators_per_closure
+                    .insert(c.name.name.clone(), slots);
+            }
+            let mut persists: Vec<String> = Vec::new();
+            for clause in &c.clauses {
+                if let ClosureClause::PersistsThrough(events) = clause {
+                    for ev in events {
+                        persists.push(ev.name.clone());
+                    }
+                }
+            }
+            if !persists.is_empty() {
+                persists_through_per_closure
+                    .insert(c.name.name.clone(), persists);
+            }
+        }
         let _ = idx;
 
         let struct_ty = self
@@ -2304,11 +2060,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 user_methods: BTreeMap::new(),
                 subscriptions: Vec::new(),
                 closures: Vec::new(),
+                accumulators_per_closure,
+                persists_through_per_closure,
                 birth_closures_fn: None,
                 dissolve_closures_fn: None,
                 tick_closures_fn: None,
                 tick_wrapper_fn: None,
                 duration_closures_fn: None,
+                duration_wrapper_fn: None,
                 duration_last_fire_field_idxs,
                 explicit_closures_fn: None,
                 failure_handler: None,
@@ -2772,6 +2531,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         } else {
             None
         };
+        // m43-followup: 1-arg wrapper adapter, same shape as
+        // tick_wrapper_fn. Needed for the pinned post-run() path,
+        // where the calling context is the pinned thread (no
+        // `current_self`), so the 3-arg fn's parent args can't be
+        // resolved at the call site — they have to come from the
+        // struct fields baked at instantiation time.
+        let duration_wrapper_fn = if has_duration {
+            let wrapper_ty = void_t.fn_type(&[ptr_t.into()], false);
+            Some(self.module.add_function(
+                &format!("{}.__duration_closures_wrapper", l.name.name),
+                wrapper_ty,
+                None,
+            ))
+        } else {
+            None
+        };
         // m44: __explicit_closures has the same 3-arg shape.
         // Called only by the `check_closures();` builtin —
         // user-triggered audit at a chosen checkpoint.
@@ -2808,6 +2583,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         info.tick_closures_fn = tick_closures_fn;
         info.tick_wrapper_fn = tick_wrapper_fn;
         info.duration_closures_fn = duration_closures_fn;
+        info.duration_wrapper_fn = duration_wrapper_fn;
         info.explicit_closures_fn = explicit_closures_fn;
         info.failure_handler = failure_handler;
         Ok(())
@@ -3224,9 +3000,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // tick violations through the same parent on_failure
         // handler the birth/dissolve epochs use, without
         // changing the bus drain loop's signature.
-        if let (Some(wrapper_fn), Some(tick_fn)) =
-            (info.tick_wrapper_fn, info.tick_closures_fn)
-        {
+        // m43-followup: duration uses the same shape so the
+        // pinned post-run path has a 1-arg call site that can
+        // route violations off-main-thread.
+        let wrapper_pairs = [
+            (info.tick_wrapper_fn, info.tick_closures_fn, "tick"),
+            (
+                info.duration_wrapper_fn,
+                info.duration_closures_fn,
+                "duration",
+            ),
+        ];
+        for (wrapper_opt, eval_opt, tag) in wrapper_pairs {
+            let (Some(wrapper_fn), Some(eval_fn)) = (wrapper_opt, eval_opt)
+            else {
+                continue;
+            };
             let entry = self.context.append_basic_block(wrapper_fn, "entry");
             self.builder.position_at_end(entry);
             let self_ptr = wrapper_fn
@@ -3268,13 +3057,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .into_pointer_value();
             self.builder
                 .build_call(
-                    tick_fn,
+                    eval_fn,
                     &[
                         self_ptr.into(),
                         parent_self.into(),
                         parent_handler.into(),
                     ],
-                    "tick.closures.call",
+                    &format!("{}.closures.call", tag),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder
@@ -3327,12 +3116,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
 
                 // m42: gate subscribed bus-handler bodies on the
-                // __quarantined flag at entry. m41b nulls
-                // bus.entries subjects so future publishes skip
-                // a quarantined subscriber, but cells enqueued
-                // before quarantine remain in the queue and
-                // would otherwise still fire. This entry gate
-                // matches the interpreter's
+                // __quarantined flag at entry. m41b (m45-followup-2
+                // form) nulls subjects in the C-runtime entries
+                // vec so future publishes skip a quarantined
+                // subscriber, but cells enqueued before quarantine
+                // remain in the queue and would otherwise still
+                // fire. This entry gate matches the interpreter's
                 // `delivery.subscription.locus.quarantined`
                 // check in dispatch_bus, so already-queued
                 // deliveries observe the stop-trying signal.
@@ -5589,6 +5378,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
         match e {
+            // m46: `sum(expr)` inside a closure assertion is the
+            // accumulator load (sample-update already ran);
+            // outside a closure assertion it is rejected (the
+            // batch array-reduction `sum(arr)` is interpreter-
+            // only at v0 — codegen never supported it).
+            Expr::Sum(_, _) => {
+                if self.accumulator_ctx.is_some() {
+                    self.lower_accumulator_load()
+                } else {
+                    Err(CodegenError::Unsupported(
+                        "`sum(...)` outside a closure assertion is not \
+                         supported in codegen v0".into(),
+                    ))
+                }
+            }
             Expr::Literal(Literal::Int(n), _) => {
                 let v = self.context.i64_type().const_int(*n as u64, true);
                 Ok((v.into(), LotusType::Int))
@@ -7163,6 +6967,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
 
+        // m46: zero each closure-accumulator slot at instantiation.
+        // The slot's type drives the zero choice (Int/Duration use
+        // i64 zero; Float/Decimal use f64 zero). Each `sum(self.X)`
+        // detected during locus-decl gave us one slot.
+        for slots in info.accumulators_per_closure.values() {
+            for (i, slot) in slots.iter().enumerate() {
+                self.zero_accumulator_slot(
+                    info.struct_ty,
+                    self_ptr,
+                    slot,
+                    &format!(
+                        "{}.__acc[{}].ptr",
+                        locus_name, i
+                    ),
+                )?;
+            }
+        }
+
         // F.7 ordering: if we're inside a parent locus's lifecycle
         // method AND the parent has an accept(child: ThisLocus) that
         // matches our type, call parent.accept(parent_self, child)
@@ -7448,20 +7270,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // parent fields from the struct) since we're
                     // off the main thread and resolve_failure_route
                     // wouldn't see the right `current_self`.
+                    // m43-followup: duration fires here too via
+                    // the matching wrapper, closing the v0 limit
+                    // where pinned post-run() didn't fire duration.
                     if *kind == "run" {
-                        if let Some(wrapper) = info.tick_wrapper_fn {
-                            self.builder
-                                .build_call(
-                                    wrapper,
-                                    &[thread_self.into()],
-                                    &format!(
-                                        "{}.tick.post_run.thread_call",
-                                        locus_name
-                                    ),
-                                )
-                                .map_err(|e| {
-                                    CodegenError::LlvmEmit(e.to_string())
-                                })?;
+                        for (wrapper_opt, tag) in [
+                            (info.tick_wrapper_fn, "tick"),
+                            (info.duration_wrapper_fn, "duration"),
+                        ] {
+                            if let Some(wrapper) = wrapper_opt {
+                                self.builder
+                                    .build_call(
+                                        wrapper,
+                                        &[thread_self.into()],
+                                        &format!(
+                                            "{}.{}.post_run.thread_call",
+                                            locus_name, tag
+                                        ),
+                                    )
+                                    .map_err(|e| {
+                                        CodegenError::LlvmEmit(e.to_string())
+                                    })?;
+                            }
                         }
                     }
                 }
@@ -7961,6 +7791,227 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///     exit(1)
     /// ```
     ///
+    /// m46: zero every closure's accumulator slots that don't
+    /// list `event` in their `persists_through(...)` clause.
+    /// Default behavior is reset; `persists_through` is opt-out
+    /// per spec/runtime.md "recovery-event interaction." Called
+    /// from `restart` / `restart_in_place` / `quarantine` recovery
+    /// dispatch (m40 / m45 / m41 sites).
+    fn emit_accumulator_reset_for_event(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        event: &str,
+        locus_name: &str,
+    ) -> Result<(), CodegenError> {
+        let groups: Vec<(String, Vec<AccumulatorSlot>)> = info
+            .accumulators_per_closure
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        for (closure_name, slots) in groups {
+            let persists = info
+                .persists_through_per_closure
+                .get(&closure_name)
+                .map(|v| v.iter().any(|e| e == event))
+                .unwrap_or(false);
+            if persists {
+                continue;
+            }
+            for (i, slot) in slots.iter().enumerate() {
+                self.zero_accumulator_slot(
+                    info.struct_ty,
+                    self_ptr,
+                    slot,
+                    &format!(
+                        "{}.{}.acc[{}].reset.{}",
+                        locus_name, closure_name, i, event
+                    ),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// m46: store a zero value into one accumulator slot. Numeric-
+    /// type-dispatched: Int/Duration → i64(0); Float/Decimal →
+    /// f64(0). Used at instantiation (initial zero) and at recovery
+    /// dispatch when the event isn't listed in `persists_through`.
+    fn zero_accumulator_slot(
+        &mut self,
+        struct_ty: inkwell::types::StructType<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        slot: &AccumulatorSlot,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let slot_ptr = self
+            .builder
+            .build_struct_gep(struct_ty, self_ptr, slot.field_idx, name)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        match slot.ty {
+            LotusType::Int | LotusType::Duration => {
+                let z = self.context.i64_type().const_int(0, false);
+                self.builder
+                    .build_store(slot_ptr, z)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            LotusType::Float | LotusType::Decimal => {
+                let z = self.context.f64_type().const_float(0.0);
+                self.builder
+                    .build_store(slot_ptr, z)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            _ => {
+                return Err(CodegenError::Unsupported(format!(
+                    "accumulator slot type {:?} unexpected — \
+                     infer_accumulator_inner_type rejects non-numerics",
+                    slot.ty
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// m46: sample-update one accumulator slot. Evaluates the
+    /// slot's `inner_expr` in the closure's scope, adds the result
+    /// to the slot's current value, stores back. Numeric-dispatched.
+    /// Called for every accumulator slot of a closure right BEFORE
+    /// the closure's assertion is lowered — so the assertion's
+    /// `sum(...)` substitutions read this fire's running total
+    /// (i.e., the new total after the current sample, matching the
+    /// natural reading of "sum across cells").
+    fn update_accumulator_slot(
+        &mut self,
+        struct_ty: inkwell::types::StructType<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        slot: &AccumulatorSlot,
+        scope: &Scope<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let (sample_val, sample_ty) =
+            self.lower_expr(&slot.inner_expr, scope)?;
+        if sample_ty != slot.ty {
+            return Err(CodegenError::Unsupported(format!(
+                "accumulator inner expr re-lowered with type {:?} but slot \
+                 was declared {:?}",
+                sample_ty, slot.ty
+            )));
+        }
+        let slot_ptr = self
+            .builder
+            .build_struct_gep(struct_ty, self_ptr, slot.field_idx, name)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        match slot.ty {
+            LotusType::Int | LotusType::Duration => {
+                let i64_t = self.context.i64_type();
+                let prev = self
+                    .builder
+                    .build_load(i64_t, slot_ptr, &format!("{}.prev", name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_int_value();
+                let next = self
+                    .builder
+                    .build_int_add(
+                        prev,
+                        sample_val.into_int_value(),
+                        &format!("{}.next", name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(slot_ptr, next)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            LotusType::Float | LotusType::Decimal => {
+                let f64_t = self.context.f64_type();
+                let prev = self
+                    .builder
+                    .build_load(f64_t, slot_ptr, &format!("{}.prev", name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_float_value();
+                let next = self
+                    .builder
+                    .build_float_add(
+                        prev,
+                        sample_val.into_float_value(),
+                        &format!("{}.next", name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(slot_ptr, next)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            _ => {
+                return Err(CodegenError::Unsupported(format!(
+                    "accumulator slot type {:?} unexpected", slot.ty
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// m46: emit a load from the *next* accumulator slot in the
+    /// current `accumulator_ctx`. Called from `lower_expr`'s Call
+    /// match when a `sum(...)` call is encountered inside a closure
+    /// assertion. Advances `next_idx` by one so the following
+    /// `sum(...)` in the same assertion lands on the next slot.
+    /// Returns `(value, slot.ty)` matching what a normal expression
+    /// would have returned, so the assertion's left/right typing
+    /// rule still applies cleanly.
+    fn lower_accumulator_load(
+        &mut self,
+    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        let ctx = self.accumulator_ctx.as_mut().ok_or_else(|| {
+            CodegenError::Unsupported(
+                "internal: lower_accumulator_load called without ctx".into(),
+            )
+        })?;
+        if ctx.next_idx >= ctx.slots.len() {
+            return Err(CodegenError::Unsupported(format!(
+                "more `sum(...)` calls encountered during assertion lowering \
+                 than slots allocated ({}); detection and lowering walks \
+                 disagree",
+                ctx.slots.len()
+            )));
+        }
+        let slot = ctx.slots[ctx.next_idx].clone();
+        let struct_ty = ctx.struct_ty;
+        let self_ptr = ctx.self_ptr;
+        ctx.next_idx += 1;
+        let slot_ptr = self
+            .builder
+            .build_struct_gep(
+                struct_ty,
+                self_ptr,
+                slot.field_idx,
+                &format!("acc[{}].load.ptr", slot.field_idx),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let v: BasicValueEnum<'ctx> = match slot.ty {
+            LotusType::Int | LotusType::Duration => self
+                .builder
+                .build_load(
+                    self.context.i64_type(),
+                    slot_ptr,
+                    &format!("acc[{}].load", slot.field_idx),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
+            LotusType::Float | LotusType::Decimal => self
+                .builder
+                .build_load(
+                    self.context.f64_type(),
+                    slot_ptr,
+                    &format!("acc[{}].load", slot.field_idx),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
+            other => {
+                return Err(CodegenError::Unsupported(format!(
+                    "accumulator slot type {:?} unexpected", other
+                )));
+            }
+        };
+        Ok((v, slot.ty))
+    }
+
     /// Operand types must match each other AND the tolerance type.
     /// v0 supports Int / Duration / Float / Decimal closures.
     /// String / Bool / record-typed closures are rejected (would
@@ -7975,9 +8026,53 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         epoch: EpochSpec,
     ) -> Result<(), CodegenError> {
         let scope = Scope::default();
+
+        // m46: install the accumulator-substitution context for
+        // this closure (if it has any sum() slots), then sample-
+        // update each slot before evaluating the assertion. The
+        // assertion's `sum(...)` references will then load the
+        // post-update value, so each fire's "running total" is
+        // the natural reading of "sum across cells through this
+        // moment."
+        let info = self
+            .user_loci
+            .get(locus_name)
+            .cloned()
+            .expect("closure check on unknown locus");
+        let cs = self
+            .current_self
+            .clone()
+            .expect("lower_closure_check called outside a locus body");
+        let slots = info
+            .accumulators_per_closure
+            .get(closure_name)
+            .cloned()
+            .unwrap_or_default();
+        if !slots.is_empty() {
+            for (i, slot) in slots.iter().enumerate() {
+                self.update_accumulator_slot(
+                    info.struct_ty,
+                    cs.self_ptr,
+                    slot,
+                    &scope,
+                    &format!(
+                        "{}.{}.acc[{}].sample",
+                        locus_name, closure_name, i
+                    ),
+                )?;
+            }
+            self.accumulator_ctx = Some(AccumulatorCtx {
+                slots: slots.clone(),
+                next_idx: 0,
+                self_ptr: cs.self_ptr,
+                struct_ty: info.struct_ty,
+            });
+        }
+
         let (lv, lt) = self.lower_expr(&ass.left, &scope)?;
         let (rv, rt) = self.lower_expr(&ass.right, &scope)?;
         if lt != rt {
+            self.accumulator_ctx = None;
             return Err(CodegenError::Unsupported(format!(
                 "closure `{}` on `{}`: left/right types differ ({:?} vs {:?})",
                 closure_name, locus_name, lt, rt
@@ -7985,11 +8080,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (tv, tt) = self.lower_expr(&ass.tolerance, &scope)?;
         if tt != lt {
+            self.accumulator_ctx = None;
             return Err(CodegenError::Unsupported(format!(
                 "closure `{}` on `{}`: tolerance type differs ({:?} vs operand {:?})",
                 closure_name, locus_name, tt, lt
             )));
         }
+        // Substitution complete; clear ctx so any later expression
+        // lowering on this thread doesn't accidentally hit it.
+        self.accumulator_ctx = None;
 
         // Track the signed-i64 diff for Int/Duration closures so
         // we can populate ClosureViolation.diff at routing time.
@@ -8595,15 +8694,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_store(rip_ptr, one)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
+        // m46: zero each closure's accumulators unless its
+        // `persists_through(...)` clause names this recovery
+        // event. Default = reset.
+        self.emit_accumulator_reset_for_event(
+            &info, child_ptr, kind, &locus_name,
+        )?;
         Ok(BlockEnd::Open)
     }
 
     /// m41: lower a `quarantine(child);` recovery call. Sets
-    /// child.__quarantined = 1; m41b extension walks the global
-    /// bus.entries table and nulls out the subject of any entry
-    /// whose `self` matches the quarantined child, so the
-    /// dispatch loop's null-subject sentinel skips those slots
-    /// thereafter (quarantined subscribers stop receiving bus
+    /// child.__quarantined = 1, then calls
+    /// `lotus_bus_quarantine_self(child_ptr)` to deregister any
+    /// bus subscriptions (the C runtime walks its entries vec and
+    /// nulls out the subject of every match — dispatch then skips
+    /// those slots, so quarantined subscribers stop receiving bus
     /// messages). Lifecycle dispatch in lower_locus_instantiation
     /// reads the flag after birth + __birth_closures and skips
     /// run() if set; drain / dissolve still fire (cleanup is
@@ -8650,155 +8755,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_store(q_ptr, one)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // m41b: walk bus.entries and null-out subject for any
-        // entry whose self matches child_ptr. Bus dispatch's
-        // null-subject sentinel will then skip those slots.
-        // The walk is bounded by bus.count and runs on the same
-        // thread as quarantine() (cooperative; pinned doesn't
-        // have closures, so quarantine() never fires there).
-        // Indexing strategy: GEP the entries array as
-        // [entry_ty, entry_ty, ...] using i_cur as the linear
-        // index — opaque-pointer LLVM lets us treat the global
-        // as an entry_ty pointer regardless of its declared
-        // outer array type.
-        if let (Some(entries_global), Some(count_global)) = (
-            self.module.get_global("bus.entries"),
-            self.module.get_global("bus.count"),
-        ) {
-            let ptr_t = self.context.ptr_type(AddressSpace::default());
-            let entry_ty = self.bus_entry_type();
-            let func = self.current_fn.expect("current_fn set");
-            let entries_base = entries_global.as_pointer_value();
-            let i_slot = self
-                .builder
-                .build_alloca(i64_t, "q.unsub.i.slot")
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // m41b semantic, m45-followup form: hand the child off to
+        // the C runtime, which walks its entries vec and nulls out
+        // every matching subscription's subject. Idempotent — repeat
+        // calls just keep finding already-nulled entries and writing
+        // NULL again.
+        if self.bus_state.is_some() {
+            let unsub_fn = self
+                .module
+                .get_function("lotus_bus_quarantine_self")
+                .expect("lotus_bus_quarantine_self declared in declare_builtins");
             self.builder
-                .build_store(i_slot, i64_t.const_int(0, false))
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let header_bb = self
-                .context
-                .append_basic_block(func, "q.unsub.header");
-            let body_bb = self
-                .context
-                .append_basic_block(func, "q.unsub.body");
-            let zero_bb = self
-                .context
-                .append_basic_block(func, "q.unsub.zero");
-            let inc_bb = self
-                .context
-                .append_basic_block(func, "q.unsub.inc");
-            let done_bb = self
-                .context
-                .append_basic_block(func, "q.unsub.done");
-            self.builder
-                .build_unconditional_branch(header_bb)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder.position_at_end(header_bb);
-            let count = self
-                .builder
-                .build_load(
-                    i64_t,
-                    count_global.as_pointer_value(),
-                    "q.unsub.count",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .into_int_value();
-            let i_cur = self
-                .builder
-                .build_load(i64_t, i_slot, "q.unsub.i")
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .into_int_value();
-            let in_range = self
-                .builder
-                .build_int_compare(
-                    inkwell::IntPredicate::ULT,
-                    i_cur,
-                    count,
-                    "q.unsub.in_range",
+                .build_call(
+                    unsub_fn,
+                    &[child_ptr.into()],
+                    "bus.quarantine.self.call",
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_conditional_branch(in_range, body_bb, done_bb)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder.position_at_end(body_bb);
-            let entry_ptr = unsafe {
-                self.builder
-                    .build_gep(
-                        entry_ty,
-                        entries_base,
-                        &[i_cur],
-                        "q.unsub.entry.ptr",
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            };
-            let self_slot_ptr = self
-                .builder
-                .build_struct_gep(
-                    entry_ty,
-                    entry_ptr,
-                    1,
-                    "q.unsub.entry.self.ptr",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let entry_self = self
-                .builder
-                .build_load(ptr_t, self_slot_ptr, "q.unsub.entry.self")
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .into_pointer_value();
-            let entry_self_int = self
-                .builder
-                .build_ptr_to_int(entry_self, i64_t, "q.unsub.self.int")
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let child_int = self
-                .builder
-                .build_ptr_to_int(child_ptr, i64_t, "q.unsub.child.int")
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let matches = self
-                .builder
-                .build_int_compare(
-                    inkwell::IntPredicate::EQ,
-                    entry_self_int,
-                    child_int,
-                    "q.unsub.match",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_conditional_branch(matches, zero_bb, inc_bb)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder.position_at_end(zero_bb);
-            let subj_slot_ptr = self
-                .builder
-                .build_struct_gep(
-                    entry_ty,
-                    entry_ptr,
-                    0,
-                    "q.unsub.entry.subject.ptr",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_store(subj_slot_ptr, ptr_t.const_null())
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_unconditional_branch(inc_bb)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder.position_at_end(inc_bb);
-            let next = self
-                .builder
-                .build_int_add(
-                    i_cur,
-                    i64_t.const_int(1, false),
-                    "q.unsub.next",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_store(i_slot, next)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_unconditional_branch(header_bb)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder.position_at_end(done_bb);
         }
+        // m46: zero each closure's accumulators unless its
+        // `persists_through(...)` clause names "quarantine".
+        self.emit_accumulator_reset_for_event(
+            &info, child_ptr, "quarantine", &locus_name,
+        )?;
         Ok(BlockEnd::Open)
     }
 
@@ -8999,19 +8978,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(BlockEnd::Terminated)
     }
 
-    /// Lower a `subject <- payload;` statement to a call into the
-    /// generated `lotus.bus_dispatch` fn. Subject must be a String
-    /// literal (or evaluate to a String pointer); payload must be
-    /// a TypeRef value (a pointer to a user-type struct). The
-    /// dispatch fn linear-scans the global subscription table and
-    /// invokes each matching handler with `(self_ptr, payload_ptr)`.
+    /// Lower a `subject <- payload;` statement to a single call to
+    /// the C-runtime `lotus_bus_dispatch(queue, subject, payload, size)`.
+    /// Subject must evaluate to a String pointer; payload must be a
+    /// TypeRef value (a pointer to a user-type struct). The C
+    /// runtime walks its (heap-grown) entries vec and routes each
+    /// match either to the cooperative queue or to a pinned
+    /// subscriber's mailbox, by mailbox-null-or-not at registration.
     fn lower_send(
         &mut self,
         subject: &Expr,
         value: &Expr,
         scope: &Scope<'ctx>,
     ) -> Result<(), CodegenError> {
-        let bus = self.bus_state.ok_or_else(|| {
+        let _ = self.bus_state.ok_or_else(|| {
             CodegenError::Unsupported(
                 "bus send `<-` used but no `bus subscribe` declared in \
                  program — nothing to dispatch to"
@@ -9049,10 +9029,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .struct_ty
             .size_of()
             .expect("payload struct has known size");
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let queue_global = self
+            .module
+            .get_global("lotus.bus_queue.global")
+            .expect("bus queue global declared");
+        let queue_ptr = self
+            .builder
+            .build_load(
+                ptr_t,
+                queue_global.as_pointer_value(),
+                "bus.dispatch.queue",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let dispatch_fn = self
+            .module
+            .get_function("lotus_bus_dispatch")
+            .expect("lotus_bus_dispatch declared in declare_builtins");
         self.builder
             .build_call(
-                bus.dispatch_fn,
-                &[subj_val.into(), payload_val.into(), payload_size.into()],
+                dispatch_fn,
+                &[
+                    queue_ptr.into(),
+                    subj_val.into(),
+                    payload_val.into(),
+                    payload_size.into(),
+                ],
                 "bus.dispatch.call",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -9312,6 +9314,82 @@ fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
 
 fn escape_format(s: &str) -> String {
     s.replace('%', "%%")
+}
+
+/// m46 (closure accumulators): walk an expression tree, append
+/// every `sum(expr)` builtin's inner argument to `out` in tree
+/// traversal order. The parser surfaces `sum(x)` as the dedicated
+/// `Expr::Sum` variant, not a generic `Call(Ident("sum"))`, so
+/// detection just matches on that variant. Doesn't recurse into
+/// the sum's own argument — `sum(sum(...))` is rejected at
+/// type-inference time anyway (only `self.X` reads survive that
+/// pass at v0).
+fn collect_sum_calls(expr: &Expr, out: &mut Vec<Expr>) {
+    match expr {
+        Expr::Sum(inner, _) => {
+            out.push((**inner).clone());
+        }
+        Expr::Call { callee, args, .. } => {
+            collect_sum_calls(callee, out);
+            for a in args {
+                collect_sum_calls(a, out);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_sum_calls(left, out);
+            collect_sum_calls(right, out);
+        }
+        Expr::Unary { operand, .. } => collect_sum_calls(operand, out),
+        Expr::Field { receiver, .. } => collect_sum_calls(receiver, out),
+        Expr::Index { receiver, index, .. } => {
+            collect_sum_calls(receiver, out);
+            collect_sum_calls(index, out);
+        }
+        _ => {}
+    }
+}
+
+/// m46: infer the LotusType of an accumulator's inner expression.
+/// v0 supports `self.X` reads only, where X is a numeric param —
+/// type comes straight from the locus's param map (`fields`).
+/// Anything else errors with a concrete message naming the closure
+/// + locus so the user knows where to look.
+fn infer_accumulator_inner_type(
+    locus_name: &str,
+    closure_name: &str,
+    inner: &Expr,
+    fields: &BTreeMap<String, (u32, LotusType)>,
+) -> Result<LotusType, CodegenError> {
+    if let Expr::Field { receiver, name, .. } = inner {
+        if let Expr::KwSelf(_) = receiver.as_ref() {
+            let (_, ty) = fields.get(&name.name).ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "closure `{}` on locus `{}`: accumulator `sum(self.{})` \
+                     references unknown field",
+                    closure_name, locus_name, name.name
+                ))
+            })?;
+            match ty {
+                LotusType::Int
+                | LotusType::Float
+                | LotusType::Decimal
+                | LotusType::Duration => return Ok(ty.clone()),
+                other => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "closure `{}` on locus `{}`: accumulator `sum(self.{})` \
+                         requires a numeric type (Int / Float / Decimal / \
+                         Duration); got {:?}",
+                        closure_name, locus_name, name.name, other
+                    )))
+                }
+            }
+        }
+    }
+    Err(CodegenError::Unsupported(format!(
+        "closure `{}` on locus `{}`: accumulator inner expr must be `self.X` \
+         in v0 (got a more complex form); reduce to a single field reference",
+        closure_name, locus_name
+    )))
 }
 
 /// LLVM produces architecture-specific triples; expose a way

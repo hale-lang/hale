@@ -1,0 +1,103 @@
+// 41-closure-accumulator — m46: closure accumulators (`sum(...)`).
+//
+// Closures could only ever do "snapshot" assertions before m46 —
+// `self.x ~~ self.y within 0` compares two values at one moment.
+// m46 lights up streaming accumulators: each `sum(expr)` call in a
+// closure assertion adds `expr`-evaluated-now to a per-closure
+// running total at every epoch fire. The assertion's `sum(...)`
+// references then read the post-update total. This is the
+// canonical "drift detection" shape — sum over a stream of cells
+// and assert it stays within a band.
+//
+// Vocabulary at v0.1: `sum(self.X)` for numeric X (Int / Float /
+// Decimal / Duration). Defer count() / mean() / rolling windows
+// until a workload calls for them — sum is enough for canonical
+// drift assertions and accumulator engines build outward from it.
+//
+// Sample point: each epoch fire (`epoch tick` here means "after
+// each bus handler invocation"). The assertion fires at the same
+// moment, so it observes the running total *including* this
+// fire's sample.
+//
+// Recovery interaction: by default, a recovery event
+// (restart / restart_in_place / quarantine) zeroes the
+// accumulators back to fresh-start. `persists_through(...)`
+// opts that closure's accumulators out of reset for the named
+// events.
+//
+// What this example exercises:
+//   - A Tracker locus whose `delta` field is updated by each
+//     bus message. Its closure accumulates self.delta across
+//     all fires and asserts the running total stays within a
+//     band of zero.
+//   - The first three samples (1 + 2 + 3 = 6) are within the
+//     band of 100; closure passes silently.
+//   - The fourth sample (200) tips the running total to 206,
+//     well outside the band → closure fires a violation.
+//   - Coordinator's on_failure absorbs and prints the
+//     accumulated diff, then quarantines the Tracker. The
+//     `persists_through(quarantine)` clause means the
+//     accumulator value survives the quarantine event (here
+//     it doesn't matter because the locus is silenced, but
+//     it documents the recovery contract).
+//   - Subsequent publishes don't reach the quarantined
+//     Tracker (m41b bus-dispatch gating), so no further fires.
+
+import "std/time";
+
+type Sample {
+    value: Int;
+}
+
+locus Tracker {
+    params {
+        delta: Int = 0;
+    }
+
+    closure within_band {
+        sum(self.delta) ~~ 0 within 100;
+        epoch tick;
+        persists_through(quarantine);
+    }
+
+    bus {
+        subscribe "data" as on_data of type Sample;
+    }
+
+    fn on_data(s: Sample) {
+        self.delta = s.value;
+        println("Tracker.on_data: delta=", self.delta);
+    }
+}
+
+locus Coordinator {
+    on_failure(t: Tracker, err: ClosureViolation) {
+        println("Coordinator: drift detected (diff=", err.diff,
+                ") — quarantining Tracker");
+        quarantine(t);
+    }
+
+    bus {
+        publish "data" of type Sample;
+    }
+
+    run() {
+        Tracker { };
+        // Each cell evaluates self.delta and adds to the
+        // accumulator. Running totals: 1, 3, 6, 206.
+        // First three pass (within 100); fourth violates.
+        "data" <- Sample { value: 1 };
+        "data" <- Sample { value: 2 };
+        "data" <- Sample { value: 3 };
+        "data" <- Sample { value: 200 };
+        // Quarantined; subsequent publishes get dropped at
+        // the bus-dispatch gate, so this 999 never reaches
+        // Tracker (no fire, no further violation).
+        "data" <- Sample { value: 999 };
+        println("--- run done ---");
+    }
+}
+
+fn main() {
+    Coordinator { };
+}
