@@ -829,6 +829,28 @@ impl Interpreter {
                         return Ok(v);
                     }
                 }
+                // m47: 2-segment path may be an enum variant
+                // construction (`EnumName::VariantName`). v0.1
+                // payloadless variants only — codegen rejects
+                // payload-bearing decls upstream, so `variants`
+                // here is already validated; we just look up
+                // the name and return a tagged Value.
+                if let [enum_name, variant_name] = segs.as_slice() {
+                    if let Some(t) = self.types.get(*enum_name) {
+                        if let TypeDeclBody::Enum(variants) = &t.body {
+                            if variants.iter().any(|v| v.name.name == *variant_name) {
+                                return Ok(Value::EnumVariant {
+                                    enum_name: (*enum_name).to_string(),
+                                    variant_name: (*variant_name).to_string(),
+                                });
+                            }
+                            return Err(Signal::Error(format!(
+                                "enum `{}` has no variant `{}`",
+                                enum_name, variant_name
+                            )));
+                        }
+                    }
+                }
                 Err(Signal::Error(format!(
                     "unresolved path `{}`",
                     qname
@@ -2275,19 +2297,26 @@ fn pattern_match(
             _ => false,
         },
         Pattern::Constructor { path, args, .. } => {
-            // v0: empty-args constructor matches a struct
-            // value by struct name (last path segment).
-            // Non-empty args require enum-variant support
-            // and aren't wired in v0.
-            let last = match path.segments.last() {
-                Some(s) => &s.name,
-                None => return false,
-            };
+            // v0.1: empty-args only. Two cases:
+            //   - 1-segment path matches struct values by name
+            //     (legacy behavior).
+            //   - 2-segment path `EnumName::VariantName` matches
+            //     enum variant values by both names. Codegen
+            //     enforces no-payload variants upstream.
             if !args.is_empty() {
                 return false;
             }
-            match val {
-                Value::Struct { name, .. } => name == last,
+            let segs: Vec<&str> =
+                path.segments.iter().map(|s| s.name.as_str()).collect();
+            match (segs.as_slice(), val) {
+                ([single], Value::Struct { name, .. }) => *single == name,
+                (
+                    [enum_name, variant_name],
+                    Value::EnumVariant {
+                        enum_name: en,
+                        variant_name: vn,
+                    },
+                ) => *enum_name == en && *variant_name == vn,
                 _ => false,
             }
         }

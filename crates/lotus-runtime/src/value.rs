@@ -33,6 +33,15 @@ pub enum Value {
         name: String,
         fields: Rc<RefCell<BTreeMap<String, Value>>>,
     },
+    /// m47: enum variant value. v0.1 supports no-payload variants
+    /// only. Codegen represents this as an i32 tag; the interpreter
+    /// keeps both names so error messages and match-pattern checks
+    /// can match by name without needing a separate enum-decl
+    /// registry walk.
+    EnumVariant {
+        enum_name: String,
+        variant_name: String,
+    },
     /// A live locus instance. Holds its state and a shared
     /// reference to its declaration so methods can be invoked
     /// off the handle.
@@ -145,6 +154,7 @@ impl Value {
             Value::Array(_) => "Array",
             Value::Tuple(_) => "Tuple",
             Value::Struct { .. } => "Struct",
+            Value::EnumVariant { .. } => "EnumVariant",
             Value::Locus(_) => "Locus",
             Value::Fn(_) => "Fn",
             Value::Builtin(_) => "Builtin",
@@ -178,6 +188,9 @@ impl Value {
                     .map(|(k, v)| format!("{}: {}", k, v.display()))
                     .collect();
                 format!("{} {{ {} }}", name, parts.join(", "))
+            }
+            Value::EnumVariant { enum_name, variant_name } => {
+                format!("{}::{}", enum_name, variant_name)
             }
             Value::Locus(h) => format!("<locus {}>", h.name),
             Value::Fn(_) => "<fn>".to_string(),

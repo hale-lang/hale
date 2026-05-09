@@ -42,11 +42,11 @@ fn method_to_fn_ty(m: &MethodInfo) -> Ty {
 ///     or a bare binding makes the match exhaustive.
 ///   - For Bool scrutinee: literal `true` AND literal `false`
 ///     arms (both unguarded) is also exhaustive.
+///   - For an enum-typed scrutinee (m47): every declared variant
+///     must be covered by an unguarded `EnumName::Variant`
+///     constructor pattern.
 ///   - For everything else: a wildcard / binding is required.
-///     The grammar's match is not currently used with
-///     enum-variant patterns; when that lands the rule will
-///     extend to "every variant covered".
-fn match_is_exhaustive(scrut_ty: &Ty, arms: &[MatchArm]) -> bool {
+fn match_is_exhaustive(scrut_ty: &Ty, arms: &[MatchArm], top: &TopScope) -> bool {
     let unguarded = |a: &&MatchArm| a.guard.is_none();
     let has_catchall = arms.iter().filter(unguarded).any(|a| {
         matches!(a.pattern, Pattern::Wildcard(_) | Pattern::Binding(_))
@@ -67,6 +67,29 @@ fn match_is_exhaustive(scrut_ty: &Ty, arms: &[MatchArm]) -> bool {
             }
         }
         return has_true && has_false;
+    }
+    if let Ty::Named(name) = scrut_ty {
+        if let Some(TopSymbol::Type(TypeInfo {
+            kind: TypeKind::Enum(variants),
+            ..
+        })) = top.symbols.get(name)
+        {
+            let mut covered: std::collections::BTreeSet<&str> =
+                std::collections::BTreeSet::new();
+            for arm in arms.iter().filter(unguarded) {
+                if let Pattern::Constructor { path, args, .. } = &arm.pattern {
+                    if !args.is_empty() {
+                        continue;
+                    }
+                    if let [enum_seg, variant_seg] = path.segments.as_slice() {
+                        if enum_seg.name == *name {
+                            covered.insert(variant_seg.name.as_str());
+                        }
+                    }
+                }
+            }
+            return variants.iter().all(|v| covered.contains(v.name.as_str()));
+        }
     }
     // Be permissive on Unknown — we genuinely can't say.
     matches!(scrut_ty, Ty::Unknown)
@@ -589,7 +612,7 @@ impl<'a> Checker<'a> {
                 MatchArmBody::Block(b) => self.check_block(b),
             }
         }
-        if !match_is_exhaustive(&scrut_ty, &stmt.arms) {
+        if !match_is_exhaustive(&scrut_ty, &stmt.arms, self.top) {
             self.diags.push(Diag::ty(
                 stmt.span,
                 format!(

@@ -1,11 +1,19 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work in a
-new session. State as of m46 (**closure accumulators** — the
-streaming-fold half of F.9: `sum(self.X)` calls inside a closure
-assertion accumulate `self.X` across every epoch fire and the
-assertion reads the running total; recovery events zero the
-accumulators by default, opt-out via `persists_through(...)`).
+new session. State as of m47 (**enums** — `type X = enum { A, B };`
+declares a no-payload tagged union; `X::A` constructs a variant
+value; `match` arms accept `X::A -> ...` constructor patterns;
+the typechecker enforces variant-coverage exhaustiveness;
+codegen emits an `i32` tag per variant in declaration order
+and pattern-match lowers to tag equality).
+State before that was m46-vocab (`count()` no-arg + `mean(x)`
+accumulator builtins built on m46's sum accumulator) and m46
+(**closure accumulators** — the streaming-fold half of F.9:
+`sum(self.X)` calls inside a closure assertion accumulate
+`self.X` across every epoch fire and the assertion reads the
+running total; recovery events zero the accumulators by default,
+opt-out via `persists_through(...)`).
 This session also shipped (a) **bus.entries proper fix**
 (m45-followup-2) — bus storage migrated out of fixed-cap LLVM
 globals into a heap-grown C-runtime dynamic vec, removing the
@@ -140,6 +148,32 @@ Phase status:
 - **Phase 2 v0** (interpreter + bus router) — 45 of 46 example
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
+- **Phase 3 milestone 47** (enums — tagged union + match) —
+  complete. v0.1 ships no-payload variants only; payload-bearing
+  variant decls are rejected upstream at typecheck/codegen
+  registration. Surface: `type Light = enum { Red, Yellow, Green };`
+  declares; `Light::Red` constructs; `match l { Light::Red -> ..., }`
+  destructures. Codegen represents each variant as its declaration-
+  order index in an `i32`; `LotusType::Enum(String)` wraps the
+  type name; `Codegen.user_enums: BTreeMap<String, EnumInfo>`
+  records the variant lists for tag lookup; `lower_expr` adds an
+  `Expr::Path` arm that resolves 2-segment paths to a const
+  `i32`; `match` lowering adds a `Pattern::Constructor` arm that
+  emits scrutinee-vs-tag equality. `llvm_basic_type` /
+  `type_expr_to_lotus` / fn-signature blocks / `alloca_for`
+  all gain `LotusType::Enum(_) => i32` arms; `lower_println`
+  rejects enum values for v0.1 (substring formatting deferred —
+  no symbol-table at runtime). Interpreter: `Value::EnumVariant
+  { enum_name, variant_name }`; `Expr::Path` recognizes 2-segment
+  paths against the existing `types` registry (`TopDecl::Type`
+  with `TypeDeclBody::Enum` body); `pattern_match`'s
+  `Pattern::Constructor` arm matches the variant's enum_name +
+  variant_name. Typechecker: `match_is_exhaustive` extended —
+  for `Ty::Named` pointing at a `TypeKind::Enum`, every
+  unguarded constructor pattern's variant name is collected and
+  the function returns true iff every declared variant is
+  covered. New `examples/43-enums/` exercises a Light state
+  machine through both backends; outputs match.
 - **Phase 3 milestone 46** (closure accumulators) — complete.
   Closes the streaming-fold half of F.9: `closure C { sum(self.X)
   ~~ Y within Z; ... }` accumulates `self.X` across every epoch

@@ -1,0 +1,47 @@
+// 43-enums — m47: enum decls + variant construction + match.
+//
+// v0.1 ships no-payload variants only (codegen rejects payload-
+// bearing variant decls upstream). The two pieces wired here:
+//
+//   - `EnumName::VariantName` as an expression. Codegen emits an
+//     i32 tag (variant index in declaration order). Interpreter
+//     produces Value::EnumVariant { enum_name, variant_name }.
+//
+//   - `EnumName::VariantName` as a Pattern::Constructor in match.
+//     Codegen compares scrutinee i32 vs each variant's tag.
+//     Interpreter compares enum_name + variant_name strings.
+//
+// Both backends should produce identical output: traffic light
+// transitions printed as the state machine cycles Red → Green →
+// Yellow → Red.
+
+type Light = enum { Red, Yellow, Green };
+
+fn report(l: Light) {
+    match l {
+        Light::Red    -> println("light: red"),
+        Light::Yellow -> println("light: yellow"),
+        Light::Green  -> println("light: green"),
+    }
+}
+
+fn next(l: Light) -> Light {
+    let mut out = Light::Red;
+    match l {
+        Light::Red    -> { out = Light::Green; },
+        Light::Green  -> { out = Light::Yellow; },
+        Light::Yellow -> { out = Light::Red; },
+    }
+    return out;
+}
+
+fn main() {
+    let mut l = Light::Red;
+    report(l);
+    l = next(l);
+    report(l);
+    l = next(l);
+    report(l);
+    l = next(l);
+    report(l);
+}
