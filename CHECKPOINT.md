@@ -1,26 +1,21 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work in a
-new session. State as of m30 (fixed-size arrays + for-over-array)
-— a surface-completeness pass following the m28 scheduler arc and
-the m29 match-guards polish. The full substrate arc
-landed: m19→m23 (region allocator with
-rich/chunked/recognition strategies + per-locus arenas + bus
-copy semantics), m24 (`match` codegen), m25 (bimodal
-schedule-class annotation), m26 (cooperative scheduler
-semantics — deferred bus dispatch + drain loop), m26b (explicit
-`yield`), m27 (pinned-thread spawning via pthread_create,
-run-only), m28a (full pinned lifecycle —
-birth/run/drain/dissolve all on the pinned thread), m28b
-(cross-thread bus mailboxes — pinned loci can subscribe and
-publish; cells route via per-locus mutex+condvar mailboxes with
-inline payloads; coordinated shutdown via
-shutdown-flag-then-join), m28c (optional `: schedule
-pinned(core = N)` for `pthread_setaffinity_np` core pinning),
-m29 (match arm guards — `pat if cond -> body` lowering with
-binding installed for the guard expr to reference), m30
-(fixed-size arrays — `[T; N]` literal, `arr[i]` indexing,
-`for x in arr` iteration, arena-backed storage). **29 of 30
+new session. State as of m34 (default param values on locus `fn`
+methods) — the surface-completeness arc that started after the
+m28 scheduler shipped. Substrate arc: m19→m23 (region allocator
+with rich/chunked/recognition + per-locus arenas + bus copy),
+m24 (`match`), m25 (bimodal schedule-class annotation), m26
+(cooperative scheduler — deferred bus + drain loop), m26b
+(explicit `yield`), m27 (pinned threads, run-only), m28a (full
+pinned lifecycle), m28b (cross-thread bus mailboxes), m28c
+(`pinned(core = N)` core pinning). Surface-completeness arc:
+m29 (match arm guards), m30 (fixed-size arrays + indexing +
+for-over-array), m30b (indexed local-array assignment), m31
+(integer ranges as for-iterators), m32 (default param values
+on free fns), m33 (multi-file `import` resolution; std/* skipped
+as built-ins), m34 (default param values on locus `fn`
+methods; bus-handlers + modes still reject). **29 of 30
 examples build to native ELF — every single-binary example.**
 Only `trellis-pair` (multi-binary, cross-process bus) remains.
 
@@ -79,9 +74,53 @@ greeting from child: yo
 Phase status:
 - **Phase 0** (spec stabilization) — complete
 - **Phase 1** (lex / parse / typecheck) — complete; F.1–F.18 enforced
-- **Phase 2 v0** (interpreter + bus router) — 21 of 22 example
+- **Phase 2 v0** (interpreter + bus router) — 29 of 30 example
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
+- **Phase 3 milestone 34** (default param values on locus `fn`
+  methods) — complete. Locus methods called via
+  `self.method(...)` now support default param values
+  (suffix-only rule, evaluated at the call site). Bus-subscribed
+  handlers reject defaults — bus dispatch is fixed-arity
+  `(self, payload)` at the C-runtime level and can't materialise
+  extra args at call time. Mode methods (bulk / harmonic /
+  resolution) still reject defaults — F.10 keeps their param
+  surface tight as designated regime selectors.
+  `examples/24-default-params/` extended with a `Counter` locus
+  whose `fn bump(step: Int = 1)` exercises the path.
+- **Phase 3 milestone 33** (multi-file imports) — complete.
+  CLI's `parse_with_imports` walks the entry's
+  `import "..."` directives, recursively parses each, dedups by
+  canonical path, merges items into one logical Program. Paths
+  resolve relative to the importing file's directory with `.lt`
+  implicit; cycles short-circuit; `std/*` paths are skipped (the
+  toolchain handles `time::*` and friends as built-ins).
+  Both `lotus run` and `lotus build` use the merged Program for
+  single-file targets. New `examples/25-imports/` is a 3-file
+  project (types.lt + notional.lt + main.lt) demonstrating the
+  diamond pattern.
+- **Phase 3 milestone 32** (default param values on free fns)
+  — complete. `fn greet(name: String, greeting: String = "hi")`
+  callers may omit trailing args; defaults evaluate at the call
+  site in the caller's scope. Suffix-only rule enforced at decl
+  time. FnSig grew a `defaults: Vec<Option<Expr>>`.
+  New `examples/24-default-params/`.
+- **Phase 3 milestone 31** (integer ranges in for-iterators) —
+  complete. New `Expr::Range { lo, hi, inclusive }`; parser
+  tail-attaches `..` / `..=` at the lowest precedence so
+  `for i in 0 .. n + 1` reads naturally; for-stmt handlers in
+  both interpreter and codegen special-case Range as a counted
+  loop. Range outside iterator position rejects (it's not a
+  first-class collection in v0). `examples/23-ranges/` covers
+  exclusive + inclusive + break-inside-range.
+- **Phase 3 milestone 30b** (indexed local-array assignment) —
+  complete. `arr[i] = v` lowers via a GEP into the local
+  array's storage + store; compound-assignment ops come for
+  free since the assignment path reuses slot-pointer + load +
+  store. `self.arr[i] = v` not yet (needs a struct-walk + GEP
+  combo). New `examples/22-moving-average/` exercises the
+  whole array stack: a sliding-window mean over a `[Int; 4]`
+  state array, driven by a bus-published "sample" subject.
 - **Phase 3 milestone 30** (arrays) — complete. New
   `LotusType::Array(elem, N)`; fixed-size `[T; N]` lowers to
   arena-allocated `[N x T]` storage. `arr[i]` indexing, `for x
@@ -532,7 +571,7 @@ m33    m33: import resolution for multi-file projects          (3440a92)
                             `lotus build` use the merged Program
                             for single-file targets.
                           + examples/25-imports
-m34    m34: default param values on locus `fn` methods         (pending)
+m34    m34: default param values on locus `fn` methods         (315ad4d)
                           ⇒ Locus methods called via
                             `self.method(...)` now support
                             default param values (suffix-only
@@ -543,6 +582,13 @@ m34    m34: default param values on locus `fn` methods         (pending)
                             methods still reject — F.10 keeps
                             their param surface tight.
                           + examples/24-default-params (extended)
+m33fix m33 fix: skip std/* imports during file resolution      (2358ea3)
+                          ⇒ `import "std/time"` declarations in
+                            01-locus-with-run + 08-monotonic-sleep
+                            now resolve as namespace markers
+                            (toolchain handles time::* as
+                            built-ins) instead of trying to load
+                            on-disk source. Fixed regression.
 ```
 
 The architectural pivots are **m7** (locus → LLVM struct,
@@ -720,6 +766,18 @@ real-world use case for lotus.
 ## Recent commit history (newest first)
 
 ```
+1a01f40 CHECKPOINT.md: align ahead-count with new origin/master tip
+2358ea3 m33 fix: skip std/* imports during file resolution
+315ad4d m34: default param values on locus fn methods
+3440a92 m33: import resolution for multi-file projects
+d211c60 m32: default fn param values (free fns)
+2e7cb06 m31: integer ranges in for-loop iterators
+78ea6e7 m30 follow-up: indexed local-array assignment + moving-average flex
+2bc3fbb m30: arrays — fixed-size literal + indexing + for-over-array
+a5fc8bd CHECKPOINT.md: 83 commits ahead post-decimal-parity polish
+0c03c79 interpreter: align Decimal arithmetic output with codegen's %g
+325a2e8 CHECKPOINT.md: bump ahead-of-origin count to 81
+7308f89 CHECKPOINT.md: reflect m28a→m28c→m29 session state
 c4ec399 codegen: remove dead `_ =>` arm in lower_stmt
 0398d42 m29: match arm guards in codegen
 5b10337 Codegen milestone 28c: pinned(core=N) CPU-core affinity
@@ -754,8 +812,9 @@ d5afffd Codegen milestone 8: accept() lifecycle + parent-child wiring
 929efa2 Codegen milestone 5: time::sleep on CLOCK_MONOTONIC
 ```
 
-7 commits ahead of origin/master at checkpoint time (origin
-moved up to the prior session's m29-tip).
+8 commits ahead of origin/master at checkpoint time (origin
+moved up to a5fc8bd / the prior session's tip; this session
+shipped m30 → m34 + the std/* import-resolution fix).
 
 ## Next steps in priority order
 
@@ -926,7 +985,7 @@ cargo run --bin lotus -- build examples/23-ranges/main.lt
 ./examples/23-ranges/main                # triangular(10)=45, factorial(5)=120, factorial(7)=5040, square>50 at i=8
 rm examples/23-ranges/main
 cargo run --bin lotus -- build examples/24-default-params/main.lt
-./examples/24-default-params/main        # greet/pow with omitted trailing args
+./examples/24-default-params/main        # greet/pow with omitted trailing args + Counter.bump default step
 rm examples/24-default-params/main
 cargo run --bin lotus -- build examples/25-imports/main.lt
 ./examples/25-imports/main               # multi-file: types.lt + notional.lt + main.lt → "GOOG notional = 17050"
