@@ -1,15 +1,18 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work in a
-new session. State as of m42 (tick-epoch closures — closures with
-`epoch tick;` fire after each bus handler AND after run() returns;
-F.9 routing reused unchanged). Surface-completeness arc through m38,
-then the substrate-foundation arc with m39 (trigger half: birth-epoch
+new session. State as of m44 (explicit-epoch closures — fired on
+demand via `check_closures();`; closes the closure-epoch lowering
+arc — all five epochs Birth + Dissolve + Tick + Duration + Explicit
+now lower). Surface-completeness arc through m38, then the
+substrate-foundation arc with m39 (trigger half: birth-epoch
 closures), m40 (response half: restart with cap-2 default), m41
 (quarantine — stop-trying flag, gates run()), m41b (quarantine
-extends to bus dispatch), and m42 (tick — steady-state pulse between
-birth and dissolve, the most-bottom remaining substrate epoch
-without a runtime engine). Substrate arc: m19→m23 (region allocator with
+extends to bus dispatch), m42 (tick — steady-state pulse), m43
+(duration — every-N-of-monotonic-time gate), m44 (explicit —
+user-triggered checkpoint via `check_closures();`). The F.9
+invariant-and-repair substrate is closure-epoch-complete.
+Substrate arc: m19→m23 (region allocator with
 rich/chunked/recognition + per-locus arenas + bus copy), m24
 (`match`), m25 (bimodal schedule-class annotation), m26
 (cooperative scheduler — deferred bus + drain loop), m26b
@@ -40,10 +43,13 @@ birth + birth-epoch closures on the same memory), m41
 (`quarantine(child);` — sticky flag that gates `run()`
 without affecting drain/dissolve cleanup) + m41b
 (quarantine extends to bus dispatch — quarantined
-subscribers stop receiving messages), and m42 (tick-epoch
+subscribers stop receiving messages), m42 (tick-epoch
 closures — fire after each bus handler + after run()
 returns; substrate-coupling between F.9 invariants and the
-cooperative scheduler's substrate-cell boundary). **39 of 40
+cooperative scheduler's substrate-cell boundary), m43
+(duration-epoch closures — every-N-of-monotonic-time gate
+on top of the tick cadence), m44 (explicit-epoch closures —
+user-triggered checkpoint via `check_closures();`). **41 of 42
 examples build to native ELF — every single-binary
 example.** Only `trellis-pair` (multi-binary, cross-process
 bus) remains.
@@ -103,9 +109,67 @@ greeting from child: yo
 Phase status:
 - **Phase 0** (spec stabilization) — complete
 - **Phase 1** (lex / parse / typecheck) — complete; F.1–F.18 enforced
-- **Phase 2 v0** (interpreter + bus router) — 39 of 40 example
+- **Phase 2 v0** (interpreter + bus router) — 41 of 42 example
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
+- **Phase 3 milestone 44** (explicit-epoch closures —
+  user-triggered checkpoint) — complete. Closes the closure-
+  epoch lowering arc: all five epochs Birth + Dissolve +
+  Tick + Duration + Explicit now lower in both interpreter
+  and codegen. Where the other four fire automatically at
+  scheduler / lifecycle boundaries, explicit fires only
+  when the user calls `check_closures();` from inside the
+  locus's body — useful for "audit at THIS specific
+  checkpoint" patterns where the locus author knows
+  precisely when an invariant should hold (e.g. the
+  double-entry balance closure in 37-explicit-closures
+  is meaningful only at transaction-boundary checkpoints,
+  not after each individual leg). Codegen: synthetic
+  `__explicit_closures(self, parent, on_failure)` fn lowered
+  through the same per-epoch loop used by Birth + Dissolve +
+  Tick. New `lower_check_closures_call` helper detects the
+  builtin in `Stmt::Expr(Call(Ident("check_closures")))`
+  and emits a direct call, reading parent / on_failure
+  from the m42 `__parent_self` / `__parent_on_failure`
+  struct fields. Silent no-op when the locus has no
+  explicit-epoch closures. Interpreter: LocusHandle gains
+  a `parent` field set at instantiation (parent_stack.last()
+  at that moment); `Expr::Call` intercepts ident
+  `check_closures` before normal callee evaluation and
+  fires `fire_explicit_closures(handle, handle.parent)`.
+  Skipped on quarantined loci. New
+  `examples/37-explicit-closures/`.
+- **Phase 3 milestone 43** (duration-epoch closures —
+  every-N-of-monotonic-time gate) — complete. `closure C
+  { ...; epoch duration(N); }` evaluates at substrate-cell
+  boundaries (alongside tick) but only fires when at least
+  N of monotonic time has elapsed since the closure's
+  last fire (or since instantiation for the first). Where
+  m42's tick fires every cell, duration fires every-N-of-
+  time — the right epoch for drift / heartbeat / rate-
+  limited audit invariants. F.9 routing reused unchanged.
+  Codegen: per-locus struct gains one i64
+  `__duration_last_fire_<i>` field per duration closure
+  (declaration order); synthetic
+  `__duration_closures(self, parent, on_failure)` fn
+  lowers each gate inline (load last, get monotonic-now,
+  compute elapsed, compare elapsed >= N, on fire store now
+  -> last BEFORE assertion runs so an absorbed violation
+  in on_failure doesn't reset the interval clock).
+  Instantiation seeds each last-fire to monotonic-now via
+  the existing `lower_time_monotonic` helper. Call sites
+  shared with tick: after each subscribed handler body
+  (before m26 tail bus drain) and after run() returns.
+  Interpreter: LocusHandle.duration_last_fire: Vec<i64>
+  parallel to declared duration closures; new
+  `closure_fires_at_duration` predicate +
+  `duration_expr_for(c)` accessor +
+  `fire_duration_closures` helper. Duration expression
+  evaluated in self-scope at fire-check time so
+  `duration(self.poll_interval)` works. Known v0 limit:
+  pinned-thread post-run() doesn't fire duration; cooperative
+  + post-handler bus paths fire duration correctly. New
+  `examples/36-duration-closures/`.
 - **Phase 3 milestone 42** (tick-epoch closures — F.9 substrate
   steady-state pulse) — complete. Where m39 audits at birth and
   dissolve audits at end-of-life, m42 lights up the "between
@@ -969,6 +1033,63 @@ m41b   m41b: bus-dispatch quarantine gating                   (cbf23cc)
                             quarantined locus. + LOTUS_DUMP_IR
                             env var for codegen debugging.
                           + examples/34-quarantine-bus
+m43    m43: duration-epoch closures (per-N-monotonic gate)   (c115829)
+                          ⇒ EpochSpec::Duration lowers
+                            alongside Birth + Dissolve + Tick.
+                            Per-locus struct gains one i64
+                            __duration_last_fire_<i> field per
+                            duration closure (declaration
+                            order). Synthetic
+                            __duration_closures(self, parent,
+                            on_failure) fn loads each last,
+                            calls clock_gettime(MONOTONIC) for
+                            now, evaluates the duration
+                            expression in self-scope (so
+                            `duration(self.poll_interval)`
+                            works), compares elapsed >= N. On
+                            fire: store now -> last_fire
+                            BEFORE assertion runs so an
+                            absorbed violation doesn't reset
+                            the interval. Instantiation
+                            seeds each field to monotonic-
+                            now. Same call sites as tick
+                            (post-handler, post-run). v0
+                            limit: pinned-thread post-run
+                            doesn't fire duration; cooperative
+                            + bus paths do. Interpreter via
+                            LocusHandle.duration_last_fire +
+                            closure_fires_at_duration +
+                            fire_duration_closures.
+                          + examples/36-duration-closures
+m44    m44: explicit-epoch closures (user-triggered)         (b4512df)
+                          ⇒ Closes the closure-epoch
+                            lowering arc — all five epochs
+                            Birth + Dissolve + Tick + Duration
+                            + Explicit now lower. EpochSpec::
+                            Explicit fires only when the user
+                            calls `check_closures();` from
+                            inside the locus's body. Synthetic
+                            __explicit_closures fn lowered
+                            through the same per-epoch loop.
+                            New lower_check_closures_call
+                            helper detects the builtin in
+                            Stmt::Expr(Call(Ident("check_
+                            closures"))) and emits a direct
+                            call reading parent /
+                            on_failure from the m42
+                            __parent_self / __parent_on_failure
+                            struct fields. Silent no-op when
+                            the locus has no explicit
+                            closures. Interpreter:
+                            LocusHandle.parent field captured
+                            at instantiation;
+                            Expr::Call intercepts ident
+                            "check_closures" before normal
+                            callee evaluation and fires
+                            fire_explicit_closures(handle,
+                            handle.parent). Skipped on
+                            quarantined loci.
+                          + examples/37-explicit-closures
 m42    m42: tick-epoch closures (steady-state pulse)         (1539dff)
                           ⇒ EpochSpec::Tick lowers alongside
                             Birth + Dissolve. Synthetic
@@ -1071,6 +1192,8 @@ m7 builds on the struct ABI.
 | `starts_with(s, p)` / `contains(s, sub)` for String | ✅ | ✅ |
 | Birth-epoch closures (F.9 invariants checked after `birth()`) | ✅ | ✅ |
 | Tick-epoch closures (fire after each handler + run() return) | ✅ | ✅ |
+| Duration-epoch closures (fire when N monotonic elapsed) | ✅ | ✅ |
+| Explicit-epoch closures (fire on `check_closures();`) | ✅ | ✅ |
 | `restart(child)` recovery (cap-2 birth re-run) | ✅ | ✅ |
 | `quarantine(child)` recovery (sticky flag, gates run + bus) | ✅ | ✅ |
 | Schedule-class annotation (`: schedule cooperative \| pinned`) | — | ✅ (resolved on LocusInfo) |
@@ -1192,6 +1315,9 @@ real-world use case for lotus.
 ## Recent commit history (newest first)
 
 ```
+b4512df m44: explicit-epoch closures (substrate)
+c115829 m43: duration-epoch closures (substrate)
+5a2c93c CHECKPOINT.md: m42 tick-epoch closures refresh
 1539dff m42: tick-epoch closures (substrate)
 a35c128 CHECKPOINT.md: correct ahead-count post-push
 bc5f702 CHECKPOINT.md: rewrite Next-Steps for post-m41b state
@@ -1257,58 +1383,59 @@ d5afffd Codegen milestone 8: accept() lifecycle + parent-child wiring
 929efa2 Codegen milestone 5: time::sleep on CLOCK_MONOTONIC
 ```
 
-6 commits ahead of origin/master at checkpoint time. This
-session shipped m42 (tick-epoch closures): F.9's steady-
-state pulse, fired after each bus handler invocation AND
-after run() returns. Pairs with m39's birth + the implicit
-dissolve epochs to give 3 of 5 closure epochs lowered
-(Duration + Explicit still need the runtime epoch engine).
-Also closes a pre-existing m41b gap: subscribed handlers
-now check __quarantined at entry so cells already in the
-cooperative queue observe the stop-trying signal, matching
-the interpreter's dispatch_bus check. Prior sessions
-shipped m30 → m41b — the F.9 substrate now has invariant
-detection at birth + tick + dissolve, plus the
+9 commits ahead of origin/master at checkpoint time. This
+session shipped m42 + m43 + m44 — the closure-epoch
+lowering arc is now closure-epoch-complete: all five F.9
+epochs (Birth + Dissolve + Tick + Duration + Explicit)
+lower in both interpreter and codegen. m42 wired tick to
+substrate-cell boundaries (post-handler + post-run); m43
+added the every-N-of-monotonic-time gate on top of that
+cadence; m44 added the user-triggered `check_closures();`
+checkpoint primitive. Side-fix from m42: subscribed
+handlers now check __quarantined at entry so cells
+already in the cooperative queue observe the stop-trying
+signal, matching the interpreter's dispatch_bus check.
+Prior sessions shipped m30 → m41b — the F.9 substrate
+now has invariant detection at all five epochs + the
 restart/quarantine response menu, with quarantine
 substrate-complete across run() + bus dispatch.
 
 ## Next steps in priority order
 
 The bimodal scheduler (m28a/b/c), the surface-completeness
-arc (m29 → m38), and most of the F.9 invariant-and-repair
+arc (m29 → m38), and the full F.9 invariant-and-repair
 substrate (m39 birth + m40 restart + m41 quarantine + m41b
-bus-dispatch gating + m42 tick-epoch) have shipped. With m42
-landed, 3 of 5 closure epochs are lowered (Birth + Tick +
-Dissolve). The remaining two — Duration + Explicit — both
-need a small runtime epoch engine.
+bus-dispatch gating + m42 tick + m43 duration + m44 explicit)
+have shipped. With m44 landed, all five closure epochs lower;
+the F.9 invariant-and-repair substrate is closure-epoch-
+complete. Remaining work divides into closure-recovery
+polish, region-allocator polish, and contained substrate
+plumbing.
 
-**1. Closure duration epoch.** `epoch duration N;` fires
-after every N units of monotonic time elapse since the
-last fire. Needs:
-- A per-locus duration-timer registration tied to
-  time::monotonic (cooperative loci poll on drain
-  iterations; pinned loci can use a thread-local
-  deadline check between mailbox cells).
-- Codegen + interpreter parity using the same
-  `__duration_closures` synthesis shape that m42
-  used for tick.
-- F.9 routing reused unchanged.
+**1. Recovery primitive: `restart_in_place`.** Variant of
+`restart(c)` that zeros user fields back to declared defaults
+before re-running birth. Complements m40's "give birth
+another shot on dirty state" with a "factory reset"
+alternative. Small compared to m40 once `restart` is in
+place — just an additional zero-fields pass at re-run time.
 
-**2. Closure explicit epoch.** `epoch explicit;` fires only
-when the user calls a `check_closures(self)`-style builtin.
-The smallest of the three remaining epochs — no scheduler
-work, just an exposed builtin that walks the explicit-epoch
-closures of the calling locus.
+**2. Closure accumulator clauses.** `persists_through(...)`
+and `resets_on(...)` clauses are parsed today but ignored
+at lowering. They'd let closures track running statistics
+that survive (or reset on) recovery events. Pairs naturally
+with the duration-epoch surface m43 just landed — duration-
+sampled accumulators are the canonical "drift detection"
+shape.
+
+**3. `bus.entries` dynamic capacity.** Pre-existing bug
+surfaced by m41b's flex example: the array is sized per-locus-
+type at compile time, but each instance registers its own
+runtime entry. Two instances of the same subscriber
+type → buffer overflow. Today's workaround is "use
+distinct types"; the proper fix is heap-resize on register
+or a static cap >> instance count.
 
 **Polish (any time):**
-
-- `bus.entries` dynamic capacity. Pre-existing bug surfaced
-  by m41b's flex example: the array is sized per-locus-type
-  at compile time, but each instance registers its own
-  runtime entry. Two instances of the same subscriber
-  type → buffer overflow. Today's workaround is "use
-  distinct types"; the proper fix is heap-resize on register
-  or a static cap >> instance count.
 - `restart_in_place` recovery primitive. Variant of
   `restart(c)` that zeros user fields back to declared
   defaults before re-running birth. Complements the
@@ -1475,6 +1602,12 @@ rm examples/34-quarantine-bus/main
 cargo run --bin lotus -- build examples/35-tick-closures/main.lt
 ./examples/35-tick-closures/main         # Counter tick-closure: 4 cells fire then violation+quarantine silences the rest
 rm examples/35-tick-closures/main
+cargo run --bin lotus -- build examples/36-duration-closures/main.lt
+./examples/36-duration-closures/main     # Watcher 5ms-duration: cells 2-4 fire (3 fires across 4 cells spaced 7ms apart)
+rm examples/36-duration-closures/main
+cargo run --bin lotus -- build examples/37-explicit-closures/main.lt
+./examples/37-explicit-closures/main     # Ledger explicit balance: imbalance after Tx#3 → Auditor absorbs; Tx#4 rebalances
+rm examples/37-explicit-closures/main
 ```
 
-If all thirty-nine work, the checkpoint is intact.
+If all forty-one work, the checkpoint is intact.
