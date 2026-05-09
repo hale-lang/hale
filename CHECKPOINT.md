@@ -1,10 +1,12 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work in a
-new session. State as of codegen milestone 17 (`on_failure`
-absorb/bubble routing) on top of commit `cdd7353` (2026-05-08).
-**15 of 18 examples build to native ELF, including the closure
-trio (03 / 03b / 03c) and trellis-demo.**
+new session. State as of codegen milestone 18 (modes +
+self.children + for-loops) on top of commit `cdd7353` (2026-05-08).
+**17 of 18 examples build to native ELF — every single-binary
+example is a build target.** Only `trellis-pair` (multi-binary,
+cross-process bus) remains, gated on substantial new
+infrastructure.
 
 This is part of the alpha-conjecture program (see
 `~/notes/alpha-conjecture/CLAUDE.md`). Lotus is the language-substrate
@@ -39,25 +41,26 @@ Phase status:
 - **Phase 2 v0** (interpreter + bus router) — 17 of 18 example
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
-- **Phase 3 milestone 17** (codegen subset) — complete. **15 of 18
-  example projects build to native ELF**, adding 03b/03c (closure
-  absorb / bubble): hello-world, 01-locus-with-run, 02-parent-child,
-  **03-closure-test**, **03b-closure-absorbed**,
-  **03c-closure-bubbled**, 05-bus, 06-mutable-counter,
-  07-control-flow, 08-monotonic-sleep, 09-functions,
-  10-stateful-locus, 11-drain-dissolve, 12-user-types,
-  13-decimal-and-exit, **trellis-demo**. Latest: built-in
-  `ClosureViolation` type with `locus / closure / diff` fields,
-  `LocusMember::Failure` lowered, `<Locus>.__closures` sig
-  extended to take `(self_ptr, parent_self_or_null,
-  on_failure_or_null)`, fail path routes through parent handler
-  (absorb) or falls back to dprintf+exit (no handler),
-  `bubble(err)` lowers as fflush + dprintf-with-err-fields +
-  exit(1).
-- **Phase 3 next** — modes + `self.children` + `for` + arrays
-  for `04-modes`; trellis-pair (cross-process bus + entry-point
-  selection). The remaining 3 examples are gated on substantial
-  new infrastructure.
+- **Phase 3 milestone 18** (codegen subset) — complete. **17 of
+  18 example projects build to native ELF — every single-binary
+  example.** Latest: modes (lowered as locus methods named
+  bulk/harmonic/resolution; callable via `self.<mode>()`), built-
+  in `self.children` array (fixed-cap 16, embedded after user
+  fields on every locus that declares accept; appended at accept
+  dispatch + counter bumped), `for child in self.children { ...
+  }` lowered as an indexed loop with the var bound as a
+  LocusRef-typed local, and locus literals in expression
+  position so `let _l1 = LeafL { ... }` works. Interpreter
+  parity: replaced the m10 dedup-pop with a `dissolved: Cell<bool>`
+  flag on LocusHandle so ephemeral handles stay in
+  parent.children (for `for child in self.children`) but the
+  parent's later cascade skips already-dissolved children.
+- **Phase 3 next** — `trellis-pair` (cross-process bus +
+  entry-point selection) is the last example. Big infra: shared-
+  memory ring buffer / NATS bridge transport, multi-binary build
+  with `--bin <locus>` selection. Beyond the example ladder:
+  region allocator + cooperative scheduler are the deferred
+  Phase-2 deep-pushes.
 
 ## Codegen milestone arc (Phase 3 progress)
 
@@ -87,6 +90,10 @@ m16 Codegen milestone 16: Time + composite defaults + heap lits (e33e8ee)
                           ⇒ trellis-demo builds to native ELF
 m17 Codegen milestone 17: on_failure routing (absorb / bubble)  (4bf84e3)
                           ⇒ 03b / 03c build to native ELF
+m18 Codegen milestone 18: modes + self.children + for + locus  (this commit)
+                          literal in expression position
+                          ⇒ 04-modes builds; 17/18 single-binary
+                            examples are build targets
 ```
 
 The architectural pivots are **m7** (locus → LLVM struct,
@@ -126,6 +133,10 @@ m7 builds on the struct ABI.
 | Closures: collapse on pass, exit-non-zero on fail | ✅ | ✅ |
 | Closures: parent absorb / bubble routing (F.9) | ✅ | ✅ |
 | Built-in `ClosureViolation` type (locus/closure/diff fields) | ✅ | ✅ |
+| Modes (`mode bulk()` etc.) + self-method dispatch | ✅ | ✅ |
+| `self.children` (fixed-cap array on accept-declaring loci) | ✅ | ✅ |
+| `for child in self.children { ... }` iteration | ✅ | ✅ |
+| Locus literals in expression position (`let l = L { }`) | ✅ | ✅ |
 | Time literals + Time as a typechecked primitive | ✅ | ✅ (string-spelling v0) |
 | Composite locus param defaults | ✅ | ✅ |
 | Nested field reads (self.x.y, expr-receiver-of-Field) | ✅ | ✅ |
@@ -286,21 +297,22 @@ user-facing). Each is a focused single-commit chunk unless noted.
 
 **Codegen surface expansion (Tier 4, the LLVM path):**
 
-1. **Modes + `self.children` + `for` loops + arrays.** Last
-   single-binary example missing a build target. Arrays are
-   the gating piece — need a runtime repr (e.g. `{ i64 len, ptr
-   data }` heap-alloc'd) and `self.children` typed accordingly.
-   Then modes are ≈ locus methods (m13 paved the way) and `for`
-   iterates the array.
-2. **trellis-pair (multi-binary, cross-process bus).** Requires
-   process-level entry-point selection (one source file
-   compiles to a per-binary entry, e.g. via `--bin analyst`)
-   AND a cross-process bus transport (shared-memory ring buffer
-   or NATS bridge). Both are infra-level pieces deferred from
-   the v0 codegen scope.
-3. **Tightening Decimal/Time precision** — the `printf %g`
-   vs Rust `Display` divergence is documented; trellis-grade
+1. **trellis-pair (multi-binary, cross-process bus).** The only
+   remaining example. Requires process-level entry-point
+   selection (one source file compiles to a per-binary entry,
+   e.g. via `--bin analyst`) AND a cross-process bus transport
+   (shared-memory ring buffer or NATS bridge). Both are
+   infra-level pieces deferred from v0 codegen scope.
+2. **Tightening Decimal/Time precision** — the `printf %g` vs
+   Rust `Display` divergence is documented; trellis-grade
    fixed-point Decimal lands when the substrate cares.
+3. **Region allocator + cooperative scheduler** — the deeper
+   Phase-2 deep-pushes. Region allocator replaces libc malloc
+   for type literals, with per-projection-class arenas (rich /
+   chunked / recognition per F.3). Cooperative scheduler
+   replaces the synchronous-instantiation model with a real
+   BEAM-shaped multi-scheduler runtime so loci with `run()` can
+   yield + resume + receive bus messages out of band.
 
 **Smaller follow-ups available in any commit:**
 - `return n;` from main → process exit code (one-line lowering
@@ -396,6 +408,9 @@ rm examples/03b-closure-absorbed/main
 cargo run --bin lotus -- build examples/03c-closure-bubbled/main.lt
 ./examples/03c-closure-bubbled/main      # bubble → exits non-zero
 rm examples/03c-closure-bubbled/main
+cargo run --bin lotus -- build examples/04-modes/main.lt
+./examples/04-modes/main                 # bulk=60, harmonic=3, resolution=30
+rm examples/04-modes/main
 ```
 
-If all nineteen work, the checkpoint is intact.
+If all twenty work, the checkpoint is intact.

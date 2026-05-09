@@ -888,6 +888,7 @@ impl Interpreter {
             state: Rc::new(RefCell::new(state)),
             children: Rc::new(RefCell::new(Vec::new())),
             decl: decl.clone(),
+            dissolved: Rc::new(std::cell::Cell::new(false)),
         };
 
         // Register every bus subscription on the router.
@@ -939,23 +940,12 @@ impl Interpreter {
         // child cascade.
         if is_ephemeral_locus(&decl) {
             let parent = self.parent_stack.last().cloned();
-            self.dissolve_locus(handle.clone(), parent.clone())?;
-            // The handle was registered on the parent's children
-            // list above (per F.7) so accept() could see it. Now
-            // that the ephemeral has dissolved synchronously, it
-            // no longer logically exists — pop it so the parent's
-            // own dissolve cascade doesn't double-fire its
-            // drain/dissolve bodies. Long-lived children stay
-            // registered and dissolve via the parent cascade.
-            if let Some(p) = parent {
-                let mut kids = p.children.borrow_mut();
-                if let Some(pos) = kids
-                    .iter()
-                    .position(|c| std::rc::Rc::ptr_eq(&c.state, &handle.state))
-                {
-                    kids.remove(pos);
-                }
-            }
+            self.dissolve_locus(handle.clone(), parent)?;
+            // Ephemeral handle stays in parent.children so
+            // `for child in self.children` (and other reads)
+            // continue to observe its post-dissolve state. The
+            // dissolved flag prevents the parent's later cascade
+            // from re-firing drain/dissolve.
         } else if self.parent_stack.is_empty() {
             self.top_level_loci.push(handle.clone());
         }
@@ -1046,6 +1036,17 @@ impl Interpreter {
         handle: LocusHandle,
         parent: Option<LocusHandle>,
     ) -> Result<(), Signal> {
+        // Idempotency: ephemeral loci dissolve once at end of
+        // instantiation. The parent's later cascade walks the
+        // same children list; without this guard each child
+        // would dissolve twice. The handle keeps living as long
+        // as something holds an Rc — `for child in self.children`
+        // and any other reads still see its (post-dissolve) state.
+        if handle.dissolved.get() {
+            return Ok(());
+        }
+        handle.dissolved.set(true);
+
         // Depth-first child drain (per F.4): every child is
         // dissolved with `handle` as their parent so violations
         // route to the locally-correct on_failure.

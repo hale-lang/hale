@@ -345,6 +345,7 @@ mod tests {
                 state: Rc::new(RefCell::new(BTreeMap::new())),
                 children: Rc::new(RefCell::new(Vec::new())),
                 decl: Rc::new(decl),
+                dissolved: Rc::new(std::cell::Cell::new(false)),
             },
             handler: handler.to_string(),
         }

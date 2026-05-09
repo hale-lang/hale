@@ -49,6 +49,14 @@ pub struct LocusHandle {
     pub state: Rc<RefCell<BTreeMap<String, Value>>>,
     pub children: Rc<RefCell<Vec<LocusHandle>>>,
     pub decl: Rc<LocusDecl>,
+    /// Tracks whether `dissolve_locus` has run on this handle.
+    /// Ephemeral loci dissolve immediately at end of instantiation
+    /// (sets the flag), and the parent's later cascade then skips
+    /// already-dissolved children. The handle itself stays in
+    /// `parent.children` so `for child in self.children` can still
+    /// observe the (post-dissolve) state — the locus's `state`
+    /// Rc is shared, so reads remain valid even after dissolution.
+    pub dissolved: Rc<std::cell::Cell<bool>>,
 }
 
 #[derive(Debug, Clone)]

@@ -305,7 +305,24 @@ struct LocusInfo<'ctx> {
     /// matching type fails its closure, the runtime routes the
     /// violation to this fn instead of dprintf+exit.
     failure_handler: Option<(String, FunctionValue<'ctx>)>,
+    /// When this locus declares `accept(child: T)`, every accept
+    /// dispatch appends the child's self_ptr to a built-in
+    /// fixed-cap array embedded in the locus struct so
+    /// `for child in self.children { ... }` can iterate. Indexes
+    /// of the synthetic array + counter fields if the locus
+    /// declares accept. None for accept-less loci.
+    children_field_idx: Option<u32>,
+    /// Index of the `i64 child_count` field. Always paired with
+    /// `children_field_idx`.
+    child_count_field_idx: Option<u32>,
 }
+
+/// Maximum number of children any locus struct's built-in
+/// `children` array can hold. v0 codegen uses a fixed cap to
+/// avoid resize / heap dance; trellis-grade loci typically have
+/// O(few-dozen) coordinatees, and 04-modes' AggregatorL only
+/// instantiates 3.
+const CHILDREN_CAP: u32 = 16;
 
 /// One locus param's default-initializer. Either pre-resolved
 /// (the common case — scalar literal) or deferred to the
@@ -1223,6 +1240,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
 
+        // If this locus declares accept, append a synthetic
+        // children array + counter at the end of the struct so
+        // each accept dispatch can record the child's self_ptr
+        // for `for child in self.children { ... }` iteration.
+        let has_accept = l.members.iter().any(|m| {
+            matches!(m, LocusMember::Lifecycle(lc)
+                if matches!(lc.kind, LifecycleKind::Accept))
+        });
+        let (children_field_idx, child_count_field_idx) = if has_accept {
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let i64_t = self.context.i64_type();
+            let arr_ty = ptr_t.array_type(CHILDREN_CAP);
+            let arr_idx = idx;
+            llvm_field_tys.push(arr_ty.into());
+            idx += 1;
+            let cnt_idx = idx;
+            llvm_field_tys.push(i64_t.into());
+            idx += 1;
+            (Some(arr_idx), Some(cnt_idx))
+        } else {
+            (None, None)
+        };
+        let _ = idx;
+
         let struct_ty = self
             .context
             .opaque_struct_type(&format!("locus.{}", l.name.name));
@@ -1241,6 +1282,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 closures: Vec::new(),
                 closures_fn: None,
                 failure_handler: None,
+                children_field_idx,
+                child_count_field_idx,
             },
         );
         Ok(())
@@ -1507,8 +1550,67 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     );
                     failure_handler = Some((child_locus_name, func));
                 }
-                LocusMember::Mode(_)
-                | LocusMember::Const(_)
+                LocusMember::Mode(md) => {
+                    // Modes lower as locus methods named after
+                    // the mode kind (bulk / harmonic /
+                    // resolution). They share the locus's struct
+                    // (per F.5: mode projections share the
+                    // locus's arena). Callable via self.bulk()
+                    // through the existing self.method() path.
+                    let mode_name = match md.kind {
+                        ModeKind::Bulk => "bulk",
+                        ModeKind::Harmonic => "harmonic",
+                        ModeKind::Resolution => "resolution",
+                    };
+                    let mut llvm_param_tys: Vec<inkwell::types::BasicMetadataTypeEnum> =
+                        Vec::with_capacity(md.params.len() + 1);
+                    llvm_param_tys.push(ptr_t.into());
+                    for p in &md.params {
+                        if p.default.is_some() {
+                            return Err(CodegenError::Unsupported(format!(
+                                "locus `{}` mode `{}` param `{}` defaults \
+                                 not yet lowered",
+                                l.name.name, mode_name, p.name.name
+                            )));
+                        }
+                        let lt = self.type_expr_to_lotus(&p.ty)?;
+                        llvm_param_tys.push(self.llvm_basic_type(&lt).into());
+                    }
+                    let fn_ty = match &md.ret {
+                        None => void_t.fn_type(&llvm_param_tys, false),
+                        Some(t) => {
+                            let rt = self.type_expr_to_lotus(t)?;
+                            match rt {
+                                LotusType::Int | LotusType::Duration => self
+                                    .context
+                                    .i64_type()
+                                    .fn_type(&llvm_param_tys, false),
+                                LotusType::Float | LotusType::Decimal => self
+                                    .context
+                                    .f64_type()
+                                    .fn_type(&llvm_param_tys, false),
+                                LotusType::Bool => self
+                                    .context
+                                    .bool_type()
+                                    .fn_type(&llvm_param_tys, false),
+                                LotusType::String
+                                | LotusType::Time
+                                | LotusType::LocusRef(_)
+                                | LotusType::TypeRef(_) => self
+                                    .context
+                                    .ptr_type(AddressSpace::default())
+                                    .fn_type(&llvm_param_tys, false),
+                            }
+                        }
+                    };
+                    let func = self.module.add_function(
+                        &format!("{}.{}", l.name.name, mode_name),
+                        fn_ty,
+                        None,
+                    );
+                    user_methods.insert(mode_name.to_string(), func);
+                }
+                LocusMember::Const(_)
                 | LocusMember::Type(_) => {
                     return Err(CodegenError::Unsupported(format!(
                         "locus `{}` member kind not yet lowered to codegen",
@@ -1855,6 +1957,80 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.current_self = None;
             }
         }
+
+        // Mode bodies — same lowering as Fn members, with the
+        // synthetic method name (bulk / harmonic / resolution).
+        for member in &l.members {
+            if let LocusMember::Mode(md) = member {
+                let mode_name = match md.kind {
+                    ModeKind::Bulk => "bulk",
+                    ModeKind::Harmonic => "harmonic",
+                    ModeKind::Resolution => "resolution",
+                };
+                let func = *info
+                    .user_methods
+                    .get(mode_name)
+                    .expect("mode declared in pass A2");
+                let entry = self.context.append_basic_block(func, "entry");
+                self.builder.position_at_end(entry);
+                let self_ptr = func
+                    .get_nth_param(0)
+                    .expect("self_ptr param")
+                    .into_pointer_value();
+                self.current_fn = Some(func);
+                let ret_ty = match &md.ret {
+                    None => None,
+                    Some(t) => Some(self.type_expr_to_lotus(t)?),
+                };
+                self.current_user_fn_ret = Some(ret_ty.clone());
+                self.current_self = Some(SelfCx {
+                    locus_name: l.name.name.clone(),
+                    struct_ty: info.struct_ty,
+                    self_ptr,
+                    fields: info.fields.clone(),
+                });
+                self.loops.clear();
+                self.push_dissolve_frame();
+
+                let mut scope = Scope::default();
+                for (i, p) in md.params.iter().enumerate() {
+                    let lt = self.type_expr_to_lotus(&p.ty)?;
+                    let alloca = self.alloca_for(&lt, &p.name.name)?;
+                    let v = func
+                        .get_nth_param((i + 1) as u32)
+                        .expect("mode arg index in range");
+                    self.builder
+                        .build_store(alloca, v)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    scope.locals.insert(p.name.name.clone(), (alloca, lt));
+                }
+
+                let end = self.lower_block(&md.body, &mut scope)?;
+                if end == BlockEnd::Open {
+                    self.flush_dissolve_frame()?;
+                    match ret_ty {
+                        None => {
+                            self.builder
+                                .build_return(None)
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        }
+                        Some(_) => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "locus `{}` mode `{}` falls through without \
+                                 returning a value",
+                                l.name.name, mode_name
+                            )));
+                        }
+                    }
+                } else {
+                    let _ = self.deferred_dissolves.pop();
+                }
+
+                self.current_fn = None;
+                self.current_user_fn_ret = None;
+                self.current_self = None;
+            }
+        }
         Ok(())
     }
 
@@ -2049,7 +2225,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 let name = path.segments[0].name.as_str();
                 if self.user_loci.contains_key(name) {
-                    self.lower_locus_instantiation(name, inits, scope)?;
+                    let _ = self.lower_locus_instantiation(name, inits, scope)?;
                 } else if self.user_types.contains_key(name) {
                     // Statement-position type literal: build it,
                     // discard the pointer. Useful for side-effect-
@@ -2224,6 +2400,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Stmt::While { cond, body, .. } => {
                 self.lower_while(cond, body, scope)
             }
+            Stmt::For { name, iter, body, .. } => {
+                self.lower_for(name, iter, body, scope)
+            }
             Stmt::Break(_) => self.lower_break(),
             Stmt::Continue(_) => self.lower_continue(),
             Stmt::Block(b) => self.lower_block(b, scope),
@@ -2369,6 +2548,195 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         // The exit is reachable from the header (cond=false) and
         // any `break`s inside the body, so it's always Open.
+        self.builder.position_at_end(exit_bb);
+        Ok(BlockEnd::Open)
+    }
+
+    /// Lower `for X in iter { body }`. v0 codegen recognizes only
+    /// `iter == self.children`: the iter is a fixed-cap array of
+    /// child-locus pointers paired with an i64 counter, both
+    /// embedded in the current self struct. Each iteration loads
+    /// `self.children[i]` as a `LocusRef(child_type)` local named
+    /// `X` so `X.field` resolves through the existing GEP path.
+    fn lower_for(
+        &mut self,
+        var_name: &Ident,
+        iter: &Expr,
+        body: &Block,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        // Pattern-match on `self.children` as the iter. Other
+        // iterators (arrays, ranges, etc.) need a richer
+        // collection ABI — out of v0 scope.
+        let is_self_children = matches!(iter, Expr::Field { receiver, name, .. }
+            if matches!(receiver.as_ref(), Expr::KwSelf(_))
+                && name.name == "children");
+        if !is_self_children {
+            return Err(CodegenError::Unsupported(format!(
+                "for-loop iterator `{:?}`: codegen v0 only supports \
+                 `for X in self.children`",
+                std::mem::discriminant(iter)
+            )));
+        }
+        let cs = self.current_self.as_ref().cloned().ok_or_else(|| {
+            CodegenError::Unsupported(
+                "self.children outside a locus method".into(),
+            )
+        })?;
+        let info = self
+            .user_loci
+            .get(&cs.locus_name)
+            .cloned()
+            .expect("current_self points to a declared locus");
+        let arr_idx = info.children_field_idx.ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "locus `{}` has no children (no accept declared)",
+                cs.locus_name
+            ))
+        })?;
+        let cnt_idx = info.child_count_field_idx.expect("paired");
+        let child_locus = info
+            .accept_param
+            .as_ref()
+            .map(|(_, ln)| ln.clone())
+            .expect("children_field_idx implies accept declared");
+
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let arr_ty = ptr_t.array_type(CHILDREN_CAP);
+
+        let func = self
+            .current_fn
+            .expect("current_fn set while lowering a for");
+        let header_bb = self.context.append_basic_block(func, "for.cond");
+        let body_bb = self.context.append_basic_block(func, "for.body");
+        let inc_bb = self.context.append_basic_block(func, "for.inc");
+        let exit_bb = self.context.append_basic_block(func, "for.end");
+
+        // i = 0 (alloca'd so the body can break/continue cleanly)
+        let i_slot = self
+            .builder
+            .build_alloca(i64_t, "for.i.slot")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(i_slot, i64_t.const_int(0, false))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // header: load i, load count, branch on i < count
+        self.builder.position_at_end(header_bb);
+        let cnt_ptr = self
+            .builder
+            .build_struct_gep(
+                cs.struct_ty,
+                cs.self_ptr,
+                cnt_idx,
+                "for.count.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let count = self
+            .builder
+            .build_load(i64_t, cnt_ptr, "for.count")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let i = self
+            .builder
+            .build_load(i64_t, i_slot, "for.i")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let in_range = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::ULT,
+                i,
+                count,
+                "for.in.range",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(in_range, body_bb, exit_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // body: load self.children[i] as a LocusRef local named
+        // var_name; lower body; jump to inc.
+        self.builder.position_at_end(body_bb);
+        let arr_ptr = self
+            .builder
+            .build_struct_gep(
+                cs.struct_ty,
+                cs.self_ptr,
+                arr_idx,
+                "for.children.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let slot_ptr = unsafe {
+            self.builder
+                .build_gep(
+                    arr_ty,
+                    arr_ptr,
+                    &[i32_t.const_int(0, false), i],
+                    "for.slot.ptr",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+        let child_ptr = self
+            .builder
+            .build_load(ptr_t, slot_ptr, "for.child")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // Stash through an alloca so the existing Ident-resolution
+        // path works. The local's type is LocusRef(child_locus) so
+        // `child.value` GEPs through the right struct.
+        let local_slot = self
+            .builder
+            .build_alloca(ptr_t, &var_name.name)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(local_slot, child_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let prev = scope.locals.insert(
+            var_name.name.clone(),
+            (local_slot, LotusType::LocusRef(child_locus)),
+        );
+        self.loops.push(LoopFrame {
+            continue_bb: inc_bb,
+            break_bb: exit_bb,
+        });
+        let body_end = self.lower_block(body, scope)?;
+        self.loops.pop();
+        if body_end == BlockEnd::Open {
+            self.builder
+                .build_unconditional_branch(inc_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        // Restore prior binding for `var_name` (if any) so the
+        // for-loop's local doesn't leak past the loop body.
+        if let Some(prev) = prev {
+            scope.locals.insert(var_name.name.clone(), prev);
+        } else {
+            scope.locals.remove(&var_name.name);
+        }
+
+        // inc: i = i + 1; jump to header
+        self.builder.position_at_end(inc_bb);
+        let i_now = self
+            .builder
+            .build_load(i64_t, i_slot, "for.i.now")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let i_next = self
+            .builder
+            .build_int_add(i_now, i64_t.const_int(1, false), "for.i.next")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(i_slot, i_next)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
         self.builder.position_at_end(exit_bb);
         Ok(BlockEnd::Open)
     }
@@ -2717,6 +3085,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     std::mem::discriminant(callee.as_ref())
                 ))),
             },
+            Expr::Struct { path, inits, .. }
+                if path.segments.len() == 1
+                    && self.user_loci.contains_key(&path.segments[0].name) =>
+            {
+                // Locus literal in expression position: instantiate
+                // and return the self_ptr typed as LocusRef. The
+                // caller (a let-binding, etc.) keeps the locus
+                // alive for the duration of the binding's scope.
+                // Ephemeral semantics still apply — the struct is
+                // alloca'd on the current frame, and drain/dissolve
+                // fired at the end of lower_locus_instantiation
+                // for ephemeral loci. The pointer remains valid
+                // because the alloca itself outlives statement
+                // boundaries; field reads through the locus's
+                // expose'd contract still work for the rest of
+                // the body.
+                let name = path.segments[0].name.clone();
+                let ptr =
+                    self.lower_locus_instantiation(&name, inits, scope)?;
+                Ok((ptr.into(), LotusType::LocusRef(name)))
+            }
             Expr::Struct { path, inits, .. }
                 if path.segments.len() == 1
                     && self.user_types.contains_key(&path.segments[0].name) =>
@@ -3348,7 +3737,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         locus_name: &str,
         inits: &[StructInit],
         scope: &Scope<'ctx>,
-    ) -> Result<(), CodegenError> {
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
         let info = self
             .user_loci
             .get(locus_name)
@@ -3414,12 +3803,36 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
 
+        // Zero-init the synthetic child_count field if this locus
+        // declares accept. The children array slots are written
+        // on accept dispatch; only the counter must start at 0.
+        if let Some(cnt_idx) = info.child_count_field_idx {
+            let cnt_ptr = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    self_ptr,
+                    cnt_idx,
+                    &format!("{}.child_count.ptr", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let zero = self.context.i64_type().const_int(0, false);
+            self.builder
+                .build_store(cnt_ptr, zero)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+
         // F.7 ordering: if we're inside a parent locus's lifecycle
         // method AND the parent has an accept(child: ThisLocus) that
         // matches our type, call parent.accept(parent_self, child)
         // BEFORE this child's own birth. This is how
         // `02-parent-child` wires the coordinator's accept callback
         // to each greeter instantiation in run().
+        //
+        // Additionally, when the parent's children array exists
+        // (accept declared), append the child's self_ptr to it +
+        // bump child_count so `for child in self.children { ... }`
+        // can iterate later.
         if let Some(parent_self) = self.current_self.clone() {
             let parent_info = self
                 .user_loci
@@ -3443,6 +3856,64 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             &format!("{}.accept.call", parent_self.locus_name),
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // Append child_self → parent.children[child_count++]
+                    if let (Some(arr_idx), Some(cnt_idx)) = (
+                        parent_info.children_field_idx,
+                        parent_info.child_count_field_idx,
+                    ) {
+                        let i64_t = self.context.i64_type();
+                        let cnt_ptr = self
+                            .builder
+                            .build_struct_gep(
+                                parent_info.struct_ty,
+                                parent_self.self_ptr,
+                                cnt_idx,
+                                "child.count.ptr",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        let cur = self
+                            .builder
+                            .build_load(i64_t, cnt_ptr, "child.count")
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .into_int_value();
+                        let arr_ptr = self
+                            .builder
+                            .build_struct_gep(
+                                parent_info.struct_ty,
+                                parent_self.self_ptr,
+                                arr_idx,
+                                "children.ptr",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        let i32_t = self.context.i32_type();
+                        let ptr_t = self
+                            .context
+                            .ptr_type(AddressSpace::default());
+                        let arr_ty = ptr_t.array_type(CHILDREN_CAP);
+                        let slot = unsafe {
+                            self.builder
+                                .build_gep(
+                                    arr_ty,
+                                    arr_ptr,
+                                    &[i32_t.const_int(0, false), cur],
+                                    "child.slot.ptr",
+                                )
+                                .map_err(|e| {
+                                    CodegenError::LlvmEmit(e.to_string())
+                                })?
+                        };
+                        self.builder
+                            .build_store(slot, self_ptr)
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        let one = i64_t.const_int(1, false);
+                        let next = self
+                            .builder
+                            .build_int_add(cur, one, "child.count.next")
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        self.builder
+                            .build_store(cnt_ptr, next)
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    }
                 }
             }
         }
@@ -3545,7 +4016,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
 
-        Ok(())
+        Ok(self_ptr)
     }
 
     /// Lower a `self.method(args)` call. Resolves the method on the
@@ -3579,9 +4050,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     cs.locus_name, method_name
                 ))
             })?;
-        // Find the source-level FnDecl so we can read the param/ret
-        // types for typechecking the call site.
-        let fd: FnDecl = self
+        // Find the source-level decl so we can read param / ret
+        // types. Methods come from either LocusMember::Fn (named
+        // user fns) or LocusMember::Mode (synthetic name from
+        // ModeKind). We extract a uniform (params, ret) tuple
+        // from whichever matches.
+        struct MethodSig {
+            params: Vec<Param>,
+            ret: Option<TypeExpr>,
+        }
+        let sig: MethodSig = self
             .program
             .items
             .iter()
@@ -3591,18 +4069,36 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .iter()
                     .find_map(|m| match m {
                         LocusMember::Fn(fd) if fd.name.name == method_name => {
-                            Some(fd.clone())
+                            Some(MethodSig {
+                                params: fd.params.clone(),
+                                ret: fd.ret.clone(),
+                            })
+                        }
+                        LocusMember::Mode(md) => {
+                            let n = match md.kind {
+                                ModeKind::Bulk => "bulk",
+                                ModeKind::Harmonic => "harmonic",
+                                ModeKind::Resolution => "resolution",
+                            };
+                            if n == method_name {
+                                Some(MethodSig {
+                                    params: md.params.clone(),
+                                    ret: md.ret.clone(),
+                                })
+                            } else {
+                                None
+                            }
                         }
                         _ => None,
                     }),
                 _ => None,
             })
             .expect("method declaration was visited in pass A2");
-        if args.len() != fd.params.len() {
+        if args.len() != sig.params.len() {
             return Err(CodegenError::Unsupported(format!(
                 "self.{}: expected {} args, got {}",
                 method_name,
-                fd.params.len(),
+                sig.params.len(),
                 args.len()
             )));
         }
@@ -3611,7 +4107,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         llvm_args.push(cs.self_ptr.into());
         for (i, a) in args.iter().enumerate() {
             let (v, ty) = self.lower_expr(a, scope)?;
-            let want = self.type_expr_to_lotus(&fd.params[i].ty)?;
+            let want = self.type_expr_to_lotus(&sig.params[i].ty)?;
             if ty != want {
                 return Err(CodegenError::Unsupported(format!(
                     "self.{} arg {} type mismatch: expected {:?}, got {:?}",
@@ -3628,7 +4124,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 &format!("self.{}.call", method_name),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        match &fd.ret {
+        match &sig.ret {
             None => Ok(None),
             Some(t) => {
                 let rt = self.type_expr_to_lotus(t)?;
