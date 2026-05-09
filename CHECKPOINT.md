@@ -508,7 +508,8 @@ m7 builds on the struct ABI.
 | Heap-allocated user-type literals (escape via bus) | ✅ | ✅ |
 | Contracts (typecheck only — F.8) | ✅ | ✅ (skipped at codegen) |
 | `match` (Literal / Wildcard / Binding patterns) | ✅ | ✅ |
-| `match` (Tuple / Constructor patterns + guards) | ✅ | — |
+| `match` arm guards (`pat if cond -> body`) | ✅ | ✅ |
+| `match` (Tuple / Constructor patterns) | ✅ | — |
 | generic `for` (over arrays / ranges) | ✅ | — |
 | Schedule-class annotation (`: schedule cooperative \| pinned`) | — | ✅ (resolved on LocusInfo) |
 | Cooperative scheduler (deferred bus + drain loop) | — | ✅ |
@@ -707,7 +708,6 @@ ladder. Two pieces:
 
 **Polish (any time):**
 
-- Match guards (extend m24)
 - Tuple / Constructor patterns in match (needs tuple values
   in codegen first)
 - Generic `for` over arrays / ranges (needs array literal +

@@ -1,14 +1,17 @@
 // 15-match — match expressions in codegen.
 //
-// Three uses of match:
+// Four uses of match:
 //   - Int literal arms with a wildcard fallthrough  (classify)
 //   - Bool literal arms                              (status_label)
 //   - Binding pattern as the only arm                (echo)
+//   - Binding pattern with `if` guards               (sign_of)
 //
 // F.18 exhaustiveness is checked at typecheck (interpreter and
 // codegen share the typechecker), so the fallthrough path past
 // a non-matching scrutinee is unreachable for well-typed match
-// statements.
+// statements. Guards (`pat if cond -> body`) extend this with a
+// runtime predicate over the bound value; they fall through to
+// the next arm when false.
 
 fn classify(n: Int) {
     match n {
@@ -32,6 +35,18 @@ fn echo(n: Int) {
     }
 }
 
+// Match arm guards — pattern + boolean condition. Falls
+// through to the next arm if the guard is false. The bound
+// `v` is in scope for the guard expression, so the guard can
+// inspect it.
+fn sign_of(n: Int) {
+    match n {
+        v if v < 0   -> println("sign(", v, ") = negative"),
+        v if v == 0  -> println("sign(", v, ") = zero"),
+        v            -> println("sign(", v, ") = positive"),
+    }
+}
+
 fn main() {
     classify(0);
     classify(2);
@@ -39,4 +54,7 @@ fn main() {
     status_label(true);
     status_label(false);
     echo(42);
+    sign_of(-3);
+    sign_of(0);
+    sign_of(7);
 }

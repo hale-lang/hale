@@ -3285,12 +3285,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// - `Binding(x)` — unconditional fallthrough; binds the
     ///   scrutinee value as a local named `x` for the arm body.
     ///
-    /// Tuple / Constructor patterns + arm guards land later;
-    /// codegen rejects them today. F.18 exhaustiveness is checked
-    /// upstream by the typechecker, so a non-matching scrutinee
-    /// at runtime falls through with no behavior (interpreter
-    /// behaves the same — match is statement-shape, not a typed
-    /// expression that must produce a value).
+    /// Tuple / Constructor patterns land later; codegen rejects
+    /// them today. F.18 exhaustiveness is checked upstream by the
+    /// typechecker, so a non-matching scrutinee at runtime falls
+    /// through with no behavior (interpreter behaves the same —
+    /// match is statement-shape, not a typed expression that must
+    /// produce a value).
+    ///
+    /// Match arm guards (`pattern if cond -> body`) lower as: the
+    /// pattern test routes to a guard-check block (or directly to
+    /// body if no guard); the guard-check block installs any
+    /// binding the pattern declared, evaluates the guard, and
+    /// cond-branches to body (true) or next-arm (false). The
+    /// binding is visible to the guard expression — that's the
+    /// whole point.
     fn lower_match_stmt(
         &mut self,
         m: &MatchStmt,
@@ -3303,28 +3311,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut all_terminated = true;
 
         for (i, arm) in m.arms.iter().enumerate() {
-            if arm.guard.is_some() {
-                return Err(CodegenError::Unsupported(
-                    "match arm guards not lowered (deferred)".into(),
-                ));
-            }
             let body_bb = self
                 .context
                 .append_basic_block(func, &format!("match.arm{}.body", i));
             let next_bb = self
                 .context
                 .append_basic_block(func, &format!("match.arm{}.next", i));
+            // For guarded arms, insert a guard_bb between pattern
+            // test and body; binding install lives there so the
+            // guard expression can reference it. For non-guarded
+            // arms, binding install happens at body_bb (existing
+            // behavior preserved exactly).
+            let has_guard = arm.guard.is_some();
+            let guard_bb = if has_guard {
+                Some(
+                    self.context
+                        .append_basic_block(func, &format!("match.arm{}.guard", i)),
+                )
+            } else {
+                None
+            };
+            let pattern_target = guard_bb.unwrap_or(body_bb);
 
             // Track an optional binding the arm body needs to see.
-            // (name, value-to-store, type) — applied after we
-            // position at body_bb.
+            // (name, value-to-store, type) — applied at
+            // pattern_target's start (guard_bb if guarded,
+            // else body_bb).
             let mut binding: Option<(String, BasicValueEnum<'ctx>, LotusType)> =
                 None;
 
             match &arm.pattern {
                 Pattern::Wildcard(_) => {
                     self.builder
-                        .build_unconditional_branch(body_bb)
+                        .build_unconditional_branch(pattern_target)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
                 Pattern::Binding(ident) => {
@@ -3334,7 +3353,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         scrutinee_ty.clone(),
                     ));
                     self.builder
-                        .build_unconditional_branch(body_bb)
+                        .build_unconditional_branch(pattern_target)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
                 Pattern::Literal(lit, span) => {
@@ -3375,7 +3394,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }
                     };
                     self.builder
-                        .build_conditional_branch(cond, body_bb, next_bb)
+                        .build_conditional_branch(cond, pattern_target, next_bb)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
                 Pattern::Tuple(_, _) | Pattern::Constructor { .. } => {
@@ -3386,25 +3405,60 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
 
-            // Emit arm body at body_bb. If a binding was declared,
-            // put it in scope just for this body. Saved so we can
-            // restore on exit (in case the binding name shadows an
-            // outer local).
-            self.builder.position_at_end(body_bb);
-            let saved: Option<(String, Option<(PointerValue<'ctx>, LotusType)>)> =
-                if let Some((bname, bval, bty)) = &binding {
-                    let alloca = self.alloca_for(bty, bname)?;
-                    self.builder
+            // Helper closure semantics inlined: install binding
+            // (alloca, store, scope.insert) and return the saved
+            // prior so we can restore on arm exit.
+            let install_binding = |this: &mut Self,
+                                   scope: &mut Scope<'ctx>,
+                                   binding: &Option<(
+                String,
+                BasicValueEnum<'ctx>,
+                LotusType,
+            )>|
+             -> Result<
+                Option<(String, Option<(PointerValue<'ctx>, LotusType)>)>,
+                CodegenError,
+            > {
+                if let Some((bname, bval, bty)) = binding {
+                    let alloca = this.alloca_for(bty, bname)?;
+                    this.builder
                         .build_store(alloca, *bval)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     let prior = scope.locals.insert(
                         bname.clone(),
                         (alloca, bty.clone()),
                     );
-                    Some((bname.clone(), prior))
+                    Ok(Some((bname.clone(), prior)))
                 } else {
-                    None
-                };
+                    Ok(None)
+                }
+            };
+
+            let saved: Option<(String, Option<(PointerValue<'ctx>, LotusType)>)>;
+            if let (Some(gbb), Some(guard_expr)) = (guard_bb, arm.guard.as_ref()) {
+                // Guard-check path: install binding so the guard
+                // can see it, evaluate the guard, cond-branch.
+                self.builder.position_at_end(gbb);
+                saved = install_binding(self, scope, &binding)?;
+                let (gv, gty) = self.lower_expr(guard_expr, scope)?;
+                if gty != LotusType::Bool {
+                    return Err(CodegenError::Unsupported(format!(
+                        "match arm guard must have type Bool, got {:?}",
+                        gty
+                    )));
+                }
+                self.builder
+                    .build_conditional_branch(
+                        gv.into_int_value(),
+                        body_bb,
+                        next_bb,
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(body_bb);
+            } else {
+                self.builder.position_at_end(body_bb);
+                saved = install_binding(self, scope, &binding)?;
+            }
 
             let body_end = match &arm.body {
                 MatchArmBody::Expr(e) => {
