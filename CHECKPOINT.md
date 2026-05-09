@@ -1,11 +1,11 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work in a
-new session. State as of m40 (restart recovery primitive — F.9
-response half) — surface-completeness arc through m38, then the
-substrate-foundation arc opened with m39 (trigger half: birth-
-epoch closures) and m40 (response half: restart with cap-2
-default). Substrate arc: m19→m23 (region allocator with
+new session. State as of m41 (quarantine recovery primitive —
+sticky-flag F.9 sibling to restart) — surface-completeness arc
+through m38, then the substrate-foundation arc with m39 (trigger
+half: birth-epoch closures), m40 (response half: restart with
+cap-2 default), and m41 (quarantine — stop-trying flag). Substrate arc: m19→m23 (region allocator with
 rich/chunked/recognition + per-locus arenas + bus copy), m24
 (`match`), m25 (bimodal schedule-class annotation), m26
 (cooperative scheduler — deferred bus + drain loop), m26b
@@ -32,8 +32,10 @@ closures — F.9 invariants checked right after `birth()`
 returns, before `run()` runs), m40 (restart recovery
 primitive — `restart(child);` from inside `on_failure`
 bumps a per-locus counter; within cap the runtime re-runs
-birth + birth-epoch closures on the same memory). **36 of
-37 examples build to native ELF — every single-binary
+birth + birth-epoch closures on the same memory), m41
+(`quarantine(child);` — sticky flag that gates `run()`
+without affecting drain/dissolve cleanup). **37 of 38
+examples build to native ELF — every single-binary
 example.** Only `trellis-pair` (multi-binary, cross-process
 bus) remains.
 
@@ -92,9 +94,29 @@ greeting from child: yo
 Phase status:
 - **Phase 0** (spec stabilization) — complete
 - **Phase 1** (lex / parse / typecheck) — complete; F.1–F.18 enforced
-- **Phase 2 v0** (interpreter + bus router) — 36 of 37 example
+- **Phase 2 v0** (interpreter + bus router) — 37 of 38 example
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
+- **Phase 3 milestone 41** (quarantine recovery primitive —
+  sticky-flag F.9 sibling) — complete. Where m40's
+  `restart(c)` is "give birth another shot," m41's
+  `quarantine(c)` is the "stop trying" response: sets a
+  sticky flag on the locus; the lifecycle dispatch checks
+  it after birth + `__birth_closures` and skips `run()`
+  if set. Drain / dissolve still fire (cleanup is
+  unconditional). Codegen: synthetic `__quarantined: i64`
+  flag appended after `__restart_count`, zero-init at
+  instantiation; `quarantine(c)` writes 1 via GEP+store;
+  run() gated by load+icmp+cond branch. Interpreter mirrors
+  via `LocusHandle.quarantined: Rc<Cell<bool>>` +
+  `RecoveryOp::Quarantine` setting it +
+  `instantiate_locus` skip on Run lifecycle. Bus-dispatch
+  gating (quarantined subscribers stop receiving) waits on
+  m41b — needs a fixed-offset C-runtime load. The two
+  recovery primitives now form a small response menu
+  inside on_failure: restart for retry-with-budget,
+  quarantine for stop-trying. Both can fire; quarantine
+  wins. New `examples/33-quarantine/`.
 - **Phase 3 milestone 40** (restart recovery primitive — F.9
   response half) — complete. m39 delivered the trigger half
   (birth-epoch closures detect violations); m40 delivers the
@@ -864,6 +886,20 @@ m40    m40: restart recovery primitive (F.9 response half)    (eab0f96)
                             depth-bounded loop in
                             instantiate_locus.
                           + examples/32-restart
+m41    m41: quarantine recovery primitive (sticky flag)       (ff525fe)
+                          ⇒ Synthetic __quarantined i64 flag
+                            after __restart_count, zero-init.
+                            quarantine(c) writes 1 via
+                            GEP+store; run() gated by load+
+                            icmp+cond branch around the call.
+                            Drain / dissolve still fire.
+                            Bus-dispatch gating deferred to
+                            m41b (needs fixed-offset C-runtime
+                            load). Interpreter mirrors via
+                            LocusHandle.quarantined +
+                            RecoveryOp::Quarantine + skip on
+                            Run lifecycle.
+                          + examples/33-quarantine
 ```
 
 The architectural pivots are **m7** (locus → LLVM struct,
@@ -934,6 +970,7 @@ m7 builds on the struct ABI.
 | `starts_with(s, p)` / `contains(s, sub)` for String | ✅ | ✅ |
 | Birth-epoch closures (F.9 invariants checked after `birth()`) | ✅ | ✅ |
 | `restart(child)` recovery (cap-2 birth re-run) | ✅ | ✅ |
+| `quarantine(child)` recovery (sticky flag, gates run) | ✅ | ✅ |
 | Schedule-class annotation (`: schedule cooperative \| pinned`) | — | ✅ (resolved on LocusInfo) |
 | Cooperative scheduler (deferred bus + drain loop) | — | ✅ |
 | Explicit `yield` primitive | ✅ (no-op) | ✅ (drains queue) |
@@ -1053,6 +1090,8 @@ real-world use case for lotus.
 ## Recent commit history (newest first)
 
 ```
+ff525fe m41: quarantine recovery primitive (sticky-flag F.9)
+0128f56 CHECKPOINT.md: m40 restart recovery refresh
 eab0f96 m40: restart recovery primitive (F.9 response half)
 eada334 CHECKPOINT.md: m39 birth-epoch closures refresh
 cba1e96 m39: birth-epoch closures (substrate F.9 deepening)
@@ -1110,14 +1149,14 @@ d5afffd Codegen milestone 8: accept() lifecycle + parent-child wiring
 929efa2 Codegen milestone 5: time::sleep on CLOCK_MONOTONIC
 ```
 
-21 commits ahead of origin/master at checkpoint time (origin
+23 commits ahead of origin/master at checkpoint time (origin
 moved up to a5fc8bd / the prior session's tip; this session
 shipped m30 → m34 + the std/* import-resolution fix, then
 m35 for tuples, m36 for string ops, m37 for to_string, m38
 for stdlib helpers, plus a bus-aggregator flex app, then
-m39 for birth-epoch closures and m40 for restart recovery —
-the F.9 invariant-and-repair pair now substrate-complete
-for the birth + dissolve epochs).
+m39 for birth-epoch closures, m40 for restart recovery, and
+m41 for quarantine — the F.9 substrate now has both invariant-
+detection and the restart/quarantine response menu).
 
 ## Next steps in priority order
 
@@ -1316,6 +1355,9 @@ rm examples/31-birth-closures/main
 cargo run --bin lotus -- build examples/32-restart/main.lt
 ./examples/32-restart/main               # restart cap-2: target=2 succeeds via 1 retry; target=1 no retry; target=4 hits cap and falls through
 rm examples/32-restart/main
+cargo run --bin lotus -- build examples/33-quarantine/main.lt
+./examples/33-quarantine/main            # quarantine: valid=1 closure passes + run() fires; valid=0 fails + quarantined + run() skipped
+rm examples/33-quarantine/main
 ```
 
-If all thirty-six work, the checkpoint is intact.
+If all thirty-seven work, the checkpoint is intact.
