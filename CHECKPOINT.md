@@ -1,8 +1,7 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work in a
-new session. State as of m35 (tuples — values + numeric field
-access + flat destructure + tuple patterns in match) — the
+new session. State as of m37 (to_string builtin) — the
 surface-completeness arc that started after the m28 scheduler
 shipped. Substrate arc: m19→m23 (region allocator with
 rich/chunked/recognition + per-locus arenas + bus copy), m24
@@ -20,9 +19,13 @@ methods; bus-handlers + modes still reject), m35 (tuples
 — anonymous heterogeneous records of fixed arity ≥ 2, with
 `(a, b)` literals, `t.0` / `t.1` numeric field access, `let
 (a, b) = pair;` destructure, and tuple patterns in match
-arms). **30 of 31 examples build to native ELF — every
-single-binary example.** Only `trellis-pair` (multi-binary,
-cross-process bus) remains.
+arms), m36 (string ops — `+` concat, `==`/`!=` equality,
+`len`, exclusive + inclusive range slicing `s[lo..hi]` /
+`s[lo..=hi]` with bounds clamping), m37 (`to_string(x)`
+primitive→String conversion for dynamic composition; output
+matches println formatting). **32 of 33 examples build to
+native ELF — every single-binary example.** Only
+`trellis-pair` (multi-binary, cross-process bus) remains.
 
 **The bimodal scheduler is fully complete.** Cooperative loci
 yield between substrate cells via the inline-payload deferred
@@ -79,9 +82,51 @@ greeting from child: yo
 Phase status:
 - **Phase 0** (spec stabilization) — complete
 - **Phase 1** (lex / parse / typecheck) — complete; F.1–F.18 enforced
-- **Phase 2 v0** (interpreter + bus router) — 30 of 31 example
+- **Phase 2 v0** (interpreter + bus router) — 32 of 33 example
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
+- **Phase 3 milestone 37** (`to_string` builtin) — complete.
+  Closes the "build a string from typed data" gap that m36
+  left open. `to_string(x)` returns a String formatted
+  exactly like `println` would render the same value: Int
+  via %lld, Float / Decimal via %g, Bool as `true`/`false`,
+  Duration as `<n>ns`, String passes through. Result lifetime
+  follows the m20 / m36 region rule — arena-allocated against
+  `current_arena_ptr` so concat-chains land in the caller's
+  locus arena. Codegen declares three snprintf-backed runtime
+  helpers (`lotus_str_from_int` / `_float` / `_duration`);
+  Bool dispatches via `build_select` against true/false
+  globals; String returns the input ptr unchanged.
+  Interpreter mirrors via `fmt_decimal_pub` (one-line pub
+  alias of `fmt_decimal`) so Float / Decimal output matches
+  codegen's %g semantics. Per spec/stdlib.md, richer
+  formatting (split / startswith / format-template) lives in
+  `std::string` once stdlib resolution wires up; `to_string`
+  is the language-native primitive those would build on.
+  New `examples/28-to-string/`.
+- **Phase 3 milestone 36** (string ops — concat / eq / len /
+  slicing) — complete. Strings before m36 were opaque
+  pointers used only by `println`; m36 lights up the four
+  ops that turn them into a usable type for real programs.
+  `+` for concat, `==` / `!=` for equality (strcmp wrapper),
+  `len(s)` for byte length (strlen), and exclusive +
+  inclusive range slicing `s[lo..hi]` / `s[lo..=hi]`. Result
+  lifetimes follow spec/memory.md region rules — concat /
+  slice land in `current_arena_ptr`, freed wholesale on
+  locus dissolution. Bounds-clamp on slice produces a
+  (possibly empty) substring rather than panicking; matches
+  the substrate "best-effort, predictable" ethos and keeps
+  interpreter / codegen output identical. C runtime
+  additions: `lotus_str_concat`, `lotus_str_eq`,
+  `lotus_str_len`, `lotus_str_slice`. `len` also returns the
+  compile-time N for `LotusType::Array(_, N)` (no strlen
+  call needed). Codegen extends `lower_binop`,
+  `lower_expr`'s `Expr::Index` (Range index → slicing), and
+  adds `lower_len_builtin`. Interpreter mirrors via
+  `builtin_len` + Range-over-String special case in
+  `Expr::Index`. New `examples/27-strings/` exercises all
+  four ops + walks byte-by-byte to find a first-word
+  delimiter.
 - **Phase 3 milestone 35** (tuples — values + patterns +
   destructure) — complete. Tuples are anonymous
   heterogeneous records of fixed arity ≥ 2, lowered as
@@ -637,6 +682,32 @@ m35    m35: tuples — values + patterns + destructure          (4e0a19b)
                             of bindings; literal-EQ comparison
                             extracted to lower_match_eq_cmp.
                           + examples/26-tuples
+m36    m36: string ops — concat, eq, len, slicing             (5f948f8)
+                          ⇒ Four C runtime helpers
+                            (lotus_str_concat / _eq / _len /
+                            _slice); codegen lower_binop adds
+                            (Add, String) and (Eq|NotEq,
+                            String); Expr::Index Range-receiver
+                            routes to slicing with hi+1 for
+                            inclusive form; lower_len_builtin
+                            handles String (strlen) and Array
+                            (compile-time N). Bounds-clamp on
+                            slice (no panic). Interpreter
+                            mirrors via builtin_len +
+                            Range-over-String in Expr::Index.
+                          + examples/27-strings
+m37    m37: to_string(x) primitive → String                   (ccbaec8)
+                          ⇒ Three snprintf-backed runtime
+                            helpers (lotus_str_from_int /
+                            _float / _duration); Bool dispatches
+                            via build_select between "true" /
+                            "false" globals; String passes
+                            through. Output matches println
+                            formatting (%lld / %g / %lldns).
+                            Interpreter uses fmt_decimal_pub
+                            so Float / Decimal output matches
+                            codegen's %g semantics.
+                          + examples/28-to-string
 ```
 
 The architectural pivots are **m7** (locus → LLVM struct,
@@ -699,6 +770,10 @@ m7 builds on the struct ABI.
 | Tuple numeric field access (`t.0`, `t.1`) | ✅ | ✅ |
 | Flat `let (a, b) = pair;` destructure | ✅ | ✅ |
 | Tuple patterns in match (Wildcard / Binding / Literal subs) | ✅ | ✅ |
+| String concat (`+`), equality (`==`/`!=`) | ✅ | ✅ |
+| `len(s)` / `len(arr)` builtin | ✅ | ✅ |
+| String slicing `s[lo..hi]` / `s[lo..=hi]` (bounds-clamped) | ✅ | ✅ |
+| `to_string(x)` for primitives → String | ✅ | ✅ |
 | Schedule-class annotation (`: schedule cooperative \| pinned`) | — | ✅ (resolved on LocusInfo) |
 | Cooperative scheduler (deferred bus + drain loop) | — | ✅ |
 | Explicit `yield` primitive | ✅ (no-op) | ✅ (drains queue) |
@@ -818,6 +893,9 @@ real-world use case for lotus.
 ## Recent commit history (newest first)
 
 ```
+ccbaec8 m37: to_string(x) primitive → String
+5f948f8 m36: string ops — concat, equality, len, slicing
+faa231e CHECKPOINT.md: m35 tuples refresh
 4e0a19b m35: tuples — values + patterns + destructure
 1a01f40 CHECKPOINT.md: align ahead-count with new origin/master tip
 2358ea3 m33 fix: skip std/* imports during file resolution
@@ -865,10 +943,10 @@ d5afffd Codegen milestone 8: accept() lifecycle + parent-child wiring
 929efa2 Codegen milestone 5: time::sleep on CLOCK_MONOTONIC
 ```
 
-10 commits ahead of origin/master at checkpoint time (origin
+14 commits ahead of origin/master at checkpoint time (origin
 moved up to a5fc8bd / the prior session's tip; this session
 shipped m30 → m34 + the std/* import-resolution fix, then
-m35 for tuples).
+m35 for tuples, m36 for string ops, m37 for to_string).
 
 ## Next steps in priority order
 
@@ -1049,6 +1127,12 @@ rm examples/25-imports/main
 cargo run --bin lotus -- build examples/26-tuples/main.lt
 ./examples/26-tuples/main                # divmod / let-destructure / numeric field access / classify match
 rm examples/26-tuples/main
+cargo run --bin lotus -- build examples/27-strings/main.lt
+./examples/27-strings/main               # concat / equality / len / inclusive+exclusive slicing / first_word
+rm examples/27-strings/main
+cargo run --bin lotus -- build examples/28-to-string/main.lt
+./examples/28-to-string/main             # per-primitive to_string + label/summary helpers + concat round-trip
+rm examples/28-to-string/main
 ```
 
-If all thirty work, the checkpoint is intact.
+If all thirty-two work, the checkpoint is intact.
