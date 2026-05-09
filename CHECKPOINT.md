@@ -680,7 +680,7 @@ d5afffd Codegen milestone 8: accept() lifecycle + parent-child wiring
 929efa2 Codegen milestone 5: time::sleep on CLOCK_MONOTONIC
 ```
 
-79 commits ahead of origin/master at checkpoint time.
+81 commits ahead of origin/master at checkpoint time.
 
 ## Next steps in priority order
 
