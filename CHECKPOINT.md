@@ -71,10 +71,15 @@ user-triggered checkpoint via `check_closures();`), m45
 (bus.entries proper-fix — C-runtime dynamic vec replaces the
 fixed-cap LLVM-side table + linear-scan dispatch fn),
 m43-followup (pinned post-run duration via the new
-`__duration_closures_wrapper`), and m46 (closure accumulators
+`__duration_closures_wrapper`), m46 (closure accumulators
 — `sum(self.X)` running totals across epoch fires +
-`persists_through(...)` recovery gating). **45 of 46 examples
-build to native ELF — every single-binary example.** Only
+`persists_through(...)` recovery gating), and a small
+post-m46 hardening — `emit_locus_arena_destroy` now calls
+`lotus_bus_quarantine_self(self_ptr)` before destroying the
+arena, mirroring the m41b deregistration path so a stale
+entries-vec entry can never direct dispatch into freed
+memory after dissolution. **45 of 46 examples build to
+native ELF — every single-binary example.** Only
 `trellis-pair` (multi-binary, cross-process bus) remains.
 
 **The bimodal scheduler is fully complete.** Cooperative loci
@@ -1548,6 +1553,8 @@ real-world use case for lotus.
 ## Recent commit history (newest first)
 
 ```
+51653bd Bus router: deregister subscribers on locus dissolve
+1fde35c CHECKPOINT.md: ahead-count 16 + recent-commits refresh post-0ff7794
 0ff7794 Substrate session: bus router rewrite + pinned-duration + sum accumulators
 47f9792 CHECKPOINT.md: correct ahead-count to 15
 8c45f8c CHECKPOINT.md: m45 + bus-cap follow-up refresh
@@ -1622,10 +1629,12 @@ d5afffd Codegen milestone 8: accept() lifecycle + parent-child wiring
 929efa2 Codegen milestone 5: time::sleep on CLOCK_MONOTONIC
 ```
 
-16 commits ahead of origin/master at checkpoint time. The
-most recent commit (0ff7794) bundled this session's three
-substrate fixes in one: m45-followup-2 bus router proper-fix,
-m43-followup pinned-duration wrapper, m46 closure accumulators. The F.9
+17 commits ahead of origin/master at checkpoint time. This
+session bundled m45-followup-2 bus router proper-fix +
+m43-followup pinned-duration wrapper + m46 closure accumulators
+into one commit (0ff7794), then a small follow-up
+(51653bd) hardened bus dispatch by deregistering subscribers
+on locus dissolve. The F.9
 substrate stays closure-epoch-complete (all 5 epochs: Birth +
 Dissolve + Tick + Duration + Explicit) on both cooperative AND
 pinned dispatch paths AND has both restart variants AND has the
