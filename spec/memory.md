@@ -456,6 +456,42 @@ inside the same lifecycle body that instantiated them. The
 F.4 cascade still falls out structurally — children dissolve
 before their parent, regardless of which mechanism handles each.
 
+### Region allocator substrate (m19)
+
+The codegen path links a small C arena runtime
+(`crates/lotus-codegen/runtime/lotus_arena.c`, bundled into the
+compiler via `include_str!`) into every emitted binary. Public
+ABI:
+
+```
+ptr  lotus_arena_create(void)                              // new arena
+ptr  lotus_arena_alloc(ptr arena, i64 size, i64 align)     // bump
+void lotus_arena_destroy(ptr arena)                        // wholesale free
+```
+
+An arena is a linked list of bump chunks (default 64 KiB each;
+oversized requests get a fresh chunk sized to fit). Allocation is
+a pointer-bump in the head chunk; on overflow, a new chunk is
+malloc'd and pushed to the front. Destruction walks the list and
+frees every chunk wholesale — no per-object free, ever.
+
+Codegen uses the arena via a single program-wide pointer
+(`@lotus.arena.global`) initialized in `main`'s prelude and
+torn down before every `ret` from `main` (covering the
+fall-through path AND the `return n;` exit-code path). All
+previously-libc-malloc call sites — user-type struct literals
+(bus payloads, composite locus param defaults) and synthesized
+`ClosureViolation` records — now allocate through
+`lotus_arena_alloc(@lotus.arena.global, size, 8)`.
+
+m19 deliberately keeps the lifetime model unchanged: one arena
+per program, wholesale free at exit. Same observable leak
+profile as the previous libc-malloc world; the substrate is now
+the lotus runtime instead of libc, which is the load-bearing
+prerequisite for m20+ to attach arenas to locus lifetimes (so
+dissolve actually frees the locus's region per F.3) and m21 to
+copy bus payloads between sender / receiver arenas.
+
 ## Future work
 
 - **Hot-load preservation across perspective updates.** When a

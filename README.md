@@ -15,9 +15,13 @@ process exit code, the **full closure-test runtime** (collapse
 + absorb + bubble per F.9), built-in `ClosureViolation`,
 **modes** (`mode bulk()` / `harmonic()` / `resolution()`),
 **`self.children`** + `for child in self.children { ... }`,
-and locus literals in expression position. **17 of 18 examples
-build to native ELF — every single-binary example is a build
-target.** Phase 3 (codegen) is at milestone 18: literals +
+locus literals in expression position, and (m19) a **lotus
+region allocator substrate**: type literals + ClosureViolations
+allocated through `lotus_arena_alloc` instead of libc malloc, with
+the C arena runtime bundled at compile time + linked into every
+build. **17 of 18 examples build to native ELF — every
+single-binary example is a build target.** Phase 3 (codegen) is
+at milestone 19: literals +
 arithmetic, `let`/`let mut` + assignment + compound ops,
 `if`/`else`/`while` + `break`/`continue`, `time::sleep` on
 `CLOCK_MONOTONIC` with EINTR retry, `time::monotonic()` +
@@ -245,6 +249,11 @@ crates/                   (Phase 1 + 2 v0 + Phase 3 milestones 0-18)
                           in expression position
   lotus-cli/              `lotus` binary (lex / parse / check / run /
                           build)
+  lotus-codegen/runtime/  C source for the lotus region allocator,
+                          bundled into the codegen crate via
+                          include_str! and compiled + linked into
+                          every binary alongside the generated
+                          object file (m19 substrate).
 ```
 
 Example ladder: 18 projects from hello-world → trellis-pair;
@@ -297,7 +306,7 @@ Per the delivery plan:
   Region allocator + cooperative scheduler are the remaining
   Phase 2 deep-pushes.
 - **Phase 3** — Codegen in Rust targeting LLVM. *In progress;
-  milestone 18 of N complete.* Working subset: literals, arithmetic,
+  milestone 19 of N complete.* Working subset: literals, arithmetic,
   `let`/`let mut` + assignment + compound ops, mixed-type println,
   if/else/while + break/continue, `time::sleep` + `time::monotonic`
   on `CLOCK_MONOTONIC` with EINTR retry, Duration / Decimal /
@@ -311,11 +320,13 @@ Per the delivery plan:
   from main → process exit code, the full closure-test runtime
   (F.9 collapse / absorb / bubble + built-in `ClosureViolation`),
   modes (`mode bulk()` etc.), `self.children` + `for child in
-  self.children { ... }` iteration, and locus literals in
-  expression position. **17 of 18 example projects compile to
-  native ELF — every single-binary example.** Only
-  `trellis-pair` (cross-process bus + entry-point selection)
-  remains, gated on substantial new infrastructure.
+  self.children { ... }` iteration, locus literals in
+  expression position, and the **lotus region allocator
+  substrate** (m19) — every previously-libc-malloc allocation
+  routes through `lotus_arena_alloc` instead. **17 of 18 example
+  projects compile to native ELF — every single-binary example.**
+  Only `trellis-pair` (cross-process bus + entry-point
+  selection) remains, gated on substantial new infrastructure.
 - **Phase 4** — Stdlib v0 in lotus + Rust FFI shims. Overlaps
   Phase 3.
 - **Phase 5** — Toolchain. Overlaps Phase 3–4.

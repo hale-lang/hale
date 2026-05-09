@@ -155,13 +155,27 @@ pub fn build_executable(
         .write_to_file(&cx.module, FileType::Object, &obj_path)
         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
+    // Drop the lotus runtime C source next to the object file so
+    // clang compiles + links it into the same binary. The C
+    // source is bundled into the codegen crate via include_str!,
+    // so the lotus binary is self-contained — no separate
+    // runtime install needed. Name is keyed off the object path
+    // so parallel `cargo test` invocations don't race on a
+    // shared filename in `/tmp`.
+    let runtime_c_path = obj_path.with_extension("arena.c");
+    std::fs::write(&runtime_c_path, RUNTIME_C_SOURCE)
+        .map_err(|e| CodegenError::Link(format!("write runtime C: {}", e)))?;
+
     let status = Command::new("clang")
         .arg(&obj_path)
+        .arg(&runtime_c_path)
+        .arg("-O2")
         .arg("-o")
         .arg(output_path)
         .status()
         .map_err(|e| CodegenError::Link(format!("clang invocation: {}", e)))?;
     let _ = std::fs::remove_file(&obj_path);
+    let _ = std::fs::remove_file(&runtime_c_path);
     if !status.success() {
         return Err(CodegenError::Link(format!(
             "clang exited with {}",
@@ -170,6 +184,14 @@ pub fn build_executable(
     }
     Ok(())
 }
+
+/// The lotus runtime C source, bundled at compile time so the
+/// codegen path is self-contained. Defines `lotus_arena_create`,
+/// `lotus_arena_alloc`, `lotus_arena_destroy` — replacements for
+/// libc malloc/free that respect the framework's region model
+/// (m19 introduces the substrate; m20+ wires it to locus
+/// lifetimes).
+const RUNTIME_C_SOURCE: &str = include_str!("../runtime/lotus_arena.c");
 
 struct Cx<'ctx, 'p> {
     context: &'ctx Context,
@@ -423,16 +445,44 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // emit after the call is enough for LLVM to optimize.
         let _ = exit_fn;
 
-        // declare ptr @malloc(i64)
+        // declare ptr @lotus_arena_create()
+        // declare ptr @lotus_arena_alloc(ptr arena, i64 size, i64 align)
+        // declare void @lotus_arena_destroy(ptr arena)
         //
-        // Used by user-type struct literals (e.g. bus payloads,
-        // composite locus param defaults) so the heap-allocated
-        // record outlives the publisher's stack frame. v0 codegen
-        // never frees — all type-literal allocations leak. Trellis-
-        // grade lifetime management lands with the region allocator.
+        // The lotus region allocator (v0 substrate). Replaces libc
+        // malloc as the backing store for type literals (bus
+        // payloads, composite locus param defaults) and synthesized
+        // ClosureViolation records. v0 wires a single program-wide
+        // arena initialized at the top of main and destroyed at
+        // exit; m20 will refine to per-locus arenas matching
+        // spec/memory.md "A locus owns a region."
+        //
+        // Backed by libc malloc internally — the C source for the
+        // arena lives in `runtime/lotus_arena.c` and is compiled +
+        // linked alongside the generated object file. From LLVM IR
+        // we just see the C-ABI surface.
         let i64_t = self.context.i64_type();
-        let malloc_ty = ptr_t.fn_type(&[i64_t.into()], false);
-        self.module.add_function("malloc", malloc_ty, None);
+        let arena_create_ty = ptr_t.fn_type(&[], false);
+        self.module
+            .add_function("lotus_arena_create", arena_create_ty, None);
+        let arena_alloc_ty =
+            ptr_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false);
+        self.module
+            .add_function("lotus_arena_alloc", arena_alloc_ty, None);
+        let arena_destroy_ty = void_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_arena_destroy", arena_destroy_ty, None);
+
+        // The single program-wide arena pointer. Initialized in
+        // the prelude of main; consulted by every arena-allocated
+        // user-type literal and ClosureViolation. m20 makes this
+        // a per-locus pointer carried on the locus struct;
+        // m21 plumbs the right one through bus dispatch.
+        let arena_global =
+            self.module
+                .add_global(ptr_t, None, "lotus.arena.global");
+        arena_global.set_initializer(&ptr_t.const_null());
+        arena_global.set_linkage(inkwell::module::Linkage::Internal);
 
         // declare i32 @fflush(ptr)
         //
@@ -958,6 +1008,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // semantics map onto this; explicit `return` from main is
         // not yet implemented in codegen).
         let i32_t = self.context.i32_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
         let main_ty = i32_t.fn_type(&[], false);
         let main_fn = self.module.add_function("main", main_ty, None);
         let entry = self.context.append_basic_block(main_fn, "entry");
@@ -968,6 +1019,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.in_main = true;
         self.push_dissolve_frame();
 
+        // Prelude: spin up the program-wide arena. Every
+        // `arena_alloc` call site loads `@lotus.arena.global`, so
+        // this store has to happen before any user code runs.
+        let arena_create = self
+            .module
+            .get_function("lotus_arena_create")
+            .expect("lotus_arena_create declared");
+        let arena_global = self
+            .module
+            .get_global("lotus.arena.global")
+            .expect("arena global declared");
+        let arena_ptr = self
+            .builder
+            .build_call(arena_create, &[], "arena.init")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("arena_create returns ptr");
+        self.builder
+            .build_store(arena_global.as_pointer_value(), arena_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
         let mut scope = Scope::default();
         let end = self.lower_block(&main_decl.body, &mut scope)?;
 
@@ -977,6 +1050,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // closed and writing more IR is unsound.
         if end == BlockEnd::Open {
             self.flush_dissolve_frame()?;
+            // Tear down the arena before exit. exit(0) via `ret`
+            // would drop the chunk linked list either way (process
+            // exit reclaims everything), but going through
+            // lotus_arena_destroy keeps this path equivalent to
+            // the early-return path emitted in `lower_return` when
+            // a user `return n;` from main runs.
+            self.emit_arena_destroy()?;
             let zero = i32_t.const_int(0, false);
             self.builder
                 .build_return(Some(&zero))
@@ -987,8 +1067,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // dissolves are unreachable.
             let _ = self.deferred_dissolves.pop();
         }
+        let _ = ptr_t;
         self.in_main = false;
         self.current_fn = None;
+        Ok(())
+    }
+
+    /// Emit a call to `lotus_arena_destroy(@lotus.arena.global)`.
+    /// Used at every main-exit point so the arena tears down
+    /// cleanly. (Matters most for tooling — e.g. valgrind /
+    /// LeakSanitizer don't see chunks as leaked when the process
+    /// returns; the OS reclaims either way.)
+    fn emit_arena_destroy(&mut self) -> Result<(), CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let arena_global = self
+            .module
+            .get_global("lotus.arena.global")
+            .expect("arena global declared");
+        let arena_ptr = self
+            .builder
+            .build_load(ptr_t, arena_global.as_pointer_value(), "arena.destroy.cur")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let destroy = self
+            .module
+            .get_function("lotus_arena_destroy")
+            .expect("lotus_arena_destroy declared");
+        self.builder
+            .build_call(destroy, &[arena_ptr.into()], "arena.destroy.call")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
 
@@ -2763,8 +2869,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // ABI. main itself returns void at the lotus level
             // OR Int (per spec/runtime.md), but at LLVM we always
             // emit i32. Flush the dissolve frame first so any
-            // long-lived loci wind down before the process exits.
+            // long-lived loci wind down before the process exits,
+            // then tear down the arena.
             self.flush_dissolve_frame()?;
+            self.emit_arena_destroy()?;
             // Re-open an empty frame so the post-flush bookkeeping
             // (popped in lower_program) stays balanced.
             self.push_dissolve_frame();
@@ -4316,18 +4424,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .struct_ty
             .size_of()
             .expect("violation struct has known size");
-        let malloc_fn = self
-            .module
-            .get_function("malloc")
-            .expect("malloc declared");
-        let viol_raw = self
-            .builder
-            .build_call(malloc_fn, &[size.into()], "viol.malloc")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("malloc returns ptr");
-        let viol_ptr = viol_raw.into_pointer_value();
+        let viol_ptr = self.arena_alloc(size, "viol.alloc")?;
         let locus_str = self.global_string(locus_name);
         let closure_str = self.global_string(closure_name);
         let f0 = self
@@ -4639,34 +4736,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
 
-        // Heap-allocate via malloc so the struct outlives the
+        // Allocate from the lotus arena so the struct outlives the
         // current stack frame. Bus payloads (publisher's frame
         // returns before subscribers finish reading), composite
         // locus param defaults (the default-init expr runs in
         // lower_locus_instantiation, but the resulting pointer is
         // stored on the locus and read later) — both need
-        // long-lived storage. v0 codegen never frees; the regional
-        // allocator will when it lands.
+        // long-lived storage. m19's arena holds them for the
+        // lifetime of the program; m20 will scope to the
+        // enclosing locus.
         let size = info
             .struct_ty
             .size_of()
             .expect("user struct has known size");
-        let malloc_fn = self
-            .module
-            .get_function("malloc")
-            .expect("malloc declared in declare_builtins");
-        let raw = self
-            .builder
-            .build_call(
-                malloc_fn,
-                &[size.into()],
-                &format!("{}.malloc", type_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("malloc returns ptr");
-        let self_ptr = raw.into_pointer_value();
+        let self_ptr = self.arena_alloc(size, &format!("{}.alloc", type_name))?;
         for fname in &info.field_order {
             let expr = by_name
                 .get(fname.as_str())
@@ -4707,6 +4790,48 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_global_string_ptr(s, "s")
             .expect("build_global_string_ptr");
         g.as_pointer_value()
+    }
+
+    /// Allocate `size` bytes from the program's arena (`@lotus.arena.global`).
+    /// Uses 8-byte alignment, matching the natural alignment for
+    /// every scalar lotus type. The returned ptr is alive until
+    /// the arena is destroyed (currently: end of main).
+    ///
+    /// This is the m19 stand-in for the libc `malloc` calls used
+    /// previously. m20 will replace `@lotus.arena.global` with
+    /// the enclosing locus's arena, picked up via `self_ptr`.
+    fn arena_alloc(
+        &mut self,
+        size: inkwell::values::IntValue<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let arena_global = self
+            .module
+            .get_global("lotus.arena.global")
+            .expect("arena global declared");
+        let arena_ptr = self
+            .builder
+            .build_load(ptr_t, arena_global.as_pointer_value(), "arena.cur")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let alloc_fn = self
+            .module
+            .get_function("lotus_arena_alloc")
+            .expect("lotus_arena_alloc declared");
+        let align = i64_t.const_int(8, false);
+        let raw = self
+            .builder
+            .build_call(
+                alloc_fn,
+                &[arena_ptr.into(), size.into(), align.into()],
+                name,
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_arena_alloc returns ptr");
+        Ok(raw.into_pointer_value())
     }
 }
 
