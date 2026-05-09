@@ -1,11 +1,13 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work in a
-new session. State as of m41 (quarantine recovery primitive —
-sticky-flag F.9 sibling to restart) — surface-completeness arc
-through m38, then the substrate-foundation arc with m39 (trigger
-half: birth-epoch closures), m40 (response half: restart with
-cap-2 default), and m41 (quarantine — stop-trying flag). Substrate arc: m19→m23 (region allocator with
+new session. State as of m41b (bus-dispatch quarantine gating —
+quarantine() now also silences bus delivery to the quarantined
+locus). Surface-completeness arc through m38, then the
+substrate-foundation arc with m39 (trigger half: birth-epoch
+closures), m40 (response half: restart with cap-2 default), m41
+(quarantine — stop-trying flag, gates run()), and m41b
+(quarantine extends to bus dispatch). Substrate arc: m19→m23 (region allocator with
 rich/chunked/recognition + per-locus arenas + bus copy), m24
 (`match`), m25 (bimodal schedule-class annotation), m26
 (cooperative scheduler — deferred bus + drain loop), m26b
@@ -34,7 +36,9 @@ primitive — `restart(child);` from inside `on_failure`
 bumps a per-locus counter; within cap the runtime re-runs
 birth + birth-epoch closures on the same memory), m41
 (`quarantine(child);` — sticky flag that gates `run()`
-without affecting drain/dissolve cleanup). **37 of 38
+without affecting drain/dissolve cleanup) + m41b
+(quarantine extends to bus dispatch — quarantined
+subscribers stop receiving messages). **38 of 39
 examples build to native ELF — every single-binary
 example.** Only `trellis-pair` (multi-binary, cross-process
 bus) remains.
@@ -94,9 +98,24 @@ greeting from child: yo
 Phase status:
 - **Phase 0** (spec stabilization) — complete
 - **Phase 1** (lex / parse / typecheck) — complete; F.1–F.18 enforced
-- **Phase 2 v0** (interpreter + bus router) — 37 of 38 example
+- **Phase 2 v0** (interpreter + bus router) — 38 of 39 example
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
+- **Phase 3 milestone 41b** (bus-dispatch quarantine gating)
+  — complete. Closes the v0 gap m41 left open: quarantined
+  subscribers now stop receiving bus messages, completing
+  the "stop trying" semantic. Codegen: dispatch's check_bb
+  null-checks entry.subject before strcmp; quarantine(c)
+  walks bus.entries (bounded by bus.count) and nulls subject
+  of any entry whose self matches the quarantined child.
+  Interpreter: `dispatch_bus` checks
+  `delivery.subscription.locus.quarantined` and skips. The
+  quarantine recovery primitive is now substrate-complete:
+  gates run() (m41) AND bus dispatch (m41b), both via the
+  same `__quarantined` flag. Plus a small dev affordance:
+  `LOTUS_DUMP_IR=1` env var writes the LLVM IR alongside
+  the .o file for debugging codegen issues.
+  New `examples/34-quarantine-bus/`.
 - **Phase 3 milestone 41** (quarantine recovery primitive —
   sticky-flag F.9 sibling) — complete. Where m40's
   `restart(c)` is "give birth another shot," m41's
@@ -900,6 +919,16 @@ m41    m41: quarantine recovery primitive (sticky flag)       (ff525fe)
                             RecoveryOp::Quarantine + skip on
                             Run lifecycle.
                           + examples/33-quarantine
+m41b   m41b: bus-dispatch quarantine gating                   (cbf23cc)
+                          ⇒ Bus dispatch null-checks
+                            entry.subject before strcmp.
+                            quarantine(c) walks bus.entries
+                            and nulls subject of matching
+                            self entries. Interpreter mirrors
+                            via dispatch_bus skipping
+                            quarantined locus. + LOTUS_DUMP_IR
+                            env var for codegen debugging.
+                          + examples/34-quarantine-bus
 ```
 
 The architectural pivots are **m7** (locus → LLVM struct,
@@ -970,7 +999,7 @@ m7 builds on the struct ABI.
 | `starts_with(s, p)` / `contains(s, sub)` for String | ✅ | ✅ |
 | Birth-epoch closures (F.9 invariants checked after `birth()`) | ✅ | ✅ |
 | `restart(child)` recovery (cap-2 birth re-run) | ✅ | ✅ |
-| `quarantine(child)` recovery (sticky flag, gates run) | ✅ | ✅ |
+| `quarantine(child)` recovery (sticky flag, gates run + bus) | ✅ | ✅ |
 | Schedule-class annotation (`: schedule cooperative \| pinned`) | — | ✅ (resolved on LocusInfo) |
 | Cooperative scheduler (deferred bus + drain loop) | — | ✅ |
 | Explicit `yield` primitive | ✅ (no-op) | ✅ (drains queue) |
@@ -1090,6 +1119,8 @@ real-world use case for lotus.
 ## Recent commit history (newest first)
 
 ```
+cbf23cc m41b: bus-dispatch quarantine gating
+366baee CHECKPOINT.md: m41 quarantine refresh
 ff525fe m41: quarantine recovery primitive (sticky-flag F.9)
 0128f56 CHECKPOINT.md: m40 restart recovery refresh
 eab0f96 m40: restart recovery primitive (F.9 response half)
@@ -1149,14 +1180,16 @@ d5afffd Codegen milestone 8: accept() lifecycle + parent-child wiring
 929efa2 Codegen milestone 5: time::sleep on CLOCK_MONOTONIC
 ```
 
-23 commits ahead of origin/master at checkpoint time (origin
+25 commits ahead of origin/master at checkpoint time (origin
 moved up to a5fc8bd / the prior session's tip; this session
 shipped m30 → m34 + the std/* import-resolution fix, then
 m35 for tuples, m36 for string ops, m37 for to_string, m38
 for stdlib helpers, plus a bus-aggregator flex app, then
-m39 for birth-epoch closures, m40 for restart recovery, and
-m41 for quarantine — the F.9 substrate now has both invariant-
-detection and the restart/quarantine response menu).
+m39 for birth-epoch closures, m40 for restart recovery,
+m41 for quarantine, and m41b for bus-dispatch quarantine
+gating — the F.9 substrate now has both invariant-detection
+and the restart/quarantine response menu, with quarantine
+substrate-complete across run() + bus dispatch).
 
 ## Next steps in priority order
 
@@ -1358,6 +1391,9 @@ rm examples/32-restart/main
 cargo run --bin lotus -- build examples/33-quarantine/main.lt
 ./examples/33-quarantine/main            # quarantine: valid=1 closure passes + run() fires; valid=0 fails + quarantined + run() skipped
 rm examples/33-quarantine/main
+cargo run --bin lotus -- build examples/34-quarantine-bus/main.lt
+./examples/34-quarantine-bus/main        # FailingWatcher quarantined and silenced; HealthyWatcher receives all 3 published samples
+rm examples/34-quarantine-bus/main
 ```
 
-If all thirty-seven work, the checkpoint is intact.
+If all thirty-eight work, the checkpoint is intact.
