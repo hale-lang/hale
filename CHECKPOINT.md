@@ -1,20 +1,38 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work
-in a new session. State as of m48 (**Decimal fixed-point** —
-exact i128-backed arithmetic in both backends; pre-m48 Decimal
-was f64-backed and round-tripped through `parse::<f64>()` /
-`%g`. Interpreter uses `DecimalVal { mantissa: i128, scale: u32 }`
-with per-value scale that round-trips source spelling; codegen
-uses i128 with fixed scale 9 and a C-runtime helper splits the
-i128 into hi:lo halves for printf, calling `lotus_decimal_to_string` —
-output trims trailing zeros so the two paths print identically).
-Before that was m47 (**enums** — `type X = enum { A, B };`
-declares a no-payload tagged union; `X::A` constructs a variant
-value; `match` arms accept `X::A -> ...` constructor patterns;
-the typechecker enforces variant-coverage exhaustiveness;
-codegen emits an `i32` tag per variant in declaration order
-and pattern-match lowers to tag equality).
+in a new session. State as of **enums-complete**: a session arc
+that started with no-payload tagged unions (m47) and finished
+with full-fidelity payload-bearing variants. Surface coverage:
+`type X = enum { A, B(Int), C(Decimal, String) };` declares any
+mix of no-payload and payload variants; `X::A` (no-args) and
+`X::B(7)` (with-args) construct; `match` accepts both bare and
+arg-binding constructor patterns plus guards on payload bindings
+(`X::B(n) if n > 10 -> ...`); `==` does deep equality across tag
++ payload fields; `println` and `to_string` render
+`"X::B(7)"` / `"X::C(3.14, hello)"`; bus dispatch carries
+has-payload enum values cleanly; enum values work as struct
+fields, array elements, tuple components, locus params, fn
+args/returns, and `self.field = ...` mutations. Codegen
+representation is per-enum: pure no-payload enums stay as i32
+tags (value semantics), once any variant has a payload the whole
+enum becomes a pointer to `{ i32 tag, [N x i8] body }` (heap
+storage in the current arena). Interpreter mirrors via
+`Value::EnumVariant { enum_name, variant_name, payload: Vec<Value> }`.
+The typechecker resolves `EnumName::Variant` paths and
+`EnumName::Variant(...)` calls to the named enum type; match
+exhaustiveness counts constructor arms (with or without
+sub-patterns) as covering their variant.
+
+Before the enums arc this session shipped m48 (**Decimal
+fixed-point** — exact i128-backed arithmetic in both backends;
+pre-m48 Decimal was f64-backed and round-tripped through
+`parse::<f64>()` / `%g`. Interpreter uses `DecimalVal { mantissa:
+i128, scale: u32 }` with per-value scale that round-trips source
+spelling; codegen uses i128 with fixed scale 9 and a C-runtime
+helper splits the i128 into hi:lo halves for printf, calling
+`lotus_decimal_to_string` — output trims trailing zeros so the
+two paths print identically).
 State before that was m46-vocab (`count()` no-arg + `mean(x)`
 accumulator builtins built on m46's sum accumulator) and m46
 (**closure accumulators** — the streaming-fold half of F.9:
@@ -156,6 +174,89 @@ Phase status:
 - **Phase 2 v0** (interpreter + bus router) — 45 of 46 example
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
+- **Enums arc complete** (m47 base + m47-followups + m47-payloads
+  + m47-payloads-followups). Spans the whole toolchain and lands
+  full substrate parity between interpreter and codegen for any
+  enum a v0.1 program is likely to need.
+
+  Surface coverage:
+  - Decl: `type X = enum { A, B(Int), C(Decimal, String) };` —
+    any mix of no-payload and payload-bearing variants.
+  - Construction: `X::A` for no-args (parsed as `Expr::Path`),
+    `X::B(7)` for with-args (parsed as `Expr::Call` with the
+    Path as callee).
+  - Match: bare `X::A -> ...` and arg-binding `X::B(n) -> ...`
+    constructor patterns; payload bindings name local values
+    inside the arm body. Guards on payload bindings work (`X::B(n)
+    if n > 10 -> ...`). Match exhaustiveness checks variant
+    coverage.
+  - Equality: `==` / `!=` are deep — tag-equality gate then
+    per-variant per-field comparison; `Result::Ok(1) ==
+    Result::Ok(2)` correctly returns false in both backends. v0.1
+    no Ord operators (declaration order isn't meaningful).
+  - Display: `println(v)` and `to_string(v)` produce
+    `"X::B(7)"` / `"X::C(3.14, hello)"`; output matches between
+    backends byte-for-byte.
+  - Composite contexts: works as struct field, array element,
+    tuple component, locus param (with default expressions),
+    function arg, function return, `self.field = ...` mutation,
+    bus payload (publish + subscribe).
+
+  Codegen representation is per-enum:
+  - **Pure no-payload enums** (every variant has zero fields)
+    stay as i32 tag values — pure value semantics, no allocation.
+    Same as the original m47 ship.
+  - **Has-payload enums** (any variant has fields) lower to a
+    pointer to `{ i32 tag, [N x i8] body }` allocated in the
+    current arena. N = max payload byte size across variants
+    (8-byte stride per field, 16 for Decimal). Construction
+    stores the tag at slot 0 and packs payload fields into the
+    body; pattern matching loads the tag through the pointer and
+    on match reads each field back out at its offset for the
+    arm's bindings. Tag-equality, println, to_string, and bus
+    dispatch all use the pointer form. Switch-based dispatch in
+    the deep-eq and to-string helpers, with PHIs joining
+    per-variant results.
+
+  Interpreter representation: `Value::EnumVariant { enum_name,
+  variant_name, payload: Vec<Value> }`. `Expr::Path` covers
+  no-args (returns variant with empty payload); `Expr::Call`
+  with a 2-segment Path callee covers with-args (evaluates each
+  arg, collects into payload). `pattern_match`'s constructor arm
+  binds each Wildcard / Binding sub-pattern against the
+  corresponding payload position. `values_equal` does
+  tag-and-deep-payload comparison; `Value::display` renders
+  `EnumName::VariantName(p0, p1, ...)`; `to_string` builtin and
+  `~~` closure assertions go through the same path.
+
+  Typechecker: `Expr::Path` (2-segment) and `Expr::Call` (with
+  a 2-segment Path callee) resolving against the top scope's
+  `TypeKind::Enum` entries return `Ty::Named(enum)`.
+  `match_is_exhaustive` treats any constructor arm as covering
+  its variant (the inner Wildcard / Binding sub-patterns are
+  catch-alls over the payload).
+
+  New helpers along the way:
+  - `lotus_decimal_to_string` / `lotus_str_from_decimal` for the
+    Decimal payload print path (m48; reused by enum-render).
+  - `lotus.enum.<E>.names` global per enum: `[N x ptr]` of
+    `"EnumName::VariantName"` strings indexed by tag, used by
+    no-payload to_string and seeded by `enum_names_array`.
+  - `enum_storage_struct(info)`, `lower_enum_variant_alloc`,
+    `load_enum_tag`, `load_enum_payload_fields`,
+    `lower_enum_deep_eq`, `lower_enum_with_payload_to_string`,
+    `value_to_string`, `str_concat`.
+  - `lotus_str_eq` (already existed for String ==) now also fires
+    from `lower_match_eq_cmp`'s String / Time arm — used by both
+    `match s { "hello" -> ... }` and by the per-field comparison
+    inside `lower_enum_deep_eq`.
+
+  Examples: 43-enums (pure no-payload Light state machine; uses
+  direct-println of an enum value), 45-enum-payloads (Result +
+  Event mixing no-payload Halt, single-arg Tick, multi-arg
+  Trade(Decimal, Int); exercises match, direct println,
+  deep ==).
+
 - **Phase 3 milestone 48** (Decimal fixed-point) — complete.
   v0 stored Decimal as a String (interpreter) / f64 (codegen) and
   round-tripped through `parse::<f64>()` for arithmetic, masking
