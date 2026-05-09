@@ -277,6 +277,29 @@ impl Interpreter {
                 self.env.define(&name.name, v);
                 Ok(())
             }
+            Stmt::LetTuple { names, value, .. } => {
+                let v = self.eval_expr(value)?;
+                let parts = match v {
+                    Value::Tuple(parts) => parts,
+                    other => {
+                        return Err(Signal::Error(format!(
+                            "let-tuple destructure: rhs is {}, not a tuple",
+                            other.type_name()
+                        )));
+                    }
+                };
+                if parts.len() != names.len() {
+                    return Err(Signal::Error(format!(
+                        "let-tuple destructure: expected {} elements, got {}",
+                        names.len(),
+                        parts.len()
+                    )));
+                }
+                for (n, val) in names.iter().zip(parts.into_iter()) {
+                    self.env.define(&n.name, val);
+                }
+                Ok(())
+            }
             Stmt::Assign { target, op, value, .. } => {
                 let v = self.eval_expr(value)?;
                 self.assign_lvalue(target, *op, v)
@@ -798,6 +821,24 @@ impl Interpreter {
 
     fn read_field(&mut self, v: &Value, name: &str) -> Result<Value, Signal> {
         match v {
+            // Numeric tuple field access: `t.0`, `t.1`. The
+            // parser stores the digit string as the field name.
+            Value::Tuple(parts) => {
+                if let Ok(i) = name.parse::<usize>() {
+                    if i < parts.len() {
+                        return Ok(parts[i].clone());
+                    }
+                    return Err(Signal::Error(format!(
+                        "tuple field index {} out of range (arity {})",
+                        i,
+                        parts.len()
+                    )));
+                }
+                Err(Signal::Error(format!(
+                    "tuple field access expects a numeric index; got `.{}`",
+                    name
+                )))
+            }
             Value::Struct { fields, .. } => fields
                 .borrow()
                 .get(name)

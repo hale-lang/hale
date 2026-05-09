@@ -1,0 +1,76 @@
+// 26-tuples — tuple values + tuple destructuring + tuple
+// patterns in match.
+//
+// Tuples are anonymous heterogeneous records — fixed arity at
+// compile time, no field names. They unblock multi-value return
+// without forcing the caller to invent a one-off `type` decl,
+// and they give match a way to test multiple scrutinees in a
+// single arm. v0 surface:
+//
+//   let pair = (3, 7);             // tuple literal
+//   let (a, b) = pair;             // flat destructure
+//   pair.0;  pair.1;               // numeric field access
+//   match (x, y) {
+//       (0, _) -> ...,             // literal sub-pattern
+//       (a, b) if a > b -> ...,    // bind + guard
+//       _ -> ...,
+//   }
+//
+// Per the user's lock-in: tuples must have at least two
+// elements (no unit `()`) and `let` destructuring is supported
+// in addition to `match`. Nested tuple sub-patterns aren't
+// covered by v0 — flat only — because every shape we've needed
+// in the substrate lives at one level. They land if a workload
+// asks.
+
+fn divmod(a: Int, b: Int) -> (Int, Int) {
+    return (a / b, a % b);
+}
+
+fn classify(x: Int, y: Int) -> String {
+    // Tuple match against a (sign(x), sign(y))-shaped pair.
+    // The match arms test literal sub-patterns, then fall
+    // through to a wildcard.
+    match (x, y) {
+        (0, 0) -> {
+            return "both zero";
+        },
+        (0, _) -> {
+            return "x is zero";
+        },
+        (_, 0) -> {
+            return "y is zero";
+        },
+        (a, b) if a == b -> {
+            return "equal";
+        },
+        _ -> {
+            return "general";
+        },
+    }
+    return "unreachable";
+}
+
+fn main() {
+    // 1. Multi-value return + numeric field access.
+    let result = divmod(17, 5);
+    println("17 / 5 = ", result.0);
+    println("17 % 5 = ", result.1);
+
+    // 2. Flat destructure on the same pair.
+    let (q, r) = divmod(23, 4);
+    println("23 / 4 = ", q);
+    println("23 % 4 = ", r);
+
+    // 3. Tuple as a let-bound value (no fn intermediary).
+    let pair = (10, 20);
+    let (a, b) = pair;
+    println("a + b = ", a + b);
+
+    // 4. match with tuple patterns + guards.
+    println("(0, 0) -> ", classify(0, 0));
+    println("(0, 7) -> ", classify(0, 7));
+    println("(3, 0) -> ", classify(3, 0));
+    println("(5, 5) -> ", classify(5, 5));
+    println("(2, 9) -> ", classify(2, 9));
+}

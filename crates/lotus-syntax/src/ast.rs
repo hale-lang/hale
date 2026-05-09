@@ -425,6 +425,18 @@ pub enum Stmt {
         value: Expr,
         span: Span,
     },
+    /// Tuple-destructuring let: `let (a, b) = pair;` (or with
+    /// `mut`). Flat only — nested patterns wait until a real
+    /// need surfaces. The value's type must be a tuple of
+    /// matching arity; each `names[i]` binds the i-th component
+    /// in the surrounding scope.
+    LetTuple {
+        is_mut: bool,
+        names: Vec<Ident>,
+        ty: Option<TypeExpr>,
+        value: Expr,
+        span: Span,
+    },
     Assign {
         target: LValue,
         op: AssignOp,

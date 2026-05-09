@@ -463,6 +463,42 @@ impl<'a> Checker<'a> {
                 };
                 self.locals.insert(&name.name, LocalSym { ty: bound });
             }
+            Stmt::LetTuple { names, ty, value, .. } => {
+                let got = self.check_expr(value);
+                let elem_tys: Vec<Ty> = match (&got, ty) {
+                    (Ty::Tuple(parts), _) if parts.len() == names.len() => {
+                        parts.clone()
+                    }
+                    (Ty::Tuple(parts), _) => {
+                        self.diags.push(Diag::ty(
+                            value.span(),
+                            format!(
+                                "let-tuple: expected {} elements, got `{}`",
+                                names.len(),
+                                got.display()
+                            ),
+                        ));
+                        // Best-effort: pad / truncate so subsequent
+                        // typechecking can still proceed.
+                        let mut v = parts.clone();
+                        v.resize(names.len(), Ty::Unknown);
+                        v
+                    }
+                    (other, _) => {
+                        self.diags.push(Diag::ty(
+                            value.span(),
+                            format!(
+                                "let-tuple: rhs is `{}`, not a tuple",
+                                other.display()
+                            ),
+                        ));
+                        vec![Ty::Unknown; names.len()]
+                    }
+                };
+                for (n, t) in names.iter().zip(elem_tys.iter()) {
+                    self.locals.insert(&n.name, LocalSym { ty: t.clone() });
+                }
+            }
             Stmt::Assign { target, value, .. } => {
                 let got = self.check_expr(value);
                 let want = self.lvalue_ty(target);
@@ -660,6 +696,17 @@ impl<'a> Checker<'a> {
     /// perspective params.
     fn field_ty(&self, ty: &Ty, name: &str) -> Option<Ty> {
         match ty {
+            // Numeric tuple field access: `t.0`, `t.1`. Parser
+            // stores the digit string as the field name, so we
+            // recognize it as a usize index here.
+            Ty::Tuple(parts) => {
+                if let Ok(i) = name.parse::<usize>() {
+                    if i < parts.len() {
+                        return Some(parts[i].clone());
+                    }
+                }
+                None
+            }
             Ty::Named(n) => match self.top.lookup(n)? {
                 TopSymbol::Type(info) => match &info.kind {
                     TypeKind::Struct(fields) => fields

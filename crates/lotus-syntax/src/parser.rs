@@ -1252,6 +1252,33 @@ impl Parser {
     fn parse_let_stmt(&mut self) -> Result<Stmt, Diag> {
         let kw = self.expect(TokenKind::Let, "let")?;
         let is_mut = self.eat(&TokenKind::Mut);
+        // Tuple destructure form: `let (a, b) = expr;`.
+        if self.at(&TokenKind::LParen) {
+            self.bump();
+            let mut names = vec![self.expect_ident("variable name")?];
+            while self.eat(&TokenKind::Comma) {
+                if self.at(&TokenKind::RParen) {
+                    break;
+                }
+                names.push(self.expect_ident("variable name")?);
+            }
+            self.expect(TokenKind::RParen, ")")?;
+            let ty = if self.eat(&TokenKind::Colon) {
+                Some(self.parse_type_expr()?)
+            } else {
+                None
+            };
+            self.expect(TokenKind::Eq, "=")?;
+            let value = self.parse_expr()?;
+            let semi = self.expect(TokenKind::Semi, ";")?;
+            return Ok(Stmt::LetTuple {
+                is_mut,
+                names,
+                ty,
+                value,
+                span: kw.span.merge(semi.span),
+            });
+        }
         let name = self.expect_ident("variable name")?;
         let ty = if self.eat(&TokenKind::Colon) {
             Some(self.parse_type_expr()?)
@@ -1637,7 +1664,19 @@ impl Parser {
             match self.peek() {
                 TokenKind::Dot => {
                     self.bump();
-                    let name = self.expect_member_name()?;
+                    // Allow numeric tuple-field access: `t.0`,
+                    // `t.1`, etc. The token shows up as IntLit;
+                    // we treat it as an Ident with the digit
+                    // string as the name, so codegen / typecheck
+                    // can detect tuple-shaped field access by
+                    // checking `name.parse::<usize>()`.
+                    let name = if let TokenKind::IntLit(n) = self.peek().clone() {
+                        let span = self.peek_token().span;
+                        self.bump();
+                        Ident { name: n.to_string(), span }
+                    } else {
+                        self.expect_member_name()?
+                    };
                     let span = expr.span().merge(name.span);
                     expr = Expr::Field {
                         receiver: Box::new(expr),

@@ -68,6 +68,14 @@ enum LotusType {
     /// would need a length field + reallocation policy that the
     /// region allocator's bump-list shape doesn't fit cleanly.
     Array(Box<LotusType>, u64),
+    /// Tuple `(T1, T2, ...)`. Anonymous heterogeneous record;
+    /// arity-fixed at compile time, no field names. Lowered as
+    /// a pointer to an arena-allocated anonymous LLVM struct.
+    /// The component types live in the Vec, in declaration
+    /// order, and access happens through numeric field syntax
+    /// (`t.0`, `t.1`, ...) or via tuple-destructuring let /
+    /// match patterns.
+    Tuple(Vec<LotusType>),
 }
 
 /// Did the last lowered statement leave the current basic block
@@ -1718,6 +1726,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 };
                 Ok(LotusType::Array(Box::new(elem_ty), n))
             }
+            TypeExpr::Tuple(parts, _) => {
+                if parts.len() < 2 {
+                    return Err(CodegenError::Unsupported(format!(
+                        "tuple type must have at least 2 elements; got {}",
+                        parts.len()
+                    )));
+                }
+                let mut elem_tys = Vec::with_capacity(parts.len());
+                for p in parts {
+                    elem_tys.push(self.type_expr_to_lotus(p)?);
+                }
+                Ok(LotusType::Tuple(elem_tys))
+            }
             other => Err(CodegenError::Unsupported(format!(
                 "type form {:?} in signature",
                 std::mem::discriminant(other)
@@ -2239,7 +2260,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 | LotusType::Time
                                 | LotusType::LocusRef(_)
                                 | LotusType::TypeRef(_)
-                                | LotusType::Array(_, _) => self
+                                | LotusType::Array(_, _)
+                                | LotusType::Tuple(_) => self
                                     .context
                                     .ptr_type(AddressSpace::default())
                                     .fn_type(&llvm_param_tys, false),
@@ -2378,7 +2400,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 | LotusType::Time
                                 | LotusType::LocusRef(_)
                                 | LotusType::TypeRef(_)
-                                | LotusType::Array(_, _) => self
+                                | LotusType::Array(_, _)
+                                | LotusType::Tuple(_) => self
                                     .context
                                     .ptr_type(AddressSpace::default())
                                     .fn_type(&llvm_param_tys, false),
@@ -2869,7 +2892,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Some(LotusType::Time)
             | Some(LotusType::LocusRef(_))
             | Some(LotusType::TypeRef(_))
-            | Some(LotusType::Array(_, _)) => self
+            | Some(LotusType::Array(_, _))
+            | Some(LotusType::Tuple(_)) => self
                 .context
                 .ptr_type(AddressSpace::default())
                 .fn_type(&llvm_param_tys, false),
@@ -3098,6 +3122,58 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_store(alloca, val)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 scope.locals.insert(name.name.clone(), (alloca, ty));
+                Ok(BlockEnd::Open)
+            }
+            Stmt::LetTuple { names, value, .. } => {
+                let (tup_val, tup_ty) = self.lower_expr(value, scope)?;
+                let elem_tys = match &tup_ty {
+                    LotusType::Tuple(ts) => ts.clone(),
+                    other => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "let-tuple destructure expects a tuple rhs, \
+                             got {:?}",
+                            other
+                        )));
+                    }
+                };
+                if elem_tys.len() != names.len() {
+                    return Err(CodegenError::Unsupported(format!(
+                        "let-tuple destructure: expected {} elements, \
+                         got {}",
+                        names.len(),
+                        elem_tys.len()
+                    )));
+                }
+                let storage_ty = self.llvm_tuple_storage_type(&elem_tys);
+                let tup_ptr = tup_val.into_pointer_value();
+                let i32_t = self.context.i32_type();
+                for (i, (n, et)) in
+                    names.iter().zip(elem_tys.iter()).enumerate()
+                {
+                    let slot = unsafe {
+                        self.builder
+                            .build_gep(
+                                storage_ty,
+                                tup_ptr,
+                                &[
+                                    i32_t.const_int(0, false),
+                                    i32_t.const_int(i as u64, false),
+                                ],
+                                &format!("tup.{}.ptr", i),
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    };
+                    let elem_llvm = self.llvm_basic_type(et);
+                    let loaded = self
+                        .builder
+                        .build_load(elem_llvm, slot, &format!("tup.{}", i))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let alloca = self.alloca_for(et, &n.name)?;
+                    self.builder
+                        .build_store(alloca, loaded)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    scope.locals.insert(n.name.clone(), (alloca, et.clone()));
+                }
                 Ok(BlockEnd::Open)
             }
             Stmt::Assign { target, op, value, .. } => {
@@ -3437,6 +3513,45 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(BlockEnd::Open)
     }
 
+    /// Build the equality comparison used by Literal patterns
+    /// (top-level and tuple sub-pattern). Int / Duration / Bool
+    /// use integer EQ; Float / Decimal use ordered float EQ. Other
+    /// types (String, Time, LocusRef, TypeRef, Array, Tuple) are
+    /// not first-class match-on-literal targets in v0; the typecheck
+    /// ahead of codegen rejects them already.
+    fn lower_match_eq_cmp(
+        &mut self,
+        scrut_val: BasicValueEnum<'ctx>,
+        lit_val: BasicValueEnum<'ctx>,
+        ty: &LotusType,
+        name: &str,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        match ty {
+            LotusType::Int | LotusType::Duration | LotusType::Bool => self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    scrut_val.into_int_value(),
+                    lit_val.into_int_value(),
+                    name,
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
+            LotusType::Float | LotusType::Decimal => self
+                .builder
+                .build_float_compare(
+                    inkwell::FloatPredicate::OEQ,
+                    scrut_val.into_float_value(),
+                    lit_val.into_float_value(),
+                    name,
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
+            other => Err(CodegenError::Unsupported(format!(
+                "match on {:?} not supported in v0",
+                other
+            ))),
+        }
+    }
+
     /// Lower `match scrutinee { arms... }`. v0 patterns:
     /// - `Literal` (Int / Bool / Duration / Decimal / Float / String) —
     ///   compare scrutinee against literal value, branch.
@@ -3492,12 +3607,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             };
             let pattern_target = guard_bb.unwrap_or(body_bb);
 
-            // Track an optional binding the arm body needs to see.
-            // (name, value-to-store, type) — applied at
+            // Track bindings the arm body needs to see. Each entry
+            // is (name, value-to-store, type). For the m24/m29
+            // surface (Wildcard / Binding / Literal) this list has
+            // at most one entry; m35 tuple patterns introduce
+            // arbitrary sub-bindings, one per sub-pattern's
+            // Binding sub-pattern. Entries are applied at
             // pattern_target's start (guard_bb if guarded,
             // else body_bb).
-            let mut binding: Option<(String, BasicValueEnum<'ctx>, LotusType)> =
-                None;
+            let mut bindings: Vec<(String, BasicValueEnum<'ctx>, LotusType)> =
+                Vec::new();
 
             match &arm.pattern {
                 Pattern::Wildcard(_) => {
@@ -3506,7 +3625,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
                 Pattern::Binding(ident) => {
-                    binding = Some((
+                    bindings.push((
                         ident.name.clone(),
                         scrutinee_val,
                         scrutinee_ty.clone(),
@@ -3525,60 +3644,157 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             lit_ty, scrutinee_ty
                         )));
                     }
-                    let cond = match lit_ty {
-                        LotusType::Int | LotusType::Duration | LotusType::Bool => {
-                            self.builder
-                                .build_int_compare(
-                                    inkwell::IntPredicate::EQ,
-                                    scrutinee_val.into_int_value(),
-                                    lit_val.into_int_value(),
-                                    &format!("match.arm{}.cmp", i),
-                                )
-                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                        }
-                        LotusType::Float | LotusType::Decimal => self
-                            .builder
-                            .build_float_compare(
-                                inkwell::FloatPredicate::OEQ,
-                                scrutinee_val.into_float_value(),
-                                lit_val.into_float_value(),
-                                &format!("match.arm{}.cmp", i),
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
-                        other => {
-                            return Err(CodegenError::Unsupported(format!(
-                                "match on {:?} not supported in v0",
-                                other
-                            )));
-                        }
-                    };
+                    let cond = self.lower_match_eq_cmp(
+                        scrutinee_val,
+                        lit_val,
+                        &lit_ty,
+                        &format!("match.arm{}.cmp", i),
+                    )?;
                     self.builder
                         .build_conditional_branch(cond, pattern_target, next_bb)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
-                Pattern::Tuple(_, _) | Pattern::Constructor { .. } => {
+                Pattern::Tuple(sub_patterns, _) => {
+                    // m35: destructure scrutinee as a tuple, then
+                    // apply each sub-pattern. v0 supports flat
+                    // sub-patterns: Wildcard / Binding / Literal.
+                    // Nested tuple patterns aren't needed for the
+                    // shapes the language exposes today.
+                    let elem_tys = match &scrutinee_ty {
+                        LotusType::Tuple(ts) => ts.clone(),
+                        other => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "tuple pattern against non-tuple \
+                                 scrutinee {:?}",
+                                other
+                            )));
+                        }
+                    };
+                    if elem_tys.len() != sub_patterns.len() {
+                        return Err(CodegenError::Unsupported(format!(
+                            "tuple pattern arity {} != scrutinee tuple \
+                             arity {}",
+                            sub_patterns.len(),
+                            elem_tys.len()
+                        )));
+                    }
+                    let storage_ty = self.llvm_tuple_storage_type(&elem_tys);
+                    let i32_t = self.context.i32_type();
+                    let scrut_ptr = scrutinee_val.into_pointer_value();
+                    let bool_t = self.context.bool_type();
+                    let mut acc_cond: inkwell::values::IntValue<'ctx> =
+                        bool_t.const_int(1, false);
+                    for (j, sub) in sub_patterns.iter().enumerate() {
+                        let slot = unsafe {
+                            self.builder
+                                .build_gep(
+                                    storage_ty,
+                                    scrut_ptr,
+                                    &[
+                                        i32_t.const_int(0, false),
+                                        i32_t.const_int(j as u64, false),
+                                    ],
+                                    &format!("match.arm{}.tup.{}.ptr", i, j),
+                                )
+                                .map_err(|e| {
+                                    CodegenError::LlvmEmit(e.to_string())
+                                })?
+                        };
+                        let elem_llvm = self.llvm_basic_type(&elem_tys[j]);
+                        let elem_val = self
+                            .builder
+                            .build_load(
+                                elem_llvm,
+                                slot,
+                                &format!("match.arm{}.tup.{}", i, j),
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        match sub {
+                            Pattern::Wildcard(_) => {}
+                            Pattern::Binding(ident) => {
+                                bindings.push((
+                                    ident.name.clone(),
+                                    elem_val,
+                                    elem_tys[j].clone(),
+                                ));
+                            }
+                            Pattern::Literal(lit, span) => {
+                                let (lit_val, lit_ty) = self.lower_expr(
+                                    &Expr::Literal(lit.clone(), *span),
+                                    scope,
+                                )?;
+                                if lit_ty != elem_tys[j] {
+                                    return Err(CodegenError::Unsupported(
+                                        format!(
+                                            "tuple sub-pattern at index {} \
+                                             type {:?} doesn't match field \
+                                             type {:?}",
+                                            j, lit_ty, elem_tys[j]
+                                        ),
+                                    ));
+                                }
+                                let sub_cond = self.lower_match_eq_cmp(
+                                    elem_val,
+                                    lit_val,
+                                    &lit_ty,
+                                    &format!(
+                                        "match.arm{}.tup.{}.cmp",
+                                        i, j
+                                    ),
+                                )?;
+                                acc_cond = self
+                                    .builder
+                                    .build_and(
+                                        acc_cond,
+                                        sub_cond,
+                                        &format!(
+                                            "match.arm{}.tup.{}.acc",
+                                            i, j
+                                        ),
+                                    )
+                                    .map_err(|e| {
+                                        CodegenError::LlvmEmit(e.to_string())
+                                    })?;
+                            }
+                            Pattern::Tuple(_, _)
+                            | Pattern::Constructor { .. } => {
+                                return Err(CodegenError::Unsupported(
+                                    "nested tuple / constructor sub-pattern \
+                                     not yet lowered"
+                                        .into(),
+                                ));
+                            }
+                        }
+                    }
+                    self.builder
+                        .build_conditional_branch(acc_cond, pattern_target, next_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Pattern::Constructor { .. } => {
                     return Err(CodegenError::Unsupported(
-                        "tuple / constructor patterns not lowered (deferred)"
+                        "constructor patterns not lowered (deferred)"
                             .into(),
                     ));
                 }
             }
 
-            // Helper closure semantics inlined: install binding
-            // (alloca, store, scope.insert) and return the saved
-            // prior so we can restore on arm exit.
-            let install_binding = |this: &mut Self,
-                                   scope: &mut Scope<'ctx>,
-                                   binding: &Option<(
+            // Helper closure semantics inlined: install the
+            // bindings list (alloca, store, scope.insert) and
+            // return the saved priors so we can restore on arm
+            // exit.
+            let install_bindings = |this: &mut Self,
+                                    scope: &mut Scope<'ctx>,
+                                    bindings: &[(
                 String,
                 BasicValueEnum<'ctx>,
                 LotusType,
-            )>|
+            )]|
              -> Result<
-                Option<(String, Option<(PointerValue<'ctx>, LotusType)>)>,
+                Vec<(String, Option<(PointerValue<'ctx>, LotusType)>)>,
                 CodegenError,
             > {
-                if let Some((bname, bval, bty)) = binding {
+                let mut out = Vec::with_capacity(bindings.len());
+                for (bname, bval, bty) in bindings {
                     let alloca = this.alloca_for(bty, bname)?;
                     this.builder
                         .build_store(alloca, *bval)
@@ -3587,18 +3803,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         bname.clone(),
                         (alloca, bty.clone()),
                     );
-                    Ok(Some((bname.clone(), prior)))
-                } else {
-                    Ok(None)
+                    out.push((bname.clone(), prior));
                 }
+                Ok(out)
             };
 
-            let saved: Option<(String, Option<(PointerValue<'ctx>, LotusType)>)>;
+            let saved: Vec<(String, Option<(PointerValue<'ctx>, LotusType)>)>;
             if let (Some(gbb), Some(guard_expr)) = (guard_bb, arm.guard.as_ref()) {
                 // Guard-check path: install binding so the guard
                 // can see it, evaluate the guard, cond-branch.
                 self.builder.position_at_end(gbb);
-                saved = install_binding(self, scope, &binding)?;
+                saved = install_bindings(self, scope, &bindings)?;
                 let (gv, gty) = self.lower_expr(guard_expr, scope)?;
                 if gty != LotusType::Bool {
                     return Err(CodegenError::Unsupported(format!(
@@ -3616,7 +3831,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder.position_at_end(body_bb);
             } else {
                 self.builder.position_at_end(body_bb);
-                saved = install_binding(self, scope, &binding)?;
+                saved = install_bindings(self, scope, &bindings)?;
             }
 
             let body_end = match &arm.body {
@@ -3639,9 +3854,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 MatchArmBody::Block(b) => self.lower_block(b, scope)?,
             };
 
-            // Restore the previous binding if we shadowed one;
-            // otherwise drop the binding entry entirely.
-            if let Some((bname, prior)) = saved {
+            // Restore previous bindings (if any were shadowed) in
+            // reverse order so a Pattern that introduced two
+            // bindings of the same name (rare but legal) restores
+            // to the original outer binding.
+            for (bname, prior) in saved.into_iter().rev() {
                 match prior {
                     Some(p) => {
                         scope.locals.insert(bname, p);
@@ -4253,7 +4470,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | LotusType::Time
             | LotusType::LocusRef(_)
             | LotusType::TypeRef(_)
-            | LotusType::Array(_, _) => self
+            | LotusType::Array(_, _)
+            | LotusType::Tuple(_) => self
                 .builder
                 .build_alloca(self.context.ptr_type(AddressSpace::default()), name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
@@ -4371,6 +4589,47 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // `self.kernel.multiplier`, expressions returning
                 // a TypeRef value, etc.
                 let (recv_val, recv_ty) = self.lower_expr(receiver, scope)?;
+                // m35: numeric tuple field access (`t.0`, `t.1`).
+                // The parser stores the digit string as the field
+                // name; if the receiver is a tuple, GEP+load.
+                if let LotusType::Tuple(elems) = &recv_ty {
+                    let i = name.name.parse::<usize>().map_err(|_| {
+                        CodegenError::Unsupported(format!(
+                            "tuple field access expects a numeric index; \
+                             got `.{}`",
+                            name.name
+                        ))
+                    })?;
+                    if i >= elems.len() {
+                        return Err(CodegenError::Unsupported(format!(
+                            "tuple field index {} out of range (arity {})",
+                            i,
+                            elems.len()
+                        )));
+                    }
+                    let storage_ty = self.llvm_tuple_storage_type(elems);
+                    let i32_t = self.context.i32_type();
+                    let recv_ptr = recv_val.into_pointer_value();
+                    let slot = unsafe {
+                        self.builder
+                            .build_gep(
+                                storage_ty,
+                                recv_ptr,
+                                &[
+                                    i32_t.const_int(0, false),
+                                    i32_t.const_int(i as u64, false),
+                                ],
+                                &format!("tup.{}.ptr", i),
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    };
+                    let elem_llvm = self.llvm_basic_type(&elems[i]);
+                    let val = self
+                        .builder
+                        .build_load(elem_llvm, slot, &format!("tup.{}", i))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    return Ok((val, elems[i].clone()));
+                }
                 let (struct_ty, fields, ref_kind) = match &recv_ty {
                     LotusType::LocusRef(n) => {
                         let info = self
@@ -4564,6 +4823,58 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Ok((arr_ptr.into(), LotusType::Array(Box::new(elem_ty), n)))
             }
+            Expr::Tuple(parts, _) => {
+                // m35: tuple literal `(a, b, ...)`. Lower each
+                // component, allocate an anonymous struct in the
+                // arena (sized to fit the components), and store
+                // each component at its slot. Typecheck rejects
+                // 0- and 1-element tuples upstream; we still
+                // guard here defensively.
+                if parts.len() < 2 {
+                    return Err(CodegenError::Unsupported(format!(
+                        "tuple literal must have at least 2 elements; \
+                         got {}",
+                        parts.len()
+                    )));
+                }
+                let mut elem_vals: Vec<BasicValueEnum<'ctx>> =
+                    Vec::with_capacity(parts.len());
+                let mut elem_tys: Vec<LotusType> =
+                    Vec::with_capacity(parts.len());
+                for p in parts {
+                    let (v, t) = self.lower_expr(p, scope)?;
+                    elem_vals.push(v);
+                    elem_tys.push(t);
+                }
+                let storage_ty = self.llvm_tuple_storage_type(&elem_tys);
+                let bytes = storage_ty
+                    .size_of()
+                    .expect("tuple storage type has known size");
+                let tup_ptr =
+                    self.arena_alloc(bytes, "tuple.literal.alloc")?;
+                let i32_t = self.context.i32_type();
+                for (i, v) in elem_vals.iter().enumerate() {
+                    let slot = unsafe {
+                        self.builder
+                            .build_gep(
+                                storage_ty,
+                                tup_ptr,
+                                &[
+                                    i32_t.const_int(0, false),
+                                    i32_t.const_int(i as u64, false),
+                                ],
+                                &format!("tuple.lit.slot{}", i),
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?
+                    };
+                    self.builder
+                        .build_store(slot, *v)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Ok((tup_ptr.into(), LotusType::Tuple(elem_tys)))
+            }
             Expr::Index { receiver, index, .. } => {
                 let (recv_val, recv_ty) = self.lower_expr(receiver, scope)?;
                 let (idx_val, idx_ty) = self.lower_expr(index, scope)?;
@@ -4661,10 +4972,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | LotusType::Time
             | LotusType::LocusRef(_)
             | LotusType::TypeRef(_)
-            | LotusType::Array(_, _) => {
+            | LotusType::Array(_, _)
+            | LotusType::Tuple(_) => {
                 self.context.ptr_type(AddressSpace::default()).into()
             }
         }
+    }
+
+    /// Anonymous LLVM struct for a tuple's storage layout. Used
+    /// at tuple-literal allocation time + at GEP time when
+    /// reading a numeric tuple field, destructuring in a let,
+    /// or matching a tuple pattern. Element types come from
+    /// `llvm_basic_type` so nested tuples / arrays / records are
+    /// stored as pointers (matching the rest of the LotusType
+    /// representation).
+    fn llvm_tuple_storage_type(
+        &self,
+        elems: &[LotusType],
+    ) -> inkwell::types::StructType<'ctx> {
+        let field_tys: Vec<inkwell::types::BasicTypeEnum<'ctx>> = elems
+            .iter()
+            .map(|t| self.llvm_basic_type(t))
+            .collect();
+        self.context.struct_type(&field_tys, false)
     }
 
     /// LLVM `[N x T]` for the element type + size of an Array
@@ -4962,6 +5292,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     return Err(CodegenError::Unsupported(
                         "println of an array — print individual \
                          elements via indexing or iteration".into(),
+                    ));
+                }
+                LotusType::Tuple(_) => {
+                    return Err(CodegenError::Unsupported(
+                        "println of a tuple — print individual \
+                         components via .0 / .1 / let-destructure".into(),
                     ));
                 }
             }
