@@ -1,21 +1,23 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work in a
-new session. State as of codegen milestone 28b (cross-thread
-bus mailboxes). The full substrate arc landed across this
-session: m19→m23 (region allocator with rich/chunked/recognition
+new session. State as of codegen milestone 28c (CPU-core
+affinity). The full substrate arc landed across this session:
+m19→m23 (region allocator with rich/chunked/recognition
 strategies + per-locus arenas + bus copy semantics), m24
-(`match` codegen), m25 (bimodal schedule-class annotation),
-m26 (cooperative scheduler semantics — deferred bus dispatch +
-drain loop), m26b (explicit `yield`), m27 (pinned-thread
-spawning via pthread_create, run-only), m28a (full pinned
-lifecycle — birth/run/drain/dissolve all on the pinned thread),
-m28b (cross-thread bus mailboxes — pinned loci can subscribe
-and publish; cells route via per-locus mutex+condvar mailboxes
-with inline payloads; coordinated shutdown via
-shutdown-flag-then-join). **23 of 24 examples build to native
-ELF — every single-binary example.** Only `trellis-pair`
-(multi-binary, cross-process bus) remains.
+(`match` codegen), m25 (bimodal schedule-class annotation), m26
+(cooperative scheduler semantics — deferred bus dispatch + drain
+loop), m26b (explicit `yield`), m27 (pinned-thread spawning via
+pthread_create, run-only), m28a (full pinned lifecycle —
+birth/run/drain/dissolve all on the pinned thread), m28b
+(cross-thread bus mailboxes — pinned loci can subscribe and
+publish; cells route via per-locus mutex+condvar mailboxes with
+inline payloads; coordinated shutdown via
+shutdown-flag-then-join), m28c (optional `: schedule
+pinned(core = N)` for `pthread_setaffinity_np` core pinning).
+**24 of 25 examples build to native ELF — every single-binary
+example.** Only `trellis-pair` (multi-binary, cross-process bus)
+remains.
 
 **The Design / lotus is now visible at the codegen substrate.**
 Same source, two execution shapes (cooperative / pinned) and
@@ -64,9 +66,22 @@ greeting from child: yo
 Phase status:
 - **Phase 0** (spec stabilization) — complete
 - **Phase 1** (lex / parse / typecheck) — complete; F.1–F.18 enforced
-- **Phase 2 v0** (interpreter + bus router) — 19 of 20 example
+- **Phase 2 v0** (interpreter + bus router) — 20 of 21 example
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
+- **Phase 3 milestone 28c** (pinned CPU-core affinity) —
+  complete. `: schedule pinned(core = N)` syntax parses through
+  to a `pthread_setaffinity_np` call right after pthread_create.
+  ScheduleClass::Pinned grew to `Pinned(Option<i64>)`; the
+  parser recognizes optional `(core = N)` after `pinned`; the
+  C-runtime helper `lotus_set_core_affinity` wraps the syscall
+  behind a stable signature so codegen doesn't have to know the
+  cpu_set_t layout. Best-effort: if the requested core doesn't
+  exist or the call is denied, the runtime silently falls back
+  to ordinary OS scheduling. New `examples/20-pinned-core/`
+  pins two workers to cores 0 and 1. Per The Design / lotus,
+  this is a refinement WITHIN pinned, not a third mode —
+  bimodality holds.
 - **Phase 3 milestone 28b** (cross-thread bus mailboxes) —
   complete. Pinned loci can now declare `bus subscribe` and
   publish to cross-thread subjects; the gate is fully lifted
@@ -255,14 +270,17 @@ Phase status:
   self.children`) but the parent's later cascade skips
   already-dissolved children.
 - **Phase 3 next** — `trellis-pair` (multi-binary, cross-process
-  bus + entry-point selection). The substrate is now in good
-  shape; trellis-pair is the natural exercise of the full
-  multi-scheduler runtime. Two pieces: `lotus build --bin
-  <locus>` for entry-point selection, and a cross-process bus
-  transport (decided last session: shared-memory ring buffer,
-  per the runtime/stdlib transport split documented below).
-  Optional `sched_setaffinity(core=N)` syntax for explicit core
-  pinning is a small later add-on.
+  bus + entry-point selection) is now the only example
+  remaining. The substrate is in good shape: full bimodal
+  scheduler with cross-thread bus, per-projection-class arenas,
+  cooperative deferred dispatch + explicit yield, pinned threads
+  with full lifecycle + mailboxes + core affinity. trellis-pair
+  needs `lotus build --bin <Locus>` entry-point selection plus a
+  cross-process bus transport (decided last session: shared-
+  memory ring buffer, per the runtime/stdlib transport split
+  documented below). It also exercises pieces still
+  interpreter-only: module / `import` resolution, `perspective`
+  declarations with `is_stable()`, and tick-epoch closures.
 
 ## Transport layering (decided 2026-05-08)
 
@@ -423,7 +441,7 @@ m28b/1 m28b stage 1: inline-payload bus queue + mutex          (8f8d20d)
                             handler. Prereq for cross-thread
                             bus: queue is the single sync point;
                             arenas stay single-threaded.
-m28b/2 m28b stage 2: per-pinned mailbox + dispatch routing     (pending)
+m28b/2 m28b stage 2: per-pinned mailbox + dispatch routing     (fe296ae)
                           ⇒ lotus_mailbox_t (mutex+condvar+
                             shutdown flag); bus entry grows
                             mailbox field; dispatch routes by
@@ -433,6 +451,14 @@ m28b/2 m28b stage 2: per-pinned mailbox + dispatch routing     (pending)
                             and drain(); coordinated shutdown
                             via shutdown-flag-then-join
                           + examples/19-pinned-bus
+m28c   Codegen milestone 28c: pinned(core=N) affinity          (pending)
+                          ⇒ ScheduleClass::Pinned(Option<i64>);
+                            parser optional (core=N); C-side
+                            lotus_set_core_affinity wraps
+                            pthread_setaffinity_np; codegen
+                            calls it after pthread_create when
+                            core is set; best-effort fallback
+                          + examples/20-pinned-core
 ```
 
 The architectural pivots are **m7** (locus → LLVM struct,
@@ -603,7 +629,8 @@ real-world use case for lotus.
 ## Recent commit history (newest first)
 
 ```
-(pending) Codegen milestone 28b stage 2: per-pinned mailbox + dispatch routing
+(pending) Codegen milestone 28c: pinned(core=N) explicit core pinning
+fe296ae m28b stage 2: cross-thread bus mailboxes for pinned loci
 8f8d20d m28b stage 1: inline-payload bus queue + mutex
 c70b551 Codegen milestone 28a: pinned full lifecycle on the pinned thread
 1cb4aaa CHECKPOINT.md: session-resume reference
@@ -634,7 +661,7 @@ d5afffd Codegen milestone 8: accept() lifecycle + parent-child wiring
 929efa2 Codegen milestone 5: time::sleep on CLOCK_MONOTONIC
 ```
 
-76 commits ahead of origin/master at checkpoint time.
+77 commits ahead of origin/master at checkpoint time.
 
 ## Next steps in priority order
 
@@ -792,6 +819,9 @@ rm examples/18-pinned-lifecycle/main
 cargo run --bin lotus -- build examples/19-pinned-bus/main.lt
 ./examples/19-pinned-bus/main            # cooperative publisher feeds 3 ticks to pinned subscriber
 rm examples/19-pinned-bus/main
+cargo run --bin lotus -- build examples/20-pinned-core/main.lt
+./examples/20-pinned-core/main           # two pinned workers on cores 0 and 1 (best-effort)
+rm examples/20-pinned-core/main
 ```
 
-If all twenty-three work, the checkpoint is intact.
+If all twenty-four work, the checkpoint is intact.

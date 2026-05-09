@@ -628,6 +628,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_mailbox_destroy", mailbox_destroy_ty, None);
 
+        // m28c: optional CPU-core affinity. Pinned loci that
+        // declare `: schedule pinned(core = N)` emit a call to
+        // this helper right after pthread_create — it wraps
+        // pthread_setaffinity_np behind a stable signature so
+        // codegen doesn't need to know the cpu_set_t layout.
+        // declare void @lotus_set_core_affinity(i64 tid, i32 core)
+        let set_aff_ty =
+            void_t.fn_type(&[i64_t.into(), i32_t.into()], false);
+        self.module
+            .add_function("lotus_set_core_affinity", set_aff_ty, None);
+
         // The program-wide bus queue pointer. Initialized in
         // main's prelude alongside the arena; drained at
         // strategic points (before each deferred-dissolve flush)
@@ -1946,7 +1957,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // and the deferred-dissolve flush (main thread, signals
         // shutdown before pthread_join). Cooperative loci and
         // pinned loci without subscriptions don't need this.
-        let has_subscribe = matches!(schedule_class, ScheduleClass::Pinned)
+        let has_subscribe = matches!(schedule_class, ScheduleClass::Pinned(_))
             && l.members.iter().any(|m| match m {
                 LocusMember::Bus(b) => b.members.iter().any(|bm| {
                     matches!(bm, BusMember::Subscribe { .. })
@@ -4955,7 +4966,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // mailbox pointer; cooperative loci register here with
         // mailbox = None (route through the global queue).
         let pinned_subscriptions =
-            matches!(info.schedule_class, ScheduleClass::Pinned)
+            matches!(info.schedule_class, ScheduleClass::Pinned(_))
                 && !info.subscriptions.is_empty();
         if !pinned_subscriptions {
             for (subject, handler_name) in &info.subscriptions {
@@ -4990,7 +5001,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // calls run.
         let is_long_lived = !info.subscriptions.is_empty();
         let is_pinned =
-            matches!(info.schedule_class, ScheduleClass::Pinned);
+            matches!(info.schedule_class, ScheduleClass::Pinned(_));
 
         // m28a + m28b: pinned-class loci spawn a pthread that runs
         // the locus's full lifecycle on its own thread:
@@ -5239,6 +5250,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             let _ = mailbox_ptr_opt;
+
+            // m28c: optional CPU-core affinity. If the locus
+            // declared `: schedule pinned(core = N)`, route the
+            // freshly-created tid through pthread_setaffinity_np
+            // (via the C-side helper) so the OS scheduler keeps
+            // this thread on the requested logical CPU.
+            if let ScheduleClass::Pinned(Some(core)) = info.schedule_class {
+                let tid_for_aff = self
+                    .builder
+                    .build_load(i64_t, tid_alloca, "pinned.tid.aff")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let core_const = i32_t.const_int(core as u64, true);
+                let set_aff_fn = self
+                    .module
+                    .get_function("lotus_set_core_affinity")
+                    .expect("lotus_set_core_affinity declared");
+                self.builder
+                    .build_call(
+                        set_aff_fn,
+                        &[tid_for_aff.into(), core_const.into()],
+                        &format!("{}.set_aff", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
 
             // Defer pthread_join + arena destroy to scope exit.
             // flush_dissolve_frame skips drain/dissolve for pinned

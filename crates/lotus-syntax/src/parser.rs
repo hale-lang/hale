@@ -327,7 +327,60 @@ impl Parser {
                     }
                     TokenKind::Pinned => {
                         self.bump();
-                        ScheduleClass::Pinned
+                        // Optional `(core = N)` attribute. Expect
+                        // exactly that one shape for v0; future
+                        // attributes (priority, scheduler policy,
+                        // etc.) plug in here.
+                        let core = if matches!(self.peek(), TokenKind::LParen) {
+                            self.bump();
+                            let attr_tok = self.peek_token();
+                            let attr_name = match self.peek() {
+                                TokenKind::Ident(s) => s.clone(),
+                                other => {
+                                    return Err(Diag::parse(
+                                        attr_tok.span,
+                                        format!(
+                                            "expected `core` inside `pinned(...)`, got {:?}",
+                                            other
+                                        ),
+                                    ));
+                                }
+                            };
+                            if attr_name != "core" {
+                                return Err(Diag::parse(
+                                    attr_tok.span,
+                                    format!(
+                                        "unknown pinned attribute `{}`; only `core` \
+                                         is recognized in v0",
+                                        attr_name
+                                    ),
+                                ));
+                            }
+                            self.bump();
+                            self.expect(TokenKind::Eq, "expected `=` after `core`")?;
+                            let n_tok = self.peek_token();
+                            let n = match self.peek() {
+                                TokenKind::IntLit(v) => *v,
+                                other => {
+                                    return Err(Diag::parse(
+                                        n_tok.span,
+                                        format!(
+                                            "expected integer CPU index after `core =`, got {:?}",
+                                            other
+                                        ),
+                                    ));
+                                }
+                            };
+                            self.bump();
+                            self.expect(
+                                TokenKind::RParen,
+                                "expected `)` after pinned(core = N)",
+                            )?;
+                            Some(n)
+                        } else {
+                            None
+                        };
+                        ScheduleClass::Pinned(core)
                     }
                     other => {
                         return Err(Diag::parse(

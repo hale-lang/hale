@@ -88,11 +88,17 @@ pub enum ProjectionClass {
 ///
 /// m25 wires the annotation through parse / resolve. m26 ships
 /// cooperative semantics (deferred bus dispatch + scheduler
-/// loop). m27 ships pinned threads.
+/// loop). m27 ships pinned threads. m28a lifts pinned to full
+/// lifecycle. m28b adds cross-thread bus mailboxes. m28c adds
+/// optional `pinned(core=N)` for explicit CPU-core affinity.
 #[derive(Debug, Clone, PartialEq, Copy)]
 pub enum ScheduleClass {
     Cooperative,
-    Pinned,
+    /// Pinned to its own thread. Optional CPU core: `Some(n)`
+    /// asks the runtime to `pthread_setaffinity_np` the spawned
+    /// thread to logical CPU `n`; `None` lets the OS scheduler
+    /// pick. Spec/runtime.md::Schedule classes.
+    Pinned(Option<i64>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

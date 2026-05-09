@@ -1,0 +1,41 @@
+// 20-pinned-core — explicit CPU-core affinity for pinned loci.
+//
+// `: schedule pinned(core = N)` asks the runtime to bind the
+// spawned pthread to logical CPU N via pthread_setaffinity_np.
+// This is the "extreme case" the bimodal scheduler vision
+// allowed for: ordinary pinned loci let the OS scheduler pick
+// a core; pinned-with-core loci own the core.
+//
+// Per The Design / lotus, this is still bimodality — the
+// substrate is just exposing one more knob on the pinned side
+// (which side of the lotus you're on stays binary, but once
+// you're on the pinned side you can ALSO declare physical
+// placement). It's the analogue of "rich vs chunked vs
+// recognition" for memory: a refinement within one mode, not
+// a third mode.
+//
+// Best-effort semantics: if the requested core doesn't exist
+// (CI box with fewer cores than the source declares) or the
+// affinity call lacks permission, the runtime silently falls
+// back to ordinary OS scheduling. Better than refusing to run
+// the binary outright.
+
+locus CoreZeroWorker : schedule pinned(core = 0) {
+    run() {
+        time::sleep(20ms);
+        println("worker: ran on core 0 (or fallback if unavailable)");
+    }
+}
+
+locus CoreOneWorker : schedule pinned(core = 1) {
+    run() {
+        time::sleep(20ms);
+        println("worker: ran on core 1 (or fallback if unavailable)");
+    }
+}
+
+fn main() {
+    CoreZeroWorker { };
+    CoreOneWorker { };
+    println("main: spawned two pinned workers on different cores");
+}

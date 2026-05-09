@@ -150,14 +150,16 @@ intermediate ground than time does.)
 - **Pinned → any**: same — cross-thread post; pinned doesn't
   block waiting for delivery acknowledgement.
 
-#### Implementation status (m26 + m27 + m28a + m28b)
+#### Implementation status (m26 + m27 + m28a + m28b + m28c)
 
 m25 wired the annotation through parse / typecheck / codegen.
 **m26 ships cooperative semantics; m27 ships pinned threads
 (run-only); m28a lifts pinned to full lifecycle; m28b lights up
 cross-thread bus mailboxes — pinned loci can subscribe and
 publish, with cells routed across threads via per-locus
-mailboxes.**
+mailboxes; m28c adds optional `: schedule pinned(core = N)`
+syntax for explicit CPU-core affinity via
+`pthread_setaffinity_np`.**
 
 **m26 (cooperative):** Each `<-` enqueues `(handler, self,
 payload_copy)` cells onto a program-wide FIFO queue
@@ -261,6 +263,20 @@ coordination, which is meaningful new infrastructure beyond
 m28b's mailbox post-and-continue) or closures (cross-thread
 violation routing). Codegen errors clearly if those are
 present.
+
+**m28c (CPU-core affinity):** When a pinned locus declares
+`: schedule pinned(core = N)`, codegen emits a call to
+`lotus_set_core_affinity(tid, N)` immediately after
+`pthread_create` succeeds. The C-side helper wraps
+`pthread_setaffinity_np` (with a `cpu_set_t` zeroed and bit N
+set) so codegen doesn't have to know the cpu_set_t layout
+(opaque + size-variable across glibc versions). Best-effort
+semantics: if the requested core is unavailable (e.g., CI box
+with fewer cores than the source declares) or the syscall is
+denied, the runtime silently falls back to ordinary OS
+scheduling rather than refusing to run the binary. The
+underlying bimodality is unchanged — `pinned(core = N)` is a
+refinement WITHIN the pinned mode, not a third position.
 
 Linker dependency: clang invocation now passes `-lpthread`
 unconditionally; small fixed cost in the resulting binary

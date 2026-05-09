@@ -33,14 +33,16 @@ yield points instead of nesting in publisher frames, and (m26b)
 long-internal-loop bodies, (m27 + m28a) **pinned threads with
 full lifecycle** — pinned-class loci spawn a real pthread at
 instantiation; the locus's full declared lifecycle (birth /
-run / drain / dissolve) executes on that thread in order, and
+run / drain / dissolve) executes on that thread in order,
 (m28b) **cross-thread bus mailboxes** — pinned loci can
 subscribe and publish; cells route between threads via
 per-locus mutex+condvar mailboxes carrying inline payloads,
-with coordinated shutdown via shutdown-flag-then-join.
-**23 of 24 examples build to native ELF — every single-binary
-example is a build target.** Phase 3 (codegen) is at milestone
-28b:
+with coordinated shutdown via shutdown-flag-then-join, and
+(m28c) **`pinned(core = N)` CPU affinity** — pinned loci
+optionally bind their thread to a specific logical CPU via
+`pthread_setaffinity_np`. **24 of 25 examples build to native
+ELF — every single-binary example is a build target.** Phase 3
+(codegen) is at milestone 28c:
 literals +
 arithmetic, `let`/`let mut` + assignment + compound ops,
 `if`/`else`/`while` + `break`/`continue`, `time::sleep` on
@@ -276,11 +278,11 @@ crates/                   (Phase 1 + 2 v0 + Phase 3 milestones 0-18)
                           object file (m19 substrate).
 ```
 
-Example ladder: 24 projects from hello-world → trellis-pair;
-~1,000 lines of source + ~1,400+ lines of README walk-throughs.
-91 tests across the workspace; 23 of 24 projects run end-to-end
+Example ladder: 25 projects from hello-world → trellis-pair;
+~1,050 lines of source + ~1,400+ lines of README walk-throughs.
+91 tests across the workspace; 24 of 25 projects run end-to-end
 under `lotus run` (only multi-binary trellis-pair waits on the
-cross-process bus). **23 of 24 projects** also build to native
+cross-process bus). **24 of 25 projects** also build to native
 ELF via `lotus build` — every single-binary example. Only
 `trellis-pair` (cross-process bus + entry-point selection) is
 not a build target.
@@ -326,7 +328,7 @@ Per the delivery plan:
   Region allocator + cooperative scheduler are the remaining
   Phase 2 deep-pushes.
 - **Phase 3** — Codegen in Rust targeting LLVM. *In progress;
-  milestone 28b of N complete.* Working subset: literals, arithmetic,
+  milestone 28c of N complete.* Working subset: literals, arithmetic,
   `let`/`let mut` + assignment + compound ops, mixed-type println,
   if/else/while + break/continue, `time::sleep` + `time::monotonic`
   on `CLOCK_MONOTONIC` with EINTR retry, Duration / Decimal /

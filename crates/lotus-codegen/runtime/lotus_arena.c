@@ -27,11 +27,13 @@
  * scheduler lands and we want page-aligned regions.
  */
 
+#define _GNU_SOURCE
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <sched.h>
 
 /* Default chunk size: 64KB. Big enough that most loci fit in
  * one chunk, small enough that a leaf locus that allocates a
@@ -545,6 +547,31 @@ void lotus_mailbox_destroy(lotus_mailbox_t *mb) {
     pthread_mutex_destroy(&mb->lock);
     if (mb->cells) free(mb->cells);
     free(mb);
+}
+
+/*
+ * Pinned-thread CPU affinity helper (m28c).
+ *
+ * `: schedule pinned(core=N)` annotations route through here:
+ * codegen emits a call to lotus_set_core_affinity right after
+ * pthread_create succeeds, with the user-declared core index.
+ * We wrap pthread_setaffinity_np behind a stable C helper so
+ * codegen doesn't have to construct a cpu_set_t directly
+ * (cpu_set_t is opaque + size-variable across glibc versions).
+ *
+ * If the affinity call fails (e.g., core index out of range,
+ * permission denied in restricted environments) we silently
+ * succeed — the thread runs without affinity, falling back to
+ * normal OS scheduling. v0 prefers "best effort" over hard-
+ * error here so a CI box with fewer cores than the source
+ * declares doesn't refuse to start the binary.
+ */
+void lotus_set_core_affinity(unsigned long tid, int core) {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(core, &cpuset);
+    (void)pthread_setaffinity_np(
+        (pthread_t)tid, sizeof(cpu_set_t), &cpuset);
 }
 
 /*

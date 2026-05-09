@@ -45,7 +45,8 @@ locus_annotation  = "tier" , INT_LIT
                   | "schedule" , schedule_class
                   ;
 projection_class  = "rich" | "chunked" | "recognition" ;
-schedule_class    = "cooperative" | "pinned" ;
+schedule_class    = "cooperative"
+                  | "pinned" , [ "(" , "core" , "=" , INT_LIT , ")" ] ;
 
 locus_member      = params_block
                   | contract_block
