@@ -861,6 +861,23 @@ impl Interpreter {
                 eval_unop(*op, &v).map_err(Signal::Error)
             }
             Expr::Call { callee, args, .. } => {
+                // m46-vocab: count() / mean(x) accumulator
+                // builtins. Inside a closure assertion (ctx set),
+                // each routes to the next accumulator slot:
+                // count returns Value::Int; mean returns Float
+                // computed from the slot's Tuple([sum, count]).
+                // Outside a closure ctx, both fall through to
+                // the generic ident-resolution path (which will
+                // error since neither is a declared fn).
+                if let Expr::Ident(i) = callee.as_ref() {
+                    if self.accumulator_ctx.is_some() {
+                        if (i.name == "count" && args.is_empty())
+                            || (i.name == "mean" && args.len() == 1)
+                        {
+                            return self.read_next_accumulator_slot(&i.name);
+                        }
+                    }
+                }
                 // m44: intercept `check_closures()` before
                 // ident resolution — it's a substrate
                 // primitive (like `quarantine` / `restart`)
@@ -1642,40 +1659,170 @@ impl Interpreter {
         }
     }
 
-    /// m46: evaluate each accumulator's inner expression in
-    /// `handle`'s scope and add the result to the matching slot
-    /// in `handle.accumulators[closure_name]`. Lazy-initializes
-    /// the slot list on first fire, using each sample's runtime
-    /// type to choose the zero. Self is already on the
+    /// m46-vocab: read the next accumulator slot in the current
+    /// `accumulator_ctx` and return its substituted value. Called
+    /// from `eval_expr`'s Call arm for `count()` and `mean(x)`.
+    /// `Expr::Sum` has its own arm that does the equivalent for
+    /// Sum-kind slots. Advances `next_idx` so a following call in
+    /// the same assertion lands on the next slot.
+    ///
+    /// count: slot is Value::Int → return as-is.
+    /// mean: slot is Value::Tuple([sum, count]) → coerce both
+    /// to f64 and divide; return Value::Float.
+    fn read_next_accumulator_slot(
+        &mut self,
+        builtin: &str,
+    ) -> Result<Value, Signal> {
+        let ctx = self.accumulator_ctx.clone().ok_or_else(|| {
+            Signal::Error(
+                "internal: read_next_accumulator_slot called without ctx".into(),
+            )
+        })?;
+        let idx = ctx.next_idx.get();
+        ctx.next_idx.set(idx + 1);
+        let map = ctx.handle.accumulators.borrow();
+        let slots = map.get(&ctx.closure_name).ok_or_else(|| {
+            Signal::Error(format!(
+                "internal: closure `{}` accumulator slots missing at \
+                 substitution time",
+                ctx.closure_name
+            ))
+        })?;
+        let slot = slots.get(idx).cloned().ok_or_else(|| {
+            Signal::Error(format!(
+                "internal: closure `{}` accumulator slot {} out of range \
+                 (have {})",
+                ctx.closure_name,
+                idx,
+                slots.len()
+            ))
+        })?;
+        match builtin {
+            "count" => Ok(slot),
+            "mean" => match slot {
+                Value::Tuple(parts) if parts.len() == 2 => {
+                    let sum_f = numeric_to_f64(&parts[0]).ok_or_else(|| {
+                        Signal::Error(
+                            "internal: mean slot's sum is not numeric".into(),
+                        )
+                    })?;
+                    let count = match &parts[1] {
+                        Value::Int(n) => *n as f64,
+                        _ => {
+                            return Err(Signal::Error(
+                                "internal: mean slot's count is not Int".into(),
+                            ));
+                        }
+                    };
+                    if count == 0.0 {
+                        // Should be unreachable — sample-update
+                        // bumps count BEFORE substitution.
+                        return Err(Signal::Error(
+                            "internal: mean accumulator has zero count at \
+                             substitution time"
+                                .into(),
+                        ));
+                    }
+                    Ok(Value::Float(sum_f / count))
+                }
+                other => Err(Signal::Error(format!(
+                    "internal: mean slot is not a 2-tuple, got {:?}",
+                    other
+                ))),
+            },
+            other => Err(Signal::Error(format!(
+                "internal: read_next_accumulator_slot unknown builtin `{}`",
+                other
+            ))),
+        }
+    }
+
+    /// m46 / m46-vocab: evaluate each accumulator's inner
+    /// expression (if any) in `handle`'s scope and update the
+    /// matching slot in `handle.accumulators[closure_name]`. Sum
+    /// adds the inner sample to a running-sum Value. Count bumps
+    /// a running-count Int. Mean updates a Value::Tuple([sum,
+    /// count]) — sum += inner, count += 1. Lazy-initializes the
+    /// slot list on first fire. Self is already on the
     /// `self_stack` when we get here (pushed by
-    /// `evaluate_closure`), so `eval_expr` of `self.X` resolves
-    /// correctly.
+    /// `evaluate_closure`).
     fn update_closure_accumulators(
         &mut self,
         handle: &LocusHandle,
         closure_name: &str,
-        inner_exprs: &[Expr],
+        accs: &[(AccKind, Option<Expr>)],
     ) -> Result<(), Signal> {
         // Evaluate each inner expr first (no borrow on accumulators).
-        let mut samples: Vec<Value> = Vec::with_capacity(inner_exprs.len());
-        for inner in inner_exprs {
-            samples.push(self.eval_expr(inner)?);
+        // Count slots have None and don't evaluate anything.
+        let mut samples: Vec<Option<Value>> = Vec::with_capacity(accs.len());
+        for (_, inner_opt) in accs {
+            match inner_opt {
+                Some(inner) => samples.push(Some(self.eval_expr(inner)?)),
+                None => samples.push(None),
+            }
         }
         // Now grab the accumulators map and update.
         let mut map = handle.accumulators.borrow_mut();
         let slots = map
             .entry(closure_name.to_string())
             .or_insert_with(Vec::new);
-        // Pad with zeros to match the inner_exprs count, using each
-        // sample's type for the zero.
-        while slots.len() < samples.len() {
+        // Pad with kind-appropriate zeros.
+        while slots.len() < accs.len() {
             let i = slots.len();
-            slots.push(zero_value_of_same_type(&samples[i]));
+            let zero = match accs[i].0 {
+                AccKind::Sum => match &samples[i] {
+                    Some(s) => zero_value_of_same_type(s),
+                    None => Value::Int(0),
+                },
+                AccKind::Count => Value::Int(0),
+                AccKind::Mean => {
+                    let sum_zero = match &samples[i] {
+                        Some(s) => zero_value_of_same_type(s),
+                        None => Value::Float(0.0),
+                    };
+                    Value::Tuple(vec![sum_zero, Value::Int(0)])
+                }
+            };
+            slots.push(zero);
         }
-        for (slot, sample) in slots.iter_mut().zip(samples.into_iter()) {
-            let next = eval_binop(BinOp::Add, slot, &sample)
-                .map_err(Signal::Error)?;
-            *slot = next;
+        // Update each slot per kind.
+        for (slot, ((kind, _), sample_opt)) in
+            slots.iter_mut().zip(accs.iter().zip(samples.into_iter()))
+        {
+            match kind {
+                AccKind::Sum => {
+                    let sample = sample_opt.expect("sum has inner");
+                    *slot = eval_binop(BinOp::Add, slot, &sample)
+                        .map_err(Signal::Error)?;
+                }
+                AccKind::Count => {
+                    *slot = eval_binop(
+                        BinOp::Add, slot, &Value::Int(1),
+                    )
+                    .map_err(Signal::Error)?;
+                }
+                AccKind::Mean => {
+                    let sample = sample_opt.expect("mean has inner");
+                    if let Value::Tuple(parts) = slot {
+                        if parts.len() != 2 {
+                            return Err(Signal::Error(
+                                "internal: mean accumulator slot has wrong arity"
+                                    .into(),
+                            ));
+                        }
+                        parts[0] = eval_binop(BinOp::Add, &parts[0], &sample)
+                            .map_err(Signal::Error)?;
+                        parts[1] = eval_binop(
+                            BinOp::Add, &parts[1], &Value::Int(1),
+                        )
+                        .map_err(Signal::Error)?;
+                    } else {
+                        return Err(Signal::Error(
+                            "internal: mean slot is not a Tuple".into(),
+                        ));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -1732,19 +1879,18 @@ impl Interpreter {
         self.self_stack.push(handle.clone());
         self.env.push();
 
-        // m46: sample-update each accumulator slot for this
-        // closure BEFORE evaluating the assertion. The slot list
-        // for this closure is computed from the AST shape (every
-        // `sum(...)` in left/right/tolerance, in occurrence
-        // order). On first fire, slots lazy-init to zero of the
-        // sample's type. The assertion's `sum(...)` references
-        // then read the post-update running totals.
-        let acc_inner_exprs = collect_sum_inner_exprs(&closure.assertion);
-        if !acc_inner_exprs.is_empty() {
+        // m46 / m46-vocab: sample-update each accumulator slot
+        // for this closure BEFORE evaluating the assertion. Slot
+        // list comes from AST shape — `sum(x)` / `count()` /
+        // `mean(x)` in left/right/tolerance, in occurrence order.
+        // The assertion's substitutions then read the post-update
+        // values.
+        let accs = collect_accumulators_in_assertion(&closure.assertion);
+        if !accs.is_empty() {
             self.update_closure_accumulators(
                 &handle,
                 &closure.name.name,
-                &acc_inner_exprs,
+                &accs,
             )?;
             self.accumulator_ctx = Some(AccumulatorEvalCtx {
                 handle: handle.clone(),
@@ -2009,40 +2155,80 @@ enum ClosureOutcome {
     Violation(Value),
 }
 
-/// m46: walk a closure assertion's left + right + tolerance
-/// in declaration order, collect every `sum(inner)` call's
-/// inner expression. Same shape as the codegen helper of the
-/// same name (kept duplicated rather than shared because the
-/// two crates have different Expr import paths and the helper
-/// is small).
-fn collect_sum_inner_exprs(ass: &ClosureAssertion) -> Vec<Expr> {
+/// m46-vocab kind tag for accumulator slots in the interpreter.
+/// Mirrors the codegen `AccumulatorKind` but with interpreter-side
+/// state shape: Sum holds a single Value, Count holds Value::Int,
+/// Mean holds Value::Tuple([sum_value, count_value]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum AccKind {
+    Sum,
+    Count,
+    Mean,
+}
+
+/// m46 / m46-vocab: walk a closure assertion's left + right +
+/// tolerance in declaration order, collect every accumulator
+/// builtin call as `(kind, optional_inner_expr)`. Three forms:
+/// `Expr::Sum(inner)`, `count()`, `mean(arg)`. Mirrors codegen's
+/// `collect_sum_calls` but operates on the runtime crate's view
+/// of the AST (kept duplicated since the helper is small).
+fn collect_accumulators_in_assertion(
+    ass: &ClosureAssertion,
+) -> Vec<(AccKind, Option<Expr>)> {
     let mut out = Vec::new();
-    walk_collect_sum_inner(&ass.left, &mut out);
-    walk_collect_sum_inner(&ass.right, &mut out);
-    walk_collect_sum_inner(&ass.tolerance, &mut out);
+    walk_collect_accumulators(&ass.left, &mut out);
+    walk_collect_accumulators(&ass.right, &mut out);
+    walk_collect_accumulators(&ass.tolerance, &mut out);
     out
 }
 
-fn walk_collect_sum_inner(e: &Expr, out: &mut Vec<Expr>) {
+fn walk_collect_accumulators(
+    e: &Expr,
+    out: &mut Vec<(AccKind, Option<Expr>)>,
+) {
     match e {
-        Expr::Sum(inner, _) => out.push((**inner).clone()),
+        Expr::Sum(inner, _) => out.push((AccKind::Sum, Some((**inner).clone()))),
         Expr::Call { callee, args, .. } => {
-            walk_collect_sum_inner(callee, out);
+            if let Expr::Ident(id) = callee.as_ref() {
+                if id.name == "count" && args.is_empty() {
+                    out.push((AccKind::Count, None));
+                    return;
+                }
+                if id.name == "mean" && args.len() == 1 {
+                    out.push((AccKind::Mean, Some(args[0].clone())));
+                    return;
+                }
+            }
+            walk_collect_accumulators(callee, out);
             for a in args {
-                walk_collect_sum_inner(a, out);
+                walk_collect_accumulators(a, out);
             }
         }
         Expr::Binary { left, right, .. } => {
-            walk_collect_sum_inner(left, out);
-            walk_collect_sum_inner(right, out);
+            walk_collect_accumulators(left, out);
+            walk_collect_accumulators(right, out);
         }
-        Expr::Unary { operand, .. } => walk_collect_sum_inner(operand, out),
-        Expr::Field { receiver, .. } => walk_collect_sum_inner(receiver, out),
+        Expr::Unary { operand, .. } => walk_collect_accumulators(operand, out),
+        Expr::Field { receiver, .. } => walk_collect_accumulators(receiver, out),
         Expr::Index { receiver, index, .. } => {
-            walk_collect_sum_inner(receiver, out);
-            walk_collect_sum_inner(index, out);
+            walk_collect_accumulators(receiver, out);
+            walk_collect_accumulators(index, out);
         }
         _ => {}
+    }
+}
+
+/// m46-vocab: coerce a numeric Value to f64. Used when computing
+/// `mean = sum / count` at substitution time — the numerator can
+/// be Int / Float / Decimal / Duration depending on the inner
+/// expr's type.
+fn numeric_to_f64(v: &Value) -> Option<f64> {
+    match v {
+        Value::Int(n) => Some(*n as f64),
+        Value::Float(f) => Some(*f),
+        Value::Duration(ns) => Some(*ns as f64),
+        Value::Decimal(s) => parse_decimal_pub(s),
+        _ => None,
     }
 }
 

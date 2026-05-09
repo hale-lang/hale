@@ -318,25 +318,50 @@ struct AccumulatorCtx<'ctx> {
 #[derive(Debug, Clone, Copy)]
 struct BusState;
 
-/// m46 (closure accumulators): one slot per `sum(expr)` call
-/// detected in a closure's assertion. Each slot owns one struct
-/// field on the locus and accumulates `expr` across epoch fires.
+/// m46 / m46-vocab: which accumulator form a slot implements.
 ///
-/// `inner_expr` is the AST expression inside `sum(...)` — the
-/// thing being summed. Re-lowered at sample time (each epoch
-/// fire) into the slot's struct field.
+/// - **Sum**: one slot of the inner expr's type. Sample = +inner.
+///   Substitute = load slot. Output type = inner's type.
+/// - **Count**: one i64 slot. Sample = +1 (no inner expr).
+///   Substitute = load slot. Output type = Int.
+/// - **Mean**: two slots — one for the running sum (inner's type)
+///   and one i64 for the count. Sample = sum += inner; count += 1.
+///   Substitute = sum / count cast to Float. Output type = Float
+///   always (avoids Int/Float-mean coercion edge cases; means are
+///   inherently real-valued).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum AccumulatorKind {
+    Sum,
+    Count,
+    Mean,
+}
+
+/// m46 / m46-vocab: one slot per accumulator call detected in a
+/// closure's assertion. Each slot owns one or two struct fields
+/// on the locus and accumulates state across epoch fires.
 ///
-/// `ty` is the LotusType of `inner_expr` — also the slot field's
-/// type and the type of the substituted load when the assertion
-/// references this `sum(...)` call.
-///
-/// `field_idx` is the slot's index in the locus struct, fixed
-/// at struct-decl time.
+/// `kind` selects sample / substitute behavior.
+/// `inner_expr` is the argument expression for Sum / Mean — the
+/// thing being summed. None for Count.
+/// `ty` is the OUTPUT type of the substitute load (Int for Count;
+/// inner's type for Sum; Float for Mean). Drives the assertion's
+/// left/right type unification.
+/// `inner_ty` is the type of `inner_expr` itself — what gets
+/// stored in the running-sum slot for Sum / Mean. Equal to `ty`
+/// for Sum; differs from `ty` for Mean (sum slot stores inner's
+/// type, output is Float). Unused for Count.
+/// `field_idx` is the slot's primary struct field — sum slot for
+/// Sum / Mean, count slot for Count.
+/// `field_idx_2` is the second struct field — count slot for
+/// Mean. None for Sum / Count.
 #[derive(Debug, Clone)]
 struct AccumulatorSlot {
-    inner_expr: Expr,
+    kind: AccumulatorKind,
+    inner_expr: Option<Expr>,
     ty: LotusType,
+    inner_ty: LotusType,
     field_idx: u32,
+    field_idx_2: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -1113,6 +1138,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     fn flush_dissolve_frame(&mut self) -> Result<(), CodegenError> {
+        self.flush_dissolve_frame_kind(true)
+    }
+
+    /// m46-vocab follow-up: variant of `flush_dissolve_frame` that
+    /// flushes the deferred-dissolve frame WITHOUT draining the
+    /// cooperative queue. Used by on_failure bodies (and any
+    /// other context that runs synchronously inside a substrate
+    /// cell) — the outer cell's flush owns the drain. A drain
+    /// here would recursively pull queued cells into the current
+    /// tick's call stack, breaking ordering: every closure check
+    /// after this body returns would observe the post-recursion
+    /// accumulator state instead of the at-this-fire state.
+    /// Same principle as the Tick/Explicit closure-eval bodies
+    /// (which already pop the frame manually and skip the drain).
+    fn flush_dissolve_frame_kind(
+        &mut self,
+        drain_queue: bool,
+    ) -> Result<(), CodegenError> {
         // m26: drain the bus queue BEFORE dissolves fire, so
         // every cooperative subscriber gets to process pending
         // cells while it's still alive. Handlers may publish
@@ -1121,7 +1164,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // enqueued during the dissolves below is leaked (v0
         // limitation; realistic programs don't publish
         // during dissolve).
-        self.emit_bus_drain()?;
+        if drain_queue {
+            self.emit_bus_drain()?;
+        }
         let frame = self
             .deferred_dissolves
             .pop()
@@ -2003,27 +2048,77 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let LocusMember::Closure(c) = member else {
                 continue;
             };
-            let mut sums: Vec<Expr> = Vec::new();
-            collect_sum_calls(&c.assertion.left, &mut sums);
-            collect_sum_calls(&c.assertion.right, &mut sums);
-            collect_sum_calls(&c.assertion.tolerance, &mut sums);
+            let mut accs: Vec<(AccumulatorKind, Option<Expr>)> = Vec::new();
+            collect_sum_calls(&c.assertion.left, &mut accs);
+            collect_sum_calls(&c.assertion.right, &mut accs);
+            collect_sum_calls(&c.assertion.tolerance, &mut accs);
             let mut slots: Vec<AccumulatorSlot> = Vec::new();
-            for inner in sums {
-                let ty = infer_accumulator_inner_type(
-                    &l.name.name,
-                    &c.name.name,
-                    &inner,
-                    &fields,
-                )?;
-                let llvm_ty: inkwell::types::BasicTypeEnum =
-                    self.llvm_basic_type(&ty);
-                llvm_field_tys.push(llvm_ty);
-                slots.push(AccumulatorSlot {
-                    inner_expr: inner,
-                    ty,
-                    field_idx: idx,
-                });
-                idx += 1;
+            for (kind, inner_opt) in accs {
+                match kind {
+                    AccumulatorKind::Sum => {
+                        let inner = inner_opt.expect("sum carries inner");
+                        let inner_ty = infer_accumulator_inner_type(
+                            &l.name.name,
+                            &c.name.name,
+                            &inner,
+                            &fields,
+                        )?;
+                        let llvm_ty: inkwell::types::BasicTypeEnum =
+                            self.llvm_basic_type(&inner_ty);
+                        llvm_field_tys.push(llvm_ty);
+                        let slot_idx = idx;
+                        idx += 1;
+                        slots.push(AccumulatorSlot {
+                            kind: AccumulatorKind::Sum,
+                            inner_expr: Some(inner),
+                            ty: inner_ty.clone(),
+                            inner_ty,
+                            field_idx: slot_idx,
+                            field_idx_2: None,
+                        });
+                    }
+                    AccumulatorKind::Count => {
+                        // One i64 slot. Inner expr = none; output = Int.
+                        llvm_field_tys.push(i64_t_struct.into());
+                        let slot_idx = idx;
+                        idx += 1;
+                        slots.push(AccumulatorSlot {
+                            kind: AccumulatorKind::Count,
+                            inner_expr: None,
+                            ty: LotusType::Int,
+                            inner_ty: LotusType::Int,
+                            field_idx: slot_idx,
+                            field_idx_2: None,
+                        });
+                    }
+                    AccumulatorKind::Mean => {
+                        // Two slots: running sum (inner's type) +
+                        // count (i64). Output is always Float.
+                        let inner = inner_opt.expect("mean carries inner");
+                        let inner_ty = infer_accumulator_inner_type(
+                            &l.name.name,
+                            &c.name.name,
+                            &inner,
+                            &fields,
+                        )?;
+                        let llvm_inner: inkwell::types::BasicTypeEnum =
+                            self.llvm_basic_type(&inner_ty);
+                        llvm_field_tys.push(llvm_inner);
+                        let sum_idx = idx;
+                        idx += 1;
+                        llvm_field_tys.push(i64_t_struct.into());
+                        let count_idx = idx;
+                        idx += 1;
+                        slots.push(AccumulatorSlot {
+                            kind: AccumulatorKind::Mean,
+                            inner_expr: Some(inner),
+                            ty: LotusType::Float,
+                            inner_ty,
+                            field_idx: sum_idx,
+                            field_idx_2: Some(count_idx),
+                        });
+                    }
+                }
             }
             if !slots.is_empty() {
                 accumulators_per_closure
@@ -2751,7 +2846,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
             let end = self.lower_block(&failure_decl.body, &mut scope)?;
             if end == BlockEnd::Open {
-                self.flush_dissolve_frame()?;
+                // m46-vocab follow-up: on_failure runs
+                // synchronously inside an outer substrate cell
+                // (the closure-eval body that detected the
+                // violation). Don't drain the bus queue here —
+                // the outer cell owns that. A recursive drain
+                // would pull queued cells mid-tick, advancing
+                // accumulator state across "this fire's"
+                // boundary. See `flush_dissolve_frame_kind`.
+                self.flush_dissolve_frame_kind(false)?;
                 self.builder
                     .build_return(None)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -5609,6 +5712,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.lower_unop(*op, v, &t)
             }
             Expr::Call { callee, args, .. } => match callee.as_ref() {
+                // m46-vocab: count() / mean(x) accumulator builtins
+                // — when an accumulator-eval ctx is active, route
+                // to the next slot. count() takes 0 args; mean(x)
+                // takes one. Outside a closure assertion, both fall
+                // through to the generic user-fn path (which will
+                // error since neither is declared).
+                Expr::Ident(i)
+                    if i.name == "count"
+                        && args.is_empty()
+                        && self.accumulator_ctx.is_some() =>
+                {
+                    self.lower_accumulator_load()
+                }
+                Expr::Ident(i)
+                    if i.name == "mean"
+                        && args.len() == 1
+                        && self.accumulator_ctx.is_some() =>
+                {
+                    self.lower_accumulator_load()
+                }
                 Expr::Ident(i) if i.name == "len" => {
                     self.lower_len_builtin(args, scope)
                 }
@@ -7833,10 +7956,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
-    /// m46: store a zero value into one accumulator slot. Numeric-
-    /// type-dispatched: Int/Duration → i64(0); Float/Decimal →
-    /// f64(0). Used at instantiation (initial zero) and at recovery
-    /// dispatch when the event isn't listed in `persists_through`.
+    /// m46 / m46-vocab: store zero values into an accumulator
+    /// slot's struct fields. Sum has one field of inner's type;
+    /// Count has one i64; Mean has both — sum slot of inner's
+    /// type plus count i64. Used at instantiation (initial zero)
+    /// and at recovery dispatch when the event isn't listed in
+    /// `persists_through`.
     fn zero_accumulator_slot(
         &mut self,
         struct_ty: inkwell::types::StructType<'ctx>,
@@ -7844,11 +7969,61 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         slot: &AccumulatorSlot,
         name: &str,
     ) -> Result<(), CodegenError> {
+        match slot.kind {
+            AccumulatorKind::Sum => {
+                self.zero_one_field(
+                    struct_ty,
+                    self_ptr,
+                    slot.field_idx,
+                    &slot.inner_ty,
+                    name,
+                )?;
+            }
+            AccumulatorKind::Count => {
+                self.zero_one_field(
+                    struct_ty,
+                    self_ptr,
+                    slot.field_idx,
+                    &LotusType::Int,
+                    name,
+                )?;
+            }
+            AccumulatorKind::Mean => {
+                self.zero_one_field(
+                    struct_ty,
+                    self_ptr,
+                    slot.field_idx,
+                    &slot.inner_ty,
+                    &format!("{}.sum", name),
+                )?;
+                let count_idx = slot
+                    .field_idx_2
+                    .expect("mean slot has count field");
+                self.zero_one_field(
+                    struct_ty,
+                    self_ptr,
+                    count_idx,
+                    &LotusType::Int,
+                    &format!("{}.count", name),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn zero_one_field(
+        &mut self,
+        struct_ty: inkwell::types::StructType<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        field_idx: u32,
+        ty: &LotusType,
+        name: &str,
+    ) -> Result<(), CodegenError> {
         let slot_ptr = self
             .builder
-            .build_struct_gep(struct_ty, self_ptr, slot.field_idx, name)
+            .build_struct_gep(struct_ty, self_ptr, field_idx, name)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        match slot.ty {
+        match ty {
             LotusType::Int | LotusType::Duration => {
                 let z = self.context.i64_type().const_int(0, false);
                 self.builder
@@ -7863,23 +8038,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             _ => {
                 return Err(CodegenError::Unsupported(format!(
-                    "accumulator slot type {:?} unexpected — \
-                     infer_accumulator_inner_type rejects non-numerics",
-                    slot.ty
+                    "accumulator slot field type {:?} unexpected", ty
                 )));
             }
         }
         Ok(())
     }
 
-    /// m46: sample-update one accumulator slot. Evaluates the
-    /// slot's `inner_expr` in the closure's scope, adds the result
-    /// to the slot's current value, stores back. Numeric-dispatched.
-    /// Called for every accumulator slot of a closure right BEFORE
-    /// the closure's assertion is lowered — so the assertion's
-    /// `sum(...)` substitutions read this fire's running total
-    /// (i.e., the new total after the current sample, matching the
-    /// natural reading of "sum across cells").
+    /// m46 / m46-vocab: sample-update an accumulator slot. Sum
+    /// evaluates the inner expr and adds it to the running-sum
+    /// field. Count just bumps an i64 by 1 (no inner expr). Mean
+    /// does both — sum += inner, count += 1. Called for every
+    /// accumulator slot of a closure right BEFORE the closure's
+    /// assertion is lowered — so the assertion's substitutions
+    /// read the post-update value (natural "sum/count/mean across
+    /// cells through this moment" semantics).
     fn update_accumulator_slot(
         &mut self,
         struct_ty: inkwell::types::StructType<'ctx>,
@@ -7888,20 +8061,92 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
         name: &str,
     ) -> Result<(), CodegenError> {
-        let (sample_val, sample_ty) =
-            self.lower_expr(&slot.inner_expr, scope)?;
-        if sample_ty != slot.ty {
-            return Err(CodegenError::Unsupported(format!(
-                "accumulator inner expr re-lowered with type {:?} but slot \
-                 was declared {:?}",
-                sample_ty, slot.ty
-            )));
+        match slot.kind {
+            AccumulatorKind::Sum => {
+                let inner = slot
+                    .inner_expr
+                    .as_ref()
+                    .expect("sum slot carries inner");
+                let (sample_val, sample_ty) = self.lower_expr(inner, scope)?;
+                if sample_ty != slot.inner_ty {
+                    return Err(CodegenError::Unsupported(format!(
+                        "accumulator inner expr re-lowered with type {:?} but \
+                         slot was declared {:?}",
+                        sample_ty, slot.inner_ty
+                    )));
+                }
+                self.add_to_field(
+                    struct_ty,
+                    self_ptr,
+                    slot.field_idx,
+                    &slot.inner_ty,
+                    sample_val,
+                    name,
+                )?;
+            }
+            AccumulatorKind::Count => {
+                let one = self.context.i64_type().const_int(1, true);
+                self.add_to_field(
+                    struct_ty,
+                    self_ptr,
+                    slot.field_idx,
+                    &LotusType::Int,
+                    one.into(),
+                    name,
+                )?;
+            }
+            AccumulatorKind::Mean => {
+                let inner = slot
+                    .inner_expr
+                    .as_ref()
+                    .expect("mean slot carries inner");
+                let (sample_val, sample_ty) = self.lower_expr(inner, scope)?;
+                if sample_ty != slot.inner_ty {
+                    return Err(CodegenError::Unsupported(format!(
+                        "accumulator inner expr re-lowered with type {:?} but \
+                         mean slot was declared {:?}",
+                        sample_ty, slot.inner_ty
+                    )));
+                }
+                self.add_to_field(
+                    struct_ty,
+                    self_ptr,
+                    slot.field_idx,
+                    &slot.inner_ty,
+                    sample_val,
+                    &format!("{}.sum", name),
+                )?;
+                let count_idx = slot
+                    .field_idx_2
+                    .expect("mean slot has count field");
+                let one = self.context.i64_type().const_int(1, true);
+                self.add_to_field(
+                    struct_ty,
+                    self_ptr,
+                    count_idx,
+                    &LotusType::Int,
+                    one.into(),
+                    &format!("{}.count", name),
+                )?;
+            }
         }
+        Ok(())
+    }
+
+    fn add_to_field(
+        &mut self,
+        struct_ty: inkwell::types::StructType<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        field_idx: u32,
+        ty: &LotusType,
+        sample_val: BasicValueEnum<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
         let slot_ptr = self
             .builder
-            .build_struct_gep(struct_ty, self_ptr, slot.field_idx, name)
+            .build_struct_gep(struct_ty, self_ptr, field_idx, name)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        match slot.ty {
+        match ty {
             LotusType::Int | LotusType::Duration => {
                 let i64_t = self.context.i64_type();
                 let prev = self
@@ -7942,21 +8187,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             _ => {
                 return Err(CodegenError::Unsupported(format!(
-                    "accumulator slot type {:?} unexpected", slot.ty
+                    "accumulator field type {:?} unexpected", ty
                 )));
             }
         }
         Ok(())
     }
 
-    /// m46: emit a load from the *next* accumulator slot in the
-    /// current `accumulator_ctx`. Called from `lower_expr`'s Call
-    /// match when a `sum(...)` call is encountered inside a closure
-    /// assertion. Advances `next_idx` by one so the following
-    /// `sum(...)` in the same assertion lands on the next slot.
-    /// Returns `(value, slot.ty)` matching what a normal expression
-    /// would have returned, so the assertion's left/right typing
-    /// rule still applies cleanly.
+    /// m46 / m46-vocab: emit a load from the *next* accumulator
+    /// slot in the current `accumulator_ctx`. Called from
+    /// `lower_expr`'s Call/Sum match when an accumulator builtin
+    /// is encountered inside a closure assertion. Advances
+    /// `next_idx` by one. Returns `(value, slot.ty)` so the
+    /// assertion's left/right typing rule applies cleanly.
+    ///
+    /// Sum: load the inner-typed slot.
+    /// Count: load the i64 slot, return as Int.
+    /// Mean: load sum + count, divide, cast to f64, return as Float.
     fn lower_accumulator_load(
         &mut self,
     ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
@@ -7967,7 +8214,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         })?;
         if ctx.next_idx >= ctx.slots.len() {
             return Err(CodegenError::Unsupported(format!(
-                "more `sum(...)` calls encountered during assertion lowering \
+                "more accumulator calls encountered during assertion lowering \
                  than slots allocated ({}); detection and lowering walks \
                  disagree",
                 ctx.slots.len()
@@ -7977,39 +8224,130 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let struct_ty = ctx.struct_ty;
         let self_ptr = ctx.self_ptr;
         ctx.next_idx += 1;
+        match slot.kind {
+            AccumulatorKind::Sum => {
+                let v = self.load_field_typed(
+                    struct_ty,
+                    self_ptr,
+                    slot.field_idx,
+                    &slot.inner_ty,
+                    &format!("acc[{}].sum.load", slot.field_idx),
+                )?;
+                Ok((v, slot.ty))
+            }
+            AccumulatorKind::Count => {
+                let v = self.load_field_typed(
+                    struct_ty,
+                    self_ptr,
+                    slot.field_idx,
+                    &LotusType::Int,
+                    &format!("acc[{}].count.load", slot.field_idx),
+                )?;
+                Ok((v, LotusType::Int))
+            }
+            AccumulatorKind::Mean => {
+                let count_idx = slot
+                    .field_idx_2
+                    .expect("mean slot has count field");
+                // Load sum (inner-typed) and count (i64).
+                let sum_v = self.load_field_typed(
+                    struct_ty,
+                    self_ptr,
+                    slot.field_idx,
+                    &slot.inner_ty,
+                    &format!("acc[{}].mean.sum.load", slot.field_idx),
+                )?;
+                let count_v = self
+                    .builder
+                    .build_load(
+                        self.context.i64_type(),
+                        self.builder
+                            .build_struct_gep(
+                                struct_ty,
+                                self_ptr,
+                                count_idx,
+                                &format!("acc[{}].mean.count.ptr", count_idx),
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?,
+                        &format!("acc[{}].mean.count.load", count_idx),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_int_value();
+                // Cast both to f64, divide.
+                let f64_t = self.context.f64_type();
+                let sum_f = match slot.inner_ty {
+                    LotusType::Int | LotusType::Duration => self
+                        .builder
+                        .build_signed_int_to_float(
+                            sum_v.into_int_value(),
+                            f64_t,
+                            "mean.sum.f",
+                        )
+                        .map_err(|e| {
+                            CodegenError::LlvmEmit(e.to_string())
+                        })?,
+                    LotusType::Float | LotusType::Decimal => {
+                        sum_v.into_float_value()
+                    }
+                    ref other => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "mean accumulator inner type {:?} unexpected",
+                            other
+                        )));
+                    }
+                };
+                let count_f = self
+                    .builder
+                    .build_signed_int_to_float(
+                        count_v,
+                        f64_t,
+                        "mean.count.f",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let mean = self
+                    .builder
+                    .build_float_div(sum_f, count_f, "mean.div")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((mean.into(), LotusType::Float))
+            }
+        }
+    }
+
+    fn load_field_typed(
+        &mut self,
+        struct_ty: inkwell::types::StructType<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        field_idx: u32,
+        ty: &LotusType,
+        name: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         let slot_ptr = self
             .builder
             .build_struct_gep(
                 struct_ty,
                 self_ptr,
-                slot.field_idx,
-                &format!("acc[{}].load.ptr", slot.field_idx),
+                field_idx,
+                &format!("{}.ptr", name),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let v: BasicValueEnum<'ctx> = match slot.ty {
+        let v: BasicValueEnum<'ctx> = match ty {
             LotusType::Int | LotusType::Duration => self
                 .builder
-                .build_load(
-                    self.context.i64_type(),
-                    slot_ptr,
-                    &format!("acc[{}].load", slot.field_idx),
-                )
+                .build_load(self.context.i64_type(), slot_ptr, name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
             LotusType::Float | LotusType::Decimal => self
                 .builder
-                .build_load(
-                    self.context.f64_type(),
-                    slot_ptr,
-                    &format!("acc[{}].load", slot.field_idx),
-                )
+                .build_load(self.context.f64_type(), slot_ptr, name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "accumulator slot type {:?} unexpected", other
+                    "load_field_typed: unsupported type {:?}", other
                 )));
             }
         };
-        Ok((v, slot.ty))
+        Ok(v)
     }
 
     /// Operand types must match each other AND the tolerance type.
@@ -9340,20 +9678,33 @@ fn escape_format(s: &str) -> String {
     s.replace('%', "%%")
 }
 
-/// m46 (closure accumulators): walk an expression tree, append
-/// every `sum(expr)` builtin's inner argument to `out` in tree
-/// traversal order. The parser surfaces `sum(x)` as the dedicated
-/// `Expr::Sum` variant, not a generic `Call(Ident("sum"))`, so
-/// detection just matches on that variant. Doesn't recurse into
-/// the sum's own argument — `sum(sum(...))` is rejected at
-/// type-inference time anyway (only `self.X` reads survive that
-/// pass at v0).
-fn collect_sum_calls(expr: &Expr, out: &mut Vec<Expr>) {
+/// m46 / m46-vocab (closure accumulators): walk an expression
+/// tree, append every accumulator-builtin call's (kind,
+/// inner_expr_or_none) to `out` in tree traversal order.
+///
+/// Three forms recognized:
+/// - `Expr::Sum(inner)` (parser-dedicated AST variant for `sum(x)`)
+/// - `Call(Ident("count"), [])` for the no-arg count accumulator
+/// - `Call(Ident("mean"), [arg])` for the running mean
+///
+/// Doesn't recurse into an accumulator's own argument — nested
+/// accumulators are rejected at type-inference time anyway.
+fn collect_sum_calls(expr: &Expr, out: &mut Vec<(AccumulatorKind, Option<Expr>)>) {
     match expr {
         Expr::Sum(inner, _) => {
-            out.push((**inner).clone());
+            out.push((AccumulatorKind::Sum, Some((**inner).clone())));
         }
         Expr::Call { callee, args, .. } => {
+            if let Expr::Ident(id) = callee.as_ref() {
+                if id.name == "count" && args.is_empty() {
+                    out.push((AccumulatorKind::Count, None));
+                    return;
+                }
+                if id.name == "mean" && args.len() == 1 {
+                    out.push((AccumulatorKind::Mean, Some(args[0].clone())));
+                    return;
+                }
+            }
             collect_sum_calls(callee, out);
             for a in args {
                 collect_sum_calls(a, out);

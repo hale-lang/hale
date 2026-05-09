@@ -1,0 +1,91 @@
+// 42-accumulator-vocab — m46 vocabulary extension: count() + mean().
+//
+// m46 shipped sum() (running total). m46-vocab adds the two
+// natural neighbors:
+//   - count():  no inner expr; running fire-count i64. Substitute
+//               returns Int.
+//   - mean(x):  running sum + count; substitute returns sum/count
+//               cast to Float (always Float — Mean is inherently
+//               real-valued, no Int-mean coercion edge case).
+//
+// Mean's two-slot storage and Float output is the design call:
+// the assertion's left/right type unification now works for
+// `mean(self.x) ~~ 0.5 within 0.01` (all sides Float) without
+// needing per-numeric-type mean specialization.
+//
+// What this example exercises:
+//   - A Tracker with two closures:
+//       * `at_least_two` uses `count()` to assert at least 2 fires
+//         have happened (count >= 2 within 0 — i.e., count - 2 = 0
+//         within 0). On fires 1 (count=1), the closure violates.
+//       * `mean_in_band` uses `mean(self.delta)` to assert the
+//         running average stays within a band of zero.
+//   - Coordinator's on_failure absorbs and prints which closure
+//     fired plus the diff — distinguishing count-violations from
+//     mean-violations by closure name.
+
+import "std/time";
+
+type Sample {
+    value: Int;
+}
+
+locus Tracker {
+    params {
+        delta: Int = 0;
+    }
+
+    closure at_least_two {
+        // count() ~~ 2 within 0 ⇒ |count - 2| <= 0 ⇒ count == 2.
+        // After fire 1: count=1, |1-2|=1, fails.
+        // After fire 2: count=2, |2-2|=0, passes.
+        // After fire 3: count=3, |3-2|=1, fails.
+        count() ~~ 2 within 0;
+        epoch tick;
+    }
+
+    closure mean_in_band {
+        // Mean of self.delta should stay within 100 of 0. With
+        // values 1, 2, 3 the running mean is 1.0, 1.5, 2.0 — all
+        // within band. The fourth value 500 trips it: running
+        // mean = 506/4 = 126.5, |126.5 - 0| > 100, fails.
+        mean(self.delta) ~~ 0.0 within 100.0;
+        epoch tick;
+    }
+
+    bus {
+        subscribe "data" as on_data of type Sample;
+    }
+
+    fn on_data(s: Sample) {
+        self.delta = s.value;
+        println("Tracker.on_data: delta=", self.delta);
+    }
+}
+
+locus Coordinator {
+    on_failure(t: Tracker, err: ClosureViolation) {
+        println("Coordinator: ", err.closure, " violated");
+    }
+
+    bus {
+        publish "data" of type Sample;
+    }
+
+    run() {
+        Tracker { };
+        // Fire 1: count=1 (fails at_least_two), mean=1.0 (passes).
+        "data" <- Sample { value: 1 };
+        // Fire 2: count=2 (passes), mean=1.5 (passes).
+        "data" <- Sample { value: 2 };
+        // Fire 3: count=3 (fails again), mean=2.0 (passes).
+        "data" <- Sample { value: 3 };
+        // Fire 4: count=4 (fails), mean=126.5 (fails mean_in_band).
+        "data" <- Sample { value: 500 };
+        println("--- run done ---");
+    }
+}
+
+fn main() {
+    Coordinator { };
+}
