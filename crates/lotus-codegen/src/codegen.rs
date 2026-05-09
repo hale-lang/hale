@@ -604,14 +604,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("pthread_join", pthread_join_ty, None);
 
-        // m27: lotus_thread_entry is the C-runtime adapter that
-        // bridges pthread_create's `void *(*)(void *)` signature
-        // to a locus's `void run(void *self)`. Declared as an
-        // extern so the codegen pass can hand its address to
-        // pthread_create at pinned-instantiation time.
-        let thread_entry_ty = ptr_t.fn_type(&[ptr_t.into()], false);
-        self.module
-            .add_function("lotus_thread_entry", thread_entry_ty, None);
+        // m28a: per-locus thread_main is synthesized at the
+        // pthread_create call site (no C-side adapter). Each
+        // pinned locus gets its own `__pinned_main_<LocusName>`
+        // function whose signature matches pthread's start-routine
+        // contract directly: ptr (ptr).
 
         // declare i32 @fflush(ptr)
         //
@@ -1078,11 +1075,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get(&locus_name)
                 .cloned()
                 .expect("deferred locus declared");
-            // m27: pinned loci — pthread_join before dissolve so
-            // the pinned thread's run() has finished before we
-            // free its arena. The thread_id alloca lives in the
-            // enclosing fn's frame; load it just before passing
-            // to pthread_join.
+            // m28a: pinned loci — pthread_join blocks until the
+            // pinned thread's full lifecycle (birth → run → drain →
+            // dissolve, all run on the pinned thread inside its
+            // synthesized __pinned_main_<Locus>) has finished.
+            // The main thread's only remaining work for a pinned
+            // entry is the join and the arena_destroy; drain /
+            // closures / dissolve are SKIPPED here because they
+            // already ran on the pinned thread.
+            let is_pinned_entry = thread_id_alloca.is_some();
             if let Some(tid_slot) = thread_id_alloca {
                 let i64_t = self.context.i64_type();
                 let ptr_t = self.context.ptr_type(AddressSpace::default());
@@ -1103,47 +1104,50 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-            // drain → __closures → dissolve, mirroring the
-            // ephemeral-locus ordering. Long-lived loci dissolve
-            // here at scope-exit; the cascade itself ran each
-            // descendant's closures during the descendant's own
-            // ephemeral-dissolve / scope-exit.
-            if let Some(drain_fn) = info.methods.get("drain") {
-                self.builder
-                    .build_call(
-                        *drain_fn,
-                        &[self_ptr.into()],
-                        &format!("{}.drain.call", locus_name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            if !is_pinned_entry {
+                // Cooperative long-lived: drain → __closures →
+                // dissolve, mirroring the ephemeral-locus ordering.
+                // The cascade itself ran each descendant's closures
+                // during the descendant's own ephemeral-dissolve /
+                // scope-exit.
+                if let Some(drain_fn) = info.methods.get("drain") {
+                    self.builder
+                        .build_call(
+                            *drain_fn,
+                            &[self_ptr.into()],
+                            &format!("{}.drain.call", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                if let Some(closures_fn) = info.closures_fn {
+                    let (parent_self, handler_ptr) =
+                        self.resolve_failure_route(&locus_name);
+                    self.builder
+                        .build_call(
+                            closures_fn,
+                            &[
+                                self_ptr.into(),
+                                parent_self.into(),
+                                handler_ptr.into(),
+                            ],
+                            &format!("{}.__closures.call", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                if let Some(dissolve_fn) = info.methods.get("dissolve") {
+                    self.builder
+                        .build_call(
+                            *dissolve_fn,
+                            &[self_ptr.into()],
+                            &format!("{}.dissolve.call", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
             }
-            if let Some(closures_fn) = info.closures_fn {
-                let (parent_self, handler_ptr) =
-                    self.resolve_failure_route(&locus_name);
-                self.builder
-                    .build_call(
-                        closures_fn,
-                        &[
-                            self_ptr.into(),
-                            parent_self.into(),
-                            handler_ptr.into(),
-                        ],
-                        &format!("{}.__closures.call", locus_name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
-            if let Some(dissolve_fn) = info.methods.get("dissolve") {
-                self.builder
-                    .build_call(
-                        *dissolve_fn,
-                        &[self_ptr.into()],
-                        &format!("{}.dissolve.call", locus_name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
-            // Long-lived locus arena released at scope exit, after
-            // its dissolve has run. Symmetric with the ephemeral
-            // path in lower_locus_instantiation.
+            // Arena released at scope exit, after the pinned thread
+            // is joined or after the cooperative drain/dissolve has
+            // run. Symmetric with the ephemeral path in
+            // lower_locus_instantiation.
             self.emit_locus_arena_destroy(&info, self_ptr, &locus_name)?;
         }
         Ok(())
@@ -4791,100 +4795,98 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let is_pinned =
             matches!(info.schedule_class, ScheduleClass::Pinned);
 
-        // m27: pinned-class loci spawn a pthread for run() and
-        // defer pthread_join + arena destroy to scope exit.
-        // v0 scope: pinned must declare ONLY `run()` — no other
-        // lifecycle methods, no bus subscribe/publish. Cross-
-        // thread mailbox + full lifecycle on pinned thread land
-        // in m28. We validate here so the failure mode is a
-        // clear codegen error rather than a silent wrong-thread
-        // execution.
+        // m28a: pinned-class loci spawn a pthread that runs
+        // birth → run → drain → dissolve in sequence on its own
+        // thread, then exits. Main thread joins at scope exit
+        // (deferred_dissolves frame) before destroying the locus's
+        // arena. We synthesize a per-locus thread_main whose
+        // signature matches pthread's start-routine contract
+        // exactly (`ptr (ptr)`), so pthread_create gets a direct
+        // function pointer with self_ptr as its argument — no C
+        // adapter, no args struct.
+        //
+        // Still gated for m28a: accept (children of pinned), bus
+        // subscriptions / publishes, closures. Bus subscribe/publish
+        // land in m28b (cross-thread mailbox); accept on pinned
+        // would cross-class-cascade dissolve which needs m28b's
+        // shutdown coordination machinery.
         if is_pinned {
             let ptr_t = self.context.ptr_type(AddressSpace::default());
-            let has_run = info.methods.contains_key("run");
-            let other_methods = ["birth", "accept", "drain", "dissolve"]
-                .iter()
-                .any(|k| info.methods.contains_key(*k));
-            if !has_run {
+            if info.methods.contains_key("accept") {
                 return Err(CodegenError::Unsupported(format!(
-                    "pinned locus `{}` requires `run()`; v0 m27 only \
-                     supports run-only pinned loci",
+                    "pinned locus `{}` declares `accept()`; pinned coordinators \
+                     wait on m28b's cross-thread shutdown coordination",
                     locus_name
                 )));
             }
-            if other_methods || is_long_lived {
+            if is_long_lived {
                 return Err(CodegenError::Unsupported(format!(
-                    "pinned locus `{}` declares lifecycle methods or bus \
-                     subscriptions beyond run(); v0 m27 only supports \
-                     run-only pinned loci. Full pinned lifecycle + cross-\
-                     thread bus mailbox land in m28.",
+                    "pinned locus `{}` declares bus subscriptions; cross-thread \
+                     bus mailbox lands in m28b",
                     locus_name
                 )));
             }
             if info.closures_fn.is_some() {
                 return Err(CodegenError::Unsupported(format!(
-                    "pinned locus `{}` declares closures; v0 m27 doesn't \
-                     route closure violations across threads",
+                    "pinned locus `{}` declares closures; cross-thread closure \
+                     routing waits on m28b",
                     locus_name
                 )));
             }
 
             let i64_t = self.context.i64_type();
-            // Allocate a thread_args struct (fn ptr + self_ptr)
-            // in the enclosing arena. lifecycle: lives until the
-            // enclosing locus's arena dies, which is bounded
-            // below by pthread_join (which runs before the
-            // enclosing arena destroy in flush_dissolve_frame).
-            let args_struct_ty = self.context.struct_type(
-                &[ptr_t.into(), ptr_t.into()],
-                false,
-            );
-            let args_size = args_struct_ty
-                .size_of()
-                .expect("thread args struct has known size");
-            let args_ptr =
-                self.arena_alloc(args_size, "pinned.args.alloc")?;
-            let run_fn = info.methods.get("run").copied().unwrap();
-            let run_fn_ptr =
-                run_fn.as_global_value().as_pointer_value();
-            // args_struct.fn = run_fn
-            let fn_slot = self
+
+            // Synthesize __pinned_main_<LocusName>(self_ptr) -> ptr.
+            // Body calls birth → run → drain → dissolve in order;
+            // each only if the locus declared it. Returns null
+            // (pthread start-routine return value is unused).
+            let saved_block = self
                 .builder
-                .build_struct_gep(
-                    args_struct_ty,
-                    args_ptr,
-                    0,
-                    "pinned.args.fn",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                .get_insert_block()
+                .expect("pinned spawn inside an active block");
+            let thread_main_name =
+                format!("__pinned_main_{}", locus_name);
+            let thread_main_ty =
+                ptr_t.fn_type(&[ptr_t.into()], false);
+            let thread_main = self
+                .module
+                .add_function(&thread_main_name, thread_main_ty, None);
+            let entry_bb = self
+                .context
+                .append_basic_block(thread_main, "entry");
+            self.builder.position_at_end(entry_bb);
+            let thread_self =
+                thread_main.get_nth_param(0).unwrap().into_pointer_value();
+            for kind in &["birth", "run", "drain", "dissolve"] {
+                if let Some(method) = info.methods.get(*kind) {
+                    self.builder
+                        .build_call(
+                            *method,
+                            &[thread_self.into()],
+                            &format!(
+                                "{}.{}.thread_call",
+                                locus_name, kind
+                            ),
+                        )
+                        .map_err(|e| {
+                            CodegenError::LlvmEmit(e.to_string())
+                        })?;
+                }
+            }
             self.builder
-                .build_store(fn_slot, run_fn_ptr)
+                .build_return(Some(&ptr_t.const_null()))
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            // args_struct.self = self_ptr
-            let self_slot = self
-                .builder
-                .build_struct_gep(
-                    args_struct_ty,
-                    args_ptr,
-                    1,
-                    "pinned.args.self",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_store(self_slot, self_ptr)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            // pthread_t alloca in the enclosing fn frame
+            // Restore builder to the calling fn so the rest of
+            // the instantiation (pthread_create) emits there.
+            self.builder.position_at_end(saved_block);
+
+            // pthread_t alloca in the enclosing fn frame.
             let tid_alloca = self
                 .builder
                 .build_alloca(i64_t, &format!("{}.tid", locus_name))
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            // Find lotus_thread_entry as a fn pointer
-            let entry_fn_ptr = self
-                .module
-                .get_function("lotus_thread_entry")
-                .expect("lotus_thread_entry declared")
-                .as_global_value()
-                .as_pointer_value();
+            let thread_main_ptr =
+                thread_main.as_global_value().as_pointer_value();
             let null_attr = ptr_t.const_null();
             let create_fn = self
                 .module
@@ -4896,14 +4898,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     &[
                         tid_alloca.into(),
                         null_attr.into(),
-                        entry_fn_ptr.into(),
-                        args_ptr.into(),
+                        thread_main_ptr.into(),
+                        self_ptr.into(),
                     ],
                     &format!("{}.pthread_create", locus_name),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
             // Defer pthread_join + arena destroy to scope exit.
+            // flush_dissolve_frame skips drain/dissolve for pinned
+            // entries — those already ran on the pinned thread
+            // before it returned (and pthread_join blocks until
+            // that return). All that's left for the main thread
+            // is the join + arena_destroy.
             if let Some(top) = self.deferred_dissolves.last_mut() {
                 top.push((self_ptr, locus_name.to_string(), Some(tid_alloca)));
             } else {

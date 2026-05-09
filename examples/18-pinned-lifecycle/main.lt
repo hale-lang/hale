@@ -1,0 +1,45 @@
+// 18-pinned-lifecycle — full birth/run/drain/dissolve on the
+// pinned thread.
+//
+// In m27 (16-schedule-classes), pinned loci could declare ONLY
+// run(). m28a lifts that: a pinned locus can now declare
+// birth/run/drain/dissolve, and ALL FOUR run on the spawned
+// pthread, in order, before the thread exits. The main thread
+// joins at scope exit before destroying the pinned locus's
+// arena.
+//
+// The whole sequence is deterministic because each method runs
+// to completion before the next starts (single thread). The
+// 30ms sleep in run() lets the main-thread println land
+// between birth's print and run's print, proving the pinned
+// thread really is parallel — main is doing other work while
+// the pinned thread is in run().
+//
+// Per The Design / lotus, pinned and cooperative are bimodal
+// projections of the same locus surface: same source,
+// different runtime shape. m28a makes the pinned shape
+// fully-featured for self-contained loci. Cross-thread bus
+// (the thing that lets a pinned locus talk to the rest of the
+// program) lands in m28b.
+
+locus PinnedJob : schedule pinned {
+    birth() {
+        println("pinned.birth: setting up on the pinned thread");
+    }
+    run() {
+        // Sleep so main can race ahead and print before us.
+        time::sleep(30ms);
+        println("pinned.run: doing work on the pinned thread");
+    }
+    drain() {
+        println("pinned.drain: finishing pending work");
+    }
+    dissolve() {
+        println("pinned.dissolve: tearing down on the pinned thread");
+    }
+}
+
+fn main() {
+    PinnedJob { };
+    println("main: spawned PinnedJob; will join at scope exit");
+}

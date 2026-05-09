@@ -150,10 +150,12 @@ intermediate ground than time does.)
 - **Pinned → any**: same — cross-thread post; pinned doesn't
   block waiting for delivery acknowledgement.
 
-#### Implementation status (m26 + m27)
+#### Implementation status (m26 + m27 + m28a)
 
 m25 wired the annotation through parse / typecheck / codegen.
-**m26 ships cooperative semantics; m27 ships pinned threads.**
+**m26 ships cooperative semantics; m27 ships pinned threads
+(run-only); m28a lifts pinned to full lifecycle (birth / run /
+drain / dissolve all on the pinned thread).**
 
 **m26 (cooperative):** Each `<-` enqueues `(handler, self,
 payload_copy)` cells onto a program-wide FIFO queue
@@ -181,26 +183,32 @@ void lotus_bus_queue_destroy(ptr q)
 m20's "memcpy payload into subscriber's arena" step happens at
 ENQUEUE time (publisher's frame).
 
-**m27 (pinned threads):** Pinned-class loci spawn a pthread at
-instantiation; the locus's `run()` body executes on that
-thread. Main thread continues. At scope exit (deferred-
+**m27 + m28a (pinned threads + full lifecycle):** Pinned-class
+loci spawn a pthread at instantiation; the locus's full
+declared lifecycle (birth → run → drain → dissolve, each only
+if declared) executes on that thread, in order. Main thread
+continues immediately after spawn. At scope exit (deferred-
 dissolve flush), `pthread_join` blocks until the pinned
-thread's `run()` returns, then the locus's arena is destroyed
-wholesale.
+thread has finished its lifecycle and returned; the main
+thread's only remaining work for a pinned entry is the join
+plus the locus's arena destroy wholesale (drain / dissolve are
+SKIPPED on the main side — they ran on the pinned thread).
 
-The C runtime gained `lotus_thread_entry`, a small adapter
-that bridges pthread_create's `void *(*)(void *)` signature to
-a locus's `void run(void *self)`. Codegen arena-allocates a
-`(fn, self_ptr)` tuple, hands it to pthread_create, and
-defers `pthread_join` to the deferred-dissolve flush via a
-new optional `thread_id_alloca` field on each frame entry.
+m28a synthesizes a per-locus `__pinned_main_<LocusName>`
+function whose signature matches pthread's start-routine
+contract directly (`ptr (ptr)`); pthread_create gets that
+function pointer with `self_ptr` as its argument. No C-side
+adapter, no thread_args struct. The synthesized body simply
+calls each declared lifecycle method in sequence, then
+returns null.
 
-v0 m27 scope: pinned loci can declare ONLY `run()` — no
-birth/drain/dissolve, no bus subscribe/publish. Codegen errors
-clearly if those are present. Full pinned lifecycle (birth /
-drain / dissolve all on the pinned thread) plus cross-thread
-bus mailbox (the post-and-continue side of "any → pinned" in
-the cross-class semantics) wait on m28.
+m28a scope (still gated): pinned loci cannot declare
+`accept()` (children of pinned would need cross-thread
+shutdown coordination), bus subscribe / publish (cross-thread
+mailbox), or closures. Codegen errors clearly if those are
+present. Cross-thread bus mailbox (the post-and-continue side
+of "any → pinned" in the cross-class semantics) waits on
+m28b.
 
 Linker dependency: clang invocation now passes `-lpthread`
 unconditionally; small fixed cost in the resulting binary
