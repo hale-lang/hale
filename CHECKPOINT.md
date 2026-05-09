@@ -1,13 +1,15 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work in a
-new session. State as of m41b (bus-dispatch quarantine gating —
-quarantine() now also silences bus delivery to the quarantined
-locus). Surface-completeness arc through m38, then the
-substrate-foundation arc with m39 (trigger half: birth-epoch
+new session. State as of m42 (tick-epoch closures — closures with
+`epoch tick;` fire after each bus handler AND after run() returns;
+F.9 routing reused unchanged). Surface-completeness arc through m38,
+then the substrate-foundation arc with m39 (trigger half: birth-epoch
 closures), m40 (response half: restart with cap-2 default), m41
-(quarantine — stop-trying flag, gates run()), and m41b
-(quarantine extends to bus dispatch). Substrate arc: m19→m23 (region allocator with
+(quarantine — stop-trying flag, gates run()), m41b (quarantine
+extends to bus dispatch), and m42 (tick — steady-state pulse between
+birth and dissolve, the most-bottom remaining substrate epoch
+without a runtime engine). Substrate arc: m19→m23 (region allocator with
 rich/chunked/recognition + per-locus arenas + bus copy), m24
 (`match`), m25 (bimodal schedule-class annotation), m26
 (cooperative scheduler — deferred bus + drain loop), m26b
@@ -38,7 +40,10 @@ birth + birth-epoch closures on the same memory), m41
 (`quarantine(child);` — sticky flag that gates `run()`
 without affecting drain/dissolve cleanup) + m41b
 (quarantine extends to bus dispatch — quarantined
-subscribers stop receiving messages). **38 of 39
+subscribers stop receiving messages), and m42 (tick-epoch
+closures — fire after each bus handler + after run()
+returns; substrate-coupling between F.9 invariants and the
+cooperative scheduler's substrate-cell boundary). **39 of 40
 examples build to native ELF — every single-binary
 example.** Only `trellis-pair` (multi-binary, cross-process
 bus) remains.
@@ -98,9 +103,44 @@ greeting from child: yo
 Phase status:
 - **Phase 0** (spec stabilization) — complete
 - **Phase 1** (lex / parse / typecheck) — complete; F.1–F.18 enforced
-- **Phase 2 v0** (interpreter + bus router) — 38 of 39 example
+- **Phase 2 v0** (interpreter + bus router) — 39 of 40 example
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
+- **Phase 3 milestone 42** (tick-epoch closures — F.9 substrate
+  steady-state pulse) — complete. Where m39 audits at birth and
+  dissolve audits at end-of-life, m42 lights up the "between
+  cells" beat: closures with `epoch tick;` fire after every
+  bus handler invocation on the locus AND after `run()`
+  returns. Birth + Dissolve are lifecycle bookends; tick is
+  the steady-state monitor — useful for drift / accumulator
+  overflow / any property that can be violated mid-life by a
+  single handler. F.9 routing reused unchanged: tick
+  violations reach the parent's on_failure, which can absorb,
+  bubble, or quarantine. m41b's bus-dispatch quarantine
+  gating composes naturally — a parent that quarantines on
+  tick violation silences the locus from receiving further
+  bus messages, AND existing queued cells observe the gate
+  via a new __quarantined entry-check on subscribed handlers
+  (closes a pre-existing m41b gap). Codegen: synthetic
+  `__tick_closures(self, parent, on_failure)` fn (3-arg
+  shape mirrors birth/dissolve); synthetic
+  `__tick_closures_wrapper(self)` adapter for the pinned
+  thread post-run path (loads parent fields baked onto the
+  struct at instantiation); two new ptr fields
+  (`__parent_self` + `__parent_on_failure`) appended to the
+  locus struct for that wrapper to read. Tick call inserted
+  inline into subscribed user-fn bodies just before the m26
+  tail bus_queue_drain — the thunk-wrapper draft broke
+  ordering because the handler's own tail drain recursively
+  processed queued cells before the thunk's tick step ran.
+  Interpreter: Subscription gains a `parent: Option<...>`
+  captured at subscribe time; dispatch_bus uses it to route
+  violations to the correct on_failure;
+  `closure_fires_at_tick` predicate +
+  `fire_tick_closures` helper called after each
+  `run_handler` and after `run()` returns. Duration +
+  Explicit epochs still reject pending the runtime epoch
+  engine. New `examples/35-tick-closures/`.
 - **Phase 3 milestone 41b** (bus-dispatch quarantine gating)
   — complete. Closes the v0 gap m41 left open: quarantined
   subscribers now stop receiving bus messages, completing
@@ -929,6 +969,38 @@ m41b   m41b: bus-dispatch quarantine gating                   (cbf23cc)
                             quarantined locus. + LOTUS_DUMP_IR
                             env var for codegen debugging.
                           + examples/34-quarantine-bus
+m42    m42: tick-epoch closures (steady-state pulse)         (1539dff)
+                          ⇒ EpochSpec::Tick lowers alongside
+                            Birth + Dissolve. Synthetic
+                            __tick_closures(self, parent,
+                            on_failure) fn + 1-arg
+                            __tick_closures_wrapper adapter
+                            for the pinned post-run path.
+                            Two new ptr fields on every locus
+                            struct (__parent_self +
+                            __parent_on_failure) baked at
+                            instantiation via the same
+                            resolve_failure_route the
+                            birth/dissolve epochs use. Tick
+                            call inlined into subscribed
+                            user-fn bodies BEFORE their m26
+                            tail bus_queue_drain (thunk-
+                            wrapper draft broke ordering
+                            because the handler's own tail
+                            drain recursively pulled queued
+                            cells first). Plus a
+                            __quarantined entry gate on
+                            subscribed handlers — closes a
+                            pre-existing m41b gap where
+                            cells enqueued before
+                            quarantine() still fired their
+                            handler. Interpreter mirrors via
+                            Subscription.parent field +
+                            closure_fires_at_tick predicate
+                            + fire_tick_closures helper
+                            called after each run_handler
+                            and after run().
+                          + examples/35-tick-closures
 ```
 
 The architectural pivots are **m7** (locus → LLVM struct,
@@ -998,6 +1070,7 @@ m7 builds on the struct ABI.
 | `min(a, b)` / `max(a, b)` / `abs(x)` for numeric types | ✅ | ✅ |
 | `starts_with(s, p)` / `contains(s, sub)` for String | ✅ | ✅ |
 | Birth-epoch closures (F.9 invariants checked after `birth()`) | ✅ | ✅ |
+| Tick-epoch closures (fire after each handler + run() return) | ✅ | ✅ |
 | `restart(child)` recovery (cap-2 birth re-run) | ✅ | ✅ |
 | `quarantine(child)` recovery (sticky flag, gates run + bus) | ✅ | ✅ |
 | Schedule-class annotation (`: schedule cooperative \| pinned`) | — | ✅ (resolved on LocusInfo) |
@@ -1119,6 +1192,10 @@ real-world use case for lotus.
 ## Recent commit history (newest first)
 
 ```
+1539dff m42: tick-epoch closures (substrate)
+a35c128 CHECKPOINT.md: correct ahead-count post-push
+bc5f702 CHECKPOINT.md: rewrite Next-Steps for post-m41b state
+9da460b CHECKPOINT.md: m41b bus-dispatch quarantine gating refresh
 cbf23cc m41b: bus-dispatch quarantine gating
 366baee CHECKPOINT.md: m41 quarantine refresh
 ff525fe m41: quarantine recovery primitive (sticky-flag F.9)
@@ -1180,55 +1257,48 @@ d5afffd Codegen milestone 8: accept() lifecycle + parent-child wiring
 929efa2 Codegen milestone 5: time::sleep on CLOCK_MONOTONIC
 ```
 
-5 commits ahead of origin/master at checkpoint time
-(origin moved up to 0128f56 / m40 CP refresh during the
-session). This session shipped m30 → m34 + the std/*
-import-resolution fix, m35 tuples, m36 string ops, m37
-to_string, m38 stdlib helpers + bus-aggregator flex app,
-m39 birth-epoch closures, m40 restart recovery, m41
-quarantine + m41b bus-dispatch quarantine gating — the
-F.9 substrate now has both invariant-detection and the
+6 commits ahead of origin/master at checkpoint time. This
+session shipped m42 (tick-epoch closures): F.9's steady-
+state pulse, fired after each bus handler invocation AND
+after run() returns. Pairs with m39's birth + the implicit
+dissolve epochs to give 3 of 5 closure epochs lowered
+(Duration + Explicit still need the runtime epoch engine).
+Also closes a pre-existing m41b gap: subscribed handlers
+now check __quarantined at entry so cells already in the
+cooperative queue observe the stop-trying signal, matching
+the interpreter's dispatch_bus check. Prior sessions
+shipped m30 → m41b — the F.9 substrate now has invariant
+detection at birth + tick + dissolve, plus the
 restart/quarantine response menu, with quarantine
 substrate-complete across run() + bus dispatch.
 
 ## Next steps in priority order
 
 The bimodal scheduler (m28a/b/c), the surface-completeness
-arc (m29 → m38), and the F.9 invariant-and-repair pair
-(m39 birth-epoch closures + m40 restart + m41 quarantine +
-m41b bus-dispatch quarantine gating) all shipped this
-session. The substrate is in strong shape; remaining work
-divides into substrate-deepening, application proof, and
-contained polish.
+arc (m29 → m38), and most of the F.9 invariant-and-repair
+substrate (m39 birth + m40 restart + m41 quarantine + m41b
+bus-dispatch gating + m42 tick-epoch) have shipped. With m42
+landed, 3 of 5 closure epochs are lowered (Birth + Tick +
+Dissolve). The remaining two — Duration + Explicit — both
+need a small runtime epoch engine.
 
-**1. Closure tick/duration/explicit epochs.** The most
-"bottom" remaining substrate item per the user's
-"locus-of-design" framing. Today only Birth + Dissolve
-epochs lower (m39); Tick / Duration / Explicit reject with
-a clear "covers Birth + Dissolve" diagnostic. Lighting
-these up needs:
-- A runtime epoch engine: a tick clock tied to the
-  scheduler, plus a way for pinned loci to register
-  duration timers
-- Codegen wiring per epoch (synthesize __tick_closures /
-  __duration_closures fns, call them at the right spot
-  in the lifecycle)
-- F.9 routing reused unchanged (already proven in
-  m39/m40/m41)
-This is the substrate piece that lights up "monitor an
-invariant continuously while the locus is alive" — the
-spec's idiomatic use of closures.
+**1. Closure duration epoch.** `epoch duration N;` fires
+after every N units of monotonic time elapse since the
+last fire. Needs:
+- A per-locus duration-timer registration tied to
+  time::monotonic (cooperative loci poll on drain
+  iterations; pinned loci can use a thread-local
+  deadline check between mailbox cells).
+- Codegen + interpreter parity using the same
+  `__duration_closures` synthesis shape that m42
+  used for tick.
+- F.9 routing reused unchanged.
 
-**2. trellis-pair** (multi-binary, cross-process bus +
-entry-point selection). The only remaining example in the
-ladder. Two pieces:
-- `lotus build --bin <locus>` entry-point selection
-- Cross-process bus transport. Prior decision: shared-
-  memory ring buffer (matches the in-process LMAX
-  disruptor), per the runtime/stdlib transport split
-  documented above. With m39+m40+m41 in place, the
-  application can now exercise the F.9 closure +
-  recovery surface end-to-end.
+**2. Closure explicit epoch.** `epoch explicit;` fires only
+when the user calls a `check_closures(self)`-style builtin.
+The smallest of the three remaining epochs — no scheduler
+work, just an exposed builtin that walks the explicit-epoch
+closures of the calling locus.
 
 **Polish (any time):**
 
@@ -1402,6 +1472,9 @@ rm examples/33-quarantine/main
 cargo run --bin lotus -- build examples/34-quarantine-bus/main.lt
 ./examples/34-quarantine-bus/main        # FailingWatcher quarantined and silenced; HealthyWatcher receives all 3 published samples
 rm examples/34-quarantine-bus/main
+cargo run --bin lotus -- build examples/35-tick-closures/main.lt
+./examples/35-tick-closures/main         # Counter tick-closure: 4 cells fire then violation+quarantine silences the rest
+rm examples/35-tick-closures/main
 ```
 
-If all thirty-eight work, the checkpoint is intact.
+If all thirty-nine work, the checkpoint is intact.
