@@ -35,6 +35,12 @@
 #include <string.h>
 #include <pthread.h>
 #include <sched.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <errno.h>
+#include <time.h>
 
 /* Default chunk size: 64KB. Big enough that most loci fit in
  * one chunk, small enough that a leaf locus that allocates a
@@ -888,4 +894,192 @@ void lotus_decimal_to_string(int64_t hi, uint64_t lo, char *buf) {
         }
     }
     *p = '\0';
+}
+
+/*
+ * m57: AF_UNIX transport for the cross-process bus.
+ *
+ * First substrate piece of the cross-process bus arc. Provides a
+ * minimal "raw bytes between two processes over a unix socket"
+ * surface: create a transport in listener or connector role, send
+ * one message, recv one message, destroy. SOCK_SEQPACKET preserves
+ * message boundaries so each lotus_transport_send shows up as
+ * exactly one lotus_transport_recv — matches bus cell semantics
+ * with no framing layer at this milestone.
+ *
+ * No protocol, no subject binding, no deployment-config: this is
+ * the kernel-level transport substrate. m58 wires deployment-config
+ * subject -> transport URL routing on top of these primitives;
+ * m59 adds per-payload serializers; m60 weaves multi-binary builds
+ * + trellis-pair end-to-end. Source-level lotus stays
+ * transport-agnostic per notes/open-questions #8.
+ *
+ * Lifecycle:
+ *   - LISTEN role: bind + listen + accept. Blocks
+ *     lotus_transport_create until exactly one connector connects.
+ *   - CONNECT role: connect with retry-on-ENOENT/ECONNREFUSED for
+ *     ~1s, then fail. Lets the connector start before the listener
+ *     races to bind without needing an external sync point.
+ *
+ * Errors return NULL (create) or -1 (send/recv) and write a
+ * perror-style message to stderr. v0.1 prefers fail-fast over
+ * recovery — the protocol layer above this re-creates on failure.
+ */
+
+#define LOTUS_TRANSPORT_LISTEN  0
+#define LOTUS_TRANSPORT_CONNECT 1
+
+typedef struct lotus_transport {
+    int   conn_fd;        /* duplex SEQPACKET fd carrying messages */
+    int   listen_fd;      /* listener role only; -1 for connector */
+    char *path;           /* listener role only; owned, unlinked on destroy */
+    int   role;
+} lotus_transport_t;
+
+static int lotus__transport_set_addr(struct sockaddr_un *addr,
+                                     const char *path) {
+    size_t len = strlen(path);
+    /* sun_path includes the NUL — reject anything that would not fit. */
+    if (len + 1 > sizeof(addr->sun_path)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    memset(addr, 0, sizeof(*addr));
+    addr->sun_family = AF_UNIX;
+    memcpy(addr->sun_path, path, len + 1);
+    return 0;
+}
+
+lotus_transport_t *lotus_transport_create(const char *path, int role) {
+    if (!path) {
+        errno = EINVAL;
+        return NULL;
+    }
+    struct sockaddr_un addr;
+    if (lotus__transport_set_addr(&addr, path) != 0) {
+        perror("lotus_transport_create: addr");
+        return NULL;
+    }
+
+    int sock = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+    if (sock < 0) {
+        perror("lotus_transport_create: socket");
+        return NULL;
+    }
+
+    if (role == LOTUS_TRANSPORT_LISTEN) {
+        /* Best-effort: clear any stale socket file so bind succeeds
+         * after a previous run was killed without destroy(). */
+        unlink(path);
+        if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+            perror("lotus_transport_create: bind");
+            close(sock);
+            return NULL;
+        }
+        if (listen(sock, 1) < 0) {
+            perror("lotus_transport_create: listen");
+            close(sock);
+            unlink(path);
+            return NULL;
+        }
+        int conn = accept(sock, NULL, NULL);
+        if (conn < 0) {
+            perror("lotus_transport_create: accept");
+            close(sock);
+            unlink(path);
+            return NULL;
+        }
+        lotus_transport_t *t = (lotus_transport_t *)calloc(1, sizeof(*t));
+        if (!t) {
+            close(conn);
+            close(sock);
+            unlink(path);
+            return NULL;
+        }
+        t->conn_fd   = conn;
+        t->listen_fd = sock;
+        t->path      = strdup(path);
+        t->role      = role;
+        return t;
+    }
+
+    if (role == LOTUS_TRANSPORT_CONNECT) {
+        /* Retry connect on ENOENT/ECONNREFUSED for up to ~1s so a
+         * connector that races ahead of the listener's bind/listen
+         * still succeeds once the listener becomes ready. */
+        struct timespec backoff = { 0, 5L * 1000L * 1000L };  /* 5ms */
+        int attempts = 200;                                   /* 200 × 5ms */
+        while (attempts-- > 0) {
+            if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+                lotus_transport_t *t =
+                    (lotus_transport_t *)calloc(1, sizeof(*t));
+                if (!t) {
+                    close(sock);
+                    return NULL;
+                }
+                t->conn_fd   = sock;
+                t->listen_fd = -1;
+                t->path      = NULL;
+                t->role      = role;
+                return t;
+            }
+            if (errno != ENOENT && errno != ECONNREFUSED) {
+                perror("lotus_transport_create: connect");
+                close(sock);
+                return NULL;
+            }
+            nanosleep(&backoff, NULL);
+        }
+        fprintf(stderr,
+                "lotus_transport_create: connect to %s timed out\n",
+                path);
+        close(sock);
+        return NULL;
+    }
+
+    fprintf(stderr, "lotus_transport_create: invalid role %d\n", role);
+    close(sock);
+    errno = EINVAL;
+    return NULL;
+}
+
+int lotus_transport_send(lotus_transport_t *t,
+                         const void *buf,
+                         size_t len) {
+    if (!t || (!buf && len > 0)) {
+        errno = EINVAL;
+        return -1;
+    }
+    ssize_t n = send(t->conn_fd, buf, len, 0);
+    if (n < 0) {
+        perror("lotus_transport_send");
+        return -1;
+    }
+    return 0;
+}
+
+ssize_t lotus_transport_recv(lotus_transport_t *t,
+                             void *buf,
+                             size_t cap) {
+    if (!t || (!buf && cap > 0)) {
+        errno = EINVAL;
+        return -1;
+    }
+    ssize_t n = recv(t->conn_fd, buf, cap, 0);
+    if (n < 0) {
+        perror("lotus_transport_recv");
+        return -1;
+    }
+    return n;
+}
+
+void lotus_transport_destroy(lotus_transport_t *t) {
+    if (!t) return;
+    if (t->conn_fd >= 0) close(t->conn_fd);
+    if (t->listen_fd >= 0) close(t->listen_fd);
+    if (t->path) {
+        unlink(t->path);
+        free(t->path);
+    }
+    free(t);
 }

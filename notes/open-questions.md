@@ -84,6 +84,10 @@ when the type-system / operational-semantics docs are drafted.
    declared subject to a transport URL. Source-level transport
    annotations would couple coordination semantics to deployment
    topology — exactly what the abstraction prevents.
+   **Substrate progress:** m57 ships the AF_UNIX kernel-level
+   transport (`lotus_transport_create / send / recv / destroy`
+   over SOCK_SEQPACKET in the C runtime). Subject→transport
+   binding from deployment-config is m58.
 
 9. **What happens if the same subject is declared by two loci in
    the same binary?** Compile error or runtime fan-out?

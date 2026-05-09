@@ -1,8 +1,32 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work
-in a new session. State as of **m55 + m56 (design-decision
-substrate cleanup)** — applies The Design's calls on the
+in a new session. State as of **m57: AF_UNIX transport in the
+C runtime** — first substrate piece of the cross-process bus
+arc. Adds `lotus_transport_create / send / recv / destroy` to
+`crates/lotus-codegen/runtime/lotus_arena.c`: SOCK_SEQPACKET so
+each send shows up as exactly one recv (message boundaries
+preserved, no framing layer needed at this milestone), bind +
+listen + accept on the LISTEN role, connect-with-retry
+(ENOENT/ECONNREFUSED, ~1s ceiling at 5ms backoff) on the
+CONNECT role so the connector can race ahead of the listener
+without an external sync. No codegen wire-up: the surface is
+exposed as stable C-ABI fns that m58's deployment-config
+subject→transport routing will call into. New
+`crates/lotus-codegen/tests/transport_driver.c` is a tiny
+harness binary that the new
+`crates/lotus-codegen/tests/transport.rs` integration test
+compiles (clang links driver + lotus_arena.c) and exec's twice
+— once as listener, once as connector — to verify a byte-for-
+byte round-trip across two processes. Two assertions: (a) short
+message round-trip, (b) message-boundary preservation
+(payload with embedded whitespace + trailing newline). 98 tests
+pass (was 96; +2 from transport.rs); 54 example builds
+unaffected. Per the v1-trajectory framing in CHECKPOINT's
+priority list, m58 (deployment-config subject binding) is next;
+trellis-pair stays the v1 acceptance test, not the development
+driver. State before that was **m55 + m56 (design-decision
+substrate cleanup)** — applied The Design's calls on the
 deferred recovery vocabulary, generics direction, and several
 spec-vs-impl drifts. m55: removes `drain` / `dissolve` from
 the `RecoveryOp` enum (vocabulary becomes restart /
@@ -2232,30 +2256,43 @@ capacity ceiling — the m45 quickfix `× 32` multiplier is gone.
 
 ### RESUME HERE (next session)
 
-**Start with m57: AF_UNIX transport in the C runtime.** First
-session of the cross-process bus arc — substrate completion
-that gates trellis-pair (the v1 acceptance test). Kept
-deliberately small: kernel-level transport only, no protocol
-layer, no deployment-config yet. Concrete deliverable:
-`lotus_transport_create / send / recv` C-runtime fns over an
-AF_UNIX socket; one synthetic example sending bytes between
-two `lotus build` outputs hand-wired in C; documented as the
-foundation for m58's deployment config.
+**Start with m58: Deployment-config subject binding.** Second
+session of the cross-process bus arc. m57 shipped the
+kernel-level transport (AF_UNIX SOCK_SEQPACKET, four C-ABI
+fns: `lotus_transport_create / send / recv / destroy`) plus a
+two-process integration test; m58 wires that surface to the
+source language. Per notes/open-questions #8, source stays
+transport-agnostic — a startup config (file or CLI flag) maps
+each declared `bus subscribe`/publish subject to a transport
+URL (e.g. `unix:///tmp/lotus-trellis.sock`). Runtime startup
+parses the config and calls `lotus_bus_register_remote`
+(or similar) once per subject so dispatch fans out to the
+local cooperative/pinned subscribers AND any remote transports
+bound to that subject. Open shape questions: config file
+format (TOML vs JSON vs CLI-only), whether transport binding
+happens before or alongside `lotus_bus_register`, and how a
+subject with both local and remote subscribers should fan out
+ordering-wise. Pick a small example as the test — probably a
+two-binary publish/subscribe that doesn't need codegen
+serializer support yet (Int payload only, m59 territory for
+struct payloads).
 
 The cross-process bus arc was chosen as the next multi-session
 commitment per The Design's delivery-lotus framing: it's the
 substrate-root layer of the v1 trajectory, the runtime/stdlib
 split is locked (m56), and the design questions for #8/#9/#10
 are resolved. Memory note holds: trellis-pair is the
-acceptance test, not the development driver — m57 ships
+acceptance test, not the development driver — m58 ships
 because the substrate needs it, not to make trellis-pair
 pass.
 
 ### Cross-process bus arc (substrate, ~3-4 sessions)
 
-- **m57 AF_UNIX transport in C runtime** — `lotus_transport_*`
-  fns; raw bytes over unix socket; no protocol layer. Single
-  hardcoded subject for testing.
+- **m57 AF_UNIX transport in C runtime — DONE** —
+  `lotus_transport_*` fns over SOCK_SEQPACKET, raw bytes, no
+  protocol layer. Verified via `crates/lotus-codegen/tests/
+  transport.rs` (driver + runtime linked into one binary,
+  exec'd twice to round-trip a message between processes).
 - **m58 Deployment-config subject binding** — startup config
   (TOML/JSON) maps subjects → transport URLs; runtime
   registers each subject's transport at boot.
@@ -2328,14 +2365,16 @@ System has:
 - `gcc` 13.x
 
 Cargo workspace builds clean. `cargo test --workspace --tests` passes
-all 96 tests (the locus-with-run test runs 3×500ms sleeps so the
-runtime + codegen integration buckets clock ~1.5s each).
+all 98 tests (the locus-with-run test runs 3×500ms sleeps so the
+runtime + codegen integration buckets clock ~1.5s each; m57 added
+two transport round-trip tests under tests/transport.rs that fork
+listener + connector subprocesses).
 
 ## How to verify the checkpoint
 
 ```
 cd ~/code/lotus-lang
-cargo test --workspace --tests           # 96 passed
+cargo test --workspace --tests           # 98 passed
 cargo run --bin lotus -- run examples/trellis-demo/main.lt
 cargo run --bin lotus -- build examples/hello-world/main.lt
 ./examples/hello-world/main              # prints "hello, world"
