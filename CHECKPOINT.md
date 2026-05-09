@@ -1,9 +1,46 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work
-in a new session. State as of **m60: per-payload serializer
-shape (wire format deferred)** — fourth substrate piece of the
-cross-process bus arc. Installs the serializer/deserializer
+in a new session. State as of **m61: generic struct
+monomorphization (narrow first slice)** — opens the generics
+arc, the named "biggest visible 'feels v1' surface gap." This
+is a deliberately small substrate slice: codegen now lifts its
+pre-m61 "generic type X" rejection and synthesizes a concrete
+mangled-name struct per unique (template, args) tuple
+discovered in struct-field positions across the program. Three
+new helpers in `crates/lotus-codegen/src/codegen.rs`:
+`mangle_generic_name` (Box<Int> → Box_Int, recurses through
+nested args), `substitute_type_expr` (walks a TypeExpr
+substituting GenericParam names with concrete TypeExprs), and
+`synthesize_generic_instantiation` (clones the template,
+substitutes T → Args throughout the body, gives the result the
+mangled name + an empty generics list). lower_program gains a
+discovery pass between Pass A0's collection and the existing
+declare_user_type loop: it walks every concrete struct decl's
+field types via `collect_generic_uses`, dedupes by mangled
+name, recurses into nested args first so inner instantiations
+land before outer (substrate-ready for `Box<Pair<Int,String>>`
+even though the parser today lexes `>>` as Shr), synthesizes
+each request, and runs declare_user_type on the synthesized
+decls before any concrete decl's fields are walked. type_expr_to_lotus
+gains a generic-args branch that mangles + looks up the
+synthesized TypeRef. v0.1 narrow scope: discovery is
+struct-field-only (fn / locus / let-ascription discovery is
+m61b); construction uses the **mangled name** explicitly
+(`Box_Int { value: 42 }`) — bare-name inference like
+`Box { ... }` resolved by context is m61b; args must be
+primitives or non-generic user types (or recursive generic
+instantiations once the parser disambiguates `>>`). Generic
+templates' source decls are still allowed but produce no LLVM
+type directly — only their instantiations do. Verified via
+new `crates/lotus-codegen/tests/generics.rs` (3 tests:
+single-arg field reference + read-through, two distinct args
+of the same template producing distinct monomorphs, two
+unrelated generic templates instantiated independently). 105
+tests pass (was 102; +3 from generics.rs); 54 example builds
+unaffected. State before that was **m60: per-payload
+serializer shape (wire format deferred)** — fourth substrate
+piece of the cross-process bus arc. Installs the serializer/deserializer
 hooks that codegen routes every bus payload through, but
 deliberately leaves the actual wire format as a future-
 milestone choice. Codegen now synthesizes
@@ -2369,49 +2406,61 @@ capacity ceiling — the m45 quickfix `× 32` multiplier is gone.
 
 ### RESUME HERE (next session)
 
-**Cross-process bus substrate arc is closed.** m57 (kernel
-transport) + m58 (publisher fanout) + m59 (subscriber reader
-thread) + m60 (serializer shape) shipped the substrate for
-cross-process coordination per
-notes/open-questions #8/#9/#10. Trellis-pair is a v1
-acceptance test, not a development driver — per the user's
-hard rule, **no code towards trellis-pair until v1 language
-is done.** Multi-binary `lotus build --manifest` is post-v1
-deployment tooling, not language, and waits with it.
+**Generics arc is in progress; m61 (narrow slice) shipped.**
+Cross-process bus substrate arc closed at m60. Generics is
+the named "biggest visible 'feels v1' surface gap"; m61 lifted
+the codegen rejection on generic struct templates and now
+synthesizes per-instantiation monomorphs from struct-field
+discovery. Per the user's hard rule, **no code towards
+trellis-pair until v1 language is done.**
 
-**Next: close the v1 language gaps surface-up.** The CHECKPOINT
-already names "Generics" as the biggest visible 'feels v1'
-surface gap; it's the natural next arc.
+**Start with m61b: surface ergonomics + broader discovery.**
+The m61 substrate works but the surface is awkward: users
+write `Box_Int { ... }` (the mangled name) explicitly, and
+discovery only walks struct fields. Two threads:
 
-**Start with m61: generics — first session.** Design is locked
-(m56): compile-time monomorphization, `ProjectionClass`
-bounds, plus `Numeric` bound for v1 (notes/open-questions #2).
-Sub-milestones (each its own session, ~4-5 sessions total):
+(a) **Bare-name struct literal resolution.** Make
+`Box { value: 42 }` work when context (let ascription, fn
+return type, surrounding struct field type) names a specific
+generic instantiation. Requires plumbing an "expected
+LotusType" through `lower_expr` so `Expr::Struct` can fall
+back to mangled-name lookup when the bare name isn't in
+user_types but a generic template of that name exists +
+context disambiguates.
 
-- **m61 generic struct + enum monomorphization** — `type Box<T>
-  { value: T }`, `type Result<T, E> = enum { Ok(T), Err(E) }`.
-  Codegen instantiates one struct/enum per used type
-  combination. Wire up the typechecker's existing generic
-  bookkeeping (lotus-types already has the design).
-- **m62 generic free fns** — `fn first<T>(xs: [T; 4]) -> T`.
-  Per-callsite-type-tuple monomorphization.
-- **m63 generic loci** — same shape lifted to locus
-  declarations.
-- **m64 `Numeric` bound + generic closures** — `T: Numeric`
-  bound permits arithmetic on generic params; closures over
-  generic loci.
-- **m65 stdlib `Result<T,E>` / `Option<T>`** — the canonical
-  payoff types that motivate generics in the first place; ship
-  as built-ins.
+(b) **Broader discovery.** Walk fn signatures (params + return
+types), locus signatures (params + lifecycle method
+signatures), bus subscribe/publish payload types, and let
+ascriptions for generic uses. Each path drives the same
+synthesize_generic_instantiation helper.
 
-After generics, scan for any remaining v1 punch-list items:
+Also worth picking up here: the parser limitation where `>>`
+lexes as Shr instead of two `>` tokens in type-arg position.
+Lift that and `Box<Box<Int>>` becomes writable; the m61
+codegen substrate is already nested-aware (`collect_generic_uses`
+recurses into args first; mangling is recursive).
+
+**Then m62: generic free fns.** `fn first<T>(xs: [T; 4]) -> T`.
+Per-callsite-type-tuple monomorphization — each unique arg
+tuple seen at a call site produces one specialized fn body.
+Same shape as struct monomorphization but applied to
+FnDecl.
+
+**m63: generic loci.** Same lifted to locus declarations.
+
+**m64: `Numeric` bound + generic closures.** `T: Numeric`
+permits arithmetic on T; closures over generic loci.
+
+**m65: stdlib `Result<T,E>` / `Option<T>`** as built-ins.
+
+After the generics arc, scan for remaining v1 punch-list:
 - Multi-peer fanout per subject (m58 hardcodes one peer)
 - String fields in cross-process bus payloads (m60's identity
   serializer can't follow String pointers across process
-  boundaries; would need real wire format)
-- The handful of workload-pending items (count() / mean() /
-  rolling-window accumulators, reorganize impl, recognition-
-  class real bitmap pool)
+  boundaries; needs real wire format)
+- Workload-pending items (count() / mean() / rolling-window
+  accumulators, reorganize impl, recognition-class bitmap
+  pool) — only if a workload actually demands them at v1
 
 Once those gaps that v1 actually *requires* are closed —
 **call v1**, then trellis-pair / multi-binary build /
@@ -2476,15 +2525,28 @@ acceptance test artifact and the deployment tooling around it,
 not language work. They sit behind whatever closes v1
 (generics + any v1-required substrate gaps); see RESUME HERE.
 
-### Generics arc (~4-5 sessions, current commitment)
+### Generics arc (current commitment, ~4-5 sessions)
 
 The biggest "feels v1" surface gap. Design locked (m56):
 compile-time monomorphization, `ProjectionClass` bounds,
 `Numeric` bound for v1 (notes/open-questions #2). Sub-
-milestones m61-m65 expanded in RESUME HERE above. After this
-arc, scan v1 punch-list for any remaining gaps the substrate
-exposes (multi-peer fanout, Strings cross-process, etc.) and
-close those before calling v1 done.
+milestones expanded in RESUME HERE above:
+
+- **m61 — DONE (narrow slice)** — generic struct templates
+  monomorphize via field-position discovery; mangled-name
+  construction only. Verified via
+  `crates/lotus-codegen/tests/generics.rs`.
+- **m61b** — bare-name resolution via context + broader
+  discovery (fn / locus / bus / let-ascription); fix
+  parser `>>` ambiguity.
+- **m62** — generic free fns.
+- **m63** — generic loci.
+- **m64** — `Numeric` bound + generic closures.
+- **m65** — stdlib `Result<T,E>` / `Option<T>`.
+
+After this arc, scan v1 punch-list for any remaining gaps the
+substrate exposes (multi-peer fanout, Strings cross-process,
+etc.) and close those before calling v1 done.
 
 ### Single-session implementations (workload-pending)
 
@@ -2537,7 +2599,7 @@ System has:
 - `gcc` 13.x
 
 Cargo workspace builds clean. `cargo test --workspace --tests` passes
-all 102 tests (the locus-with-run test runs 3×500ms sleeps so the
+all 105 tests (the locus-with-run test runs 3×500ms sleeps so the
 runtime + codegen integration buckets clock ~1.5s each; m57 added
 two transport round-trip tests under tests/transport.rs that fork
 listener + connector subprocesses; m58 added two more under
@@ -2547,13 +2609,14 @@ tests/bus_subscriber.rs that runs the full two-lotus-binary
 publisher → reader-thread → cooperative-queue → handler path; m60
 added one more under tests/serializer_shape.rs that verifies the
 synthesized __serialize_T / __deserialize_T symbols + send-site
-calls show up in the IR).
+calls show up in the IR; m61 added three under tests/generics.rs
+that exercise generic struct template monomorphization).
 
 ## How to verify the checkpoint
 
 ```
 cd ~/code/lotus-lang
-cargo test --workspace --tests           # 102 passed
+cargo test --workspace --tests           # 105 passed
 cargo run --bin lotus -- run examples/trellis-demo/main.lt
 cargo run --bin lotus -- build examples/hello-world/main.lt
 ./examples/hello-world/main              # prints "hello, world"

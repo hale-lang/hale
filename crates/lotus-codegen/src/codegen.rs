@@ -1755,6 +1755,53 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 _ => None,
             })
             .collect();
+
+        // m61: discover generic instantiations referenced in
+        // struct field positions, synthesize a concrete
+        // (mangled-name) decl per unique (template, args), and
+        // declare those FIRST so non-generic decls that reference
+        // generic types resolve cleanly when their fields are
+        // walked. v0.1 narrow scope: discover only in
+        // TypeDeclBody::Struct field types. Fn / locus / let-
+        // ascription discovery is m61b. Recurses into nested
+        // generic args so `Box<Pair<Int,String>>` synthesizes
+        // both `Pair_Int_String` and `Box_Pair_Int_String`.
+        let generic_decls: BTreeMap<String, TypeDecl> = type_decls
+            .iter()
+            .filter(|t| !t.generics.is_empty())
+            .map(|t| (t.name.name.clone(), t.clone()))
+            .collect();
+        let mut seen_mangles: BTreeSet<String> = BTreeSet::new();
+        let mut requests: Vec<(String, Vec<TypeExpr>)> = Vec::new();
+        for t in &type_decls {
+            if !t.generics.is_empty() {
+                continue;     /* skip templates' own bodies */
+            }
+            if let TypeDeclBody::Struct(fields) = &t.body {
+                for f in fields {
+                    Self::collect_generic_uses(
+                        &f.ty,
+                        &generic_decls,
+                        &mut seen_mangles,
+                        &mut requests,
+                    )?;
+                }
+            }
+        }
+        for (template_name, args) in &requests {
+            let template = generic_decls
+                .get(template_name)
+                .expect("template was just looked up via generic_decls");
+            let synthesized =
+                Self::synthesize_generic_instantiation(template, args)?;
+            self.declare_user_type(&synthesized)?;
+        }
+
+        // Now declare concrete user-written non-generic decls.
+        // The generic templates themselves are skipped inside
+        // declare_user_type (m61: generic decls produce no LLVM
+        // type directly; their instantiations were declared
+        // above).
         for t in &type_decls {
             self.declare_user_type(t)?;
         }
@@ -2098,6 +2145,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )))
                 }
             }
+            // m61: generic instantiation in type position. Mangle
+            // (template, args) to a flat name and look it up; the
+            // monomorphization pass in lower_program (A0b) will
+            // have synthesized + declared the mangled struct
+            // before any concrete decl that references it tries
+            // to resolve. If lookup fails, the generic was used
+            // somewhere the discovery pass missed (m61b territory)
+            // — error clearly.
+            TypeExpr::Named { path, generic_args, .. }
+                if !generic_args.is_empty() && path.segments.len() == 1 =>
+            {
+                let mangled = Self::mangle_generic_name(
+                    &path.segments[0].name,
+                    generic_args,
+                )?;
+                if self.user_types.contains_key(&mangled) {
+                    Ok(LotusType::TypeRef(mangled))
+                } else if self.user_enums.contains_key(&mangled) {
+                    Ok(LotusType::Enum(mangled))
+                } else {
+                    Err(CodegenError::Unsupported(format!(
+                        "generic instantiation `{}` not synthesized — \
+                         m61 v0.1 only discovers uses in struct field \
+                         positions; reachable from {:?}",
+                        mangled, path.segments[0].name
+                    )))
+                }
+            }
             TypeExpr::Array { elem, size, .. } => {
                 let elem_ty = self.type_expr_to_lotus(elem)?;
                 let n = match size {
@@ -2178,10 +2253,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// literals to provide every field at the call site).
     fn declare_user_type(&mut self, t: &TypeDecl) -> Result<(), CodegenError> {
         if !t.generics.is_empty() {
-            return Err(CodegenError::Unsupported(format!(
-                "generic type `{}`",
-                t.name.name
-            )));
+            // m61: generic templates are not lowered directly. The
+            // monomorphization pass (lower_program A0b) walks every
+            // generic-arg use site, synthesizes a concrete TypeDecl
+            // per (template, args) tuple with the generic params
+            // substituted, and calls declare_user_type on the
+            // synthesized non-generic decl. Skipping here lets the
+            // template's source declaration coexist with its
+            // synthesized instantiations without producing a
+            // template-shaped LLVM struct (which would have no
+            // sensible field types because T isn't a real type).
+            return Ok(());
         }
         let struct_fields = match &t.body {
             TypeDeclBody::Struct(fs) => fs,
@@ -2259,6 +2341,261 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             },
         );
         Ok(())
+    }
+
+    /// m61: produce the mangled name for a generic instantiation.
+    /// `Box<Int>` → `"Box_Int"`, `Pair<Int, String>` →
+    /// `"Pair_Int_String"`. Recurses into nested generics so
+    /// `Box<Pair<Int, String>>` → `"Box_Pair_Int_String"`. Each
+    /// arg must be a primitive or a non-generic user type at this
+    /// milestone (or itself a generic instantiation, which mangles
+    /// recursively).
+    fn mangle_generic_name(
+        template: &str,
+        args: &[TypeExpr],
+    ) -> Result<String, CodegenError> {
+        let mut tokens: Vec<String> = Vec::with_capacity(args.len());
+        for a in args {
+            tokens.push(Self::type_expr_mangle_token(a)?);
+        }
+        Ok(format!("{}_{}", template, tokens.join("_")))
+    }
+
+    /// m61: produce a single-token mangle for one generic arg.
+    /// Primitives use their canonical name (`Int`, `String`,
+    /// ...); a non-generic Named ref uses the bare name; a
+    /// generic ref recurses through `mangle_generic_name`.
+    fn type_expr_mangle_token(t: &TypeExpr) -> Result<String, CodegenError> {
+        match t {
+            TypeExpr::Primitive(p, _) => match p {
+                PrimType::Int => Ok("Int".into()),
+                PrimType::Float => Ok("Float".into()),
+                PrimType::Bool => Ok("Bool".into()),
+                PrimType::String => Ok("String".into()),
+                PrimType::Duration => Ok("Duration".into()),
+                PrimType::Decimal => Ok("Decimal".into()),
+                PrimType::Time => Ok("Time".into()),
+                other => Err(CodegenError::Unsupported(format!(
+                    "primitive `{:?}` as generic arg (m61 v0.1)",
+                    other
+                ))),
+            },
+            TypeExpr::Named { path, generic_args, .. }
+                if path.segments.len() == 1 =>
+            {
+                if generic_args.is_empty() {
+                    Ok(path.segments[0].name.clone())
+                } else {
+                    Self::mangle_generic_name(
+                        &path.segments[0].name,
+                        generic_args,
+                    )
+                }
+            }
+            other => Err(CodegenError::Unsupported(format!(
+                "type form `{:?}` as generic arg (m61 v0.1 only \
+                 supports primitives + named types)",
+                other
+            ))),
+        }
+    }
+
+    /// m61: substitute generic param refs (`T`, `U`, ...) inside a
+    /// `TypeExpr` per the supplied substitution map. Recurses into
+    /// generic args, array elems, tuple parts, etc., so a body
+    /// like `[T; 4]` substitutes to `[Int; 4]` correctly.
+    fn substitute_type_expr(
+        expr: &TypeExpr,
+        subst: &BTreeMap<String, TypeExpr>,
+    ) -> TypeExpr {
+        match expr {
+            TypeExpr::Named { path, generic_args, span }
+                if path.segments.len() == 1
+                    && generic_args.is_empty()
+                    && subst.contains_key(&path.segments[0].name) =>
+            {
+                subst[&path.segments[0].name].clone()
+            }
+            TypeExpr::Named { path, generic_args, span } => TypeExpr::Named {
+                path: path.clone(),
+                generic_args: generic_args
+                    .iter()
+                    .map(|a| Self::substitute_type_expr(a, subst))
+                    .collect(),
+                span: span.clone(),
+            },
+            TypeExpr::Array { elem, size, span } => TypeExpr::Array {
+                elem: Box::new(Self::substitute_type_expr(elem, subst)),
+                size: size.clone(),
+                span: span.clone(),
+            },
+            TypeExpr::Tuple(parts, span) => TypeExpr::Tuple(
+                parts
+                    .iter()
+                    .map(|p| Self::substitute_type_expr(p, subst))
+                    .collect(),
+                span.clone(),
+            ),
+            TypeExpr::Projection { class, inner, span } => {
+                TypeExpr::Projection {
+                    class: *class,
+                    inner: Box::new(Self::substitute_type_expr(inner, subst)),
+                    span: span.clone(),
+                }
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// m61: walk a TypeExpr looking for generic instantiations
+    /// that reference one of the known generic templates. Each
+    /// unique (template_name, args) tuple is recorded in
+    /// `requests` (deduped via the mangled name in `seen`), with
+    /// recursion into the args themselves so nested generics like
+    /// `Box<Pair<Int, String>>` register `Pair_Int_String` first
+    /// then `Box_Pair_Int_String`. Discovery is purely structural
+    /// — the typechecker has already validated names.
+    fn collect_generic_uses(
+        t: &TypeExpr,
+        generic_decls: &BTreeMap<String, TypeDecl>,
+        seen: &mut BTreeSet<String>,
+        requests: &mut Vec<(String, Vec<TypeExpr>)>,
+    ) -> Result<(), CodegenError> {
+        match t {
+            TypeExpr::Named { path, generic_args, .. }
+                if path.segments.len() == 1
+                    && !generic_args.is_empty()
+                    && generic_decls
+                        .contains_key(&path.segments[0].name) =>
+            {
+                // Recurse into args first so nested instantiations
+                // are discovered (and end up in requests order
+                // before the outer one — which is what
+                // declare_user_type needs to resolve them).
+                for a in generic_args {
+                    Self::collect_generic_uses(
+                        a,
+                        generic_decls,
+                        seen,
+                        requests,
+                    )?;
+                }
+                let mangled = Self::mangle_generic_name(
+                    &path.segments[0].name,
+                    generic_args,
+                )?;
+                if seen.insert(mangled) {
+                    requests.push((
+                        path.segments[0].name.clone(),
+                        generic_args.clone(),
+                    ));
+                }
+            }
+            TypeExpr::Named { generic_args, .. } => {
+                /* non-generic Named ref (or unknown): still
+                 * recurse into any args in case they themselves
+                 * use a known generic template. */
+                for a in generic_args {
+                    Self::collect_generic_uses(
+                        a,
+                        generic_decls,
+                        seen,
+                        requests,
+                    )?;
+                }
+            }
+            TypeExpr::Array { elem, .. } => Self::collect_generic_uses(
+                elem,
+                generic_decls,
+                seen,
+                requests,
+            )?,
+            TypeExpr::Tuple(parts, _) => {
+                for p in parts {
+                    Self::collect_generic_uses(
+                        p,
+                        generic_decls,
+                        seen,
+                        requests,
+                    )?;
+                }
+            }
+            TypeExpr::Projection { inner, .. } => Self::collect_generic_uses(
+                inner,
+                generic_decls,
+                seen,
+                requests,
+            )?,
+            TypeExpr::Primitive(_, _) | TypeExpr::Function { .. } => {}
+        }
+        Ok(())
+    }
+
+    /// m61: synthesize a concrete TypeDecl from a generic template
+    /// + a tuple of concrete type args. The synthesized decl has
+    /// the mangled name (e.g., `Box_Int`), no generics, and a body
+    /// where every reference to a generic param is substituted
+    /// with the corresponding arg. Caller hands the result to
+    /// `declare_user_type` like any other non-generic decl.
+    fn synthesize_generic_instantiation(
+        template: &TypeDecl,
+        args: &[TypeExpr],
+    ) -> Result<TypeDecl, CodegenError> {
+        if template.generics.len() != args.len() {
+            return Err(CodegenError::Unsupported(format!(
+                "generic type `{}` expects {} args, got {}",
+                template.name.name,
+                template.generics.len(),
+                args.len()
+            )));
+        }
+        let mangled = Self::mangle_generic_name(&template.name.name, args)?;
+
+        let mut subst: BTreeMap<String, TypeExpr> = BTreeMap::new();
+        for (gp, arg) in template.generics.iter().zip(args.iter()) {
+            subst.insert(gp.name.name.clone(), arg.clone());
+        }
+
+        // Walk the body, substituting generic param refs.
+        let new_body = match &template.body {
+            TypeDeclBody::Struct(fields) => {
+                let new_fields: Vec<StructField> = fields
+                    .iter()
+                    .map(|f| StructField {
+                        name: f.name.clone(),
+                        ty: Self::substitute_type_expr(&f.ty, &subst),
+                        default: f.default.clone(),
+                        span: f.span.clone(),
+                    })
+                    .collect();
+                TypeDeclBody::Struct(new_fields)
+            }
+            TypeDeclBody::Alias(_) => {
+                return Err(CodegenError::Unsupported(format!(
+                    "generic alias `{}` (m61 v0.1 supports struct \
+                     templates only)",
+                    template.name.name
+                )));
+            }
+            TypeDeclBody::Enum(_) => {
+                return Err(CodegenError::Unsupported(format!(
+                    "generic enum `{}` (m61 v0.1 supports struct \
+                     templates only; enum monomorphization is \
+                     m61b)",
+                    template.name.name
+                )));
+            }
+        };
+
+        Ok(TypeDecl {
+            name: Ident {
+                name: mangled,
+                span: template.name.span.clone(),
+            },
+            generics: Vec::new(),
+            body: new_body,
+            span: template.span.clone(),
+        })
     }
 
     /// Pass A: declare a locus's struct type + lifecycle method
