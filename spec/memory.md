@@ -475,22 +475,60 @@ a pointer-bump in the head chunk; on overflow, a new chunk is
 malloc'd and pushed to the front. Destruction walks the list and
 frees every chunk wholesale — no per-object free, ever.
 
-Codegen uses the arena via a single program-wide pointer
-(`@lotus.arena.global`) initialized in `main`'s prelude and
-torn down before every `ret` from `main` (covering the
-fall-through path AND the `return n;` exit-code path). All
-previously-libc-malloc call sites — user-type struct literals
-(bus payloads, composite locus param defaults) and synthesized
-`ClosureViolation` records — now allocate through
-`lotus_arena_alloc(@lotus.arena.global, size, 8)`.
+### Locus-owned arenas + bus copy semantics (m20)
 
-m19 deliberately keeps the lifetime model unchanged: one arena
-per program, wholesale free at exit. Same observable leak
-profile as the previous libc-malloc world; the substrate is now
-the lotus runtime instead of libc, which is the load-bearing
-prerequisite for m20+ to attach arenas to locus lifetimes (so
-dissolve actually frees the locus's region per F.3) and m21 to
-copy bus payloads between sender / receiver arenas.
+Every locus struct carries a synthetic `__arena: ptr` field at
+**struct slot 0**. Initialized at instantiation time (right after
+the `alloca`) via `lotus_arena_create()` and torn down via
+`lotus_arena_destroy(self.__arena)` after the user's `dissolve`
+method runs (in both the ephemeral path and the deferred
+long-lived-locus flush at body exit). Per spec: "A locus owns a
+region. The region's lifetime is the locus's lifetime."
+
+The arena field's fixed-offset placement is load-bearing for the
+bus path: `lotus.bus_dispatch` is type-erased — it sees only
+`ptr self` from the subscription table — so its only way to find
+the subscriber's arena at runtime is a fixed-offset load. Slot 0
+makes that a constant GEP.
+
+Allocation routing inside codegen has three tiers, in order:
+
+1. **`current_arena_override`** — set during locus-instantiation
+   field init so composite-literal defaults / overrides land in
+   the new locus's arena (rather than the parent's arena where
+   the default expression literally executes).
+2. **`current_self`'s arena field** — when we're inside a
+   lifecycle method body (or any fn with a `current_self`
+   binding), allocations go to the locus's own arena.
+3. **`@lotus.arena.global`** — fallback for `main` and free fns,
+   which have no enclosing locus. Initialized in main's prelude;
+   destroyed at every `ret` from main.
+
+Bus dispatch implements the spec's copy-not-pointer semantic:
+
+```
+void lotus.bus_dispatch(ptr subject, ptr payload, i64 size):
+   for i in 0..bus.count:
+     if strcmp(bus.entries[i].subject, subject) == 0:
+       sub_self  = bus.entries[i].self
+       sub_arena = load (sub_self + 0)
+       copy      = lotus_arena_alloc(sub_arena, size, 8)
+       memcpy(copy, payload, size)
+       bus.entries[i].handler(sub_self, copy)
+```
+
+Each `<-` call site passes the payload's compile-time-known
+struct size as a third arg. The subscriber's handler receives a
+pointer into the subscriber's own arena, valid until that
+subscriber dissolves — independently of when the publisher's
+locus dissolves. This unblocks `self.current_kernel = msg`
+patterns where the subscriber stores a payload reference across
+multiple bus events (trellis-demo's central pattern).
+
+m20 deliberately keeps free fns + main on the program-wide arena
+(no per-call arena yet) and doesn't yet specialize per projection
+class — chunked-class per-coordinatee sub-regions land in m22,
+the recognition-class fixed pool in m23.
 
 ## Future work
 

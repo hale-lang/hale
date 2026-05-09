@@ -128,6 +128,7 @@ pub fn build_executable(
         bus_state: None,
         deferred_dissolves: Vec::new(),
         in_main: false,
+        current_arena_override: None,
     };
 
     cx.declare_builtins();
@@ -244,6 +245,14 @@ struct Cx<'ctx, 'p> {
     /// as an exit-code return (truncated to i32) when this is set,
     /// rather than the user-fn `current_user_fn_ret` path.
     in_main: bool,
+    /// When set, `arena_alloc` routes through this arena pointer
+    /// instead of `current_self`'s arena field or the program
+    /// global. Used during locus-instantiation field init so
+    /// composite literals (`TradeKernel { ... }`) used as
+    /// default-init values land in the *new* locus's arena
+    /// rather than the parent's. Restored after the field-init
+    /// loop completes.
+    current_arena_override: Option<PointerValue<'ctx>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -337,6 +346,14 @@ struct LocusInfo<'ctx> {
     /// Index of the `i64 child_count` field. Always paired with
     /// `children_field_idx`.
     child_count_field_idx: Option<u32>,
+    /// Index of the synthetic `__arena: ptr` field carrying this
+    /// locus's `lotus_arena_t*`. Always 0 — the arena field is
+    /// the first slot in every locus struct so bus dispatch can
+    /// GEP-load it from a type-erased self pointer (m20: bus
+    /// payload copy semantics need the subscriber's arena, and
+    /// the dispatch fn doesn't know which locus type its
+    /// self_ptr came from).
+    arena_field_idx: u32,
 }
 
 /// Maximum number of children any locus struct's built-in
@@ -493,6 +510,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // observable output order.
         let fflush_ty = i32_t.fn_type(&[ptr_t.into()], false);
         self.module.add_function("fflush", fflush_ty, None);
+
+        // declare ptr @memcpy(ptr dest, ptr src, i64 n)
+        //
+        // Used by `bus_dispatch` to copy the publisher's payload
+        // into a fresh allocation in the subscriber's arena before
+        // invoking the handler — per spec/memory.md "A typed
+        // message crossing a locus boundary is a copy, not a
+        // pointer." Standard libc surface; we don't use LLVM's
+        // intrinsic memcpy because clang lowers it through the
+        // libc symbol anyway and a normal call is easier to
+        // reason about.
+        let memcpy_ty =
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64_t.into()], false);
+        self.module.add_function("memcpy", memcpy_ty, None);
     }
 
     /// LLVM struct type for one entry in the bus subscription
@@ -525,12 +556,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         count_global.set_initializer(&i64_t.const_int(0, false));
         count_global.set_linkage(inkwell::module::Linkage::Internal);
 
-        // void @bus_dispatch(ptr %subject, ptr %payload):
+        // void @bus_dispatch(ptr %subject, ptr %payload, i64 %size):
         //   for (i = 0; i < bus.count; i++)
         //     if (strcmp(bus.entries[i].subject, %subject) == 0)
-        //       bus.entries[i].handler(bus.entries[i].self, %payload)
-        let dispatch_ty =
-            void_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        //       sub_self  = bus.entries[i].self
+        //       sub_arena = load (sub_self + 0)             ; arena field is slot 0
+        //       copy      = lotus_arena_alloc(sub_arena, size, 8)
+        //       memcpy(copy, %payload, %size)
+        //       bus.entries[i].handler(sub_self, copy)
+        //
+        // Per spec/memory.md: "A typed message crossing a locus
+        // boundary is a copy, not a pointer." The publisher owns
+        // the original payload (in its arena); the subscriber gets
+        // a copy in its own arena, freed when the subscriber
+        // dissolves. This decouples publisher / subscriber
+        // lifetimes — exactly what trellis-demo's
+        // `self.current_kernel = msg` pattern needs to be safe.
+        let dispatch_ty = void_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), i64_t.into()],
+            false,
+        );
         let dispatch_fn = self
             .module
             .add_function("lotus.bus_dispatch", dispatch_ty, None);
@@ -667,13 +712,58 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .get_nth_param(1)
             .expect("payload param")
             .into_pointer_value();
+        let size_param = dispatch_fn
+            .get_nth_param(2)
+            .expect("size param")
+            .into_int_value();
+
+        // Copy payload into the subscriber's arena. The arena
+        // field is at struct offset 0 on every locus type — so
+        // we can pull it out of the type-erased self_ptr without
+        // knowing which locus we're talking to. Allocate `size`
+        // bytes there, memcpy from the publisher's pointer, pass
+        // the COPY to the handler.
+        let sub_arena = self
+            .builder
+            .build_load(ptr_t, entry_self, "sub.__arena")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        let arena_alloc_fn = self
+            .module
+            .get_function("lotus_arena_alloc")
+            .expect("lotus_arena_alloc declared");
+        let align = i64_t.const_int(8, false);
+        let copy_raw = self
+            .builder
+            .build_call(
+                arena_alloc_fn,
+                &[sub_arena.into(), size_param.into(), align.into()],
+                "payload.copy",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("arena_alloc returns ptr");
+        let copy_ptr = copy_raw.into_pointer_value();
+        let memcpy_fn = self
+            .module
+            .get_function("memcpy")
+            .expect("memcpy declared");
+        self.builder
+            .build_call(
+                memcpy_fn,
+                &[copy_ptr.into(), payload_param.into(), size_param.into()],
+                "payload.memcpy",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
         let handler_callee_ty =
             void_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
         self.builder
             .build_indirect_call(
                 handler_callee_ty,
                 handler,
-                &[entry_self.into(), payload_param.into()],
+                &[entry_self.into(), copy_ptr.into()],
                 "handler.call",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -809,6 +899,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
+            // Long-lived locus arena released at scope exit, after
+            // its dissolve has run. Symmetric with the ephemeral
+            // path in lower_locus_instantiation.
+            self.emit_locus_arena_destroy(&info, self_ptr, &locus_name)?;
         }
         Ok(())
     }
@@ -1277,7 +1371,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut defaults: Vec<(String, DefaultInit)> = Vec::new();
         let mut llvm_field_tys: Vec<inkwell::types::BasicTypeEnum> =
             Vec::new();
-        let mut idx: u32 = 0;
+
+        // Synthetic `__arena: ptr` is *always* the first field
+        // (index 0). m20+ allocations on behalf of a locus go to
+        // this arena; bus dispatch's payload-copy step pulls it
+        // out of the subscriber's self_ptr at runtime via a
+        // fixed-offset GEP. Keeping it at idx 0 means the dispatch
+        // fn doesn't need to know the subscriber's specific locus
+        // type to find the arena.
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        llvm_field_tys.push(ptr_t.into());
+        let arena_field_idx: u32 = 0;
+        let mut idx: u32 = 1;
+
         for member in &l.members {
             if let LocusMember::Params(pb) = member {
                 for p in &pb.params {
@@ -1355,7 +1461,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if matches!(lc.kind, LifecycleKind::Accept))
         });
         let (children_field_idx, child_count_field_idx) = if has_accept {
-            let ptr_t = self.context.ptr_type(AddressSpace::default());
             let i64_t = self.context.i64_type();
             let arr_ty = ptr_t.array_type(CHILDREN_CAP);
             let arr_idx = idx;
@@ -1390,6 +1495,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 failure_handler: None,
                 children_field_idx,
                 child_count_field_idx,
+                arena_field_idx,
             },
         );
         Ok(())
@@ -3868,6 +3974,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_alloca(info.struct_ty, &format!("{}.self", locus_name))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
+        // First — initialize the synthetic `__arena` field
+        // (struct slot 0) with a fresh arena. Allocations made
+        // on behalf of this locus during the rest of
+        // instantiation (composite-literal defaults / overrides)
+        // and during its lifecycle method bodies will route
+        // through `arena_alloc`, which prefers `current_self`'s
+        // arena field over the program global.
+        let arena_create = self
+            .module
+            .get_function("lotus_arena_create")
+            .expect("lotus_arena_create declared");
+        let new_arena = self
+            .builder
+            .build_call(arena_create, &[], &format!("{}.arena", locus_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("arena_create returns ptr");
+        let arena_field = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                info.arena_field_idx,
+                &format!("{}.__arena.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(arena_field, new_arena)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
         // Initialize each field. Overrides go through lower_expr in
         // the caller's scope so any expression — not just literals —
         // can be passed. Defaults are either pre-resolved scalar
@@ -3875,7 +4012,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // expressions (DefaultInit::Expr → lower_expr) that may
         // construct composite values like `TradeKernel { ... }` at
         // the instantiation site.
-        for (i, (fname, default)) in info.defaults.iter().enumerate() {
+        //
+        // While evaluating field defaults / overrides, allocations
+        // created by composite literals (the only kind that allocs
+        // at this point) should land in THE NEW LOCUS'S arena —
+        // they're effectively part of its initial state. We achieve
+        // that by setting `current_arena_override` to the new
+        // arena ptr; arena_alloc's lookup prefers an override over
+        // both `current_self` (the parent, here) and the program
+        // global.
+        let prev_arena_override = self.current_arena_override;
+        self.current_arena_override = Some(new_arena.into_pointer_value());
+        for (fname, default) in info.defaults.iter() {
             let (val, val_ty) = if let Some(expr) = overrides.get(fname.as_str())
             {
                 self.lower_expr(expr, scope)?
@@ -3885,7 +4033,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     DefaultInit::Expr(e) => self.lower_expr(e, scope)?,
                 }
             };
-            let (_, declared_ty) = info
+            let (slot_idx, declared_ty) = info
                 .fields
                 .get(fname)
                 .cloned()
@@ -3902,7 +4050,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_struct_gep(
                     info.struct_ty,
                     self_ptr,
-                    i as u32,
+                    slot_idx,
                     &format!("{}.{}.ptr", locus_name, fname),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -3910,6 +4058,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_store(field_ptr, val)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
+        self.current_arena_override = prev_arena_override;
 
         // Zero-init the synthetic child_count field if this locus
         // declares accept. The children array slots are written
@@ -4110,6 +4259,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
+            // Wholesale-free the locus's arena. Per spec/memory.md:
+            // "When the locus dissolves, the region is freed
+            // wholesale." Anything allocated for this locus —
+            // composite-default literals, ClosureViolations, bus
+            // payload copies it received — goes here.
+            self.emit_locus_arena_destroy(&info, self_ptr, locus_name)?;
         } else if let Some(top) = self.deferred_dissolves.last_mut() {
             top.push((self_ptr, locus_name.to_string()));
         } else {
@@ -4681,19 +4836,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (payload_val, payload_ty) = self.lower_expr(value, scope)?;
-        match payload_ty {
-            LotusType::TypeRef(_) => {}
+        let payload_type_name = match &payload_ty {
+            LotusType::TypeRef(name) => name.clone(),
             other => {
                 return Err(CodegenError::Unsupported(format!(
                     "bus send payload must be a user-type value; got {:?}",
                     other
                 )));
             }
-        }
+        };
+        let payload_info = self
+            .user_types
+            .get(&payload_type_name)
+            .cloned()
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "bus payload type `{}` not declared",
+                    payload_type_name
+                ))
+            })?;
+        let payload_size = payload_info
+            .struct_ty
+            .size_of()
+            .expect("payload struct has known size");
         self.builder
             .build_call(
                 bus.dispatch_fn,
-                &[subj_val.into(), payload_val.into()],
+                &[subj_val.into(), payload_val.into(), payload_size.into()],
                 "bus.dispatch.call",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -4792,29 +4961,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         g.as_pointer_value()
     }
 
-    /// Allocate `size` bytes from the program's arena (`@lotus.arena.global`).
-    /// Uses 8-byte alignment, matching the natural alignment for
-    /// every scalar lotus type. The returned ptr is alive until
-    /// the arena is destroyed (currently: end of main).
+    /// Allocate `size` bytes through the lotus region allocator.
+    /// 8-byte alignment, matching the natural alignment for every
+    /// scalar lotus type. The returned ptr is alive until the
+    /// arena it came from is destroyed.
     ///
-    /// This is the m19 stand-in for the libc `malloc` calls used
-    /// previously. m20 will replace `@lotus.arena.global` with
-    /// the enclosing locus's arena, picked up via `self_ptr`.
+    /// Arena selection (m20):
+    /// 1. `current_arena_override` — set during locus-instantiation
+    ///    field init so composite-literal defaults land in the new
+    ///    locus's arena.
+    /// 2. `current_self`'s arena field — when we're in a lifecycle
+    ///    method body, the locus's own arena. The arena field is
+    ///    always struct slot 0 (`arena_field_idx`).
+    /// 3. `@lotus.arena.global` — the program-wide arena (used in
+    ///    main and free fns, where there's no enclosing locus).
     fn arena_alloc(
         &mut self,
         size: inkwell::values::IntValue<'ctx>,
         name: &str,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let arena_ptr = self.current_arena_ptr()?;
         let i64_t = self.context.i64_type();
-        let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let arena_global = self
-            .module
-            .get_global("lotus.arena.global")
-            .expect("arena global declared");
-        let arena_ptr = self
-            .builder
-            .build_load(ptr_t, arena_global.as_pointer_value(), "arena.cur")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let alloc_fn = self
             .module
             .get_function("lotus_arena_alloc")
@@ -4832,6 +4999,83 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .left()
             .expect("lotus_arena_alloc returns ptr");
         Ok(raw.into_pointer_value())
+    }
+
+    /// The arena pointer to allocate from at the current builder
+    /// position. See `arena_alloc` for the priority order.
+    fn current_arena_ptr(
+        &mut self,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        if let Some(p) = self.current_arena_override {
+            return Ok(p);
+        }
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        if let Some(cs) = self.current_self.clone() {
+            let info = self
+                .user_loci
+                .get(&cs.locus_name)
+                .cloned()
+                .expect("current_self points to a declared locus");
+            let arena_field_ptr = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    cs.self_ptr,
+                    info.arena_field_idx,
+                    "self.__arena.ptr",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let arena_ptr = self
+                .builder
+                .build_load(ptr_t, arena_field_ptr, "self.__arena")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            return Ok(arena_ptr.into_pointer_value());
+        }
+        let arena_global = self
+            .module
+            .get_global("lotus.arena.global")
+            .expect("arena global declared");
+        let arena_ptr = self
+            .builder
+            .build_load(ptr_t, arena_global.as_pointer_value(), "arena.cur")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(arena_ptr.into_pointer_value())
+    }
+
+    /// Emit `lotus_arena_destroy(<load self_ptr->__arena>)` for a
+    /// just-dissolved locus. Used in both the ephemeral-locus
+    /// dissolve path (lower_locus_instantiation) and the deferred-
+    /// dissolve flush at body exit. Safe to call after the
+    /// dissolve method body has run; the arena is the LAST piece
+    /// of the locus's state to go.
+    fn emit_locus_arena_destroy(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+    ) -> Result<(), CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let arena_field_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                info.arena_field_idx,
+                &format!("{}.__arena.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let arena = self
+            .builder
+            .build_load(ptr_t, arena_field_ptr, &format!("{}.__arena", locus_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let destroy = self
+            .module
+            .get_function("lotus_arena_destroy")
+            .expect("lotus_arena_destroy declared");
+        self.builder
+            .build_call(destroy, &[arena.into()], &format!("{}.arena.destroy", locus_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
     }
 }
 

@@ -1,10 +1,11 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work in a
-new session. State as of codegen milestone 19 (region allocator
-substrate — every libc-malloc call site now routes through
-`lotus_arena_alloc`) on top of milestone 18 (modes + self.children
-+ for-loops). **17 of 18 examples build to native ELF — every
+new session. State as of codegen milestone 20 (locus-owned arenas
++ bus copy semantics — every locus carries its own region, freed
+at dissolve; bus dispatch copies payloads between publisher and
+subscriber arenas) on top of milestone 19 (region allocator
+substrate). **17 of 18 examples build to native ELF — every
 single-binary example is a build target.** Only `trellis-pair`
 (multi-binary, cross-process bus) remains, gated on substantial
 new infrastructure.
@@ -60,6 +61,27 @@ Phase status:
 - **Phase 2 v0** (interpreter + bus router) — 17 of 18 example
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
+- **Phase 3 milestone 20** (locus-owned arenas + bus copy
+  semantics) — complete. Every locus struct now carries a
+  synthetic `__arena: ptr` field at struct slot 0; instantiation
+  fills it via `lotus_arena_create()`; the per-locus arena is
+  wholesale-freed via `lotus_arena_destroy` after `dissolve()`
+  runs (both the ephemeral path and the deferred long-lived
+  flush). Allocations route through three tiers: an explicit
+  override (used during locus-instantiation field init so
+  composite-default literals land in the new locus's arena), the
+  enclosing locus's arena field (when `current_self` is set), or
+  the program-wide arena (`@lotus.arena.global`, used in `main`
+  and free fns). Bus dispatch implements the spec's "typed
+  message crossing a locus boundary is a copy, not a pointer"
+  rule: each `<-` passes the payload's compile-time size to
+  `lotus.bus_dispatch`, which allocates `size` bytes in each
+  matching subscriber's arena (loaded from `self_ptr + 0`,
+  the fixed arena-field offset), memcpy's the payload, and
+  passes the COPY to the subscriber's handler. Trellis-demo's
+  `self.current_kernel = msg` pattern now actually works under
+  per-locus arenas — subscriber's stored copy outlives publisher
+  locus dissolution.
 - **Phase 3 milestone 19** (region allocator substrate) —
   complete. The codegen path now links a small C arena runtime
   (`crates/lotus-codegen/runtime/lotus_arena.c`, bundled into the
@@ -68,15 +90,7 @@ Phase status:
   / `lotus_arena_destroy(arena)`. An arena is a linked list of
   bump chunks (default 64 KiB; oversized requests get a fresh
   chunk sized to fit); allocation is pointer-bump in the head
-  chunk, destruction walks + frees wholesale. v0 wires a single
-  program-wide arena (`@lotus.arena.global`) initialized in
-  main's prelude and destroyed at every `ret`. All previously-
-  libc-malloc call sites (user-type struct literals + synthesized
-  `ClosureViolation` records) now route through
-  `arena_alloc(@lotus.arena.global, size, 8)`. **No observable
-  change to user programs — same lifetime, same leak profile —
-  but the substrate is now lotus-controlled, ready for m20+
-  to attach arenas to loci.**
+  chunk, destruction walks + frees wholesale.
 - **Phase 3 milestone 18** (codegen subset). **17 of 18 example
   projects build to native ELF — every single-binary example.**
   Modes (lowered as locus methods named bulk/harmonic/resolution;
@@ -91,14 +105,12 @@ Phase status:
   handles stay in parent.children (for `for child in
   self.children`) but the parent's later cascade skips
   already-dissolved children.
-- **Phase 3 next** — region allocator deep-push: m20 attaches
-  per-locus arenas (replacing the m19 single global arena),
-  m21 adds bus copy semantics (payload copied between sender /
-  receiver arenas at dispatch time per spec/memory.md),
-  m22 brings chunked-class per-coordinatee sub-regions online,
-  m23 the recognition-class fixed pool. After that arc:
-  cooperative scheduler (BEAM-shaped). `trellis-pair` (cross-
-  process bus + entry-point selection) is deferred until
+- **Phase 3 next** — m22 brings chunked-class per-coordinatee
+  sub-regions online (the parent's arena owns sub-regions for
+  each accepted child, freed individually as children dissolve);
+  m23 adds the recognition-class fixed-pool strategy. After
+  that arc: cooperative scheduler (BEAM-shaped). `trellis-pair`
+  (cross-process bus + entry-point selection) is deferred until
   the substrate is ready — the application is the right
   exercise of the full runtime, not a target the substrate
   bends toward.
@@ -189,10 +201,15 @@ m18 Codegen milestone 18: modes + self.children + for + locus  (d48df6b)
                           literal in expression position
                           ⇒ 04-modes builds; 17/18 single-binary
                             examples are build targets
-m19 Codegen milestone 19: region allocator substrate           (this commit)
+m19 Codegen milestone 19: region allocator substrate           (ea4892b)
                           ⇒ libc malloc removed; lotus_arena_*
                             backs every type-literal + ClosureViolation
                             allocation; same example ladder still passes
+m20 Codegen milestone 20: locus-owned arenas + bus copy        (this commit)
+                          ⇒ __arena field on every locus struct
+                            (slot 0), lifecycle-bound; bus dispatch
+                            copies payloads between publisher /
+                            subscriber arenas per spec
 ```
 
 The architectural pivots are **m7** (locus → LLVM struct,
