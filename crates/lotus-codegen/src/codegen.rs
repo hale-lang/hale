@@ -291,12 +291,20 @@ struct LocusInfo<'ctx> {
     /// from the AST so the synthetic `__closures` fn body can
     /// re-lower the assertion expressions.
     closures: Vec<(String, ClosureAssertion)>,
-    /// Synthetic `<Locus>.__closures(self_ptr)` fn that evaluates
-    /// every dissolve-epoch closure. None when `closures` is
-    /// empty — saves the indirect call when the locus has nothing
-    /// to check. Called between drain() and dissolve() per F.4 +
-    /// F.9.
+    /// Synthetic `<Locus>.__closures(self_ptr, parent_self_or_null,
+    /// on_failure_fn_or_null)` fn that evaluates every
+    /// dissolve-epoch closure. None when `closures` is empty —
+    /// saves the indirect call when the locus has nothing to
+    /// check. Called between drain() and dissolve() per F.4 + F.9.
     closures_fn: Option<FunctionValue<'ctx>>,
+    /// `on_failure(child: ChildL, err: ClosureViolation)` handler
+    /// declared on this locus, if any. Each parent has at most
+    /// one handler (per FailureDecl AST shape); the handler's
+    /// first param's type names the single child locus it accepts.
+    /// Stored as (child_locus_name, llvm_fn). When a child of
+    /// matching type fails its closure, the runtime routes the
+    /// violation to this fn instead of dprintf+exit.
+    failure_handler: Option<(String, FunctionValue<'ctx>)>,
 }
 
 /// One locus param's default-initializer. Either pre-resolved
@@ -408,6 +416,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let i64_t = self.context.i64_type();
         let malloc_ty = ptr_t.fn_type(&[i64_t.into()], false);
         self.module.add_function("malloc", malloc_ty, None);
+
+        // declare i32 @fflush(ptr)
+        //
+        // Used by bubble() right before the dprintf-to-stderr so
+        // any pending stdout output (from prior println calls in
+        // an on_failure handler) flushes BEFORE the violation
+        // report writes to fd 2, matching the interpreter's
+        // observable output order.
+        let fflush_ty = i32_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function("fflush", fflush_ty, None);
     }
 
     /// LLVM struct type for one entry in the bus subscription
@@ -629,6 +647,40 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// Resolve the (parent_self, on_failure_fn) pair for a child
+    /// of `child_locus_name` whose closure may fail at dissolve.
+    /// Reads `current_self` (set while we're in the parent's
+    /// lifecycle body) and that parent's `failure_handler`. If
+    /// the parent declares an on_failure that takes this child
+    /// type, returns the parent's self_ptr + the handler fn ptr.
+    /// Otherwise returns (null, null) — the closure-fail path
+    /// will fall back to the v0 dprintf+exit report.
+    fn resolve_failure_route(
+        &self,
+        child_locus_name: &str,
+    ) -> (PointerValue<'ctx>, PointerValue<'ctx>) {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let null_ptr = ptr_t.const_null();
+        let Some(cs) = self.current_self.as_ref() else {
+            return (null_ptr, null_ptr);
+        };
+        let Some(parent_info) = self.user_loci.get(&cs.locus_name) else {
+            return (null_ptr, null_ptr);
+        };
+        let Some((expected_child, handler_fn)) =
+            parent_info.failure_handler.as_ref()
+        else {
+            return (null_ptr, null_ptr);
+        };
+        if expected_child != child_locus_name {
+            return (null_ptr, null_ptr);
+        }
+        (
+            cs.self_ptr,
+            handler_fn.as_global_value().as_pointer_value(),
+        )
+    }
+
     /// Push a fresh deferred-dissolve frame onto the stack. Each
     /// fn body / lifecycle method body opens one at entry and
     /// flushes at exit so long-lived loci instantiated inside it
@@ -667,10 +719,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
             if let Some(closures_fn) = info.closures_fn {
+                let (parent_self, handler_ptr) =
+                    self.resolve_failure_route(&locus_name);
                 self.builder
                     .build_call(
                         closures_fn,
-                        &[self_ptr.into()],
+                        &[
+                            self_ptr.into(),
+                            parent_self.into(),
+                            handler_ptr.into(),
+                        ],
                         &format!("{}.__closures.call", locus_name),
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -790,6 +848,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .ok_or_else(|| {
                 CodegenError::Unsupported("program has no `fn main()`".to_string())
             })?;
+
+        // Pre-pass: register the built-in `ClosureViolation` type.
+        // The interpreter exposes this as a Value::Struct with
+        // fields { locus, closure, left, right, tolerance, diff };
+        // codegen v0 only carries `locus` and `closure` (both
+        // String) since the dynamic-typed left/right/diff fields
+        // would need polymorphic record support. on_failure
+        // handlers can therefore read err.locus and err.closure.
+        self.declare_builtin_closure_violation_type();
 
         // Pass A0: declare every user-defined `type` so locus
         // params, fn signatures, and struct literals can reference
@@ -965,6 +1032,42 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// Register the built-in `ClosureViolation` record so closure-
+    /// failure handlers can take it as their second param. v0
+    /// fields: `locus: String`, `closure: String`, `diff: Int`.
+    /// The polymorphic `left / right / tolerance` fields the
+    /// interpreter exposes wait on polymorphic record support.
+    /// `diff` is i64; for Int/Duration closures it carries `left -
+    /// right` directly; for Float/Decimal closures it carries 0
+    /// (the value isn't a useful signed Int there anyway).
+    fn declare_builtin_closure_violation_type(&mut self) {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        let mut fields: BTreeMap<String, (u32, LotusType)> = BTreeMap::new();
+        fields.insert("locus".into(), (0, LotusType::String));
+        fields.insert("closure".into(), (1, LotusType::String));
+        fields.insert("diff".into(), (2, LotusType::Int));
+        let field_order = vec![
+            "locus".to_string(),
+            "closure".to_string(),
+            "diff".to_string(),
+        ];
+        let llvm_field_tys: Vec<inkwell::types::BasicTypeEnum> =
+            vec![ptr_t.into(), ptr_t.into(), i64_t.into()];
+        let struct_ty = self
+            .context
+            .opaque_struct_type("type.ClosureViolation");
+        struct_ty.set_body(&llvm_field_tys, false);
+        self.user_types.insert(
+            "ClosureViolation".to_string(),
+            TypeInfo {
+                struct_ty,
+                fields,
+                field_order,
+            },
+        );
+    }
+
     /// Pass A0: declare a user `type` decl as an LLVM struct type.
     /// Aliases and enums are not yet lowered — only struct bodies.
     /// No defaults are expected (the language requires struct
@@ -1137,6 +1240,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 subscriptions: Vec::new(),
                 closures: Vec::new(),
                 closures_fn: None,
+                failure_handler: None,
             },
         );
         Ok(())
@@ -1169,6 +1273,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             BTreeMap::new();
         let mut subscriptions: Vec<(String, String)> = Vec::new();
         let mut closures: Vec<(String, ClosureAssertion)> = Vec::new();
+        let mut failure_handler: Option<(String, FunctionValue<'ctx>)> = None;
         for member in &l.members {
             match member {
                 LocusMember::Params(_) | LocusMember::Contract(_) => {
@@ -1358,8 +1463,51 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let _ = explicit_epoch;
                     closures.push((c.name.name.clone(), c.assertion.clone()));
                 }
+                LocusMember::Failure(fd) => {
+                    // on_failure(child: ChildL, err: ClosureViolation)
+                    // is a handler closures route to when an
+                    // unabsorbed violation reaches the parent.
+                    if fd.params.len() != 2 {
+                        return Err(CodegenError::Unsupported(format!(
+                            "locus `{}` on_failure must take exactly two \
+                             params (child + err), got {}",
+                            l.name.name,
+                            fd.params.len()
+                        )));
+                    }
+                    let child_ty = self.type_expr_to_lotus(&fd.params[0].ty)?;
+                    let child_locus_name = match &child_ty {
+                        LotusType::LocusRef(n) => n.clone(),
+                        other => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "locus `{}` on_failure first param must be \
+                                 a locus type; got {:?}",
+                                l.name.name, other
+                            )));
+                        }
+                    };
+                    let err_ty = self.type_expr_to_lotus(&fd.params[1].ty)?;
+                    if err_ty != LotusType::TypeRef("ClosureViolation".into())
+                    {
+                        return Err(CodegenError::Unsupported(format!(
+                            "locus `{}` on_failure second param must be \
+                             ClosureViolation; got {:?}",
+                            l.name.name, err_ty
+                        )));
+                    }
+                    // Sig: void(parent_self, child_self, violation)
+                    let fn_ty = void_t.fn_type(
+                        &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
+                        false,
+                    );
+                    let func = self.module.add_function(
+                        &format!("{}.on_failure", l.name.name),
+                        fn_ty,
+                        None,
+                    );
+                    failure_handler = Some((child_locus_name, func));
+                }
                 LocusMember::Mode(_)
-                | LocusMember::Failure(_)
                 | LocusMember::Const(_)
                 | LocusMember::Type(_) => {
                     return Err(CodegenError::Unsupported(format!(
@@ -1373,10 +1521,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // If this locus has any dissolve-epoch closures, declare
         // its synthetic __closures fn here so call sites in
         // lower_locus_instantiation / flush_dissolve_frame can
-        // resolve it. Body is lowered alongside lifecycle bodies
-        // in pass C.
+        // resolve it. Sig: (self_ptr, parent_self_or_null,
+        // on_failure_fn_or_null) — call sites pass the parent's
+        // self + on_failure fn ptr if the parent has a matching
+        // handler, else null/null. Body lowered in pass C.
         let closures_fn = if !closures.is_empty() {
-            let fn_ty = void_t.fn_type(&[ptr_t.into()], false);
+            let fn_ty = void_t.fn_type(
+                &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
+                false,
+            );
             Some(self.module.add_function(
                 &format!("{}.__closures", l.name.name),
                 fn_ty,
@@ -1398,6 +1551,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         info.subscriptions = subscriptions;
         info.closures = closures;
         info.closures_fn = closures_fn;
+        info.failure_handler = failure_handler;
         Ok(())
     }
 
@@ -1492,6 +1646,89 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
 
+        // on_failure(child: ChildL, err: ClosureViolation) body.
+        // LLVM sig: void(parent_self, child_self, violation_ptr).
+        // Inside the body: bind the child param as a LocusRef
+        // local (so c.field GEPs into child struct) and the err
+        // param as a TypeRef("ClosureViolation") local (so
+        // err.locus / err.closure GEP into the violation struct).
+        if let (Some(failure_decl), Some((child_locus_name, ff))) =
+            (l.members.iter().find_map(|m| match m {
+                LocusMember::Failure(fd) => Some(fd),
+                _ => None,
+            }), info.failure_handler.as_ref())
+        {
+            let child_locus_name = child_locus_name.clone();
+            let ff = *ff;
+            let entry = self.context.append_basic_block(ff, "entry");
+            self.builder.position_at_end(entry);
+            let parent_self = ff
+                .get_nth_param(0)
+                .expect("parent_self param")
+                .into_pointer_value();
+            let child_self = ff
+                .get_nth_param(1)
+                .expect("child_self param")
+                .into_pointer_value();
+            let viol_ptr = ff
+                .get_nth_param(2)
+                .expect("violation param")
+                .into_pointer_value();
+            self.current_fn = Some(ff);
+            self.current_user_fn_ret = None;
+            self.current_self = Some(SelfCx {
+                locus_name: l.name.name.clone(),
+                struct_ty: info.struct_ty,
+                self_ptr: parent_self,
+                fields: info.fields.clone(),
+            });
+            self.loops.clear();
+            self.push_dissolve_frame();
+
+            let mut scope = Scope::default();
+            // Bind c (the child) and err (the violation) as
+            // alloca'd-pointer locals so the existing Ident
+            // resolution path works.
+            let child_param_name = failure_decl.params[0].name.name.clone();
+            let err_param_name = failure_decl.params[1].name.name.clone();
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let child_slot = self
+                .builder
+                .build_alloca(ptr_t, &child_param_name)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(child_slot, child_self)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            scope.locals.insert(
+                child_param_name,
+                (child_slot, LotusType::LocusRef(child_locus_name.clone())),
+            );
+            let err_slot = self
+                .builder
+                .build_alloca(ptr_t, &err_param_name)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(err_slot, viol_ptr)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            scope.locals.insert(
+                err_param_name,
+                (err_slot, LotusType::TypeRef("ClosureViolation".into())),
+            );
+
+            let end = self.lower_block(&failure_decl.body, &mut scope)?;
+            if end == BlockEnd::Open {
+                self.flush_dissolve_frame()?;
+                self.builder
+                    .build_return(None)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            } else {
+                let _ = self.deferred_dissolves.pop();
+            }
+
+            self.current_fn = None;
+            self.current_self = None;
+        }
+
         // Synthetic __closures fn: evaluate every dissolve-epoch
         // closure assertion in declaration order. Each assertion
         // computes |left - right| <= tolerance; on fail, write a
@@ -1507,6 +1744,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get_nth_param(0)
                 .expect("self_ptr param")
                 .into_pointer_value();
+            // arg 1: parent_self_or_null; arg 2: on_failure fn ptr
+            // or null. Both nullable — call sites that have no
+            // matching parent handler pass null/null and the fail
+            // path falls back to dprintf+exit.
+            let parent_self_arg = func
+                .get_nth_param(1)
+                .expect("parent_self_or_null param")
+                .into_pointer_value();
+            let parent_handler_arg = func
+                .get_nth_param(2)
+                .expect("on_failure_or_null param")
+                .into_pointer_value();
             self.current_fn = Some(func);
             self.current_user_fn_ret = None;
             self.current_self = Some(SelfCx {
@@ -1516,15 +1765,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 fields: info.fields.clone(),
             });
             self.loops.clear();
-            // No deferred-dissolve frame here — closures don't
-            // instantiate child loci, and even if a typo'd
-            // assertion expression did, the synchronous-instantiate
-            // path would handle it the same way as any lifecycle
-            // body.
             self.push_dissolve_frame();
 
             for (cname, assertion) in &info.closures {
-                self.lower_closure_check(&l.name.name, cname, assertion)?;
+                self.lower_closure_check(
+                    &l.name.name,
+                    cname,
+                    assertion,
+                    parent_self_arg,
+                    parent_handler_arg,
+                )?;
             }
 
             self.flush_dissolve_frame()?;
@@ -1817,7 +2067,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 match callee.as_ref() {
                     Expr::Ident(i) => {
                         let name = i.name.as_str();
-                        if self.user_fns.contains_key(name) {
+                        if name == "bubble" {
+                            // bubble() ends the block — propagate
+                            // Terminated up so the lower_block walker
+                            // stops emitting IR after this stmt.
+                            return self.lower_bubble_call(args, scope);
+                        } else if self.user_fns.contains_key(name) {
                             // Discard return value; statement-position
                             // call.
                             let _ = self.lower_user_fn_call(name, args, scope)?;
@@ -1973,6 +2228,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Stmt::Continue(_) => self.lower_continue(),
             Stmt::Block(b) => self.lower_block(b, scope),
             Stmt::Return(expr_opt, _) => self.lower_return(expr_opt.as_ref(), scope),
+            Stmt::Recovery { op, args, modifier, .. } => {
+                if modifier.is_some() {
+                    return Err(CodegenError::Unsupported(
+                        "recovery modifier (for/until) not lowered".into(),
+                    ));
+                }
+                match op {
+                    RecoveryOp::Bubble => self.lower_bubble_call(args, scope),
+                    other => Err(CodegenError::Unsupported(format!(
+                        "recovery op {:?} not lowered",
+                        other
+                    ))),
+                }
+            }
             Stmt::Send { subject, value, .. } => {
                 self.lower_send(subject, value, scope)?;
                 Ok(BlockEnd::Open)
@@ -3239,10 +3508,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
             if let Some(closures_fn) = info.closures_fn {
+                let (parent_self, handler_ptr) =
+                    self.resolve_failure_route(&locus_name);
                 self.builder
                     .build_call(
                         closures_fn,
-                        &[self_ptr.into()],
+                        &[
+                            self_ptr.into(),
+                            parent_self.into(),
+                            handler_ptr.into(),
+                        ],
                         &format!("{}.__closures.call", locus_name),
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -3387,6 +3662,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         locus_name: &str,
         closure_name: &str,
         ass: &ClosureAssertion,
+        parent_self_or_null: PointerValue<'ctx>,
+        on_failure_or_null: PointerValue<'ctx>,
     ) -> Result<(), CodegenError> {
         let scope = Scope::default();
         let (lv, lt) = self.lower_expr(&ass.left, &scope)?;
@@ -3405,6 +3682,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
 
+        // Track the signed-i64 diff for Int/Duration closures so
+        // we can populate ClosureViolation.diff at routing time.
+        // For Float/Decimal closures, diff is f64 and we store 0
+        // in the violation (the interpreter exposes a polymorphic
+        // diff there, which v0 codegen's static struct can't
+        // express).
+        let mut int_diff: Option<inkwell::values::IntValue<'ctx>> = None;
+
         let pass = match &lt {
             LotusType::Int | LotusType::Duration => {
                 let l = lv.into_int_value();
@@ -3414,6 +3699,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_int_sub(l, r, "diff")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                int_diff = Some(diff);
                 let zero = self.context.i64_type().const_int(0, false);
                 let neg = self
                     .builder
@@ -3499,8 +3785,125 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_conditional_branch(pass, cont_bb, fail_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // fail_bb: report + exit(1).
+        // fail_bb: route to parent's on_failure if non-null,
+        // else fall back to dprintf+exit.
         self.builder.position_at_end(fail_bb);
+        let route_bb = self
+            .context
+            .append_basic_block(func, "closure.fail.route");
+        let bare_bb = self
+            .context
+            .append_basic_block(func, "closure.fail.bare");
+        let post_bb = self
+            .context
+            .append_basic_block(func, "closure.fail.post");
+        let null_check = self
+            .builder
+            .build_is_not_null(on_failure_or_null, "has.handler")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(null_check, route_bb, bare_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // route_bb: build a ClosureViolation, call parent's
+        // on_failure(parent_self, child_self, violation). If the
+        // handler returns (absorb), continue; if it bubbles, the
+        // bubble path inside the handler exits the program before
+        // returning. Either way we just branch to post_bb.
+        self.builder.position_at_end(route_bb);
+        let viol_info = self
+            .user_types
+            .get("ClosureViolation")
+            .cloned()
+            .expect("ClosureViolation declared at startup");
+        let size = viol_info
+            .struct_ty
+            .size_of()
+            .expect("violation struct has known size");
+        let malloc_fn = self
+            .module
+            .get_function("malloc")
+            .expect("malloc declared");
+        let viol_raw = self
+            .builder
+            .build_call(malloc_fn, &[size.into()], "viol.malloc")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("malloc returns ptr");
+        let viol_ptr = viol_raw.into_pointer_value();
+        let locus_str = self.global_string(locus_name);
+        let closure_str = self.global_string(closure_name);
+        let f0 = self
+            .builder
+            .build_struct_gep(
+                viol_info.struct_ty,
+                viol_ptr,
+                0,
+                "viol.locus.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(f0, locus_str)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f1 = self
+            .builder
+            .build_struct_gep(
+                viol_info.struct_ty,
+                viol_ptr,
+                1,
+                "viol.closure.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(f1, closure_str)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f2 = self
+            .builder
+            .build_struct_gep(
+                viol_info.struct_ty,
+                viol_ptr,
+                2,
+                "viol.diff.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let i64_t = self.context.i64_type();
+        let diff_val = int_diff.unwrap_or_else(|| i64_t.const_int(0, false));
+        self.builder
+            .build_store(f2, diff_val)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // self.current_self.self_ptr is the failing locus's self —
+        // pass it as the child_self arg.
+        let child_self = self
+            .current_self
+            .as_ref()
+            .expect("__closures runs with current_self set")
+            .self_ptr;
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let void_t = self.context.void_type();
+        let handler_callee_ty = void_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.builder
+            .build_indirect_call(
+                handler_callee_ty,
+                on_failure_or_null,
+                &[
+                    parent_self_or_null.into(),
+                    child_self.into(),
+                    viol_ptr.into(),
+                ],
+                "on_failure.call",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(post_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // bare_bb: no handler — emit the v0 fallback report and
+        // exit(1).
+        self.builder.position_at_end(bare_bb);
         let msg = format!(
             "ClosureViolation: locus `{}` closure `{}` failed at dissolve\n",
             locus_name, closure_name
@@ -3534,9 +3937,128 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_unreachable()
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
+        // post_bb: parent absorbed → continue with next closure.
+        self.builder.position_at_end(post_bb);
+        self.builder
+            .build_unconditional_branch(cont_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
         // cont_bb: continue with next closure (or fall off body).
         self.builder.position_at_end(cont_bb);
         Ok(())
+    }
+
+    /// Lower `bubble(err);` — the F.9 re-raise primitive. Inside
+    /// an `on_failure` handler body, `bubble(err)` reports the
+    /// violation to stderr and exits the process non-zero. v0
+    /// codegen prints a fixed "ClosureViolation: bubbled" message;
+    /// preserving the original violation's locus/closure fields
+    /// would require reading them off the err pointer, which works
+    /// but isn't required to ship 03c.
+    fn lower_bubble_call(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "bubble() takes exactly one argument, got {}",
+                args.len()
+            )));
+        }
+        // Read err.locus + err.closure off the violation, format
+        // the standard violation message, dprintf to stderr, exit.
+        let (val, ty) = self.lower_expr(&args[0], scope)?;
+        if ty != LotusType::TypeRef("ClosureViolation".into()) {
+            return Err(CodegenError::Unsupported(format!(
+                "bubble() requires a ClosureViolation; got {:?}",
+                ty
+            )));
+        }
+        let viol_info = self
+            .user_types
+            .get("ClosureViolation")
+            .cloned()
+            .expect("ClosureViolation declared at startup");
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let viol_ptr = val.into_pointer_value();
+        let locus_field = self
+            .builder
+            .build_struct_gep(
+                viol_info.struct_ty,
+                viol_ptr,
+                0,
+                "bubble.locus.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let locus_str = self
+            .builder
+            .build_load(ptr_t, locus_field, "bubble.locus")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let closure_field = self
+            .builder
+            .build_struct_gep(
+                viol_info.struct_ty,
+                viol_ptr,
+                1,
+                "bubble.closure.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let closure_str = self
+            .builder
+            .build_load(ptr_t, closure_field, "bubble.closure")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // Flush all stdio (NULL = all open streams) so any pending
+        // stdout output from a preceding println in this on_failure
+        // body lands before our stderr message.
+        let fflush_fn = self
+            .module
+            .get_function("fflush")
+            .expect("fflush declared");
+        self.builder
+            .build_call(
+                fflush_fn,
+                &[ptr_t.const_null().into()],
+                "bubble.fflush",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let fmt = self.global_string(
+            "runtime error: ClosureViolation: locus `%s` closure `%s` failed at dissolve\n",
+        );
+        let dprintf_fn = self
+            .module
+            .get_function("dprintf")
+            .expect("dprintf declared");
+        let i32_t = self.context.i32_type();
+        self.builder
+            .build_call(
+                dprintf_fn,
+                &[
+                    i32_t.const_int(2, false).into(),
+                    fmt.into(),
+                    locus_str.into(),
+                    closure_str.into(),
+                ],
+                "bubble.dprintf",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let exit_fn = self
+            .module
+            .get_function("exit")
+            .expect("exit declared");
+        self.builder
+            .build_call(
+                exit_fn,
+                &[i32_t.const_int(1, false).into()],
+                "bubble.exit",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // bubble doesn't return; emit unreachable to close the
+        // current bb so subsequent stmts produce no IR.
+        self.builder
+            .build_unreachable()
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(BlockEnd::Terminated)
     }
 
     /// Lower a `subject <- payload;` statement to a call into the

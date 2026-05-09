@@ -1,10 +1,10 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work in a
-new session. State as of codegen milestone 16 (Time + composite
-defaults + nested-field reads + heap-alloc'd type literals) on top
-of commit `cdd7353` (2026-05-08). **`trellis-demo` is now a build
-target.**
+new session. State as of codegen milestone 17 (`on_failure`
+absorb/bubble routing) on top of commit `cdd7353` (2026-05-08).
+**15 of 18 examples build to native ELF, including the closure
+trio (03 / 03b / 03c) and trellis-demo.**
 
 This is part of the alpha-conjecture program (see
 `~/notes/alpha-conjecture/CLAUDE.md`). Lotus is the language-substrate
@@ -39,24 +39,25 @@ Phase status:
 - **Phase 2 v0** (interpreter + bus router) — 17 of 18 example
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
-- **Phase 3 milestone 16** (codegen subset) — complete. **14 of 18
-  example projects build to native ELF**, including the marquee
-  **trellis-demo**: hello-world, 01-locus-with-run,
-  02-parent-child, 03-closure-test, 05-bus, 06-mutable-counter,
+- **Phase 3 milestone 17** (codegen subset) — complete. **15 of 18
+  example projects build to native ELF**, adding 03b/03c (closure
+  absorb / bubble): hello-world, 01-locus-with-run, 02-parent-child,
+  **03-closure-test**, **03b-closure-absorbed**,
+  **03c-closure-bubbled**, 05-bus, 06-mutable-counter,
   07-control-flow, 08-monotonic-sleep, 09-functions,
   10-stateful-locus, 11-drain-dissolve, 12-user-types,
-  13-decimal-and-exit, **trellis-demo**. Latest: Time literals
-  (lowered as ptr-to-source-spelling, like Decimal-as-f64 v0
-  hack), composite locus param defaults (literal-only constraint
-  lifted; non-literal defaults are deferred to instantiation
-  site as `DefaultInit::Expr`), generalized field access
-  (recursive lower_expr through Field receivers — supports
-  `self.x.y`, `g.x.y`, etc.), and heap-allocated user-type
-  literals via libc malloc (was alloca; bus payloads + composite
-  defaults need to outlive the publisher's stack frame).
-- **Phase 3 next** — `on_failure` routing (absorb / bubble) for
-  03b/03c; modes + `self.children` + `for` + arrays for 04;
-  trellis-pair (cross-process bus + entry-point selection).
+  13-decimal-and-exit, **trellis-demo**. Latest: built-in
+  `ClosureViolation` type with `locus / closure / diff` fields,
+  `LocusMember::Failure` lowered, `<Locus>.__closures` sig
+  extended to take `(self_ptr, parent_self_or_null,
+  on_failure_or_null)`, fail path routes through parent handler
+  (absorb) or falls back to dprintf+exit (no handler),
+  `bubble(err)` lowers as fflush + dprintf-with-err-fields +
+  exit(1).
+- **Phase 3 next** — modes + `self.children` + `for` + arrays
+  for `04-modes`; trellis-pair (cross-process bus + entry-point
+  selection). The remaining 3 examples are gated on substantial
+  new infrastructure.
 
 ## Codegen milestone arc (Phase 3 progress)
 
@@ -84,6 +85,8 @@ m14 Codegen milestone 14: Decimal + return-from-main exit code  (b036c7f)
 m15 Codegen milestone 15: closures (collapse-only path)         (9bf21c1)
 m16 Codegen milestone 16: Time + composite defaults + heap lits (e33e8ee)
                           ⇒ trellis-demo builds to native ELF
+m17 Codegen milestone 17: on_failure routing (absorb / bubble)  (this commit)
+                          ⇒ 03b / 03c build to native ELF
 ```
 
 The architectural pivots are **m7** (locus → LLVM struct,
@@ -121,7 +124,8 @@ m7 builds on the struct ABI.
 | `Decimal` type + arithmetic + comparisons (f64 v0) | ✅ | ✅ |
 | `return n;` from main → process exit code | ✅ | ✅ |
 | Closures: collapse on pass, exit-non-zero on fail | ✅ | ✅ |
-| Closures: parent absorb / bubble routing (F.9) | ✅ | — |
+| Closures: parent absorb / bubble routing (F.9) | ✅ | ✅ |
+| Built-in `ClosureViolation` type (locus/closure/diff fields) | ✅ | ✅ |
 | Time literals + Time as a typechecked primitive | ✅ | ✅ (string-spelling v0) |
 | Composite locus param defaults | ✅ | ✅ |
 | Nested field reads (self.x.y, expr-receiver-of-Field) | ✅ | ✅ |
@@ -282,22 +286,21 @@ user-facing). Each is a focused single-commit chunk unless noted.
 
 **Codegen surface expansion (Tier 4, the LLVM path):**
 
-1. **`on_failure` routing (absorb / bubble)** — F.9's third
-   path. parent's `on_failure(child: ChildL, err: ClosureViolation)`
-   handler fires when a child's closure fails; calling
-   `bubble(err)` re-raises. Adds the absorb path which keeps the
-   process alive after a violation. `03b-closure-absorbed` and
-   `03c-closure-bubbled` become build targets.
-2. **Modes + `self.children` + `for` loops + arrays.** Modes are
-   easy alone (≈ locus methods, m13 already paved the way) but
-   only useful with `self.children` iteration; arrays are the
-   gating piece. `04-modes` becomes a build target.
-3. **Composite locus param defaults** — TradeKernel-as-default,
-   etc. Required for `trellis-demo`. Lift the literal-only
-   constraint by deferring default eval to the instantiation
-   site.
-4. **Time literals** (`` `2026-05-08T...Z` ``) + `time::now()` —
-   needed for `trellis-demo`. v0: store as a Duration since epoch.
+1. **Modes + `self.children` + `for` loops + arrays.** Last
+   single-binary example missing a build target. Arrays are
+   the gating piece — need a runtime repr (e.g. `{ i64 len, ptr
+   data }` heap-alloc'd) and `self.children` typed accordingly.
+   Then modes are ≈ locus methods (m13 paved the way) and `for`
+   iterates the array.
+2. **trellis-pair (multi-binary, cross-process bus).** Requires
+   process-level entry-point selection (one source file
+   compiles to a per-binary entry, e.g. via `--bin analyst`)
+   AND a cross-process bus transport (shared-memory ring buffer
+   or NATS bridge). Both are infra-level pieces deferred from
+   the v0 codegen scope.
+3. **Tightening Decimal/Time precision** — the `printf %g`
+   vs Rust `Display` divergence is documented; trellis-grade
+   fixed-point Decimal lands when the substrate cares.
 
 **Smaller follow-ups available in any commit:**
 - `return n;` from main → process exit code (one-line lowering
@@ -387,6 +390,12 @@ rm examples/03-closure-test/main         # clean up artifact
 cargo run --bin lotus -- build examples/trellis-demo/main.lt
 ./examples/trellis-demo/main             # 5x intent + 3x kernel hot-load
 rm examples/trellis-demo/main            # clean up artifact
+cargo run --bin lotus -- build examples/03b-closure-absorbed/main.lt
+./examples/03b-closure-absorbed/main     # AuditL absorbs the violation, exits 0
+rm examples/03b-closure-absorbed/main
+cargo run --bin lotus -- build examples/03c-closure-bubbled/main.lt
+./examples/03c-closure-bubbled/main      # bubble → exits non-zero
+rm examples/03c-closure-bubbled/main
 ```
 
-If all seventeen work, the checkpoint is intact.
+If all nineteen work, the checkpoint is intact.

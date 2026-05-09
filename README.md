@@ -11,10 +11,11 @@ lifecycle quartet (`birth` / `accept` / `run` / `drain` /
 defaults + nested field reads + heap-allocated literals, the
 **bus router** (typed pub-sub via `<-`), `Decimal` / `Time`
 primitives, `self.method()` calls, `return n` from main →
-process exit code, and the **closure-test runtime** (collapse
-on pass, exit-non-zero on fail). **`trellis-demo` builds
-end-to-end to native ELF.** Phase 3 (codegen) is at milestone
-16: literals +
+process exit code, the **full closure-test runtime** (collapse
++ absorb + bubble per F.9), and built-in `ClosureViolation`.
+**15 of 18 examples build to native ELF, including
+trellis-demo and the 03 / 03b / 03c closure trio.** Phase 3
+(codegen) is at milestone 17: literals +
 arithmetic, `let`/`let mut` + assignment + compound ops,
 `if`/`else`/`while` + `break`/`continue`, `time::sleep` on
 `CLOCK_MONOTONIC` with EINTR retry, `time::monotonic()` +
@@ -214,7 +215,7 @@ examples/
 notes/
   open-questions.md       deferred decisions and future directions
 
-crates/                   (Phase 1 + 2 v0 + Phase 3 milestones 0-16)
+crates/                   (Phase 1 + 2 v0 + Phase 3 milestones 0-17)
   lotus-syntax/           lexer + parser + AST + diagnostics
   lotus-types/            symbol resolution + type checker (F.8,
                           field strictness, closure cycle, match
@@ -232,10 +233,12 @@ crates/                   (Phase 1 + 2 v0 + Phase 3 milestones 0-16)
                           w/ F.7 ordering + run + drain + dissolve
                           w/ F.4 cascade) + self.X / g.X via GEP +
                           user `type` decls (struct literals + field
-                          reads) + locus `fn` members + bus router
-                          (subscribe / publish / `<-` dispatch with
-                          long-lived deferral) + closures (collapse
-                          / exit-non-zero on dissolve fail)
+                          reads + composite defaults + nested field
+                          reads + heap allocation) + locus `fn`
+                          members + bus router (subscribe / publish /
+                          `<-` dispatch with long-lived deferral) +
+                          closures with F.9 collapse / absorb / bubble
+                          + ClosureViolation built-in type
   lotus-cli/              `lotus` binary (lex / parse / check / run /
                           build)
 ```
@@ -244,9 +247,12 @@ Example ladder: 18 projects from hello-world → trellis-pair;
 ~860 lines of source + ~1,400+ lines of README walk-throughs.
 91 tests across the workspace; 17 of 18 projects run end-to-end
 under `lotus run` (only multi-binary trellis-pair waits on the
-cross-process bus). **Fourteen** projects (hello-world, 01, 02,
-03-closure-test, 05-bus, 06, 07, 08, 09, 10, 11, 12, 13,
+cross-process bus). **Fifteen** projects (hello-world, 01, 02,
+03 / 03b / 03c, 05-bus, 06, 07, 08, 09, 10, 11, 12, 13,
 **trellis-demo**) also build to native ELF via `lotus build`.
+Only `04-modes` (needs arrays + `for` + `self.children`) and
+`trellis-pair` (needs cross-process bus + entry-point selection)
+remain.
 
 ## Toolchain
 
@@ -258,7 +264,7 @@ lotus parse <file>           parse and print the AST
 lotus check <file | dir>     parse + typecheck (the full F-rules)
 lotus run   <file | dir>     parse + typecheck + interpret
 lotus build <file>           parse + typecheck + emit native ELF
-                              (Phase 3, milestone-16 subset)
+                              (Phase 3, milestone-17 subset)
 ```
 
 Per `spec/testing.md`, the planned full surface adds:
@@ -289,7 +295,7 @@ Per the delivery plan:
   Region allocator + cooperative scheduler are the remaining
   Phase 2 deep-pushes.
 - **Phase 3** — Codegen in Rust targeting LLVM. *In progress;
-  milestone 16 of N complete.* Working subset: literals, arithmetic,
+  milestone 17 of N complete.* Working subset: literals, arithmetic,
   `let`/`let mut` + assignment + compound ops, mixed-type println,
   if/else/while + break/continue, `time::sleep` + `time::monotonic`
   on `CLOCK_MONOTONIC` with EINTR retry, Duration / Decimal /
@@ -300,12 +306,11 @@ Per the delivery plan:
   field reads + composite locus param defaults + heap-allocated
   literals + nested field reads, the bus router (`<-` dispatch +
   long-lived locus deferral), `self.method()` calls, `return n`
-  from main → process exit code, and the closure-test runtime
-  (collapse-on-pass / exit-non-zero-on-fail at dissolve).
-  **14 of 18 example projects compile to native ELF, including
-  the marquee `trellis-demo`.** Up next: `on_failure` routing
-  for closures (03b/03c), modes + `self.children` + arrays
-  (04), then trellis-pair (cross-process bus + entry-point
+  from main → process exit code, and the full closure-test
+  runtime (F.9 collapse / absorb / bubble + built-in
+  `ClosureViolation`). **15 of 18 example projects compile to
+  native ELF.** Up next: modes + `self.children` + arrays for
+  `04-modes`; trellis-pair (cross-process bus + entry-point
   selection).
 - **Phase 4** — Stdlib v0 in lotus + Rust FFI shims. Overlaps
   Phase 3.
