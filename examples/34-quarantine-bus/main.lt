@@ -1,0 +1,98 @@
+// 34-quarantine-bus — m41b extension: quarantined
+// subscribers stop receiving bus messages.
+//
+// m41 made `quarantine(c)` skip run() on the quarantined
+// locus. m41b extends the gating to bus dispatch: a
+// quarantined subscriber's `on_X` handlers no longer fire
+// for inbound messages on its subscribed subjects.
+//
+// Implementation:
+//   Codegen — quarantine() additionally walks the global
+//   bus.entries table and nulls the subject pointer of any
+//   entry whose self_ptr matches the quarantined locus.
+//   Bus dispatch's null-subject sentinel skips those slots.
+//   Interpreter — Bus.dispatch checks delivery.locus's
+//   quarantined flag and skips delivery when set.
+//
+// What this exercises:
+//   - A FailingWatcher whose birth-epoch closure fails →
+//     Coordinator quarantines it; subsequent publishes
+//     should NOT reach it
+//   - A HealthyWatcher whose closure passes → publishes
+//     reach it normally
+//   - Demonstrates that the parent's published messages
+//     still flow to the healthy subscriber while the
+//     quarantined one is silenced
+
+type Sample {
+    value: Int;
+}
+
+locus FailingWatcher {
+    params {
+        valid: Int = 0;
+        seen: Int = 0;
+    }
+
+    closure must_be_valid {
+        self.valid ~~ 1 within 0;
+        epoch birth;
+    }
+
+    bus {
+        subscribe "feed.sample" as on_sample of type Sample;
+    }
+
+    fn on_sample(s: Sample) {
+        // Should NOT fire — quarantined.
+        self.seen = self.seen + 1;
+        println("FailingWatcher: got ", s.value);
+    }
+}
+
+locus HealthyWatcher {
+    params {
+        seen: Int = 0;
+    }
+
+    bus {
+        subscribe "feed.sample" as on_sample of type Sample;
+    }
+
+    fn on_sample(s: Sample) {
+        self.seen = self.seen + 1;
+        println(self.seen, ": HealthyWatcher got ", s.value);
+    }
+}
+
+locus Coordinator {
+    on_failure(f: FailingWatcher, err: ClosureViolation) {
+        println("Coordinator: quarantining FailingWatcher");
+        quarantine(f);
+    }
+
+    bus {
+        publish "feed.sample" of type Sample;
+    }
+
+    run() {
+        // FailingWatcher's birth closure fails; on_failure
+        // quarantines it. m41 already skips its run() (which
+        // it doesn't have anyway); m41b ALSO nulls its bus
+        // subscription so on_sample is never called.
+        FailingWatcher { valid: 0 };
+        // HealthyWatcher: closure passes; on_sample fires
+        // for every published message.
+        HealthyWatcher { };
+
+        println("publishing 3 samples");
+        "feed.sample" <- Sample { value: 10 };
+        "feed.sample" <- Sample { value: 20 };
+        "feed.sample" <- Sample { value: 30 };
+        println("done");
+    }
+}
+
+fn main() {
+    Coordinator { };
+}

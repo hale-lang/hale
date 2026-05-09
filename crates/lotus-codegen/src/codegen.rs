@@ -167,6 +167,10 @@ pub fn build_executable(
         })?;
 
     let obj_path: PathBuf = output_path.with_extension("o");
+    if std::env::var("LOTUS_DUMP_IR").is_ok() {
+        let ir_path = output_path.with_extension("ll");
+        let _ = cx.module.print_to_file(&ir_path);
+    }
     machine
         .write_to_file(&cx.module, FileType::Object, &obj_path)
         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -933,6 +937,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_load(ptr_t, subj_slot_ptr, "entry.subject")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .into_pointer_value();
+        // m41b: null-subject sentinel marks a deregistered entry
+        // (set by `quarantine(c)` so quarantined subscribers stop
+        // receiving bus messages). Skip the slot before strcmp,
+        // which is UB on NULL inputs.
+        let subj_int = self
+            .builder
+            .build_ptr_to_int(subj_loaded, i64_t, "subj.as.int")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let subj_nonnull = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                subj_int,
+                i64_t.const_int(0, false),
+                "subj.nonnull",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let strcmp_bb =
+            self.context.append_basic_block(dispatch_fn, "loop.strcmp");
+        self.builder
+            .build_conditional_branch(subj_nonnull, strcmp_bb, inc_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(strcmp_bb);
         let strcmp_fn = self
             .module
             .get_function("strcmp")
@@ -7696,11 +7723,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// m41: lower a `quarantine(child);` recovery call. Sets
-    /// child.__quarantined = 1. The lifecycle dispatch in
-    /// lower_locus_instantiation reads the flag after birth +
-    /// __birth_closures and skips run() if set; drain / dissolve
-    /// still fire (cleanup is unconditional). Repeat calls are
-    /// idempotent — the flag stays at 1 once set.
+    /// child.__quarantined = 1; m41b extension walks the global
+    /// bus.entries table and nulls out the subject of any entry
+    /// whose `self` matches the quarantined child, so the
+    /// dispatch loop's null-subject sentinel skips those slots
+    /// thereafter (quarantined subscribers stop receiving bus
+    /// messages). Lifecycle dispatch in lower_locus_instantiation
+    /// reads the flag after birth + __birth_closures and skips
+    /// run() if set; drain / dissolve still fire (cleanup is
+    /// unconditional). Repeat calls are idempotent.
     fn lower_quarantine_call(
         &mut self,
         args: &[Expr],
@@ -7742,6 +7773,156 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_store(q_ptr, one)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // m41b: walk bus.entries and null-out subject for any
+        // entry whose self matches child_ptr. Bus dispatch's
+        // null-subject sentinel will then skip those slots.
+        // The walk is bounded by bus.count and runs on the same
+        // thread as quarantine() (cooperative; pinned doesn't
+        // have closures, so quarantine() never fires there).
+        // Indexing strategy: GEP the entries array as
+        // [entry_ty, entry_ty, ...] using i_cur as the linear
+        // index — opaque-pointer LLVM lets us treat the global
+        // as an entry_ty pointer regardless of its declared
+        // outer array type.
+        if let (Some(entries_global), Some(count_global)) = (
+            self.module.get_global("bus.entries"),
+            self.module.get_global("bus.count"),
+        ) {
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let entry_ty = self.bus_entry_type();
+            let func = self.current_fn.expect("current_fn set");
+            let entries_base = entries_global.as_pointer_value();
+            let i_slot = self
+                .builder
+                .build_alloca(i64_t, "q.unsub.i.slot")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(i_slot, i64_t.const_int(0, false))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let header_bb = self
+                .context
+                .append_basic_block(func, "q.unsub.header");
+            let body_bb = self
+                .context
+                .append_basic_block(func, "q.unsub.body");
+            let zero_bb = self
+                .context
+                .append_basic_block(func, "q.unsub.zero");
+            let inc_bb = self
+                .context
+                .append_basic_block(func, "q.unsub.inc");
+            let done_bb = self
+                .context
+                .append_basic_block(func, "q.unsub.done");
+            self.builder
+                .build_unconditional_branch(header_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(header_bb);
+            let count = self
+                .builder
+                .build_load(
+                    i64_t,
+                    count_global.as_pointer_value(),
+                    "q.unsub.count",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_int_value();
+            let i_cur = self
+                .builder
+                .build_load(i64_t, i_slot, "q.unsub.i")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_int_value();
+            let in_range = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::ULT,
+                    i_cur,
+                    count,
+                    "q.unsub.in_range",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_conditional_branch(in_range, body_bb, done_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(body_bb);
+            let entry_ptr = unsafe {
+                self.builder
+                    .build_gep(
+                        entry_ty,
+                        entries_base,
+                        &[i_cur],
+                        "q.unsub.entry.ptr",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            };
+            let self_slot_ptr = self
+                .builder
+                .build_struct_gep(
+                    entry_ty,
+                    entry_ptr,
+                    1,
+                    "q.unsub.entry.self.ptr",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let entry_self = self
+                .builder
+                .build_load(ptr_t, self_slot_ptr, "q.unsub.entry.self")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value();
+            let entry_self_int = self
+                .builder
+                .build_ptr_to_int(entry_self, i64_t, "q.unsub.self.int")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let child_int = self
+                .builder
+                .build_ptr_to_int(child_ptr, i64_t, "q.unsub.child.int")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let matches = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    entry_self_int,
+                    child_int,
+                    "q.unsub.match",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_conditional_branch(matches, zero_bb, inc_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(zero_bb);
+            let subj_slot_ptr = self
+                .builder
+                .build_struct_gep(
+                    entry_ty,
+                    entry_ptr,
+                    0,
+                    "q.unsub.entry.subject.ptr",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(subj_slot_ptr, ptr_t.const_null())
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_unconditional_branch(inc_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(inc_bb);
+            let next = self
+                .builder
+                .build_int_add(
+                    i_cur,
+                    i64_t.const_int(1, false),
+                    "q.unsub.next",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(i_slot, next)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_unconditional_branch(header_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(done_bb);
+        }
         Ok(BlockEnd::Open)
     }
 

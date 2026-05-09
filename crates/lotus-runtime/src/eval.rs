@@ -1513,6 +1513,13 @@ impl Interpreter {
                 break;
             }
             for delivery in batch {
+                // m41b: skip quarantined subscribers — the
+                // recovery primitive's "stop trying" signal
+                // extends to bus dispatch, so a quarantined
+                // locus stops receiving messages.
+                if delivery.subscription.locus.quarantined.get() {
+                    continue;
+                }
                 self.run_handler(
                     delivery.subscription.locus,
                     &delivery.subscription.handler,
