@@ -488,10 +488,38 @@ impl Interpreter {
                             ))),
                         }
                     }
-                    // restart_in_place / drain / dissolve /
-                    // reorganize: parsed for surface
-                    // completeness; full semantics land with later
-                    // milestones.
+                    // m45: restart_in_place(c) is restart(c) +
+                    // a flag that tells the rerun loop to zero
+                    // user fields back to declared defaults
+                    // before invoking birth(). Cap-2 budget on
+                    // restart_count is shared with
+                    // RecoveryOp::Restart so both variants
+                    // collectively use at most 2 attempts per
+                    // locus lifetime.
+                    RecoveryOp::RestartInPlace => {
+                        let target = arg_vs.into_iter().next().ok_or_else(|| {
+                            Signal::Error(
+                                "restart_in_place() takes one locus argument"
+                                    .into(),
+                            )
+                        })?;
+                        match target {
+                            Value::Locus(handle) => {
+                                let cur = handle.restart_count.get();
+                                handle.restart_count.set(cur + 1);
+                                handle.restart_in_place_pending.set(true);
+                                Ok(())
+                            }
+                            other => Err(Signal::Error(format!(
+                                "restart_in_place() expects a locus argument; \
+                                 got {}",
+                                other.type_name()
+                            ))),
+                        }
+                    }
+                    // drain / dissolve / reorganize: parsed for
+                    // surface completeness; full semantics land
+                    // with later milestones.
                     _ => Ok(()),
                 }
             }
@@ -1174,6 +1202,7 @@ impl Interpreter {
             quarantined: Rc::new(std::cell::Cell::new(false)),
             duration_last_fire: Rc::new(RefCell::new(vec![now_ns; duration_count])),
             parent: Rc::new(RefCell::new(parent_at_birth)),
+            restart_in_place_pending: Rc::new(std::cell::Cell::new(false)),
         };
 
         // Register every bus subscription on the router. m42:
@@ -1229,6 +1258,27 @@ impl Interpreter {
             .collect();
 
         loop {
+            // m45: if a previous iteration's on_failure body
+            // called restart_in_place(self), reset user fields
+            // to declared defaults before invoking birth().
+            // Clears the flag so a subsequent plain restart()
+            // doesn't accidentally repeat the zero pass.
+            if handle.restart_in_place_pending.get() {
+                handle.restart_in_place_pending.set(false);
+                let mut state = handle.state.borrow_mut();
+                for member in &decl.members {
+                    if let LocusMember::Params(pb) = member {
+                        for p in &pb.params {
+                            if let ParamInit::Value(e) = &p.init {
+                                drop(state);
+                                let v = self.eval_expr(e)?;
+                                state = handle.state.borrow_mut();
+                                state.insert(p.name.name.clone(), v);
+                            }
+                        }
+                    }
+                }
+            }
             // birth() runs at the top of every attempt — first
             // attempt is the natural birth; subsequent attempts
             // are restart-driven re-runs of the same lifecycle.

@@ -72,6 +72,15 @@ pub struct LocusHandle {
     /// still fire (cleanup is unconditional). Bus-dispatch
     /// gating waits on m41b.
     pub quarantined: Rc<std::cell::Cell<bool>>,
+    /// m45: signals the next restart re-run should reset
+    /// user fields to declared defaults before invoking
+    /// birth(). Set by `restart_in_place(c)`; cleared by
+    /// the rerun branch in `instantiate_locus` after the
+    /// re-init pass runs. Both restart and restart_in_place
+    /// share the cap-2 budget on `restart_count`; this
+    /// flag only changes whether the re-run preserves
+    /// state or factory-resets it.
+    pub restart_in_place_pending: Rc<std::cell::Cell<bool>>,
     /// m43: per-duration-closure last-fire timestamps in
     /// monotonic nanoseconds. Vec is parallel to the locus's
     /// declared duration-epoch closures (in declaration

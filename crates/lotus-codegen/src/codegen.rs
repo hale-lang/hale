@@ -432,6 +432,16 @@ struct LocusInfo<'ctx> {
     /// it after birth() + __birth_closures and skips `run()`
     /// if set. Drain / dissolve still fire unconditionally.
     quarantined_field_idx: u32,
+    /// m45: index of the synthetic `__restart_in_place_pending:
+    /// i64` flag. 0 = next re-run is a regular `restart` (state
+    /// preserved); 1 = next re-run is `restart_in_place` (user
+    /// fields zeroed back to declared defaults before birth).
+    /// Set by `restart_in_place(c)`; cleared by the rerun
+    /// branch in `lower_closure_check` after the re-init pass
+    /// runs. Both restart variants share the cap-2 budget on
+    /// `__restart_count` — the kind flag only changes whether
+    /// the re-run preserves state.
+    restart_in_place_pending_field_idx: u32,
     /// m42: index of the synthetic `__parent_self: ptr` field.
     /// Set at instantiation time to the resolved parent
     /// self_ptr (from `resolve_failure_route`), or null if no
@@ -2218,6 +2228,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let quarantined_field_idx = idx;
         llvm_field_tys.push(i64_t_struct.into());
         idx += 1;
+        // m45: synthetic __restart_in_place_pending flag —
+        // distinguishes a pending `restart_in_place` re-run
+        // (zero fields first) from a plain `restart` re-run
+        // (state preserved). Zero-init at instantiation.
+        let restart_in_place_pending_field_idx = idx;
+        llvm_field_tys.push(i64_t_struct.into());
+        idx += 1;
         // m42: synthetic `__parent_self: ptr` and
         // `__parent_on_failure: ptr` fields. Always present
         // (uniform struct shape — the alternative would be
@@ -2284,6 +2301,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 arena_field_idx,
                 restart_count_field_idx,
                 quarantined_field_idx,
+                restart_in_place_pending_field_idx,
                 parent_self_field_idx,
                 parent_on_failure_field_idx,
                 mailbox_field_idx,
@@ -4098,6 +4116,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 match op {
                     RecoveryOp::Bubble => self.lower_bubble_call(args, scope),
                     RecoveryOp::Restart => self.lower_restart_call(args, scope),
+                    RecoveryOp::RestartInPlace => {
+                        self.lower_restart_in_place_call(args, scope)
+                    }
                     RecoveryOp::Quarantine => {
                         self.lower_quarantine_call(args, scope)
                     }
@@ -7043,6 +7064,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_store(q_ptr, zero)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // m45: zero-init the synthetic __restart_in_place_pending
+        // flag. restart_in_place(c) sets it to 1; the rerun
+        // branch in __birth_closures reads + clears it.
+        let rip_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                info.restart_in_place_pending_field_idx,
+                &format!("{}.__restart_in_place_pending.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(rip_ptr, zero)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         // m42: init the synthetic __parent_self / __parent_on_failure
         // fields. Resolve the (parent_self, on_failure_fn) pair via
@@ -8236,12 +8272,123 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.builder
                 .build_conditional_branch(should_rerun, rerun_bb, post_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            // rerun_bb: call birth(self) + recursively call
-            // __birth_closures(self, parent_self, on_failure),
-            // then ret void. The recursive call may itself fail +
-            // restart, so the cap is enforced naturally as the
-            // counter accumulates across attempts.
+            // rerun_bb: m45 — gate on
+            // __restart_in_place_pending. If set, branch to a
+            // zero-fields pass (re-init each user field from
+            // its declared default) and clear the flag before
+            // call_birth_bb. Otherwise branch direct to
+            // call_birth_bb. Both converge on the call_birth
+            // block which fires birth + __birth_closures.
             self.builder.position_at_end(rerun_bb);
+            let rip_ptr = self
+                .builder
+                .build_struct_gep(
+                    cs_struct_ty,
+                    child_self,
+                    info.restart_in_place_pending_field_idx,
+                    "restart_in_place.pending.load.ptr",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let rip_val = self
+                .builder
+                .build_load(i64_t, rip_ptr, "restart_in_place.pending")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_int_value();
+            let is_in_place = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    rip_val,
+                    i64_t.const_int(0, false),
+                    "restart_in_place.is_pending",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let zero_fields_bb = self.context.append_basic_block(
+                func,
+                "restart_in_place.zero_fields",
+            );
+            let call_birth_bb = self.context.append_basic_block(
+                func,
+                "restart.call_birth",
+            );
+            self.builder
+                .build_conditional_branch(
+                    is_in_place,
+                    zero_fields_bb,
+                    call_birth_bb,
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+            // zero_fields_bb: re-store each declared default
+            // into its user field, then clear the in-place
+            // flag so a subsequent restart() (without _in_place)
+            // doesn't accidentally repeat the zero pass.
+            // Composite-default literals re-allocate in this
+            // locus's own arena (via current_arena_override),
+            // matching the instantiation-time discipline.
+            self.builder.position_at_end(zero_fields_bb);
+            let arena_slot = self
+                .builder
+                .build_struct_gep(
+                    cs_struct_ty,
+                    child_self,
+                    info.arena_field_idx,
+                    "restart_in_place.arena.ptr",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let locus_arena = self
+                .builder
+                .build_load(
+                    self.context.ptr_type(AddressSpace::default()),
+                    arena_slot,
+                    "restart_in_place.arena",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value();
+            let prev_override = self.current_arena_override;
+            self.current_arena_override = Some(locus_arena);
+            let scope = Scope::default();
+            let defaults_snapshot = info.defaults.clone();
+            for (fname, default) in &defaults_snapshot {
+                let (val, _) = match default {
+                    DefaultInit::Const(pv) => self.const_param(pv),
+                    DefaultInit::Expr(e) => self.lower_expr(e, &scope)?,
+                };
+                let (slot_idx, _) = info
+                    .fields
+                    .get(fname)
+                    .cloned()
+                    .expect("field declared by declare_locus_struct");
+                let field_slot = self
+                    .builder
+                    .build_struct_gep(
+                        cs_struct_ty,
+                        child_self,
+                        slot_idx,
+                        &format!("restart_in_place.{}.ptr", fname),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(field_slot, val)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            self.current_arena_override = prev_override;
+            // Clear the pending flag; otherwise a subsequent
+            // restart() (without _in_place) would zero again.
+            self.builder
+                .build_store(rip_ptr, i64_t.const_int(0, false))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_unconditional_branch(call_birth_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+            // call_birth_bb: call birth(self) + recursively
+            // call __birth_closures(self, parent_self,
+            // on_failure), then ret void. The recursive call
+            // may itself fail + restart, so the cap is
+            // enforced naturally as the counter accumulates
+            // across attempts.
+            self.builder.position_at_end(call_birth_bb);
             let birth_fn = *info
                 .methods
                 .get("birth")
@@ -8344,9 +8491,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
+        self.lower_restart_call_kind(args, scope, false)
+    }
+
+    /// m45: lower `restart_in_place(c);`. Same shape as
+    /// `restart(c)` — bumps `__restart_count` to drive the
+    /// rerun branch in `__birth_closures` — but additionally
+    /// sets `__restart_in_place_pending = 1` so the rerun
+    /// branch zeros user fields back to declared defaults
+    /// before re-running birth(). Cap (2 attempts) is shared
+    /// with the regular restart path.
+    fn lower_restart_in_place_call(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        self.lower_restart_call_kind(args, scope, true)
+    }
+
+    fn lower_restart_call_kind(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        in_place: bool,
+    ) -> Result<BlockEnd, CodegenError> {
+        let kind = if in_place { "restart_in_place" } else { "restart" };
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
-                "restart() takes exactly one argument, got {}",
+                "{}() takes exactly one argument, got {}",
+                kind,
                 args.len()
             )));
         }
@@ -8355,8 +8528,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             LotusType::LocusRef(n) => n.clone(),
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "restart() requires a locus reference; got {:?}",
-                    other
+                    "{}() requires a locus reference; got {:?}",
+                    kind, other
                 )));
             }
         };
@@ -8388,6 +8561,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_store(rc_ptr, next)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        if in_place {
+            // m45: flag the next re-run as in-place. The rerun
+            // branch in __birth_closures will see this set,
+            // re-init user fields from declared defaults, and
+            // clear the flag back to 0 before calling birth().
+            let rip_ptr = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    child_ptr,
+                    info.restart_in_place_pending_field_idx,
+                    "restart_in_place.pending.ptr",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(rip_ptr, one)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         Ok(BlockEnd::Open)
     }
 
