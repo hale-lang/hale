@@ -3984,21 +3984,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | LotusType::Time
             | LotusType::Duration => Ok(value),
             LotusType::Enum(name) => {
-                let has_payload = self
+                let info = self
                     .user_enums
                     .get(name.as_str())
-                    .map(|i| i.has_payload)
-                    .unwrap_or(false);
-                if has_payload {
-                    Err(CodegenError::Unsupported(format!(
-                        "free-fn return of has-payload enum `{}` \
-                         not yet supported (m49 v0.1; deep-copy of \
-                         enum payload deferred until a workload \
-                         demands)",
-                        name
-                    )))
-                } else {
-                    Ok(value)
+                    .cloned();
+                match info {
+                    Some(info) if info.has_payload => {
+                        // m51: per-variant switch + recursive
+                        // payload deep-copy. See
+                        // emit_enum_payload_deep_copy.
+                        self.emit_enum_payload_deep_copy(
+                            &info,
+                            value.into_pointer_value(),
+                            dest_arena,
+                        )
+                    }
+                    _ => Ok(value),
                 }
             }
             LotusType::String => {
@@ -4101,15 +4102,289 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Ok(new_tup.into())
             }
-            LotusType::Array(_, _)
-            | LotusType::TypeRef(_)
-            | LotusType::LocusRef(_) => Err(CodegenError::Unsupported(format!(
-                "free-fn return of type {:?} not yet supported \
-                 (m49 v0.1; deep-copy deferred until a workload \
-                 demands)",
+            LotusType::Array(elem_ty, n) => {
+                // m51: deep-copy a fixed-size array. Allocate
+                // `[n x llvm(elem)]` in dest_arena, GEP each slot
+                // in the source, recurse on the element value, and
+                // store into the destination slot. Layout matches
+                // the array-literal allocation path so callers see
+                // the returned array's slot loads identically.
+                let arr_ty =
+                    self.llvm_array_storage_type(elem_ty, *n);
+                let bytes = arr_ty
+                    .size_of()
+                    .expect("array storage type has known size");
+                let alloc_fn = self
+                    .module
+                    .get_function("lotus_arena_alloc")
+                    .expect("lotus_arena_alloc declared");
+                let i64_t = self.context.i64_type();
+                let new_arr = self
+                    .builder
+                    .build_call(
+                        alloc_fn,
+                        &[
+                            dest_arena.into(),
+                            bytes.into(),
+                            i64_t.const_int(8, false).into(),
+                        ],
+                        "fn.ret.arr.alloc",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("arena_alloc returns ptr")
+                    .into_pointer_value();
+                let i32_t = self.context.i32_type();
+                let src_ptr = value.into_pointer_value();
+                let llvm_elem_ty = self.llvm_basic_type(elem_ty);
+                for i in 0..*n {
+                    let src_slot = unsafe {
+                        self.builder
+                            .build_gep(
+                                arr_ty,
+                                src_ptr,
+                                &[
+                                    i32_t.const_int(0, false),
+                                    i32_t.const_int(i, false),
+                                ],
+                                &format!("fn.ret.arr.src.slot{}", i),
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?
+                    };
+                    let elem_val = self
+                        .builder
+                        .build_load(
+                            llvm_elem_ty,
+                            src_slot,
+                            &format!("fn.ret.arr.src.load{}", i),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let copied = self.emit_return_value_deep_copy(
+                        elem_val, elem_ty, dest_arena,
+                    )?;
+                    let dst_slot = unsafe {
+                        self.builder
+                            .build_gep(
+                                arr_ty,
+                                new_arr,
+                                &[
+                                    i32_t.const_int(0, false),
+                                    i32_t.const_int(i, false),
+                                ],
+                                &format!("fn.ret.arr.dst.slot{}", i),
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?
+                    };
+                    self.builder
+                        .build_store(dst_slot, copied)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Ok(new_arr.into())
+            }
+            LotusType::TypeRef(name) => {
+                // m51: deep-copy a user-defined struct. Allocate a
+                // fresh struct in dest_arena, walk each declared
+                // field by its struct slot index, recursively copy
+                // the loaded value, and store into the
+                // destination. Field order matches the original
+                // declaration via TypeInfo.field_order.
+                let info = self
+                    .user_types
+                    .get(name.as_str())
+                    .cloned()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "free-fn return of unknown type `{}`",
+                            name
+                        ))
+                    })?;
+                let struct_ty = info.struct_ty;
+                let bytes = struct_ty
+                    .size_of()
+                    .expect("user-type struct has known size");
+                let alloc_fn = self
+                    .module
+                    .get_function("lotus_arena_alloc")
+                    .expect("lotus_arena_alloc declared");
+                let i64_t = self.context.i64_type();
+                let new_struct = self
+                    .builder
+                    .build_call(
+                        alloc_fn,
+                        &[
+                            dest_arena.into(),
+                            bytes.into(),
+                            i64_t.const_int(8, false).into(),
+                        ],
+                        "fn.ret.struct.alloc",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("arena_alloc returns ptr")
+                    .into_pointer_value();
+                let src_ptr = value.into_pointer_value();
+                for fname in &info.field_order {
+                    let (idx, fty) = info
+                        .fields
+                        .get(fname)
+                        .cloned()
+                        .expect("field_order lists declared fields");
+                    let src_slot = self
+                        .builder
+                        .build_struct_gep(
+                            struct_ty,
+                            src_ptr,
+                            idx,
+                            &format!("fn.ret.struct.src.{}", fname),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let llvm_field_ty = self.llvm_basic_type(&fty);
+                    let field_val = self
+                        .builder
+                        .build_load(
+                            llvm_field_ty,
+                            src_slot,
+                            &format!("fn.ret.struct.load.{}", fname),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let copied = self.emit_return_value_deep_copy(
+                        field_val, &fty, dest_arena,
+                    )?;
+                    let dst_slot = self
+                        .builder
+                        .build_struct_gep(
+                            struct_ty,
+                            new_struct,
+                            idx,
+                            &format!("fn.ret.struct.dst.{}", fname),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_store(dst_slot, copied)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Ok(new_struct.into())
+            }
+            LotusType::LocusRef(_) => Err(CodegenError::Unsupported(format!(
+                "free-fn return of {:?}: locus references shouldn't \
+                 cross arena boundaries — pass via bus instead",
                 ty
             ))),
         }
+    }
+
+    /// m51: switch-on-tag deep-copy for a has-payload enum return
+    /// value. We pre-load the tag, then dispatch through a switch
+    /// where each case alloc's a fresh storage struct in
+    /// dest_arena, deep-copies the variant's payload fields via
+    /// load_enum_payload_fields + recursive emit_return_value_deep_copy,
+    /// and writes them back via lower_enum_variant_alloc. The new
+    /// pointers PHI-join into a single returned ptr value.
+    fn emit_enum_payload_deep_copy(
+        &mut self,
+        info: &EnumInfo,
+        src_ptr: PointerValue<'ctx>,
+        dest_arena: PointerValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let func = self
+            .current_fn
+            .expect("enum deep-copy emitted inside a fn");
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i32_t = self.context.i32_type();
+        let tag = self.load_enum_tag(info, src_ptr)?;
+        let entry_bb = self
+            .builder
+            .get_insert_block()
+            .expect("builder positioned");
+        let cont_bb = self.context.append_basic_block(func, "enum.dc.cont");
+        let default_bb = self.context.append_basic_block(func, "enum.dc.default");
+        let mut variant_blocks: Vec<(
+            inkwell::values::IntValue<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
+            BasicValueEnum<'ctx>,
+        )> = Vec::new();
+        // Set up per-variant blocks first; switch wires after.
+        for (i, _) in info.variants.iter().enumerate() {
+            let bb = self
+                .context
+                .append_basic_block(func, &format!("enum.dc.v{}", i));
+            self.builder.position_at_end(bb);
+            // Push the caller_arena_override so payload allocations
+            // for this variant happen in dest_arena, not the fn
+            // subregion. Wait — actually, we need the *new enum
+            // struct* to land in dest_arena via lower_enum_variant_alloc,
+            // which calls arena_alloc through current_arena_ptr.
+            // Override current_arena_override for this stretch.
+            let prev_override = self.current_arena_override;
+            self.current_arena_override = Some(dest_arena);
+            // Load the variant's payload fields from src_ptr, then
+            // deep-copy each one into dest_arena.
+            let raw_fields = self.load_enum_payload_fields(info, src_ptr, i)?;
+            let mut copied_fields: Vec<(BasicValueEnum<'ctx>, LotusType)> =
+                Vec::with_capacity(raw_fields.len());
+            for (val, fty) in raw_fields {
+                let copied = self.emit_return_value_deep_copy(
+                    val, &fty, dest_arena,
+                )?;
+                copied_fields.push((copied, fty));
+            }
+            // Allocate the new enum value in dest_arena (the
+            // override routes lower_enum_variant_alloc's
+            // arena_alloc there).
+            let new_ptr =
+                self.lower_enum_variant_alloc(info, i as u32, &copied_fields)?;
+            self.current_arena_override = prev_override;
+            self.builder
+                .build_unconditional_branch(cont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            variant_blocks.push((
+                i32_t.const_int(i as u64, false),
+                bb,
+                new_ptr.into(),
+            ));
+        }
+        // Default block: should be unreachable (tag is always one
+        // of the declared variants). Fall through with a null ptr
+        // PHI value to keep IR well-formed.
+        self.builder.position_at_end(default_bb);
+        self.builder
+            .build_unconditional_branch(cont_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // Wire the switch from entry_bb.
+        self.builder.position_at_end(entry_bb);
+        let cases: Vec<(
+            inkwell::values::IntValue<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
+        )> = variant_blocks
+            .iter()
+            .map(|(c, bb, _)| (*c, *bb))
+            .collect();
+        self.builder
+            .build_switch(tag, default_bb, &cases)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // PHI in cont.
+        self.builder.position_at_end(cont_bb);
+        let phi = self
+            .builder
+            .build_phi(ptr_t, "enum.dc.phi")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let mut incoming: Vec<(
+            &dyn inkwell::values::BasicValue<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
+        )> = Vec::new();
+        for (_, bb, val) in &variant_blocks {
+            incoming.push((val, *bb));
+        }
+        let null = ptr_t.const_null();
+        incoming.push((&null, default_bb));
+        phi.add_incoming(&incoming);
+        Ok(phi.as_basic_value())
     }
 
     /// Emit a call to a user-defined fn. Returns the lowered value

@@ -1,0 +1,81 @@
+// 47-fn-arenas-extras — m51: complete the m49 free-fn deep-copy
+// matrix. m49 shipped identity for value types, lotus_str_clone
+// for String, and a recursive walk for Tuple. The remaining three
+// branches — Array, TypeRef-struct, has-payload-Enum — were
+// rejected at codegen with a clear "not yet supported" message
+// pending a workload that demanded them. m51 fills them in.
+//
+// What each return path tests:
+//
+//   - Array (`[Int; 4]`): the body builds a fixed-size array
+//     inside the per-call subregion; deep-copy walks each slot
+//     and reconstructs it in the caller's arena.
+//
+//   - TypeRef-struct (`Point`): the body composes a struct via a
+//     literal that allocates in the subregion; deep-copy walks
+//     each declared field by struct slot index. Recursion handles
+//     fields whose types are themselves heap (a String inside the
+//     struct here exercises that — its buffer must also land in
+//     the caller's arena, not the subregion).
+//
+//   - Has-payload Enum (`Result::Ok(x)` / `Result::Err(s)`): the
+//     body constructs a tagged-union value, allocated as
+//     {i32 tag, [N x i8] body} in the subregion. Deep-copy
+//     switches on tag, allocates a fresh storage struct in the
+//     caller's arena, recursively copies each variant's payload
+//     fields (the String in Err recurses through emit_return_value_
+//     deep_copy and lands in the caller's arena via lotus_str_clone),
+//     and PHI-joins the new pointers.
+//
+// All three return values are then used after the fn return — if
+// any of them pointed into the destroyed subregion, the printed
+// output would be garbage. Parity with the interpreter (which is
+// unaffected by m49/m51 because Rust ownership handles lifetimes)
+// catches that immediately.
+
+type Point {
+    x: Int;
+    y: Int;
+    label: String;
+}
+
+type Result = enum {
+    Ok(Int),
+    Err(String),
+};
+
+fn make_arr(base: Int) -> [Int; 4] {
+    let xs: [Int; 4] = [base, base + 1, base + 2, base + 3];
+    return xs;
+}
+
+fn make_point(name: String, k: Int) -> Point {
+    return Point {
+        x: k,
+        y: k * 2,
+        label: "[" + name + "]",
+    };
+}
+
+fn divide(a: Int, b: Int) -> Result {
+    if b == 0 {
+        return Result::Err("divide by zero");
+    }
+    return Result::Ok(a / b);
+}
+
+fn main() {
+    let arr: [Int; 4] = make_arr(10);
+    println("arr[0] = ", arr[0]);
+    println("arr[3] = ", arr[3]);
+
+    let p: Point = make_point("alpha", 7);
+    println("p.x = ", p.x);
+    println("p.y = ", p.y);
+    println("p.label = ", p.label);
+
+    let r1: Result = divide(20, 4);
+    let r2: Result = divide(1, 0);
+    println("r1 = ", r1);
+    println("r2 = ", r2);
+}
