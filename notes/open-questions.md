@@ -117,6 +117,13 @@ when the type-system / operational-semantics docs are drafted.
     emits a default per-payload-type serializer; transport
     adapters override when needed. The wire is just a longer
     copy path — semantics don't change at the arena boundary.
+    **Substrate progress (m60):** codegen synthesizes
+    `__serialize_<T>` / `__deserialize_<T>` per bus payload
+    type and routes send/recv through them. Bodies are
+    identity (memcpy of sizeof(T)) at v0.1 — the shape is in
+    place; a future wire-format milestone replaces the bodies
+    (field-by-field little-endian, length-prefixed Strings,
+    schema versioning) without touching call sites.
 
 ## Closure tests
 

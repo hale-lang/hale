@@ -1,7 +1,7 @@
 //! AST → LLVM IR → object file → executable, for the
 //! milestone-0 subset.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -157,6 +157,7 @@ pub fn build_executable(
         current_user_fn_exit_bb: None,
         current_user_fn_ret_alloca: None,
         accumulator_ctx: None,
+        serializers: BTreeMap::new(),
     };
 
     cx.declare_builtins();
@@ -330,6 +331,46 @@ struct Cx<'ctx, 'p> {
     /// order in declare_locus_struct, so the Nth `sum` encountered
     /// during lowering corresponds to the Nth slot.
     accumulator_ctx: Option<AccumulatorCtx<'ctx>>,
+    /// m60: per-payload-type serializer / deserializer fns,
+    /// keyed by the type's name (e.g., "Ping" or "Greeting").
+    /// Synthesized in lower_program after pass A2 once user_types
+    /// + user_enums are populated; bodies are identity (memcpy)
+    /// at v0.1, so observable bytes are unchanged from the
+    /// pre-m60 raw-struct path. The functions exist so codegen
+    /// call sites (`<-` send + bus subscribe register) can route
+    /// payloads through a per-type encode/decode pair instead of
+    /// memcpy'ing struct bytes inline — a future wire-format
+    /// milestone replaces the bodies without touching call
+    /// sites. Per notes/open-questions #10, the receiver's
+    /// arena gets a fresh copy of the payload struct: the
+    /// deserializer's job is to reconstruct that struct from
+    /// whatever bytes the wire delivered.
+    serializers: BTreeMap<String, SerializerPair<'ctx>>,
+}
+
+/// m60: paired serialize / deserialize fns synthesized per bus
+/// payload type. v0.1 wire format is identity (struct bytes
+/// passed through memcpy) so a publisher and subscriber on the
+/// same arch + same compiler version stay byte-compatible. The
+/// shape is what matters: codegen routes payloads through these
+/// hooks so a future wire-format change drops in by replacing
+/// the function bodies, not the call sites.
+#[derive(Debug, Clone, Copy)]
+struct SerializerPair<'ctx> {
+    /// `i64 @__serialize_T(ptr src, ptr dst, i64 cap)` — copies
+    /// the struct at `src` (size known statically per T) into
+    /// `dst` (caller-provided buffer of `cap` bytes), returning
+    /// the number of bytes written. Identity body at v0.1 just
+    /// memcpys `sizeof(T)` bytes. cap is reserved for the future
+    /// wire-format pass.
+    serialize: FunctionValue<'ctx>,
+    /// `i64 @__deserialize_T(ptr src, i64 n, ptr dst, i64 cap)` —
+    /// reads `n` wire bytes from `src` and reconstructs a struct
+    /// of type T at `dst` (caller-provided buffer of `cap` bytes),
+    /// returning the struct's natural size on success or -1 on
+    /// error. Identity body at v0.1 memcpys `sizeof(T)` bytes
+    /// (which equals `n` because the wire format is identity).
+    deserialize: FunctionValue<'ctx>,
 }
 
 /// m46: substitution context for `sum(...)` lowering inside a
@@ -472,11 +513,13 @@ struct LocusInfo<'ctx> {
     /// `self_ptr` plus their declared params.
     user_methods: BTreeMap<String, FunctionValue<'ctx>>,
     /// Each `bus subscribe "S" as h ...` declaration on this
-    /// locus: (subject_literal, handler_method_name). At
-    /// instantiation time, registration emits a triple
-    /// (subject_str, self_ptr, handler_fn_ptr) into the global
-    /// bus table.
-    subscriptions: Vec<(String, String)>,
+    /// locus: (subject_literal, handler_method_name,
+    /// payload_type_name). At instantiation time, registration
+    /// emits a 5-tuple (subject_str, self_ptr, handler_fn_ptr,
+    /// mailbox_or_null, deserialize_fn_ptr) into the global
+    /// bus table — the deserialize fn is looked up via the
+    /// payload type name in `cx.serializers` (m60).
+    subscriptions: Vec<(String, String, String)>,
     /// Closure declarations on this locus. All five epochs lower
     /// (Birth m39, Dissolve, Tick m42, Duration m43, Explicit m44).
     /// Each element is `(name, assertion, epoch)` carried over from
@@ -977,13 +1020,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // a compile-time-fixed multiple of the declared
         // subscription count.
         // declare void @lotus_bus_register(ptr subject, ptr self,
-        //                                  ptr handler, ptr mailbox)
+        //                                  ptr handler, ptr mailbox,
+        //                                  ptr deserialize_fn)
         // declare void @lotus_bus_dispatch(ptr queue, ptr subject,
         //                                  ptr payload, i64 size)
         // declare void @lotus_bus_quarantine_self(ptr self)
         // declare void @lotus_bus_router_destroy()
+        // m60: lotus_bus_register grows a 5th arg, the per-subject
+        // deserialize fn ptr. The reader thread (m59) needs it to
+        // decode wire-format bytes into a struct before invoking
+        // the handler. Cooperative-only programs that never receive
+        // bytes from the cross-process bus still pass it (it's
+        // unused at runtime); kept unconditional to keep the ABI
+        // stable across config-set vs config-not-set runs.
         let bus_register_ty = void_t.fn_type(
-            &[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into()],
+            &[
+                ptr_t.into(),
+                ptr_t.into(),
+                ptr_t.into(),
+                ptr_t.into(),
+                ptr_t.into(),
+            ],
             false,
         );
         self.module
@@ -1465,19 +1522,153 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// m60: synthesize `__serialize_T` and `__deserialize_T` for
+    /// a single bus payload type, registering them in
+    /// `cx.serializers` so call sites can look them up by type
+    /// name. Body is identity (memcpy of `sizeof(T)` bytes) at
+    /// v0.1 — the shape is what installs the substrate; the
+    /// actual wire format is a deliberate later choice. Saves
+    /// and restores the builder position so this can run between
+    /// passes that use the builder (notably between A2 and the
+    /// body-lowering passes C/D).
+    fn synthesize_serializer(
+        &mut self,
+        type_name: &str,
+    ) -> Result<(), CodegenError> {
+        if self.serializers.contains_key(type_name) {
+            return Ok(());     /* already synthesized */
+        }
+        let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+
+        // Resolve the LLVM struct type and its size from either
+        // the user-types or user-enums table. Either kind of
+        // payload (TypeRef struct OR has-payload Enum) ends up as
+        // a sized struct in memory.
+        let size_iv = if let Some(info) = self.user_types.get(type_name) {
+            info.struct_ty.size_of().expect("payload struct has known size")
+        } else if let Some(info) = self.user_enums.get(type_name).cloned() {
+            if !info.has_payload {
+                return Err(CodegenError::Unsupported(format!(
+                    "bus payload `{}` is a no-payload enum; wrap in a \
+                     struct or add a variant payload (m60 needs a sized \
+                     storage struct)",
+                    type_name
+                )));
+            }
+            self.enum_storage_struct(&info)
+                .size_of()
+                .expect("enum storage struct has known size")
+        } else {
+            return Err(CodegenError::Unsupported(format!(
+                "synthesize_serializer: type `{}` not declared",
+                type_name
+            )));
+        };
+
+        let saved_block = self.builder.get_insert_block();
+
+        // i64 @__serialize_T(ptr src, ptr dst, i64 cap)
+        let ser_ty = i64_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), i64_t.into()],
+            false,
+        );
+        let ser_fn = self.module.add_function(
+            &format!("__serialize_{}", type_name),
+            ser_ty,
+            None,
+        );
+        let ser_entry = self.context.append_basic_block(ser_fn, "entry");
+        self.builder.position_at_end(ser_entry);
+        let ser_src = ser_fn
+            .get_nth_param(0)
+            .expect("ser src arg")
+            .into_pointer_value();
+        let ser_dst = ser_fn
+            .get_nth_param(1)
+            .expect("ser dst arg")
+            .into_pointer_value();
+        // cap arg ignored at v0.1 — caller is trusted to provide
+        // at least sizeof(T) bytes. Future wire-format pass will
+        // bounds-check.
+        let memcpy_fn = self
+            .module
+            .get_function("memcpy")
+            .expect("memcpy declared");
+        self.builder
+            .build_call(
+                memcpy_fn,
+                &[ser_dst.into(), ser_src.into(), size_iv.into()],
+                "ser.memcpy",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_return(Some(&size_iv))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // i64 @__deserialize_T(ptr src, i64 n, ptr dst, i64 cap)
+        let de_ty = i64_t.fn_type(
+            &[ptr_t.into(), i64_t.into(), ptr_t.into(), i64_t.into()],
+            false,
+        );
+        let de_fn = self.module.add_function(
+            &format!("__deserialize_{}", type_name),
+            de_ty,
+            None,
+        );
+        let de_entry = self.context.append_basic_block(de_fn, "entry");
+        self.builder.position_at_end(de_entry);
+        let de_src = de_fn
+            .get_nth_param(0)
+            .expect("de src arg")
+            .into_pointer_value();
+        // n arg ignored at v0.1 — wire bytes ARE struct bytes, so
+        // n is expected to equal sizeof(T). cap arg likewise.
+        let de_dst = de_fn
+            .get_nth_param(2)
+            .expect("de dst arg")
+            .into_pointer_value();
+        self.builder
+            .build_call(
+                memcpy_fn,
+                &[de_dst.into(), de_src.into(), size_iv.into()],
+                "de.memcpy",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_return(Some(&size_iv))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        if let Some(b) = saved_block {
+            self.builder.position_at_end(b);
+        }
+
+        self.serializers.insert(
+            type_name.to_string(),
+            SerializerPair { serialize: ser_fn, deserialize: de_fn },
+        );
+        Ok(())
+    }
+
     /// Emit a single subscription registration as one call to
-    /// `lotus_bus_register(subject, self, handler, mailbox)`.
-    /// The C runtime owns the entries vec and grows it on demand,
-    /// so there's no compile-time-fixed capacity ceiling.
-    /// `mailbox_or_null` is `Some(mb_ptr)` for pinned subscribers
-    /// (cells route to that locus's mailbox) and `None` for
-    /// cooperative subscribers (cells route to the global queue).
+    /// `lotus_bus_register(subject, self, handler, mailbox,
+    /// deserialize_fn)`. The C runtime owns the entries vec and
+    /// grows it on demand, so there's no compile-time-fixed
+    /// capacity ceiling. `mailbox_or_null` is `Some(mb_ptr)` for
+    /// pinned subscribers (cells route to that locus's mailbox)
+    /// and `None` for cooperative subscribers (cells route to
+    /// the global queue). m60: `payload_type` names the type
+    /// declared in the matching `bus subscribe "..." of type T`
+    /// — used to look up `__deserialize_T` so the reader thread
+    /// (m59) can decode wire-format bytes into a struct before
+    /// dispatching to the handler.
     fn emit_bus_register(
         &mut self,
         subject: &str,
         self_ptr: PointerValue<'ctx>,
         handler_fn: FunctionValue<'ctx>,
         mailbox_or_null: Option<PointerValue<'ctx>>,
+        payload_type: &str,
     ) -> Result<(), CodegenError> {
         let _ = self
             .bus_state
@@ -1486,6 +1677,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let subj_str = self.global_string(subject);
         let handler_ptr = handler_fn.as_global_value().as_pointer_value();
         let mailbox_val = mailbox_or_null.unwrap_or_else(|| ptr_t.const_null());
+        let deserialize_ptr = self
+            .serializers
+            .get(payload_type)
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "no serializer synthesized for bus payload type `{}` — \
+                     m60 should have created one in pass A3",
+                    payload_type
+                ))
+            })?
+            .deserialize
+            .as_global_value()
+            .as_pointer_value();
         let register_fn = self
             .module
             .get_function("lotus_bus_register")
@@ -1498,6 +1702,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self_ptr.into(),
                     handler_ptr.into(),
                     mailbox_val.into(),
+                    deserialize_ptr.into(),
                 ],
                 "bus.register.call",
             )
@@ -1591,6 +1796,47 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .sum();
         if decl_subs > 0 {
             self.init_bus_state()?;
+        }
+
+        // Pass A3 (m60): synthesize per-payload-type serializer
+        // and deserializer fns. Walks every locus's bus declarations
+        // and pulls the type names from both Subscribe (carried in
+        // info.subscriptions[].2) and Publish (carried in the AST
+        // directly, since publish doesn't go through info). Dedupe
+        // by name. Bodies are identity at v0.1; the shape is what
+        // matters — call sites in lower_send + emit_bus_register
+        // route payloads through these hooks instead of memcpy'ing
+        // struct bytes inline, so a future wire-format milestone
+        // drops in by replacing the bodies, not the call sites.
+        let mut payload_types: BTreeSet<String> = BTreeSet::new();
+        for info in self.user_loci.values() {
+            for (_, _, payload_type) in &info.subscriptions {
+                payload_types.insert(payload_type.clone());
+            }
+        }
+        for l in &locus_decls {
+            for member in &l.members {
+                if let LocusMember::Bus(bb) = member {
+                    for bm in &bb.members {
+                        if let BusMember::Publish { ty, .. } = bm {
+                            if let Ok(lt) = self.type_expr_to_lotus(ty) {
+                                match lt {
+                                    LotusType::TypeRef(n) => {
+                                        payload_types.insert(n);
+                                    }
+                                    LotusType::Enum(n) => {
+                                        payload_types.insert(n);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for type_name in &payload_types {
+            self.synthesize_serializer(type_name)?;
         }
 
         // Pass B: declare every user-defined function so call sites
@@ -2451,7 +2697,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut accept_param: Option<(String, String)> = None;
         let mut user_methods: BTreeMap<String, FunctionValue<'ctx>> =
             BTreeMap::new();
-        let mut subscriptions: Vec<(String, String)> = Vec::new();
+        let mut subscriptions: Vec<(String, String, String)> = Vec::new();
         let mut closures: Vec<(String, ClosureAssertion, EpochSpec)> =
             Vec::new();
         let mut failure_handler: Option<(String, FunctionValue<'ctx>)> = None;
@@ -2560,11 +2806,43 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // typecheck-only (the `<-` operator does the
                     // emit at codegen). Subject must be a literal
                     // string at compile time.
+                    //
+                    // m60: each subscription also carries the
+                    // payload type's name so registration can
+                    // look up the matching __deserialize_T fn in
+                    // cx.serializers. The `of type T` clause is
+                    // optional in the AST but every example
+                    // declares it; if it's missing we fall back
+                    // to extracting the type from the handler's
+                    // first param signature later in pass A2.
                     for bm in &bb.members {
                         match bm {
-                            BusMember::Subscribe { subject, handler, .. } => {
-                                subscriptions
-                                    .push((subject.clone(), handler.name.clone()));
+                            BusMember::Subscribe { subject, handler, ty, .. } => {
+                                let payload_type_name = ty
+                                    .as_ref()
+                                    .and_then(|t| {
+                                        self.type_expr_to_lotus(t).ok()
+                                    })
+                                    .and_then(|lt| match lt {
+                                        LotusType::TypeRef(n) => Some(n),
+                                        LotusType::Enum(n) => Some(n),
+                                        _ => None,
+                                    })
+                                    .ok_or_else(|| {
+                                        CodegenError::Unsupported(format!(
+                                            "locus `{}` subscribe `{}`: \
+                                             missing or unsupported \
+                                             payload type (m60 requires \
+                                             a TypeRef or has-payload \
+                                             Enum)",
+                                            l.name.name, subject
+                                        ))
+                                    })?;
+                                subscriptions.push((
+                                    subject.clone(),
+                                    handler.name.clone(),
+                                    payload_type_name,
+                                ));
                             }
                             BusMember::Publish { .. } => {
                                 // No-op at codegen; type info
@@ -3527,7 +3805,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let is_subscribed_handler = info
                     .subscriptions
                     .iter()
-                    .any(|(_, h)| h == &fd.name.name);
+                    .any(|(_, h, _)| h == &fd.name.name);
                 if is_subscribed_handler {
                     let i64_t = self.context.i64_type();
                     let q_slot = self
@@ -3587,7 +3865,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let is_subscribed_handler = info
                         .subscriptions
                         .iter()
-                        .any(|(_, h)| h == &fd.name.name);
+                        .any(|(_, h, _)| h == &fd.name.name);
                     if is_subscribed_handler {
                         // Load parent_self and parent_handler
                         // once; both tick and duration fns
@@ -8962,7 +9240,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             matches!(info.schedule_class, ScheduleClass::Pinned(_))
                 && !info.subscriptions.is_empty();
         if !pinned_subscriptions {
-            for (subject, handler_name) in &info.subscriptions {
+            for (subject, handler_name, payload_type) in &info.subscriptions {
                 let handler_fn = info
                     .user_methods
                     .get(handler_name)
@@ -8974,7 +9252,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             locus_name, subject, handler_name
                         ))
                     })?;
-                self.emit_bus_register(subject, self_ptr, handler_fn, None)?;
+                self.emit_bus_register(
+                    subject,
+                    self_ptr,
+                    handler_fn,
+                    None,
+                    payload_type,
+                )?;
             }
         }
 
@@ -9078,7 +9362,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.builder
                         .build_store(mb_slot, mb_ptr)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    for (subject, handler_name) in &info.subscriptions {
+                    for (subject, handler_name, payload_type) in
+                        &info.subscriptions
+                    {
                         let handler_fn = info
                             .user_methods
                             .get(handler_name)
@@ -9091,7 +9377,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 ))
                             })?;
                         self.emit_bus_register(
-                            subject, self_ptr, handler_fn, Some(mb_ptr),
+                            subject,
+                            self_ptr,
+                            handler_fn,
+                            Some(mb_ptr),
+                            payload_type,
                         )?;
                     }
                     Some(mb_ptr)
@@ -11160,12 +11450,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (payload_val, payload_ty) = self.lower_expr(value, scope)?;
         // m47-payloads-followup: bus payload is either a
         // user-type struct pointer OR a has-payload enum
-        // pointer. Both lower to a ptr value + a size of the
-        // pointed-to storage struct; bus_dispatch memcpys those
-        // bytes into the cell. No-payload enums are i32 values
-        // — they'd need an alloca + pointer take to dispatch;
-        // not common enough at v0.1 to wire (wrap in a struct).
-        let payload_size = match &payload_ty {
+        // pointer. Both lower to a ptr value + a sized storage
+        // struct. m60: payload bytes flow through __serialize_T
+        // before reaching lotus_bus_dispatch, so the wire format
+        // is governed by the per-type serializer rather than
+        // implicit struct-layout assumption.
+        let (payload_type_name, payload_struct_ty) = match &payload_ty {
             LotusType::TypeRef(name) => {
                 let info = self
                     .user_types
@@ -11177,9 +11467,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             name
                         ))
                     })?;
-                info.struct_ty
-                    .size_of()
-                    .expect("payload struct has known size")
+                (name.clone(), info.struct_ty)
             }
             LotusType::Enum(name) => {
                 let info = self
@@ -11199,9 +11487,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         name
                     )));
                 }
-                self.enum_storage_struct(&info)
-                    .size_of()
-                    .expect("enum storage struct has known size")
+                (name.clone(), self.enum_storage_struct(&info))
             }
             other => {
                 return Err(CodegenError::Unsupported(format!(
@@ -11212,6 +11498,53 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         };
         let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        let payload_size_iv = payload_struct_ty
+            .size_of()
+            .expect("payload struct has known size");
+
+        // m60: alloca a stack buffer large enough to hold the
+        // serialized form. v0.1 wire format is identity so
+        // sizeof(struct) is exactly right; once the wire-format
+        // milestone introduces variable-width encodings we'll
+        // either size up here or spill to the arena.
+        let scratch_buf = self
+            .builder
+            .build_alloca(payload_struct_ty, "bus.send.scratch")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Call __serialize_T(payload, scratch, sizeof(T)) and use
+        // its return value as the dispatch size. For identity the
+        // returned size IS sizeof(T); the variable lets future
+        // encodings shrink/grow the wire payload without changing
+        // the dispatch surface.
+        let ser_fn = self
+            .serializers
+            .get(&payload_type_name)
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "no serializer for bus payload `{}` — pass A3 should \
+                     have synthesized one",
+                    payload_type_name
+                ))
+            })?
+            .serialize;
+        let written_size = self
+            .builder
+            .build_call(
+                ser_fn,
+                &[
+                    payload_val.into(),
+                    scratch_buf.into(),
+                    payload_size_iv.into(),
+                ],
+                "bus.send.serialize",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("__serialize_T returns i64");
+
         let queue_global = self
             .module
             .get_global("lotus.bus_queue.global")
@@ -11228,14 +11561,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .get_function("lotus_bus_dispatch")
             .expect("lotus_bus_dispatch declared in declare_builtins");
+        let _ = i64_t;
         self.builder
             .build_call(
                 dispatch_fn,
                 &[
                     queue_ptr.into(),
                     subj_val.into(),
-                    payload_val.into(),
-                    payload_size.into(),
+                    scratch_buf.into(),
+                    written_size.into(),
                 ],
                 "bus.dispatch.call",
             )

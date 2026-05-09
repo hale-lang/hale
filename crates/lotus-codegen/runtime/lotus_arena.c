@@ -581,11 +581,25 @@ void lotus_mailbox_destroy(lotus_mailbox_t *mb) {
  * acquires a mutex.
  */
 
+/* m60: per-payload deserializer signature. Codegen synthesizes
+ * `__deserialize_T` per bus payload type and passes the fn ptr
+ * to lotus_bus_register; the reader thread (m59) calls it on
+ * recv'd wire bytes to reconstruct the struct before dispatching
+ * to the local handler. v0.1 wire format is identity (memcpy of
+ * sizeof(T) bytes), so the reconstructed struct equals the
+ * publisher's original struct. Returns the size written into
+ * `dst` on success, -1 on error. */
+typedef ssize_t (*lotus_deserialize_fn)(const void *src,
+                                        size_t n,
+                                        void *dst,
+                                        size_t cap);
+
 typedef struct lotus_bus_entry {
-    const char       *subject;
-    void             *self_ptr;
-    void             *handler;
-    lotus_mailbox_t  *mailbox;
+    const char           *subject;
+    void                 *self_ptr;
+    void                 *handler;
+    lotus_mailbox_t      *mailbox;
+    lotus_deserialize_fn  deserialize;     /* m60: nullable */
 } lotus_bus_entry_t;
 
 static lotus_bus_entry_t *g_bus_entries = NULL;
@@ -630,7 +644,8 @@ void lotus_bus_set_queue(lotus_bus_queue_t *queue);
 void lotus_bus_register(const char *subject,
                         void *self_ptr,
                         void *handler,
-                        lotus_mailbox_t *mailbox) {
+                        lotus_mailbox_t *mailbox,
+                        lotus_deserialize_fn deserialize) {
     if (g_bus_count == g_bus_cap) {
         size_t new_cap = g_bus_cap == 0
             ? LOTUS_BUS_ROUTER_INITIAL_CAP
@@ -642,10 +657,11 @@ void lotus_bus_register(const char *subject,
         g_bus_cap     = new_cap;
     }
     lotus_bus_entry_t *e = &g_bus_entries[g_bus_count++];
-    e->subject  = subject;
-    e->self_ptr = self_ptr;
-    e->handler  = handler;
-    e->mailbox  = mailbox;
+    e->subject     = subject;
+    e->self_ptr    = self_ptr;
+    e->handler     = handler;
+    e->mailbox     = mailbox;
+    e->deserialize = deserialize;
 }
 
 /* Dispatch a published message to every subscriber of `subject`.
@@ -1239,13 +1255,36 @@ static void *lotus_bus_reader_thread_main(void *arg) {
      * which already drives recv to EOF.) */
     args->entry->transport = t;
 
-    char buf[LOTUS_PAYLOAD_MAX];
+    char wire_buf[LOTUS_PAYLOAD_MAX];
+    char struct_buf[LOTUS_PAYLOAD_MAX];
     while (1) {
-        ssize_t n = lotus_transport_recv(t, buf, sizeof(buf));
+        ssize_t n = lotus_transport_recv(t, wire_buf, sizeof(wire_buf));
         if (n <= 0) break;     /* peer closed (0) or error (-1) */
+
+        /* m60: deserialize wire bytes into struct-layout bytes
+         * before handing them to local dispatch. Look up the
+         * deserialize_fn from the FIRST local entry matching
+         * this subject — by language constraint all entries on
+         * the same subject share the payload type, so any one
+         * works. Skip dispatch if the type-checker mismatches
+         * or there are no local subscribers (the recv'd bytes
+         * have nowhere to go locally; that's not an error in
+         * relay-shaped programs). */
+        lotus_deserialize_fn deserialize = NULL;
+        for (size_t i = 0; i < g_bus_count; i++) {
+            lotus_bus_entry_t *e = &g_bus_entries[i];
+            if (!e->subject) continue;
+            if (strcmp(e->subject, args->entry->subject) != 0) continue;
+            deserialize = e->deserialize;
+            break;
+        }
+        if (!deserialize) continue;
+        ssize_t struct_size = deserialize(
+            wire_buf, (size_t)n, struct_buf, sizeof(struct_buf));
+        if (struct_size <= 0) continue;
         lotus_bus_local_dispatch(g_bus_queue_for_remote,
                                  args->entry->subject,
-                                 buf, (size_t)n);
+                                 struct_buf, (size_t)struct_size);
     }
 
     lotus_transport_destroy(t);

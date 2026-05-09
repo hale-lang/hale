@@ -1,7 +1,48 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work
-in a new session. State as of **m59: subscriber-side reader
+in a new session. State as of **m60: per-payload serializer
+shape (wire format deferred)** — fourth substrate piece of the
+cross-process bus arc. Installs the serializer/deserializer
+hooks that codegen routes every bus payload through, but
+deliberately leaves the actual wire format as a future-
+milestone choice. Codegen now synthesizes
+`__serialize_<TypeName>(src, dst, cap) -> i64` and
+`__deserialize_<TypeName>(src, n, dst, cap) -> i64` per bus
+payload type during a new pass A3 (between locus declarations
+and body lowering); bodies are identity at v0.1 (memcpy
+sizeof(T) bytes), so a publisher and subscriber on the same
+arch + same compiler version stay byte-compatible — observable
+behavior is unchanged from m59. The shape is what installs the
+substrate: `<-` send sites alloca a scratch buffer, call
+`__serialize_T(payload, scratch, sizeof(T))` and pass the
+returned size + scratch ptr to `lotus_bus_dispatch` (replacing
+the previous "raw struct ptr + sizeof(T)" pattern); bus
+subscribe registration passes `__deserialize_T` as a 5th
+argument to the now-extended `lotus_bus_register(subject,
+self, handler, mailbox, deserialize_fn)`; the m59 reader
+thread looks up the deserialize fn from the first matching
+local entry on each recv, decodes wire bytes into a struct
+buffer, then calls `lotus_bus_local_dispatch` with struct-
+layout bytes. A future wire-format milestone replaces the
+function bodies — field-by-field little-endian, length-
+prefixed Strings, schema versioning — without touching call
+sites. Per notes/open-questions #10 the contract stays "the
+receiver's arena gets a fresh copy of the payload struct"; the
+serializer is just the encoder/decoder for the bytes between
+publisher and that arena copy. Verified via new
+`crates/lotus-codegen/tests/serializer_shape.rs` (builds a
+program with two payload types, asserts the IR contains
+`define i64 @__serialize_Ping`, `@__deserialize_Ping`,
+`@__serialize_Pong`, `@__deserialize_Pong` and that the send
+site emits `call i64 @__serialize_Ping`); m59's two-binary
+publisher/subscriber test (`bus_subscriber.rs`) continues to
+pass unchanged, which is the operational proof that identity
+bodies preserve byte semantics through the new pipeline. 102
+tests pass (was 101; +1 from serializer_shape.rs); 54 example
+builds unaffected; bus examples (05-bus, 19-pinned-bus,
+30-stats) rebuild + run with byte-identical output. State
+before that was **m59: subscriber-side reader
 thread** — third substrate piece of the cross-process bus
 arc. Closes the receive half: when a deployment-config entry
 declares `role=listen`, the runtime spawns a per-subject
@@ -2327,30 +2368,16 @@ capacity ceiling — the m45 quickfix `× 32` multiplier is gone.
 
 ### RESUME HERE (next session)
 
-**Start with m60: multi-binary build orchestration + per-payload
-serializer + trellis-pair.** Final session of the cross-process
-bus arc. The receive/send loop is closed (m57+m58+m59); what's
-left is the production-readiness layer that makes
+**Start with m61: multi-binary build orchestration +
+trellis-pair.** Final session of the cross-process bus arc.
+m57 (kernel transport), m58 (deployment-config publisher
+fanout), m59 (subscriber reader thread), m60 (serializer
+shape) all close the cross-process bus loop substrate.
+What's left is the production-readiness layer that makes
 `examples/trellis-pair/` the v1 acceptance test it's supposed
-to be. Three threads:
+to be. Two threads:
 
-(a) **Per-payload serializer.** Currently
-`lotus_bus_dispatch` and the m59 reader thread pass raw struct
-bytes between processes — works on same arch + same compiler
-version (which is the trellis-pair scope), fragile across
-binary versions where LLVM padding can drift. Codegen-emit a
-per-payload-type `__serialize_<TypeName>(struct *, void *buf,
-size_t cap)` and `__deserialize_<TypeName>(void *buf, size_t
-n, struct *out)`. v0.1: field-by-field write little-endian
-fixed-width per scalar; length-prefixed Strings; nested
-struct fields recurse. Call sites: serialize on the publisher
-in `lotus_bus_remote_fanout` before send; deserialize on the
-subscriber inside the reader thread before
-`lotus_bus_local_dispatch`. Schema versioning (per-type
-fingerprint, mismatch detection) deferred to v0.2 +
-notes/open-questions #13.
-
-(b) **Multi-binary build orchestration.** `lotus build` today
+(a) **Multi-binary build orchestration.** `lotus build` today
 takes one `.lt` entry file and emits one binary. trellis-pair
 needs two binaries (analyst + executor) sharing a `shared.lt`
 type module. Either: (1) `lotus build` accepts a list of
@@ -2362,12 +2389,23 @@ substrate-aligned. Concrete deliverable: `lotus build
 `analyst` and `executor` binaries side-by-side with their
 per-binary bus configs.
 
-(c) **trellis-pair end-to-end test.** With (a) and (b) in
-place, the CHECKPOINT verify recipe gains a line that builds
-the manifest, runs the two binaries with a deployment-config
+(b) **trellis-pair end-to-end test.** With (a) in place, the
+CHECKPOINT verify recipe gains a line that builds the
+manifest, runs the two binaries with a deployment-config
 that wires their subjects together, and asserts the same
 trellis-demo behavior playing out across two processes.
-Actually flips trellis-pair from "stub" to v1 acceptance gate.
+Actually flips trellis-pair from "stub" to v1 acceptance
+gate.
+
+The actual wire-format choice that m60 explicitly deferred
+(field-by-field little-endian for scalars, length-prefixed
+Strings, schema fingerprinting + version-mismatch detection
+per notes/open-questions #13) sits behind m61 in priority —
+identity bodies are correct for the trellis-pair scope, and
+swapping in a real wire format only becomes load-bearing once
+binary-version drift or heterogeneous hosts enter the
+picture. Punt to a workload-driven later milestone; the m60
+substrate makes that swap a body-only change.
 
 The cross-process bus arc was chosen as the next multi-session
 commitment per The Design's delivery-lotus framing: it's the
@@ -2404,13 +2442,26 @@ exercises the assembled substrate.
   `crates/lotus-codegen/tests/bus_subscriber.rs` (two-lotus-
   binary end-to-end: publisher → unix socket → subscriber's
   reader thread → cooperative queue → Sub.on_evt → stdout).
-  Wire format stays raw struct bytes at v0.1; serializer is
-  m60 territory.
-- **m60 Per-payload serializer + multi-binary build
-  orchestration + trellis-pair** — codegen-emitted
-  serialize/deserialize per payload type for layout
-  robustness; `lotus build --manifest` for two-binary builds;
-  trellis-pair flips from stub to v1 acceptance gate.
+- **m60 Per-payload serializer shape — DONE (wire format
+  deferred)** — codegen synthesizes
+  `__serialize_<T>` / `__deserialize_<T>` per bus payload
+  type and routes every send/recv through them; bodies are
+  identity at v0.1. `lotus_bus_register` extended with a
+  deserialize_fn ptr arg; reader thread looks it up by
+  subject and decodes wire bytes before local dispatch. The
+  shape unblocks a future wire-format milestone (field-by-
+  field little-endian + length-prefixed Strings + schema
+  versioning) as a body-only change. Verified via
+  `crates/lotus-codegen/tests/serializer_shape.rs` (IR
+  contains expected `define i64 @__serialize_T` /
+  `@__deserialize_T` symbols) plus continued passing of
+  `bus_subscriber.rs` (operational proof that identity bodies
+  preserve byte semantics through the pipeline).
+- **m61 Multi-binary build orchestration + trellis-pair** —
+  `lotus build --manifest` for two-binary builds (analyst +
+  executor sharing shared.lt); trellis-pair flips from stub
+  to v1 acceptance gate. Closes the cross-process bus arc
+  with the workload that originally motivated it.
 
 ### Other multi-session arcs (no current commitment)
 
@@ -2473,20 +2524,23 @@ System has:
 - `gcc` 13.x
 
 Cargo workspace builds clean. `cargo test --workspace --tests` passes
-all 101 tests (the locus-with-run test runs 3×500ms sleeps so the
+all 102 tests (the locus-with-run test runs 3×500ms sleeps so the
 runtime + codegen integration buckets clock ~1.5s each; m57 added
 two transport round-trip tests under tests/transport.rs that fork
 listener + connector subprocesses; m58 added two more under
 tests/bus_config.rs that route a lotus publisher's bus dispatch
 through a unix socket to the m57 driver; m59 added one more under
 tests/bus_subscriber.rs that runs the full two-lotus-binary
-publisher → reader-thread → cooperative-queue → handler path).
+publisher → reader-thread → cooperative-queue → handler path; m60
+added one more under tests/serializer_shape.rs that verifies the
+synthesized __serialize_T / __deserialize_T symbols + send-site
+calls show up in the IR).
 
 ## How to verify the checkpoint
 
 ```
 cd ~/code/lotus-lang
-cargo test --workspace --tests           # 101 passed
+cargo test --workspace --tests           # 102 passed
 cargo run --bin lotus -- run examples/trellis-demo/main.lt
 cargo run --bin lotus -- build examples/hello-world/main.lt
 ./examples/hello-world/main              # prints "hello, world"
