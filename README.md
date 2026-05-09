@@ -40,9 +40,9 @@ per-locus mutex+condvar mailboxes carrying inline payloads,
 with coordinated shutdown via shutdown-flag-then-join, and
 (m28c) **`pinned(core = N)` CPU affinity** — pinned loci
 optionally bind their thread to a specific logical CPU via
-`pthread_setaffinity_np`. **28 of 29 examples build to native
+`pthread_setaffinity_np`. **29 of 30 examples build to native
 ELF — every single-binary example is a build target.** Phase 3
-(codegen) is at milestone 32:
+(codegen) is at milestone 33:
 literals +
 arithmetic, `let`/`let mut` + assignment + compound ops,
 `if`/`else`/`while` + `break`/`continue`, `time::sleep` on
@@ -278,11 +278,11 @@ crates/                   (Phase 1 + 2 v0 + Phase 3 milestones 0-18)
                           object file (m19 substrate).
 ```
 
-Example ladder: 29 projects from hello-world → trellis-pair;
-~1,300 lines of source + ~1,400+ lines of README walk-throughs.
-91 tests across the workspace; 28 of 29 projects run end-to-end
+Example ladder: 30 projects from hello-world → trellis-pair;
+~1,350 lines of source + ~1,400+ lines of README walk-throughs.
+91 tests across the workspace; 29 of 30 projects run end-to-end
 under `lotus run` (only multi-binary trellis-pair waits on the
-cross-process bus). **28 of 29 projects** also build to native
+cross-process bus). **29 of 30 projects** also build to native
 ELF via `lotus build` — every single-binary example. Only
 `trellis-pair` (cross-process bus + entry-point selection) is
 not a build target.

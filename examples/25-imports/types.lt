@@ -1,0 +1,11 @@
+// types.lt — typed messages shared across files in this
+// project. Imported by both producer.lt and consumer.lt
+// (transitively, via main.lt). Per `import` resolution: paths
+// are relative to the importing file's directory, with the
+// `.lt` extension implicit.
+
+type Trade {
+    symbol: String;
+    price:  Decimal;
+    qty:    Decimal;
+}

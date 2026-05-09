@@ -1,0 +1,27 @@
+// 25-imports — multi-file lotus project linked by `import`.
+//
+// Three files in this directory:
+//   - types.lt       — `type Trade` definition
+//   - notional.lt    — `fn notional(Trade) -> Decimal` helper,
+//                      itself importing types.lt
+//   - main.lt        — this file, with `fn main()` driving it
+//
+// `import "..."` paths resolve relative to the importing
+// file's directory. Cycles short-circuit (re-importing the
+// same canonical path adds nothing). The merged compilation
+// unit is one logical Program; downstream typecheck + codegen
+// see all top-level decls together.
+//
+// Per The Design / lotus, multi-file projects are organisational
+// — the framework's coordination primitives don't change shape
+// because a type lives in a sibling file. The bus and the
+// region allocator stay one unit; what's different is just
+// where the source TEXT lives.
+
+import "types";
+import "notional";
+
+fn main() {
+    let t = Trade { symbol: "GOOG", price: 170.5d, qty: 100.0d };
+    println(t.symbol, " notional = ", notional(t));
+}

@@ -121,6 +121,83 @@ fn collect_lt_files(target: &Path) -> Result<Vec<PathBuf>, String> {
     Err(format!("not a file or directory: {}", target.display()))
 }
 
+/// Parse a single entry file and recursively follow its
+/// `import "..."` directives, merging all encountered top-level
+/// declarations + imports into one logical Program. Paths
+/// resolve RELATIVE to the importing file's directory, with the
+/// `.lt` extension implicit (so `import "foo/bar"` from
+/// `proj/main.lt` opens `proj/foo/bar.lt`).
+///
+/// Cycles are tolerated by short-circuiting on already-visited
+/// canonical paths (the second sight contributes nothing new).
+/// The merged Program's `imports` list is left empty since
+/// resolution has already happened — no downstream pass needs
+/// to re-walk it.
+fn parse_with_imports(
+    entry: &Path,
+) -> Result<(Program, BTreeMap<PathBuf, String>), Vec<(PathBuf, lotus_syntax::Diag, String)>>
+{
+    let mut merged_items = Vec::new();
+    let mut sources: BTreeMap<PathBuf, String> = BTreeMap::new();
+    let mut visited: std::collections::BTreeSet<PathBuf> =
+        std::collections::BTreeSet::new();
+    let mut errors: Vec<(PathBuf, lotus_syntax::Diag, String)> = Vec::new();
+    let mut stack: Vec<PathBuf> = vec![entry.to_path_buf()];
+    let mut entry_span_program: Option<Program> = None;
+
+    while let Some(path) = stack.pop() {
+        let canon = match path.canonicalize() {
+            Ok(c) => c,
+            Err(_) => path.clone(),
+        };
+        if !visited.insert(canon.clone()) {
+            continue;
+        }
+        let source = match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("could not read {}: {}", path.display(), e);
+                return Err(errors);
+            }
+        };
+        let program = match lotus_syntax::parse_source(&source) {
+            Ok(p) => p,
+            Err(diags) => {
+                for d in diags {
+                    errors.push((path.clone(), d, source.clone()));
+                }
+                sources.insert(canon, source);
+                continue;
+            }
+        };
+        // Follow imports relative to THIS file's directory.
+        let dir = path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        for imp in &program.imports {
+            let mut p = dir.clone();
+            p.push(format!("{}.lt", imp.path));
+            stack.push(p);
+        }
+        sources.insert(canon, source);
+        if entry_span_program.is_none() {
+            // Use the entry program's span / shape as the
+            // skeleton; just collect items from imports into it.
+            entry_span_program = Some(Program {
+                items: Vec::new(),
+                imports: Vec::new(),
+                span: program.span,
+            });
+        }
+        merged_items.extend(program.items);
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let mut prog = entry_span_program.expect("at least one parse succeeded");
+    prog.items = merged_items;
+    Ok((prog, sources))
+}
+
 fn parse_files(
     files: &[PathBuf],
 ) -> Result<(BTreeMap<PathBuf, Program>, BTreeMap<PathBuf, String>), ExitCode> {
@@ -189,6 +266,42 @@ fn run_check(target: &Path) -> ExitCode {
 }
 
 fn run_program(target: &Path) -> ExitCode {
+    // Single-file targets follow imports starting from the entry
+    // file's directory. Directory targets bundle every .lt under
+    // them as today (multi-file projects without import wiring
+    // — useful for ad-hoc test setups).
+    if target.is_file() {
+        let (program, sources) = match parse_with_imports(target) {
+            Ok(x) => x,
+            Err(errors) => {
+                for (path, d, src) in &errors {
+                    eprintln!("{}:", path.display());
+                    eprintln!("  {}", d.render(src));
+                }
+                return ExitCode::from(1);
+            }
+        };
+        let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
+        bundle_programs.insert(target.display().to_string(), &program);
+        let bundle = lotus_types::Bundle { programs: bundle_programs };
+        let diags = lotus_types::check_bundle(&bundle);
+        if !diags.is_empty() {
+            let any_source = sources.values().next().map(|s| s.as_str()).unwrap_or("");
+            for d in &diags {
+                eprintln!("{}", d.render(any_source));
+            }
+            return ExitCode::from(1);
+        }
+        let prog_refs: Vec<&Program> = vec![&program];
+        return match lotus_runtime::run_bundle(&prog_refs) {
+            Ok(code) => ExitCode::from(code as u8),
+            Err(e) => {
+                eprintln!("runtime error: {}", e);
+                ExitCode::from(1)
+            }
+        };
+    }
+
     let files = match collect_lt_files(target) {
         Ok(f) => f,
         Err(e) => {
@@ -229,26 +342,24 @@ fn run_program(target: &Path) -> ExitCode {
 
 fn run_build(target: &Path) -> ExitCode {
     if !target.is_file() {
-        eprintln!("`lotus build` accepts a single .lt file in milestone 0");
+        eprintln!("`lotus build` accepts a single .lt file (imports \
+                   resolve from the file's directory)");
         return ExitCode::from(1);
     }
-    let source = match fs::read_to_string(target) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("could not read {}: {}", target.display(), e);
-            return ExitCode::from(1);
-        }
-    };
-    let program = match lotus_syntax::parse_source(&source) {
-        Ok(p) => p,
-        Err(diags) => {
-            for d in &diags {
-                eprintln!("{}", d.render(&source));
+    let (program, sources) = match parse_with_imports(target) {
+        Ok(x) => x,
+        Err(errors) => {
+            for (path, d, src) in &errors {
+                eprintln!("{}:", path.display());
+                eprintln!("  {}", d.render(src));
             }
             return ExitCode::from(1);
         }
     };
-    // Typecheck before lowering.
+    // Typecheck before lowering. Render diagnostics against the
+    // entry-file's source — diagnostic spans currently point into
+    // the merged item stream which doesn't have a single source
+    // string; this is good enough for v0.
     let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
     bundle_programs.insert(target.display().to_string(), &program);
     let bundle = lotus_types::Bundle {
@@ -256,8 +367,9 @@ fn run_build(target: &Path) -> ExitCode {
     };
     let diags = lotus_types::check_bundle(&bundle);
     if !diags.is_empty() {
+        let any_source = sources.values().next().map(|s| s.as_str()).unwrap_or("");
         for d in &diags {
-            eprintln!("{}", d.render(&source));
+            eprintln!("{}", d.render(any_source));
         }
         return ExitCode::from(1);
     }

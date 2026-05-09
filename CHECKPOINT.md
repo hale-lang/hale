@@ -20,7 +20,7 @@ pinned(core = N)` for `pthread_setaffinity_np` core pinning),
 m29 (match arm guards — `pat if cond -> body` lowering with
 binding installed for the guard expr to reference), m30
 (fixed-size arrays — `[T; N]` literal, `arr[i]` indexing,
-`for x in arr` iteration, arena-backed storage). **28 of 29
+`for x in arr` iteration, arena-backed storage). **29 of 30
 examples build to native ELF — every single-binary example.**
 Only `trellis-pair` (multi-binary, cross-process bus) remains.
 
@@ -513,13 +513,25 @@ m31    m31: integer ranges in for-loop iterators               (2e7cb06)
                             case Range as a counted loop; range
                             outside iterator position rejects
                           + examples/23-ranges
-m32    m32: default fn param values (free fns)                 (pending)
+m32    m32: default fn param values (free fns)                 (d211c60)
                           ⇒ Defaults must form a suffix; caller
                             may omit trailing args; default expr
                             evaluates at the call site in the
                             caller's scope. Locus methods still
                             reject — m32 is free-fn-only.
                           + examples/24-default-params
+m33    m33: import resolution for multi-file projects          (pending)
+                          ⇒ CLI's parse_with_imports walks the
+                            entry's `import "..."` directives,
+                            recursively parses each, dedups by
+                            canonical path, merges items into
+                            one logical Program. Paths resolve
+                            relative to importing file's dir
+                            with .lt extension implicit. Cycles
+                            short-circuit. Both `lotus run` and
+                            `lotus build` use the merged Program
+                            for single-file targets.
+                          + examples/25-imports
 ```
 
 The architectural pivots are **m7** (locus → LLVM struct,
@@ -577,6 +589,7 @@ m7 builds on the struct ABI.
 | `for i in lo..hi` / `lo..=hi` range loops | ✅ | ✅ |
 | Default fn param values (free fns; suffix-only rule) | ✅ | ✅ |
 | Default values on locus methods | ✅ | — |
+| `import "..."` resolution (multi-file projects) | ✅ | ✅ |
 | Schedule-class annotation (`: schedule cooperative \| pinned`) | — | ✅ (resolved on LocusInfo) |
 | Cooperative scheduler (deferred bus + drain loop) | — | ✅ |
 | Explicit `yield` primitive | ✅ (no-op) | ✅ (drains queue) |
@@ -730,7 +743,7 @@ d5afffd Codegen milestone 8: accept() lifecycle + parent-child wiring
 929efa2 Codegen milestone 5: time::sleep on CLOCK_MONOTONIC
 ```
 
-88 commits ahead of origin/master at checkpoint time.
+89 commits ahead of origin/master at checkpoint time.
 
 ## Next steps in priority order
 
@@ -902,6 +915,9 @@ rm examples/23-ranges/main
 cargo run --bin lotus -- build examples/24-default-params/main.lt
 ./examples/24-default-params/main        # greet/pow with omitted trailing args
 rm examples/24-default-params/main
+cargo run --bin lotus -- build examples/25-imports/main.lt
+./examples/25-imports/main               # multi-file: types.lt + notional.lt + main.lt → "GOOG notional = 17050"
+rm examples/25-imports/main
 ```
 
-If all twenty-eight work, the checkpoint is intact.
+If all twenty-nine work, the checkpoint is intact.

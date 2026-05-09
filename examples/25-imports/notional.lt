@@ -1,0 +1,10 @@
+// notional.lt — derives the notional value for a Trade
+// (price * quantity). Lives in a separate file so the same
+// utility can be imported by anyone who wants to project a
+// Trade onto its dollar size.
+
+import "types";
+
+fn notional(t: Trade) -> Decimal {
+    return t.price * t.qty;
+}
