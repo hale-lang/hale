@@ -1,0 +1,112 @@
+// 22-moving-average — sliding-window mean computed inside a
+// locus, fed by a typed bus.
+//
+// What this exercises end-to-end:
+//   - Fixed-cap array as locus state (`[Int; 4]`).
+//   - Mutation through self.X = ... (replace oldest slot).
+//   - Subscribe + publish on the bus, with a typed payload.
+//   - For-over-array inside a handler body.
+//   - A modular index walking the circular buffer, written
+//     as `i = (i + 1) % cap` so the window slides without
+//     touching the rest of the buffer.
+//
+// The shape is the canonical "online aggregator" from
+// market-data preprocessing: an unbounded stream comes in on
+// one subject, a derived statistic (here, the mean of the
+// last 4 values) comes out on another. In a production
+// trellis the upstream subject would be `quote.last_trade`
+// or similar; the downstream subject would feed whatever
+// regime depends on smoothed inputs.
+//
+// Per The Design / lotus, this is the cooperative-cooperative
+// shape: same scheduler thread for source + aggregator +
+// sink. If the aggregator's smoothing math got expensive
+// enough to dominate the substrate cell it would naturally
+// graduate to `: schedule pinned` — same source, two runtime
+// shapes — but for v0 the cooperative shape is plenty.
+
+type Sample {
+    value: Int;
+}
+
+type Smoothed {
+    avg: Int;
+}
+
+locus Window {
+    params {
+        // 4-slot circular buffer of recent samples.
+        // Pre-fill with a sentinel value (here 0) so the
+        // first three samples don't blow the average toward
+        // an uninitialised slot — the mean will reflect the
+        // sentinels until the buffer's been overwritten.
+        recent: [Int; 4] = [0, 0, 0, 0];
+        head: Int = 0;
+    }
+
+    bus {
+        subscribe "sample"   as on_sample of type Sample;
+        publish   "smoothed"             of type Smoothed;
+    }
+
+    fn on_sample(s: Sample) {
+        // Slot the new value at `head`. We can't write
+        // self.recent[head] = ... in v0 codegen (indexed
+        // self assignment is gated), so we rebuild the array
+        // by mapping over the old contents — replace one
+        // slot, copy the rest.
+        let mut next = [0, 0, 0, 0];
+        let mut i = 0;
+        while i < 4 {
+            if i == self.head {
+                next[i] = s.value;
+            } else {
+                next[i] = self.recent[i];
+            }
+            i = i + 1;
+        }
+        self.recent = next;
+        self.head = (self.head + 1) % 4;
+
+        // Recompute the rolling sum + emit smoothed value.
+        let mut sum = 0;
+        for v in self.recent {
+            sum = sum + v;
+        }
+        "smoothed" <- Smoothed { avg: sum / 4 };
+    }
+}
+
+locus Sink {
+    bus {
+        subscribe "smoothed" as on_smoothed of type Smoothed;
+    }
+
+    fn on_smoothed(s: Smoothed) {
+        println("smoothed avg = ", s.avg);
+    }
+}
+
+locus Source {
+    bus {
+        publish "sample" of type Sample;
+    }
+
+    birth() {
+        // Stream of 6 samples — the window starts empty (0s)
+        // and fills as samples arrive, so the smoothed
+        // average ramps up toward the steady-state mean.
+        "sample" <- Sample { value: 100 };
+        "sample" <- Sample { value: 200 };
+        "sample" <- Sample { value: 300 };
+        "sample" <- Sample { value: 400 };
+        "sample" <- Sample { value: 500 };
+        "sample" <- Sample { value: 600 };
+    }
+}
+
+fn main() {
+    Window { };
+    Sink   { };
+    Source { };
+}

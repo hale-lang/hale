@@ -20,7 +20,7 @@ pinned(core = N)` for `pthread_setaffinity_np` core pinning),
 m29 (match arm guards — `pat if cond -> body` lowering with
 binding installed for the guard expr to reference), m30
 (fixed-size arrays — `[T; N]` literal, `arr[i]` indexing,
-`for x in arr` iteration, arena-backed storage). **25 of 26
+`for x in arr` iteration, arena-backed storage). **26 of 27
 examples build to native ELF — every single-binary example.**
 Only `trellis-pair` (multi-binary, cross-process bus) remains.
 
@@ -491,13 +491,20 @@ m29    m29: match arm guards in codegen                        (0398d42)
                             falls through to next arm on false;
                             extends m24 surface
                           + examples/15-match (extended)
-m30    m30: arrays — literal + indexing + for-over-array       (pending)
+m30    m30: arrays — literal + indexing + for-over-array       (2bc3fbb)
                           ⇒ LotusType::Array(elem, N); fixed-
                             size [T; N] only; arena-backed
                             storage; arr[i] indexing; for x in
                             arr lowers to indexed loop; arrays
                             pass through fn params (as ptrs)
                           + examples/21-arrays
+m30b   m30 follow-up: indexed local-array assignment           (pending)
+                          ⇒ `arr[i] = v` lowers via GEP-into-
+                            local-array-storage + store; rest
+                            of LValue surface unchanged
+                          + examples/22-moving-average (real
+                            flex: bus-driven sliding-window
+                            mean over a [Int; 4] state array)
 ```
 
 The architectural pivots are **m7** (locus → LLVM struct,
@@ -551,6 +558,7 @@ m7 builds on the struct ABI.
 | `match` (Tuple / Constructor patterns) | ✅ | — |
 | Array literals `[T; N]` + indexing | ✅ | ✅ |
 | `for x in arr` over fixed-size arrays | ✅ | ✅ |
+| Indexed local-array assignment `arr[i] = v` | ✅ | ✅ |
 | generic `for` (over ranges) | ✅ | — |
 | Schedule-class annotation (`: schedule cooperative \| pinned`) | — | ✅ (resolved on LocusInfo) |
 | Cooperative scheduler (deferred bus + drain loop) | — | ✅ |
@@ -705,7 +713,7 @@ d5afffd Codegen milestone 8: accept() lifecycle + parent-child wiring
 929efa2 Codegen milestone 5: time::sleep on CLOCK_MONOTONIC
 ```
 
-85 commits ahead of origin/master at checkpoint time.
+86 commits ahead of origin/master at checkpoint time.
 
 ## Next steps in priority order
 
@@ -868,6 +876,9 @@ rm examples/20-pinned-core/main
 cargo run --bin lotus -- build examples/21-arrays/main.lt
 ./examples/21-arrays/main                # nums[i] reads + sum_of + dot product over [Int; N]
 rm examples/21-arrays/main
+cargo run --bin lotus -- build examples/22-moving-average/main.lt
+./examples/22-moving-average/main        # 6 samples → smoothed averages 25/75/150/250/350/450
+rm examples/22-moving-average/main
 ```
 
-If all twenty-five work, the checkpoint is intact.
+If all twenty-six work, the checkpoint is intact.

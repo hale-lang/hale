@@ -3095,6 +3095,68 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             ))
                         })?;
                     (alloca, ty, target.head.name.clone())
+                } else if target.tail.len() == 1
+                    && matches!(target.tail[0], LValueSeg::Index(_))
+                {
+                    // `arr[i] = v` for a local array. Look up the
+                    // local, load the array ptr, GEP at index, store.
+                    let idx_expr = match &target.tail[0] {
+                        LValueSeg::Index(e) => e,
+                        _ => unreachable!(),
+                    };
+                    let (alloca, ty) = scope
+                        .locals
+                        .get(&target.head.name)
+                        .cloned()
+                        .ok_or_else(|| {
+                            CodegenError::Unsupported(format!(
+                                "indexed assignment to unbound `{}`",
+                                target.head.name
+                            ))
+                        })?;
+                    let (elem_ty, n) = match ty {
+                        LotusType::Array(elem, n) => (*elem, n),
+                        other => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "indexed assignment to non-array local \
+                                 `{}` (type {:?})",
+                                target.head.name, other
+                            )));
+                        }
+                    };
+                    let ptr_t = self.context.ptr_type(AddressSpace::default());
+                    let arr_ptr = self
+                        .builder
+                        .build_load(ptr_t, alloca, &target.head.name)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_pointer_value();
+                    let (idx_val, idx_ty) = self.lower_expr(idx_expr, scope)?;
+                    if idx_ty != LotusType::Int {
+                        return Err(CodegenError::Unsupported(format!(
+                            "array index must be Int, got {:?}",
+                            idx_ty
+                        )));
+                    }
+                    let i32_t = self.context.i32_type();
+                    let storage_ty = self.llvm_array_storage_type(&elem_ty, n);
+                    let slot_ptr = unsafe {
+                        self.builder
+                            .build_gep(
+                                storage_ty,
+                                arr_ptr,
+                                &[
+                                    i32_t.const_int(0, false),
+                                    idx_val.into_int_value(),
+                                ],
+                                "array.assign.slot",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    };
+                    (
+                        slot_ptr,
+                        elem_ty,
+                        format!("{}[idx]", target.head.name),
+                    )
                 } else {
                     return Err(CodegenError::Unsupported(
                         "non-self field/index assignment target".to_string(),
