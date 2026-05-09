@@ -90,7 +90,7 @@ m16 Codegen milestone 16: Time + composite defaults + heap lits (e33e8ee)
                           ⇒ trellis-demo builds to native ELF
 m17 Codegen milestone 17: on_failure routing (absorb / bubble)  (4bf84e3)
                           ⇒ 03b / 03c build to native ELF
-m18 Codegen milestone 18: modes + self.children + for + locus  (this commit)
+m18 Codegen milestone 18: modes + self.children + for + locus  (d48df6b)
                           literal in expression position
                           ⇒ 04-modes builds; 17/18 single-binary
                             examples are build targets
