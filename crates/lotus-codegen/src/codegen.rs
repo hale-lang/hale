@@ -542,11 +542,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         arena_global.set_initializer(&ptr_t.const_null());
         arena_global.set_linkage(inkwell::module::Linkage::Internal);
 
-        // m26: cooperative scheduler — bus dispatch queue.
+        // m26 + m28b stage 1: cooperative scheduler — bus dispatch queue.
         // declare ptr  @lotus_bus_queue_create()
-        // declare void @lotus_bus_queue_enqueue(ptr q, ptr handler, ptr self, ptr payload)
+        // declare void @lotus_bus_queue_enqueue(ptr q, ptr handler, ptr self,
+        //                                       ptr payload_src, i64 payload_size)
         // declare void @lotus_bus_queue_drain(ptr q)
         // declare void @lotus_bus_queue_destroy(ptr q)
+        //
+        // m28b stage 1 changed enqueue's signature: cells now carry
+        // an INLINE payload buffer (memcpy'd from payload_src). The
+        // subscriber-arena copy moves to drain time so that cross-
+        // thread cells don't write into another thread's arena.
         let bus_queue_create_ty = ptr_t.fn_type(&[], false);
         self.module.add_function(
             "lotus_bus_queue_create",
@@ -554,7 +560,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
         let bus_queue_enqueue_ty = void_t.fn_type(
-            &[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into()],
+            &[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into(), i64_t.into()],
             false,
         );
         self.module.add_function(
@@ -826,55 +832,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .expect("size param")
             .into_int_value();
 
-        // Copy payload into the subscriber's arena. The arena
-        // field is at struct offset 0 on every locus type — so
-        // we can pull it out of the type-erased self_ptr without
-        // knowing which locus we're talking to. Allocate `size`
-        // bytes there, memcpy from the publisher's pointer, pass
-        // the COPY to the handler.
-        let sub_arena = self
-            .builder
-            .build_load(ptr_t, entry_self, "sub.__arena")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_pointer_value();
-        let arena_alloc_fn = self
-            .module
-            .get_function("lotus_arena_alloc")
-            .expect("lotus_arena_alloc declared");
-        let align = i64_t.const_int(8, false);
-        let copy_raw = self
-            .builder
-            .build_call(
-                arena_alloc_fn,
-                &[sub_arena.into(), size_param.into(), align.into()],
-                "payload.copy",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("arena_alloc returns ptr");
-        let copy_ptr = copy_raw.into_pointer_value();
-        let memcpy_fn = self
-            .module
-            .get_function("memcpy")
-            .expect("memcpy declared");
-        self.builder
-            .build_call(
-                memcpy_fn,
-                &[copy_ptr.into(), payload_param.into(), size_param.into()],
-                "payload.memcpy",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        // m26: cooperative semantics — instead of invoking the
-        // handler inline (synchronous nested dispatch), enqueue
-        // a (handler, self, payload_copy) cell onto the program-
-        // wide bus queue. The drain loop pops cells and runs
-        // handlers one at a time at strategic scope-exit points
-        // (currently: end of main, before deferred-dissolve
-        // flush). This makes substrate cells real: each handler
-        // invocation is its own atomic unit, with cooperative
-        // yields between them rather than nested call frames.
+        // m28b stage 1: enqueue with INLINE payload. The cell
+        // memcpy's the publisher's bytes into its own buffer; the
+        // subscriber-arena copy happens on the SUBSCRIBER thread
+        // at drain time (which is where it has to be — the
+        // subscriber's arena is single-threaded territory). This
+        // is the prerequisite for cross-thread bus: the queue is
+        // now the only point of cross-thread synchronization, the
+        // arenas stay lock-free, and per-spec/memory.md "every
+        // boundary copies" still holds (just with two memcpy's
+        // per cell instead of one).
         let queue_global = self
             .module
             .get_global("lotus.bus_queue.global")
@@ -894,15 +861,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     queue_ptr.into(),
                     handler.into(),
                     entry_self.into(),
-                    copy_ptr.into(),
+                    payload_param.into(),
+                    size_param.into(),
                 ],
                 "bus.enqueue",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        // Silence the unused-binding warning for the now-unused
-        // handler_callee_ty (kept around in case we want to
-        // re-introduce a sync path for pinned cross-thread).
-        let _ = void_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
         self.builder
             .build_unconditional_branch(inc_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

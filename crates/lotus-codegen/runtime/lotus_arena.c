@@ -31,6 +31,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 
 /* Default chunk size: 64KB. Big enough that most loci fit in
  * one chunk, small enough that a leaf locus that allocates a
@@ -201,7 +202,7 @@ void lotus_arena_destroy(lotus_arena_t *a) {
 }
 
 /*
- * Cooperative scheduler — bus dispatch queue (m26).
+ * Cooperative scheduler — bus dispatch queue (m26 + m28b stage 1).
  *
  * Per The Design / lotus, every bus dispatch is a substrate
  * cell. The cooperative scheduler enqueues these cells at
@@ -211,22 +212,43 @@ void lotus_arena_destroy(lotus_arena_t *a) {
  * publish more events, which enqueue more cells; drain
  * continues until the queue is empty.
  *
- * v0 is single-threaded — one queue, one drain loop, runs at
- * end of main and at strategic scope-exit points. m27 will
- * spawn dedicated threads for pinned-class loci, with
- * cross-thread mailbox post for any-class → pinned dispatch.
+ * m28b stage 1 changed cell shape: cells now carry an INLINE
+ * payload buffer instead of a pointer to subscriber-arena
+ * memory. This is the prerequisite for cross-thread bus: the
+ * publisher can be on a different thread than the subscriber,
+ * so the payload can't live in either arena (each arena is
+ * single-threaded territory). The boundary IS the queue —
+ * inline payload makes the queue the single point of cross-
+ * thread synchronization. Drain copies inline → subscriber's
+ * arena before invoking the handler, so the per-spec/memory.md
+ * "every locus boundary copies the payload" rule still holds:
+ * the subscriber gets its own arena-resident copy that outlives
+ * the publisher.
  *
- * The queue stores (handler, self, payload) triples. The
- * payload is already in the subscriber's arena (memcpy'd at
- * enqueue time, per spec/memory.md "A typed message crossing
- * a locus boundary is a copy, not a pointer."). At drain
- * time we just call handler(self, payload).
+ * Cost vs m26: every cell does TWO memcpy's (publisher → cell
+ * inline + cell inline → subscriber arena) instead of one
+ * (publisher → subscriber arena). For the small typed messages
+ * lotus carries this is negligible; cross-thread correctness
+ * is worth more than one memcpy.
+ *
+ * Mutex protects the cell array so pinned threads can enqueue
+ * concurrently with the cooperative drain (m28b stage 2). v0
+ * uses a single mutex around enqueue + each pop. Drain releases
+ * the lock around handler invocation so handlers can re-enqueue
+ * without self-deadlock (and so cooperative handlers don't
+ * block pinned producers for their entire run-time).
+ *
+ * Inline payload size cap: LOTUS_PAYLOAD_MAX bytes per cell.
+ * Larger payloads abort at enqueue (v0 limitation).
  */
 
+#define LOTUS_PAYLOAD_MAX 512
+
 typedef struct lotus_bus_cell {
-    void *handler;          /* void (*)(void *self, void *payload) */
-    void *self_ptr;         /* subscriber's locus ptr */
-    void *payload;          /* copy in subscriber's arena */
+    void  *handler;                       /* void (*)(void *self, void *payload) */
+    void  *self_ptr;                      /* subscriber's locus ptr */
+    size_t payload_size;                  /* bytes used in inline */
+    char   payload_inline[LOTUS_PAYLOAD_MAX];
 } lotus_bus_cell_t;
 
 typedef struct lotus_bus_queue {
@@ -234,6 +256,7 @@ typedef struct lotus_bus_queue {
     size_t            head;     /* next slot to pop */
     size_t            tail;     /* next slot to fill */
     size_t            cap;
+    pthread_mutex_t   lock;
 } lotus_bus_queue_t;
 
 #define LOTUS_BUS_QUEUE_INITIAL_CAP 64
@@ -251,20 +274,33 @@ lotus_bus_queue_t *lotus_bus_queue_create(void) {
     }
     q->head = 0;
     q->tail = 0;
+    pthread_mutex_init(&q->lock, NULL);
     return q;
 }
 
-/* Enqueue (handler, self, payload). Grows the cell array
- * geometrically when full; head/tail are monotonic indices
- * (compacted on grow). v0 keeps it simple — no ring buffer,
- * no power-of-two mask, just a linear array with grow-on-full
- * semantics. Trellis-grade workloads typically have queues of
- * a few hundred cells max; the full memcpy on grow is fine. */
+/* Enqueue (handler, self, payload_src + payload_size). The
+ * publisher's payload is memcpy'd into the cell's inline
+ * buffer; the cell does NOT carry a pointer back to publisher
+ * memory. After enqueue returns, the publisher is free to
+ * dissolve / reuse / overwrite the payload source — the queue
+ * holds the canonical copy until drain re-copies it into the
+ * subscriber's arena.
+ *
+ * Holds the queue's mutex for the duration so concurrent pinned
+ * publishers don't corrupt each other's writes. */
 void lotus_bus_queue_enqueue(lotus_bus_queue_t *q,
                              void *handler,
                              void *self_ptr,
-                             void *payload) {
+                             const void *payload_src,
+                             size_t payload_size) {
     if (!q) return;
+    if (payload_size > LOTUS_PAYLOAD_MAX) {
+        /* v0 limitation — payloads above 512 bytes need spill-
+         * to-malloc support that isn't here yet. Drop silently;
+         * better-than-corrupting. */
+        return;
+    }
+    pthread_mutex_lock(&q->lock);
     if (q->tail == q->cap) {
         /* Compact first: slide live cells to the front. */
         size_t live = q->tail - q->head;
@@ -279,41 +315,78 @@ void lotus_bus_queue_enqueue(lotus_bus_queue_t *q,
             size_t new_cap = q->cap * 2;
             lotus_bus_cell_t *new_cells = (lotus_bus_cell_t *)
                 realloc(q->cells, new_cap * sizeof(lotus_bus_cell_t));
-            if (!new_cells) return;     /* drop on OOM */
+            if (!new_cells) {
+                pthread_mutex_unlock(&q->lock);
+                return;     /* drop on OOM */
+            }
             q->cells = new_cells;
             q->cap   = new_cap;
         }
     }
-    q->cells[q->tail].handler  = handler;
-    q->cells[q->tail].self_ptr = self_ptr;
-    q->cells[q->tail].payload  = payload;
-    q->tail++;
+    lotus_bus_cell_t *slot = &q->cells[q->tail++];
+    slot->handler      = handler;
+    slot->self_ptr     = self_ptr;
+    slot->payload_size = payload_size;
+    if (payload_size > 0 && payload_src) {
+        memcpy(slot->payload_inline, payload_src, payload_size);
+    }
+    pthread_mutex_unlock(&q->lock);
 }
 
-/* Drain the queue: pop cells one at a time and invoke
- * `handler(self, payload)`. Handlers may enqueue more cells
+/* Drain the queue: pop cells one at a time, copy each cell's
+ * inline payload into the subscriber's arena (located at
+ * self_ptr+0 by the universal __arena offset), and invoke
+ * handler(self, arena_copy). Handlers may enqueue more cells
  * (cooperative-cooperative bus dispatch is the natural
  * interleaving — see The Design / lotus, substrate cells).
  * Loops until the queue is empty AT POP TIME, including any
- * cells enqueued during the drain itself. */
+ * cells enqueued during the drain itself.
+ *
+ * Lock discipline: take the mutex to pop one cell + read its
+ * fields into a local; release before allocating in the
+ * subscriber's arena and invoking the handler. Holding the
+ * lock across handler invocation would (a) block pinned
+ * producers for the entire handler runtime and (b) deadlock
+ * if the handler re-enqueues. */
 typedef void (*lotus_handler_fn)(void *self, void *payload);
 
 void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
     if (!q) return;
-    while (q->head < q->tail) {
-        lotus_bus_cell_t cell = q->cells[q->head++];
-        ((lotus_handler_fn)cell.handler)(cell.self_ptr, cell.payload);
+    for (;;) {
+        pthread_mutex_lock(&q->lock);
+        if (q->head >= q->tail) {
+            /* Reset indices so the next batch starts fresh. */
+            q->head = 0;
+            q->tail = 0;
+            pthread_mutex_unlock(&q->lock);
+            return;
+        }
+        lotus_bus_cell_t cell_copy = q->cells[q->head++];
+        pthread_mutex_unlock(&q->lock);
+
+        /* Copy inline payload into the subscriber's arena.
+         * The arena pointer lives at self_ptr+0 by convention
+         * (every locus struct has __arena as its first field). */
+        void *payload_in_arena = NULL;
+        if (cell_copy.payload_size > 0) {
+            lotus_arena_t *sub_arena =
+                *(lotus_arena_t **)cell_copy.self_ptr;
+            payload_in_arena = lotus_arena_alloc(
+                sub_arena, cell_copy.payload_size, 8);
+            if (payload_in_arena) {
+                memcpy(payload_in_arena,
+                       cell_copy.payload_inline,
+                       cell_copy.payload_size);
+            }
+        }
+        ((lotus_handler_fn)cell_copy.handler)(
+            cell_copy.self_ptr, payload_in_arena);
     }
-    /* Reset indices so subsequent enqueues start fresh — this
-     * is functionally optional (tail can keep growing), but
-     * makes peek/inspect easier and keeps the working-set
-     * memory smaller across long-running drains. */
-    q->head = 0;
-    q->tail = 0;
 }
 
 void lotus_bus_queue_destroy(lotus_bus_queue_t *q) {
     if (!q) return;
+    pthread_mutex_destroy(&q->lock);
     if (q->cells) free(q->cells);
     free(q);
 }
