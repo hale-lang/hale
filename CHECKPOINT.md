@@ -1,9 +1,9 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work in a
-new session. State as of m37 (to_string builtin) — the
-surface-completeness arc that started after the m28 scheduler
-shipped. Substrate arc: m19→m23 (region allocator with
+new session. State as of m38 (stdlib helpers — min / max / abs
+/ starts_with / contains) — the surface-completeness arc that
+started after the m28 scheduler shipped. Substrate arc: m19→m23 (region allocator with
 rich/chunked/recognition + per-locus arenas + bus copy), m24
 (`match`), m25 (bimodal schedule-class annotation), m26
 (cooperative scheduler — deferred bus + drain loop), m26b
@@ -23,8 +23,10 @@ arms), m36 (string ops — `+` concat, `==`/`!=` equality,
 `len`, exclusive + inclusive range slicing `s[lo..hi]` /
 `s[lo..=hi]` with bounds clamping), m37 (`to_string(x)`
 primitive→String conversion for dynamic composition; output
-matches println formatting). **32 of 33 examples build to
-native ELF — every single-binary example.** Only
+matches println formatting), m38 (stdlib helpers — `min` /
+`max` / `abs` across numeric types, plus `starts_with` /
+`contains` for String predicates). **34 of 35 examples build
+to native ELF — every single-binary example.** Only
 `trellis-pair` (multi-binary, cross-process bus) remains.
 
 **The bimodal scheduler is fully complete.** Cooperative loci
@@ -82,9 +84,41 @@ greeting from child: yo
 Phase status:
 - **Phase 0** (spec stabilization) — complete
 - **Phase 1** (lex / parse / typecheck) — complete; F.1–F.18 enforced
-- **Phase 2 v0** (interpreter + bus router) — 32 of 33 example
+- **Phase 2 v0** (interpreter + bus router) — 34 of 35 example
   projects execute end-to-end via `lotus run` (only multi-binary
   trellis-pair waits on cross-process bus)
+- **Phase 3 milestone 38** (stdlib helpers — math + string
+  predicates) — complete. Five small language-native helpers
+  that fill the most-common gaps before deeper-substrate
+  work: `min(a, b)` / `max(a, b)` / `abs(x)` across Int /
+  Duration (signed integer compare + select) and Float /
+  Decimal (float compare + select); `starts_with(s, prefix)`
+  / `contains(s, sub)` over String, returning Bool.
+  Per spec/stdlib.md these are formally `std::math` and
+  `std::string` territory; lotus exposes them as built-ins
+  until stdlib resolution wires up — same pattern as
+  `print` / `println` / `len` / `to_string`. C runtime adds
+  `lotus_str_starts_with` (strncmp wrapper) and
+  `lotus_str_contains` (strstr wrapper). Empty prefix /
+  sub matches anything (Rust semantics). Codegen
+  `lower_math_builtin` covers min/max/abs uniformly with a
+  build_int_compare-or-build_float_compare + build_select
+  shape; `lower_str_predicate_builtin` dispatches String
+  predicates. Interpreter mirrors via `builtin_min` /
+  `_max` / `_abs` / `_starts_with` / `_contains`; new
+  `parse_decimal_pub` alias added so Decimal min/max can
+  compare without duplicating the strip-`d`-then-parse-f64
+  logic. New `examples/29-helpers/` covers all five plus
+  a `classify_temp` that composes min + max for clamping,
+  and a path-prefix filter using `starts_with` over an
+  array of operation strings.
+
+  Bonus: `examples/30-stats/` ties the m35 → m38 surface
+  together — Producer publishes Samples, Aggregator
+  subscribes and emits a single-line summary built via
+  concat + to_string + min/max per receipt. Demonstrates
+  the substrate's per-locus arena ownership + bus dispatch
+  copy semantics under realistic flow.
 - **Phase 3 milestone 37** (`to_string` builtin) — complete.
   Closes the "build a string from typed data" gap that m36
   left open. `to_string(x)` returns a String formatted
@@ -708,6 +742,22 @@ m37    m37: to_string(x) primitive → String                   (ccbaec8)
                             so Float / Decimal output matches
                             codegen's %g semantics.
                           + examples/28-to-string
+m38    m38: stdlib helpers — math + string predicates         (5787acd)
+                          ⇒ min(a, b) / max(a, b) / abs(x)
+                            across Int / Duration (signed
+                            integer compare + select) and
+                            Float / Decimal (float compare +
+                            select). starts_with / contains
+                            over String → Bool, backed by C
+                            strncmp / strstr wrappers. Empty
+                            prefix / sub matches anything
+                            (Rust semantics). Interpreter
+                            mirrors via parse_decimal_pub
+                            alias for Decimal compare.
+                          + examples/29-helpers
+                          + examples/30-stats (bonus —
+                            Producer + Aggregator combining
+                            m35 → m38 surface)
 ```
 
 The architectural pivots are **m7** (locus → LLVM struct,
@@ -774,6 +824,8 @@ m7 builds on the struct ABI.
 | `len(s)` / `len(arr)` builtin | ✅ | ✅ |
 | String slicing `s[lo..hi]` / `s[lo..=hi]` (bounds-clamped) | ✅ | ✅ |
 | `to_string(x)` for primitives → String | ✅ | ✅ |
+| `min(a, b)` / `max(a, b)` / `abs(x)` for numeric types | ✅ | ✅ |
+| `starts_with(s, p)` / `contains(s, sub)` for String | ✅ | ✅ |
 | Schedule-class annotation (`: schedule cooperative \| pinned`) | — | ✅ (resolved on LocusInfo) |
 | Cooperative scheduler (deferred bus + drain loop) | — | ✅ |
 | Explicit `yield` primitive | ✅ (no-op) | ✅ (drains queue) |
@@ -893,6 +945,9 @@ real-world use case for lotus.
 ## Recent commit history (newest first)
 
 ```
+f90c8b4 examples/30-stats: bus aggregator combining recent surface
+5787acd m38: stdlib helpers — min / max / abs / starts_with / contains
+21ac4a2 CHECKPOINT.md: m36 + m37 string ops refresh
 ccbaec8 m37: to_string(x) primitive → String
 5f948f8 m36: string ops — concat, equality, len, slicing
 faa231e CHECKPOINT.md: m35 tuples refresh
@@ -943,10 +998,12 @@ d5afffd Codegen milestone 8: accept() lifecycle + parent-child wiring
 929efa2 Codegen milestone 5: time::sleep on CLOCK_MONOTONIC
 ```
 
-14 commits ahead of origin/master at checkpoint time (origin
+17 commits ahead of origin/master at checkpoint time (origin
 moved up to a5fc8bd / the prior session's tip; this session
 shipped m30 → m34 + the std/* import-resolution fix, then
-m35 for tuples, m36 for string ops, m37 for to_string).
+m35 for tuples, m36 for string ops, m37 for to_string, m38
+for stdlib helpers, plus a bus-aggregator flex app combining
+recent surface).
 
 ## Next steps in priority order
 
@@ -1133,6 +1190,12 @@ rm examples/27-strings/main
 cargo run --bin lotus -- build examples/28-to-string/main.lt
 ./examples/28-to-string/main             # per-primitive to_string + label/summary helpers + concat round-trip
 rm examples/28-to-string/main
+cargo run --bin lotus -- build examples/29-helpers/main.lt
+./examples/29-helpers/main               # min/max/abs over Int/Float/Duration + starts_with + contains + clamping classify_temp
+rm examples/29-helpers/main
+cargo run --bin lotus -- build examples/30-stats/main.lt
+./examples/30-stats/main                 # bus aggregator: 6 samples → running n/sum/min/max/avg lines
+rm examples/30-stats/main
 ```
 
-If all thirty-two work, the checkpoint is intact.
+If all thirty-four work, the checkpoint is intact.
