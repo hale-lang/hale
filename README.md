@@ -40,9 +40,9 @@ per-locus mutex+condvar mailboxes carrying inline payloads,
 with coordinated shutdown via shutdown-flag-then-join, and
 (m28c) **`pinned(core = N)` CPU affinity** — pinned loci
 optionally bind their thread to a specific logical CPU via
-`pthread_setaffinity_np`. **48 of 49 examples build to native
+`pthread_setaffinity_np`. **54 of 55 examples build to native
 ELF — every single-binary example is a build target.** Phase 3
-(codegen) is past milestone 48: substrate parity now covers
+(codegen) is past milestone 56: substrate parity now covers
 the full F.9 closure-epoch matrix (Birth + Dissolve + Tick +
 Duration + Explicit) with `sum` / `count` / `mean` accumulators
 and `restart` / `restart_in_place` / `quarantine` recovery,
@@ -53,8 +53,25 @@ variants — including deep `==`, payload-rendering `println`
 sub-patterns in match arms, and per-enum representation that
 keeps no-payload enums as i32 tags while has-payload enums
 become arena-allocated `{ i32 tag, [N x i8] body }` storage
-pointers. Detailed per-milestone history lives in
-`CHECKPOINT.md`. The codegen toolchain also covers literals +
+pointers. m49 + m51 + m53 ship the full **free-fn implicit-
+locus arenas** arc: every non-main free fn opens a per-call
+subregion of its caller's arena, allocations route through
+it, heap-typed return values deep-copy back into the caller's
+arena (across String / Tuple / Array / TypeRef-struct /
+has-payload-Enum), and any long-lived loci bound in the fn
+body get drained + dissolved at fn return per spec/memory.md
+"Free `fn` functions". m50 enforces immutable bindings (`let
+x = 0; x = 1;` is now the compile-time error spec/types.md
+always said it should be). m52 closes the cells-leaked-during-
+dissolves gap with an in-loop drain after each iteration of
+the dissolve loop. m54 lifts default param values into mode
+methods. m55 cleans the recovery vocabulary down to its
+five-primitive minimum (drain/dissolve removed; they're
+lifecycle methods, not recovery ops). m56 is a docs-only pass
+that locks seven design decisions per The Design (runtime/
+stdlib transport split, fan-out semantics, `reorganize` =
+`restart_in_place` lifted, `Numeric` bound for v1 generics).
+Detailed per-milestone history lives in `CHECKPOINT.md`. The codegen toolchain also covers literals +
 arithmetic, `let`/`let mut` + assignment + compound ops,
 `if`/`else`/`while` + `break`/`continue`, `time::sleep` on
 `CLOCK_MONOTONIC` with EINTR retry, `time::monotonic()` +
@@ -74,7 +91,7 @@ outlive synchronous publishes).
 Phase 0 (spec stabilization + example ladder) and Phase 1
 (compiler frontend: lex / parse / typecheck) are complete. The
 v0 runtime (Phase 2 first cut) is a tree-walking interpreter
-that executes 48 of 49 example projects end-to-end (only
+that executes 54 of 55 example projects end-to-end (only
 multi-binary trellis-pair waits on cross-process bus),
 including the trellis-demo pipeline. The bus router has a Transport
 trait with two implementations (sync dispatch, LMAX-style ring
@@ -259,6 +276,15 @@ examples/
                           with bindings + literal sub-patterns,
                           deep ==, payload-rendering println /
                           to_string, bus dispatch
+  46-fn-arenas/           m49: per-call free-fn subregion + return-
+                          copy for value types + String + Tuple
+  47-fn-arenas-extras/    m51: deep-copy completion for Array /
+                          TypeRef-struct / has-payload-Enum returns
+  48-publish-during-      m52: dissolve-time publish dispatched to
+    dissolve/             still-alive subscribers via in-loop drain
+  49-fn-handle-rooting/   m53: long-lived loci bound in a free fn
+                          drain + dissolve at fn.exit per spec
+  50-mode-defaults/       m54: default param values on mode methods
   trellis-demo/           full producer→analyst→executor→logger
                           pipeline as one process; F.4 program-end
                           dissolve fires the analyst's audit closure
@@ -271,7 +297,7 @@ examples/
 notes/
   open-questions.md       deferred decisions and future directions
 
-crates/                   (Phase 1 + 2 v0 + Phase 3 milestones 0–48 + enums-payloads + Decimal fixed-point)
+crates/                   (Phase 1 + 2 v0 + Phase 3 milestones 0–56 + free-fn arena arc + immutable-binding enforcement + recovery-vocabulary cleanup)
   lotus-syntax/           lexer + parser + AST + diagnostics
   lotus-types/            symbol resolution + type checker (F.8,
                           field strictness, closure cycle, match

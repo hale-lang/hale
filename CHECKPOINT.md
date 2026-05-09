@@ -2226,76 +2226,96 @@ pair end-to-end: detect-at-any-epoch (5 epochs × snapshot
 or running-total), route-via-on_failure, respond-via-restart-
 or-quarantine. Bus storage no longer has a compile-time
 capacity ceiling — the m45 quickfix `× 32` multiplier is gone.
-45 of 46 examples build to native ELF.
+**54 of 55 examples build to native ELF.**
 
 ## Next steps in priority order
 
-The bimodal scheduler (m28a/b/c), the surface-completeness
-arc (m29 → m38), the full F.9 invariant-and-repair substrate
-(m39 birth + m40 restart + m41 quarantine + m41b bus-dispatch
-gating + m42 tick + m43 duration + m44 explicit + m45
-restart_in_place + m46 sum-accumulators), and the bus router
-proper-fix (m45-followup-2: C-runtime dynamic vec replaces
-the fixed-cap LLVM-side table) have shipped. The recovery
-primitive set covers restart / restart_in_place / quarantine
-/ bubble; the closure-epoch lowering arc is complete on both
-cooperative and pinned (m43-followup added the duration
-wrapper for pinned post-run); the closure-accumulator
-streaming-fold half is complete for sum() at v0.1.
+### RESUME HERE (next session)
 
-**1. Accumulator vocabulary extension** — workload-pending.
-Add `count()` and `mean(x)` once a workload calls for them.
-`count()` is one i64 slot bumped at each fire; `mean(x)` is
-sum/count derived. Both build directly on the m46 slot
-machinery — adding them is small (~80 lines codegen + parity
-in the interpreter) but speculative without a workload
-example. Rolling windows need a fixed-cap storage decision
-that interacts with the arena lifetime — defer further.
+**Start with m57: AF_UNIX transport in the C runtime.** First
+session of the cross-process bus arc — substrate completion
+that gates trellis-pair (the v1 acceptance test). Kept
+deliberately small: kernel-level transport only, no protocol
+layer, no deployment-config yet. Concrete deliverable:
+`lotus_transport_create / send / recv` C-runtime fns over an
+AF_UNIX socket; one synthetic example sending bytes between
+two `lotus build` outputs hand-wired in C; documented as the
+foundation for m58's deployment config.
 
-**2. `reorganize` recovery primitive.** Semantic locked in
-m56 per The Design (= `restart_in_place` lifted to
-substructure level: parent's params reset, children re-attach
-to the new instance, no lateral migration). Implementation
-deferred until a workload exercises it. `drain` / `dissolve`
-as recovery ops removed in m55 — they're lifecycle methods
-only.
+The cross-process bus arc was chosen as the next multi-session
+commitment per The Design's delivery-lotus framing: it's the
+substrate-root layer of the v1 trajectory, the runtime/stdlib
+split is locked (m56), and the design questions for #8/#9/#10
+are resolved. Memory note holds: trellis-pair is the
+acceptance test, not the development driver — m57 ships
+because the substrate needs it, not to make trellis-pair
+pass.
 
-**Polish (any time):**
-- Constructor patterns in `match` (enum variants need a
-  real enum-value representation first; struct-by-name
-  was the v0 shape but no example exercised it). Tuple
-  patterns shipped in m35.
-- Default param values: locus `fn` methods called via
-  `self.method(...)` shipped in m34; modes shipped in m54
-  via the same MethodSig path. Bus-subscribed handlers stay
-  rejected by design — the single payload param is always
-  provided by dispatch, so a default on it would never
-  fire (rejection documents the constraint).
-- Recognition-class real bitmap-pool (currently chunked-
-  equivalent stub per spec/memory.md). Workload-pending.
-- Decimal precision tightening (printf %g vs Display).
-- Free-fn implicit-locus arenas: arena boundary shipped in
-  m49 (value types + String + Tuple); m51 closed the
-  remaining type matrix (Array / TypeRef-struct /
-  has-payload-Enum); m53 closed the handle-rooting half
-  (fn return waits for in-fn-bound children to dissolve).
-  The arc is fully spec-aligned modulo the LocusRef return
-  case which stays rejected by design (locus references
-  shouldn't cross arena boundaries — pass via bus).
-- Cells enqueued during dissolves: shipped in m52. The
-  in-loop drain after each iteration of the dissolve loop
-  catches publishes from any dissolve method while
-  later-iter subscribers are still alive. The ordering
-  question resolved as: drain after each dissolve, not at
-  the top only. The deregister-on-dissolve invariant
-  guarantees cells never target a just-dissolved locus.
+### Cross-process bus arc (substrate, ~3-4 sessions)
 
-**Long-deferred:**
+- **m57 AF_UNIX transport in C runtime** — `lotus_transport_*`
+  fns; raw bytes over unix socket; no protocol layer. Single
+  hardcoded subject for testing.
+- **m58 Deployment-config subject binding** — startup config
+  (TOML/JSON) maps subjects → transport URLs; runtime
+  registers each subject's transport at boot.
+- **m59 Per-payload serializer in codegen** — default
+  struct-fields-to-bytes; transport adapter calls it. Cross-
+  process payload semantics from notes/open-questions #10.
+- **m60 Multi-binary build orchestration + trellis-pair** —
+  `lotus build` emits a binary plus a manifest of publishes/
+  subscribes; deployment config knits binaries together;
+  trellis-pair runs end-to-end across two processes.
 
-- Generic instantiation (records args, no substitution)
-- Tree-sitter grammar derivation from EBNF
-- LSP server
+### Other multi-session arcs (no current commitment)
+
+- **Generics** (~4-5 sessions). Design now locked (m56):
+  compile-time monomorphization, `ProjectionClass` + `Numeric`
+  bounds. Sub-milestones: generic struct/enum monomorphization
+  → generic free fns → generic loci → `Numeric` bound +
+  generic closures → `Result<T,E>` / `Option<T>` in stdlib.
+  Biggest visible "feels v1" surface gap; no specific
+  workload demands it.
+
+### Single-session implementations (workload-pending)
+
+- **`reorganize` impl.** Semantic locked m56: `restart_in_place`
+  lifted to substructure level — parent's params reset,
+  children re-attach, no lateral migration. Defer until a
+  workload exercises it (no example currently does).
+- **`count()` / `mean(x)` accumulator vocabulary.** Both build
+  on m46 slot machinery; ~80 lines codegen. Workload-pending.
+- **Rolling-window accumulators.** Fixed-cap storage decision
+  that interacts with arena lifetime; deeper than count/mean.
+  Workload-pending.
+- **Recognition-class real bitmap-pool.** Currently chunked-
+  equivalent stub per spec/memory.md. Surface contract is
+  exercised; only the optimization is missing. Workload-
+  pending.
+
+### Polish
+
+- **Decimal precision tightening** (printf %g vs Display) —
+  m48 trims trailing zeros in `lotus_decimal_to_string`;
+  remaining gap (if any) is workload-driven.
+- **Constructor patterns in `match`** for enum variants —
+  shipped in m47 + m47-payloads. The CHECKPOINT polish-list
+  entry from earlier sessions referred to a struct-by-name
+  shape that no example exercised; resolved.
+
+### Tooling (post-substrate-v1)
+
+- Tree-sitter grammar derivation from EBNF (~2-4h)
+- LSP server (~8-12h, the big tooling commitment)
+- Stdlib growth (workload-pending — collections, time/decimal
+  helpers, bus-transport adapters)
+
+### Long-deferred (post-v1)
+
 - Self-hosting (Phase 6, distant)
+- Multi-implementation contract surface (deferred to v0.5+)
+- Perspective `serialize_as TypeV1` versioning protocol
+  (open-question #13)
 
 ## Toolchain state
 
@@ -2308,14 +2328,14 @@ System has:
 - `gcc` 13.x
 
 Cargo workspace builds clean. `cargo test --workspace --tests` passes
-all 91 tests (the locus-with-run test runs 3×500ms sleeps so the
+all 96 tests (the locus-with-run test runs 3×500ms sleeps so the
 runtime + codegen integration buckets clock ~1.5s each).
 
 ## How to verify the checkpoint
 
 ```
 cd ~/code/lotus-lang
-cargo test --workspace --tests           # 91 passed
+cargo test --workspace --tests           # 96 passed
 cargo run --bin lotus -- run examples/trellis-demo/main.lt
 cargo run --bin lotus -- build examples/hello-world/main.lt
 ./examples/hello-world/main              # prints "hello, world"
