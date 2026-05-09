@@ -561,12 +561,21 @@ pub enum Pattern {
     Tuple(Vec<Pattern>, Span),
 }
 
+/// Recovery primitives invokable from `on_failure` bodies.
+///
+/// m55 (per The Design's vertical-only-flow): the vocabulary is
+/// **restart / restart_in_place / quarantine / bubble +
+/// reorganize**. `drain` and `dissolve` are lifecycle methods,
+/// not recovery operations — invoking them in `on_failure`
+/// would overlap with `bubble(err)` (failure propagates up,
+/// runs the lifecycle teardown). Two spellings for one concept
+/// violates substrate-invariance, so v0.1 removes them from
+/// the recovery vocabulary entirely. To end a locus's role on
+/// failure, use `bubble(err)`.
 #[derive(Debug, Clone, PartialEq, Copy)]
 pub enum RecoveryOp {
     Restart,
     RestartInPlace,
-    Drain,
-    Dissolve,
     Quarantine,
     Reorganize,
     Bubble,

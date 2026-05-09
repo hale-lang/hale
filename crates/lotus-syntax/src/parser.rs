@@ -1262,11 +1262,13 @@ impl Parser {
                 Ok(Stmt::Yield(kw.span.merge(semi.span)))
             }
             TokenKind::LBrace => Ok(Stmt::Block(self.parse_block()?)),
-            // Recovery primitives
+            // Recovery primitives. m55: per The Design, the
+            // vocabulary is restart / restart_in_place /
+            // quarantine / bubble + reorganize. drain and
+            // dissolve are lifecycle methods only — using them
+            // here would overlap with bubble(err).
             TokenKind::Restart
             | TokenKind::RestartInPlace
-            | TokenKind::Drain
-            | TokenKind::Dissolve
             | TokenKind::Quarantine
             | TokenKind::Reorganize
             | TokenKind::Bubble => self.parse_recovery_stmt(),
@@ -1515,8 +1517,6 @@ impl Parser {
         let op = match kw_tok.kind {
             TokenKind::Restart => RecoveryOp::Restart,
             TokenKind::RestartInPlace => RecoveryOp::RestartInPlace,
-            TokenKind::Drain => RecoveryOp::Drain,
-            TokenKind::Dissolve => RecoveryOp::Dissolve,
             TokenKind::Quarantine => RecoveryOp::Quarantine,
             TokenKind::Reorganize => RecoveryOp::Reorganize,
             TokenKind::Bubble => RecoveryOp::Bubble,
