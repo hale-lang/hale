@@ -206,6 +206,33 @@ locus __StdLangLang {
         return false;
     }
 
+    // Extract the target fn name from a named concurrent spawn,
+    // or "" for anonymous spawns / unsupported shapes. For Go's
+    // `go someFn()` this returns "someFn"; for `go obj.Method()`
+    // returns "" (selector, not a bare identifier we can
+    // cross-reference); for `go func(){...}()` returns "" (no
+    // named target).
+    fn extract_spawn_target(spawn_stmt: Int) -> String {
+        if self.flavor == "go" {
+            let n = std::ts::node_named_child_count(spawn_stmt);
+            let mut i = 0;
+            while i < n {
+                let c = std::ts::node_named_child(spawn_stmt, i);
+                if std::ts::node_kind(c) == "call_expression" {
+                    let cn = std::ts::node_named_child_count(c);
+                    if cn > 0 {
+                        let f = std::ts::node_named_child(c, 0);
+                        if std::ts::node_kind(f) == "identifier" {
+                            return std::ts::node_text(f);
+                        }
+                    }
+                }
+                i = i + 1;
+            }
+        }
+        return "";
+    }
+
     // Anonymous-vs-named spawn distinction.
     //
     //   "anonymous" — `go func() { ... }()` (Go),

@@ -234,6 +234,38 @@ fn http_handlers_show_their_routes_inline() {
 }
 
 #[test]
+fn named_goroutines_resolve_to_their_defining_file() {
+    // The operational fixture has:
+    //   main.go: `go backgroundWorker()` — backgroundWorker is
+    //            defined in worker.go.
+    //   worker.go: `go fanout()` — fanout is defined in same file.
+    //   worker.go: `go func() { ... }()` — anonymous spawn.
+    //
+    // The polished report should resolve named goroutines to
+    // their defining file via the cross-file FN_DEF aggregate.
+    let report = run_against("operational-graph");
+    // main.go's spawn: backgroundWorker → defined in worker.go.
+    assert!(
+        report.contains("backgroundWorker (worker.go)"),
+        "expected cross-file goroutine resolution; output:\n{}",
+        report
+    );
+    // worker.go's spawn: fanout → defined in worker.go (same file).
+    assert!(
+        report.contains("fanout (worker.go)"),
+        "expected same-file goroutine resolution; output:\n{}",
+        report
+    );
+    // Anonymous spawn surfaces as "anonymous func" — no target
+    // file because there's no named target to resolve.
+    assert!(
+        report.contains("anonymous func"),
+        "expected anonymous goroutine label; output:\n{}",
+        report
+    );
+}
+
+#[test]
 fn shape_rules_doc_referenced_for_agents() {
     // The unknowns section must point the agent at the canonical
     // rules doc so the recognition is reproducible across

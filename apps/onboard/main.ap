@@ -46,6 +46,10 @@ fn __unified_walk(lang: std::lang::Lang, node: Int, in_import: Bool) -> String {
         acc = acc + "IMP:" + lang.strip_string_quotes(raw) + "\n";
     }
     if lang.is_fn_decl(node) {
+        // Always record the fn-def name so cross-file lookups
+        // (goroutine target resolution) can find which file
+        // defines a given fn.
+        acc = acc + "FN_DEF:" + lang.extract_fn_name(node) + "\n";
         if lang.is_main_fn(node) {
             acc = acc + "OP_MAIN:1\n";
         } else if lang.is_init_fn(node) {
@@ -55,7 +59,12 @@ fn __unified_walk(lang: std::lang::Lang, node: Int, in_import: Bool) -> String {
         }
     }
     if lang.is_concurrent_spawn(node) {
-        acc = acc + "OP_SPAWN:" + lang.spawn_kind(node) + "\n";
+        let kind = lang.spawn_kind(node);
+        let target = lang.extract_spawn_target(node);
+        // Encode kind + target together: "named:backgroundWorker"
+        // or "anonymous:". Empty target is the anonymous case
+        // (or an unsupported call shape we couldn't resolve).
+        acc = acc + "OP_SPAWN:" + kind + ":" + target + "\n";
     }
     if lang.is_infinite_loop(node) {
         acc = acc + "OP_LOOP:1\n";
@@ -241,6 +250,31 @@ fn __indent_block(label: String, content: String) -> String {
     return "  " + label + "  " + content + "\n";
 }
 
+// Look up which file defines a given fn name. `fn_defs` is a
+// cross-file aggregate of "FN_DEF:<name>:<file>\n" lines built
+// in the first pass of __drive. Returns "" if the fn isn't
+// defined in any scanned file (e.g., it's a stdlib call or
+// imported from another package).
+fn __lookup_fn_file(fn_defs: String, name: String) -> String {
+    let total = len(fn_defs);
+    let mut from = 0;
+    let needle = "FN_DEF:" + name + ":";
+    let nlen = len(needle);
+    while from < total {
+        let rest = fn_defs[from..total];
+        let nl = std::str::index_of(rest, "\n");
+        let mut line = "";
+        if nl < 0 { line = rest; from = total; }
+        else { line = rest[0..nl]; from = from + nl + 1; }
+        if len(line) > nlen {
+            if line[0..nlen] == needle {
+                return line[nlen..len(line)];
+            }
+        }
+    }
+    return "";
+}
+
 // Look up a handler fn's route in a "WIRE:target->route\n"-
 // formatted aggregate string. Returns "" if the target hasn't
 // been wired in this codebase (the handler is defined but not
@@ -266,7 +300,8 @@ fn __lookup_handler_route(wires: String, target: String) -> String {
 }
 
 fn __render_per_file(lang: std::lang::Lang, r: std::lang::Morpheme,
-                     dir: String, name: String, wires: String) -> String {
+                     dir: String, name: String, wires: String,
+                     fn_defs: String) -> String {
     let path = dir + "/" + name;
     let src = std::io::fs::read_file(path);
     if len(src) == 0 { return ""; }
@@ -351,8 +386,55 @@ fn __render_per_file(lang: std::lang::Lang, r: std::lang::Morpheme,
     }
     if n_spawns > 0 {
         if len(op_summary) > 0 { op_summary = op_summary + "; "; }
+        // Format spawns with target + defining-file lookup.
+        // Each OP_SPAWN tag is "kind:target" where target is
+        // empty for anonymous spawns. Named spawns get their
+        // defining file looked up in fn_defs.
+        let mut spawns_pretty = "";
+        let prefix = "OP_SPAWN:";
+        let plen = len(prefix);
+        let mut sfrom = 0;
+        let stotal = len(acc);
+        let mut sfirst = true;
+        while sfrom < stotal {
+            let srest = acc[sfrom..stotal];
+            let snl = std::str::index_of(srest, "\n");
+            let mut sline = "";
+            if snl < 0 { sline = srest; sfrom = stotal; }
+            else { sline = srest[0..snl]; sfrom = sfrom + snl + 1; }
+            if len(sline) > plen {
+                if sline[0..plen] == prefix {
+                    let body = sline[plen..len(sline)];
+                    // body is "kind:target".
+                    let cidx = std::str::index_of(body, ":");
+                    let mut kind = body;
+                    let mut target = "";
+                    if cidx >= 0 {
+                        kind = body[0..cidx];
+                        target = body[cidx+1..len(body)];
+                    }
+                    let mut entry = kind;
+                    if kind == "anonymous" {
+                        entry = "anonymous func";
+                    } else {
+                        if len(target) > 0 {
+                            let target_file = __lookup_fn_file(fn_defs, target);
+                            if len(target_file) > 0 {
+                                entry = target + " (" + target_file + ")";
+                            } else {
+                                entry = target + " (?)";
+                            }
+                        } else {
+                            entry = "named (?)";
+                        }
+                    }
+                    if sfirst { spawns_pretty = entry; sfirst = false; }
+                    else { spawns_pretty = spawns_pretty + ", " + entry; }
+                }
+            }
+        }
         op_summary = op_summary + to_string(n_spawns) + " concurrent spawn(s): "
-            + spawns;
+            + spawns_pretty;
     }
     if n_loops > 0 {
         if len(op_summary) > 0 { op_summary = op_summary + "; "; }
@@ -502,12 +584,14 @@ fn __drive(dir: String, flavor: String) {
     println("============================================================");
     println("");
 
-    // First pass: collect all WIRE tags across files. The
-    // wiring (mux.HandleFunc) typically lives in main.go while
-    // handler defs live elsewhere; we need the cross-file
-    // route table available before per-file rendering so each
-    // handler's route can show inline.
+    // First pass: collect cross-file aggregates needed by the
+    // per-file render — WIRE tags (handler registration → route
+    // map) and FN_DEF tags (fn name → defining file). The
+    // wiring often lives in main.go while handler defs live in
+    // handlers.go; goroutine spawns reference fns defined in
+    // sibling files. Both lookups need to span the whole dir.
     let mut wires = "";
+    let mut fn_defs = "";
     let mut wfrom = 0;
     while wfrom < total {
         let wrest = entries[wfrom..total];
@@ -524,7 +608,11 @@ fn __drive(dir: String, flavor: String) {
                     if tree != 0 {
                         let root = std::ts::root_node(tree);
                         let walk = __unified_walk(lang, root, false);
-                        // Pull WIRE: lines into the aggregate.
+                        // Pull WIRE: and FN_DEF: lines into
+                        // their respective aggregates. FN_DEF
+                        // entries get stamped with the file
+                        // name so cross-file lookups know where
+                        // each fn was defined.
                         let mut sfrom = 0;
                         let stotal = len(walk);
                         while sfrom < stotal {
@@ -536,6 +624,13 @@ fn __drive(dir: String, flavor: String) {
                             if len(sline) > 5 {
                                 if sline[0..5] == "WIRE:" {
                                     wires = wires + sline + "\n";
+                                }
+                            }
+                            if len(sline) > 7 {
+                                if sline[0..7] == "FN_DEF:" {
+                                    let fname = sline[7..len(sline)];
+                                    fn_defs = fn_defs + "FN_DEF:" + fname
+                                        + ":" + wname + "\n";
                                 }
                             }
                         }
@@ -560,7 +655,7 @@ fn __drive(dir: String, flavor: String) {
         else { name = rest[0..nl]; from = from + nl + 1; }
         if len(name) > 0 {
             if __ends_with_source(name, flavor) {
-                let block = __render_per_file(lang, r, dir, name, wires);
+                let block = __render_per_file(lang, r, dir, name, wires, fn_defs);
                 if len(block) > 0 {
                     all_files_section = all_files_section + block;
                     if std::str::index_of(block, "[locus]") >= 0 {
