@@ -2,16 +2,17 @@
 
 Bundled with the toolchain, no separate install required.
 
-> **Status (m93):** Phases 1-5 of the v1.x stdlib roadmap are
+> **Status (m95):** Phases 1-5 of the v1.x stdlib roadmap are
 > **sealed**. Phase 1 (substrate floor) at m76, Phase 3 (HTTP)
 > at m86, Phase 2 v0.1 (assertions) at m88, Phase 4 v0.1
 > (markdown) at m91, Phase 5 (doc-server capstone) at m92,
-> stdlib organization (per-domain `.ap` files) at m93. See
-> `docs/std/src/roadmap.md` for the v1.x plan and the
-> per-phase tables below for what shipped under each.
-> The aspirational "v0 module map" section near the bottom
-> of this file was sketched pre-rename; treat the per-phase
-> tables as authoritative for what's actually shipped.
+> stdlib organization (per-domain `.ap` files) at m93. **Phase 6
+> (substrate for the IDE) underway:** m94 bus subject wildcards,
+> m95 `std::log` namespace. See `docs/std/src/roadmap.md` for
+> the v1.x plan and the per-phase tables below for what shipped
+> under each. The aspirational "v0 module map" section near the
+> bottom of this file was sketched pre-rename; treat the
+> per-phase tables as authoritative for what's actually shipped.
 
 ## Phase 1 — what shipped (sealed m76)
 
@@ -108,6 +109,7 @@ through m92. m93 split it into per-domain files under
 | `http.ap`   | `Request` + `Response` types + `__parse_http_request` + `__write_http_response` + `__status_phrase`. |
 | `text.ap`   | `__md_to_html` + line tokenization helpers. |
 | `test.ap`   | `__test_assert` + `assert_eq_*` variants. |
+| `log.ap`    | (m95) `__StdLogEvent` + `__StdLogLogger` + `__StdLogStdoutSink`. |
 
 `STDLIB_AP_SOURCE` in codegen is now
 `concat!(include_str!("core.ap"), "\n", include_str!("io_tcp.ap"), ...)`.
@@ -115,6 +117,13 @@ Order matters — `core.ap` must precede `text.ap` (markdown
 depends on `core`'s helpers); `io_tcp.ap` must precede
 `http.ap` (HTTP signatures reference `Stream`). Each file
 header documents its constraint.
+
+## Phase 6 — substrate (underway, m94+)
+
+| Milestone | What it shipped |
+|-----------|-----------------|
+| m94 | Bus subject wildcards. Trailing `**` matches zero+ remaining dot-separated segments. Subscribe-side: `subscribe "log.app.**"` catches a sub-tree. Publish-side: declaring `publish "log.**" of type T` authorizes runtime-computed subjects of that type. Three implementations (`lotus_subject_match` C, `subject_match` Rust runtime, `wildcard_match` typechecker) agree on identical semantics. |
+| m95 | `std::log` namespace. `Logger` (cascading namespace via `name` + `parent_path`), `LogEvent` (level / msg / path), `StdoutSink` (subscribes `log.**`). Levels are Int constants pending enum-variant patterns. First Phase-6 user surface; written purely in Aperio composing m94. |
 
 ## What landed but isn't yet a phase capstone
 

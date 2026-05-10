@@ -8,6 +8,12 @@ Structured logging on the bus. Phase 6 m95 ships three pieces:
 - **`std::log::StdoutSink`** — a default sink that subscribes
   on `log.**` and prints `[LEVEL path] msg` to stdout.
 
+The bus subject wildcard `**` is a **zero-or-more** trailing-
+segment match — `log.app.**` includes the root subject `log.app`
+AND any descendant (`log.app.db`, `log.app.db.query`, ...). The
+default sink's `log.**` therefore catches every Logger's events
+regardless of namespace depth.
+
 The Aperio-shape: every log event is a typed payload published
 on a hierarchical subject. Sinks are bus subscribers — same
 mechanism as any other Aperio bus user. Cross-process tailing
@@ -187,6 +193,44 @@ locus DbOnlySinkL {
 events) and any descendant — `log.app.db.query`,
 `log.app.db.cache`, etc. It does not match `log.app` (parent)
 or `log.app.api` (peer).
+
+### File-backed sinks
+
+A sink that writes to a file rather than stdout looks like the
+above plus a buffer + flush. Caveat: `std::io::fs::write_file`
+**truncates** on each call (it's `O_WRONLY | O_CREAT | O_TRUNC`,
+no append). For a sink that wants every event durable, the
+shipped pattern is buffer-in-state, flush-on-dissolve:
+
+```aperio
+locus FileAuditSinkL {
+    params { path: String = "audit.log"; buffer: String = ""; }
+    bus {
+        subscribe "log.app.db.**" as on_db of type std::log::LogEvent;
+    }
+    fn on_db(e: std::log::LogEvent) {
+        let level = ...;  // map e.level to "INFO"/"WARN"/...
+        self.buffer = self.buffer
+            + level + " " + e.path + " " + e.msg + "\n";
+    }
+    dissolve() {
+        std::io::fs::write_file(self.path, self.buffer);
+    }
+}
+
+fn main() {
+    let sink = FileAuditSinkL { path: "audit.log" };
+    // ... loggers + work that publishes events ...
+    // sink.dissolve() fires at fn scope-exit (m82); audit.log
+    // is written once with the full buffer.
+}
+```
+
+The `let sink = ...` binding (m82 deferred-dissolve) is what
+makes this work — a statement-position `FileAuditSinkL { };`
+would dissolve immediately, flushing an empty buffer. An
+`append_file` primitive (no truncate) is a planned follow-up;
+until it lands, buffer-and-flush is the idiom.
 
 To see *every* event regardless of subject (e.g. a
 forwarding sink), subscribe on `log.**`.

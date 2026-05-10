@@ -127,7 +127,7 @@ Things that **do not exist** in Aperio v0. Do not write them.
 | `match` patterns on enum variants | Enum variants exist; pattern-matching on payloads is deferred. Workaround: one bus subject per variant. |
 | `Vec<T>` / `Box<T>` / `Rc<T>` | No. Arrays exist (`[T; N]` style) but no growable list yet. No heap pointers in source. |
 | `Option<T>` / `Result<T, E>` | No. Functions return sentinels (`-1`, `""`, `false`, `nil`) plus a sibling boolean if disambiguation matters. See `std::str::parse_int` + `can_parse_int`. |
-| Closures as values | Function pointers exist (`fn(T) -> R`); inline closures-as-values do not. Pass named functions. |
+| Closures as values | Function pointers exist (`fn(T) -> R`); inline closures-as-values do not. Pass named functions. **A fn-pointer callback (e.g., `Listener.on_connection`) cannot capture surrounding state** — if your callback needs context, either reconstruct it inside the callback (cheap loci like `Logger` are fine to re-instantiate) or route the context through the bus. |
 | `let x: T = ...;` (type ascription) | Yes for fn params, yes for `let mut x: Int = -1`, but you usually elide it. The parser is fine either way. |
 | `var` / `final` / `const T` keywords | `let` (immutable) and `let mut` (mutable). `const` exists at top level only. |
 | Multi-file projects | Single `main.ap` per app. Multi-file module support is planned, not shipped. |
@@ -251,19 +251,49 @@ will get more out of `docs/book/` and `docs/reference/`.
 
 ## Running and testing
 
+The CLI has two execution modes — **read this carefully**, several
+cold-start sessions have lost time to it:
+
 ```
-aperio run apps/<your-app>/main.ap          # compile and run
-aperio run apps/<your-app>/main.ap arg1 arg2
-cargo test -p aperio-codegen <pattern>      # workspace tests
+aperio run   apps/<your-app>/main.ap [args]   # interpreter
+aperio build apps/<your-app>/main.ap          # native binary at ./main
 ```
+
+**`aperio run` (interpreter) does NOT support qualified-name
+struct/locus literals** like `std::http::Request { ... }`,
+`std::log::Logger { ... }`, etc. — it errors with "qualified-
+name struct/locus literals not yet implemented." If your
+program uses any path-qualified stdlib type (most non-trivial
+programs do), you must use `aperio build` and then run the
+produced binary.
+
+```
+# Recommended pattern:
+target/debug/aperio build apps/<your-app>/main.ap
+./main                                    # binary lands in cwd
+```
+
+**Stale-CLI gotcha.** `target/debug/aperio` only updates when
+`aperio-cli` rebuilds. If `crates/aperio-codegen` or
+`crates/aperio-runtime` was changed (by anyone), you may be
+running a stale CLI that was built against the old lowering —
+silent miscompile is possible (subscribers may be quietly
+dropped, etc.). When in doubt, run via cargo to force freshness:
+
+```
+cargo run -p aperio-cli --bin aperio -- build apps/<your-app>/main.ap
+```
+
+This is slower (cargo checks freshness on every invocation) but
+guaranteed up-to-date.
 
 For end-to-end tests of your app, mirror
 `crates/aperio-codegen/tests/docs_server.rs` or
 `tests/http_hello.rs`: a Rust harness spawns the compiled
-binary, exercises it (HTTP request, file write, etc.), asserts
-on observable behavior. Keep your app tests in your app's
-directory if it has a `tests/` subdir, else add to the codegen
-crate's `tests/` with a clear filename.
+binary, exercises it, and asserts on observable behavior. Keep
+your app tests in your app's directory if it has a `tests/`
+subdir, else add to the codegen crate's `tests/` with a clear
+filename. Run via `cargo test -p aperio-codegen <pattern>`.
 
 ## The friction-log contract
 

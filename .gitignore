@@ -28,3 +28,7 @@ docs/grimoire/book/
 docs/book/book/
 docs/reference/book/
 docs/std/book/
+
+# Aperio app build artifacts (binaries + generated content)
+apps/*/main
+apps/*/out/

@@ -1,0 +1,161 @@
+// ssg — a minimal markdown-to-HTML static site generator.
+//
+// Reads .md files from an input directory, renders each through
+// std::text::md_to_html, wraps the result in a plain HTML shell,
+// and writes the output to a sibling output directory.
+//
+// Configuration (argv):
+//   argv[1] — input directory  (default "./content")
+//   argv[2] — output directory (default "./out")
+//
+// Run:
+//   aperio build apps/ssg/main.ap
+//   ./target/debug/apps/ssg/ssg
+//   ./target/debug/apps/ssg/ssg apps/ssg/content /tmp/ssg-out
+//
+// v0 limits:
+//   - Block-level markdown only (md_to_html). No inline bold /
+//     italic / links yet.
+//   - The output directory must already exist; this program does
+//     not create it. (No std::io::fs::mkdir surface today.)
+//   - One input directory, one level deep — list_dir does not
+//     recurse.
+//   - Filenames are surfaced verbatim from list_dir; no escaping
+//     for HTML index links.
+
+fn __wrap_html_page(title: String, body: String) -> String {
+    return "<!doctype html>\n"
+         + "<html><head><meta charset=\"utf-8\">"
+         + "<title>" + title + "</title>"
+         + "</head><body>\n"
+         + body
+         + "\n</body></html>\n";
+}
+
+fn __ends_with_md(name: String) -> Bool {
+    let nlen = len(name);
+    if nlen < 3 { return false; }
+    let suffix_start = nlen - 3;
+    if name[suffix_start..nlen] != ".md" { return false; }
+    return true;
+}
+
+fn __strip_md_suffix(name: String) -> String {
+    // Caller must have already confirmed __ends_with_md.
+    let nlen = len(name);
+    let stem_end = nlen - 3;
+    return name[0..stem_end];
+}
+
+fn __render_one(input_dir: String, output_dir: String, name: String) -> Int {
+    // Returns 0 on success, -1 on read/write failure, 1 if skipped.
+    if !__ends_with_md(name) {
+        return 1;
+    }
+    let in_path = input_dir + "/" + name;
+    if !std::io::fs::file_exists(in_path) {
+        println("ssg: missing ", in_path);
+        return -1;
+    }
+    let md = std::io::fs::read_file(in_path);
+    let body_html = std::text::md_to_html(md);
+    let stem = __strip_md_suffix(name);
+    let html = __wrap_html_page(stem, body_html);
+    let out_path = output_dir + "/" + stem + ".html";
+    let r = std::io::fs::write_file(out_path, html);
+    if r != 0 {
+        println("ssg: write failed for ", out_path);
+        return -1;
+    }
+    println("rendered: ", in_path, " -> ", out_path);
+    return 0;
+}
+
+fn __render_index(output_dir: String, listing: String) -> Int {
+    // Stretch: write an index.html linking each rendered page.
+    // Walks the same newline-separated listing the main loop saw.
+    let total = len(listing);
+    let mut body = "<h1>Index</h1>\n<ul>\n";
+    let mut i: Int = 0;
+    let mut count: Int = 0;
+    while i < total {
+        let rest = listing[i..total];
+        let nl = std::str::index_of(rest, "\n");
+        let mut entry_end = total;
+        if nl >= 0 {
+            entry_end = i + nl;
+        }
+        let name = listing[i..entry_end];
+        i = entry_end + 1;
+        if len(name) == 0 { continue; }
+        if !__ends_with_md(name) { continue; }
+        let stem = __strip_md_suffix(name);
+        let href = stem + ".html";
+        body = body + "<li><a href=\"" + href + "\">" + stem + "</a></li>\n";
+        count = count + 1;
+    }
+    body = body + "</ul>\n";
+    if count == 0 {
+        body = "<h1>Index</h1>\n<p>(no pages rendered)</p>\n";
+    }
+    let html = __wrap_html_page("Index", body);
+    let out_path = output_dir + "/index.html";
+    let r = std::io::fs::write_file(out_path, html);
+    if r != 0 {
+        println("ssg: index write failed for ", out_path);
+        return -1;
+    }
+    println("rendered: <index> -> ", out_path);
+    return 0;
+}
+
+fn main() {
+    let mut input_dir: String = "./content";
+    if std::env::args_count() > 1 {
+        input_dir = std::env::arg(1);
+    }
+
+    let mut output_dir: String = "./out";
+    if std::env::args_count() > 2 {
+        output_dir = std::env::arg(2);
+    }
+
+    println("ssg: input=", input_dir, " output=", output_dir);
+
+    let listing = std::io::fs::list_dir(input_dir);
+    let total = len(listing);
+    if total == 0 {
+        println("ssg: no entries in ", input_dir);
+        return;
+    }
+
+    // Walk the newline-separated listing, render each .md file.
+    let mut start: Int = 0;
+    let mut rendered: Int = 0;
+    let mut failed: Int = 0;
+    while start < total {
+        let rest = listing[start..total];
+        let nl = std::str::index_of(rest, "\n");
+        let mut entry_end = total;
+        if nl >= 0 {
+            entry_end = start + nl;
+        }
+        let name = listing[start..entry_end];
+        start = entry_end + 1;
+        if len(name) == 0 { continue; }
+        let r = __render_one(input_dir, output_dir, name);
+        if r == 0 {
+            rendered = rendered + 1;
+        }
+        if r < 0 {
+            failed = failed + 1;
+        }
+    }
+
+    // Stretch: emit an index.html only when at least one page rendered.
+    if rendered > 0 {
+        __render_index(output_dir, listing);
+    }
+
+    println("ssg: ", to_string(rendered), " rendered, ", to_string(failed), " failed");
+}
