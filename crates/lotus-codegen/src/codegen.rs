@@ -2506,19 +2506,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for item in &program.items {
             match item {
                 TopDecl::Type(t) if t.generics.is_empty() => {
-                    if let TypeDeclBody::Struct(fields) = &t.body {
-                        for f in fields {
-                            Self::collect_generic_uses(
-                                &f.ty,
-                                generic_decls,
-                                seen,
-                                requests,
-                            )?;
+                    match &t.body {
+                        TypeDeclBody::Struct(fields) => {
+                            for f in fields {
+                                Self::collect_generic_uses(
+                                    &f.ty,
+                                    generic_decls,
+                                    seen,
+                                    requests,
+                                )?;
+                            }
                         }
+                        // m61c: enum variant field types can
+                        // reference generic instantiations
+                        // (e.g., a non-generic enum variant
+                        // carrying a Box<Int> payload).
+                        TypeDeclBody::Enum(variants) => {
+                            for v in variants {
+                                for f in &v.fields {
+                                    Self::collect_generic_uses(
+                                        f,
+                                        generic_decls,
+                                        seen,
+                                        requests,
+                                    )?;
+                                }
+                            }
+                        }
+                        TypeDeclBody::Alias(_) => {}
                     }
-                    /* Enum variants' field types could grow into
-                     * this once generic enums ship. Aliases too.
-                     * v0.1 keeps it struct-only. */
                 }
                 TopDecl::Type(_) => {
                     /* generic template — its own body's `T`
@@ -2663,15 +2679,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 )?;
             }
             LocusMember::Type(t) if t.generics.is_empty() => {
-                if let TypeDeclBody::Struct(fields) = &t.body {
-                    for f in fields {
-                        Self::collect_generic_uses(
-                            &f.ty,
-                            generic_decls,
-                            seen,
-                            requests,
-                        )?;
+                match &t.body {
+                    TypeDeclBody::Struct(fields) => {
+                        for f in fields {
+                            Self::collect_generic_uses(
+                                &f.ty,
+                                generic_decls,
+                                seen,
+                                requests,
+                            )?;
+                        }
                     }
+                    TypeDeclBody::Enum(variants) => {
+                        for v in variants {
+                            for f in &v.fields {
+                                Self::collect_generic_uses(
+                                    f,
+                                    generic_decls,
+                                    seen,
+                                    requests,
+                                )?;
+                            }
+                        }
+                    }
+                    TypeDeclBody::Alias(_) => {}
                 }
             }
             LocusMember::Contract(_)
@@ -2837,18 +2868,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             TypeDeclBody::Alias(_) => {
                 return Err(CodegenError::Unsupported(format!(
-                    "generic alias `{}` (m61 v0.1 supports struct \
-                     templates only)",
+                    "generic alias `{}` (m61c v0.1 supports struct \
+                     and enum templates only)",
                     template.name.name
                 )));
             }
-            TypeDeclBody::Enum(_) => {
-                return Err(CodegenError::Unsupported(format!(
-                    "generic enum `{}` (m61 v0.1 supports struct \
-                     templates only; enum monomorphization is \
-                     m61b)",
-                    template.name.name
-                )));
+            TypeDeclBody::Enum(variants) => {
+                // m61c: substitute generic params throughout each
+                // variant's field TypeExprs. Variant names stay as
+                // declared (e.g., `Result_Int_String::Ok` keeps
+                // `Ok` as the variant name) — the enum's mangled
+                // outer name + variant lookup by string handles
+                // namespacing.
+                let new_variants: Vec<EnumVariant> = variants
+                    .iter()
+                    .map(|v| EnumVariant {
+                        name: v.name.clone(),
+                        fields: v
+                            .fields
+                            .iter()
+                            .map(|f| {
+                                Self::substitute_type_expr(f, &subst)
+                            })
+                            .collect(),
+                        span: v.span.clone(),
+                    })
+                    .collect();
+                TypeDeclBody::Enum(new_variants)
             }
         };
 
@@ -2986,7 +3032,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     ))
                                 })?;
                                 let ty = self.type_expr_to_lotus(ascribed)?;
-                                (DefaultInit::Expr(default_expr.clone()), ty)
+                                // m61c: bare-name struct literal in
+                                // a typed param default rewrites to
+                                // the mangled monomorph at decl
+                                // time, so the deferred lower_expr
+                                // at instantiation sees the right
+                                // path. Mirrors the let-ascription
+                                // hook from m61b.
+                                let stored_default =
+                                    match default_expr {
+                                        Expr::Struct {
+                                            path,
+                                            inits,
+                                            span,
+                                        } => match self
+                                            .resolve_generic_struct_path(
+                                                path, ascribed,
+                                            ) {
+                                            Some(new_path) => {
+                                                Expr::Struct {
+                                                    path: new_path,
+                                                    inits: inits.clone(),
+                                                    span: *span,
+                                                }
+                                            }
+                                            None => default_expr.clone(),
+                                        },
+                                        _ => default_expr.clone(),
+                                    };
+                                (DefaultInit::Expr(stored_default), ty)
                             }
                         };
                     if let Some(ascribed) = &p.ty {

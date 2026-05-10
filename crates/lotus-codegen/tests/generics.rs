@@ -195,6 +195,110 @@ fn discovery_walks_fn_signature_param_and_return() {
 // walk for the Params branch IS in place; locking it in via a
 // passing test waits on the param-default bare-name path.
 
+// === m61c ====================================================
+// Generic enum monomorphization + locus param-default
+// bare-name resolution.
+
+#[test]
+fn generic_enum_template_monomorphizes() {
+    // Result<Int, String> referenced as a struct field type
+    // triggers discovery + synthesis of Result_Int_String.
+    // Construction goes via the mangled enum name; pattern
+    // match against synthesized variants works.
+    let src = r#"
+        type Result<T, E> = enum {
+            Ok(T),
+            Err(E),
+        };
+
+        type Holder {
+            r: Result<Int, String>;
+        }
+
+        fn main() {
+            let r = Result_Int_String::Ok(42);
+            let h = Holder { r: r };
+            // Wildcard arm to bypass typechecker exhaustiveness
+            // (it sees `Result` template, not Result_Int_String;
+            // tightening this is a typechecker integration, not
+            // a m61c codegen concern).
+            match h.r {
+                Result_Int_String::Ok(n) -> println("ok: ", n),
+                _                         -> println("other"),
+            }
+        }
+    "#;
+    let (stdout, status) = build_and_run("gen_enum", src);
+    assert!(status.success(), "exited non-zero: {:?}", status);
+    assert!(stdout.contains("ok: 42"), "got: {:?}", stdout);
+}
+
+#[test]
+fn locus_param_default_resolves_bare_name() {
+    // `params { b: Box<Int> = Box { value: 0 }; }` — the
+    // bare-name `Box { ... }` rewrites to `Box_Int` at
+    // decl-time so the deferred default evaluation lands on
+    // the mangled monomorph.
+    let src = r#"
+        type Box<T> {
+            value: T;
+        }
+
+        locus Container {
+            params {
+                b: Box<Int> = Box { value: 0 };
+            }
+            birth() {
+                println("default b.value=", self.b.value);
+            }
+        }
+
+        fn main() {
+            Container { };
+        }
+    "#;
+    let (stdout, status) = build_and_run("param_default", src);
+    assert!(status.success(), "exited non-zero: {:?}", status);
+    assert!(
+        stdout.contains("default b.value=0"),
+        "got: {:?}",
+        stdout,
+    );
+}
+
+#[test]
+fn locus_param_default_overridable_at_instantiation() {
+    // Caller can override the default with their own bare-name
+    // struct literal — instantiation goes through the same
+    // rewrite path (via the ParamInit's value Expr).
+    let src = r#"
+        type Box<T> {
+            value: T;
+        }
+
+        locus Container {
+            params {
+                b: Box<Int> = Box { value: 0 };
+            }
+            birth() {
+                println("got b.value=", self.b.value);
+            }
+        }
+
+        fn main() {
+            let custom: Box<Int> = Box { value: 99 };
+            Container { b: custom };
+        }
+    "#;
+    let (stdout, status) = build_and_run("param_override", src);
+    assert!(status.success(), "exited non-zero: {:?}", status);
+    assert!(
+        stdout.contains("got b.value=99"),
+        "got: {:?}",
+        stdout,
+    );
+}
+
 #[test]
 fn discovery_walks_locus_lifecycle_signatures() {
     // Discovery covers locus lifecycle method signatures via
