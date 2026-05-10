@@ -256,6 +256,10 @@ impl Parser {
     fn parse_locus_decl(&mut self) -> Result<LocusDecl, Diag> {
         let kw = self.expect(TokenKind::Locus, "locus")?;
         let name = self.expect_ident("locus name")?;
+        // m63: optional `<K, V, ...>` generic param list right
+        // after the locus name. Same shape as fn / type generic
+        // params — codegen monomorphizes on use sites.
+        let generics = self.parse_generic_params_opt()?;
 
         let mut annotations = Vec::new();
         if self.eat(&TokenKind::Colon) {
@@ -273,6 +277,7 @@ impl Parser {
         let close = self.expect(TokenKind::RBrace, "}")?;
         Ok(LocusDecl {
             name,
+            generics,
             annotations,
             members,
             span: kw.span.merge(close.span),

@@ -159,6 +159,7 @@ pub fn build_executable(
         accumulator_ctx: None,
         serializers: BTreeMap::new(),
         generic_fn_templates: BTreeMap::new(),
+        generic_locus_templates: BTreeMap::new(),
     };
 
     cx.declare_builtins();
@@ -358,6 +359,18 @@ struct Cx<'ctx, 'p> {
     /// keyed by mangled name, so subsequent calls with the same
     /// type args resolve directly.
     generic_fn_templates: BTreeMap<String, FnDecl>,
+    /// m63: generic locus templates indexed by name. Populated
+    /// from LocusDecls with non-empty generics. Unlike generic
+    /// fns (which synthesize on-demand at call sites), generic
+    /// loci synthesize upfront from discovery: every TypeExpr
+    /// reference to `Cache<Int, String>` triggers synthesis of
+    /// a `Cache_Int_String` LocusDecl, and the synthesized
+    /// decl flows through the standard A1/A2/C locus passes
+    /// alongside user-written decls. Loci are typically
+    /// instantiated via struct-literal syntax + bare-name
+    /// resolution (`let c: Cache<Int, String> = Cache { ... };`),
+    /// matching the m61b/m61c pattern for generic structs.
+    generic_locus_templates: BTreeMap<String, LocusDecl>,
 }
 
 /// m60: paired serialize / deserialize fns synthesized per bus
@@ -1780,26 +1793,113 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // would synthesize both `Pair_Int_String` and
         // `Box_Pair_Int_String` (parser `>>` ambiguity is a
         // separate gap; the codegen substrate is ready).
-        let generic_decls: BTreeMap<String, TypeDecl> = type_decls
+        let generic_type_decls: BTreeMap<String, TypeDecl> = type_decls
             .iter()
             .filter(|t| !t.generics.is_empty())
             .map(|t| (t.name.name.clone(), t.clone()))
+            .collect();
+        // m63: collect generic locus templates from the program.
+        // Loci with non-empty `generics` get registered here so
+        // discovery can route their TypeExpr uses through the
+        // same walker as generic types.
+        let raw_locus_decls: Vec<LocusDecl> = self
+            .program
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                TopDecl::Locus(l) => Some(l.clone()),
+                _ => None,
+            })
+            .collect();
+        let generic_locus_decls: BTreeMap<String, LocusDecl> = raw_locus_decls
+            .iter()
+            .filter(|l| !l.generics.is_empty())
+            .map(|l| (l.name.name.clone(), l.clone()))
+            .collect();
+        let generic_names: BTreeSet<String> = generic_type_decls
+            .keys()
+            .chain(generic_locus_decls.keys())
+            .cloned()
             .collect();
         let mut seen_mangles: BTreeSet<String> = BTreeSet::new();
         let mut requests: Vec<(String, Vec<TypeExpr>)> = Vec::new();
         Self::collect_generic_uses_in_program(
             self.program,
-            &generic_decls,
+            &generic_names,
             &mut seen_mangles,
             &mut requests,
         )?;
-        for (template_name, args) in &requests {
-            let template = generic_decls
-                .get(template_name)
-                .expect("template was just looked up via generic_decls");
-            let synthesized =
-                Self::synthesize_generic_instantiation(template, args)?;
-            self.declare_user_type(&synthesized)?;
+        // m63: process requests as a queue — synthesizing one
+        // instantiation may surface NEW generic uses inside its
+        // substituted body (e.g., `Holder<Int>` instantiates
+        // a body containing `Box<Int>` which itself needs
+        // synthesizing). The queue closes when discovery on the
+        // most recent synthesis adds nothing new.
+        let mut synthesized_loci: Vec<LocusDecl> = Vec::new();
+        let mut next_idx = 0usize;
+        while next_idx < requests.len() {
+            let (template_name, args) = requests[next_idx].clone();
+            next_idx += 1;
+            if let Some(template) = generic_type_decls.get(&template_name) {
+                let synthesized =
+                    Self::synthesize_generic_instantiation(
+                        template, &args,
+                    )?;
+                // Walk the synthesized decl's body for nested
+                // generic uses before declaring.
+                if let TypeDeclBody::Struct(fields) = &synthesized.body {
+                    for f in fields {
+                        Self::collect_generic_uses(
+                            &f.ty,
+                            &generic_names,
+                            &mut seen_mangles,
+                            &mut requests,
+                        )?;
+                    }
+                } else if let TypeDeclBody::Enum(variants) =
+                    &synthesized.body
+                {
+                    for v in variants {
+                        for f in &v.fields {
+                            Self::collect_generic_uses(
+                                f,
+                                &generic_names,
+                                &mut seen_mangles,
+                                &mut requests,
+                            )?;
+                        }
+                    }
+                }
+                self.declare_user_type(&synthesized)?;
+            } else if let Some(template) =
+                generic_locus_decls.get(&template_name)
+            {
+                let mangled =
+                    Self::mangle_generic_name(&template_name, &args)?;
+                let synthesized =
+                    Self::synthesize_generic_locus_instantiation(
+                        template, &args, &mangled,
+                    )?;
+                // Walk synthesized locus's substituted member
+                // type positions for nested generic uses.
+                for member in &synthesized.members {
+                    Self::collect_in_locus_member(
+                        member,
+                        &generic_names,
+                        &mut seen_mangles,
+                        &mut requests,
+                    )?;
+                }
+                synthesized_loci.push(synthesized);
+            }
+        }
+        // Register generic locus templates so user_loci lookups
+        // and bare-name-resolution paths can find them.
+        for l in &raw_locus_decls {
+            if !l.generics.is_empty() {
+                self.generic_locus_templates
+                    .insert(l.name.name.clone(), l.clone());
+            }
         }
 
         // Now declare concrete user-written non-generic decls.
@@ -1816,15 +1916,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // declaration order in source:
         //   A1: every locus's struct type + field layout
         //   A2: every locus's lifecycle method signatures
-        let locus_decls: Vec<LocusDecl> = self
-            .program
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                TopDecl::Locus(l) => Some(l.clone()),
-                _ => None,
-            })
-            .collect();
+        // m63: append synthesized locus instantiations (from
+        // the m63 monomorphization pass above) to the
+        // user-written locus list so they flow through the
+        // standard A1 / A2 / C passes alongside non-generic
+        // decls. Synthesized loci have empty `generics`, so the
+        // declare_/lower_ passes treat them as regular concrete
+        // loci with the mangled names.
+        let mut locus_decls: Vec<LocusDecl> = raw_locus_decls.clone();
+        locus_decls.extend(synthesized_loci);
         for l in &locus_decls {
             self.declare_locus_struct(l)?;
         }
@@ -2181,11 +2281,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     Ok(LotusType::TypeRef(mangled))
                 } else if self.user_enums.contains_key(&mangled) {
                     Ok(LotusType::Enum(mangled))
+                } else if self.user_loci.contains_key(&mangled) {
+                    // m63: generic locus instantiation —
+                    // resolves to a LocusRef pointing at the
+                    // synthesized concrete locus.
+                    Ok(LotusType::LocusRef(mangled))
                 } else {
                     Err(CodegenError::Unsupported(format!(
                         "generic instantiation `{}` not synthesized — \
-                         m61 v0.1 only discovers uses in struct field \
-                         positions; reachable from {:?}",
+                         discovery missed the use site; reachable from \
+                         {:?}",
                         mangled, path.segments[0].name
                     )))
                 }
@@ -2460,6 +2565,162 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     span: span.clone(),
                 }
             }
+            other => other.clone(),
+        }
+    }
+
+    /// m63: synthesize a concrete (non-generic) LocusDecl from
+    /// a generic template + a tuple of resolved type args. The
+    /// substitution walks every TypeExpr-bearing position in
+    /// the locus's members:
+    /// - Params block (ParamDecl.ty)
+    /// - Bus block (Subscribe.ty + Publish.ty)
+    /// - Lifecycle decls (params + ret + body let-ascriptions)
+    /// - Fn methods (params + ret + body let-ascriptions)
+    /// - Const decls (ty)
+    /// - Nested Type decls (struct fields + enum variant fields)
+    ///
+    /// v0.1 limits: Mode, Failure, Closure, Contract members
+    /// pass through unchanged. Generic loci using those
+    /// surfaces would need m63b. The body walk for lifecycle /
+    /// fn methods only substitutes let / let-tuple ascriptions
+    /// (matching the m62 fn-body shallow substitution).
+    fn synthesize_generic_locus_instantiation(
+        template: &LocusDecl,
+        type_args: &[TypeExpr],
+        mangled_name: &str,
+    ) -> Result<LocusDecl, CodegenError> {
+        if template.generics.len() != type_args.len() {
+            return Err(CodegenError::Unsupported(format!(
+                "generic locus `{}`: expected {} type args, got {}",
+                template.name.name,
+                template.generics.len(),
+                type_args.len()
+            )));
+        }
+        let mut subst: BTreeMap<String, TypeExpr> = BTreeMap::new();
+        for (gp, arg) in template.generics.iter().zip(type_args.iter()) {
+            subst.insert(gp.name.name.clone(), arg.clone());
+        }
+        let new_members: Vec<LocusMember> = template
+            .members
+            .iter()
+            .map(|m| Self::substitute_locus_member(m, &subst))
+            .collect();
+        Ok(LocusDecl {
+            name: Ident {
+                name: mangled_name.to_string(),
+                span: template.name.span.clone(),
+            },
+            generics: Vec::new(),
+            annotations: template.annotations.clone(),
+            members: new_members,
+            span: template.span.clone(),
+        })
+    }
+
+    fn substitute_locus_member(
+        member: &LocusMember,
+        subst: &BTreeMap<String, TypeExpr>,
+    ) -> LocusMember {
+        match member {
+            LocusMember::Params(pb) => LocusMember::Params(ParamsBlock {
+                params: pb
+                    .params
+                    .iter()
+                    .map(|p| ParamDecl {
+                        name: p.name.clone(),
+                        ty: p.ty.as_ref().map(|t| {
+                            Self::substitute_type_expr(t, subst)
+                        }),
+                        init: p.init.clone(),
+                        span: p.span.clone(),
+                    })
+                    .collect(),
+                span: pb.span.clone(),
+            }),
+            LocusMember::Bus(bb) => LocusMember::Bus(BusBlock {
+                members: bb
+                    .members
+                    .iter()
+                    .map(|bm| match bm {
+                        BusMember::Subscribe { subject, handler, ty, span } => {
+                            BusMember::Subscribe {
+                                subject: subject.clone(),
+                                handler: handler.clone(),
+                                ty: ty.as_ref().map(|t| {
+                                    Self::substitute_type_expr(t, subst)
+                                }),
+                                span: span.clone(),
+                            }
+                        }
+                        BusMember::Publish { subject, ty, alias, span } => {
+                            BusMember::Publish {
+                                subject: subject.clone(),
+                                ty: Self::substitute_type_expr(ty, subst),
+                                alias: alias.clone(),
+                                span: span.clone(),
+                            }
+                        }
+                    })
+                    .collect(),
+                span: bb.span.clone(),
+            }),
+            LocusMember::Lifecycle(lc) => LocusMember::Lifecycle(
+                LifecycleDecl {
+                    kind: lc.kind,
+                    params: lc
+                        .params
+                        .iter()
+                        .map(|p| Param {
+                            name: p.name.clone(),
+                            ty: Self::substitute_type_expr(&p.ty, subst),
+                            default: p.default.clone(),
+                            span: p.span.clone(),
+                        })
+                        .collect(),
+                    ret: lc
+                        .ret
+                        .as_ref()
+                        .map(|t| Self::substitute_type_expr(t, subst)),
+                    body: Self::substitute_block_type_ascriptions(
+                        &lc.body, subst,
+                    ),
+                    span: lc.span.clone(),
+                },
+            ),
+            LocusMember::Fn(fd) => LocusMember::Fn(FnDecl {
+                name: fd.name.clone(),
+                generics: fd.generics.clone(),
+                params: fd
+                    .params
+                    .iter()
+                    .map(|p| Param {
+                        name: p.name.clone(),
+                        ty: Self::substitute_type_expr(&p.ty, subst),
+                        default: p.default.clone(),
+                        span: p.span.clone(),
+                    })
+                    .collect(),
+                ret: fd
+                    .ret
+                    .as_ref()
+                    .map(|t| Self::substitute_type_expr(t, subst)),
+                body: Self::substitute_block_type_ascriptions(
+                    &fd.body, subst,
+                ),
+                span: fd.span.clone(),
+            }),
+            LocusMember::Const(c) => LocusMember::Const(ConstDecl {
+                name: c.name.clone(),
+                ty: Self::substitute_type_expr(&c.ty, subst),
+                value: c.value.clone(),
+                span: c.span.clone(),
+            }),
+            // Mode, Failure, Closure, Contract, Type pass through
+            // unchanged at v0.1; m63b can extend them when a
+            // workload exercises generic loci that use those
+            // surfaces.
             other => other.clone(),
         }
     }
@@ -2748,7 +3009,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let bare_name = &bare.segments[0].name;
         // Already concrete (mangled or not) — leave it alone.
-        if self.user_types.contains_key(bare_name) {
+        // m63: also accept user_loci as concrete since generic
+        // locus instantiations land there too.
+        if self.user_types.contains_key(bare_name)
+            || self.user_loci.contains_key(bare_name)
+        {
             return None;
         }
         let (ty_name, generic_args) = match expected {
@@ -2765,7 +3030,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let mangled =
             Self::mangle_generic_name(bare_name, generic_args).ok()?;
-        if !self.user_types.contains_key(&mangled) {
+        // m63: extend lookup to user_loci so generic locus
+        // instantiations resolve via let-ascription bare-name
+        // construction the same way generic structs do.
+        if !self.user_types.contains_key(&mangled)
+            && !self.user_loci.contains_key(&mangled)
+        {
             return None;
         }
         Some(QualifiedName {
@@ -2788,7 +3058,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// resolved.
     fn collect_generic_uses_in_program(
         program: &Program,
-        generic_decls: &BTreeMap<String, TypeDecl>,
+        generic_names: &BTreeSet<String>,
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
@@ -2800,7 +3070,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             for f in fields {
                                 Self::collect_generic_uses(
                                     &f.ty,
-                                    generic_decls,
+                                    generic_names,
                                     seen,
                                     requests,
                                 )?;
@@ -2815,7 +3085,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 for f in &v.fields {
                                     Self::collect_generic_uses(
                                         f,
-                                        generic_decls,
+                                        generic_names,
                                         seen,
                                         requests,
                                     )?;
@@ -2832,25 +3102,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 TopDecl::Fn(f) => {
                     Self::collect_in_fn_decl(
                         f,
-                        generic_decls,
+                        generic_names,
                         seen,
                         requests,
                     )?;
                 }
-                TopDecl::Locus(l) => {
+                TopDecl::Locus(l) if l.generics.is_empty() => {
                     for member in &l.members {
                         Self::collect_in_locus_member(
                             member,
-                            generic_decls,
+                            generic_names,
                             seen,
                             requests,
                         )?;
                     }
                 }
+                TopDecl::Locus(_) => {
+                    /* m63: generic locus template — its members'
+                     * type positions still mention the generic
+                     * params (e.g. `Box<T>`) which can't unify
+                     * against any actual concrete type yet.
+                     * Synthesis later walks the substituted
+                     * version. */
+                }
                 TopDecl::Const(c) => {
                     Self::collect_generic_uses(
                         &c.ty,
-                        generic_decls,
+                        generic_names,
                         seen,
                         requests,
                     )?;
@@ -2867,23 +3145,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     fn collect_in_fn_decl(
         f: &FnDecl,
-        generic_decls: &BTreeMap<String, TypeDecl>,
+        generic_names: &BTreeSet<String>,
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
         for p in &f.params {
-            Self::collect_generic_uses(&p.ty, generic_decls, seen, requests)?;
+            Self::collect_generic_uses(&p.ty, generic_names, seen, requests)?;
         }
         if let Some(ret) = &f.ret {
-            Self::collect_generic_uses(ret, generic_decls, seen, requests)?;
+            Self::collect_generic_uses(ret, generic_names, seen, requests)?;
         }
-        Self::collect_in_block(&f.body, generic_decls, seen, requests)?;
+        Self::collect_in_block(&f.body, generic_names, seen, requests)?;
         Ok(())
     }
 
     fn collect_in_locus_member(
         member: &LocusMember,
-        generic_decls: &BTreeMap<String, TypeDecl>,
+        generic_names: &BTreeSet<String>,
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
@@ -2893,7 +3171,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     if let Some(t) = &p.ty {
                         Self::collect_generic_uses(
                             t,
-                            generic_decls,
+                            generic_names,
                             seen,
                             requests,
                         )?;
@@ -2906,7 +3184,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         BusMember::Subscribe { ty: Some(t), .. } => {
                             Self::collect_generic_uses(
                                 t,
-                                generic_decls,
+                                generic_names,
                                 seen,
                                 requests,
                             )?;
@@ -2914,7 +3192,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         BusMember::Publish { ty, .. } => {
                             Self::collect_generic_uses(
                                 ty,
-                                generic_decls,
+                                generic_names,
                                 seen,
                                 requests,
                             )?;
@@ -2927,7 +3205,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 for p in &lc.params {
                     Self::collect_generic_uses(
                         &p.ty,
-                        generic_decls,
+                        generic_names,
                         seen,
                         requests,
                     )?;
@@ -2935,14 +3213,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if let Some(r) = &lc.ret {
                     Self::collect_generic_uses(
                         r,
-                        generic_decls,
+                        generic_names,
                         seen,
                         requests,
                     )?;
                 }
                 Self::collect_in_block(
                     &lc.body,
-                    generic_decls,
+                    generic_names,
                     seen,
                     requests,
                 )?;
@@ -2950,7 +3228,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             LocusMember::Fn(fd) => {
                 Self::collect_in_fn_decl(
                     fd,
-                    generic_decls,
+                    generic_names,
                     seen,
                     requests,
                 )?;
@@ -2962,7 +3240,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             LocusMember::Const(c) => {
                 Self::collect_generic_uses(
                     &c.ty,
-                    generic_decls,
+                    generic_names,
                     seen,
                     requests,
                 )?;
@@ -2973,7 +3251,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         for f in fields {
                             Self::collect_generic_uses(
                                 &f.ty,
-                                generic_decls,
+                                generic_names,
                                 seen,
                                 requests,
                             )?;
@@ -2984,7 +3262,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             for f in &v.fields {
                                 Self::collect_generic_uses(
                                     f,
-                                    generic_decls,
+                                    generic_names,
                                     seen,
                                     requests,
                                 )?;
@@ -3004,28 +3282,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     fn collect_in_block(
         block: &Block,
-        generic_decls: &BTreeMap<String, TypeDecl>,
+        generic_names: &BTreeSet<String>,
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
         for stmt in &block.stmts {
-            Self::collect_in_stmt(stmt, generic_decls, seen, requests)?;
+            Self::collect_in_stmt(stmt, generic_names, seen, requests)?;
         }
         Ok(())
     }
 
     fn collect_in_stmt(
         stmt: &Stmt,
-        generic_decls: &BTreeMap<String, TypeDecl>,
+        generic_names: &BTreeSet<String>,
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
         match stmt {
             Stmt::Let { ty: Some(t), .. } => {
-                Self::collect_generic_uses(t, generic_decls, seen, requests)?;
+                Self::collect_generic_uses(t, generic_names, seen, requests)?;
             }
             Stmt::LetTuple { ty: Some(t), .. } => {
-                Self::collect_generic_uses(t, generic_decls, seen, requests)?;
+                Self::collect_generic_uses(t, generic_names, seen, requests)?;
             }
             _ => {}
         }
@@ -3042,7 +3320,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// — the typechecker has already validated names.
     fn collect_generic_uses(
         t: &TypeExpr,
-        generic_decls: &BTreeMap<String, TypeDecl>,
+        generic_names: &BTreeSet<String>,
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
@@ -3050,8 +3328,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             TypeExpr::Named { path, generic_args, .. }
                 if path.segments.len() == 1
                     && !generic_args.is_empty()
-                    && generic_decls
-                        .contains_key(&path.segments[0].name) =>
+                    && generic_names
+                        .contains(&path.segments[0].name) =>
             {
                 // Recurse into args first so nested instantiations
                 // are discovered (and end up in requests order
@@ -3060,7 +3338,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 for a in generic_args {
                     Self::collect_generic_uses(
                         a,
-                        generic_decls,
+                        generic_names,
                         seen,
                         requests,
                     )?;
@@ -3083,7 +3361,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 for a in generic_args {
                     Self::collect_generic_uses(
                         a,
-                        generic_decls,
+                        generic_names,
                         seen,
                         requests,
                     )?;
@@ -3091,7 +3369,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             TypeExpr::Array { elem, .. } => Self::collect_generic_uses(
                 elem,
-                generic_decls,
+                generic_names,
                 seen,
                 requests,
             )?,
@@ -3099,7 +3377,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 for p in parts {
                     Self::collect_generic_uses(
                         p,
-                        generic_decls,
+                        generic_names,
                         seen,
                         requests,
                     )?;
@@ -3107,7 +3385,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             TypeExpr::Projection { inner, .. } => Self::collect_generic_uses(
                 inner,
-                generic_decls,
+                generic_names,
                 seen,
                 requests,
             )?,
@@ -3212,6 +3490,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         l: &LocusDecl,
     ) -> Result<(), CodegenError> {
+        if !l.generics.is_empty() {
+            // m63: generic locus templates emit nothing at decl
+            // time. Per-instantiation specialized LocusDecls get
+            // synthesized in the m63 monomorphization pass and
+            // flow through this same fn under their mangled
+            // name.
+            return Ok(());
+        }
         // Resolve projection class: explicit annotation wins;
         // otherwise default per spec/memory.md (chunked if
         // accept declared, rich otherwise — recognition is
@@ -3655,6 +3941,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         l: &LocusDecl,
     ) -> Result<(), CodegenError> {
+        if !l.generics.is_empty() {
+            // m63: see declare_locus_struct — generic templates
+            // skip method declaration too.
+            return Ok(());
+        }
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let void_t = self.context.void_type();
         let mut methods: BTreeMap<&'static str, FunctionValue<'ctx>> =
@@ -4231,6 +4522,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         l: &LocusDecl,
     ) -> Result<(), CodegenError> {
+        if !l.generics.is_empty() {
+            // m63: generic templates have no method bodies to
+            // lower until pinned by an instantiation site.
+            return Ok(());
+        }
         let info = self
             .user_loci
             .get(&l.name.name)

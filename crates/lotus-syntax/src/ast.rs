@@ -47,6 +47,12 @@ impl TopDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocusDecl {
     pub name: Ident,
+    /// m63: optional generic param list on the locus
+    /// declaration. `locus Cache<K, V> { ... }` parses to a
+    /// non-empty Vec; non-generic loci leave this empty.
+    /// Codegen monomorphizes on use sites — generic templates
+    /// emit no LLVM IR directly.
+    pub generics: Vec<GenericParam>,
     pub annotations: Vec<LocusAnnotation>,
     pub members: Vec<LocusMember>,
     pub span: Span,

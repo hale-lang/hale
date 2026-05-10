@@ -1,7 +1,45 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work
-in a new session. State as of **m62: generic free fns** —
+in a new session. State as of **m63: generic loci
+monomorphization**. `locus Cache<K, V> { ... }` declarations
+parse (parser + AST extended), and codegen synthesizes one
+specialized LocusDecl per (template, args) tuple from
+discovery in TypeExpr-bearing positions. Synthesized loci
+flow through the standard A1/A2/C locus passes alongside
+user-written decls — they're regular concrete loci with
+mangled names. The discovery+synthesis pass is now a
+**fixpoint queue**: synthesizing `Holder<Int>` substitutes
+its body, surfacing nested generic uses like `Box<Int>`,
+which themselves need synthesis; the queue closes when no
+new requests appear after a synthesis. Three new helpers in
+codegen: `synthesize_generic_locus_instantiation` (clones a
+template with mangled name + substitutes generic params
+through every member), `substitute_locus_member` (handles
+Params, Bus, Lifecycle, Fn, Const members; Mode, Failure,
+Closure, Contract, nested Type members pass through
+unchanged at v0.1), plus a unified discovery walker that
+takes a single `BTreeSet<String>` of generic names (replacing
+the m61 BTreeMap<String, TypeDecl> param). `resolve_generic_struct_path`
+extends to also check `user_loci`, so `let h: Holder<Int> =
+Holder { ... };` rewrites the bare `Holder` to `Holder_Int`
+just like generic structs do. `type_expr_to_lotus`'s
+generic-args branch returns `LotusType::LocusRef(mangled)`
+for synthesized locus instantiations. v0.1 limits: Mode,
+Failure, Closure, Contract, nested Type members of generic
+loci pass through without substitution; bus subscribe ty
+arg substitution works (m63 covers it), lifecycle bodies
+substitute let / let-tuple ascriptions only (mirrors m62
+fn-body shallow walk). Two new tests in generics.rs:
+generic_locus_with_typed_param_default,
+generic_locus_overridden_at_instantiation. Parser change in
+lotus-syntax: `parse_locus_decl` now calls
+`parse_generic_params_opt` after the locus name; AST
+LocusDecl gains a `generics: Vec<GenericParam>` field. One
+LocusDecl construction site in `crates/lotus-runtime/src/bus.rs`
+updated to include the new field. 117 tests pass (was 115;
++2 from generics.rs); 54 example builds unaffected. State
+before that was **m62: generic free fns** —
 the first generic-fn slice in the generics arc. Codegen now
 accepts `fn first<T>(x: T) -> T { return x; }` declarations
 and synthesizes per-call-site specialized fn bodies on demand.
@@ -2502,32 +2540,36 @@ capacity ceiling — the m45 quickfix `× 32` multiplier is gone.
 
 ### RESUME HERE (next session)
 
-**Generics arc in progress; m61, m61b, m61c, m62 shipped.**
-Cross-process bus substrate arc closed at m60. Generic structs +
-enums + free fns all monomorphize. Per the user's hard rule,
-**no code towards trellis-pair until v1 language is done.**
+**Generics arc in progress; m61, m61b, m61c, m62, m63 shipped.**
+Cross-process bus substrate arc closed at m60. Generic
+structs + enums + free fns + loci all monomorphize. Per the
+user's hard rule, **no code towards trellis-pair until v1
+language is done.**
 
-**Start with m63: generic loci.** `locus Cache<K, V> { ... }`
-— same monomorphization shape lifted to LocusDecl. Loci have
-substantially more state than free fns (params, methods,
-lifecycle, bus subscribe, closures), so substitution needs to
-cover all of those. Discovery: walk every locus instantiation
-site (Expr::Struct where path resolves to a generic locus
-template) and infer type args from the field-init exprs that
-correspond to generic-typed params. Synthesis: clone the
-LocusDecl, substitute generic-param refs throughout member
-type positions, give it the mangled name, route through the
-existing declare_locus_struct + declare_locus_methods +
-lower_locus_method_bodies passes. The biggest open question
-is: does monomorphization happen upfront (like m61 structs)
-or on-demand at instantiation sites (like m62 fns)? Loci are
-typically instantiated explicitly via struct-literal-style
-syntax, so upfront discovery from instantiation sites should
-work cleanly. Investigate which Expr/Stmt forms create locus
-instances and walk them in a pre-pass.
+**Start with m64: `Numeric` bound + generic closures.**
+`T: Numeric` bounds permit arithmetic on T (Int / Float /
+Decimal / Duration). Generic closures (closure assertions
+declared on a generic locus type whose `T` is bound to a
+Numeric) need to lower correctly per substituted T —
+arithmetic ops + comparisons.
 
-**Then m64: `Numeric` bound + generic closures.** `T: Numeric`
-permits arithmetic on T. Closures over generic loci.
+The Numeric bound part: parser already accepts
+`<T: Bound>` style via `GenericParam.bound: Option<TypeExpr>`.
+Wire the typechecker (or codegen-side check) to enforce
+that operations like `+`, `-`, `*`, `<` on T are only valid
+when T: Numeric. v0.1 narrow: enforce the bound at the
+substituted-call-site (e.g., when synthesizing
+`Compute<String>` from `Compute<T: Numeric>`, error if String
+isn't Numeric). Tightening into the typechecker is a
+v0.2 polish.
+
+The generic closures part: m61c covered closure substitution
+in non-generic loci (passes through unchanged). For generic
+loci, `substitute_locus_member` currently does NOT handle
+Closure members. Adding support means substituting through
+`ClosureAssertion` expressions (which have l/r/tolerance
+exprs that may reference generic param values via self.X
+fields). Tractable but needs care.
 
 **m65: stdlib `Result<T,E>` / `Option<T>`** as built-ins.
 
@@ -2651,6 +2693,14 @@ milestones expanded in RESUME HERE above:
   every generic param must appear in an arg position;
   primitives + named types only as inferred args; no
   turbofish syntax (parser doesn't recognize `::<T>`).
+- **m63 — DONE (generic loci)** — `locus Cache<K, V>` parses
+  + AST extended with `LocusDecl.generics`; codegen
+  synthesizes specialized LocusDecls upfront via fixpoint
+  queue (handles nested generic uses surfacing during
+  substitution); synthesized loci flow through the standard
+  declare/lower passes. Limits: Mode / Failure / Closure /
+  Contract / nested Type members pass through without
+  substitution at v0.1.
 - **m62** — generic free fns.
 - **m63** — generic loci.
 - **m64** — `Numeric` bound + generic closures.
@@ -2711,7 +2761,7 @@ System has:
 - `gcc` 13.x
 
 Cargo workspace builds clean. `cargo test --workspace --tests` passes
-all 115 tests (the locus-with-run test runs 3×500ms sleeps so the
+all 117 tests (the locus-with-run test runs 3×500ms sleeps so the
 runtime + codegen integration buckets clock ~1.5s each; m57 added
 two transport round-trip tests under tests/transport.rs that fork
 listener + connector subprocesses; m58 added two more under
@@ -2721,17 +2771,17 @@ tests/bus_subscriber.rs that runs the full two-lotus-binary
 publisher → reader-thread → cooperative-queue → handler path; m60
 added one more under tests/serializer_shape.rs that verifies the
 synthesized __serialize_T / __deserialize_T symbols + send-site
-calls show up in the IR; m61 through m62 added thirteen under
-tests/generics.rs that exercise generic struct + enum template
-monomorphization, broader discovery, bare-name resolution at let
-ascriptions + locus param defaults, and generic free fn inference
-+ synthesis).
+calls show up in the IR; m61 through m63 added fifteen under
+tests/generics.rs that exercise generic struct + enum + locus
+template monomorphization, broader discovery, bare-name
+resolution at let ascriptions + locus param defaults, and
+generic free fn inference + synthesis).
 
 ## How to verify the checkpoint
 
 ```
 cd ~/code/lotus-lang
-cargo test --workspace --tests           # 115 passed
+cargo test --workspace --tests           # 117 passed
 cargo run --bin lotus -- run examples/trellis-demo/main.lt
 cargo run --bin lotus -- build examples/hello-world/main.lt
 ./examples/hello-world/main              # prints "hello, world"

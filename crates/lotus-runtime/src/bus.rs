@@ -348,6 +348,7 @@ mod tests {
                 end: lotus_syntax::Pos(0),
             },
             },
+            generics: Vec::new(),
             annotations: Vec::new(),
             members: Vec::new(),
             span: lotus_syntax::Span {

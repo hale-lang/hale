@@ -299,6 +299,81 @@ fn locus_param_default_overridable_at_instantiation() {
     );
 }
 
+// === m63 ====================================================
+// Generic loci. Locus templates with `<T>` declare without
+// emitting LLVM directly; per-instantiation specialized
+// LocusDecls synthesize from discovery, flow through the
+// standard A1/A2/C locus passes alongside non-generic decls.
+
+#[test]
+fn generic_locus_with_typed_param_default() {
+    // Locus has a generic param T and a typed param of
+    // Box<T> with a default Box { value: 0 }. Discovery sees
+    // Holder<Int> in the let ascription, synthesizes
+    // Holder_Int (which then surfaces Box<Int> during the
+    // queue walk and synthesizes Box_Int too), default fires
+    // at instantiation.
+    let src = r#"
+        type Box<T> {
+            value: T;
+        }
+
+        locus Holder<T> {
+            params {
+                wrapped: Box<T> = Box { value: 0 };
+            }
+            birth() {
+                println("holder.wrapped.value=", self.wrapped.value);
+            }
+        }
+
+        fn main() {
+            let h: Holder<Int> = Holder { };
+        }
+    "#;
+    let (stdout, status) = build_and_run("gen_locus_default", src);
+    assert!(status.success(), "exited non-zero: {:?}", status);
+    assert!(
+        stdout.contains("holder.wrapped.value=0"),
+        "got: {:?}",
+        stdout,
+    );
+}
+
+#[test]
+fn generic_locus_overridden_at_instantiation() {
+    // Caller provides `wrapped` directly at instantiation. Both
+    // the locus instantiation and the inner Box<Int>
+    // construction go through bare-name resolution against the
+    // ascribed types.
+    let src = r#"
+        type Box<T> {
+            value: T;
+        }
+
+        locus Holder<T> {
+            params {
+                wrapped: Box<T> = Box { value: 0 };
+            }
+            birth() {
+                println("holder.wrapped.value=", self.wrapped.value);
+            }
+        }
+
+        fn main() {
+            let custom: Box<Int> = Box { value: 42 };
+            let h: Holder<Int> = Holder { wrapped: custom };
+        }
+    "#;
+    let (stdout, status) = build_and_run("gen_locus_override", src);
+    assert!(status.success(), "exited non-zero: {:?}", status);
+    assert!(
+        stdout.contains("holder.wrapped.value=42"),
+        "got: {:?}",
+        stdout,
+    );
+}
+
 // === m62 ====================================================
 // Generic free fns. Inference at the call site pins type args
 // from actual arg LotusTypes; per-instantiation specialized
