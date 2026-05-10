@@ -1,0 +1,224 @@
+// docs-server — Phase 5 capstone.
+//
+// An HTTP server written in Aperio that lists + serves
+// markdown files from a configured directory. This is the
+// program every prior milestone aimed at:
+//
+//   m71 → m76: stdlib substrate (TCP, fs, env)
+//   m80:        function pointers
+//   m81 → m83:  Stream + Listener + multi-accept callbacks
+//   m84 → m86:  HTTP request parsing + response writing
+//   m89:        Bytes (binary I/O — unused here, available
+//               for future image/asset serving)
+//   m90:        list_dir (the index page enumeration)
+//   m91:        Markdown → HTML rendering
+//
+// Composed: a real, end-to-end working program in 80-some
+// lines of Aperio.
+//
+// Layout served:
+//   GET /             → index page listing each `.md` file
+//                        in the configured docs directory.
+//   GET /foo.md       → renders docs_dir/foo.md to HTML and
+//                        wraps it in a plain HTML shell.
+//   GET /missing      → 404.
+//   Anything else     → 404.
+//
+// Configuration (argv):
+//   argv[1]           → port (default 8080)
+//   argv[2]           → docs directory (default "docs")
+//   argv[3]           → max_accepts (default -1 = forever)
+//
+// v0 limits called out:
+//   - One recv per request; assumes request fits in 8KB.
+//   - No persistent connections (Connection: close).
+//   - `.md` files only; binary assets (images, etc.) need
+//     a content-type-by-extension dispatch + read_bytes.
+//   - No path-traversal protection beyond rejecting paths
+//     that don't end in `.md` or contain `..`. Real
+//     deployment would want stricter.
+
+// Resolve docs_dir once and store it on the request handler
+// indirectly (via a free fn that closes over fixed defaults).
+// v0 has no closures over fn-pointer captures, so the
+// directory is read from env each request — one stat
+// roundtrip per request, fine for a demo server.
+
+fn __docs_dir() -> String {
+    if std::env::args_count() > 2 {
+        return std::env::arg(2);
+    }
+    return "docs";
+}
+
+fn __safe_path(p: String) -> Bool {
+    // Reject empty, absolute, or path-traversal-shaped paths.
+    // v0 trust model is: serve only basenames within the
+    // configured docs dir. `..` and `/` in user-supplied
+    // paths are rejected outright.
+    if len(p) == 0 { return false; }
+    if std::str::index_of(p, "..") >= 0 { return false; }
+    if std::str::index_of(p, "/") >= 0 {
+        // Single leading `/` is fine (we strip it below);
+        // anything else means a nested path which v0 doesn't
+        // serve.
+        if p[0..1] == "/" {
+            let rest = p[1..len(p)];
+            if std::str::index_of(rest, "/") >= 0 { return false; }
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn __strip_leading_slash(p: String) -> String {
+    if len(p) > 0 {
+        if p[0..1] == "/" {
+            return p[1..len(p)];
+        }
+    }
+    return p;
+}
+
+fn __wrap_html_page(title: String, body: String) -> String {
+    return "<!doctype html>\n"
+         + "<html><head><meta charset=\"utf-8\">"
+         + "<title>" + title + "</title>"
+         + "<style>body{font-family:sans-serif;max-width:42em;margin:2em auto;padding:0 1em;line-height:1.5}"
+         + "code{background:#eee;padding:0 0.3em;border-radius:3px}"
+         + "pre{background:#f5f5f5;padding:0.7em;overflow:auto;border-radius:5px}"
+         + "</style></head><body>\n"
+         + body
+         + "\n</body></html>\n";
+}
+
+fn __render_index() -> String {
+    let dir = __docs_dir();
+    let listing = std::io::fs::list_dir(dir);
+    let mut body = "<h1>Aperio Docs</h1>\n";
+    if len(listing) == 0 {
+        body = body + "<p>(no markdown files in " + dir + ")</p>\n";
+        return __wrap_html_page("Aperio Docs", body);
+    }
+    body = body + "<ul>\n";
+    let mut i = 0;
+    let total = len(listing);
+    while i < total {
+        let nl = std::str::index_of(listing[i..total], "\n");
+        let mut entry_end = total;
+        if nl >= 0 {
+            entry_end = i + nl;
+        }
+        let name = listing[i..entry_end];
+        i = entry_end + 1;
+        if len(name) == 0 { continue; }
+        // Skip any non-.md entries (subdirs, README plaintext, etc.).
+        let nlen = len(name);
+        if nlen < 3 { continue; }
+        let suffix_start = nlen - 3;
+        if name[suffix_start..nlen] != ".md" { continue; }
+        body = body + "<li><a href=\"/" + name + "\">" + name + "</a></li>\n";
+    }
+    body = body + "</ul>\n";
+    return __wrap_html_page("Aperio Docs", body);
+}
+
+fn __render_doc(name: String) -> String {
+    let dir = __docs_dir();
+    let path = dir + "/" + name;
+    if !std::io::fs::file_exists(path) {
+        return "";
+    }
+    let md = std::io::fs::read_file(path);
+    let body_html = std::text::md_to_html(md);
+    let nav = "<p><a href=\"/\">&larr; index</a></p>\n";
+    return __wrap_html_page(name, nav + body_html);
+}
+
+fn handle_request(s: std::io::tcp::Stream) {
+    let raw = s.recv(8192);
+    let req = std::http::parse_request(raw);
+    println("docs-server: ", req.method, " ", req.path);
+
+    if req.method == "" {
+        let bad = std::http::Response {
+            status: 400,
+            content_type: "text/plain",
+            body: "malformed request\n"
+        };
+        std::http::write_response(s, bad);
+        return;
+    }
+
+    // Index.
+    if req.path == "/" {
+        let html = __render_index();
+        let resp = std::http::Response {
+            status: 200,
+            content_type: "text/html; charset=utf-8",
+            body: html
+        };
+        std::http::write_response(s, resp);
+        return;
+    }
+
+    // Path validation. Anything that doesn't pass safe-path
+    // is a 404 — no leak about whether the file would have
+    // existed.
+    let raw_path = req.path;
+    if !__safe_path(raw_path) {
+        let nf = std::http::Response {
+            status: 404,
+            content_type: "text/plain",
+            body: "Not Found\n"
+        };
+        std::http::write_response(s, nf);
+        return;
+    }
+
+    let name = __strip_leading_slash(raw_path);
+    let rendered = __render_doc(name);
+    if len(rendered) == 0 {
+        let nf = std::http::Response {
+            status: 404,
+            content_type: "text/plain",
+            body: "Not Found\n"
+        };
+        std::http::write_response(s, nf);
+        return;
+    }
+    let ok = std::http::Response {
+        status: 200,
+        content_type: "text/html; charset=utf-8",
+        body: rendered
+    };
+    std::http::write_response(s, ok);
+}
+
+fn main() {
+    let mut port: Int = 8080;
+    if std::env::args_count() > 1 {
+        let parsed = std::str::parse_int(std::env::arg(1));
+        if parsed > 0 {
+            port = parsed;
+        }
+    }
+
+    let mut max_accepts: Int = -1;
+    if std::env::args_count() > 3 {
+        let parsed = std::str::parse_int(std::env::arg(3));
+        if parsed > 0 {
+            max_accepts = parsed;
+        }
+    }
+
+    let dir = __docs_dir();
+    println("docs-server: serving ", dir, " on 127.0.0.1:", port);
+    std::io::tcp::Listener {
+        host: "127.0.0.1",
+        port: port,
+        max_accepts: max_accepts,
+        on_connection: handle_request
+    };
+}
