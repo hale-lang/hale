@@ -1,9 +1,9 @@
 # `std::process`
 
-Process-level introspection and control. Phase 1 ships a single
-function — `pid` — as the proof symbol that the magic-`std::*`-path
-resolver works end-to-end. The rest of the module fills in across
-later phases.
+Process-level introspection and control. Phase 1 shipped `pid`
+as the proof symbol for the magic-`std::*`-path resolver; m79
+added `exit` to the same module. The rest of the surface fills
+in across later milestones.
 
 ## Functions
 
@@ -64,3 +64,40 @@ fn main() { L { }; }
 - [Roadmap](../roadmap.md) — Phase 1+ stdlib build-out plan.
 - `spec/stdlib.md` (in the language repo) — path-resolution
   semantics, the m71 dispatcher, and design principles.
+
+### `std::process::exit`
+
+#### Synopsis
+
+```aperio
+fn exit(code: Int)
+```
+
+Terminates the process with the given exit code. Does not
+return. Statement-position only — using it as an expression
+errors at compile time.
+
+#### Semantics
+
+- Lowers to a libc `exit()` call with the user-supplied code
+  truncated to i32 (POSIX exit codes are 8 bits anyway; the
+  truncation is observationally equivalent to passing
+  `code & 0xff`).
+- Code after `std::process::exit(...)` lowers into a fresh
+  basic block that's unreachable at runtime but well-formed
+  in IR. A future control-flow milestone may diagnose it
+  as dead code.
+- The standard convention applies: `0` for clean exit;
+  non-zero for failure. The shell sees `n & 0xff`.
+
+#### Examples
+
+```aperio
+fn main() {
+    if std::env::args_count() < 2 {
+        println("usage: tool <port>");
+        std::process::exit(2);
+    }
+    println("running");
+}
+```

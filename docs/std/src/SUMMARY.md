@@ -9,3 +9,4 @@
 - [`std::io::fs`](./io/fs.md)
 - [`std::env`](./env.md)
 - [`std::str`](./str.md)
+- [`std::time`](./time.md)

@@ -11346,6 +11346,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_str_can_parse_int(args, scope)?;
                 Ok(())
             }
+            // m79: std::time::* aliases. The legacy `time::*`
+            // dispatcher above still works; these route to the
+            // same lower_time_* implementations under the
+            // canonical `std::*` namespace.
+            ["std", "time", "sleep"] => self.lower_time_sleep(args, scope),
+            ["std", "time", "monotonic"] => {
+                let _ = self.lower_time_monotonic(args)?;
+                Ok(())
+            }
+            // m79: std::process::exit. Calls libc exit() with the
+            // user-supplied code, then emits unreachable + a fresh
+            // basic block so subsequent statements (dead but
+            // syntactically permitted) have somewhere to lower
+            // into.
+            ["std", "process", "exit"] => {
+                self.lower_std_process_exit(args, scope)
+            }
             _ => Err(CodegenError::Unsupported(format!(
                 "stdlib path `{}` — not implemented",
                 segs.join("::")
@@ -11395,11 +11412,64 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "str", "can_parse_int"] => {
                 self.lower_std_str_can_parse_int(args, scope)
             }
+            // m79: std::time::monotonic alias for expression position.
+            // sleep is statement-only; trying to use it in an
+            // expression falls through to the catch-all error.
+            ["std", "time", "monotonic"] => self.lower_time_monotonic(args),
             _ => Err(CodegenError::Unsupported(format!(
                 "stdlib path `{}` in expression position — not implemented",
                 segs.join("::")
             ))),
         }
+    }
+
+    /// Lower `std::process::exit(code: Int)` to libc `exit()`.
+    /// Statement-position only; the block becomes terminated
+    /// after the call, so we open a fresh basic block to land
+    /// any subsequent (dead) lowering into. Matches the
+    /// closure-violation handler's exit pattern.
+    fn lower_std_process_exit(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::process::exit takes 1 arg (code), got {}",
+                args.len()
+            )));
+        }
+        let (code_val, code_ty) = self.lower_expr(&args[0], scope)?;
+        if code_ty != LotusType::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::process::exit: code must be Int, got {:?}",
+                code_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let code_i32 = self
+            .builder
+            .build_int_truncate(code_val.into_int_value(), i32_t, "exit.code.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let exit_fn = self
+            .module
+            .get_function("exit")
+            .expect("exit declared in declare_builtins");
+        self.builder
+            .build_call(exit_fn, &[code_i32.into()], "exit.call")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unreachable()
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // Fresh dead block so any post-exit() statements have
+        // somewhere to lower into without violating LLVM's
+        // single-terminator-per-block rule.
+        let func = self
+            .current_fn
+            .expect("current_fn set while lowering std::process::exit");
+        let after = self.context.append_basic_block(func, "after.exit");
+        self.builder.position_at_end(after);
+        Ok(())
     }
 
     /// Lower `std::process::pid() -> Int` to `getpid()`. POSIX
