@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/lotus-syntax",
-    "crates/lotus-types",
-    "crates/lotus-runtime",
-    "crates/lotus-codegen",
-    "crates/lotus-cli",
+    "crates/aperio-syntax",
+    "crates/aperio-types",
+    "crates/aperio-runtime",
+    "crates/aperio-codegen",
+    "crates/aperio-cli",
 ]
 
 [workspace.package]

@@ -1,0 +1,12 @@
+[package]
+name = "aperio-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Aperio toolchain runtime — interpreter (v0) + region/scheduler/bus (Phase 2). Manages the lotus substrate."
+
+[dependencies]
+aperio-syntax = { path = "../aperio-syntax" }
+aperio-types = { path = "../aperio-types" }
+libc = "0.2"

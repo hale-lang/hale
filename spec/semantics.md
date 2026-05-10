@@ -1,6 +1,6 @@
 # Operational semantics
 
-This document specifies what lotus programs *do* when they
+This document specifies what Aperio programs *do* when they
 run. Where `grammar.ebnf` says what's syntactically valid and
 `types.md` says what's meaningfully valid, this document says
 what happens at runtime.

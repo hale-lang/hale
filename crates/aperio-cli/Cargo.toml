@@ -1,0 +1,17 @@
+[package]
+name = "aperio-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Aperio language CLI"
+
+[[bin]]
+name = "aperio"
+path = "src/main.rs"
+
+[dependencies]
+aperio-syntax = { path = "../aperio-syntax" }
+aperio-types = { path = "../aperio-types" }
+aperio-runtime = { path = "../aperio-runtime" }
+aperio-codegen = { path = "../aperio-codegen" }

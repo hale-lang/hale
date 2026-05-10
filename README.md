@@ -1,9 +1,24 @@
-# lotus
+# Aperio
 
-A programming language whose primitives are the lotus framework's
-coordination primitives.
+> **Aperio** /ah-PEH-ree-oh/ — Latin: *I open. I reveal.*
+>
+> A programming language whose primitives are the **lotus** framework's
+> coordination primitives. An Aperio program is a spell cast at compile
+> time; running it opens a *lotus* — a structure that grows itself, audits
+> its own correctness, and dissolves cleanly when its work is done.
 
-**Status.** v0 compiler runs lotus programs end-to-end via a
+The language is **Aperio**. The runtime substrate it produces is a **lotus**:
+a tree of *loci* communicating via vertical-only-flow over a shared bus, with
+per-region arenas and closure-asserted invariants. Aperio is the spell; the
+lotus opens under it.
+
+(The crate name `crates/aperio-codegen/runtime/lotus_arena.c` and C-runtime
+symbols like `lotus_arena_*` / `lotus_bus_*` retain the *lotus* name on
+purpose — they're the substrate's mechanics, not Aperio's user-facing
+toolchain. Aperio is the language; lotus is what an Aperio program *is*
+at runtime.)
+
+**Status.** v0 compiler runs Aperio programs end-to-end via a
 tree-walking interpreter AND emits native ELF binaries via LLVM
 for a substantial subset of the language including the full
 lifecycle quartet (`birth` / `accept` / `run` / `drain` /
@@ -222,7 +237,7 @@ spec/
   semantics.md            357 lines  operational semantics
 
 examples/
-  hello-world/            minimal lotus program (one locus, birth)
+  hello-world/            minimal Aperio program (one locus, birth)
   01-locus-with-run/      run() lifecycle, mut bindings, time::sleep
   02-parent-child/        contract expose/consume, accept, parent-child
                           memory hierarchy

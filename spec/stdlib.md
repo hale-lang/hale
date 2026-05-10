@@ -141,7 +141,7 @@ Provided implementations:
 - `bus::unix_socket::Adapter` — same-host, ordered, reliable.
 - `bus::in_memory::Adapter` — for tests; deterministic ordering.
 
-Channels declared in lotus source bind to transports at
+Channels declared in Aperio source bind to transports at
 deployment time. The locus's `bus { subscribe "..." as h; }`
 declaration carries the channel's mode (bulk / harmonic /
 resolution); the deployment config maps mode + subject pattern

@@ -1,7 +1,7 @@
 # Runtime
 
 What the lotus binary always ships with. Always-loaded; not
-optional; no `import` needed; the substrate every lotus program
+optional; no `import` needed; the substrate every Aperio program
 depends on.
 
 This document distinguishes the **runtime** (always there) from

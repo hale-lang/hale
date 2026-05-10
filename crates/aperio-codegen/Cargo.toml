@@ -1,0 +1,12 @@
+[package]
+name = "aperio-codegen"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Aperio codegen targeting LLVM"
+
+[dependencies]
+aperio-syntax = { path = "../aperio-syntax" }
+aperio-types = { path = "../aperio-types" }
+inkwell = { version = "0.5", features = ["llvm18-0"] }

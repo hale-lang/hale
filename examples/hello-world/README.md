@@ -1,6 +1,6 @@
 # hello-world
 
-The minimal lotus program. One locus, one lifecycle method.
+The minimal Aperio program. One locus, one lifecycle method.
 
 ```
 locus HelloL {

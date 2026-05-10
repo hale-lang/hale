@@ -254,7 +254,7 @@ Declaring the bus interface in source means the language can
 typecheck the messages flowing in/out without committing to a
 specific runtime. This also enables the perspective-shipping
 contract between analyst and executor binaries — both compile
-from the same lotus source, both have type-level agreement.
+from the same Aperio source, both have type-level agreement.
 
 **Considered and rejected.**
 
@@ -453,7 +453,7 @@ perspective TradeKernel<T> {
 
 **Commits to.** A perspective is a serializable parameter bundle
 within a shared compiled-in schema. Both producer (analyst) and
-consumer (executor) compile from the same lotus source, so the
+consumer (executor) compile from the same Aperio source, so the
 type *is* the contract; the bus carries only parameter values.
 
 **Why.** This is the analyst/executor split discussed in the

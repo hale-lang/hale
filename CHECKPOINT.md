@@ -1,8 +1,17 @@
-# Lotus — session checkpoint
+# Aperio — session checkpoint
 
-**Read this first** if you're picking up the lotus language work
-in a new session. State as of **m70: per-field cross-process
-wire format with String support**. Replaces the m60 memcpy
+**Read this first** if you're picking up the Aperio work
+in a new session. State as of **Phase Z: rename complete**
+(language is **Aperio** /ah-PEH-ree-oh/ — Latin "I open / I
+reveal"; the runtime substrate stays *lotus*; file ext `.ap`,
+CLI `aperio`, crates `aperio-{syntax,types,runtime,codegen,cli}`;
+C-runtime symbols `lotus_arena_*` / `lotus_bus_*` /
+`lotus_transport_*` / `lotus_str_*` are intentionally
+preserved — they're the substrate's mechanics, not Aperio's
+user-facing toolchain). All 132 tests still pass post-rename.
+
+Last *milestone* before the rename was **m70: per-field
+cross-process wire format with String support**. Replaces the m60 memcpy
 serializer with a per-field walk for struct payloads. Wire
 format (per F-design "compile-time agreement, no runtime
 negotiation"; versioning is open-question #13's
@@ -742,7 +751,7 @@ coordination primitives.
 
 ## Where we are
 
-A working compiler that **runs** lotus programs end-to-end (tree-
+A working compiler that **runs** Aperio programs end-to-end (tree-
 walking interpreter) AND **produces** native ELF binaries (LLVM via
 inkwell) for a substantial subset including loci with `run()` and
 parent-child `accept()` lifecycle methods. 91 tests pass across

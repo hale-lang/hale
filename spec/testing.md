@@ -67,7 +67,7 @@ The framework's commitments need test infrastructure:
 
 These tests are written in lotus itself. The standard library
 provides `assert(...)`, `assert_rejects(...)`, `assert_closure(...)`
-and similar primitives. Test programs are valid lotus programs;
+and similar primitives. Test programs are valid Aperio programs;
 the framework discipline applies to them too.
 
 ### Layer 3 — Performance
