@@ -262,8 +262,8 @@ arguments. The parser disambiguates contextually.)
 ### Decimal literals
 
 - Suffix `d`: `1.50d`, `0.05d`. Used for the built-in `decimal`
-  type (fixed-precision, no float artifacts; same shape as
-  shopspring/decimal in grease).
+  type (fixed-precision, no float artifacts; same semantics as
+  the `shopspring/decimal` Go library).
 
 ### Time / duration literals
 

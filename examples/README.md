@@ -1,30 +1,33 @@
 # Examples
 
-Placeholder. The first example program is the trader/analyst pair
-on grease UDP multicast input — the load-bearing first program
-discussed in the design conversation.
+A ladder of Aperio programs from the smallest viable shape
+(`hello-world/`) up to a multi-binary capstone (`trellis-pair/`).
+Each example has a `main.ap` (or, for multi-binary projects,
+named entry points) and a `README.md` walk-through.
 
-It will live at:
+The ladder is also a tutorial. Read in order, each rung
+introduces one new substrate primitive on top of the previous.
 
-- `examples/trellis-pair/analyst.lt`
-- `examples/trellis-pair/executor.lt`
-- `examples/trellis-pair/shared.lt`  (the perspective + closure types
-                                       both binaries compile from)
-- `examples/trellis-pair/README.md`  (what the program does, what
-                                       primitives it exercises)
+## Structure
 
-**Status.** Not yet written. Awaiting at least: the EBNF spec to
-stabilize through one or two iterations; resolution of any
-load-bearing open questions (`notes/open-questions.md`); decision
-on which transport-binding form to commit to for UDP multicast.
+- `hello-world/` — one locus, one lifecycle method, one
+  built-in call.
+- `01-` through `50-` — the layered tutorial: lifecycle, types,
+  contracts, bus, closures, scheduling, recovery, accumulators,
+  generics.
+- `trellis-demo/` — single-process orchestration of the
+  feedback-loop pattern (fitter + applier in one binary).
+- `trellis-pair/` — the production-shaped multi-binary form:
+  separate fitter and applier processes communicating over a
+  typed bus.
 
-When ready, the program serves three purposes:
+## How to read
 
-1. **Validation of the design.** If the spec hangs together, the
-   program reads cleanly. If not, the program surfaces what's
-   wrong.
-2. **Concrete exemplar.** A future reader who sees this program
-   understands the language by induction.
-3. **Empirical anchor.** Trellis is a real production-shaped
-   system; writing it in lotus is a real anchor at the trading
-   substrate.
+```bash
+aperio run examples/hello-world/main.ap
+aperio run examples/02-parent-child/main.ap
+# ...
+```
+
+Each example's README explains what the example exercises and
+the design framings it locks in.

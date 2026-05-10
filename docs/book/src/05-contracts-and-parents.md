@@ -53,8 +53,7 @@ Their meanings:
   child interaction goes through the contract surface).
 
 These are not arbitrary configuration values. They are the
-**framework's named-concept registry** (per the alpha-conjecture
-program's `theory/notation.yaml`) made executable. The runtime
+**ancient texts' named-concept registry** made executable. The runtime
 uses them to compute `k_max`.
 
 ## `self.k_max`

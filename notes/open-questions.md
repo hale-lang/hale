@@ -46,8 +46,9 @@ when the type-system / operational-semantics docs are drafted.
    sufficient given the framework discipline already enforces
    correctness.
 
-4. **Decimal semantics.** **Resolved:** matches shopspring/decimal
-   semantics for direct FFI compatibility with grease.
+4. **Decimal semantics.** **Resolved:** matches `shopspring/decimal`
+   semantics for FFI compatibility with existing fixed-precision
+   ecosystems.
 
 ## Memory / runtime
 
@@ -231,9 +232,8 @@ runtime.
     next artifact after the spec stabilizes.
 
 21. **Compiler implementation language.** Rust (good for
-    compilers, mature toolchain) or Go (closer to the surface
-    syntax, easier for the team)? Probably Rust for the
-    compiler proper, with Go bindings for FFI to grease.
+    compilers, mature toolchain) or Go (closer to some teams'
+    surface syntax)? Resolved: Rust for the compiler proper.
 
 22. **First reference implementation.** ANTLR4 frontend would
     give a fast path to a parser; LLVM backend gives native

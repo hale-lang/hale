@@ -47,9 +47,8 @@ mode, closure) carry the unfamiliarity.
 `approx` / `~~`. No Unicode operators in source. Renderer can
 produce Greek for human display; the source is ASCII.
 
-**Why.** The framework's named-concept registry
-(`theory/notation.yaml` in the alpha-conjecture program) already
-commits to: source uses names, renderer produces symbols. Lotus
+**Why.** The ancient texts' named-concept registry already
+commits to: source uses names, renderer produces symbols. Aperio
 inherits this. Agent-first authorship benefits from no
 symbol-input friction. Tooling is simpler.
 
@@ -248,13 +247,13 @@ publications without committing to a specific bus implementation
 binds the bus block to the actual transport at link / startup
 time.
 
-**Why.** Trellis's first program needs UDP multicast input from
-grease. Future programs will need NATS, Kafka, or other transports.
-Declaring the bus interface in source means the language can
-typecheck the messages flowing in/out without committing to a
-specific runtime. This also enables the perspective-shipping
-contract between analyst and executor binaries — both compile
-from the same Aperio source, both have type-level agreement.
+**Why.** The running example needs UDP multicast input. Future
+programs will need NATS, Kafka, or other transports. Declaring
+the bus interface in source means the language can typecheck the
+messages flowing in/out without committing to a specific runtime.
+This also enables the perspective-shipping contract between
+fitter and applier binaries — both compile from the same Aperio
+source, both have type-level agreement.
 
 **Considered and rejected.**
 
@@ -313,9 +312,9 @@ mode resolution(input: [Book]) -> SingleDecision { ... }
 language-native; user defines any subset; compiler emits one
 implementation per declared mode.
 
-**Why.** Modes are a framework primitive (paper 4 ME-5a/5b/7;
-the framework's commitment that one kernel has three projections).
-Making them syntactic means the compiler can:
+**Why.** Modes are a substrate primitive from the ancient texts —
+the commitment that one kernel has three projections. Making them
+syntactic means the compiler can:
 
 - Generate optimized code per mode (vectorization for bulk,
   per-class projection for harmonic, lazy / tail-only access for
@@ -393,8 +392,8 @@ a locus. The first non-clause in the body is the assertion: two
 expressions and a tolerance. Subsequent clauses control epoch
 boundaries and recovery interaction.
 
-**Why.** Cyclic-closure is a framework primitive (paper 4 ME-13;
-R12 cyclic-closure pattern). Making it syntactic enables:
+**Why.** Cyclic-closure is a substrate primitive from the ancient
+texts. Making it syntactic enables:
 
 - Compile-time verification that the cycle exists (both sides of
   the `~~` reference defined values; the runtime accumulates
@@ -556,11 +555,11 @@ unit-confusion bugs.
 
 ## 14. `decimal` as a primitive type
 
-**Why.** Floating-point arithmetic is wrong for money. The
-grease codebase already uses `shopspring/decimal`; lotus
-inherits the commitment by making `decimal` a primitive
-distinct from `float`. Decimal literals use the `d` suffix
-(`1.50d`).
+**Why.** Floating-point arithmetic is wrong for money and any
+other fixed-precision domain. Aperio makes `decimal` a primitive
+distinct from `float`, with semantics matching the
+`shopspring/decimal` Go library. Decimal literals use the `d`
+suffix (`1.50d`).
 
 ---
 
@@ -1264,7 +1263,7 @@ closure within_capacity {
 ```
 
 Numerically: B=100, c=10, sigma=1, phi=0.5 yields k_max ≈ 18.18,
-the small-k regime paper 1 predicts for mixed formality.
+the small-k regime the ancient texts predict for mixed formality.
 
 ### F.17 Strict field-access checking + method types on locus values
 

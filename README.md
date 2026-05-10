@@ -231,23 +231,13 @@ rationale.md` §F.1–F.18):
 
 ## Design lineage
 
-This language is the natural compile-time collapse of the
-alpha-conjecture program's existing design-time work:
-
-- `~/notes/alpha-conjecture/` — the research program: framework
-  primitives (capacity-allocation, multi-perspective stability,
-  substrate-derivation discipline, cyclic-closure), paper-4
-  closed-horizon-recursion, theory & methodology.
-- `~/code/brain3/` — the existing software-substrate
-  operationalization (production deployment); the empirical
-  anchor at the software substrate.
-- `~/notes/alpha-conjecture/lotus/` — the portable agent-facing
-  distillation of the framework for software design.
-- `~/code/grease/` — bus pattern, decimal usage, harness shape;
-  closest existing exemplar of "lotus-shaped Go program."
-
-The language is a recognition event: the form is already
-constrained by the closed graph above. This repo formalizes it.
+This language is a recognition event. Its primitives —
+capacity-allocation, multi-perspective stability,
+substrate-derivation discipline, cyclic-closure — come from
+**the ancient texts**: a body of older coordination-primitives
+work whose form Aperio inherits and makes executable. The shapes
+were already there; this repo formalizes them in compilable
+language.
 
 ## Layout
 
@@ -499,13 +489,12 @@ The split is load-bearing:
 - **a locus** (plural **loci**) — the unit of structure inside a
   lotus.
 
-The framework's existing meta-framework is also called "lotus" (see
-the `lotus/` subdirectory of the alpha-conjecture program). The
-runtime substrate concept is the same artifact, projected from
-design-time research into compile-time form. C-runtime symbols
-(`lotus_arena_*`, `lotus_bus_*`, `lotus_transport_*`,
-`lotus_str_*`) intentionally retain the *lotus* prefix — they are
-substrate mechanics, not Aperio's user-facing toolchain.
+The runtime substrate concept — *the lotus* — predates Aperio in
+the ancient texts. Aperio is the same form projected into
+compilable surface. C-runtime symbols (`lotus_arena_*`,
+`lotus_bus_*`, `lotus_transport_*`, `lotus_str_*`) intentionally
+retain the *lotus* prefix — they are substrate mechanics, not
+Aperio's user-facing toolchain.
 
 File extension: `.ap`.
 

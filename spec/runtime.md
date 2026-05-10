@@ -436,8 +436,8 @@ Erlang.
   points subsume most of what async is for; explicit
   async/await may not be necessary.
 - **FFI to existing languages.** Generic FFI in stdlib;
-  team-specific bindings (e.g. grease's typed messages) live
-  as third-party packages. Marshalling helpers in stdlib.
+  team-specific bindings (e.g. domain-specific typed messages)
+  live as third-party packages. Marshalling helpers in stdlib.
 - **Hot-reload of code (not just perspectives).** Erlang
   supports module-level hot reload. Lotus's perspective
   hot-reload is more granular and addresses most of the use

@@ -197,8 +197,8 @@ specific external runtime is favored.
 - Marshalling helpers for common types
 - Adapters for other runtimes (Go, Rust, etc.) live as
   third-party modules, not stdlib. Lotus stdlib provides the
-  generic primitives; team-specific bindings (e.g. grease's
-  typed messages) live in their own packages.
+  generic primitives; team-specific bindings (e.g.
+  domain-specific typed messages) live in their own packages.
 
 ### `std::random`
 
