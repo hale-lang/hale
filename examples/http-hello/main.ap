@@ -1,0 +1,75 @@
+// http-hello — Phase 3 capstone (HTTP server in Aperio).
+//
+// Composes the four pieces Phase 3 ships:
+//   - m83 Listener — accept loop with on_connection callback
+//   - m84 parse_request — raw bytes → Request {method,path,...}
+//   - m85 write_response — Response {status, body, ...} → wire
+//   - m82 Stream let-binding lifecycle (the prerequisite that
+//     made the whole accept-loop-with-handler pattern viable)
+//
+// Run:
+//   aperio run examples/http-hello/main.ap
+//   aperio run examples/http-hello/main.ap 9000   # custom port
+//
+// Curl:
+//   curl http://127.0.0.1:8080/
+//   curl http://127.0.0.1:8080/anything?ok=true
+//
+// Limits:
+//   - Single-threaded (each request handled before next accept)
+//   - One recv per request — assumes the request fits in 8KB
+//   - max_accepts caps the loop; pass max_accepts: -1 for a
+//     server that runs until killed.
+
+fn handle_request(s: std::io::tcp::Stream) {
+    let raw = s.recv(8192);
+    let req = std::http::parse_request(raw);
+    println("http-hello: ", req.method, " ", req.path);
+
+    if req.method == "" {
+        let bad = std::http::Response {
+            status: 400,
+            content_type: "text/plain",
+            body: "malformed request\n"
+        };
+        std::http::write_response(s, bad);
+        return;
+    }
+
+    let body = "<!doctype html><html><head><title>aperio</title></head>"
+             + "<body><h1>Hello from Aperio</h1>"
+             + "<p>You requested: " + req.path + "</p>"
+             + "</body></html>\n";
+    let resp = std::http::Response {
+        status: 200,
+        content_type: "text/html; charset=utf-8",
+        body: body
+    };
+    std::http::write_response(s, resp);
+}
+
+fn main() {
+    let mut port: Int = 8080;
+    if std::env::args_count() > 1 {
+        let parsed = std::str::parse_int(std::env::arg(1));
+        if parsed > 0 {
+            port = parsed;
+        }
+    }
+
+    let mut max_accepts: Int = -1;
+    if std::env::args_count() > 2 {
+        let parsed = std::str::parse_int(std::env::arg(2));
+        if parsed > 0 {
+            max_accepts = parsed;
+        }
+    }
+
+    println("http-hello: listening on 127.0.0.1:", port);
+    std::io::tcp::Listener {
+        host: "127.0.0.1",
+        port: port,
+        max_accepts: max_accepts,
+        on_connection: handle_request
+    };
+}
