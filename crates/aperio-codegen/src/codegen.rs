@@ -1364,6 +1364,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // (already declared earlier in this fn for String ops; re-
         // declaration via add_function would be a duplicate symbol
         // so we skip — codegen reuses the existing one.)
+
+        // m77: env / argv primitives. Codegen emits a call to
+        // lotus_env_init in main's prelude that captures argc/
+        // argv into static globals; the std::env::* path calls
+        // then reach them via the get-style accessors below.
+
+        // declare void @lotus_env_init(i32 argc, ptr argv)
+        let env_init_ty =
+            self.context.void_type().fn_type(&[i32_t.into(), ptr_t.into()], false);
+        self.module
+            .add_function("lotus_env_init", env_init_ty, None);
+
+        // declare i32 @lotus_env_args_count(void)
+        let env_args_count_ty = i32_t.fn_type(&[], false);
+        self.module
+            .add_function("lotus_env_args_count", env_args_count_ty, None);
+
+        // declare ptr @lotus_env_arg(i32 i)
+        let env_arg_ty = ptr_t.fn_type(&[i32_t.into()], false);
+        self.module.add_function("lotus_env_arg", env_arg_ty, None);
+
+        // declare ptr @lotus_env_var(ptr name)
+        let env_var_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function("lotus_env_var", env_var_ty, None);
+
+        // declare i32 @lotus_env_var_exists(ptr name)
+        let env_var_exists_ty = i32_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_env_var_exists",
+            env_var_exists_ty,
+            None,
+        );
     }
 
     /// Mark the program as containing at least one `bus subscribe`
@@ -2732,14 +2764,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.lower_user_fn_body(f)?;
         }
 
-        // Pass 3: the C entry point — i32 @main(). Always void-arg
-        // and i32-return at the LLVM ABI level, regardless of what
-        // the user wrote (lotus's "main returns Int = exit code"
-        // semantics map onto this; explicit `return` from main is
-        // not yet implemented in codegen).
+        // Pass 3: the C entry point — i32 @main(i32 argc, ptr argv).
+        // m77 lifted the signature from `i32 @main()` to capture
+        // argc/argv so std::env::args_count / arg can reach them.
+        // The pre-m77 zero-arg signature still works for any
+        // platform that doesn't actually pass them (cargo test
+        // harness calls main(...) via Command::new which always
+        // does), and the call into lotus_env_init in the prelude
+        // below stashes the values for stdlib retrieval.
         let i32_t = self.context.i32_type();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let main_ty = i32_t.fn_type(&[], false);
+        let main_ty = i32_t.fn_type(&[i32_t.into(), ptr_t.into()], false);
         let main_fn = self.module.add_function("main", main_ty, None);
         let entry = self.context.append_basic_block(main_fn, "entry");
         self.builder.position_at_end(entry);
@@ -2748,6 +2783,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.current_self = None;
         self.in_main = true;
         self.push_dissolve_frame();
+
+        // m77: pull argc/argv off main's params and hand them to
+        // the C-runtime stash so std::env::args_count / arg /
+        // var / var_exists can reach them. Must run before any
+        // user code in main().
+        let argc_param = main_fn
+            .get_nth_param(0)
+            .expect("main argc param")
+            .into_int_value();
+        let argv_param = main_fn
+            .get_nth_param(1)
+            .expect("main argv param")
+            .into_pointer_value();
+        let env_init = self
+            .module
+            .get_function("lotus_env_init")
+            .expect("lotus_env_init declared");
+        self.builder
+            .build_call(
+                env_init,
+                &[argc_param.into(), argv_param.into()],
+                "",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         // Prelude: spin up the program-wide arena. Every
         // `arena_alloc` call site loads `@lotus.arena.global`, so
@@ -11250,6 +11309,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_io_fs_file_exists(args, scope)?;
                 Ok(())
             }
+            ["std", "env", "args_count"] => {
+                let _ = self.lower_std_env_args_count(args)?;
+                Ok(())
+            }
+            ["std", "env", "arg"] => {
+                let _ = self.lower_std_env_arg(args, scope)?;
+                Ok(())
+            }
+            ["std", "env", "var"] => {
+                let _ = self.lower_std_env_var(args, scope)?;
+                Ok(())
+            }
+            ["std", "env", "var_exists"] => {
+                let _ = self.lower_std_env_var_exists(args, scope)?;
+                Ok(())
+            }
             _ => Err(CodegenError::Unsupported(format!(
                 "stdlib path `{}` — not implemented",
                 segs.join("::")
@@ -11286,6 +11361,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "io", "fs", "file_exists"] => {
                 self.lower_std_io_fs_file_exists(args, scope)
+            }
+            ["std", "env", "args_count"] => self.lower_std_env_args_count(args),
+            ["std", "env", "arg"] => self.lower_std_env_arg(args, scope),
+            ["std", "env", "var"] => self.lower_std_env_var(args, scope),
+            ["std", "env", "var_exists"] => {
+                self.lower_std_env_var_exists(args, scope)
             }
             _ => Err(CodegenError::Unsupported(format!(
                 "stdlib path `{}` in expression position — not implemented",
@@ -11433,6 +11514,162 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_int_s_extend(conn_i32, i64_t, "conn.i64")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok((conn_i64.into(), LotusType::Int))
+    }
+
+    /// Lower `std::env::args_count() -> Int`. Returns argc as
+    /// captured in main's prelude (m77 codegen change).
+    fn lower_std_env_args_count(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        if !args.is_empty() {
+            return Err(CodegenError::Unsupported(format!(
+                "std::env::args_count takes 0 args, got {}",
+                args.len()
+            )));
+        }
+        let i64_t = self.context.i64_type();
+        let f = self
+            .module
+            .get_function("lotus_env_args_count")
+            .expect("lotus_env_args_count declared");
+        let call = self
+            .builder
+            .build_call(f, &[], "argc.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let raw = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let ext = self
+            .builder
+            .build_int_s_extend(raw, i64_t, "argc.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((ext.into(), LotusType::Int))
+    }
+
+    /// Lower `std::env::arg(i: Int) -> String`. Returns argv[i]
+    /// for valid i; out-of-range indices return the empty
+    /// String (the C runtime's stable g_empty_str). Negative i
+    /// also returns empty rather than UB.
+    fn lower_std_env_arg(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::env::arg takes 1 arg (index), got {}",
+                args.len()
+            )));
+        }
+        let (i_val, i_ty) = self.lower_expr(&args[0], scope)?;
+        if i_ty != LotusType::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::env::arg: index must be Int, got {:?}",
+                i_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let i_i32 = self
+            .builder
+            .build_int_truncate(i_val.into_int_value(), i32_t, "arg.i.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_env_arg")
+            .expect("lotus_env_arg declared");
+        let call = self
+            .builder
+            .build_call(f, &[i_i32.into()], "arg.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, LotusType::String))
+    }
+
+    /// Lower `std::env::var(name: String) -> String`. Returns the
+    /// env value or empty String for unset vars. Use
+    /// `std::env::var_exists` to disambiguate.
+    fn lower_std_env_var(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::env::var takes 1 arg (name), got {}",
+                args.len()
+            )));
+        }
+        let (name_val, name_ty) = self.lower_expr(&args[0], scope)?;
+        if name_ty != LotusType::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::env::var: name must be String, got {:?}",
+                name_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_env_var")
+            .expect("lotus_env_var declared");
+        let call = self
+            .builder
+            .build_call(f, &[name_val.into()], "var.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, LotusType::String))
+    }
+
+    /// Lower `std::env::var_exists(name: String) -> Bool`.
+    fn lower_std_env_var_exists(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::env::var_exists takes 1 arg (name), got {}",
+                args.len()
+            )));
+        }
+        let (name_val, name_ty) = self.lower_expr(&args[0], scope)?;
+        if name_ty != LotusType::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::env::var_exists: name must be String, got {:?}",
+                name_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let f = self
+            .module
+            .get_function("lotus_env_var_exists")
+            .expect("lotus_env_var_exists declared");
+        let call = self
+            .builder
+            .build_call(f, &[name_val.into()], "var_exists.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ret_i32 = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let ret_bool = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                ret_i32,
+                i32_t.const_zero(),
+                "var.exists.bool",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((ret_bool.into(), LotusType::Bool))
     }
 
     /// Lower `std::io::fs::read_file(path: String) -> String`.

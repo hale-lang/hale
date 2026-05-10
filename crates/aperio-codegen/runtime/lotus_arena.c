@@ -1708,6 +1708,57 @@ int lotus_fs_file_exists(const char *path) {
 }
 
 /*
+ * m77: process environment + argv access.
+ *
+ * Captures argc/argv in main's prelude (codegen emits a call
+ * to lotus_env_init at the top of main, before any user code
+ * runs) and exposes:
+ *
+ *   - args_count: argc
+ *   - arg(i):     argv[i] for valid i, else stable empty string
+ *   - var(name):  getenv(name) or stable empty string
+ *   - var_exists: getenv(name) != NULL
+ *
+ * Aperio Strings need NUL-terminated, pointer-stable buffers.
+ * argv entries and getenv returns satisfy both (POSIX: argv
+ * strings are NUL-terminated and live for main's lifetime;
+ * getenv returns valid until a setenv/putenv we don't have a
+ * surface for in v0). The empty-string sentinel is a single
+ * NUL byte at static address — also pointer-stable for the
+ * program's life.
+ */
+static int          g_argc       = 0;
+static char *const *g_argv       = NULL;
+static const char   g_empty_str[1] = { 0 };
+
+void lotus_env_init(int argc, char *const *argv) {
+    g_argc = argc;
+    g_argv = argv;
+}
+
+int lotus_env_args_count(void) {
+    return g_argc;
+}
+
+const char *lotus_env_arg(int i) {
+    if (i < 0 || i >= g_argc || !g_argv || !g_argv[i]) {
+        return g_empty_str;
+    }
+    return g_argv[i];
+}
+
+const char *lotus_env_var(const char *name) {
+    if (!name) return g_empty_str;
+    const char *v = getenv(name);
+    return v ? v : g_empty_str;
+}
+
+int lotus_env_var_exists(const char *name) {
+    if (!name) return 0;
+    return getenv(name) != NULL ? 1 : 0;
+}
+
+/*
  * m58: deployment-config subject binding.
  *
  * Layered on top of the m57 AF_UNIX transport: a startup config

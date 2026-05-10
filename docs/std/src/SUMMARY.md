@@ -7,3 +7,4 @@
 - [`std::process`](./process/index.md)
 - [`std::io::tcp`](./io/tcp.md)
 - [`std::io::fs`](./io/fs.md)
+- [`std::env`](./env.md)
