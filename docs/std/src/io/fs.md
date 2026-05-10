@@ -1,12 +1,15 @@
 # `std::io::fs`
 
-Filesystem operations for Aperio programs. Phase 1 (m75) ships
+Filesystem operations for Aperio programs. Phase 1 (m75) shipped
 four one-shot synchronous functions: `read_file`, `write_file`,
-`file_size`, `file_exists`. Each is a path-call function — no
-locus wrapping, no streaming handle, no buffering layer. The
-shape mirrors `std::process::pid` rather than the Listener-style
-locus pattern because file ops are inherently one-shot: there's
-no lifetime-of-a-stream concept to manage.
+`file_size`, `file_exists`. m89 added `read_bytes` (binary-safe
+read). m90 added `list_dir` (directory listing).
+
+Each is a path-call function — no locus wrapping, no streaming
+handle, no buffering layer. The shape mirrors `std::process::pid`
+rather than the Listener-style locus pattern because file ops
+are inherently one-shot: there's no lifetime-of-a-stream concept
+to manage.
 
 A future milestone that needs streaming reads (large files,
 line-by-line processing, tailing logs) adds a separate
@@ -154,22 +157,115 @@ fn main() {
 }
 ```
 
-## Limitations (Phase 1)
+### `std::io::fs::read_bytes`
+
+#### Synopsis
+
+```aperio
+fn read_bytes(path: String) -> Bytes
+```
+
+Reads the entire file at `path` and returns its contents as a
+`Bytes` value (length-preserved; embedded NULs survive). Returns
+a zero-length `Bytes` on any error. m89.
+
+#### Semantics
+
+- Two-phase like `read_file`: stats the file to learn its
+  size, allocates a `[i64 len][u8 data[len]]` blob in the
+  lazy global payload arena, reads into it.
+- Returns a zero-length `Bytes` on missing path, permissions,
+  or IO failure. To distinguish "missing" from "empty," probe
+  with `file_exists` first.
+- The returned `Bytes` references arena memory that lives for
+  the program's duration. Same accumulation caveat as
+  `read_file`.
+
+#### Examples
+
+```aperio
+fn main() {
+    let body = std::io::fs::read_bytes("logo.png");
+    println("loaded ", len(body), " bytes");
+}
+```
+
+Use this instead of `read_file` whenever the payload may
+contain binary content (images, archives, compiled artifacts).
+String-mediated reads will silently truncate at the first NUL.
+
+### `std::io::fs::list_dir`
+
+#### Synopsis
+
+```aperio
+fn list_dir(path: String) -> String
+```
+
+Lists the entries of directory `path` as a single
+newline-separated String. Returns an empty String on error.
+m90.
+
+#### Semantics
+
+- Two-pass `opendir` / `readdir`: first pass measures total
+  bytes, second pass writes into an arena-allocated buffer.
+- Skips `.` and `..` entries.
+- Order matches `readdir` order — i.e., **not** sorted. If
+  you need a sorted listing, sort the lines after splitting.
+- Subdirectory recursion is not performed; one level only.
+- Returns the empty String on any error (missing path, not a
+  directory, permission denied, etc.).
+
+#### Examples
+
+```aperio
+fn main() {
+    let listing = std::io::fs::list_dir("docs/");
+    let n = len(listing);
+
+    // Iterate by walking newline-separated entries.
+    let mut start: Int = 0;
+    while start < n {
+        let rest = listing[start..n];
+        let nl = std::str::index_of(rest, "\n");
+        if nl < 0 {
+            // Last entry (no trailing newline).
+            println("entry: ", rest);
+            return;
+        }
+        let entry = listing[start..(start + nl)];
+        println("entry: ", entry);
+        start = start + nl + 1;
+    }
+}
+```
+
+The newline-separated `String` shape is the v0 representation
+because Aperio doesn't yet have a generic `List<T>` for
+returning `[String]`. A `[String]` overload lands when generics
+do.
+
+## Limitations (Phase 1 + m89/m90)
 
 - **No streaming**: the entire file is read into memory in
   one call. Large files (hundreds of MB+) are uncomfortable.
-- **No `read_dir`**: directory listing is deferred to a
-  follow-up milestone — the variable-length-output story
-  (NUL-separated buffer? iteration model?) deserves its own
-  design pass.
-- **NUL-truncation on write**: Aperio Strings are
+  `read_bytes` has the same constraint.
+- **`list_dir` returns String, not [String]**: caller splits
+  on `\n`. Generic-backed sibling waits on `List<T>`.
+- **No recursive directory walk**: `list_dir` is one level.
+  Recursion is hand-rolled by the caller.
+- **No filesystem watch**: m94 (planned) will add
+  `std::fs::watch` for inotify-style file-change events.
+- **NUL-truncation on `write_file`**: Aperio Strings are
   NUL-terminated in memory, so writing binary data with
-  embedded NULs truncates at the first NUL. Real binary I/O
-  waits on a `Bytes` type with proper codegen support.
+  embedded NULs truncates at the first NUL. Use
+  `read_bytes` + (future) `write_bytes` for binary I/O.
+  Currently there is no `write_bytes`.
 - **No errno surface**: errors collapse to -1 / `false` /
   empty. A future milestone surfaces errno-style detail.
-- **Lazy global arena growth**: every `read_file` call
-  allocates from a process-lifetime arena. Long-running
+- **Lazy global arena growth**: every read call (text or
+  bytes) allocates from a process-lifetime arena. Long-running
   processes that re-read files repeatedly grow memory
   unbounded.
 

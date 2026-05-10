@@ -4,19 +4,17 @@ A locus with ongoing work after birth. Bounded — terminates
 naturally after `n` ticks, then drains and dissolves.
 
 ```
-import "std/time";
-
 locus TickerL {
     params {
-        n: int = 5;
-        interval: duration = 1s;
+        n: Int = 5;
+        interval: Duration = 1s;
     }
 
     run() {
-        let mut i: int = 0;
+        let mut i: Int = 0;
         while i < self.n {
             println("tick ", i);
-            time::sleep(self.interval);
+            std::time::sleep(self.interval);
             i = i + 1;
         }
     }
@@ -51,11 +49,10 @@ fn main() {
   the locus's steady-state work happens here.
 - **`while` loop** with mutable iteration variable.
 - **`let mut x: T = ...`** — mutable binding.
-- **`time::sleep(duration)`** — stdlib function; cooperative
+- **`std::time::sleep(duration)`** — stdlib function; cooperative
   yield point.
-- **Duration literals**: `1s`, `500ms` — type `duration`,
+- **Duration literals**: `1s`, `500ms` — type `Duration`,
   language-native.
-- **`import "std/time"`** — bring stdlib module into scope.
 - **Param overrides at instantiation** — `TickerL { n: 3,
   interval: 500ms }` overrides the declared defaults.
 - **Multiple-arg `println`** — `println("tick ", i)` concatenates

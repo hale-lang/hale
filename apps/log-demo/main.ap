@@ -1,0 +1,60 @@
+// log-demo — bus-based structured logging.
+//
+// A "fake service" locus publishes LogEvents on a bus subject
+// during its lifecycle. A separate sink locus subscribes to the
+// same subject and prints each event in [LEVEL] msg form.
+//
+// Order matters in v0: subscribers must be born before
+// publishers so they're listening when events fire (per
+// examples/05-bus/main.ap).
+//
+// Levels are Int constants for now; sum-type / enum payload
+// pattern-matching is deferred (see counter-hallucination
+// table in the app-dev brief). 1 = INFO, 2 = WARN, 3 = ERROR.
+
+type LogEvent {
+    level: Int;
+    msg: String;
+}
+
+locus StdoutSinkL {
+    bus {
+        subscribe "log.event" as on_event of type LogEvent;
+    }
+
+    fn on_event(e: LogEvent) {
+        if e.level == 1 {
+            println("[INFO] ", e.msg);
+            return;
+        }
+        if e.level == 2 {
+            println("[WARN] ", e.msg);
+            return;
+        }
+        if e.level == 3 {
+            println("[ERROR] ", e.msg);
+            return;
+        }
+        println("[L", to_string(e.level), "] ", e.msg);
+    }
+}
+
+locus GreeterServiceL {
+    bus {
+        publish "log.event" of type LogEvent;
+    }
+
+    birth() {
+        "log.event" <- LogEvent { level: 1, msg: "starting" };
+        "log.event" <- LogEvent { level: 1, msg: "did the thing" };
+        "log.event" <- LogEvent { level: 2, msg: "things look slow" };
+        "log.event" <- LogEvent { level: 3, msg: "imaginary failure" };
+        "log.event" <- LogEvent { level: 1, msg: "shutting down" };
+    }
+}
+
+fn main() {
+    // Subscribers first, then publishers (v0 ordering rule).
+    StdoutSinkL { };
+    GreeterServiceL { };
+}

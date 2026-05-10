@@ -24,7 +24,6 @@
 //     fired plus the diff — distinguishing count-violations from
 //     mean-violations by closure name.
 
-import "std/time";
 
 type Sample {
     value: Int;

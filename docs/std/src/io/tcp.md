@@ -1,131 +1,226 @@
 # `std::io::tcp`
 
-TCP networking for Aperio programs. Phase 1 (m73) ships
-`Listener` — a stdlib locus that binds a TCP port and accepts
-one incoming connection in its lifecycle, then closes cleanly.
-The single-accept shape is the smallest testable unit; the
-multi-accept loop and per-connection handler primitives
-(`Stream`, `send`, `recv`) follow in a later milestone once
-the shape of "how user code sees an accepted connection" has
-been worked out.
+TCP networking for Aperio programs. Phase 1 introduced the
+single-accept Listener (m73). Subsequent milestones generalized
+it: m81 added the `Stream` type with `send`/`recv` methods, m82
+made the Stream's let-binding lifecycle work cleanly, m83 added
+the multi-accept Listener with an `on_connection` callback, and
+m89 added `Stream.send_bytes` for binary-safe payloads.
+
+The shipped surface is two stdlib types — `Listener` (a locus)
+and `Stream` (a locus you receive but don't construct directly)
+— plus their methods.
 
 ## Loci
 
 ### `std::io::tcp::Listener`
+
+A multi-accept TCP listener. Binds a port, calls
+`on_connection` once per accepted connection, terminates after
+`max_accepts` accepts (or runs forever if `max_accepts == -1`).
 
 #### Synopsis
 
 ```aperio
 locus Listener {
     params {
-        host: String = "127.0.0.1";
-        port: Int = 0;
-        listen_fd: Int = -1;     // overwritten in birth()
+        host:           String = "127.0.0.1";
+        port:           Int    = 0;
+        max_accepts:    Int    = 1;        // -1 for unbounded
+        on_connection:  fn(Stream);
     }
-    birth() { /* bind + listen */ }
-    run()   { /* accept one connection, then return */ }
-    dissolve() { /* close listen socket */ }
+    // birth: bind, listen
+    // run:   accept loop, calling on_connection for each
+    // dissolve: close listening fd
 }
 ```
 
-#### Grammar
+#### Fields
 
-A path-qualified locus instantiation:
-
-```ebnf
-listener_inst ::= "std" "::" "io" "::" "tcp" "::" "Listener"
-                  "{" field_init ( "," field_init )* "}"
-```
+- `host: String` — bind interface. `"127.0.0.1"` for
+  loopback only; `"0.0.0.0"` for all interfaces.
+- `port: Int` — TCP port. `0` lets the OS pick a free
+  ephemeral port.
+- `max_accepts: Int` — accept limit. `-1` means unbounded
+  (server runs until killed). Bounded values are useful for
+  tests and one-shot tools.
+- `on_connection: fn(Stream)` — callback invoked once per
+  accepted connection. The Stream's lifecycle is owned by the
+  callback's stack frame; when the callback returns, the
+  Stream's `dissolve()` closes the connection's fd.
 
 #### Semantics
 
-- **birth()** binds an `AF_INET` `SOCK_STREAM` socket to
-  `host:port`, sets `SO_REUSEADDR` to tolerate quick rebinds,
-  and calls `listen(backlog=16)`. The listening file
-  descriptor is stored on `self.listen_fd` for `run()` and
-  `dissolve()` to read back.
-- **run()** blocks on `accept()` until exactly one peer
-  connects, prints a diagnostic line containing the accepted
-  connection's fd, closes that connection, and returns. The
-  Phase-1 Listener accepts a single connection by design;
-  multi-accept loops become available when `Stream` and
-  per-connection handler dispatch land.
-- **dissolve()** closes the listening fd. Because the
-  listening fd is not used between accepts, the OS port is
-  released as soon as `dissolve()` runs.
-- Errors at any step (bind failure, accept failure, close
-  failure) print a `perror`-style diagnostic to stderr and
-  return -1 from the underlying primitive; the lifecycle
-  continues to the next stage rather than aborting.
-
-#### Fields
-
-- `host: String = "127.0.0.1"` — bind interface. Use
-  `"0.0.0.0"` to bind on all interfaces.
-- `port: Int = 0` — TCP port. `0` lets the OS pick a free
-  ephemeral port.
-- `listen_fd: Int = -1` — internal. The Listener locus
-  overwrites this in `birth()`; user code does not set it.
+- **birth()** binds an `AF_INET SOCK_STREAM` socket to
+  `host:port` with `SO_REUSEADDR`, then calls `listen(backlog=16)`.
+- **run()** loops calling `accept()`. Each accepted
+  connection's fd is wrapped in a `Stream` locus, passed to
+  `on_connection`, and dissolved at the callback's scope-exit.
+  After `max_accepts` accepts (or never, if -1), `run()`
+  returns.
+- **dissolve()** closes the listening fd, releasing the port.
+- Errors during accept print a `perror`-style line to stderr
+  and continue the loop. A bind failure in `birth()` aborts
+  the locus.
 
 #### Examples
 
-Single-accept echo-style listener:
+A multi-accept listener that handles requests until killed:
 
 ```aperio
+fn handle(s: std::io::tcp::Stream) {
+    let req = s.recv(8192);
+    println("got ", len(req), " bytes");
+    s.send("ok\n");
+}
+
 fn main() {
     std::io::tcp::Listener {
         host: "127.0.0.1",
         port: 8080,
+        max_accepts: -1,
+        on_connection: handle
     };
 }
 ```
 
-Run that program; from another shell, `nc 127.0.0.1 8080`
-connects, the Aperio program logs the accepted fd and
-exits, freeing the port.
-
-Default host (any host the OS resolves to localhost):
+A bounded listener for a test (handle 3 connections, then
+exit):
 
 ```aperio
 fn main() {
-    std::io::tcp::Listener { port: 8080 };
+    std::io::tcp::Listener {
+        port: 8080,
+        max_accepts: 3,
+        on_connection: handle
+    };
 }
 ```
 
-#### Limitations (Phase 1)
+### `std::io::tcp::Stream`
 
-- **Single accept**: `run()` returns after one connection.
-  Multi-connection servers wait on `Stream` + handler
-  dispatch.
-- **No send/recv on the accepted connection from user code**.
-  m73 closes the accepted fd inside the Listener's `run()`
-  body. Reading or writing on the accepted connection requires
-  the future `Stream` locus and its `send` / `recv` methods.
-- **AF_INET only**: IPv4. AF_INET6 is a follow-up.
+A handle to one accepted TCP connection. You don't construct
+`Stream` directly — instead, you receive one as the parameter
+of an `on_connection` callback.
+
+#### Synopsis
+
+```aperio
+locus Stream {
+    params { conn_fd: Int = -1; }
+    fn send(msg: String);
+    fn send_bytes(payload: Bytes);
+    fn recv(max: Int) -> String;
+    // dissolve: close(conn_fd)
+}
+```
+
+#### Methods
+
+- **`send(msg: String)`** — writes the String's bytes to the
+  connection. Aperio Strings are NUL-terminated in memory, so
+  embedded NULs in `msg` truncate the write. Use `send_bytes`
+  for binary-safe sends.
+- **`send_bytes(payload: Bytes)`** — writes the full byte
+  blob, length-preserved. Embedded NULs survive. (m89)
+- **`recv(max: Int) -> String`** — reads up to `max` bytes
+  from the connection. Returns the bytes received as a String
+  in the lazy global payload arena. Returns the empty String
+  on EOF or error. **Single recv per call** — the result is
+  whatever one OS-level `read()` produces, not a guaranteed
+  full message. For typical HTTP request payloads (under
+  8 KB), one `recv(8192)` covers the whole request.
+
+#### Semantics
+
+- A `Stream` instantiated from outside an `on_connection`
+  callback (e.g. `let s = std::io::tcp::Stream { conn_fd: ... }`)
+  works the same way: methods operate on `conn_fd`; `dissolve`
+  closes the fd at scope-exit. This is the m82 let-bound-locus
+  lifecycle in action.
+- The connection is closed exactly once, when the binding's
+  scope ends. Don't close `conn_fd` directly via the
+  `__close_fd` primitive while a Stream binding still holds
+  it.
+
+#### Examples
+
+Echo server using the multi-accept Listener:
+
+```aperio
+fn echo(s: std::io::tcp::Stream) {
+    let buf = s.recv(4096);
+    s.send(buf);
+}
+
+fn main() {
+    std::io::tcp::Listener {
+        port: 9000, max_accepts: -1, on_connection: echo
+    };
+}
+```
+
+Outbound TCP client (compose with the lower-level `__connect`
+primitive — there is no high-level `Stream::connect` yet):
+
+```aperio
+fn main() {
+    let fd = std::io::tcp::__connect("127.0.0.1", 8080);
+    let s  = std::io::tcp::Stream { conn_fd: fd };
+    s.send("GET / HTTP/1.0\r\n\r\n");
+    let body = s.recv(8192);
+    println(body);
+}
+```
+
+The let-binding `let s = ...` is the form that makes Stream
+usable as a multi-statement handle (m82). A statement-position
+Stream literal would dissolve immediately, closing `fd` before
+`send`/`recv` ran.
+
+## Limitations
+
+- **Single recv per call.** No streaming-recv loop, no buffered
+  reader. Bodies > 8 KB are not handled by Phase 3 v0; this is
+  a Phase 3 v1.0 follow-up.
+- **No `Stream::connect` constructor.** Outbound connections
+  use the lower-level `__connect` primitive. A high-level
+  `connect` form is a follow-up.
+- **AF_INET only.** IPv4 — IPv6 (AF_INET6) is a follow-up.
+- **No TLS.** No HTTPS substrate ships.
+- **No bind-readiness signal.** Tests connecting to a listener
+  immediately after instantiation may race the bind. The
+  workaround is retry-connect from the client side.
 
 ## Internal primitives
 
-The stdlib locus delegates to three internal `std::io::tcp::__*`
-path-call primitives. These are not part of the user surface —
-they exist only so the bundled stdlib source has a way to call
-into the C runtime — but their shape is documented here for
-implementers and curious readers:
+The stdlib loci delegate to internal `std::io::tcp::__*`
+path-calls. These are not part of the user surface but their
+shape is documented for implementers:
 
-| Primitive                                 | Type                                  | Backs                               |
-|-------------------------------------------|---------------------------------------|-------------------------------------|
-| `std::io::tcp::__listen_socket(host, port)` | `(String, Int) -> Int`               | `lotus_tcp_listen_socket` C runtime |
-| `std::io::tcp::__accept_one(listen_fd)`     | `(Int) -> Int`                       | `lotus_tcp_accept_one` C runtime    |
-| `std::io::tcp::__close_fd(fd)`              | `(Int) -> Int`                       | `lotus_tcp_close_fd` C runtime      |
+| Primitive                                       | Type                              | Backs                            |
+|-------------------------------------------------|-----------------------------------|----------------------------------|
+| `std::io::tcp::__listen_socket(host, port)`     | `(String, Int) -> Int`            | `lotus_tcp_listen_socket`         |
+| `std::io::tcp::__accept_one(listen_fd)`         | `(Int) -> Int`                    | `lotus_tcp_accept_one`            |
+| `std::io::tcp::__close_fd(fd)`                  | `(Int) -> Int`                    | `lotus_tcp_close_fd`              |
+| `std::io::tcp::__connect(host, port)`           | `(String, Int) -> Int`            | `lotus_tcp_connect`               |
+| `std::io::tcp::__send(fd, msg)`                 | `(Int, String) -> Int`            | `lotus_tcp_send`                  |
+| `std::io::tcp::__send_bytes(fd, payload)`       | `(Int, Bytes) -> Int`             | `lotus_tcp_send_bytes`            |
+| `std::io::tcp::__recv(fd, max)`                 | `(Int, Int) -> String`            | `lotus_tcp_recv`                  |
 
-Future stdlib loci (Phase 1 `Stream`, Phase 3 HTTP) extend
-this internal-primitive set; the user surface stays at the
-locus level.
+User code reaches for the high-level `Listener` / `Stream`
+surface; reach for `__*` primitives only when composing
+something the high-level surface can't yet express (e.g.
+outbound connection via `__connect`).
 
 ## See Also
 
-- [Roadmap](../roadmap.md) — Phase 1+ stdlib build-out plan.
-- `spec/stdlib.md` (in the language repo) — path-resolution
-  semantics, the m71 dispatcher, and design principles.
-- `crates/aperio-codegen/runtime/stdlib.ap` (in the language
-  repo) — bundled source for `__StdIoTcpListener` and any
-  future stdlib loci.
+- [Roadmap](../roadmap.md) — Phase 3 v1.0 follow-ups (keep-alive,
+  streaming bodies, listener bind-readiness).
+- [`std::http`](../http.md) — composes on `Listener` and
+  `Stream` to build an HTTP server.
+- [`Bytes`](../bytes.md) — type used by `send_bytes`.
+- `examples/http-hello/main.ap` (in the language repo) —
+  Listener + on_connection + handler pattern.
+- `crates/aperio-codegen/runtime/stdlib/io_tcp.ap` (in the
+  language repo) — bundled source for the stdlib loci.

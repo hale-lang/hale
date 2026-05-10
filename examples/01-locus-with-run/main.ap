@@ -4,7 +4,6 @@
 // naturally when its work is done, then drains and dissolves.
 // Demonstrates the run() lifecycle method.
 
-import "std/time";
 
 locus TickerL {
     params {

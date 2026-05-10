@@ -1,46 +1,95 @@
 # The Aperio Standard Library — Roadmap
 
-Aperio's stdlib is in active development as the v1.x build-out. The doc
-server you're reading these pages on (eventually — currently mdbook
-serves them) will be one of the first programs that synthesizes the
-stdlib end-to-end.
+The stdlib's v1.x build-out unfolds in five phases. Phases 1
+through 5 are sealed as of m93. Phase 6 (the substrate plan
+forced by the Aperio IDE) is the next arc.
 
-## Phases
+For "what can I actually use today," see
+[What you can build today](./ready-today.md).
 
-### Phase 1: Foundations
+## Phase 1 — Foundations (sealed, m71 → m76)
 
-- `std::io::tcp` — TCP listen / connect / accept / send / recv. Extends
-  the substrate transport from AF_UNIX to AF_INET / AF_INET6.
-- `std::io::fs` — read_file, read_dir, file_size, file_exists.
-- `std::time` — extends `time::sleep` / `time::monotonic` with `time::now`,
-  formatting, parsing.
+- `std::io::tcp` — multi-accept Listener + Stream send/recv.
+  Substrate: `lotus_tcp_*` over AF_INET with internal length-prefix
+  framing.
+- `std::io::fs` — `read_file`, `write_file`, `file_exists`,
+  `file_size`, plus `read_bytes` (m89) and `list_dir` (m90).
+- `std::env` — `args_count`, `arg`, `var`, `var_exists`.
+- `std::str` — `parse_int`, `can_parse_int`, `index_of` (m84).
+- `std::time` — `sleep`, `monotonic` (under the `std::*` namespace).
+- `std::process` — `pid`, `exit`.
 
-### Phase 2: Test framework
+Magic `std::*` path resolver in codegen; no module system.
 
-- `std::test` — assertions, test runner (`aperio test path/`).
-- `std::test::fake` — fake time, fake bus, fake fs.
-- `std::test::trace` — record/replay bus events for regression tests.
+## Phase 2 — Test framework (v0.1 sealed, m87 → m88)
 
-### Phase 3: HTTP server
+- `std::test::assert(cond, msg)`
+- `std::test::assert_eq_int(actual, expected, msg)`
+- `std::test::assert_eq_str(actual, expected, msg)`
 
-- `std::http::request` — parse request line + headers.
-- `std::http::response` — build response (status, headers, body).
-- `std::http::server` — accept loop on a TcpListener.
-- `std::http::router` — path-pattern dispatch.
+Test-runner contract: pass = exit 0 silent; fail = non-zero +
+`"ASSERTION FAILED: …"` on stdout. Sufficient for self-tests
+written in Aperio that drive real Aperio behavior.
 
-### Phase 4: Text processing
+**v1.0 still on the table:** `aperio test` CLI runner,
+`assert_rejects` (compile-error tests), `assert_closure` (closure
+introspection), `assert_neq_*` siblings, benchmarks. Property-based
+testing explicitly deferred per spec.
 
-- `std::text::markdown` — CommonMark subset parser.
-- `std::text::html` — escape, build, pretty-print.
-- `std::text::highlight` — per-language syntax highlighter.
+## Phase 3 — HTTP server (sealed, m83 → m86)
 
-### Phase 5: Synthesis
+- `std::http::Request` and `std::http::Response` — record types.
+- `std::http::parse_request(raw) -> Request`
+- `std::http::write_response(stream, response)`
+- Multi-accept TCP Listener composes via `on_connection: fn(Stream)`.
 
-- `examples/docs-server/main.ap` — the Aperio doc server, written in
-  Aperio, serving the Aperio docs.
+**v1.0 still on the table:** header-map type, `Connection: keep-alive`,
+streaming bodies > 8 KB, listener bind-readiness primitive,
+content-type-by-extension dispatch.
 
-## Status
+## Phase 4 — Text processing (v0.1 sealed, m91)
 
-Currently: **placeholder.** No stdlib code has shipped yet. This page
-exists so SUMMARY.md resolves cleanly under `mdbook build`. Each Phase
-above is its own multi-milestone arc with its own plan.
+- `std::text::md_to_html(md) -> String` — block-level markdown:
+  ATX headings, paragraphs joined by single space, fenced code
+  blocks, HTML escape (`&` / `<` / `>`).
+
+**v1.0 still on the table:** inline formatting (`**bold**`,
+`*italic*`, `` `code` ``, `[text](url)`).
+
+## Phase 5 — Synthesis (sealed, m92)
+
+`examples/docs-server/main.ap` — ~200 lines of Aperio composing
+seven stdlib namespaces into a real HTTP server that lists and
+renders markdown docs from a configured directory. Demonstrates
+the stdlib end-to-end.
+
+## Phase 6 — Substrate for the IDE (m94 onwards, planned)
+
+Forcing function: an Aperio IDE that renders the locus tree of
+running programs. Each milestone exposes a `std::*` namespace
+useful to every Aperio program, not just the IDE.
+
+| #     | Name                          | Surface                                                              |
+| ----- | ----------------------------- | -------------------------------------------------------------------- |
+| m94   | Filesystem watch              | `std::fs::watch::{create, next, close}`                              |
+| m95   | Runtime debug instrumentation | Runtime publishes `lotus.debug.*` when `APERIO_DEBUG` env-enabled    |
+| m96   | 3D graphics                   | `std::graphics::{scene, camera, mesh, transform, animate}`           |
+| m97   | UI panels                     | `std::ui::{panel, label, button, text_input, ...}`                   |
+| m98   | Embedded shell                | `std::shell::{pty_spawn, pty_read, pty_write, terminal_widget}`      |
+| m99   | MCP server                    | `std::mcp::{serve_http, tool, register_tool}`                        |
+| m100  | Compiler self-introspection   | `std::aperio::{parse, typecheck, ast_walk}`                          |
+
+Detailed plan: `notes/aperio-ide-design.md` (in the repo).
+
+## How priorities are set
+
+The next milestone is chosen from friction signals — moments where
+real Aperio programs hit something missing. Sources:
+
+- `notes/aperio-friction.md` — global friction log.
+- `apps/<name>/FRICTION.md` — per-app logs.
+- The IDE design plan's own pre-emptive friction list (above).
+
+If you are an agent session writing an Aperio program, your
+friction log is the prioritization signal. See
+`notes/agent-onboarding/app-dev-brief.md`.

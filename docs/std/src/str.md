@@ -1,11 +1,13 @@
 # `std::str`
 
-Minimal string parsing primitives. m78 ships two functions:
-`parse_int` (atoi-ish) and `can_parse_int` (the boolean
-sibling for callers that need to distinguish "0" from "bad
-input"). v0 scope: signed 64-bit integers in base 10. Hex /
-octal / underscore separators wait on a richer parsing
-library.
+Minimal string-processing primitives. m78 added the integer
+parsers (`parse_int`, `can_parse_int`); m84 added `index_of`
+for substring search. v0 scope is small by design — most
+string work in Aperio uses bare-name builtins (`len`,
+`starts_with`, `contains`, `to_string`) plus the `+` operator
+for concatenation and `s[start..end]` for slicing. The path-
+qualified surface here covers the cases that need a real
+function call.
 
 ## Functions
 
@@ -76,21 +78,104 @@ fn main() {
 }
 ```
 
+### `std::str::index_of`
+
+#### Synopsis
+
+```aperio
+fn index_of(s: String, sub: String) -> Int
+```
+
+Returns the byte offset of the first occurrence of `sub`
+within `s`, or `-1` if `sub` is not present. m84.
+
+#### Semantics
+
+- Byte-wise search, not codepoint-aware. Multi-byte UTF-8
+  sequences in either argument are matched by their byte
+  pattern. For ASCII content (the common case) the
+  distinction doesn't matter.
+- Empty `sub` returns 0 by convention (the empty string is
+  trivially present at the start).
+- Returns the index of the **first** match; there is no
+  `find_all` or `last_index_of` in v0.
+- `sub` longer than `s` returns -1.
+
+#### Examples
+
+Split-on-first-occurrence pattern:
+
+```aperio
+fn main() {
+    let raw = "method=GET path=/index";
+    let eq = std::str::index_of(raw, "=");
+    if eq >= 0 {
+        let key = raw[0..eq];
+        let val = raw[(eq + 1)..len(raw)];
+        println("key=", key, " val=", val);
+    }
+}
+```
+
+Test for substring presence — but prefer the bare-name
+builtin `contains`:
+
+```aperio
+fn main() {
+    let url = "https://example.com/path";
+
+    // Idiomatic — bare-name builtin:
+    if contains(url, "example.com") {
+        println("matches");
+    }
+
+    // index_of works too, but is more verbose for a yes/no:
+    if std::str::index_of(url, "example.com") >= 0 {
+        println("matches");
+    }
+}
+```
+
+`index_of` shines when you need the **position**, not just
+presence — e.g., for splitting on a delimiter or extracting
+a header before / after a separator.
+
+## Bare-name builtins
+
+The most common string operations are bare-name builtins (no
+`std::*` path), summarised here for completeness. Each is
+documented in the language reference, not under `std::*`:
+
+| Name           | Type                                  | Notes                          |
+|----------------|---------------------------------------|--------------------------------|
+| `len(s)`       | `(String) -> Int`                     | Byte length.                   |
+| `starts_with`  | `(String, String) -> Bool`            | Prefix test.                   |
+| `contains`     | `(String, String) -> Bool`            | Substring test (yes/no).       |
+| `to_string`    | `(Int / Float / Decimal) -> String`   | Numeric → String.              |
+
+Slicing uses range syntax: `s[start..end]`. Concatenation
+uses `+`.
+
 ## Limitations
 
-- **Base 10 only.** No `0x`, `0o`, `0b` prefixes.
-- **No whitespace trimming.** Leading or trailing whitespace
-  rejects the input. Callers that want lenient input strip
-  manually (which itself wants string ops Aperio doesn't
-  yet ship — a future arc).
+- **Base 10 only.** `parse_int` rejects `0x`, `0o`, `0b`
+  prefixes.
+- **No whitespace trimming.** `parse_int` rejects any leading
+  or trailing whitespace.
 - **No floating-point parsing.** `parse_float` lands when
   there's a use case forcing it.
-- **No reverse direction (int → String) here.** `println`
-  already formats Ints; explicit `int_to_str` waits on the
-  string-builder library.
+- **No `int_to_str` path-call.** Use the bare-name builtin
+  `to_string(n)` for the Int → String direction.
+- **`index_of` is byte-wise, not codepoint-wise.** Fine for
+  ASCII; surprising for multi-byte UTF-8 if the search needle
+  could split a codepoint.
+- **No `split` / `replace` / `trim` / `to_lower` / `to_upper`.**
+  Hand-roll using `index_of` + slicing for now.
 
 ## See Also
 
 - [Roadmap](./roadmap.md) — Phase 1+ stdlib build-out plan.
 - [`std::env`](./env.md) — argv access; the canonical
   pairing for `parse_int`-from-argv usage.
+- [What you can build today](./ready-today.md) — capability
+  matrix including the bare-name string surface.

@@ -43,7 +43,6 @@
 //   - Subsequent publishes don't reach the quarantined
 //     Tracker (m41b bus-dispatch gating), so no further fires.
 
-import "std/time";
 
 type Sample {
     value: Int;

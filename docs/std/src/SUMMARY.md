@@ -1,6 +1,7 @@
 # Summary
 
 [Roadmap](./roadmap.md)
+[What you can build today](./ready-today.md)
 
 # Phase 1: Foundations
 
@@ -10,3 +11,19 @@
 - [`std::env`](./env.md)
 - [`std::str`](./str.md)
 - [`std::time`](./time.md)
+
+# Phase 2: Test framework (v0.1)
+
+- [`std::test`](./test.md)
+
+# Phase 3: HTTP server
+
+- [`std::http`](./http.md)
+
+# Phase 4: Text processing (v0.1)
+
+- [`std::text`](./text.md)
+
+# Primitives
+
+- [`Bytes`](./bytes.md)

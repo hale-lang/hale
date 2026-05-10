@@ -11,7 +11,6 @@
 // locus's `run()` lifecycle method waits on the locus-as-struct
 // runtime ABI (next milestone in the Phase 3 ladder).
 
-import "std/time";
 
 fn main() {
     let mut i = 0;

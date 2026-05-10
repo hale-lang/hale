@@ -21,7 +21,6 @@
 // parent counts fires so the test reads as a single count, not
 // a stream.
 
-import "std/time";
 
 locus Heartbeat : schedule pinned {
     params {
