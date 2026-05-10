@@ -939,6 +939,22 @@ int lotus_str_contains(const char *s, const char *sub) {
 }
 
 /*
+ * m84: byte index of first occurrence of `sub` in `s`, or -1 if
+ * not found. Mirrors lotus_str_contains's strstr-based search but
+ * returns the position rather than just a presence flag — needed
+ * by Phase 3's HTTP request parser (locating ` ` between method
+ * and path, `\r\n` at the end of the request line, etc.). Empty
+ * needle returns 0 by convention; null inputs return -1.
+ */
+int64_t lotus_str_index_of(const char *s, const char *sub) {
+    if (!s || !sub) return -1;
+    if (*sub == '\0') return 0;
+    const char *hit = strstr(s, sub);
+    if (!hit) return -1;
+    return (int64_t)(hit - s);
+}
+
+/*
  * m48: render a Decimal value (i128 mantissa with implicit
  * scale 9 — i.e., mantissa × 10^-9) into a NUL-terminated
  * string. The i128 is passed as two i64 halves (hi:lo) since

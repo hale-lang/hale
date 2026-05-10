@@ -277,26 +277,35 @@ const RUNTIME_C_SOURCE: &str = include_str!("../runtime/lotus_arena.c");
 /// source via the `STDLIB_PATH_RENAMES` table below.
 const STDLIB_AP_SOURCE: &str = include_str!("../runtime/stdlib.ap");
 
-/// Maps each user-facing stdlib locus path to the mangled locus
-/// name declared in `STDLIB_AP_SOURCE`. The mangled prefix
-/// (`__StdIo...`) makes collision with user-declared identifiers
-/// impossible at v0. Each entry is `&[&"std", &"io", ...]` →
-/// flat string. Keep this table sorted by path for review.
+/// Maps each user-facing stdlib path (locus OR type) to the
+/// mangled name declared in `STDLIB_AP_SOURCE`. The mangled
+/// prefix (`__StdIo...`, `__StdHttp...`) makes collision with
+/// user-declared identifiers impossible at v0. Each entry is
+/// `&[&"std", ...]` → flat string. Whether the resolved name
+/// refers to a locus or a type is determined downstream by
+/// looking it up in `user_loci` / `user_types` — this table
+/// is just the path → name mapping. Keep sorted by path for
+/// review.
 const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
+    (&["std", "http", "Request"], "__StdHttpRequest"),
+    (&["std", "http", "Response"], "__StdHttpResponse"),
     (&["std", "io", "tcp", "Listener"], "__StdIoTcpListener"),
     (&["std", "io", "tcp", "Stream"], "__StdIoTcpStream"),
 ];
 
-/// Look up the mangled locus name for a stdlib path. Returns
-/// `None` when the path isn't a recognized stdlib locus, in
-/// which case the qualified-path struct literal falls through to
-/// the existing "unknown" error.
-fn stdlib_locus_for_path(segs: &[&str]) -> Option<&'static str> {
+/// Look up the mangled name for a stdlib path (locus or type).
+/// Returns `None` when the path isn't recognized; callers then
+/// surface the path-as-typed in their error message. The legacy
+/// alias `stdlib_locus_for_path` is preserved by callers via the
+/// downstream `user_loci` check, which still gates the locus-only
+/// code paths.
+fn stdlib_mangled_for_path(segs: &[&str]) -> Option<&'static str> {
     STDLIB_PATH_RENAMES
         .iter()
         .find(|(p, _)| *p == segs)
         .map(|(_, name)| *name)
 }
+
 
 struct Cx<'ctx, 'p> {
     context: &'ctx Context,
@@ -1010,6 +1019,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_str_contains", str_predicate_ty, None);
+
+        // m84: byte index of substring (or -1 if not found).
+        // declare i64 @lotus_str_index_of(ptr s, ptr sub)
+        let str_index_of_ty =
+            i64_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        self.module
+            .add_function("lotus_str_index_of", str_index_of_ty, None);
 
         // m48: render a Decimal (i128 mantissa, implicit scale 9)
         // into a NUL-terminated string buffer.
@@ -3102,7 +3118,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .iter()
                     .map(|s| s.name.as_str())
                     .collect();
-                let mangled = stdlib_locus_for_path(&segs).ok_or_else(|| {
+                let mangled = stdlib_mangled_for_path(&segs).ok_or_else(|| {
                     CodegenError::Unsupported(format!(
                         "qualified type `{}` not in stdlib path-renames table",
                         segs.join("::")
@@ -3110,12 +3126,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 })?;
                 if self.user_loci.contains_key(mangled) {
                     Ok(LotusType::LocusRef(mangled.to_string()))
+                } else if self.user_types.contains_key(mangled) {
+                    // m84: path-qualified stdlib `type` records.
+                    // `std::http::Request` in a fn signature
+                    // resolves to TypeRef("__StdHttpRequest").
+                    Ok(LotusType::TypeRef(mangled.to_string()))
                 } else {
                     Err(CodegenError::Unsupported(format!(
                         "qualified type `{}` (mangled `{}`) declared in stdlib \
-                         path-renames table but not registered in user_loci yet \
-                         — sequencing issue: type_expr_to_lotus called before \
-                         locus pass A1 populated this locus",
+                         path-renames table but not registered in user_loci or \
+                         user_types yet — sequencing issue: type_expr_to_lotus \
+                         called before pass A0/A1 populated this name",
                         segs.join("::"),
                         mangled,
                     )))
@@ -7409,7 +7430,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map(|s| s.name.as_str())
                     .collect();
                 let resolved_name: String = if path.segments.len() > 1 {
-                    match stdlib_locus_for_path(&segs) {
+                    match stdlib_mangled_for_path(&segs) {
                         Some(mangled) => mangled.to_string(),
                         None => {
                             return Err(CodegenError::Unsupported(format!(
@@ -10289,11 +10310,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.lower_locus_instantiation(&name, inits, scope)?;
                 Ok((ptr.into(), LotusType::LocusRef(name)))
             }
-            // m81: path-qualified stdlib locus in expression
-            // position — `std::io::tcp::Stream { conn_fd }`
-            // bound to a let or passed to a fn arg. Rewrite the
-            // path to its mangled bundled-locus name and
-            // dispatch the same way as the bare-name arm above.
+            // m81 + m84: path-qualified stdlib literal in expression
+            // position. `std::io::tcp::Stream { conn_fd }` resolves
+            // to a locus → LocusRef; `std::http::Request { ... }`
+            // resolves to a `type` (record) → TypeRef. The mangled-
+            // name lookup is shared; the dispatch (locus vs type)
+            // follows whichever map the mangled name lives in.
             Expr::Struct { path, inits, .. }
                 if path.segments.len() > 1 => {
                 let segs: Vec<&str> = path
@@ -10301,21 +10323,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .iter()
                     .map(|s| s.name.as_str())
                     .collect();
-                let mangled = stdlib_locus_for_path(&segs).ok_or_else(|| {
+                let mangled = stdlib_mangled_for_path(&segs).ok_or_else(|| {
                     CodegenError::Unsupported(format!(
                         "qualified-name struct literal `{}` in expression position",
                         segs.join("::")
                     ))
                 })?;
-                if !self.user_loci.contains_key(mangled) {
-                    return Err(CodegenError::Unsupported(format!(
-                        "stdlib locus `{}` (mangled `{}`) not found",
+                if self.user_loci.contains_key(mangled) {
+                    let ptr = self.lower_locus_instantiation(mangled, inits, scope)?;
+                    Ok((ptr.into(), LotusType::LocusRef(mangled.to_string())))
+                } else if self.user_types.contains_key(mangled) {
+                    let ptr = self.lower_user_type_instantiation(mangled, inits, scope)?;
+                    Ok((ptr.into(), LotusType::TypeRef(mangled.to_string())))
+                } else {
+                    Err(CodegenError::Unsupported(format!(
+                        "stdlib path `{}` (mangled `{}`) not found in \
+                         user_loci or user_types",
                         segs.join("::"),
                         mangled
-                    )));
+                    )))
                 }
-                let ptr = self.lower_locus_instantiation(mangled, inits, scope)?;
-                Ok((ptr.into(), LotusType::LocusRef(mangled.to_string())))
             }
             Expr::Struct { path, inits, .. }
                 if path.segments.len() == 1
@@ -11633,6 +11660,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_env_var_exists(args, scope)?;
                 Ok(())
             }
+            ["std", "str", "index_of"] => {
+                let _ = self.lower_std_str_index_of(args, scope)?;
+                Ok(())
+            }
             ["std", "str", "parse_int"] => {
                 let _ = self.lower_std_str_parse_int(args, scope)?;
                 Ok(())
@@ -11710,8 +11741,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "env", "var_exists"] => {
                 self.lower_std_env_var_exists(args, scope)
             }
+            ["std", "str", "index_of"] => {
+                self.lower_std_str_index_of(args, scope)
+            }
             ["std", "str", "parse_int"] => {
                 self.lower_std_str_parse_int(args, scope)
+            }
+            // m84: std::http::parse_request(raw: String) -> Request.
+            // Implementation lives in stdlib.ap as the bare-name
+            // free fn `__parse_http_request`. The path-call form is
+            // the user-facing API; routing here keeps the stdlib's
+            // private fn names hidden behind the std:: namespace.
+            ["std", "http", "parse_request"] => {
+                let result = self.lower_user_fn_call(
+                    "__parse_http_request",
+                    args,
+                    scope,
+                )?;
+                result.ok_or_else(|| {
+                    CodegenError::Unsupported(
+                        "std::http::parse_request returns Request but \
+                         called in a position that expects no value"
+                            .to_string(),
+                    )
+                })
             }
             ["std", "str", "can_parse_int"] => {
                 self.lower_std_str_can_parse_int(args, scope)
@@ -11999,6 +12052,57 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let call = self
             .builder
             .build_call(f, &[s_val.into()], "parse.int.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let v = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((v, LotusType::Int))
+    }
+
+    /// Lower `std::str::index_of(s: String, sub: String) -> Int`.
+    /// Returns the byte index of the first occurrence of `sub` in
+    /// `s`, or -1 when `sub` doesn't appear. Empty needle returns
+    /// 0 by convention. Wraps `lotus_str_index_of` directly. m84:
+    /// the substring-search primitive HTTP request parsing leans
+    /// on (find ` ` between method and path, `\r\n` to bound the
+    /// request line).
+    fn lower_std_str_index_of(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::index_of takes 2 args (s, sub), got {}",
+                args.len()
+            )));
+        }
+        let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
+        if s_ty != LotusType::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::index_of: s must be String, got {:?}",
+                s_ty
+            )));
+        }
+        let (sub_val, sub_ty) = self.lower_expr(&args[1], scope)?;
+        if sub_ty != LotusType::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::index_of: sub must be String, got {:?}",
+                sub_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_str_index_of")
+            .expect("lotus_str_index_of declared");
+        let call = self
+            .builder
+            .build_call(
+                f,
+                &[s_val.into(), sub_val.into()],
+                "str.index_of.ret",
+            )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let v = call
             .try_as_basic_value()
@@ -12681,7 +12785,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .iter()
                 .map(|s| s.name.as_str())
                 .collect();
-            if let Some(mangled) = stdlib_locus_for_path(&segs) {
+            // Use the generalized lookup, then narrow to loci.
+            // m84: path-qualified stdlib `type` records resolve via
+            // the same table; we mustn't accidentally classify them
+            // as locus literals (they have no dissolve to defer).
+            if let Some(mangled) = stdlib_mangled_for_path(&segs) {
                 return self.user_loci.contains_key(mangled);
             }
         }

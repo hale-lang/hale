@@ -21,6 +21,131 @@
 // (which references Stream in its on_connection callback type)
 // follows.
 
+// m84 — HTTP types: Request and Response.
+//
+// Both are `type` (records), not loci — they're plain data
+// with no lifecycle. Returnable from fns by value, embeddable
+// in larger structures, no dissolve to schedule. User code
+// references them via `std::http::Request` / `std::http::Response`
+// (path-rewritten to `__StdHttp*` at codegen time).
+//
+// Request carries the parsed request line (method, path,
+// HTTP version) and the raw body String. Headers are NOT
+// surfaced in v0 — adding them needs either a generic
+// String→String map type or a fixed-size array of
+// (key, value) tuples; both are deferred to a later
+// milestone. Most static-content servers don't need request
+// headers, and the doc server (Phase 5) certainly doesn't.
+type __StdHttpRequest {
+    method: String;
+    path: String;
+    version: String;
+    body: String;
+}
+
+// Response carries the status code (200, 404, etc.) plus a
+// content_type and body. v0 emits a fixed header set
+// (Content-Type, Content-Length, Connection: close); user
+// code can't currently add custom headers without a future
+// header-map milestone. content_type defaults are convention
+// rather than required: the writer just emits whatever
+// String is set.
+type __StdHttpResponse {
+    status: Int;
+    content_type: String;
+    body: String;
+}
+
+// Map a numeric HTTP status to its canonical reason phrase.
+// v0 covers the codes a doc-server actually emits (200/301/
+// 400/404/500); any other input falls through to a generic
+// phrase. Lives in the stdlib so user code that wants
+// reason-phrase rendering doesn't have to redo this table.
+fn __status_phrase(status: Int) -> String {
+    if status == 200 { return "OK"; }
+    if status == 301 { return "Moved Permanently"; }
+    if status == 400 { return "Bad Request"; }
+    if status == 404 { return "Not Found"; }
+    if status == 500 { return "Internal Server Error"; }
+    return "Status";
+}
+
+// m84 — parse one HTTP request from a raw buffer.
+//
+// Pulls the request line (`METHOD PATH HTTP/VER\r\n`) and
+// the body (everything after `\r\n\r\n`). Headers between
+// the request line and the blank line are skipped — they
+// appear neither on the resulting Request nor on the wire
+// for the response. Malformed inputs (no CRLF in request
+// line, missing space, etc.) yield a Request with empty
+// fields rather than erroring; callers that care should
+// check `req.method == ""` and respond with 400.
+//
+// v0 assumption: the entire request-line + headers fit in
+// the recv buffer. Real-world browser GETs are well within
+// 4-8KB, so the m83 Listener's Stream.recv(8192) call covers
+// the common case. Streaming reassembly for oversized
+// requests is a later milestone.
+fn __parse_http_request(raw: String) -> std::http::Request {
+    // Locate end of request line.
+    let line_end = std::str::index_of(raw, "\r\n");
+    if line_end < 0 {
+        return std::http::Request {
+            method: "",
+            path: "",
+            version: "",
+            body: ""
+        };
+    }
+    let request_line = raw[0..line_end];
+    let raw_len = len(raw);
+
+    // Body: everything past the first `\r\n\r\n` — empty if
+    // not present (e.g. on a header-less GET).
+    let header_end = std::str::index_of(raw, "\r\n\r\n");
+    let mut body = "";
+    if header_end >= 0 {
+        let body_start = header_end + 4;
+        if body_start < raw_len {
+            body = raw[body_start..raw_len];
+        }
+    }
+
+    // Split request line on spaces: METHOD SP PATH SP VERSION.
+    let sp1 = std::str::index_of(request_line, " ");
+    if sp1 < 0 {
+        return std::http::Request {
+            method: "",
+            path: "",
+            version: "",
+            body: body
+        };
+    }
+    let line_len = len(request_line);
+    let method = request_line[0..sp1];
+    let after_method = request_line[(sp1 + 1)..line_len];
+
+    let sp2 = std::str::index_of(after_method, " ");
+    if sp2 < 0 {
+        return std::http::Request {
+            method: method,
+            path: after_method,
+            version: "",
+            body: body
+        };
+    }
+    let after_method_len = len(after_method);
+    let path = after_method[0..sp2];
+    let version = after_method[(sp2 + 1)..after_method_len];
+
+    return std::http::Request {
+        method: method,
+        path: path,
+        version: version,
+        body: body
+    };
+}
+
 // m81: Stream locus — owns one connected TCP fd, exposes
 // send/recv via fn members, closes on dissolve. User code
 // receives a Stream as the parameter to a callback (via
