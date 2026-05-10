@@ -831,3 +831,93 @@ fn nested_builtin_result_with_box_arg() {
     assert!(status.success(), "exited non-zero: {:?}", status);
     assert!(stdout.contains("ok: 9"), "got: {:?}", stdout);
 }
+
+// === m67 ====================================================
+// Bare-name struct literal resolution at return + struct
+// field-init sites.
+
+#[test]
+fn bare_name_resolves_at_return_position() {
+    // `fn make_box() -> Box<Int> { return Box { value: 5 }; }` —
+    // the bare `Box { ... }` rewrites to `Box_Int` because the
+    // fn's declared return type is `Box<Int>`.
+    let src = r#"
+        type Box<T> {
+            value: T;
+        }
+
+        fn make_box() -> Box<Int> {
+            return Box { value: 5 };
+        }
+
+        fn main() {
+            let b = make_box();
+            println("b.value=", b.value);
+        }
+    "#;
+    let (stdout, status) = build_and_run("bare_return", src);
+    assert!(status.success(), "exited non-zero: {:?}", status);
+    assert!(stdout.contains("b.value=5"), "got: {:?}", stdout);
+}
+
+#[test]
+fn bare_name_resolves_at_struct_field_init() {
+    // `Outer { inner: Box { value: 7 } }` — the inner bare
+    // `Box { ... }` rewrites to `Box_Int` because Outer.inner's
+    // declared field type is `Box<Int>`.
+    let src = r#"
+        type Box<T> {
+            value: T;
+        }
+
+        type Outer {
+            inner: Box<Int>;
+            label: String;
+        }
+
+        fn main() {
+            let o = Outer { inner: Box { value: 7 }, label: "hi" };
+            println("o.inner.value=", o.inner.value, " o.label=", o.label);
+        }
+    "#;
+    let (stdout, status) = build_and_run("bare_field_init", src);
+    assert!(status.success(), "exited non-zero: {:?}", status);
+    assert!(
+        stdout.contains("o.inner.value=7 o.label=hi"),
+        "got: {:?}",
+        stdout,
+    );
+}
+
+#[test]
+fn bare_name_resolves_at_nested_field_init() {
+    // Two-level nesting: Outer.middle is Pair<Int>, and Pair has
+    // a Box<Int>. The middle's `Pair { ... }` rewrites; inside
+    // it, `Box { ... }` rewrites against Pair's field type too.
+    let src = r#"
+        type Box<T> {
+            value: T;
+        }
+
+        type Pair<T> {
+            a: Box<T>;
+            tag: String;
+        }
+
+        type Outer {
+            middle: Pair<Int>;
+        }
+
+        fn main() {
+            let o = Outer { middle: Pair { a: Box { value: 11 }, tag: "wrapped" } };
+            println("o.middle.a.value=", o.middle.a.value, " o.middle.tag=", o.middle.tag);
+        }
+    "#;
+    let (stdout, status) = build_and_run("bare_nested", src);
+    assert!(status.success(), "exited non-zero: {:?}", status);
+    assert!(
+        stdout.contains("o.middle.a.value=11 o.middle.tag=wrapped"),
+        "got: {:?}",
+        stdout,
+    );
+}

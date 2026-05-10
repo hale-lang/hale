@@ -1847,6 +1847,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // a body containing `Box<Int>` which itself needs
         // synthesizing). The queue closes when discovery on the
         // most recent synthesis adds nothing new.
+        // m67: split the generic-instantiation pass into two
+        // phases so a synthesized type can reference another
+        // synthesized type regardless of queue order. Phase 1
+        // synthesizes everything (no declarations) while
+        // continuing to discover nested generic uses; phase 2
+        // declares synthesized types in dependency order via a
+        // retry loop that defers any decl whose field-type
+        // resolution would fail because a dep isn't declared
+        // yet. The pre-m67 BFS-then-declare path worked for
+        // linear chains (Outer → Pair_Int → Box_Int) only when
+        // declared in reverse queue order; for fan-in cases
+        // where two outer types share a nested generic, the
+        // queue order doesn't yield a valid topological sort.
+        let mut synthesized_types: Vec<TypeDecl> = Vec::new();
         let mut synthesized_loci: Vec<LocusDecl> = Vec::new();
         let mut next_idx = 0usize;
         while next_idx < requests.len() {
@@ -1858,7 +1872,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         template, &args,
                     )?;
                 // Walk the synthesized decl's body for nested
-                // generic uses before declaring.
+                // generic uses; deps go in the queue and get
+                // synthesized in subsequent loop iterations.
                 if let TypeDeclBody::Struct(fields) = &synthesized.body {
                     for f in fields {
                         Self::collect_generic_uses(
@@ -1882,7 +1897,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }
                     }
                 }
-                self.declare_user_type(&synthesized)?;
+                synthesized_types.push(synthesized);
             } else if let Some(template) =
                 generic_locus_decls.get(&template_name)
             {
@@ -1904,6 +1919,56 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 synthesized_loci.push(synthesized);
             }
+        }
+        // Phase 2: declare synthesized types in dependency order.
+        // Each iteration, attempt every still-pending decl; keep
+        // those whose declarations succeed and retry the rest.
+        // Lack of progress in a full pass means a cycle (which
+        // shouldn't happen for value-shaped generic types — they
+        // can't directly contain themselves) and surfaces a
+        // clear error.
+        let mut pending = synthesized_types;
+        while !pending.is_empty() {
+            let mut next_pending: Vec<TypeDecl> = Vec::new();
+            let mut progress = false;
+            // Snapshot user_types/user_enums state before the
+            // pass so a partial registration in declare_user_type
+            // (struct opaque type creation, enum tag table) can
+            // be detected and retried cleanly. In practice
+            // declare_user_type either fully succeeds (registers
+            // in user_types/user_enums) or returns Err before
+            // any partial state lands; the retry loop relies on
+            // that contract.
+            for syn in pending.drain(..) {
+                let mangled = syn.name.name.clone();
+                match self.declare_user_type(&syn) {
+                    Ok(()) => {
+                        progress = true;
+                    }
+                    Err(CodegenError::Unsupported(msg))
+                        if msg.contains("not synthesized")
+                            || msg.contains("unknown type name") =>
+                    {
+                        // Defer: a referenced dep isn't declared
+                        // yet. Keep for retry.
+                        let _ = mangled;
+                        next_pending.push(syn);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            if !progress {
+                let names: Vec<String> = next_pending
+                    .iter()
+                    .map(|t| t.name.name.clone())
+                    .collect();
+                return Err(CodegenError::Unsupported(format!(
+                    "generic-type dependency cycle or unresolvable \
+                     dep among synthesized monomorphs: {:?}",
+                    names
+                )));
+            }
+            pending = next_pending;
         }
         // Register generic locus templates so user_loci lookups
         // and bare-name-resolution paths can find them.
@@ -3160,6 +3225,57 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Returns `None` when no rewrite applies — caller falls back
     /// to the original path. Idempotent: if `bare` is already a
     /// mangled name in `user_types`, the rewrite is skipped.
+    /// m67: like resolve_generic_struct_path but takes a target
+    /// LotusType (the declared type at the use site — return slot
+    /// or struct field) instead of a TypeExpr ascription. Used at
+    /// return statements (where the target is the fn's declared
+    /// return LotusType) and struct field initializers (where the
+    /// target is the field's declared LotusType). The caller has
+    /// already converted the source-position TypeExpr through
+    /// `type_expr_to_lotus`, so we get the mangled name directly.
+    fn resolve_generic_struct_path_for_lotus_type(
+        &self,
+        bare: &QualifiedName,
+        target: &LotusType,
+    ) -> Option<QualifiedName> {
+        if bare.segments.len() != 1 {
+            return None;
+        }
+        let bare_name = &bare.segments[0].name;
+        // Already concrete — leave it alone.
+        if self.user_types.contains_key(bare_name)
+            || self.user_loci.contains_key(bare_name)
+        {
+            return None;
+        }
+        let target_name = match target {
+            LotusType::TypeRef(n) => n,
+            LotusType::LocusRef(n) => n,
+            LotusType::Enum(n) => n,
+            _ => return None,
+        };
+        // The target must be a mangled monomorph of the bare name:
+        // it has to start with `<bare>_` and exist in user_types or
+        // user_loci. The underscore separator is what mangle_name
+        // emits between template name and each arg.
+        let prefix = format!("{}_", bare_name);
+        if !target_name.starts_with(&prefix) {
+            return None;
+        }
+        if !self.user_types.contains_key(target_name)
+            && !self.user_loci.contains_key(target_name)
+        {
+            return None;
+        }
+        Some(QualifiedName {
+            segments: vec![Ident {
+                name: target_name.clone(),
+                span: bare.segments[0].span,
+            }],
+            span: bare.span,
+        })
+    }
+
     fn resolve_generic_struct_path(
         &self,
         bare: &QualifiedName,
@@ -8696,7 +8812,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
             (Some(e), Some(declared_ty)) => {
-                let (v, got_ty) = self.lower_expr(e, scope)?;
+                // m67: rewrite a bare-name struct literal in return
+                // position to its mangled monomorph using the fn's
+                // declared return type as the target.
+                let rewritten;
+                let e_to_lower: &Expr = match e {
+                    Expr::Struct { path, inits, span } => {
+                        match self
+                            .resolve_generic_struct_path_for_lotus_type(
+                                path,
+                                &declared_ty,
+                            )
+                        {
+                            Some(new_path) => {
+                                rewritten = Expr::Struct {
+                                    path: new_path,
+                                    inits: inits.clone(),
+                                    span: *span,
+                                };
+                                &rewritten
+                            }
+                            None => e,
+                        }
+                    }
+                    _ => e,
+                };
+                let (v, got_ty) = self.lower_expr(e_to_lower, scope)?;
                 if got_ty != declared_ty {
                     return Err(CodegenError::Unsupported(format!(
                         "return type mismatch: declared {:?}, got {:?}",
@@ -13251,12 +13392,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get(fname.as_str())
                 .copied()
                 .expect("field presence checked above");
-            let (val, val_ty) = self.lower_expr(expr, scope)?;
             let (idx, declared_ty) = info
                 .fields
                 .get(fname)
                 .cloned()
                 .expect("field declared by declare_user_type");
+            // m67: rewrite a bare-name struct literal in field-
+            // init position to its mangled monomorph using the
+            // field's declared LotusType as the target.
+            let rewritten;
+            let expr_to_lower: &Expr = match expr {
+                Expr::Struct { path, inits, span } => {
+                    match self
+                        .resolve_generic_struct_path_for_lotus_type(
+                            path,
+                            &declared_ty,
+                        )
+                    {
+                        Some(new_path) => {
+                            rewritten = Expr::Struct {
+                                path: new_path,
+                                inits: inits.clone(),
+                                span: *span,
+                            };
+                            &rewritten
+                        }
+                        None => expr,
+                    }
+                }
+                _ => expr,
+            };
+            let (val, val_ty) = self.lower_expr(expr_to_lower, scope)?;
             if val_ty != declared_ty {
                 return Err(CodegenError::Unsupported(format!(
                     "type `{}` field `{}` type mismatch: declared {:?}, \

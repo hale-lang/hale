@@ -1,8 +1,36 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work
-in a new session. State as of **m66: parser `>>` split for
-nested generic args**. `Box<Box<Int>>`,
+in a new session. State as of **m67: bare-name resolution at
+return + struct field-init sites + dependency-aware generic
+type declaration**. Two language ergonomic gaps closed plus a
+substrate hardening: (1) `fn make_box() -> Box<Int> { return
+Box { value: 5 }; }` — the bare `Box { ... }` rewrites to
+`Box_Int` using the fn's declared return LotusType. (2)
+`Outer { inner: Box { value: 7 } }` — the nested `Box { ... }`
+rewrites against Outer.inner's declared field LotusType.
+Helper `resolve_generic_struct_path_for_lotus_type` handles
+both: takes a bare path + a target LotusType (TypeRef /
+LocusRef / Enum mangled name), returns a rewritten path if
+the target matches the bare's expected mangle. (3) The
+generic-type synthesis pass split into two phases: phase 1
+synthesizes everything (no decls) while continuing to
+discover nested generic uses; phase 2 declares synthesized
+types via a retry loop that defers decls whose deps aren't
+yet declared. The pre-m67 declare-inline path failed at
+fan-in cases (`Outer { middle: Pair<Int> }` where Pair has
+`a: Box<T>`) because Pair_Int was queued before Box_Int and
+declared first, but its declaration referenced Box_Int via
+`type_expr_to_lotus`. The retry loop tolerates any DAG order
+and surfaces a cycle error if no progress is made. Three
+new tests in generics.rs:
+`bare_name_resolves_at_return_position`,
+`bare_name_resolves_at_struct_field_init`,
+`bare_name_resolves_at_nested_field_init` (the
+last exercises the new dep-aware decl loop). 129 tests pass
+(was 126; +3 from generics.rs); 54 example builds
+unaffected. State before that was **m66: parser `>>` split
+for nested generic args**. `Box<Box<Int>>`,
 `Result<Box<Int>, String>`, `Rich<Box<Int>>` etc. now parse
 cleanly. The lexer continues to emit `Shr` for `>>` (it must,
 because shift-right needs the token in expression position);
@@ -2625,11 +2653,13 @@ based on whichever workload-shaped example pushes hardest):
    versioning. The serializer/deserializer hook shape from m60
    already routes through; this is a body-only change.
 
-3. **Bare-name resolution at return + struct-field-init sites
-   (m61d).** Currently `let h: Holder<Int> = Holder { ... };`
-   rewrites the bare name; `return Holder { ... };` and
-   `Outer { inner: Holder { ... } }` don't. Tractable; needs
-   walker extensions.
+3. **Bare-name resolution at return + struct-field-init sites —
+   DONE (m67).** Both sites use the same target-LotusType-driven
+   rewrite as the m61b let-ascription path. The same milestone
+   also reworked the generic-type synthesis pass into two phases
+   (synthesize-all then retry-declare) so dep-fan-in cases like
+   `Outer.middle: Pair<Int>` where `Pair<T>` contains `Box<T>`
+   declare cleanly regardless of queue order.
 
 4. **Parser `>>` ambiguity for nested generics — DONE (m66).**
    `expect_gt_or_split_shr` splits `>>` in-place at all three
@@ -2847,7 +2877,7 @@ System has:
 - `gcc` 13.x
 
 Cargo workspace builds clean. `cargo test --workspace --tests` passes
-all 126 tests (the locus-with-run test runs 3×500ms sleeps so the
+all 129 tests (the locus-with-run test runs 3×500ms sleeps so the
 runtime + codegen integration buckets clock ~1.5s each; m57 added
 two transport round-trip tests under tests/transport.rs that fork
 listener + connector subprocesses; m58 added two more under
