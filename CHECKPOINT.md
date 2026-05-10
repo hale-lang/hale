@@ -16,8 +16,12 @@ paths plus the formal reference:
   substantively written** in the meta-spell register; STYLE.md's
   per-tree register section pins the framing as load-bearing for
   future contributors.
-- `docs/book/` — The Aperio Programming Language (12-chapter tutorial
-  outline, intro page filled, chapters stubbed).
+- `docs/book/` — The Aperio Programming Language. **All 12 chapters
+  substantively written** (~5,200 lines of prose). Layered
+  substrate-up tutorial from "Why Aperio?" through "Hello, locus"
+  through types, lifecycle, contracts, bus, closures, cross-process,
+  generics, perspectives, recovery, and the trellis-pair capstone.
+  Neutral systems-language tutorial register (per STYLE.md).
 - `docs/reference/` — The Aperio Reference (lexical / types /
   expressions / statements / loci / bus / closures / recovery /
   generics / memory / runtime / deployment / grammar / glossary
