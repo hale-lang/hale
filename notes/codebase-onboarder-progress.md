@@ -1,8 +1,11 @@
 # Codebase-onboarder — progress report
 
-> Date: 2026-05-10. Snapshot after the m96+m97+m100+m102 +
-> std::lang session. Plan: `notes/codebase-onboarding-design.md`.
+> Date: 2026-05-10. **Updated** after the polished-middle-step
+> arc (apps/onboard, per-codebase overrides, handler route
+> derivation, goroutine target resolution).
+> Plan: `notes/codebase-onboarding-design.md`.
 > Validation: `notes/three-tower-validation.md`.
+> Shape rules: `notes/onboarding-shape-rules.md`.
 
 ## The pitch (one paragraph)
 
@@ -62,6 +65,25 @@ Each app is locus-shaped per the apps-are-loci ethos. The
 **namespace-lotus pattern** — empty `params { }`, only methods,
 self-method calls compose.
 
+### ✅ Shipped — the polished middle-step product
+
+| What                              | Status        |
+|-----------------------------------|---------------|
+| Tower aggregator / cross-tower join (m102.5) | done — `apps/tower-join` |
+| Polished CLI recognition report   | done — `apps/onboard` |
+| Per-codebase overrides loop       | done — `<dir>/.aperio-overrides` |
+| HTTP handler → route derivation   | done — handlers show routes inline |
+| Goroutine call-site → target file | done — cross-file FN_DEF aggregate |
+| Shape-rules doc for agents        | done — `notes/onboarding-shape-rules.md` |
+| `std::lang::Morpheme` (stdlib)    | done — flavor + overrides params |
+
+The agentic feedback loop is closed end-to-end: agent runs
+onboard → reads structured recognition report with cross-file
+flow + agent-actionable unknowns → resolves unknowns by reading
+flagged files → drops decisions in `<dir>/.aperio-overrides` →
+re-runs onboard, recognition crystallizes. Universal seed
+stays clean; per-codebase vocabulary lives next to the codebase.
+
 ### ⏳ Not yet — rendering and follow-ons
 
 | What                              | Milestone | Effort       | Status |
@@ -78,6 +100,37 @@ self-method calls compose.
 | `std::mcp` (MCP server)           | m106      | multi-month  | deferred |
 | Rust/Python/TS via Lang flavor arms | parallel | ~half-day each | deferred until Go validated |
 
+## Now-open follow-ups
+
+Items below the critical path; useful but not blocking the
+demo product:
+
+1. **Validation on a real-world Go project.** Micro-fixtures
+   landed; a small open-source project would surface scaling
+   issues (parsing edge cases, lookup-miss patterns at scale,
+   recognition narrative quality). ~1 day to set up + iterate.
+2. **Tower-join JSON parity with onboard.** Onboard surfaces
+   handler routes + goroutine target files; tower-join's JSON
+   doesn't yet. Quick mirror refactor (the unified walk
+   shipped; just thread WIRE + FN_DEF aggregates through).
+3. **Add a Rust flavor to `std::lang::Lang`.** Validates the
+   single-locus + flavor-switch pattern by adding a second
+   per-language implementation. Requires bundling
+   `tree-sitter-rust` in `aperio-ts-shim`. ~half-day.
+4. **Per-framework HTTP routing.** Currently detects
+   `*.HandleFunc` (stdlib net/http). Chi/Echo/Gin/Gorilla
+   variations (`r.Get`, `e.GET`, `app.Get`, etc.) extend by
+   adding more field_identifier names to
+   `is_handler_registration`'s match list.
+5. **Method-based fn detection.** Currently
+   `extract_spawn_target` only resolves bare-identifier callees
+   (`go someFn()`). Selector callees (`go obj.Method()`) return
+   "" — agent fills these in or they remain unresolved.
+6. **Recognition narrative depth.** Current narrative is
+   template-driven on summary counts; could grow cross-file
+   relationship descriptions ("MainL spawns WorkerL via
+   backgroundWorker; WorkerL drains via parent dissolve").
+
 ## Distance to the demo product
 
 Per the design doc, the **demo-product candidate** is m96 + m97
@@ -91,25 +144,23 @@ We're 3-of-N done on that, where N includes m98+m99+m103.
 
 ## Critical path before any visualization investment
 
-Per `notes/three-tower-validation.md`, three things to ship
-before m98 starts:
+Per `notes/three-tower-validation.md`, three items were
+identified as needing to ship before m98. Status update:
 
-1. **Tower aggregator** — roll file-level entries up into
-   package-level loci. Pure Aperio source over emitted JSON.
-   ~1 day.
-2. **Cross-tower join layer** — link goroutine call-sites to
-   target fn decls; HTTP handlers to their `HandleFunc` wiring
-   (for subject derivation); motion-forms to operational loci.
-   The composition that turns three independent JSONs into one
-   unified tower model. ~3-5 days.
-3. **Domain lookup table expansion** — current unknown rate is
-   ~50% on the micro-fixture (`Request`, `Session`, `Audit`
-   morphemes mark unknown). Curation pass against a top-100 Go
-   projects vocabulary should drop that to <30%. ~half-day of
-   curation work, no code.
+1. **Tower aggregator** — ✅ shipped via `apps/tower-join`.
+2. **Cross-tower join layer** — ✅ shipped. Cross-tower-
+   agreement rule emits loci; HTTP handler → route derivation
+   surfaces subjects; goroutine call-site → target file
+   resolution does cross-file flow inference without LSP.
+3. **Domain lookup table expansion** — ✅ superseded by the
+   agent-driven reframe (`notes/onboarding-shape-rules.md`).
+   Per-codebase overrides via `<dir>/.aperio-overrides` close
+   the agent loop — agents resolve unknowns by reading source,
+   not by extending a universal table. The seed stays at 15
+   universally-clear entries.
 
-None need new substrate. Pure Aperio composition over what's
-shipped.
+All three items: done, with interpretation refined per the
+agent-first reframe.
 
 ## Friction logged this session
 
