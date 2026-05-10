@@ -1,4 +1,4 @@
-// io-demo — Phase 1 capstone.
+// io-demo — Phase 1 capstone (parameterized via env + argv).
 //
 // Combines std::io::fs (config + log) with std::io::tcp
 // (listener) into a single Aperio program. The shape of "open
@@ -6,28 +6,45 @@
 // read in one sitting, complete enough to exercise every
 // primitive Phase 1 ships.
 //
+// Parameterization (m78 follow-up):
+//   argv[1]                          — optional port (default 9876)
+//   $APERIO_IO_DEMO_CONFIG_PATH      — config file (default /tmp/...)
+//   $APERIO_IO_DEMO_LOG_PATH         — log file    (default /tmp/...)
+//
 // What it does:
 //   1. Probe an optional config file. If present, read its
 //      contents into the log payload; otherwise use a default.
-//   2. Bind a TCP Listener on 127.0.0.1:9876, wait for one
+//   2. Bind a TCP Listener on 127.0.0.1:<port>, wait for one
 //      connection, log the accepted fd, close.
-//   3. Write the log payload to a known path.
+//   3. Write the log payload to the chosen log path.
 //   4. Print where the log went and exit.
 //
-// To run manually:
+// Run manually:
 //   aperio run examples/io-demo/main.ap
-// then from a second terminal:
-//   nc 127.0.0.1 9876
-//
-// The integration test for this example (in
-// crates/aperio-codegen/tests/io_demo.rs) drives the
-// connection from Rust so CI runs without manual
-// intervention.
+// or with explicit port:
+//   aperio run examples/io-demo/main.ap 9000
 
 fn main() {
-    let config_path: String = "/tmp/aperio_io_demo_config.txt";
-    let log_path: String = "/tmp/aperio_io_demo_log.txt";
+    // ---- resolve config + log paths (env > defaults) ----
+    let mut config_path: String = "/tmp/aperio_io_demo_config.txt";
+    if std::env::var_exists("APERIO_IO_DEMO_CONFIG_PATH") {
+        config_path = std::env::var("APERIO_IO_DEMO_CONFIG_PATH");
+    }
+    let mut log_path: String = "/tmp/aperio_io_demo_log.txt";
+    if std::env::var_exists("APERIO_IO_DEMO_LOG_PATH") {
+        log_path = std::env::var("APERIO_IO_DEMO_LOG_PATH");
+    }
 
+    // ---- resolve port (argv[1] > default) ----
+    let mut port: Int = 9876;
+    if std::env::args_count() > 1 {
+        let parsed = std::str::parse_int(std::env::arg(1));
+        if parsed > 0 {
+            port = parsed;
+        }
+    }
+
+    // ---- read config payload ----
     let mut payload: String = "default visit\n";
     if std::io::fs::file_exists(config_path) {
         payload = std::io::fs::read_file(config_path);
@@ -36,12 +53,14 @@ fn main() {
         println("config: none, using default");
     }
 
-    println("io-demo: listening on 127.0.0.1:9876");
+    // ---- listen for one connection ----
+    println("io-demo: listening on 127.0.0.1:", port);
     std::io::tcp::Listener {
         host: "127.0.0.1",
-        port: 9876,
+        port: port,
     };
 
+    // ---- write log ----
     let r: Int = std::io::fs::write_file(log_path, payload);
     if r == 0 {
         println("io-demo: wrote log to ", log_path);

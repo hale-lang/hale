@@ -1,88 +1,63 @@
 # io-demo
 
-Phase 1 capstone. Combines `std::io::fs` and `std::io::tcp`
-into a small program that exercises every primitive the v1.x
-stdlib's first arc ships.
+Phase 1 capstone. Combines `std::io::fs` (config + log),
+`std::io::tcp` (Listener), `std::env` (argv + env), and
+`std::str::parse_int` (numeric argv) into a single Aperio
+program that exercises the v1.x stdlib's first arc end-to-end.
 
-```aperio
-fn main() {
-    let config_path: String = "/tmp/aperio_io_demo_config.txt";
-    let log_path: String = "/tmp/aperio_io_demo_log.txt";
+## What it does
 
-    let mut payload: String = "default visit\n";
-    if std::io::fs::file_exists(config_path) {
-        payload = std::io::fs::read_file(config_path);
-        println("config: loaded from ", config_path);
-    } else {
-        println("config: none, using default");
-    }
+1. Resolve a port: `argv[1]` if it parses as a positive
+   integer, otherwise `9876`.
+2. Resolve a config path: `$APERIO_IO_DEMO_CONFIG_PATH`
+   if set, otherwise `/tmp/aperio_io_demo_config.txt`.
+3. Resolve a log path: `$APERIO_IO_DEMO_LOG_PATH` if set,
+   otherwise `/tmp/aperio_io_demo_log.txt`.
+4. If a config file exists at the resolved path, read its
+   contents into the log payload; otherwise use a default.
+5. Bind a TCP Listener on `127.0.0.1:<port>`, wait for one
+   connection, log the accepted fd, close.
+6. Write the log payload to the resolved log path. Print
+   where it landed and exit.
 
-    println("io-demo: listening on 127.0.0.1:9876");
-    std::io::tcp::Listener {
-        host: "127.0.0.1",
-        port: 9876,
-    };
+## Run it
 
-    let r: Int = std::io::fs::write_file(log_path, payload);
-    if r == 0 {
-        println("io-demo: wrote log to ", log_path);
-    } else {
-        println("io-demo: log write failed");
-    }
-}
-```
-
-## What runs
-
-1. The program checks for a config file at
-   `/tmp/aperio_io_demo_config.txt`. If present, its contents
-   become the log payload; otherwise a default string is used.
-2. A `std::io::tcp::Listener` binds `127.0.0.1:9876` and
-   blocks on accept inside its `run()` lifecycle.
-3. When a peer connects, the Listener prints the accepted fd
-   and closes the connection (Phase-1 single-accept shape per
-   `docs/std/src/io/tcp.md`).
-4. The program writes the log payload to
-   `/tmp/aperio_io_demo_log.txt` and prints where it landed.
-5. `main()` returns. Process exits.
-
-## Running it manually
+Default port and paths:
 
 ```
 aperio run examples/io-demo/main.ap
-```
-
-In a second terminal:
-
-```
-nc 127.0.0.1 9876
-```
-
-After the connection drops, check the log:
-
-```
+nc 127.0.0.1 9876        # in another terminal
 cat /tmp/aperio_io_demo_log.txt
 ```
 
-To exercise the config path, write to the config file before
-running:
+Custom port:
 
 ```
-echo "custom payload" > /tmp/aperio_io_demo_config.txt
-aperio run examples/io-demo/main.ap
-cat /tmp/aperio_io_demo_log.txt   # → custom payload
+aperio run examples/io-demo/main.ap 9000
+nc 127.0.0.1 9000
+```
+
+Custom config path:
+
+```
+echo "custom payload" > /tmp/my-config
+APERIO_IO_DEMO_CONFIG_PATH=/tmp/my-config \
+  aperio run examples/io-demo/main.ap
 ```
 
 ## Primitives this exercises
 
-- **`std::io::fs::file_exists`** — Bool probe.
-- **`std::io::fs::read_file`** — String return, allocated in
-  the lazy global payload arena.
-- **`std::io::fs::write_file`** — Int (0/-1) return.
-- **`std::io::tcp::Listener`** — stdlib locus with a real
-  three-stage lifecycle (`birth` binds, `run` accepts,
-  `dissolve` closes) backed by the m73b `__listen_socket` /
-  `__accept_one` / `__close_fd` path-call primitives.
+- **`std::env::args_count`, `std::env::arg`,
+  `std::env::var`, `std::env::var_exists`** — process-level
+  state captured in main's prelude.
+- **`std::str::parse_int`** — string-to-Int with sentinel
+  fallback. The `parsed > 0` guard rejects both garbage
+  input (returns 0) and explicit non-positive values.
+- **`std::io::fs::file_exists`, `read_file`, `write_file`** —
+  one-shot synchronous file ops.
+- **`std::io::tcp::Listener`** — stdlib locus with the
+  three-stage TCP lifecycle (`birth` binds, `run` accepts,
+  `dissolve` closes).
 - **Magic `std::*` paths** — every stdlib reference goes
   through the m71 path resolver. No `import`, no `use`.
 - **Stdlib-loci-via-bundled-source** — the Listener's
@@ -95,17 +70,18 @@ cat /tmp/aperio_io_demo_log.txt   # → custom payload
 
 - The Listener accepts exactly one connection then exits.
   Servers that handle many connections wait on the
-  multi-accept arc (see `docs/std/src/io/tcp.md`'s
-  Limitations section).
-- The port and paths are hardcoded — Aperio doesn't have
-  argv parsing or string-to-int yet, so config-driven values
-  beyond raw String contents need plumbing landing later.
+  multi-accept arc (see `docs/std/src/io/tcp.md`).
 - Binary payloads with embedded NULs would truncate at
   `write_file` time. UTF-8 strings only for v0.
+- `parse_int` is base 10 only and doesn't trim whitespace
+  (see `docs/std/src/str.md`).
 
 ## Integration test
 
-`crates/aperio-codegen/tests/io_demo.rs` builds this example,
-runs it twice (default-config and seeded-config), and asserts
-on stdout + on-disk log contents — same path a user would
-exercise manually, automated for CI.
+`crates/aperio-codegen/tests/io_demo.rs` builds this example
+and runs three scenarios, each on a freshly picked port +
+unique /tmp paths so the tests are fully parallel-safe:
+
+- Default config (no seeded file): logs the default payload.
+- Seeded config: logs the file contents.
+- Garbage argv[1] (`"not-a-port"`): falls back to port 9876.

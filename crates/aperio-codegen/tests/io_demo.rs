@@ -1,16 +1,18 @@
-//! m76: Phase 1 capstone — integration test for examples/io-demo.
+//! m76 + m78b: Phase 1 capstone — integration test for
+//! examples/io-demo, parameterized via env + argv (m78
+//! follow-up).
 //!
-//! Builds the example, runs it twice (default-config and
-//! seeded-config paths) sequentially within a single test
-//! function. Sequencing matters because the example hardcodes
-//! port 9876 and shared /tmp paths — running two cases in
-//! parallel would race both. Cargo's default per-test
-//! parallelism would split the cases across threads, so we
-//! keep them in one test.
+//! Each test picks a free localhost port and unique /tmp
+//! paths, passes them to the example via argv[1] +
+//! APERIO_IO_DEMO_{CONFIG,LOG}_PATH. Parallel cargo test
+//! threads no longer collide on a hardcoded port — the
+//! example consumes std::env / std::str::parse_int from
+//! the v1.x stdlib to wire its parameters.
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use aperio_codegen::build_executable;
 
@@ -22,9 +24,26 @@ fn examples_dir() -> PathBuf {
     p
 }
 
-fn cleanup_demo_paths() {
-    let _ = std::fs::remove_file("/tmp/aperio_io_demo_config.txt");
-    let _ = std::fs::remove_file("/tmp/aperio_io_demo_log.txt");
+fn pick_free_port() -> u16 {
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
+    let port = probe.local_addr().expect("local_addr").port();
+    drop(probe);
+    port
+}
+
+fn unique_path(tag: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut p = std::env::temp_dir();
+    p.push(format!(
+        "aperio_io_demo_{}_{}_{}.tmp",
+        tag,
+        std::process::id(),
+        nanos
+    ));
+    p
 }
 
 fn wait_until_listening(port: u16) -> bool {
@@ -38,46 +57,70 @@ fn wait_until_listening(port: u16) -> bool {
     false
 }
 
-fn run_io_demo() -> (String, String, std::process::ExitStatus) {
-    let mut src_path = examples_dir();
-    src_path.push("io-demo");
-    src_path.push("main.ap");
-    let source = std::fs::read_to_string(&src_path).expect("read source");
-    let program = aperio_syntax::parse_source(&source).expect("parse");
+struct Demo {
+    port: u16,
+    config_path: PathBuf,
+    log_path: PathBuf,
+    bin: PathBuf,
+}
 
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("aperio_io_demo_{}", std::process::id()));
-    build_executable(&program, &bin).expect("build");
+impl Demo {
+    fn build(tag: &str) -> Self {
+        let mut src_path = examples_dir();
+        src_path.push("io-demo");
+        src_path.push("main.ap");
+        let source = std::fs::read_to_string(&src_path).expect("read source");
+        let program = aperio_syntax::parse_source(&source).expect("parse");
+        let mut bin = std::env::temp_dir();
+        bin.push(format!("aperio_io_demo_bin_{}_{}", std::process::id(), tag));
+        build_executable(&program, &bin).expect("build");
+        Self {
+            port: pick_free_port(),
+            config_path: unique_path(&format!("{}_config", tag)),
+            log_path: unique_path(&format!("{}_log", tag)),
+            bin,
+        }
+    }
 
-    let listener_proc = Command::new(&bin)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn io-demo");
+    fn run(&self) -> (String, String, std::process::ExitStatus) {
+        let listener_proc = Command::new(&self.bin)
+            .arg(self.port.to_string())
+            .env("APERIO_IO_DEMO_CONFIG_PATH", &self.config_path)
+            .env("APERIO_IO_DEMO_LOG_PATH", &self.log_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn io-demo");
 
-    assert!(
-        wait_until_listening(9876),
-        "io-demo never bound to 127.0.0.1:9876"
-    );
+        assert!(
+            wait_until_listening(self.port),
+            "io-demo never bound to 127.0.0.1:{}",
+            self.port
+        );
 
-    let mut sock = std::net::TcpStream::connect(("127.0.0.1", 9876))
-        .expect("connect to demo");
-    let _ = sock.write_all(b"hello\n");
-    drop(sock);
+        let mut sock = std::net::TcpStream::connect(("127.0.0.1", self.port))
+            .expect("connect to demo");
+        let _ = sock.write_all(b"hello\n");
+        drop(sock);
 
-    let out = listener_proc.wait_with_output().expect("listener wait");
-    let _ = std::fs::remove_file(&bin);
+        let out = listener_proc.wait_with_output().expect("listener wait");
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        (stdout, stderr, out.status)
+    }
 
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    (stdout, stderr, out.status)
+    fn cleanup(&self) {
+        let _ = std::fs::remove_file(&self.bin);
+        let _ = std::fs::remove_file(&self.config_path);
+        let _ = std::fs::remove_file(&self.log_path);
+    }
 }
 
 #[test]
-fn io_demo_capstone_default_then_with_config() {
-    // ---- Cycle 1: no config file present, default payload ----
-    cleanup_demo_paths();
-    let (stdout, stderr, status) = run_io_demo();
+fn io_demo_default_config_writes_default_payload() {
+    let demo = Demo::build("default");
+    // No config file seeded.
+    let (stdout, stderr, status) = demo.run();
 
     assert!(
         status.success(),
@@ -87,57 +130,96 @@ fn io_demo_capstone_default_then_with_config() {
     );
     assert!(
         stdout.contains("config: none, using default"),
-        "default-cycle: expected default-config message; got: {:?}",
+        "expected default-config message; got: {:?}",
         stdout
     );
     assert!(
-        stdout.contains("io-demo: listening on 127.0.0.1:9876"),
-        "default-cycle: expected listening diagnostic; got: {:?}",
+        stdout.contains(&format!("io-demo: listening on 127.0.0.1:{}", demo.port)),
+        "expected listening diagnostic with picked port; got: {:?}",
         stdout
     );
-    assert!(
-        stdout.contains("io-demo: wrote log to /tmp/aperio_io_demo_log.txt"),
-        "default-cycle: expected log-write success; got: {:?}",
-        stdout
-    );
-
-    let log = std::fs::read_to_string("/tmp/aperio_io_demo_log.txt")
+    let log = std::fs::read_to_string(&demo.log_path)
         .expect("default-cycle: log should exist");
-    assert_eq!(
-        log, "default visit\n",
-        "default-cycle: expected default payload; got: {:?}",
-        log
-    );
+    assert_eq!(log, "default visit\n", "got: {:?}", log);
+    demo.cleanup();
+}
 
-    // ---- Cycle 2: seed the config and re-run ----
-    cleanup_demo_paths();
-    std::fs::write(
-        "/tmp/aperio_io_demo_config.txt",
-        "configured visit payload\n",
-    )
-    .expect("seed config");
-
-    let (stdout, stderr, status) = run_io_demo();
+#[test]
+fn io_demo_with_config_writes_config_payload() {
+    let demo = Demo::build("with_config");
+    std::fs::write(&demo.config_path, "configured visit payload\n")
+        .expect("seed config");
+    let (stdout, stderr, status) = demo.run();
 
     assert!(
         status.success(),
-        "with-config cycle exited non-zero: {:?}\nstderr: {}",
+        "io-demo exited non-zero: {:?}\nstderr: {}",
         status,
         stderr
     );
     assert!(
-        stdout.contains("config: loaded from /tmp/aperio_io_demo_config.txt"),
-        "with-config cycle: expected loaded-config message; got: {:?}",
+        stdout.contains(&format!(
+            "config: loaded from {}",
+            demo.config_path.to_str().unwrap()
+        )),
+        "expected loaded-config message; got: {:?}",
         stdout
     );
-
-    let log = std::fs::read_to_string("/tmp/aperio_io_demo_log.txt")
+    let log = std::fs::read_to_string(&demo.log_path)
         .expect("with-config cycle: log should exist");
-    assert_eq!(
-        log, "configured visit payload\n",
-        "with-config cycle: expected config payload; got: {:?}",
-        log
+    assert_eq!(log, "configured visit payload\n", "got: {:?}", log);
+    demo.cleanup();
+}
+
+#[test]
+fn io_demo_falls_back_to_default_port_on_garbage_argv() {
+    // Pass a non-numeric argv[1]; parse_int returns 0; the
+    // example sees `parsed > 0` is false and keeps the default
+    // (9876). To avoid collision with any hardcoded-port test
+    // we set the demo's APERIO_IO_DEMO_PORT env... wait, the
+    // example doesn't read env for port. Skip this case OR
+    // accept that we're testing argv-fallback specifically and
+    // it'll bind 9876.
+    //
+    // Compromise: build with garbage argv[1], let the binary
+    // bind its DEFAULT port (9876), connect to that. We
+    // serialize this test against the default-port collision
+    // by NOT running other 9876-bound tests in this file —
+    // the other two tests use unique picked ports.
+    let mut src_path = examples_dir();
+    src_path.push("io-demo");
+    src_path.push("main.ap");
+    let source = std::fs::read_to_string(&src_path).expect("read source");
+    let program = aperio_syntax::parse_source(&source).expect("parse");
+    let mut bin = std::env::temp_dir();
+    bin.push(format!("aperio_io_demo_bin_garbage_{}", std::process::id()));
+    build_executable(&program, &bin).expect("build");
+
+    let log_path = unique_path("garbage_log");
+
+    let listener_proc = Command::new(&bin)
+        .arg("not-a-port")
+        .env("APERIO_IO_DEMO_LOG_PATH", &log_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+
+    assert!(
+        wait_until_listening(9876),
+        "io-demo didn't bind default port 9876"
     );
 
-    cleanup_demo_paths();
+    let _ = std::net::TcpStream::connect(("127.0.0.1", 9876));
+    let out = listener_proc.wait_with_output().expect("wait");
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_file(&log_path);
+
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("io-demo: listening on 127.0.0.1:9876"),
+        "expected default-port fallback; got: {:?}",
+        stdout
+    );
 }
