@@ -1756,16 +1756,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             })
             .collect();
 
-        // m61: discover generic instantiations referenced in
-        // struct field positions, synthesize a concrete
+        // m61 / m61b: discover generic instantiations referenced
+        // anywhere in the program, synthesize a concrete
         // (mangled-name) decl per unique (template, args), and
         // declare those FIRST so non-generic decls that reference
-        // generic types resolve cleanly when their fields are
-        // walked. v0.1 narrow scope: discover only in
-        // TypeDeclBody::Struct field types. Fn / locus / let-
-        // ascription discovery is m61b. Recurses into nested
-        // generic args so `Box<Pair<Int,String>>` synthesizes
-        // both `Pair_Int_String` and `Box_Pair_Int_String`.
+        // generic types resolve cleanly when their bodies are
+        // walked. m61b broadens the walk from struct fields only
+        // to: fn signatures, locus signatures (params, lifecycle,
+        // mode, fn, bus payloads), let ascriptions in fn bodies.
+        // Recurses into nested args so `Box<Pair<Int,String>>`
+        // would synthesize both `Pair_Int_String` and
+        // `Box_Pair_Int_String` (parser `>>` ambiguity is a
+        // separate gap; the codegen substrate is ready).
         let generic_decls: BTreeMap<String, TypeDecl> = type_decls
             .iter()
             .filter(|t| !t.generics.is_empty())
@@ -1773,21 +1775,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .collect();
         let mut seen_mangles: BTreeSet<String> = BTreeSet::new();
         let mut requests: Vec<(String, Vec<TypeExpr>)> = Vec::new();
-        for t in &type_decls {
-            if !t.generics.is_empty() {
-                continue;     /* skip templates' own bodies */
-            }
-            if let TypeDeclBody::Struct(fields) = &t.body {
-                for f in fields {
-                    Self::collect_generic_uses(
-                        &f.ty,
-                        &generic_decls,
-                        &mut seen_mangles,
-                        &mut requests,
-                    )?;
-                }
-            }
-        }
+        Self::collect_generic_uses_in_program(
+            self.program,
+            &generic_decls,
+            &mut seen_mangles,
+            &mut requests,
+        )?;
         for (template_name, args) in &requests {
             let template = generic_decls
                 .get(template_name)
@@ -2445,6 +2438,278 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             other => other.clone(),
         }
+    }
+
+    /// m61b: when an `Expr::Struct { path: bare, ... }` is being
+    /// lowered against an expected generic-instantiation type
+    /// (e.g., `Box<Int>` from a let ascription or fn param), and
+    /// `bare` matches the template name, return a rewritten path
+    /// pointing at the mangled monomorph (`Box_Int`) so the rest
+    /// of struct-literal lowering finds it in `user_types`.
+    /// Returns `None` when no rewrite applies — caller falls back
+    /// to the original path. Idempotent: if `bare` is already a
+    /// mangled name in `user_types`, the rewrite is skipped.
+    fn resolve_generic_struct_path(
+        &self,
+        bare: &QualifiedName,
+        expected: &TypeExpr,
+    ) -> Option<QualifiedName> {
+        if bare.segments.len() != 1 {
+            return None;
+        }
+        let bare_name = &bare.segments[0].name;
+        // Already concrete (mangled or not) — leave it alone.
+        if self.user_types.contains_key(bare_name) {
+            return None;
+        }
+        let (ty_name, generic_args) = match expected {
+            TypeExpr::Named { path, generic_args, .. }
+                if path.segments.len() == 1
+                    && !generic_args.is_empty() =>
+            {
+                (&path.segments[0].name, generic_args)
+            }
+            _ => return None,
+        };
+        if bare_name != ty_name {
+            return None;
+        }
+        let mangled =
+            Self::mangle_generic_name(bare_name, generic_args).ok()?;
+        if !self.user_types.contains_key(&mangled) {
+            return None;
+        }
+        Some(QualifiedName {
+            segments: vec![Ident {
+                name: mangled,
+                span: bare.segments[0].span,
+            }],
+            span: bare.span,
+        })
+    }
+
+    /// m61b: comprehensive walk for generic instantiations
+    /// across the entire program. Calls `collect_generic_uses` at
+    /// every TypeExpr-bearing site we care about: type decl
+    /// fields, fn / locus signatures, bus payload types, let
+    /// ascriptions in fn bodies. The walk is purely structural —
+    /// the typechecker has already validated names — and runs
+    /// before any synthesis so the synthesized instantiations
+    /// land in user_types before any concrete decl's bodies are
+    /// resolved.
+    fn collect_generic_uses_in_program(
+        program: &Program,
+        generic_decls: &BTreeMap<String, TypeDecl>,
+        seen: &mut BTreeSet<String>,
+        requests: &mut Vec<(String, Vec<TypeExpr>)>,
+    ) -> Result<(), CodegenError> {
+        for item in &program.items {
+            match item {
+                TopDecl::Type(t) if t.generics.is_empty() => {
+                    if let TypeDeclBody::Struct(fields) = &t.body {
+                        for f in fields {
+                            Self::collect_generic_uses(
+                                &f.ty,
+                                generic_decls,
+                                seen,
+                                requests,
+                            )?;
+                        }
+                    }
+                    /* Enum variants' field types could grow into
+                     * this once generic enums ship. Aliases too.
+                     * v0.1 keeps it struct-only. */
+                }
+                TopDecl::Type(_) => {
+                    /* generic template — its own body's `T`
+                     * references aren't instantiations. */
+                }
+                TopDecl::Fn(f) => {
+                    Self::collect_in_fn_decl(
+                        f,
+                        generic_decls,
+                        seen,
+                        requests,
+                    )?;
+                }
+                TopDecl::Locus(l) => {
+                    for member in &l.members {
+                        Self::collect_in_locus_member(
+                            member,
+                            generic_decls,
+                            seen,
+                            requests,
+                        )?;
+                    }
+                }
+                TopDecl::Const(c) => {
+                    Self::collect_generic_uses(
+                        &c.ty,
+                        generic_decls,
+                        seen,
+                        requests,
+                    )?;
+                }
+                TopDecl::Perspective(_) | TopDecl::Module(_) => {
+                    /* Perspective / Module type-bearing positions
+                     * could grow into this when those features
+                     * land in v0.1 codegen. */
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_in_fn_decl(
+        f: &FnDecl,
+        generic_decls: &BTreeMap<String, TypeDecl>,
+        seen: &mut BTreeSet<String>,
+        requests: &mut Vec<(String, Vec<TypeExpr>)>,
+    ) -> Result<(), CodegenError> {
+        for p in &f.params {
+            Self::collect_generic_uses(&p.ty, generic_decls, seen, requests)?;
+        }
+        if let Some(ret) = &f.ret {
+            Self::collect_generic_uses(ret, generic_decls, seen, requests)?;
+        }
+        Self::collect_in_block(&f.body, generic_decls, seen, requests)?;
+        Ok(())
+    }
+
+    fn collect_in_locus_member(
+        member: &LocusMember,
+        generic_decls: &BTreeMap<String, TypeDecl>,
+        seen: &mut BTreeSet<String>,
+        requests: &mut Vec<(String, Vec<TypeExpr>)>,
+    ) -> Result<(), CodegenError> {
+        match member {
+            LocusMember::Params(pb) => {
+                for p in &pb.params {
+                    if let Some(t) = &p.ty {
+                        Self::collect_generic_uses(
+                            t,
+                            generic_decls,
+                            seen,
+                            requests,
+                        )?;
+                    }
+                }
+            }
+            LocusMember::Bus(bb) => {
+                for bm in &bb.members {
+                    match bm {
+                        BusMember::Subscribe { ty: Some(t), .. } => {
+                            Self::collect_generic_uses(
+                                t,
+                                generic_decls,
+                                seen,
+                                requests,
+                            )?;
+                        }
+                        BusMember::Publish { ty, .. } => {
+                            Self::collect_generic_uses(
+                                ty,
+                                generic_decls,
+                                seen,
+                                requests,
+                            )?;
+                        }
+                        BusMember::Subscribe { ty: None, .. } => {}
+                    }
+                }
+            }
+            LocusMember::Lifecycle(lc) => {
+                for p in &lc.params {
+                    Self::collect_generic_uses(
+                        &p.ty,
+                        generic_decls,
+                        seen,
+                        requests,
+                    )?;
+                }
+                if let Some(r) = &lc.ret {
+                    Self::collect_generic_uses(
+                        r,
+                        generic_decls,
+                        seen,
+                        requests,
+                    )?;
+                }
+                Self::collect_in_block(
+                    &lc.body,
+                    generic_decls,
+                    seen,
+                    requests,
+                )?;
+            }
+            LocusMember::Fn(fd) => {
+                Self::collect_in_fn_decl(
+                    fd,
+                    generic_decls,
+                    seen,
+                    requests,
+                )?;
+            }
+            LocusMember::Mode(_) => {
+                /* Modes' body / params walk would mirror Fn; not
+                 * yet wired. m61c. */
+            }
+            LocusMember::Const(c) => {
+                Self::collect_generic_uses(
+                    &c.ty,
+                    generic_decls,
+                    seen,
+                    requests,
+                )?;
+            }
+            LocusMember::Type(t) if t.generics.is_empty() => {
+                if let TypeDeclBody::Struct(fields) = &t.body {
+                    for f in fields {
+                        Self::collect_generic_uses(
+                            &f.ty,
+                            generic_decls,
+                            seen,
+                            requests,
+                        )?;
+                    }
+                }
+            }
+            LocusMember::Contract(_)
+            | LocusMember::Failure(_)
+            | LocusMember::Closure(_)
+            | LocusMember::Type(_) => {}
+        }
+        Ok(())
+    }
+
+    fn collect_in_block(
+        block: &Block,
+        generic_decls: &BTreeMap<String, TypeDecl>,
+        seen: &mut BTreeSet<String>,
+        requests: &mut Vec<(String, Vec<TypeExpr>)>,
+    ) -> Result<(), CodegenError> {
+        for stmt in &block.stmts {
+            Self::collect_in_stmt(stmt, generic_decls, seen, requests)?;
+        }
+        Ok(())
+    }
+
+    fn collect_in_stmt(
+        stmt: &Stmt,
+        generic_decls: &BTreeMap<String, TypeDecl>,
+        seen: &mut BTreeSet<String>,
+        requests: &mut Vec<(String, Vec<TypeExpr>)>,
+    ) -> Result<(), CodegenError> {
+        match stmt {
+            Stmt::Let { ty: Some(t), .. } => {
+                Self::collect_generic_uses(t, generic_decls, seen, requests)?;
+            }
+            Stmt::LetTuple { ty: Some(t), .. } => {
+                Self::collect_generic_uses(t, generic_decls, seen, requests)?;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     /// m61: walk a TypeExpr looking for generic instantiations
@@ -5326,8 +5591,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Ok(BlockEnd::Open)
             }
-            Stmt::Let { name, value, .. } => {
-                let (val, ty) = self.lower_expr(value, scope)?;
+            Stmt::Let { name, ty: ascribed, value, .. } => {
+                // m61b: when a let has both a generic-typed
+                // ascription and a bare-name struct literal as
+                // its value, rewrite the literal's path to the
+                // mangled name. So `let b: Box<Int> = Box { value: 42 };`
+                // works without requiring the user to spell
+                // Box_Int.
+                let rewritten;
+                let value_to_lower: &Expr = match (ascribed.as_ref(), value)
+                {
+                    (
+                        Some(asc),
+                        Expr::Struct {
+                            path,
+                            inits,
+                            span: sspan,
+                        },
+                    ) => match self
+                        .resolve_generic_struct_path(path, asc)
+                    {
+                        Some(new_path) => {
+                            rewritten = Expr::Struct {
+                                path: new_path,
+                                inits: inits.clone(),
+                                span: *sspan,
+                            };
+                            &rewritten
+                        }
+                        None => value,
+                    },
+                    _ => value,
+                };
+                let (val, ty) = self.lower_expr(value_to_lower, scope)?;
                 let alloca = self.alloca_for(&ty, &name.name)?;
                 self.builder
                     .build_store(alloca, val)

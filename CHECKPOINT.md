@@ -1,7 +1,34 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work
-in a new session. State as of **m61: generic struct
+in a new session. State as of **m61b: broader generic discovery
++ bare-name struct literal resolution** — extends m61's narrow
+slice. Discovery now walks every TypeExpr-bearing position
+across the program: free fn signatures (params + return), locus
+signatures (Params block, lifecycle methods, user fn methods,
+bus subscribe + publish payload types, const decls), and let
+ascriptions inside fn bodies. New
+`collect_generic_uses_in_program` orchestrates the recursive
+walk via per-AST-node helpers (`collect_in_fn_decl`,
+`collect_in_locus_member`, `collect_in_block`,
+`collect_in_stmt`) and reuses m61's `collect_generic_uses` at
+each TypeExpr leaf. Bare-name struct literal resolution
+shipped for the let-ascription case: `let b: Box<Int> = Box {
+value: 42 };` — the bare `Box { ... }` rewrites to
+`Box_Int { ... }` before `lower_expr` sees it, via a new
+`resolve_generic_struct_path(bare_path, expected_type) ->
+Option<QualifiedName>` helper hooked into `Stmt::Let`. v0.1
+limits: bare-name resolution applies only at let-ascription
+sites (return-statement and struct-field-init contexts are
+m61c); locus param defaults still need a literal expression
+even when typed by a generic (e.g.,
+`params { b: Box<Int> = Box { value: 0 }; }` doesn't yet
+rewrite the default-init). Four new tests in
+`crates/lotus-codegen/tests/generics.rs` exercise the new
+paths: bare-name via let ascription, fn signature discovery,
+bus payload discovery, lifecycle body discovery. 109 tests
+pass (was 105; +4 from generics.rs); 54 example builds
+unaffected. State before that was **m61: generic struct
 monomorphization (narrow first slice)** — opens the generics
 arc, the named "biggest visible 'feels v1' surface gap." This
 is a deliberately small substrate slice: codegen now lifts its
@@ -2406,39 +2433,42 @@ capacity ceiling — the m45 quickfix `× 32` multiplier is gone.
 
 ### RESUME HERE (next session)
 
-**Generics arc is in progress; m61 (narrow slice) shipped.**
-Cross-process bus substrate arc closed at m60. Generics is
-the named "biggest visible 'feels v1' surface gap"; m61 lifted
-the codegen rejection on generic struct templates and now
-synthesizes per-instantiation monomorphs from struct-field
-discovery. Per the user's hard rule, **no code towards
-trellis-pair until v1 language is done.**
+**Generics arc in progress; m61 + m61b shipped.** Cross-process
+bus substrate arc closed at m60. m61 lifted the codegen
+rejection on generic struct templates with field-position
+discovery + mangled-name construction; m61b extended discovery
+to fn signatures, locus signatures, bus payloads, and let
+ascriptions, plus added bare-name struct literal resolution at
+let-ascription sites. Per the user's hard rule, **no code
+towards trellis-pair until v1 language is done.**
 
-**Start with m61b: surface ergonomics + broader discovery.**
-The m61 substrate works but the surface is awkward: users
-write `Box_Int { ... }` (the mangled name) explicitly, and
-discovery only walks struct fields. Two threads:
+**Start with m61c: tighten the bare-name path + parser fix.**
+Three small remaining ergonomic gaps in the generic-struct
+slice:
 
-(a) **Bare-name struct literal resolution.** Make
-`Box { value: 42 }` work when context (let ascription, fn
-return type, surrounding struct field type) names a specific
-generic instantiation. Requires plumbing an "expected
-LotusType" through `lower_expr` so `Expr::Struct` can fall
-back to mangled-name lookup when the bare name isn't in
-user_types but a generic template of that name exists +
-context disambiguates.
+(a) **Bare-name resolution in more contexts.** Today only
+let-ascriptions trigger the rewrite. Extend to: return
+statements (when fn return type names an instantiation),
+struct field initializers (when assigning into a typed field
+of a parent struct), and locus param defaults (the
+`params { b: Box<Int> = Box { value: 0 }; }` case that fails
+in m61b). Each of these sites has a known expected TypeExpr
+in scope; the same `resolve_generic_struct_path` helper
+applies.
 
-(b) **Broader discovery.** Walk fn signatures (params + return
-types), locus signatures (params + lifecycle method
-signatures), bus subscribe/publish payload types, and let
-ascriptions for generic uses. Each path drives the same
-synthesize_generic_instantiation helper.
+(b) **Parser `>>` ambiguity.** The lexer currently produces a
+single `Shr` token where two `>` are expected in type-arg
+position (`Box<Box<Int>>`). Either special-case the lexer in
+type-arg context, or have the parser split a `Shr` token when
+the type-arg parser expects `>`. The codegen substrate is
+already nested-aware.
 
-Also worth picking up here: the parser limitation where `>>`
-lexes as Shr instead of two `>` tokens in type-arg position.
-Lift that and `Box<Box<Int>>` becomes writable; the m61
-codegen substrate is already nested-aware (`collect_generic_uses`
-recurses into args first; mangling is recursive).
+(c) **Generic enum monomorphization.** `type Result<T,E> = enum
+{ Ok(T), Err(E) }`. Mirror the struct flow:
+`synthesize_generic_instantiation` already errors on enums
+with an m61c TODO; lifting that requires substituting
+generic-param refs in enum variant field TypeExprs and routing
+through the existing has-payload enum codegen.
 
 **Then m62: generic free fns.** `fn first<T>(xs: [T; 4]) -> T`.
 Per-callsite-type-tuple monomorphization — each unique arg
@@ -2536,9 +2566,14 @@ milestones expanded in RESUME HERE above:
   monomorphize via field-position discovery; mangled-name
   construction only. Verified via
   `crates/lotus-codegen/tests/generics.rs`.
-- **m61b** — bare-name resolution via context + broader
-  discovery (fn / locus / bus / let-ascription); fix
-  parser `>>` ambiguity.
+- **m61b — DONE (broader discovery + let bare-name)** —
+  discovery walks fn signatures, locus signatures (params,
+  lifecycle, fn methods, bus subscribe/publish payloads),
+  let ascriptions; bare-name struct literals resolve via
+  let ascription. Tests cover the new paths.
+- **m61c** — bare-name resolution at return / field-init /
+  param-default sites; parser `>>` ambiguity; generic enum
+  monomorphization.
 - **m62** — generic free fns.
 - **m63** — generic loci.
 - **m64** — `Numeric` bound + generic closures.
@@ -2599,7 +2634,7 @@ System has:
 - `gcc` 13.x
 
 Cargo workspace builds clean. `cargo test --workspace --tests` passes
-all 105 tests (the locus-with-run test runs 3×500ms sleeps so the
+all 109 tests (the locus-with-run test runs 3×500ms sleeps so the
 runtime + codegen integration buckets clock ~1.5s each; m57 added
 two transport round-trip tests under tests/transport.rs that fork
 listener + connector subprocesses; m58 added two more under
@@ -2609,14 +2644,16 @@ tests/bus_subscriber.rs that runs the full two-lotus-binary
 publisher → reader-thread → cooperative-queue → handler path; m60
 added one more under tests/serializer_shape.rs that verifies the
 synthesized __serialize_T / __deserialize_T symbols + send-site
-calls show up in the IR; m61 added three under tests/generics.rs
-that exercise generic struct template monomorphization).
+calls show up in the IR; m61 + m61b added seven under
+tests/generics.rs that exercise generic struct template
+monomorphization, broader discovery across fn / locus / bus
+positions, and bare-name resolution via let ascription).
 
 ## How to verify the checkpoint
 
 ```
 cd ~/code/lotus-lang
-cargo test --workspace --tests           # 105 passed
+cargo test --workspace --tests           # 109 passed
 cargo run --bin lotus -- run examples/trellis-demo/main.lt
 cargo run --bin lotus -- build examples/hello-world/main.lt
 ./examples/hello-world/main              # prints "hello, world"

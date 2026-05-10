@@ -124,6 +124,154 @@ fn distinct_generic_args_get_distinct_monomorphs() {
 // here as a marker — when `>>`-disambiguation lands, add a
 // nested test.
 
+// === m61b ====================================================
+// Broader discovery (fn signatures, locus signatures, bus
+// payloads, let ascriptions) + bare-name struct literal
+// resolution via let ascription.
+
+#[test]
+fn bare_name_struct_literal_resolves_via_let_ascription() {
+    // `let b: Box<Int> = Box { value: 42 };` should resolve
+    // the bare `Box { ... }` to `Box_Int { ... }` because the
+    // ascription names the instantiation.
+    let src = r#"
+        type Box<T> {
+            value: T;
+        }
+
+        type Holder {
+            b: Box<Int>;
+        }
+
+        fn main() {
+            let b: Box<Int> = Box { value: 42 };
+            let h = Holder { b: b };
+            println("h.b.value=", h.b.value);
+        }
+    "#;
+    let (stdout, status) = build_and_run("bare_let", src);
+    assert!(status.success(), "exited non-zero: {:?}", status);
+    assert!(
+        stdout.contains("h.b.value=42"),
+        "got: {:?}",
+        stdout,
+    );
+}
+
+#[test]
+fn discovery_walks_fn_signature_param_and_return() {
+    // Generic uses in fn params + return types should be
+    // discovered without needing a struct field reference.
+    let src = r#"
+        type Box<T> {
+            value: T;
+        }
+
+        fn make() -> Box<Int> {
+            return Box_Int { value: 99 };
+        }
+
+        fn unwrap(b: Box<Int>) -> Int {
+            return b.value;
+        }
+
+        fn main() {
+            let b = make();
+            let v = unwrap(b);
+            println("v=", v);
+        }
+    "#;
+    let (stdout, status) = build_and_run("fn_sig", src);
+    assert!(status.success(), "exited non-zero: {:?}", status);
+    assert!(stdout.contains("v=99"), "got: {:?}", stdout);
+}
+
+// Locus params with generic types — discovery walks them via
+// collect_in_locus_member's Params branch — but lotus codegen
+// requires every locus param to have a default value, and
+// `Box<Int> = Box { value: 0 }` would need bare-name resolution
+// to also apply in param-default context (not just let
+// ascription). That extension is m61c-or-later. The discovery
+// walk for the Params branch IS in place; locking it in via a
+// passing test waits on the param-default bare-name path.
+
+#[test]
+fn discovery_walks_locus_lifecycle_signatures() {
+    // Discovery covers locus lifecycle method signatures via
+    // collect_in_locus_member's Lifecycle branch. We register
+    // Box<Int> through the body's `let` ascription; the
+    // lifecycle params themselves don't take a payload here
+    // (lifecycle params are reserved for the implicit self),
+    // so this exercises the body-walk path inside the
+    // lifecycle.
+    let src = r#"
+        type Box<T> {
+            value: T;
+        }
+
+        locus Demo {
+            params {
+                seed: Int = 0;
+            }
+            birth() {
+                let b: Box<Int> = Box { value: 21 };
+                println("birth saw b.value=", b.value);
+            }
+        }
+
+        fn main() {
+            Demo { };
+        }
+    "#;
+    let (stdout, status) = build_and_run("locus_lifecycle", src);
+    assert!(status.success(), "exited non-zero: {:?}", status);
+    assert!(
+        stdout.contains("birth saw b.value=21"),
+        "got: {:?}",
+        stdout,
+    );
+}
+
+#[test]
+fn discovery_walks_bus_payload_types() {
+    // Bus subscribe + publish with generic payloads. Discovery
+    // walks BusMember::Subscribe.ty + BusMember::Publish.ty;
+    // m60's serializer-shape pass picks up the synthesized
+    // Box_Int and emits __serialize_Box_Int / __deserialize_Box_Int.
+    let src = r#"
+        type Box<T> {
+            value: T;
+        }
+
+        locus Sub {
+            bus {
+                subscribe "ev" as on_ev of type Box<Int>;
+            }
+            fn on_ev(b: Box<Int>) {
+                println("got ", b.value);
+            }
+        }
+
+        locus Pub {
+            bus {
+                publish "ev" of type Box<Int>;
+            }
+            birth() {
+                let b: Box<Int> = Box { value: 100 };
+                "ev" <- b;
+            }
+        }
+
+        fn main() {
+            Sub { };
+            Pub { };
+        }
+    "#;
+    let (stdout, status) = build_and_run("bus_payload", src);
+    assert!(status.success(), "exited non-zero: {:?}", status);
+    assert!(stdout.contains("got 100"), "got: {:?}", stdout);
+}
+
 #[test]
 fn two_distinct_generic_types_monomorphize_independently() {
     // Two unrelated generic templates each get their own
