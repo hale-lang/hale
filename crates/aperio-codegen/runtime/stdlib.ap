@@ -12,24 +12,44 @@
 // collision with user-declared identifiers impossible at v0
 // while keeping the user-facing surface clean.
 //
-// m73a — placeholder. Lifecycle bodies just println so the
-// stdlib-loci-via-bundled-source mechanism can be verified end
-// to end. m73b replaces these bodies with real lotus_tcp_*
-// calls (via the m71-style `std::io::tcp::__*` path-call
-// primitives). m73c adds the Stream locus + send/recv methods.
+// m73b — real lifecycle. birth() binds + listens, run() accepts
+// one connection (m73c extends to a loop spawning Stream
+// children), dissolve() closes the listen socket. Internal
+// calls go via `std::io::tcp::__*` path-call primitives that
+// lower to lotus_tcp_listen_socket / accept_one / close_fd.
+//
+// The println diagnostics in birth/dissolve are intentional v0
+// observability: stdlib loci are new and the cost of the prints
+// is far less than the debugging value when something goes
+// wrong. Removed in a later milestone once the stdlib pattern
+// is well-trodden.
 
 locus __StdIoTcpListener {
     params {
         host: String = "127.0.0.1";
         port: Int = 0;
+        // listen_fd is overwritten in birth(); -1 here is a
+        // "not yet bound" sentinel so dissolve() can detect a
+        // partially-constructed listener and skip the close.
+        listen_fd: Int = -1;
     }
     birth() {
         println("__StdIoTcpListener.birth host=", self.host, " port=", self.port);
+        self.listen_fd = std::io::tcp::__listen_socket(self.host, self.port);
     }
     run() {
-        println("__StdIoTcpListener.run host=", self.host, " port=", self.port);
+        // m73b: accept exactly one connection, log, close it,
+        // then return. m73c replaces this with a real loop that
+        // spawns __StdIoTcpStream children for each accepted
+        // connection — the parent locus's `accept(s: Stream)`
+        // hook then handles each one via the standard F.7
+        // accept-before-birth machinery.
+        let conn = std::io::tcp::__accept_one(self.listen_fd);
+        println("__StdIoTcpListener.run accepted conn=", conn);
+        std::io::tcp::__close_fd(conn);
     }
     dissolve() {
         println("__StdIoTcpListener.dissolve host=", self.host, " port=", self.port);
+        std::io::tcp::__close_fd(self.listen_fd);
     }
 }

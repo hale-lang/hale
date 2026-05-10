@@ -1289,6 +1289,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // declare i32 @getpid(void)  — POSIX, backs std::process::pid()
         let getpid_ty = i32_t.fn_type(&[], false);
         self.module.add_function("getpid", getpid_ty, None);
+
+        // m73b: TCP primitives reachable from Aperio source via
+        // the `std::io::tcp::__*` magic-path calls. lotus_tcp_t
+        // (the bus's "blocking-accept-of-one" struct adapter
+        // from m72) stays for transport tests; these split-
+        // shape fd-level primitives are what stdlib loci
+        // call in their lifecycle bodies.
+
+        // declare i32 @lotus_tcp_listen_socket(ptr host, i16 port)
+        // bind + listen, returns listen_fd (>=0) or -1.
+        let i16_t = self.context.i16_type();
+        let tcp_listen_ty =
+            i32_t.fn_type(&[ptr_t.into(), i16_t.into()], false);
+        self.module
+            .add_function("lotus_tcp_listen_socket", tcp_listen_ty, None);
+
+        // declare i32 @lotus_tcp_accept_one(i32 listen_fd)
+        // accept, returns conn_fd (>=0) or -1.
+        let tcp_accept_ty = i32_t.fn_type(&[i32_t.into()], false);
+        self.module
+            .add_function("lotus_tcp_accept_one", tcp_accept_ty, None);
+
+        // declare i32 @lotus_tcp_close_fd(i32 fd)
+        // close, returns 0 or -1.
+        let tcp_close_ty = i32_t.fn_type(&[i32_t.into()], false);
+        self.module
+            .add_function("lotus_tcp_close_fd", tcp_close_ty, None);
     }
 
     /// Mark the program as containing at least one `bus subscribe`
@@ -11137,7 +11164,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         segs: &[&str],
         args: &[Expr],
-        _scope: &Scope<'ctx>,
+        scope: &Scope<'ctx>,
     ) -> Result<(), CodegenError> {
         match segs {
             // Statement-position calls that have a useful return
@@ -11145,6 +11172,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // the result.
             ["std", "process", "pid"] => {
                 let _ = self.lower_std_process_pid(args)?;
+                Ok(())
+            }
+            ["std", "io", "tcp", "__listen_socket"] => {
+                let _ = self.lower_std_io_tcp_listen_socket(args, scope)?;
+                Ok(())
+            }
+            ["std", "io", "tcp", "__accept_one"] => {
+                let _ = self.lower_std_io_tcp_accept_one(args, scope)?;
+                Ok(())
+            }
+            ["std", "io", "tcp", "__close_fd"] => {
+                let _ = self.lower_std_io_tcp_close_fd(args, scope)?;
                 Ok(())
             }
             _ => Err(CodegenError::Unsupported(format!(
@@ -11159,10 +11198,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         segs: &[&str],
         args: &[Expr],
-        _scope: &Scope<'ctx>,
+        scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
         match segs {
             ["std", "process", "pid"] => self.lower_std_process_pid(args),
+            ["std", "io", "tcp", "__listen_socket"] => {
+                self.lower_std_io_tcp_listen_socket(args, scope)
+            }
+            ["std", "io", "tcp", "__accept_one"] => {
+                self.lower_std_io_tcp_accept_one(args, scope)
+            }
+            ["std", "io", "tcp", "__close_fd"] => {
+                self.lower_std_io_tcp_close_fd(args, scope)
+            }
             _ => Err(CodegenError::Unsupported(format!(
                 "stdlib path `{}` in expression position — not implemented",
                 segs.join("::")
@@ -11205,6 +11253,157 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_int_s_extend(pid_i32, i64_t, "pid.i64")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok((pid_i64.into(), LotusType::Int))
+    }
+
+    /// Lower `std::io::tcp::__listen_socket(host: String,
+    /// port: Int) -> Int`. host is passed through as the
+    /// NUL-terminated string pointer Aperio uses for String
+    /// values; port is i64 truncated to i16 (port range fits).
+    /// Returns the listen_fd as Int, sign-extended from i32.
+    /// Stdlib loci call this from birth() and stash the result
+    /// on self.
+    fn lower_std_io_tcp_listen_socket(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__listen_socket takes 2 args (host, port), got {}",
+                args.len()
+            )));
+        }
+        let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
+        if host_ty != LotusType::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__listen_socket: host must be String, got {:?}",
+                host_ty
+            )));
+        }
+        let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
+        if port_ty != LotusType::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__listen_socket: port must be Int, got {:?}",
+                port_ty
+            )));
+        }
+        let i16_t = self.context.i16_type();
+        let i64_t = self.context.i64_type();
+        let port_i16 = self
+            .builder
+            .build_int_truncate(port_val.into_int_value(), i16_t, "port.i16")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_tcp_listen_socket")
+            .expect("lotus_tcp_listen_socket declared");
+        let call = self
+            .builder
+            .build_call(f, &[host_val.into(), port_i16.into()], "listen.fd")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let fd_i32 = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let fd_i64 = self
+            .builder
+            .build_int_s_extend(fd_i32, i64_t, "fd.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((fd_i64.into(), LotusType::Int))
+    }
+
+    /// Lower `std::io::tcp::__accept_one(listen_fd: Int) -> Int`.
+    /// Returns the conn_fd (or -1 on error) as Int.
+    fn lower_std_io_tcp_accept_one(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__accept_one takes 1 arg (listen_fd), got {}",
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        if fd_ty != LotusType::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__accept_one: listen_fd must be Int, got {:?}",
+                fd_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let fd_i32 = self
+            .builder
+            .build_int_truncate(fd_val.into_int_value(), i32_t, "lfd.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_tcp_accept_one")
+            .expect("lotus_tcp_accept_one declared");
+        let call = self
+            .builder
+            .build_call(f, &[fd_i32.into()], "accept.fd")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let conn_i32 = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let conn_i64 = self
+            .builder
+            .build_int_s_extend(conn_i32, i64_t, "conn.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((conn_i64.into(), LotusType::Int))
+    }
+
+    /// Lower `std::io::tcp::__close_fd(fd: Int) -> Int`. Returns
+    /// 0 on success, -1 on error (errno set). Most callers
+    /// discard the return.
+    fn lower_std_io_tcp_close_fd(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__close_fd takes 1 arg (fd), got {}",
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        if fd_ty != LotusType::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__close_fd: fd must be Int, got {:?}",
+                fd_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let fd_i32 = self
+            .builder
+            .build_int_truncate(fd_val.into_int_value(), i32_t, "fd.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_tcp_close_fd")
+            .expect("lotus_tcp_close_fd declared");
+        let call = self
+            .builder
+            .build_call(f, &[fd_i32.into()], "close.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ret_i32 = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let ret_i64 = self
+            .builder
+            .build_int_s_extend(ret_i32, i64_t, "close.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((ret_i64.into(), LotusType::Int))
     }
 
     /// Statement-level locus instantiation `T { f: v, ... };`.

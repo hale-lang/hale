@@ -1500,6 +1500,88 @@ void lotus_tcp_destroy(lotus_tcp_t *t) {
 }
 
 /*
+ * m73b: split-shape primitives reachable from Aperio source.
+ *
+ * lotus_tcp_create collapses bind+listen+accept into one
+ * blocking call — convenient for the m72 driver tests but wrong
+ * for a Listener locus pattern where birth() should not block on
+ * an incoming connection. The locus's lifecycle wants:
+ *
+ *   birth():     bind+listen     -> listen_fd          (non-blocking)
+ *   run():       accept (loop)   -> conn_fd per peer   (blocks per accept)
+ *   dissolve():  close(listen_fd)
+ *
+ * These three functions provide that split. Aperio source
+ * reaches them via the magic `std::io::tcp::__*` path-call
+ * primitives wired up in codegen (m73b path-call additions). The
+ * `__` prefix is internal-only; the polished user surface is
+ * the Listener / Stream loci that wrap these calls in idiomatic
+ * lifecycle bodies.
+ *
+ * fds are returned as plain ints; -1 signals error (errno set).
+ * Callers stash the listen_fd on `self` in birth() and read it
+ * back in run/dissolve via the standard locus self-field
+ * mechanics — no opaque handle struct needed because the
+ * Listener locus IS the handle.
+ */
+
+int lotus_tcp_listen_socket(const char *host, uint16_t port) {
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons(port);
+    if (!host) {
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    } else if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+        fprintf(stderr,
+                "lotus_tcp_listen_socket: invalid host %s\n", host);
+        errno = EINVAL;
+        return -1;
+    }
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        perror("lotus_tcp_listen_socket: socket");
+        return -1;
+    }
+    int one = 1;
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) < 0) {
+        perror("lotus_tcp_listen_socket: SO_REUSEADDR");
+        close(sock);
+        return -1;
+    }
+    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("lotus_tcp_listen_socket: bind");
+        close(sock);
+        return -1;
+    }
+    if (listen(sock, 16) < 0) {
+        perror("lotus_tcp_listen_socket: listen");
+        close(sock);
+        return -1;
+    }
+    return sock;
+}
+
+int lotus_tcp_accept_one(int listen_fd) {
+    int conn = accept(listen_fd, NULL, NULL);
+    if (conn < 0) {
+        if (errno != EINTR) {
+            perror("lotus_tcp_accept_one: accept");
+        }
+        return -1;
+    }
+    int nodelay = 1;
+    (void)setsockopt(conn, IPPROTO_TCP, TCP_NODELAY,
+                     &nodelay, sizeof(nodelay));
+    return conn;
+}
+
+int lotus_tcp_close_fd(int fd) {
+    if (fd < 0) return 0;
+    return close(fd);
+}
+
+/*
  * m58: deployment-config subject binding.
  *
  * Layered on top of the m57 AF_UNIX transport: a startup config
