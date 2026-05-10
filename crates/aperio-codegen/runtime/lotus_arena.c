@@ -2108,6 +2108,32 @@ int lotus_fs_file_exists(const char *path) {
     return stat(path, &st) == 0 ? 1 : 0;
 }
 
+/* Locates the extension within `path` — including the leading
+ * dot (".go", ".md") — or returns NULL when there is no
+ * extension. The lookup operates on the basename: a dot inside
+ * an earlier directory segment ("a.b/c") does NOT count as the
+ * file's extension, and a leading-dot file (".bashrc",
+ * "src/.config") has no extension by this rule. Mirrors the
+ * conventional split used by Python's os.path.splitext and
+ * Rust's Path::extension.
+ *
+ * Internal helper: the returned pointer (when non-NULL) aliases
+ * `path`. External callers go through lotus_fs_extension_global,
+ * which copies the slice into the program-lifetime payload arena
+ * so the result is safe to stash past the call frame. */
+static const char *lotus_fs_extension_locate(const char *path) {
+    if (!path) return NULL;
+    const char *base = path;
+    for (const char *p = path; *p; p++) {
+        if (*p == '/') base = p + 1;
+    }
+    const char *dot = NULL;
+    for (const char *p = base; *p; p++) {
+        if (*p == '.' && p != base) dot = p;
+    }
+    return dot;
+}
+
 /*
  * m77: process environment + argv access.
  *
@@ -2605,6 +2631,31 @@ const char *lotus_fs_list_dir_global(const char *path) {
     const char *result = lotus_fs_list_dir(g_bus_payload_arena, path);
     pthread_mutex_unlock(&g_bus_payload_arena_mutex);
     return result;
+}
+
+/*
+ * Extension lookup wrapper. Resolves the basename's last dot
+ * (see lotus_fs_extension_locate) and copies the dot-prefixed
+ * slice into the program-lifetime payload arena so the returned
+ * String outlives the call frame — same convention as
+ * read_file / list_dir / read_bytes. Returns the stable empty
+ * string when there is no extension.
+ */
+const char *lotus_fs_extension_global(const char *path) {
+    static const char empty[1] = { 0 };
+    const char *ext = lotus_fs_extension_locate(path);
+    if (!ext) return empty;
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            return empty;
+        }
+    }
+    char *out = lotus_str_clone(g_bus_payload_arena, ext);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    return out ? out : empty;
 }
 
 void lotus_bus_remote_destroy_all(void) {

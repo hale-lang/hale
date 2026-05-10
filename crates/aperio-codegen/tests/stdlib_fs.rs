@@ -204,3 +204,35 @@ fn aperio_read_file_on_missing_path_returns_empty_string() {
         stdout
     );
 }
+
+#[test]
+fn aperio_extension_isolates_basename_last_dot() {
+    // Covers every shape the proposal called out:
+    //   - "main.go" → ".go" (the common case)
+    //   - "archive.tar.gz" → ".gz" (multiple dots; last wins)
+    //   - "Makefile" → "" (no dot)
+    //   - "a.b/c" → "" (dot in dir segment, not basename)
+    //   - "src/.config" → "" (leading-dot basename is not an ext)
+    //   - "src/.config.toml" → ".toml" (leading dot allowed once)
+    let source = r#"
+        fn main() {
+            println("go=", std::io::fs::extension("main.go"));
+            println("gz=", std::io::fs::extension("archive.tar.gz"));
+            println("make=", std::io::fs::extension("Makefile"));
+            println("dirdot=", std::io::fs::extension("a.b/c"));
+            println("hidden=", std::io::fs::extension("src/.config"));
+            println("toml=", std::io::fs::extension("src/.config.toml"));
+        }
+    "#;
+    let (stdout, status) = build_and_run("extension", source);
+    assert!(status.success());
+    assert!(stdout.contains("go=.go"),       "main.go → .go; got: {:?}", stdout);
+    assert!(stdout.contains("gz=.gz"),       "archive.tar.gz → .gz; got: {:?}", stdout);
+    assert!(stdout.contains("make="),        "Makefile → ''; got: {:?}", stdout);
+    assert!(!stdout.contains("make=."),      "Makefile must not report a dot; got: {:?}", stdout);
+    assert!(stdout.contains("dirdot="),      "a.b/c → ''; got: {:?}", stdout);
+    assert!(!stdout.contains("dirdot=."),    "a.b/c must not report a dot; got: {:?}", stdout);
+    assert!(stdout.contains("hidden="),      "/.config → ''; got: {:?}", stdout);
+    assert!(!stdout.contains("hidden=."),    "/.config must not report a dot; got: {:?}", stdout);
+    assert!(stdout.contains("toml=.toml"),   "/.config.toml → .toml; got: {:?}", stdout);
+}

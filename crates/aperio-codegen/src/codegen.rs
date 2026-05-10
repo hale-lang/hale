@@ -1574,6 +1574,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_fs_file_exists", fs_exists_ty, None);
 
+        // declare ptr @lotus_fs_extension_global(ptr path)
+        // returns the basename's last-dot suffix (".go", ".md"),
+        // or the empty string when there is no extension. Result
+        // lives in the lazy global payload arena.
+        let fs_extension_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_fs_extension_global", fs_extension_ty, None);
+
         // declare ptr @lotus_bus_payload_arena_alloc(i64 size, i64 align)
         // m70 lazy global arena for cross-call buffer ownership.
         // read_file uses this to allocate the returned String
@@ -11941,6 +11949,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_io_fs_file_exists(args, scope)?;
                 Ok(())
             }
+            ["std", "io", "fs", "extension"] => {
+                let _ = self.lower_std_io_fs_extension(args, scope)?;
+                Ok(())
+            }
             ["std", "env", "args_count"] => {
                 let _ = self.lower_std_env_args_count(args)?;
                 Ok(())
@@ -12200,6 +12212,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "io", "fs", "file_exists"] => {
                 self.lower_std_io_fs_file_exists(args, scope)
+            }
+            ["std", "io", "fs", "extension"] => {
+                self.lower_std_io_fs_extension(args, scope)
             }
             ["std", "env", "args_count"] => self.lower_std_env_args_count(args),
             ["std", "env", "arg"] => self.lower_std_env_arg(args, scope),
@@ -13459,6 +13474,44 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let _ = i1_t; // silence unused warning if any
         Ok((ret_bool.into(), LotusType::Bool))
+    }
+
+    /// Lower `std::io::fs::extension(path: String) -> String`.
+    /// Returns the basename's last-dot suffix including the
+    /// leading dot (".go", ".md"), or the empty string when
+    /// there is no extension. Result lives in the global
+    /// payload arena (same lifetime as list_dir / read_file).
+    fn lower_std_io_fs_extension(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::fs::extension takes 1 arg (path), got {}",
+                args.len()
+            )));
+        }
+        let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
+        if path_ty != LotusType::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::fs::extension: path must be String, got {:?}",
+                path_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_fs_extension_global")
+            .expect("lotus_fs_extension_global declared");
+        let call = self
+            .builder
+            .build_call(f, &[path_val.into()], "fs.extension.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let v = call
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_fs_extension_global returns ptr");
+        Ok((v, LotusType::String))
     }
 
     /// Lower `std::io::tcp::__send(fd: Int, msg: String) -> Int`.

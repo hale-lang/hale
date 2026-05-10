@@ -157,6 +157,46 @@ fn main() {
 }
 ```
 
+### `std::io::fs::extension`
+
+#### Synopsis
+
+```aperio
+fn extension(path: String) -> String
+```
+
+Returns the path's file extension, including the leading dot
+(`.go`, `.md`), or the empty string when the path has no
+extension. Mirrors the conventional split used by Python's
+`os.path.splitext` and Rust's `Path::extension`.
+
+#### Semantics
+
+- Inspects the basename only: a dot inside an earlier
+  directory segment (`a.b/c`) does not count as the file's
+  extension.
+- A leading-dot file (`.bashrc`, `src/.config`) has no
+  extension by this rule.
+- Multiple dots resolve to the last one: `archive.tar.gz`
+  returns `.gz`.
+- The returned String lives in the lazy global payload arena
+  (same lifetime convention as `read_file` / `list_dir`), so
+  it is safe to stash past the call frame.
+
+#### Examples
+
+```aperio
+fn main() {
+    if std::io::fs::extension("main.go") == ".go" {
+        println("a Go source file");
+    }
+}
+```
+
+Replaces the per-app `__ends_with_source` / `__ends_with_go`
+helper that several extractors hand-rolled before this
+primitive landed.
+
 ### `std::io::fs::read_bytes`
 
 #### Synopsis
