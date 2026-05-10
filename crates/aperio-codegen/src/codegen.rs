@@ -1070,6 +1070,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             fs_read_bytes_global_ty,
             None,
         );
+
+        // m90: directory enumeration (newline-separated entries
+        // as a String). Lifetime via the global payload arena.
+        // declare ptr @lotus_fs_list_dir_global(ptr path)
+        let fs_list_dir_global_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_fs_list_dir_global",
+            fs_list_dir_global_ty,
+            None,
+        );
         let tcp_send_bytes_ty = i32_t_local.fn_type(
             &[self.context.i32_type().into(), ptr_t.into()],
             false,
@@ -11761,6 +11771,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_io_fs_read_bytes(args, scope)?;
                 Ok(())
             }
+            ["std", "io", "fs", "list_dir"] => {
+                let _ = self.lower_std_io_fs_list_dir(args, scope)?;
+                Ok(())
+            }
             ["std", "io", "tcp", "__send_bytes"] => {
                 let _ = self.lower_std_io_tcp_send_bytes(args, scope)?;
                 Ok(())
@@ -11913,6 +11927,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "io", "fs", "read_bytes"] => {
                 self.lower_std_io_fs_read_bytes(args, scope)
+            }
+            ["std", "io", "fs", "list_dir"] => {
+                self.lower_std_io_fs_list_dir(args, scope)
             }
             ["std", "io", "tcp", "__send_bytes"] => {
                 self.lower_std_io_tcp_send_bytes(args, scope)
@@ -12543,6 +12560,43 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .left()
             .expect("lotus_fs_read_bytes_global returns ptr");
         Ok((v, LotusType::Bytes))
+    }
+
+    /// m90: Lower `std::io::fs::list_dir(path: String) -> String`.
+    /// Returns a newline-separated String of entry names (skipping
+    /// `.` and `..`). Empty string on error / missing dir / empty
+    /// dir — callers distinguish via `len(result) == 0`.
+    fn lower_std_io_fs_list_dir(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::fs::list_dir takes 1 arg (path), got {}",
+                args.len()
+            )));
+        }
+        let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
+        if path_ty != LotusType::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::fs::list_dir: path must be String, got {:?}",
+                path_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_fs_list_dir_global")
+            .expect("lotus_fs_list_dir_global declared");
+        let call = self
+            .builder
+            .build_call(f, &[path_val.into()], "fs.list_dir.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let v = call
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_fs_list_dir_global returns ptr");
+        Ok((v, LotusType::String))
     }
 
     /// m89: Lower `std::io::tcp::__send_bytes(fd: Int, b: Bytes) -> Int`.

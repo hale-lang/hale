@@ -46,6 +46,7 @@
 #include <time.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <dirent.h>
 
 /* Default chunk size: 64KB. Big enough that most loci fit in
  * one chunk, small enough that a leaf locus that allocates a
@@ -1912,6 +1913,84 @@ void *lotus_fs_read_bytes(lotus_arena_t *a, const char *path) {
     return blob;
 }
 
+/*
+ * m90: enumerate a directory's entries, returning a single
+ * String with one entry per line (`\n`-separated, trailing
+ * newline included). Skips `.` and `..` so callers don't
+ * have to filter them. Errors (path missing, not a
+ * directory, permission denied) return an empty string —
+ * same soft-fail shape as the rest of std::io::fs.
+ *
+ * v0 design choice: newline-separated String, not Bytes /
+ * not a List<String>, so the substrate composes with the
+ * existing String primitives (index_of, slice). When Aperio
+ * grows a generic List<T> this can grow a sibling
+ * `list_dir_entries(path) -> [String]` API; for Phase 5's
+ * doc-server need (enumerate `.md` files in docs/), the
+ * String shape is sufficient — user code walks newlines via
+ * std::str::index_of("\n").
+ *
+ * Filenames with embedded `\n` would corrupt this format.
+ * POSIX permits them (only `\0` and `/` are illegal in path
+ * segments) but they're rare; v0 documents the limitation
+ * and chooses the simpler shape.
+ */
+const char *lotus_fs_list_dir(lotus_arena_t *a, const char *path) {
+    static const char empty[1] = { 0 };
+    if (!a || !path) {
+        return empty;
+    }
+    DIR *dir = opendir(path);
+    if (!dir) {
+        return empty;
+    }
+    /* First pass: tally the byte count we need. struct
+     * dirent's d_name is NUL-terminated; we add 1 byte per
+     * entry for the joining `\n` (plus the trailing one). */
+    size_t total = 0;
+    struct dirent *e;
+    while ((e = readdir(dir)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0
+            || strcmp(e->d_name, "..") == 0) {
+            continue;
+        }
+        total += strlen(e->d_name) + 1;
+    }
+    rewinddir(dir);
+
+    /* Allocate (total + 1) for the trailing NUL terminator. */
+    char *buf = (char *)lotus_arena_alloc(a, total + 1, 1);
+    if (!buf) {
+        closedir(dir);
+        return empty;
+    }
+    /* Second pass: copy entry names + newlines. Because
+     * filesystems can change between rewinddir and the
+     * second readdir, the actual bytes copied may differ
+     * from the first-pass tally; we cap by `total` to
+     * avoid overrun and accept that a directory mutated
+     * mid-call may lose late-arriving entries. v0 considers
+     * directory-listing under concurrent mutation an out-of-
+     * scope concern. */
+    char *p = buf;
+    size_t left = total;
+    while ((e = readdir(dir)) != NULL && left > 0) {
+        if (strcmp(e->d_name, ".") == 0
+            || strcmp(e->d_name, "..") == 0) {
+            continue;
+        }
+        size_t nlen = strlen(e->d_name);
+        if (nlen + 1 > left) break;
+        memcpy(p, e->d_name, nlen);
+        p[nlen] = '\n';
+        p += nlen + 1;
+        left -= nlen + 1;
+    }
+    *p = '\0';
+    closedir(dir);
+    return buf;
+}
+
 /* Write exactly `len` bytes from `buf` to `path`. Truncates
  * any existing file. Returns 0 on success, -1 on error. */
 int lotus_fs_write_file(const char *path,
@@ -2439,6 +2518,28 @@ void *lotus_fs_read_bytes_global(const char *path) {
      * lotus_arena_alloc; we hold the mutex around it because
      * the global arena is shared across reader threads. */
     void *result = lotus_fs_read_bytes(g_bus_payload_arena, path);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    return result;
+}
+
+/*
+ * m90: list_dir wrapper anchoring the resulting String in
+ * the global payload arena. Same lifetime motivation as
+ * read_bytes_global / read_file: callers can stash the
+ * pointer past the call site without m49-style deep-copy
+ * plumbing.
+ */
+const char *lotus_fs_list_dir_global(const char *path) {
+    static const char empty[1] = { 0 };
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            return empty;
+        }
+    }
+    const char *result = lotus_fs_list_dir(g_bus_payload_arena, path);
     pthread_mutex_unlock(&g_bus_payload_arena_mutex);
     return result;
 }
