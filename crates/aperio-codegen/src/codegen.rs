@@ -1228,6 +1228,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let memcpy_ty =
             ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64_t.into()], false);
         self.module.add_function("memcpy", memcpy_ty, None);
+
+        // ---- Phase 1 stdlib builtins (m71+) ----
+        //
+        // Functions reached via the magic `std::*` path. Each
+        // backing libc primitive is declared here; the per-symbol
+        // lowering lives in the stdlib section near
+        // `lower_std_process_pid`. Adding a new stdlib function
+        // means: declare its libc backer here, add a match arm in
+        // `lower_stdlib_path_call_expr` (or the stmt sibling), and
+        // implement one `lower_std_*` method.
+
+        // declare i32 @getpid(void)  — POSIX, backs std::process::pid()
+        let getpid_ty = i32_t.fn_type(&[], false);
+        self.module.add_function("getpid", getpid_ty, None);
     }
 
     /// Mark the program as containing at least one `bus subscribe`
@@ -10715,6 +10729,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(), CodegenError> {
         let segs: Vec<&str> =
             qn.segments.iter().map(|s| s.name.as_str()).collect();
+        // m71: std::* paths route through the stdlib lowering. The
+        // dispatcher returns Some(_) iff it recognized the path; an
+        // unknown std::* path errors with the same shape as the rest
+        // of this match's catch-all.
+        if segs.first() == Some(&"std") {
+            return self.lower_stdlib_path_call(&segs, args, scope);
+        }
         match segs.as_slice() {
             ["time", "sleep"] => self.lower_time_sleep(args, scope),
             ["time", "monotonic"] => {
@@ -10750,6 +10771,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
         let segs: Vec<&str> =
             qn.segments.iter().map(|s| s.name.as_str()).collect();
+        if segs.first() == Some(&"std") {
+            return self.lower_stdlib_path_call_expr(&segs, args, scope);
+        }
         match segs.as_slice() {
             ["time", "monotonic"] => self.lower_time_monotonic(args),
             // m47-payloads: enum-variant construction with
@@ -11028,6 +11052,99 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         self.builder.position_at_end(done_bb);
         Ok(())
+    }
+
+    // ============================================================
+    // Phase 1 stdlib lowering (m71+).
+    //
+    // `.ap` source references stdlib symbols by fully-qualified
+    // path: `std::io::tcp::listen(8080)`, `std::io::fs::read_file
+    // (path)`, `std::process::pid()`. The parser tokenizes `::`
+    // already and the type checker punts namespaced paths to
+    // `Ty::Unknown`; codegen resolves them here.
+    //
+    // No general module system in Phase 1 — `std::*` is the only
+    // recognized prefix, matched against a hardcoded namespace
+    // dispatcher. Adding a function means: declare its libc backer
+    // in `declare_builtins` (Phase 1 stdlib section), add a match
+    // arm here, and implement one `lower_std_*` method.
+    // ============================================================
+
+    /// Statement-position dispatcher for `std::*` paths. The leading
+    /// `"std"` segment is included in `segs` for symmetry with the
+    /// expression-position dispatcher.
+    fn lower_stdlib_path_call(
+        &mut self,
+        segs: &[&str],
+        args: &[Expr],
+        _scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        match segs {
+            // Statement-position calls that have a useful return
+            // value still go through the expression form; we drop
+            // the result.
+            ["std", "process", "pid"] => {
+                let _ = self.lower_std_process_pid(args)?;
+                Ok(())
+            }
+            _ => Err(CodegenError::Unsupported(format!(
+                "stdlib path `{}` — not implemented",
+                segs.join("::")
+            ))),
+        }
+    }
+
+    /// Expression-position dispatcher for `std::*` paths.
+    fn lower_stdlib_path_call_expr(
+        &mut self,
+        segs: &[&str],
+        args: &[Expr],
+        _scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        match segs {
+            ["std", "process", "pid"] => self.lower_std_process_pid(args),
+            _ => Err(CodegenError::Unsupported(format!(
+                "stdlib path `{}` in expression position — not implemented",
+                segs.join("::")
+            ))),
+        }
+    }
+
+    /// Lower `std::process::pid() -> Int` to `getpid()`. POSIX
+    /// returns `pid_t` (i32 on Linux); Aperio `Int` is i64, so we
+    /// sign-extend. m71 ships this as the proof symbol that the
+    /// magic-`std::*`-path resolver works end-to-end; the same
+    /// pattern (declare libc fn → match arm → one `lower_std_*`
+    /// method) extends to every Phase 1 stdlib function.
+    fn lower_std_process_pid(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        if !args.is_empty() {
+            return Err(CodegenError::Unsupported(format!(
+                "std::process::pid takes 0 arguments, got {}",
+                args.len()
+            )));
+        }
+        let i64_t = self.context.i64_type();
+        let getpid = self
+            .module
+            .get_function("getpid")
+            .expect("getpid declared");
+        let call = self
+            .builder
+            .build_call(getpid, &[], "getpid.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let pid_i32 = call
+            .try_as_basic_value()
+            .left()
+            .expect("getpid returns i32")
+            .into_int_value();
+        let pid_i64 = self
+            .builder
+            .build_int_s_extend(pid_i32, i64_t, "pid.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((pid_i64.into(), LotusType::Int))
     }
 
     /// Statement-level locus instantiation `T { f: v, ... };`.

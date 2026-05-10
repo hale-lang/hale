@@ -1,13 +1,42 @@
 # Standard library
 
-Bundled with the toolchain, no separate install required, but
-explicit `import std::...` is needed (Go-style: batteries
-included but you say which battery).
+Bundled with the toolchain, no separate install required.
 
-This document scopes the v0 stdlib. Each module gets a one-paragraph
-description, an export sketch, and an open-decisions list. Full
-APIs are specified per-module in the `stdlib/` directory of the
-compiler repo (when that exists).
+> **Status (m71+):** The active build-out is Phase 1 of the v1.x
+> stdlib roadmap (see `docs/std/src/roadmap.md` for current scope).
+> The aspirational module map below this section was sketched
+> pre-rename and is being progressively realigned as Phase 1–5
+> milestones land. Treat the v1.x roadmap doc as authoritative for
+> what's shipped or shipping; the module sketches here are
+> directional, not prescriptive.
+
+## Path resolution (m71)
+
+`.ap` source references stdlib symbols by fully-qualified path:
+
+```aperio
+let p = std::process::pid();
+let bytes = std::io::fs::read_file("config.toml");
+let listener = std::io::tcp::listen(8080);
+```
+
+The parser tokenizes `::` as a path separator and the type checker
+punts namespaced paths to `Ty::Unknown`; the codegen layer resolves
+`std::*` paths against a hardcoded namespace dispatcher.
+
+There is **no general module system** in Phase 1 — no `use`
+statements, no user-defined modules, no multi-file `.ap` projects.
+`std::*` is the only recognized prefix. Adding a new stdlib function
+means: declare its libc backer in `aperio-codegen` (the Phase 1
+stdlib section of `declare_builtins`), add a match arm to
+`lower_stdlib_path_call_expr` (or its statement sibling), and
+implement one `lower_std_*` method.
+
+Adding a real module system is deferred until something forces it
+(probably Phase 3+ when the HTTP server or Phase 5 doc-server
+example pushes against single-file organization). The
+import-mechanism choice is recorded in
+`docs/std/src/roadmap.md` and the project memory.
 
 ## Design principles
 
