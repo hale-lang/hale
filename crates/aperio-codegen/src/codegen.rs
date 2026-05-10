@@ -390,6 +390,10 @@ const STDLIB_AP_SOURCE: &str = concat!(
     // (empty params, methods only). Order between these is
     // flexible — they reference only path-call primitives.
     include_str!("../runtime/stdlib/iter.ap"),
+    "\n",
+    // tagged.ap depends on iter.ap (Lines is used internally in
+    // every Accumulator method), so it must land after.
+    include_str!("../runtime/stdlib/tagged.ap"),
 );
 
 /// Maps each user-facing stdlib path (locus OR type) to the
@@ -412,6 +416,7 @@ const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "log", "LogEvent"], "__StdLogEvent"),
     (&["std", "log", "Logger"], "__StdLogLogger"),
     (&["std", "log", "StdoutSink"], "__StdLogStdoutSink"),
+    (&["std", "tagged", "Accumulator"], "__StdTaggedAccumulator"),
 ];
 
 /// Look up the mangled name for a stdlib path (locus or type).

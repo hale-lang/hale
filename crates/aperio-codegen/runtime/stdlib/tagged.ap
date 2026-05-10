@@ -1,0 +1,134 @@
+// std::tagged::Accumulator — parses tagged-string accumulators.
+//
+// A tagged accumulator is a multi-line String where each line
+// is `TAG:body`. The tag (everything before the first colon)
+// classifies the line; the body (everything after the colon
+// to end-of-line) is the payload. Extractors in the
+// codebase-onboarder family produce this shape pervasively,
+// and several apps were hand-rolling identical scan loops
+// before this extraction.
+//
+// Surface mirrors the four operations the corpus already
+// expressed:
+//   - count(acc, tag)         → how many lines match TAG?
+//   - first_body(acc, tag)    → first matching body, or ""
+//   - each_body(acc, tag)     → "\n"-joined matching bodies
+//                               (then iterate via std::iter::Lines)
+//   - collect_csv(acc, tag)   → comma-joined bare bodies for report prose
+//   - collect_array(acc, tag) → JSON array of quoted bodies
+//
+// Built on std::iter::Lines so the newline-scan logic lives in
+// exactly one place across the seed.
+locus __StdTaggedAccumulator {
+    params { }
+
+    // True when `line` starts with `tag + ":"` and the line is
+    // long enough to carry a body. Open-coded so callers don't
+    // pay the prefix-allocation cost per line.
+    fn line_matches(line: String, tag: String) -> Bool {
+        let plen = len(tag) + 1;
+        if len(line) < plen { return false; }
+        if line[0..len(tag)] != tag { return false; }
+        return line[len(tag)..plen] == ":";
+    }
+
+    // Returns the body of `line` (everything after the first
+    // `:`), assuming line_matches(line, tag) just returned true.
+    // The plen offset comes back out of the call site to keep
+    // both halves cheap.
+    fn body_of(line: String, tag: String) -> String {
+        let plen = len(tag) + 1;
+        return line[plen..len(line)];
+    }
+
+    fn count(acc: String, tag: String) -> Int {
+        let it = std::iter::Lines { };
+        let mut from = 0;
+        let mut count = 0;
+        while from >= 0 {
+            let line = it.line_at(acc, from);
+            from = it.next_idx(acc, from);
+            if self.line_matches(line, tag) {
+                count = count + 1;
+            }
+        }
+        return count;
+    }
+
+    fn first_body(acc: String, tag: String) -> String {
+        let it = std::iter::Lines { };
+        let mut from = 0;
+        while from >= 0 {
+            let line = it.line_at(acc, from);
+            from = it.next_idx(acc, from);
+            if self.line_matches(line, tag) {
+                return self.body_of(line, tag);
+            }
+        }
+        return "";
+    }
+
+    // Returns matching bodies as a newline-separated String,
+    // suitable for the caller to iterate again via
+    // std::iter::Lines (or to length-check via std::str::index_of).
+    // Empty when no lines match.
+    fn each_body(acc: String, tag: String) -> String {
+        let it = std::iter::Lines { };
+        let mut from = 0;
+        let mut out = "";
+        let mut first = true;
+        while from >= 0 {
+            let line = it.line_at(acc, from);
+            from = it.next_idx(acc, from);
+            if self.line_matches(line, tag) {
+                let body = self.body_of(line, tag);
+                if first { out = body; first = false; }
+                else { out = out + "\n" + body; }
+            }
+        }
+        return out;
+    }
+
+    // Comma-joined bare bodies for human-readable report prose.
+    // Example: "log, net/http". No quoting; not JSON.
+    fn collect_csv(acc: String, tag: String) -> String {
+        let it = std::iter::Lines { };
+        let mut from = 0;
+        let mut out = "";
+        let mut first = true;
+        while from >= 0 {
+            let line = it.line_at(acc, from);
+            from = it.next_idx(acc, from);
+            if self.line_matches(line, tag) {
+                let body = self.body_of(line, tag);
+                if first { out = body; first = false; }
+                else { out = out + ", " + body; }
+            }
+        }
+        return out;
+    }
+
+    // JSON array of `"body"` strings. Bodies are inserted into
+    // the array verbatim — embedded `"` or `\` will need
+    // escaping by the caller (or by a future std::json::Builder.quote).
+    fn collect_array(acc: String, tag: String) -> String {
+        let it = std::iter::Lines { };
+        let mut from = 0;
+        let mut arr = "[";
+        let mut first = true;
+        while from >= 0 {
+            let line = it.line_at(acc, from);
+            from = it.next_idx(acc, from);
+            if self.line_matches(line, tag) {
+                let body = self.body_of(line, tag);
+                if first {
+                    arr = arr + "\"" + body + "\"";
+                    first = false;
+                } else {
+                    arr = arr + ", \"" + body + "\"";
+                }
+            }
+        }
+        return arr + "]";
+    }
+}
