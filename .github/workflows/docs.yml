@@ -35,6 +35,12 @@ jobs:
             fi
           done
 
+      - name: Build the Quickstart
+        run: mdbook build docs/quickstart
+
+      - name: Build the Grimoire
+        run: mdbook build docs/grimoire
+
       - name: Build the Book
         run: mdbook build docs/book
 

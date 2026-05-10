@@ -1,9 +1,21 @@
 # Aperio — session checkpoint
 
 **Read this first** if you're picking up the Aperio work
-in a new session. State as of **Phase 0: docs system shipped**.
-Three mdbook subtrees stubbed under `docs/`:
+in a new session. State as of **Phase 0: docs system shipped + grimoire onboarding**.
+**Five** mdbook subtrees under `docs/`, arranged as four onboarding
+paths plus the formal reference:
 
+- `docs/quickstart/` — The Aperio Quickstart. Five-minute install +
+  hello-world tour. Three pages, fully written.
+- `docs/grimoire/` — The Aperio Grimoire. Magical onboarding in the
+  **meta-spell register**: *Aperio is the spell of spellcasting
+  itself; the compiler is the wand; reaching across the source-runtime
+  boundary is the act of casting; each program is a particular spell
+  now within reach.* Four-moment arc (arrival → reveal → vocabulary →
+  emergence) plus where-next. **Introduction + all four chapters
+  substantively written** in the meta-spell register; STYLE.md's
+  per-tree register section pins the framing as load-bearing for
+  future contributors.
 - `docs/book/` — The Aperio Programming Language (12-chapter tutorial
   outline, intro page filled, chapters stubbed).
 - `docs/reference/` — The Aperio Reference (lexical / types /
@@ -17,12 +29,12 @@ Three mdbook subtrees stubbed under `docs/`:
 
 `docs/STYLE.md` documents conventions (Aperio vs lotus terminology,
 heading anchors, glossary linking, code-block tagging, per-reference-
-page template, Since: annotations). `docs/README.md` covers local
-build/preview. `.github/workflows/docs.yml` builds + caches the three
-trees on every PR / push to main; **no deploy step** until the
-go-public gate flips.
+page template, Since: annotations, **per-tree tonal register**).
+`docs/README.md` covers the four-doorway map + local build/preview.
+`.github/workflows/docs.yml` builds + caches all five trees on every
+PR / push to main; **no deploy step** until the go-public gate flips.
 
-All three subtrees build cleanly under `mdbook build` with `mdbook` +
+All five subtrees build cleanly under `mdbook build` with `mdbook` +
 `mdbook-toc`. `mdbook-admonish` and `mdbook-linkcheck` are deferred:
 each has a compat issue with mdbook 0.5.x. Re-add when upstream
 catches up.

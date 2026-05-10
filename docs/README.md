@@ -1,10 +1,19 @@
 # Aperio docs
 
-This directory holds the Aperio language docs as three mdbook subtrees:
+This directory holds the Aperio language docs as five mdbook subtrees,
+arranged as four onboarding paths plus the formal reference:
 
-- `book/` — **The Aperio Programming Language**, a layered tutorial.
-- `reference/` — **The Aperio Reference**, formal grammar + semantics.
-- `std/` — **The Aperio Standard Library** (placeholder; see roadmap).
+| Tree | Title | Role |
+|---|---|---|
+| `quickstart/` | **The Aperio Quickstart** | Five-minute install + hello-world tour. |
+| `grimoire/` | **The Aperio Grimoire** | Magical onboarding — spell-cast register, four-moment arc (arrival → reveal → vocabulary → emergence). |
+| `book/` | **The Aperio Programming Language** | Technical onboarding — substrate-up, Rust-Book-shaped layered tutorial. |
+| `reference/` | **The Aperio Reference** | Formal grammar + semantics + glossary. |
+| `std/` | **The Aperio Standard Library** | Stdlib roadmap + per-module docs (Phases 1–5). |
+
+The grimoire and the technical book teach the same material in
+different registers. Readers pick a doorway; the reference and std
+trees are the destination either way.
 
 Authoring conventions live in [`STYLE.md`](./STYLE.md).
 
@@ -33,7 +42,9 @@ upstream catches up.)
 Serve a subtree at `http://localhost:3000`:
 
 ```bash
-mdbook serve docs/book          # the tutorial
+mdbook serve docs/quickstart    # the five-minute tour
+mdbook serve docs/grimoire      # the spell-cast onboarding
+mdbook serve docs/book          # the technical tutorial
 mdbook serve docs/reference     # the formal reference
 mdbook serve docs/std           # the stdlib roadmap
 ```
@@ -44,6 +55,8 @@ mdbook serve docs/std           # the stdlib roadmap
 To build static output without serving:
 
 ```bash
+mdbook build docs/quickstart
+mdbook build docs/grimoire
 mdbook build docs/book
 mdbook build docs/reference
 mdbook build docs/std

@@ -18,6 +18,34 @@ Use *Aperio* when describing language behavior at the source level, *a
 lotus* / *loci* when describing runtime data structures. Mixing them
 confuses readers.
 
+## Per-tree register
+
+Different docs trees use different tonal registers. Both are correct;
+match the tree:
+
+- **`quickstart/`** — terse, imperative, instruction-tone. No
+  philosophy.
+- **`grimoire/`** — meta-spell register. The load-bearing framing:
+  *Aperio is the spell of spellcasting itself; the compiler is the
+  wand; reaching across the source-runtime boundary is the act of
+  spell-casting; each Aperio program is a particular spell now within
+  the caster's reach.* The substrate's primitives (`locus`, `birth`,
+  `bus`, `closure`, `on_failure`) are framed not as features but as
+  the *invariant form every spell on the far side must take*. Magical
+  metaphor never contradicts runtime semantics — the language was
+  named precisely so the magical word and the technical word point at
+  the same thing.
+- **`book/`** — neutral systems-language tutorial register, in line
+  with the Rust Book.
+- **`reference/`** — formal, prescriptive. Synopsis / Grammar /
+  Semantics / Examples / See Also. No metaphor.
+- **`std/`** — same prescriptive register as the reference, scoped to
+  library modules.
+
+The "Avoid" list at the bottom of this guide (no marketing language,
+no "we / our") applies to every tree, including `grimoire/`. Magical
+register is not a license for hype.
+
 ## Headings
 
 - Per-page H1 is the page title.
