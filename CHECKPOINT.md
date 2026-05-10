@@ -2661,18 +2661,68 @@ capacity ceiling — the m45 quickfix `× 32` multiplier is gone.
 
 ### RESUME HERE (next session)
 
-**Generics arc closed (m61, m61b, m61c, m62, m63, m64, m65 all
-shipped).** Cross-process bus substrate arc closed at m60.
-Generic structs + enums + free fns + loci all monomorphize,
-with `Numeric` bound enforcement at synthesis time, and
-`Result<T,E>` / `Option<T>` available as built-ins. Per the
-user's hard rule, **no code towards trellis-pair until v1
+**Generics arc closed; v1 language ergonomics arc closed (m65,
+m66, m67, m68 all shipped); cross-process bus multi-peer
+fanout verified (m69).** Generic structs + enums + free fns +
+loci all monomorphize with `Numeric` bound enforcement;
+`Result<T,E>` / `Option<T>` available as built-ins; nested
+generics parse cleanly (`Box<Box<Int>>`); bare-name struct
+literal resolution works at let / return / struct-field-init
+positions; typechecker exhaustiveness recognizes synthesized
+monomorph match arms. Cross-process bus substrate works for
+fixed-layout primitive payloads with multi-peer fanout. Per
+the user's hard rule, **no code towards trellis-pair until v1
 language is done.**
 
-**Start by scanning the v1 punch-list for remaining gaps the
-substrate exposes, then close those before calling v1 done.**
-Candidate gaps in priority order (none currently blocking; pick
-based on whichever workload-shaped example pushes hardest):
+**One v1 punch-list item remains: m70 (cross-process String
+fields).** Currently the m60 serializer memcpys the struct
+bytes verbatim — fine for primitives, broken for String
+fields whose pointer values can't survive the process
+boundary. Real wire format needed for any v1 deployment with
+non-primitive payloads.
+
+**Start with m70: per-field wire format with String support.**
+Replaces the m60 memcpy serializer with a per-field walk.
+Plan:
+
+1. **C runtime: lazy global payload arena.** The deserialize
+   path needs to allocate String byte storage that survives the
+   reader-thread → `lotus_bus_local_dispatch` → cell enqueue →
+   drain → handler chain. Subscriber arena isn't accessible at
+   deserialize time (we don't know which subscriber yet — the
+   queue dispatches later, and a subject can have multiple).
+   Cleanest solution: a `lotus_bus_payload_arena` lazily
+   created at first use, destroyed in
+   `lotus_bus_remote_destroy_all` (program exit). Memory grows
+   unbounded for the program lifetime — acceptable for v1
+   (subscribers run for bounded duration in trellis-pair).
+   Add helper `lotus_bus_payload_arena_alloc(size, align)`
+   that codegen can call from the synthesized deserialize body.
+
+2. **Codegen: per-field encode/decode.** Replace the memcpy in
+   `synthesize_serializer` with a field walk using GEP +
+   per-field LotusType dispatch. Wire layout:
+   - Int / Duration / Time / Float: 8 bytes little-endian.
+   - Decimal: 16 bytes (already fixed).
+   - Bool: 1 byte (zero-extend on decode).
+   - String: 8-byte length prefix (i64) + N bytes (no NUL
+     terminator — length-prefix is the boundary). Decode
+     allocates `length+1` bytes via
+     `lotus_bus_payload_arena_alloc`, copies bytes, writes
+     trailing NUL so existing C-side string ops work.
+   - Other (nested struct, enum, array): error at synthesis
+     time with a clear message — defer to a future polish.
+
+3. **Test:** extend `bus_subscriber.rs` with a payload type
+   `Msg { tag: String; n: Int; }`; publisher sends
+   `Msg { tag: "hello", n: 42 }`; subscriber prints both;
+   assert subscriber's stdout contains "tag=hello" and "n=42".
+   Cross-process verifies the wire format actually carries
+   the bytes (not just the pointer).
+
+m70 is the LAST v1 punch-list item. Once it ships, **call v1.**
+
+Other items (none blocking; addressed earlier this session):
 
 1. **Multi-peer fanout per subject — DONE (m69, verification
    only).** The existing iteration loop in
