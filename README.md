@@ -20,15 +20,24 @@ at runtime.)
 
 ## Docs
 
-Aperio's documentation lives under [`docs/`](./docs/) as three mdbook
-subtrees:
+Aperio's documentation lives under [`docs/`](./docs/) as five mdbook
+subtrees, arranged as four onboarding paths plus the formal reference:
 
+- **The Aperio Quickstart** ([`docs/quickstart/`](./docs/quickstart/)) —
+  five-minute install + hello-world tour.
+- **The Aperio Grimoire** ([`docs/grimoire/`](./docs/grimoire/)) —
+  magical onboarding in the meta-spell register: Aperio as the spell
+  of spellcasting itself; the compiler as the wand; substrate
+  primitives as the invariant form every spell must take.
 - **The Aperio Programming Language** ([`docs/book/`](./docs/book/)) —
-  layered tutorial.
+  technical onboarding, substrate-up layered tutorial.
 - **The Aperio Reference** ([`docs/reference/`](./docs/reference/)) —
-  formal grammar + semantics.
+  formal grammar + semantics + glossary.
 - **The Aperio Standard Library** ([`docs/std/`](./docs/std/)) —
   stdlib roadmap (libraries in active development).
+
+The grimoire and the technical book teach the same material in
+different registers; readers pick a doorway.
 
 The docs are local-only until the language is ready for public release.
 See [`docs/README.md`](./docs/README.md) for local build/preview
@@ -135,10 +144,10 @@ Quick start:
 
 ```
 cargo build
-cargo run --bin lotus -- run   examples/hello-world/main.lt
-cargo run --bin lotus -- build examples/02-parent-child/main.lt
+cargo run --bin aperio -- run   examples/hello-world/main.ap
+cargo run --bin aperio -- build examples/02-parent-child/main.ap
 ./examples/02-parent-child/main                       # 3× "greeting from child"
-cargo test --workspace                                # 90 tests
+cargo test --workspace                                # 132 tests
 ```
 
 Working CLI commands: `lex`, `parse`, `check`, `run`, `build` —
@@ -149,9 +158,11 @@ Full delivery plan to team-wide-internal v1.0:
 
 ## What this is
 
-Lotus is a compile-time language designed around the alpha-
+Aperio is a compile-time language designed around the alpha-
 conjecture program's substrate-invariant coordination primitives.
-Concretely:
+An Aperio program runs by opening a *lotus* — a tree of loci
+communicating via vertical-only-flow over a shared bus, with
+per-region arenas and closure-asserted invariants. Concretely:
 
 - **Loci as first-class entities.** Each locus declares its
   capacity parameters (B, c, σ, φ); the compiler computes its
@@ -329,17 +340,17 @@ examples/
 notes/
   open-questions.md       deferred decisions and future directions
 
-crates/                   (Phase 1 + 2 v0 + Phase 3 milestones 0–56 + free-fn arena arc + immutable-binding enforcement + recovery-vocabulary cleanup)
-  lotus-syntax/           lexer + parser + AST + diagnostics
-  lotus-types/            symbol resolution + type checker (F.8,
+crates/                   (Phase 1 + 2 v0 + Phase 3 milestones 0–70 + free-fn arena arc + immutable-binding enforcement + recovery-vocabulary cleanup + cross-process wire format)
+  aperio-syntax/          lexer + parser + AST + diagnostics
+  aperio-types/           symbol resolution + type checker (F.8,
                           field strictness, closure cycle, match
                           exhaustiveness, k_max recognition)
-  lotus-runtime/          tree-walking interpreter + bus router
+  aperio-runtime/         tree-walking interpreter + bus router
                           (Transport trait: SyncDispatch / RingBuffer)
                           + dissolve cascade (F.4 + F.9, with drain
                           bodies invoked); time::sleep / monotonic
                           via libc::clock_* on CLOCK_MONOTONIC
-  lotus-codegen/          LLVM codegen (inkwell + llvm-18). Subset:
+  aperio-codegen/         LLVM codegen (inkwell + llvm-18). Subset:
                           literals, arithmetic, let mut + assignment,
                           control flow, time::sleep + monotonic,
                           user-defined fns, the locus runtime ABI,
@@ -355,45 +366,43 @@ crates/                   (Phase 1 + 2 v0 + Phase 3 milestones 0–56 + free-fn 
                           + ClosureViolation built-in type + modes +
                           self.children + for-loops + locus literals
                           in expression position
-  lotus-cli/              `lotus` binary (lex / parse / check / run /
+  aperio-cli/             `aperio` binary (lex / parse / check / run /
                           build)
-  lotus-codegen/runtime/  C source for the lotus region allocator,
+  aperio-codegen/runtime/ C source for the lotus region allocator,
                           bundled into the codegen crate via
                           include_str! and compiled + linked into
                           every binary alongside the generated
-                          object file (m19 substrate).
+                          object file (m19 substrate). Substrate
+                          symbols stay `lotus_*` by design.
 ```
 
-Example ladder: 30 projects from hello-world → trellis-pair;
-~1,350 lines of source + ~1,400+ lines of README walk-throughs.
-91 tests across the workspace; 29 of 30 projects run end-to-end
-under `lotus run` (only multi-binary trellis-pair waits on the
-cross-process bus). **29 of 30 projects** also build to native
-ELF via `lotus build` — every single-binary example. Only
-`trellis-pair` (cross-process bus + entry-point selection) is
-not a build target.
+Example ladder: 50+ projects from hello-world → trellis-pair.
+132 tests across the workspace; 54 of 55 projects run end-to-end
+under `aperio run` (only multi-binary trellis-pair waits on
+post-v1 cross-process entry-point selection). **54 of 55 projects**
+also build to native ELF via `aperio build` — every single-binary
+example.
 
 ## Toolchain
 
 Working today:
 
 ```
-lotus lex   <file>           tokenize and print tokens
-lotus parse <file>           parse and print the AST
-lotus check <file | dir>     parse + typecheck (the full F-rules)
-lotus run   <file | dir>     parse + typecheck + interpret
-lotus build <file>           parse + typecheck + emit native ELF
-                              (Phase 3, milestone-18 subset)
+aperio lex   <file>           tokenize and print tokens
+aperio parse <file>           parse and print the AST
+aperio check <file | dir>     parse + typecheck (the full F-rules)
+aperio run   <file | dir>     parse + typecheck + interpret
+aperio build <file>           parse + typecheck + emit native ELF
 ```
 
 Per `spec/testing.md`, the planned full surface adds:
 
 ```
-lotus test        run all *_test.lt files
-lotus bench       run all *_bench.lt files
-lotus bench -compare  build + run external-language equivalents alongside
-lotus verify      framework-discipline checks specifically (no execution)
-lotus fmt         canonical formatter (zero config)
+aperio test        run all *_test.ap files
+aperio bench       run all *_bench.ap files
+aperio bench -compare  build + run external-language equivalents alongside
+aperio verify      framework-discipline checks specifically (no execution)
+aperio fmt         canonical formatter (zero config)
 ```
 
 JSON output for CI consumption; tree-sitter grammar derived from
@@ -462,27 +471,43 @@ Per the delivery plan:
   example.** Only `trellis-pair` (cross-process bus +
   entry-point selection) remains, gated on substantial new
   infrastructure.
-- **Phase 4** — Stdlib v0 in lotus + Rust FFI shims. Overlaps
+- **Phase 4** — Stdlib v0 in Aperio + Rust FFI shims. Overlaps
   Phase 3.
 - **Phase 5** — Toolchain. Overlaps Phase 3–4.
-- **Phase 6** — Self-host (compiler rewrite in lotus).
+- **Phase 6** — Self-host (compiler rewrite in Aperio).
 - **Phase 7** — Trellis production deployment. Parallel.
 - **Phase 8** — v1.0 stabilization.
 
-Implementation strategy: **Rust bootstrap → self-host in lotus**.
-The compiler-in-lotus milestone is the empirical anchor for the
+Implementation strategy: **Rust bootstrap → self-host in Aperio**.
+The compiler-in-Aperio milestone is the empirical anchor for the
 framework's substrate-invariance claim at the compiler-internals
 substrate.
 
 ## Naming
 
-The framework's existing meta-framework is called "lotus" (see
-the `lotus/` subdirectory of the alpha-conjecture program). This
-language is named "lotus" for the same reason: it's the same
-form, projected from design-time into compile-time. The two are
-expected to converge.
+The language is **Aperio** — Latin *I open / I reveal*. An Aperio
+program runs by *opening* a [lotus](./docs/reference/src/glossary.md):
+the runtime data structure of loci, lifecycles, arenas, and the bus.
 
-File extension: `.lt`.
+The split is load-bearing:
+
+- **Aperio** — the language; what you write source code in; the
+  toolchain (`aperio build`, `aperio run`).
+- **a lotus** — the runtime substrate an Aperio program *is*. The
+  word stays lowercase except where grammar demands the noun be
+  capitalized.
+- **a locus** (plural **loci**) — the unit of structure inside a
+  lotus.
+
+The framework's existing meta-framework is also called "lotus" (see
+the `lotus/` subdirectory of the alpha-conjecture program). The
+runtime substrate concept is the same artifact, projected from
+design-time research into compile-time form. C-runtime symbols
+(`lotus_arena_*`, `lotus_bus_*`, `lotus_transport_*`,
+`lotus_str_*`) intentionally retain the *lotus* prefix — they are
+substrate mechanics, not Aperio's user-facing toolchain.
+
+File extension: `.ap`.
 
 ## License
 
