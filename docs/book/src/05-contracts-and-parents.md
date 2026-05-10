@@ -207,7 +207,7 @@ What this gives Aperio:
   asks for whichever it wants; the contract bounds them all.
   (Multi-implementation syntax is deferred to a future version;
   for v0 the commitment is the typing rule. See
-  [chapter 10](./10-perspectives.md) for projection classes,
+  [chapter 11](./11-perspectives.md) for projection classes,
   which make multi-implementation natural.)
 - **Vertical-only flow at the query level.** A grandparent at
   D−2 cannot reach past its child at D−1 directly into the
@@ -259,7 +259,7 @@ greeting from child: yo
 - **Multi-implementation contract fields** — `@projection
   rich fn greeting() -> String { ... }` style annotations land
   alongside projection classes in
-  [chapter 10](./10-perspectives.md).
+  [chapter 11](./11-perspectives.md).
 - **`self.children`** — iterating a parent's currently-attached
   children — appears starting in
   [chapter 7](./07-closures.md), where it is the usual

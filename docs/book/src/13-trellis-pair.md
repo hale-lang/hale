@@ -85,13 +85,13 @@ perspective KernelPerspective {
 }
 ```
 
-Per [chapter 8](./08-cross-process.md), schema agreement is
+Per [chapter 9](./09-cross-process.md), schema agreement is
 *by compilation, not by runtime negotiation*. Both binaries
 `import "trellis-pair/shared";`. Each compiles the same struct
 layouts; the wire format is exactly that in-memory layout, so
 deserialization is exact.
 
-The `KernelPerspective` ([chapter 10](./10-perspectives.md))
+The `KernelPerspective` ([chapter 11](./11-perspectives.md))
 wraps the wire-shaped `Kernel` with a `validation_count` and a
 `stable_when` commit predicate ("ship only after at least three
 perspectives agree"). The `serialize_as Kernel` annotation
@@ -172,7 +172,7 @@ The substrate primitives in play, all introduced earlier:
 - **A perspective construction** wrapping a `Kernel` with a
   validation count, then `is_stable()` invoking the
   perspective's `stable_when` predicate ([chapter
-  10](./10-perspectives.md)).
+  10](./11-perspectives.md)).
 - **A closure** auditing that `published_count` keeps pace
   with `validation_count` (within a small tolerance for
   in-flight perspectives that have not yet hit the stability
@@ -311,7 +311,7 @@ single-process integration test.
 
 > **v0 caveat.** The YAML form is the *intended* future
 > surface. v0's actual cross-process bus consumes the simpler
-> `LOTUS_BUS_CONFIG` line format from chapter 8.
+> `LOTUS_BUS_CONFIG` line format from chapter 9.
 > `deployment.yaml` parsing and richer transport selection
 > are v1.x roadmap items.
 

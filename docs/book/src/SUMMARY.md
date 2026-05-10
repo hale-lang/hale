@@ -15,16 +15,20 @@
 - [The bus](./06-the-bus.md)
 - [Closures](./07-closures.md)
 
+# Concurrency
+
+- [Scheduling and threads](./08-scheduling-and-threads.md)
+
 # Beyond a single binary
 
-- [Cross-process: opening multiple lotuses](./08-cross-process.md)
+- [Cross-process: opening multiple lotuses](./09-cross-process.md)
 
 # Composition
 
-- [Generics](./09-generics.md)
-- [Perspectives and projection classes](./10-perspectives.md)
-- [Recovery and supervision](./11-recovery-and-supervision.md)
+- [Generics](./10-generics.md)
+- [Perspectives and projection classes](./11-perspectives.md)
+- [Recovery and supervision](./12-recovery-and-supervision.md)
 
 # Capstone
 
-- [Building trellis-pair](./12-trellis-pair.md)
+- [Building trellis-pair](./13-trellis-pair.md)

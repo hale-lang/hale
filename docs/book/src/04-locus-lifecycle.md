@@ -285,7 +285,7 @@ supervision protocols.
 - **`on_failure`** — what happens when a child's lifecycle
   ends in a `ClosureViolation` rather than a clean dissolve —
   is covered in
-  [chapter 11](./11-recovery-and-supervision.md).
+  [chapter 12](./12-recovery-and-supervision.md).
 
 The next chapter, **[Contracts and
 parents](./05-contracts-and-parents.md)**, introduces the

@@ -212,7 +212,7 @@ between fitting and applying loci.
   code in v0; substrate helpers will land in v1.x.
 
 The next chapter, **[Recovery and
-supervision](./11-recovery-and-supervision.md)**, returns to
+supervision](./12-recovery-and-supervision.md)**, returns to
 the failure-handling surface introduced in
 [chapter 7](./07-closures.md). It covers the four recovery
 primitives (`restart`, `restart_in_place`, `quarantine`,

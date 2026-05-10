@@ -160,15 +160,18 @@ time, in a layered tutorial:
   vertical-only-flow; transport-bound-at-deployment.
 - **[Closures](./07-closures.md)** — F.9 collapse / absorb /
   bubble; structural-invariant auditing.
-- **[Cross-process](./08-cross-process.md)** — opening
+- **[Scheduling and threads](./08-scheduling-and-threads.md)** —
+  cooperative vs pinned; cross-thread bus mailboxes; CPU
+  affinity; building multi-core programs.
+- **[Cross-process](./09-cross-process.md)** — opening
   multiple lotuses; the wire format.
-- **[Generics](./09-generics.md)** — monomorphization, the
+- **[Generics](./10-generics.md)** — monomorphization, the
   `Numeric` bound, `Result<T,E>` and `Option<T>`.
-- **[Perspectives](./10-perspectives.md)** — projection
+- **[Perspectives](./11-perspectives.md)** — projection
   classes; F.2.
-- **[Recovery and supervision](./11-recovery-and-supervision.md)**
+- **[Recovery and supervision](./12-recovery-and-supervision.md)**
   — `on_failure` deeply; the four recovery primitives.
-- **[trellis-pair](./12-trellis-pair.md)** — the capstone: a
+- **[trellis-pair](./13-trellis-pair.md)** — the capstone: a
   multi-binary production-shaped Aperio program built from every
   substrate primitive introduced.
 

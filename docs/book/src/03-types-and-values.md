@@ -252,7 +252,7 @@ plain-tag representation.
 
 The standard library's `Result<T, E>` and `Option<T>` are
 generic payload enums (introduced in
-[chapter 9](./09-generics.md)).
+[chapter 10](./10-generics.md)).
 
 ## Operators
 
@@ -291,13 +291,13 @@ substrate; both are introduced in their own chapters:
   type — appears in later chapters where it matters (closures,
   higher-order helpers).
 - **Generics** — `Stack<T>`, `Result<T, E>`, the `Numeric`
-  bound — see [chapter 9](./09-generics.md).
+  bound — see [chapter 10](./10-generics.md).
 - **Projection classes** — `Rich<T>` / `Chunked<T>` /
   `Recognition<T>` and the `ProjectionClass` constraint (per
   **F.2**) — see
-  [chapter 10](./10-perspectives.md).
+  [chapter 11](./11-perspectives.md).
 - **Perspective types** — `perspective P { ... }` — also in
-  chapter 10.
+  chapter 11.
 
 The next chapter, **[Locus lifecycle](./04-locus-lifecycle.md)**,
 returns to the runtime side: every locus's existence is the same

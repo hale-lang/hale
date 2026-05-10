@@ -330,7 +330,7 @@ tree, no separate supervisor declarations needed.
   the way it does within one binary; instead each process
   has its own supervision tree, and the bus carries
   *successful* values between them. The capstone in
-  [chapter 12](./12-trellis-pair.md) walks the full pattern.
+  [chapter 13](./13-trellis-pair.md) walks the full pattern.
 - **`KMaxExceeded`** and other typed runtime failures — the
   closure system handles structural violations; runtime
   failures from the substrate (e.g., over-attachment past
@@ -339,7 +339,7 @@ tree, no separate supervisor declarations needed.
   the reference's recovery section.
 
 The next chapter, **[Building
-trellis-pair](./12-trellis-pair.md)**, is the capstone. It
+trellis-pair](./13-trellis-pair.md)**, is the capstone. It
 takes everything introduced over chapters 1–11 — locus
 declarations, lifecycles, contracts, bus pub-sub, closures,
 generics, perspectives, recovery — and assembles a

@@ -55,7 +55,7 @@ of constraint:
   Numeric-typed accumulator (`sum`, `count`, `mean`) inside the
   generic body.
 - **`ProjectionClass`** — covered in
-  [chapter 10](./10-perspectives.md).
+  [chapter 11](./11-perspectives.md).
 
 ```aperio
 fn sum2<T: Numeric>(a: T, b: T) -> T {
@@ -221,13 +221,13 @@ it on a dozen types, twelve specializations land in the binary.
   [chapter 9 of stdlib](../../std/book/index.html) once
   higher-order helpers like `map` / `fold` ship.
 - **Projection-class constraints** (`<T: ProjectionClass>`,
-  `<T: Rich>`) — see [chapter 10](./10-perspectives.md).
+  `<T: Rich>`) — see [chapter 11](./11-perspectives.md).
 - **Generic closures** — closures whose accumulator type is
   itself generic over a `Numeric` bound. They follow naturally
   from chapter 7 + this chapter; the m64 milestone wired them
   end-to-end.
 
-The next chapter, **[Perspectives](./10-perspectives.md)**,
+The next chapter, **[Perspectives](./11-perspectives.md)**,
 introduces the substrate's *other* generic surface —
 projection classes (`Rich<T>` / `Chunked<T>` /
 `Recognition<T>`) and the `ProjectionClass` constraint per

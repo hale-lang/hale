@@ -83,7 +83,7 @@ silently" path; a violation either collapses, is absorbed, or
 bubbles. (Recovery primitives like `restart_in_place` and
 `quarantine` are full alternatives to `bubble` in
 `on_failure`; see [chapter
-11](./11-recovery-and-supervision.md).)
+11](./12-recovery-and-supervision.md).)
 
 ## `ClosureViolation`
 
@@ -240,18 +240,19 @@ work is centralized; they do not interleave.
 - **`on_failure` deeply** — what `restart`, `restart_in_place`,
   `quarantine`, and `bubble` do, when each applies, what the
   recovery costs are. See
-  [chapter 11](./11-recovery-and-supervision.md).
+  [chapter 12](./12-recovery-and-supervision.md).
 - **`self.children` as a scrutinee** — closures auditing
   populations of children (`closure within_capacity {
   self.children.length ~~ 0 within self.k_max; }`). Appears
-  alongside recovery in chapter 11.
+  alongside recovery in chapter 12.
 - **`evaluate(closure_name)`** — the explicit-epoch trigger —
-  surfaces in chapter 11 too.
+  surfaces in chapter 12 too.
 
-The next chapter, **[Cross-process](./08-cross-process.md)**,
-shifts gears. Up to here every Aperio program lived in one
-binary. The next chapter introduces what happens when an Aperio
-program opens multiple lotuses across separate processes — the
-wire format, the deployment-time transport binding, and the
-boundary at which "in-memory copy" becomes "copy across a Unix
-socket."
+The next chapter, **[Scheduling and
+threads](./08-scheduling-and-threads.md)**, shifts gears. Up
+to here every Aperio program has run on a single thread. The
+next chapter introduces pinned loci — loci that own their own
+OS thread, optionally bound to a specific CPU core — and the
+cross-thread bus mailboxes that connect them to cooperative
+loci. After that, [chapter 9](./09-cross-process.md) extends
+the same shape across separate processes.

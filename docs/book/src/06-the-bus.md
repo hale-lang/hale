@@ -190,7 +190,7 @@ to its parent, who decides whether to absorb, restart, or
 bubble it further. There is no "failure published as a message
 to a peer" mechanism; siblings cannot accidentally absorb each
 other's failures. (Recovery primitives are the topic of
-[chapter 11](./11-recovery-and-supervision.md).)
+[chapter 12](./12-recovery-and-supervision.md).)
 
 The combination of these two — closed communication graph plus
 no-lateral-failure — rules out an entire class of
@@ -208,7 +208,7 @@ in source. The same source can run with the bus over:
   the same process.
 - **Unix sockets** — for cross-process bus on a single machine
   (m57+). Subjects with this transport land in
-  [chapter 8](./08-cross-process.md).
+  [chapter 9](./09-cross-process.md).
 - **NATS / UDP multicast / TCP** — the production transports.
   Implementations of `std::bus::Adapter`. Same source binds to
   any of them per `deployment.yaml`.
@@ -241,14 +241,14 @@ For variable-length fields — most commonly `String` — the
 runtime's payload arena (allocated lazily on first
 cross-process publish) holds the string bytes in the
 subscriber's reach. The mechanics are introduced in
-[chapter 8](./08-cross-process.md); for in-process bus you do
+[chapter 9](./09-cross-process.md); for in-process bus you do
 not need to think about it.
 
 ## What this chapter does not cover
 
 - **Cross-process bus** — `connect` / `listen` deployment
   roles, the wire format, the per-field serializer — see
-  [chapter 8](./08-cross-process.md).
+  [chapter 9](./09-cross-process.md).
 - **Closures** — the audit construct that uses `~~` and runs
   at compile-known epochs — see
   [chapter 7](./07-closures.md). Closures interact with the

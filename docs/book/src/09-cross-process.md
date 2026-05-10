@@ -1,5 +1,13 @@
 # Cross-process: opening multiple lotuses
 
+[Chapter 8](./08-scheduling-and-threads.md) introduced
+multi-thread Aperio programs — pinned loci on separate OS
+threads, cross-thread bus mailboxes, CPU-core affinity. This
+chapter goes one level beyond: when even multiple threads in
+one process is the wrong shape — when a workload needs separate
+OS processes, possibly on separate machines — the same bus
+extends transparently.
+
 So far every Aperio program has lived in one binary, opening one
 [lotus](../../reference/src/glossary.md#lotus). This chapter covers
 the multi-binary case: separate Aperio programs that share a bus
@@ -247,10 +255,10 @@ to user code.
 - **Perspective versioning (`serialize_as TypeV1`)** — the
   schema-evolution mechanism mentioned briefly above. Lands
   with the perspectives chapter,
-  [chapter 10](./10-perspectives.md), and is full v1.x roadmap
+  [chapter 11](./11-perspectives.md), and is full v1.x roadmap
   work.
 
-The next chapter, **[Generics](./09-generics.md)**, returns to
+The next chapter, **[Generics](./10-generics.md)**, returns to
 the source-level surface: how `Result<T, E>`, `Option<T>`, and
 the substrate's `Numeric` bound let a single locus or function
 work over a family of types without runtime type inspection.
