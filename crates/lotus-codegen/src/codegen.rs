@@ -158,6 +158,7 @@ pub fn build_executable(
         current_user_fn_ret_alloca: None,
         accumulator_ctx: None,
         serializers: BTreeMap::new(),
+        generic_fn_templates: BTreeMap::new(),
     };
 
     cx.declare_builtins();
@@ -346,6 +347,17 @@ struct Cx<'ctx, 'p> {
     /// deserializer's job is to reconstruct that struct from
     /// whatever bytes the wire delivered.
     serializers: BTreeMap<String, SerializerPair<'ctx>>,
+    /// m62: generic free fn templates indexed by name.
+    /// Populated in lower_program from FnDecls whose
+    /// `generics: Vec<GenericParam>` is non-empty. Call sites
+    /// look here to find templates and trigger on-demand
+    /// instantiation: lower_call_expr infers concrete type args
+    /// from the actual arg LotusTypes, mangles, and synthesizes
+    /// + lowers a per-instantiation specialized fn body. The
+    /// resulting specialized FunctionValue lands in `user_fns`
+    /// keyed by mangled name, so subsequent calls with the same
+    /// type args resolve directly.
+    generic_fn_templates: BTreeMap<String, FnDecl>,
 }
 
 /// m60: paired serialize / deserialize fns synthesized per bus
@@ -1894,6 +1906,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.declare_user_fn(f)?;
         }
 
+        // m62: register every generic fn template so
+        // lower_call_expr can find them at call sites and
+        // synthesize per-instantiation specialized fns on
+        // demand. Templates themselves were skipped by
+        // declare_user_fn (they emit no LLVM IR until pinned).
+        for f in &user_fn_decls {
+            if !f.generics.is_empty() {
+                self.generic_fn_templates
+                    .insert(f.name.name.clone(), f.clone());
+            }
+        }
+
         // Pass C: lower lifecycle method bodies (birth, run, ...).
         for l in &locus_decls {
             self.lower_locus_method_bodies(l)?;
@@ -2433,6 +2457,271 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 TypeExpr::Projection {
                     class: *class,
                     inner: Box::new(Self::substitute_type_expr(inner, subst)),
+                    span: span.clone(),
+                }
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// m62: convert a LotusType back to a TypeExpr for the
+    /// generic-fn inference path. The resulting TypeExpr is used
+    /// to mangle the instantiation name and to substitute into
+    /// the template's body — both purely structural operations,
+    /// so the synthetic spans are fine.
+    fn lotus_type_to_type_expr(
+        t: &LotusType,
+    ) -> Result<TypeExpr, CodegenError> {
+        // Synthetic span for the synthesized TypeExpr — these
+        // never surface in user-visible diagnostics because m62
+        // structural ops only inspect shape, not source location.
+        let span = lotus_syntax::span::Span::new(0, 0);
+        match t {
+            LotusType::Int => Ok(TypeExpr::Primitive(PrimType::Int, span)),
+            LotusType::Float => {
+                Ok(TypeExpr::Primitive(PrimType::Float, span))
+            }
+            LotusType::Bool => Ok(TypeExpr::Primitive(PrimType::Bool, span)),
+            LotusType::String => {
+                Ok(TypeExpr::Primitive(PrimType::String, span))
+            }
+            LotusType::Duration => {
+                Ok(TypeExpr::Primitive(PrimType::Duration, span))
+            }
+            LotusType::Decimal => {
+                Ok(TypeExpr::Primitive(PrimType::Decimal, span))
+            }
+            LotusType::Time => Ok(TypeExpr::Primitive(PrimType::Time, span)),
+            LotusType::TypeRef(name) | LotusType::Enum(name) => {
+                Ok(TypeExpr::Named {
+                    path: QualifiedName {
+                        segments: vec![Ident {
+                            name: name.clone(),
+                            span,
+                        }],
+                        span,
+                    },
+                    generic_args: Vec::new(),
+                    span,
+                })
+            }
+            other => Err(CodegenError::Unsupported(format!(
+                "lotus_type_to_type_expr: form `{:?}` not supported \
+                 (m62 v0.1 limits inference to primitives + named \
+                 types as generic args)",
+                other
+            ))),
+        }
+    }
+
+    /// m62: structurally walk a declared TypeExpr against an
+    /// actual LotusType, recording bindings for any generic
+    /// param refs. `params` names which idents in the TypeExpr
+    /// represent generic params (vs. concrete user types).
+    /// Errors if a param binds to multiple distinct types
+    /// (inconsistent inference).
+    fn unify_generic_param_bindings(
+        declared: &TypeExpr,
+        actual: &LotusType,
+        params: &BTreeSet<String>,
+        bindings: &mut BTreeMap<String, TypeExpr>,
+    ) -> Result<(), CodegenError> {
+        // Generic-param ref: bind to actual.
+        if let TypeExpr::Named {
+            path, generic_args, ..
+        } = declared
+        {
+            if path.segments.len() == 1
+                && generic_args.is_empty()
+                && params.contains(&path.segments[0].name)
+            {
+                let bound = Self::lotus_type_to_type_expr(actual)?;
+                let name = &path.segments[0].name;
+                if let Some(prior) = bindings.get(name) {
+                    if prior != &bound {
+                        return Err(CodegenError::Unsupported(format!(
+                            "generic param `{}` inferred as both \
+                             `{:?}` and `{:?}` from call site",
+                            name, prior, bound
+                        )));
+                    }
+                } else {
+                    bindings.insert(name.clone(), bound);
+                }
+                return Ok(());
+            }
+        }
+        // Otherwise structural recurse where shapes match.
+        match (declared, actual) {
+            (TypeExpr::Array { elem, .. }, LotusType::Array(a_elem, _)) => {
+                Self::unify_generic_param_bindings(
+                    elem, a_elem, params, bindings,
+                )
+            }
+            (TypeExpr::Tuple(parts, _), LotusType::Tuple(a_parts))
+                if parts.len() == a_parts.len() =>
+            {
+                for (p, a) in parts.iter().zip(a_parts) {
+                    Self::unify_generic_param_bindings(
+                        p, a, params, bindings,
+                    )?;
+                }
+                Ok(())
+            }
+            // Concrete-vs-concrete shapes: nothing to bind.
+            // Mismatches don't error here — the typechecker (or
+            // the call site type check after substitution) will
+            // surface them.
+            _ => Ok(()),
+        }
+    }
+
+    /// m62: infer the concrete type-args tuple for a generic fn
+    /// call by unifying each declared param TypeExpr against the
+    /// actual arg LotusType. Returns the args in the same order
+    /// as the template's `generics: Vec<GenericParam>`.
+    fn infer_generic_fn_args(
+        template: &FnDecl,
+        actual_arg_tys: &[LotusType],
+    ) -> Result<Vec<TypeExpr>, CodegenError> {
+        let visible_args = template.params.len().min(actual_arg_tys.len());
+        let generic_param_names: BTreeSet<String> = template
+            .generics
+            .iter()
+            .map(|g| g.name.name.clone())
+            .collect();
+        let mut bindings: BTreeMap<String, TypeExpr> = BTreeMap::new();
+        for (p, actual_ty) in template
+            .params
+            .iter()
+            .zip(actual_arg_tys.iter())
+            .take(visible_args)
+        {
+            Self::unify_generic_param_bindings(
+                &p.ty,
+                actual_ty,
+                &generic_param_names,
+                &mut bindings,
+            )?;
+        }
+        let mut args: Vec<TypeExpr> = Vec::new();
+        for gp in &template.generics {
+            match bindings.get(&gp.name.name) {
+                Some(t) => args.push(t.clone()),
+                None => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "generic fn `{}`: could not infer param `{}` \
+                         from call site (m62 v0.1 requires every \
+                         generic param to appear in an arg position \
+                         that pins it)",
+                        template.name.name, gp.name.name
+                    )));
+                }
+            }
+        }
+        Ok(args)
+    }
+
+    /// m62: synthesize a concrete (non-generic) FnDecl from a
+    /// generic template + a tuple of resolved type args. The
+    /// template's params, return type, and body type-ascriptions
+    /// (let / let-tuple) are walked through `substitute_type_expr`.
+    /// Body expression-level generic-typed sites that aren't
+    /// covered (e.g., struct literals using a generic type
+    /// without a let ascription) flow through as-is and rely on
+    /// the m61b/m61c surface resolution at lowering time.
+    fn synthesize_generic_fn_instantiation(
+        template: &FnDecl,
+        type_args: &[TypeExpr],
+        mangled_name: &str,
+    ) -> Result<FnDecl, CodegenError> {
+        if template.generics.len() != type_args.len() {
+            return Err(CodegenError::Unsupported(format!(
+                "generic fn `{}`: expected {} type args, got {}",
+                template.name.name,
+                template.generics.len(),
+                type_args.len()
+            )));
+        }
+        let mut subst: BTreeMap<String, TypeExpr> = BTreeMap::new();
+        for (gp, arg) in template.generics.iter().zip(type_args.iter()) {
+            subst.insert(gp.name.name.clone(), arg.clone());
+        }
+        let new_params: Vec<Param> = template
+            .params
+            .iter()
+            .map(|p| Param {
+                name: p.name.clone(),
+                ty: Self::substitute_type_expr(&p.ty, &subst),
+                default: p.default.clone(),
+                span: p.span.clone(),
+            })
+            .collect();
+        let new_ret = template
+            .ret
+            .as_ref()
+            .map(|t| Self::substitute_type_expr(t, &subst));
+        let new_body = Self::substitute_block_type_ascriptions(
+            &template.body,
+            &subst,
+        );
+        Ok(FnDecl {
+            name: Ident {
+                name: mangled_name.to_string(),
+                span: template.name.span.clone(),
+            },
+            generics: Vec::new(),
+            params: new_params,
+            ret: new_ret,
+            body: new_body,
+            span: template.span.clone(),
+        })
+    }
+
+    /// m62: shallow walk of a block to substitute generic-param
+    /// refs in any let/let-tuple type ascriptions. Other
+    /// type-position uses inside the body (cast targets, nested
+    /// fn decl signatures, etc.) are not walked — generic fn
+    /// bodies that need those aren't expected at v0.1 and would
+    /// surface as type errors after substitution leaves them
+    /// pointing at unbound names.
+    fn substitute_block_type_ascriptions(
+        block: &Block,
+        subst: &BTreeMap<String, TypeExpr>,
+    ) -> Block {
+        let new_stmts = block
+            .stmts
+            .iter()
+            .map(|s| Self::substitute_stmt_type_ascriptions(s, subst))
+            .collect();
+        Block {
+            stmts: new_stmts,
+            span: block.span.clone(),
+        }
+    }
+
+    fn substitute_stmt_type_ascriptions(
+        stmt: &Stmt,
+        subst: &BTreeMap<String, TypeExpr>,
+    ) -> Stmt {
+        match stmt {
+            Stmt::Let { is_mut, name, ty, value, span } => Stmt::Let {
+                is_mut: *is_mut,
+                name: name.clone(),
+                ty: ty
+                    .as_ref()
+                    .map(|t| Self::substitute_type_expr(t, subst)),
+                value: value.clone(),
+                span: span.clone(),
+            },
+            Stmt::LetTuple { is_mut, names, ty, value, span } => {
+                Stmt::LetTuple {
+                    is_mut: *is_mut,
+                    names: names.clone(),
+                    ty: ty
+                        .as_ref()
+                        .map(|t| Self::substitute_type_expr(t, subst)),
+                    value: value.clone(),
                     span: span.clone(),
                 }
             }
@@ -4728,10 +5017,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// can resolve to fns declared anywhere in the program.
     fn declare_user_fn(&mut self, f: &FnDecl) -> Result<(), CodegenError> {
         if !f.generics.is_empty() {
-            return Err(CodegenError::Unsupported(format!(
-                "generic fn `{}`",
-                f.name.name
-            )));
+            // m62: generic templates declare nothing directly.
+            // Per-instantiation specialized fns get declared
+            // on-demand from `lower_call_expr` once arg types
+            // are known and inference can pin the type args.
+            return Ok(());
         }
         let mut param_tys = Vec::with_capacity(f.params.len());
         let ptr_t_for_caller_arena =
@@ -4837,6 +5127,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// to a unified `fn.exit` epilogue block to avoid duplicating
     /// the destroy + copy at every return site.
     fn lower_user_fn_body(&mut self, f: &FnDecl) -> Result<(), CodegenError> {
+        if !f.generics.is_empty() {
+            // m62: generic templates have no body to lower until
+            // call sites pin the type args. lower_call_expr
+            // synthesizes + lowers per-instantiation bodies on-
+            // demand.
+            return Ok(());
+        }
         let sig = self
             .user_fns
             .get(&f.name.name)
@@ -5503,6 +5800,134 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// + type when the fn has a return type, or `None` for void
     /// fns. Used from both expression-position and statement-position
     /// call sites.
+    /// m62: lower a call to a generic free fn. Lowers each arg
+    /// once (so side effects fire at most once), infers concrete
+    /// type args from the resulting LotusTypes, mangles, and —
+    /// if this instantiation hasn't been seen before — synthesizes
+    /// + lowers a specialized fn body (saving and restoring
+    /// builder state so the surrounding caller's IR isn't
+    /// disturbed). Then emits a manual `build_call` using the
+    /// already-lowered arg values + the implicit `__caller_arena`.
+    fn lower_generic_fn_call(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<(BasicValueEnum<'ctx>, LotusType)>, CodegenError> {
+        let mut arg_pairs: Vec<(BasicValueEnum<'ctx>, LotusType)> =
+            Vec::with_capacity(args.len());
+        for a in args {
+            arg_pairs.push(self.lower_expr(a, scope)?);
+        }
+        let template = self
+            .generic_fn_templates
+            .get(name)
+            .cloned()
+            .expect("caller verified template exists");
+        if arg_pairs.len() != template.params.len() {
+            return Err(CodegenError::Unsupported(format!(
+                "generic fn `{}` expects {} args, got {} (m62 v0.1 \
+                 doesn't fill defaults on generic templates yet)",
+                name,
+                template.params.len(),
+                arg_pairs.len()
+            )));
+        }
+        let arg_tys: Vec<LotusType> =
+            arg_pairs.iter().map(|(_, t)| t.clone()).collect();
+        let inferred = Self::infer_generic_fn_args(&template, &arg_tys)?;
+        let mangled = Self::mangle_generic_name(name, &inferred)?;
+
+        // Synthesize + lower the specialized fn if we haven't
+        // seen this instantiation before.
+        if !self.user_fns.contains_key(&mangled) {
+            let synth = Self::synthesize_generic_fn_instantiation(
+                &template, &inferred, &mangled,
+            )?;
+            // Save builder state — synthesizing a fn switches
+            // the insertion point to the new fn's entry block,
+            // and lower_user_fn_body resets all the
+            // current_user_fn_* fields. Critically also
+            // save/restore `in_main`: synthesis fires while
+            // lowering main's body, but the synthesized fn
+            // itself isn't main and `return x` inside its body
+            // must hit the typed-return path, not the exit-code
+            // path. Same for `current_self` and the loop stack.
+            let saved_block = self.builder.get_insert_block();
+            let saved_current_fn = self.current_fn;
+            let saved_user_fn_ret = self.current_user_fn_ret.clone();
+            let saved_caller_arena =
+                self.current_user_fn_caller_arena;
+            let saved_fn_arena = self.current_user_fn_arena;
+            let saved_exit_bb = self.current_user_fn_exit_bb;
+            let saved_ret_alloca = self.current_user_fn_ret_alloca;
+            let saved_in_main = self.in_main;
+            let saved_current_self = self.current_self.clone();
+            let saved_loops = std::mem::take(&mut self.loops);
+
+            self.in_main = false;
+            self.current_self = None;
+
+            self.declare_user_fn(&synth)?;
+            self.lower_user_fn_body(&synth)?;
+
+            // Restore caller-side state.
+            if let Some(b) = saved_block {
+                self.builder.position_at_end(b);
+            }
+            self.current_fn = saved_current_fn;
+            self.current_user_fn_ret = saved_user_fn_ret;
+            self.current_user_fn_caller_arena = saved_caller_arena;
+            self.current_user_fn_arena = saved_fn_arena;
+            self.current_user_fn_exit_bb = saved_exit_bb;
+            self.current_user_fn_ret_alloca = saved_ret_alloca;
+            self.in_main = saved_in_main;
+            self.current_self = saved_current_self;
+            self.loops = saved_loops;
+        }
+
+        // Emit the call manually using the pre-lowered args (so
+        // we don't lower them twice). Mirrors lower_user_fn_call's
+        // call-emit tail but without the inline arg lowering.
+        let sig = self
+            .user_fns
+            .get(&mangled)
+            .cloned()
+            .expect("specialized fn was just declared");
+        let caller_arena = self.current_arena_ptr()?;
+        let mut llvm_args: Vec<BasicMetadataValueEnum> =
+            Vec::with_capacity(sig.params.len() + 1);
+        llvm_args.push(caller_arena.into());
+        for (i, (val, ty)) in arg_pairs.iter().enumerate() {
+            if ty != &sig.params[i] {
+                return Err(CodegenError::Unsupported(format!(
+                    "generic fn `{}` arg {} type mismatch after \
+                     monomorphization: expected {:?}, got {:?}",
+                    mangled, i, sig.params[i], ty
+                )));
+            }
+            llvm_args.push((*val).into());
+        }
+        let call = self
+            .builder
+            .build_call(
+                sig.func,
+                &llvm_args,
+                &format!("{}.call", mangled),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        match sig.ret {
+            None => Ok(None),
+            Some(lt) => {
+                let v = call
+                    .try_as_basic_value()
+                    .left()
+                    .expect("non-void fn returns a basic value");
+                Ok(Some((v, lt)))
+            }
+        }
+    }
+
     fn lower_user_fn_call(
         &mut self,
         name: &str,
@@ -5641,6 +6066,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // Discard return value; statement-position
                             // call.
                             let _ = self.lower_user_fn_call(name, args, scope)?;
+                        } else if self
+                            .generic_fn_templates
+                            .contains_key(name)
+                        {
+                            // m62: generic fn at statement
+                            // position — synthesize on-demand,
+                            // discard return value.
+                            let _ = self
+                                .lower_generic_fn_call(name, args, scope)?;
                         } else {
                             self.lower_print_call(name, args, scope)?;
                         }
@@ -8238,6 +8672,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         CodegenError::Unsupported(format!(
                             "fn `{}` returns no value but is used in \
                              expression position",
+                            i.name
+                        ))
+                    })
+                }
+                Expr::Ident(i)
+                    if self.generic_fn_templates.contains_key(&i.name) =>
+                {
+                    let result =
+                        self.lower_generic_fn_call(&i.name, args, scope)?;
+                    result.ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "generic fn `{}` returns no value but is \
+                             used in expression position",
                             i.name
                         ))
                     })

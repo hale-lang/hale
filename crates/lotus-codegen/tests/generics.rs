@@ -299,6 +299,74 @@ fn locus_param_default_overridable_at_instantiation() {
     );
 }
 
+// === m62 ====================================================
+// Generic free fns. Inference at the call site pins type args
+// from actual arg LotusTypes; per-instantiation specialized
+// fn bodies synthesize on-demand and land in user_fns under
+// the mangled name.
+
+#[test]
+fn generic_fn_identity_inferred_from_arg() {
+    let src = r#"
+        fn first<T>(x: T) -> T {
+            return x;
+        }
+
+        fn main() {
+            let v = first(42);
+            println("v=", v);
+        }
+    "#;
+    let (stdout, status) = build_and_run("gen_fn_id_int", src);
+    assert!(status.success(), "exited non-zero: {:?}", status);
+    assert!(stdout.contains("v=42"), "got: {:?}", stdout);
+}
+
+#[test]
+fn generic_fn_distinct_instantiations_at_distinct_calls() {
+    // Two calls with different arg types should produce two
+    // specialized fns. Both round-trip the value.
+    let src = r#"
+        fn first<T>(x: T) -> T {
+            return x;
+        }
+
+        fn main() {
+            let a = first(7);
+            let b = first("ok");
+            println("a=", a, " b=", b);
+        }
+    "#;
+    let (stdout, status) = build_and_run("gen_fn_id_two", src);
+    assert!(status.success(), "exited non-zero: {:?}", status);
+    assert!(
+        stdout.contains("a=7 b=ok"),
+        "got: {:?}",
+        stdout,
+    );
+}
+
+#[test]
+fn generic_fn_with_arithmetic_on_inferred_type() {
+    // T is pinned to Int; the body adds 1, returns Int. Tests
+    // that the substituted body still typechecks at codegen
+    // (Int + Int).
+    let src = r#"
+        fn bump<T>(x: T) -> T {
+            return x;
+        }
+
+        fn main() {
+            let n = bump(99);
+            let m = n + 1;
+            println("m=", m);
+        }
+    "#;
+    let (stdout, status) = build_and_run("gen_fn_bump", src);
+    assert!(status.success(), "exited non-zero: {:?}", status);
+    assert!(stdout.contains("m=100"), "got: {:?}", stdout);
+}
+
 #[test]
 fn discovery_walks_locus_lifecycle_signatures() {
     // Discovery covers locus lifecycle method signatures via

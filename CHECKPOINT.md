@@ -1,7 +1,49 @@
 # Lotus — session checkpoint
 
 **Read this first** if you're picking up the lotus language work
-in a new session. State as of **m61c: generic enum
+in a new session. State as of **m62: generic free fns** —
+the first generic-fn slice in the generics arc. Codegen now
+accepts `fn first<T>(x: T) -> T { return x; }` declarations
+and synthesizes per-call-site specialized fn bodies on demand.
+Inference is via type-arg-binding-from-actual-arg-types: at a
+Call site for a generic fn name, codegen lowers each arg
+once, walks the template's declared param TypeExprs against
+the actual LotusTypes via `unify_generic_param_bindings`,
+extracts a binding for each generic param, mangles
+(template, args) into a name like `first_Int`, and — if this
+instantiation hasn't been seen — synthesizes a concrete
+FnDecl, runs declare_user_fn + lower_user_fn_body on it
+(carefully save/restoring builder state, `in_main`,
+`current_self`, the loop stack, and the
+current_user_fn_* alloca slots so the surrounding caller's
+IR isn't corrupted), then emits a manual `build_call`
+against the specialized fn. Subsequent calls with the same
+type args resolve directly via user_fns lookup — no
+re-synthesis. v0.1 limits: every generic param must appear
+in an arg position that pins it (return-type-only inference
+isn't supported); only primitives + non-generic named types
+work as inferred args (`unify_generic_param_bindings` recurses
+through Array + Tuple but not yet through arbitrary nested
+generic args); turbofish syntax (`first::<Int>(x)`) doesn't
+parse, which is fine because inference handles the common
+case. Three new helpers in codegen:
+`lotus_type_to_type_expr` (LotusType → TypeExpr for mangling
++ substitution), `unify_generic_param_bindings` (structural
+walk extracting bindings), `infer_generic_fn_args` (driver
+that returns the args tuple in template generic-param order).
+`synthesize_generic_fn_instantiation` substitutes through
+params, return type, and body let/let-tuple ascriptions;
+expression-level type ascriptions in bodies aren't walked
+(rare in v0.1 generic fn bodies). `lower_generic_fn_call` is
+the new dispatch hook in `lower_expr`'s Call branch (and the
+matching `Stmt::Expr(Call)` branch). New `cx.generic_fn_templates:
+BTreeMap<String, FnDecl>` populated in lower_program. Three
+new tests in `tests/generics.rs`:
+generic_fn_identity_inferred_from_arg,
+generic_fn_distinct_instantiations_at_distinct_calls,
+generic_fn_with_arithmetic_on_inferred_type. 115 tests pass
+(was 112; +3 from generics.rs); 54 example builds unaffected.
+State before that was **m61c: generic enum
 monomorphization + locus param-default bare-name resolution**
 — closes the most painful ergonomic gaps in the generic-struct
 slice. Two extensions: (1)
@@ -2460,44 +2502,45 @@ capacity ceiling — the m45 quickfix `× 32` multiplier is gone.
 
 ### RESUME HERE (next session)
 
-**Generics arc in progress; m61 + m61b + m61c shipped.**
-Cross-process bus substrate arc closed at m60. The generic-
-struct + generic-enum substrate is now usable end-to-end:
-discovery walks every TypeExpr position; struct + enum
-templates monomorphize per (template, args); bare-name
-construction works at let ascriptions and locus param
-defaults. Per the user's hard rule, **no code towards
-trellis-pair until v1 language is done.**
+**Generics arc in progress; m61, m61b, m61c, m62 shipped.**
+Cross-process bus substrate arc closed at m60. Generic structs +
+enums + free fns all monomorphize. Per the user's hard rule,
+**no code towards trellis-pair until v1 language is done.**
 
-**Start with m62: generic free fns.** `fn first<T>(xs: [T;
-4]) -> T`. Per-callsite-type-tuple monomorphization — each
-unique arg tuple seen at a call site produces one specialized
-fn body. Same shape as struct monomorphization (m61) applied
-to FnDecl: discover at call sites (read each call's
-type_args), synthesize a per-instantiation `__first_Int` /
-`__first_String` fn with bodies that have generic-param refs
-substituted, route call sites to the mangled name. Likely
-needs:
-- A new `cx.generic_fn_instantiations: BTreeMap<String,
-  BTreeMap<Vec<String>, FunctionValue>>` for the synthesized
-  fns.
-- A discovery pass that walks call sites for explicit
-  type-args (turbofish `first::<Int>(xs)`) AND inferred
-  type-args (where call-site arg types pin them down).
-  Inference is the harder half; v0.1 may require explicit
-  turbofish if inference proves too involved.
-- declare_user_fn skip generic templates; synthesize per
-  instantiation; lower per instantiation.
+**Start with m63: generic loci.** `locus Cache<K, V> { ... }`
+— same monomorphization shape lifted to LocusDecl. Loci have
+substantially more state than free fns (params, methods,
+lifecycle, bus subscribe, closures), so substitution needs to
+cover all of those. Discovery: walk every locus instantiation
+site (Expr::Struct where path resolves to a generic locus
+template) and infer type args from the field-init exprs that
+correspond to generic-typed params. Synthesis: clone the
+LocusDecl, substitute generic-param refs throughout member
+type positions, give it the mangled name, route through the
+existing declare_locus_struct + declare_locus_methods +
+lower_locus_method_bodies passes. The biggest open question
+is: does monomorphization happen upfront (like m61 structs)
+or on-demand at instantiation sites (like m62 fns)? Loci are
+typically instantiated explicitly via struct-literal-style
+syntax, so upfront discovery from instantiation sites should
+work cleanly. Investigate which Expr/Stmt forms create locus
+instances and walk them in a pre-pass.
+
+**Then m64: `Numeric` bound + generic closures.** `T: Numeric`
+permits arithmetic on T. Closures over generic loci.
+
+**m65: stdlib `Result<T,E>` / `Option<T>`** as built-ins.
 
 **Smaller ergonomic gaps still parked (m61d-or-later):**
 - Bare-name struct literal resolution at return statements +
-  struct field initializers (today still requires explicit
-  mangled name there; rare in practice once locus params
-  cover most use cases).
+  struct field initializers.
 - Parser `>>` ambiguity: `Box<Box<Int>>` doesn't parse;
   codegen substrate is nested-aware already.
 - Tightening typechecker so match exhaustiveness against
   synthesized enum monomorphs doesn't need a wildcard arm.
+- m62 inference limited to single-level generic args
+  (primitives + named types). Nested-generic inference and
+  return-type-driven inference deferred.
 
 **m63: generic loci.** Same lifted to locus declarations.
 
@@ -2601,6 +2644,13 @@ milestones expanded in RESUME HERE above:
 - **m61d (parked)** — bare-name resolution at return /
   field-init sites; parser `>>` ambiguity; typechecker
   exhaustiveness against synthesized monomorphs.
+- **m62 — DONE (generic free fns + inference)** — codegen
+  accepts `fn f<T>(...) -> ...` declarations, infers type
+  args from call-site arg types via structural unification,
+  synthesizes specialized fn bodies on demand. Limits:
+  every generic param must appear in an arg position;
+  primitives + named types only as inferred args; no
+  turbofish syntax (parser doesn't recognize `::<T>`).
 - **m62** — generic free fns.
 - **m63** — generic loci.
 - **m64** — `Numeric` bound + generic closures.
@@ -2661,7 +2711,7 @@ System has:
 - `gcc` 13.x
 
 Cargo workspace builds clean. `cargo test --workspace --tests` passes
-all 112 tests (the locus-with-run test runs 3×500ms sleeps so the
+all 115 tests (the locus-with-run test runs 3×500ms sleeps so the
 runtime + codegen integration buckets clock ~1.5s each; m57 added
 two transport round-trip tests under tests/transport.rs that fork
 listener + connector subprocesses; m58 added two more under
@@ -2671,17 +2721,17 @@ tests/bus_subscriber.rs that runs the full two-lotus-binary
 publisher → reader-thread → cooperative-queue → handler path; m60
 added one more under tests/serializer_shape.rs that verifies the
 synthesized __serialize_T / __deserialize_T symbols + send-site
-calls show up in the IR; m61 + m61b + m61c added ten under
+calls show up in the IR; m61 through m62 added thirteen under
 tests/generics.rs that exercise generic struct + enum template
-monomorphization, broader discovery across fn / locus / bus
-positions, and bare-name resolution at let ascriptions and
-locus param defaults).
+monomorphization, broader discovery, bare-name resolution at let
+ascriptions + locus param defaults, and generic free fn inference
++ synthesis).
 
 ## How to verify the checkpoint
 
 ```
 cd ~/code/lotus-lang
-cargo test --workspace --tests           # 112 passed
+cargo test --workspace --tests           # 115 passed
 cargo run --bin lotus -- run examples/trellis-demo/main.lt
 cargo run --bin lotus -- build examples/hello-world/main.lt
 ./examples/hello-world/main              # prints "hello, world"
