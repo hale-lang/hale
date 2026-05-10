@@ -2,10 +2,14 @@
 
 > Date: 2026-05-10. **Updated** after the polished-middle-step
 > arc (apps/onboard, per-codebase overrides, handler route
-> derivation, goroutine target resolution).
+> derivation, goroutine target resolution) AND the corpus
+> extraction pass (std::iter::Lines, std::tagged::Accumulator,
+> std::name::Convention, std::json::Builder, std::io::fs::extension
+> primitive + all five app migrations).
 > Plan: `notes/codebase-onboarding-design.md`.
 > Validation: `notes/three-tower-validation.md`.
 > Shape rules: `notes/onboarding-shape-rules.md`.
+> Refactor: `notes/aperio-refactor-proposal.md` (now historical).
 
 ## The pitch (one paragraph)
 
@@ -83,6 +87,40 @@ flow + agent-actionable unknowns → resolves unknowns by reading
 flagged files → drops decisions in `<dir>/.aperio-overrides` →
 re-runs onboard, recognition crystallizes. Universal seed
 stays clean; per-codebase vocabulary lives next to the codebase.
+
+### ✅ Shipped — corpus extraction (post-polished-middle-step)
+
+Per `notes/aperio-refactor-proposal.md` (now historical), the
+duplicated helper clusters across the `apps/` tree lifted into
+the std seed:
+
+| Extraction                | Surface                                  | Status |
+|---------------------------|------------------------------------------|--------|
+| `std::io::fs::extension`  | basename-aware extension primitive       | done   |
+| `std::iter::Lines`        | cursor-shape newline walker              | done   |
+| `std::tagged::Accumulator`| TAG:body line accumulator parsing        | done   |
+| `std::name::Convention`   | snake/Camel + file-stem → LocusL         | done   |
+| `std::json::Builder`      | JSON-shape glue helpers                  | done   |
+
+All five extractions ship with stdlib doc pages
+(`docs/std/src/{iter,tagged,name,json}.md`) and ~25 new tests
+across `crates/aperio-codegen/tests/stdlib_{iter,tagged,name,json}.rs`
+plus a 6-shape test in `stdlib_fs.rs`. Workspace test count
+moved from 290 → 312 across this arc.
+
+All five app migrations land byte-identical output against the
+checked-in fixtures (`apps/operational-graph/fixture`,
+`apps/import-graph/fixture`). Net: ~430 LOC of duplicated
+glue removed from `apps/`, ~150 LOC added to the std seed.
+
+One v0 compiler bug surfaced during the migration and was
+logged: cross-locus method return that follows a different
+sub-locus's method call loses its String at the free-fn return
+boundary. Workaround is inline primitive concat; tracked in
+`notes/aperio-friction.md` as `2026-05-10 cross-locus-return-
+deep-copy`. Two functions (`__collect_types_with_motion` in
+tower-join, `__collect_section` in operational-graph) carry
+the workaround.
 
 ### ⏳ Not yet — rendering and follow-ons
 
