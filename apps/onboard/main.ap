@@ -1,0 +1,512 @@
+// onboard — the polished codebase recognition report.
+//
+// **The middle step product.** Per the codebase-onboarder
+// design (notes/codebase-onboarding-design.md) and the agent-
+// driven reframe (notes/onboarding-shape-rules.md), the
+// codebase-onboarder's first deliverable is **not** a
+// transpiler — it's a perception tool. A developer (or LLM
+// agent driving a session) points it at a foreign codebase,
+// gets a structured recognition report, and sees the lotus
+// shape already present in the source.
+//
+// Output: a human-readable text report with one section per
+// detected locus, an agent-actionable list of unknowns, and a
+// recognition narrative explaining what the lotus tower for
+// this codebase looks like.
+//
+// **Agent-friendly.** Unknowns are flagged prominently with
+// file paths and shape-rule hints; an LLM driving the session
+// reads the report, opens the flagged files, and resolves
+// unknowns per-codebase context (per
+// `notes/onboarding-shape-rules.md`).
+//
+// **Companion to apps/tower-join.** tower-join emits raw JSON
+// for machine consumption (downstream pipelines, the future
+// transpiler); onboard renders the same data for human/agent
+// reading.
+//
+// Per the apps-are-loci ethos, wrapped in `OnboardL`.
+//
+// Usage:
+//   aperio build apps/onboard/main.ap
+//   apps/onboard/main [SRC_DIR] [LANG_FLAVOR]
+
+// ---- Per-file unified walk (shared shape with tower-join). ----
+
+fn __unified_walk(lang: std::lang::Lang, node: Int, in_import: Bool) -> String {
+    if node == 0 { return ""; }
+    let mut acc = "";
+    if lang.is_package_clause(node) {
+        acc = acc + "PKG:" + lang.extract_package_name(node) + "\n";
+    }
+    let mut now_in_import = in_import;
+    if lang.is_import_decl(node) { now_in_import = true; }
+    if now_in_import && lang.is_string_literal(node) {
+        let raw = std::ts::node_text(node);
+        acc = acc + "IMP:" + lang.strip_string_quotes(raw) + "\n";
+    }
+    if lang.is_fn_decl(node) {
+        if lang.is_main_fn(node) {
+            acc = acc + "OP_MAIN:1\n";
+        } else if lang.is_init_fn(node) {
+            acc = acc + "OP_INIT:1\n";
+        } else if lang.is_http_handler(node) {
+            acc = acc + "OP_HANDLER:" + lang.extract_fn_name(node) + "\n";
+        }
+    }
+    if lang.is_concurrent_spawn(node) {
+        acc = acc + "OP_SPAWN:" + lang.spawn_kind(node) + "\n";
+    }
+    if lang.is_infinite_loop(node) {
+        acc = acc + "OP_LOOP:1\n";
+    }
+    if lang.is_type_spec(node) {
+        acc = acc + "TYPE:" + lang.extract_type_name(node) + "\n";
+    }
+    let n = std::ts::node_named_child_count(node);
+    let mut i = 0;
+    while i < n {
+        let c = std::ts::node_named_child(node, i);
+        acc = acc + __unified_walk(lang, c, now_in_import);
+        i = i + 1;
+    }
+    return acc;
+}
+
+fn __count_tag(acc: String, tag: String) -> Int {
+    let prefix = tag + ":";
+    let plen = len(prefix);
+    let mut from = 0;
+    let total = len(acc);
+    let mut count = 0;
+    while from < total {
+        let rest = acc[from..total];
+        let nl = std::str::index_of(rest, "\n");
+        let mut line = "";
+        if nl < 0 { line = rest; from = total; }
+        else { line = rest[0..nl]; from = from + nl + 1; }
+        if len(line) >= plen {
+            if line[0..plen] == prefix { count = count + 1; }
+        }
+    }
+    return count;
+}
+
+fn __first_tag_body(acc: String, tag: String) -> String {
+    let prefix = tag + ":";
+    let plen = len(prefix);
+    let mut from = 0;
+    let total = len(acc);
+    while from < total {
+        let rest = acc[from..total];
+        let nl = std::str::index_of(rest, "\n");
+        let mut line = "";
+        if nl < 0 { line = rest; from = total; }
+        else { line = rest[0..nl]; from = from + nl + 1; }
+        if len(line) > plen {
+            if line[0..plen] == prefix {
+                return line[plen..len(line)];
+            }
+        }
+    }
+    return "";
+}
+
+// Comma-joined list of bodies for matching tags. For the report,
+// we want plain "log, net/http" not JSON.
+fn __collect_tag_csv(acc: String, tag: String) -> String {
+    let prefix = tag + ":";
+    let plen = len(prefix);
+    let mut from = 0;
+    let total = len(acc);
+    let mut out = "";
+    let mut first = true;
+    while from < total {
+        let rest = acc[from..total];
+        let nl = std::str::index_of(rest, "\n");
+        let mut line = "";
+        if nl < 0 { line = rest; from = total; }
+        else { line = rest[0..nl]; from = from + nl + 1; }
+        if len(line) > plen {
+            if line[0..plen] == prefix {
+                let body = line[plen..len(line)];
+                if first { out = body; first = false; }
+                else { out = out + ", " + body; }
+            }
+        }
+    }
+    return out;
+}
+
+// ---- Locus name proposal (file-stem → CamelCase + L suffix). ----
+
+fn __propose_locus_name(file: String) -> String {
+    let n = len(file);
+    if n < 3 { return "?L"; }
+    let stem = file[0..n-3];
+    let sn = len(stem);
+    if sn == 0 { return "?L"; }
+    let mut out = "";
+    let mut i = 0;
+    let mut next_upper = true;
+    while i < sn {
+        let c = stem[i..i+1];
+        if c == "_" {
+            next_upper = true;
+        } else {
+            if next_upper {
+                let lower_idx = std::str::index_of("abcdefghijklmnopqrstuvwxyz", c);
+                if lower_idx >= 0 {
+                    out = out + "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[lower_idx..lower_idx+1];
+                } else {
+                    out = out + c;
+                }
+                next_upper = false;
+            } else {
+                out = out + c;
+            }
+        }
+        i = i + 1;
+    }
+    return out + "L";
+}
+
+fn __ends_with_source(name: String, flavor: String) -> Bool {
+    let n = len(name);
+    if flavor == "go" {
+        if n < 3 { return false; }
+        return name[n-3..n] == ".go";
+    }
+    return false;
+}
+
+// ---- Aperio-shape narrative inference. ----
+//
+// Given a file's per-tower signal, infer a short description of
+// the locus shape it would land as in absorbed Aperio source.
+// v0 covers the patterns the operational extractor recognizes.
+fn __infer_locus_shape(has_main: Bool, has_init: Bool, n_handlers: Int,
+                       n_spawns: Int, n_loops: Int, n_types: Int,
+                       n_imports: Int) -> String {
+    if has_main {
+        if n_spawns > 0 || n_handlers > 0 {
+            return "root locus — birth() = init code, run() = main body, "
+                + "child loci = spawned goroutines / handler subscribers";
+        }
+        return "root locus — run() = main body";
+    }
+    if n_handlers > 0 {
+        return "bus-subscriber locus — each handler is a subscriber on a "
+            + "path-derived subject (HTTP route → bus subject)";
+    }
+    if n_loops > 0 {
+        return "long-running child locus — run() = the infinite loop body, "
+            + "dissolve() = parent-driven termination";
+    }
+    if n_spawns > 0 {
+        return "concurrent-spawning locus — child loci spawned in run()";
+    }
+    if n_types > 0 {
+        if n_imports > 0 {
+            return "state-holding sibling locus — typed fields hold the "
+                + "shared state other loci coordinate around";
+        }
+        return "shape-only file — no flow signal; types likely emit as "
+            + "`type` declarations rather than loci";
+    }
+    if n_imports > 0 {
+        return "structural support — imports without types or flow; likely "
+            + "free fns and constants the other loci depend on";
+    }
+    return "structural artifact — empty or pure boilerplate";
+}
+
+// ---- Per-file report rendering. ----
+
+fn __indent_block(label: String, content: String) -> String {
+    if len(content) == 0 {
+        return "  " + label + "  (none)\n";
+    }
+    return "  " + label + "  " + content + "\n";
+}
+
+fn __render_per_file(lang: std::lang::Lang, r: std::lang::Morpheme,
+                     dir: String, name: String) -> String {
+    let path = dir + "/" + name;
+    let src = std::io::fs::read_file(path);
+    if len(src) == 0 { return ""; }
+    let tree = lang.parse(src);
+    if tree == 0 { return ""; }
+    let root = std::ts::root_node(tree);
+    let acc = __unified_walk(lang, root, false);
+
+    let pkg = __first_tag_body(acc, "PKG");
+    let imports = __collect_tag_csv(acc, "IMP");
+    let handlers = __collect_tag_csv(acc, "OP_HANDLER");
+    let spawns = __collect_tag_csv(acc, "OP_SPAWN");
+    let has_main = __count_tag(acc, "OP_MAIN") > 0;
+    let has_init = __count_tag(acc, "OP_INIT") > 0;
+    let n_handlers = __count_tag(acc, "OP_HANDLER");
+    let n_spawns = __count_tag(acc, "OP_SPAWN");
+    let n_loops = __count_tag(acc, "OP_LOOP");
+    let n_imports = __count_tag(acc, "IMP");
+    let n_types = __count_tag(acc, "TYPE");
+
+    let has_op = has_main || has_init || n_handlers > 0
+                 || n_spawns > 0 || n_loops > 0;
+    let has_harm = n_imports > 0;
+    let has_dom = n_types > 0;
+
+    let mut agreement = 0;
+    if has_op   { agreement = agreement + 1; }
+    if has_harm { agreement = agreement + 1; }
+    if has_dom  { agreement = agreement + 1; }
+
+    let mut verdict = "structural";
+    if agreement >= 2 { verdict = "locus"; }
+    else if agreement == 1 { verdict = "type_or_fn"; }
+
+    let proposed = __propose_locus_name(name);
+
+    // Operational summary line.
+    let mut op_summary = "";
+    if has_main { op_summary = op_summary + "main() entrypoint"; }
+    if has_init {
+        if len(op_summary) > 0 { op_summary = op_summary + "; "; }
+        op_summary = op_summary + "init() lifecycle hook";
+    }
+    if n_handlers > 0 {
+        if len(op_summary) > 0 { op_summary = op_summary + "; "; }
+        op_summary = op_summary + to_string(n_handlers) + " HTTP handler(s): "
+            + handlers;
+    }
+    if n_spawns > 0 {
+        if len(op_summary) > 0 { op_summary = op_summary + "; "; }
+        op_summary = op_summary + to_string(n_spawns) + " concurrent spawn(s): "
+            + spawns;
+    }
+    if n_loops > 0 {
+        if len(op_summary) > 0 { op_summary = op_summary + "; "; }
+        op_summary = op_summary + "long-running for-loop";
+    }
+
+    // Domain summary lines (one per type with motion).
+    let mut dom_summary = "";
+    let mut tfrom = 0;
+    let total = len(acc);
+    let prefix = "TYPE:";
+    let plen = len(prefix);
+    while tfrom < total {
+        let rest = acc[tfrom..total];
+        let nl = std::str::index_of(rest, "\n");
+        let mut line = "";
+        if nl < 0 { line = rest; tfrom = total; }
+        else { line = rest[0..nl]; tfrom = tfrom + nl + 1; }
+        if len(line) > plen {
+            if line[0..plen] == prefix {
+                let tname = line[plen..len(line)];
+                let motion = r.name_to_motion(tname);
+                if len(dom_summary) > 0 { dom_summary = dom_summary + "\n                "; }
+                dom_summary = dom_summary + tname + " → " + motion;
+            }
+        }
+    }
+
+    let shape = __infer_locus_shape(has_main, has_init, n_handlers,
+                                     n_spawns, n_loops, n_types, n_imports);
+
+    // Verdict marker.
+    let mut marker = "[structural]";
+    if verdict == "locus" { marker = "[locus]"; }
+    else if verdict == "type_or_fn" { marker = "[type_or_fn]"; }
+
+    let header = "+-- " + proposed + "  (" + name + ")  "
+        + marker + "  agreement=" + to_string(agreement) + "/3 ----";
+
+    let mut out = header + "\n";
+    out = out + "  package       " + pkg + "\n";
+    out = out + __indent_block("operational ", op_summary);
+    out = out + __indent_block("harmonic    ", imports);
+    out = out + __indent_block("domain      ", dom_summary);
+    out = out + "  aperio shape  " + shape + "\n";
+    out = out + "\n";
+    return out;
+}
+
+// ---- Recognition narrative. ----
+//
+// Top-level paragraph that frames what the user/agent just saw.
+// Templated on summary counts; v0 is intentionally simple — the
+// narrative's job is to land the recognition, not to be exhaustive.
+fn __render_narrative(n_loci: Int, n_type_or_fn: Int, n_struct: Int,
+                      n_unknowns: Int) -> String {
+    let mut out = "";
+    out = out + "Recognition\n";
+    out = out + "-----------\n";
+    out = out + "\n";
+    if n_loci == 0 {
+        out = out + "No clear lotus shape detected. The codebase may be too\n";
+        out = out + "small (single-file utility) or have signals only in one\n";
+        out = out + "tower at a time. Cross-tower agreement is what surfaces\n";
+        out = out + "loci; without it, every file lands as type/fn or\n";
+        out = out + "structural support.\n";
+        return out;
+    }
+    out = out + to_string(n_loci) + " file(s) exhibit lotus shape "
+        + "(at least 2 of 3 tower roles populated).\n";
+    if n_type_or_fn > 0 {
+        out = out + to_string(n_type_or_fn) + " file(s) are single-tower — "
+            + "likely emit as types, free fns, or structural\n"
+            + "support around the loci.\n";
+    }
+    if n_struct > 0 {
+        out = out + to_string(n_struct) + " file(s) carry no tower signal "
+            + "(empty / pure boilerplate).\n";
+    }
+    out = out + "\n";
+    out = out + "What this means: your codebase already projects through\n";
+    out = out + "three lenses cleanly. Each detected locus owns a region\n";
+    out = out + "(memory), has a lifecycle (operational), participates in\n";
+    out = out + "dependency contracts (harmonic), and names its concepts\n";
+    out = out + "(domain). The lotus shape isn't being imposed — it's\n";
+    out = out + "being recognized.\n";
+    if n_unknowns > 0 {
+        out = out + "\n";
+        out = out + to_string(n_unknowns) + " unknown morpheme(s) flagged for\n";
+        out = out + "agent review (see section above). For each, an LLM agent\n";
+        out = out + "should read the source file, classify the noun per\n";
+        out = out + "notes/onboarding-shape-rules.md (Agent / Entity / Shape),\n";
+        out = out + "and propose a motion-form or reclassify as a type.\n";
+    }
+    return out;
+}
+
+// ---- Unknowns section (agent-actionable). ----
+
+fn __render_unknowns(unknowns: String) -> String {
+    if len(unknowns) == 0 { return ""; }
+    let mut out = "";
+    out = out + "Unknowns flagged for agent review\n";
+    out = out + "----------------------------------\n";
+    out = out + "\n";
+    out = out + unknowns;
+    out = out + "Per notes/onboarding-shape-rules.md:\n";
+    out = out + "  - Agent noun  (-er/-or/-ar suffix on verb stem):\n";
+    out = out + "                strip suffix, add -ing.\n";
+    out = out + "  - Entity noun (named for the flow it enables):\n";
+    out = out + "                propose verb the tool serves.\n";
+    out = out + "  - Shape noun  (pure data, no flow):\n";
+    out = out + "                no motion form; emit as `type`,\n";
+    out = out + "                not `locus`.\n";
+    out = out + "\n";
+    return out;
+}
+
+fn __drive(dir: String, flavor: String) {
+    let lang = std::lang::Lang { flavor: flavor };
+    let r = std::lang::Morpheme { flavor: flavor };
+    let entries = std::io::fs::list_dir(dir);
+    let total = len(entries);
+    if total == 0 {
+        println("(empty or unreadable dir: ", dir, ")");
+        return;
+    }
+
+    println("============================================================");
+    println("  Aperio recognition: ", dir);
+    println("  flavor: ", flavor);
+    println("============================================================");
+    println("");
+
+    let mut all_files_section = "";
+    let mut unknowns_section = "";
+    let mut n_loci = 0;
+    let mut n_type_or_fn = 0;
+    let mut n_struct = 0;
+    let mut n_unknowns = 0;
+    let mut from = 0;
+    while from < total {
+        let rest = entries[from..total];
+        let nl = std::str::index_of(rest, "\n");
+        let mut name = "";
+        if nl < 0 { name = rest; from = total; }
+        else { name = rest[0..nl]; from = from + nl + 1; }
+        if len(name) > 0 {
+            if __ends_with_source(name, flavor) {
+                let block = __render_per_file(lang, r, dir, name);
+                if len(block) > 0 {
+                    all_files_section = all_files_section + block;
+                    if std::str::index_of(block, "[locus]") >= 0 {
+                        n_loci = n_loci + 1;
+                    } else if std::str::index_of(block, "[type_or_fn]") >= 0 {
+                        n_type_or_fn = n_type_or_fn + 1;
+                    } else {
+                        n_struct = n_struct + 1;
+                    }
+                    // Walk again for unknowns. Cheap, and avoids
+                    // threading another return value through render.
+                    let path = dir + "/" + name;
+                    let src = std::io::fs::read_file(path);
+                    if len(src) > 0 {
+                        let tree = lang.parse(src);
+                        if tree != 0 {
+                            let root = std::ts::root_node(tree);
+                            let walk = __unified_walk(lang, root, false);
+                            let prefix = "TYPE:";
+                            let plen = len(prefix);
+                            let mut wfrom = 0;
+                            let wtotal = len(walk);
+                            while wfrom < wtotal {
+                                let wrest = walk[wfrom..wtotal];
+                                let wnl = std::str::index_of(wrest, "\n");
+                                let mut wline = "";
+                                if wnl < 0 { wline = wrest; wfrom = wtotal; }
+                                else { wline = wrest[0..wnl]; wfrom = wfrom + wnl + 1; }
+                                if len(wline) > plen {
+                                    if wline[0..plen] == prefix {
+                                        let tname = wline[plen..len(wline)];
+                                        let motion = r.name_to_motion(tname);
+                                        if std::str::index_of(motion, "<unknown:") >= 0 {
+                                            n_unknowns = n_unknowns + 1;
+                                            unknowns_section = unknowns_section
+                                                + "  * " + name + " : " + tname
+                                                + "\n      static rewriter: "
+                                                + motion + "\n      action: open "
+                                                + name + " and apply shape rules.\n";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    print(all_files_section);
+    print(__render_unknowns(unknowns_section));
+    print(__render_narrative(n_loci, n_type_or_fn, n_struct, n_unknowns));
+}
+
+locus OnboardL {
+    params {
+        dir: String = "apps/operational-graph/fixture";
+        flavor: String = "go";
+    }
+    run() {
+        __drive(self.dir, self.flavor);
+    }
+}
+
+fn main() {
+    let mut dir = "apps/operational-graph/fixture";
+    let mut flavor = "go";
+    if std::env::args_count() > 1 {
+        dir = std::env::arg(1);
+    }
+    if std::env::args_count() > 2 {
+        flavor = std::env::arg(2);
+    }
+    OnboardL { dir: dir, flavor: flavor };
+}
