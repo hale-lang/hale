@@ -51,3 +51,11 @@ What is **not** a friction entry:
 ## Entries
 
 <!-- Append below this line. Do not edit existing entries. -->
+
+## 2026-05-10 cross-locus-return-deep-copy
+
+**Source:** corpus-extraction migration (tower-join, operational-graph)
+**Tried:** End a free fn with `return jb.wrap_array(inner);` after the body called another locus method (e.g. `ta.each_body(acc, tag)`).
+**Hit:** Caller observes `""` for the returned String. Standalone callsites of `jb.wrap_array("")` work fine; the bug triggers only when the fn first calls a *different* sub-locus's method, then returns the second method's result directly. Reproduced minimally with `let bodies = ta.each_body(...); return jb.wrap_array("");`.
+**Workaround:** Replace `return jb.wrap_array(inner);` with inline `return "[" + inner + "]";` (primitive concat allocates in the local region and round-trips). Equivalently, `return jb.wrap_array(inner) + "";` works.
+**Why it matters:** Cross-locus composition is the std seed's whole point. Without this fix the surface forces callers to inline primitive concat for any value crossing a fn boundary — undoing half the extraction. Likely a return-boundary deep-copy that does not chase pointers into sub-locus arenas; the fix probably lives in the m49 free-fn return path.

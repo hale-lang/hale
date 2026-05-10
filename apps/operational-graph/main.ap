@@ -76,6 +76,11 @@ fn __walk(lang: std::lang::Lang, node: Int, file: String) -> String {
 // (everything after the first ":") and produces one JSON object.
 // Walks the accumulator via std::tagged::Accumulator.each_body;
 // json::Builder formats the array.
+//
+// Return uses an inline `[ + arr + ]` rather than
+// `jb.wrap_array(arr)` to dodge the v0 return-boundary
+// deep-copy bug — see __collect_types_with_motion in
+// apps/tower-join/main.ap and notes/aperio-friction.md.
 fn __collect_section(acc: String, tag: String, to_entry: fn(String) -> String) -> String {
     let ta = std::tagged::Accumulator { };
     let it = std::iter::Lines { };
@@ -89,7 +94,7 @@ fn __collect_section(acc: String, tag: String, to_entry: fn(String) -> String) -
         if len(body) == 0 { continue; }
         arr = jb.append_entry(arr, to_entry(body));
     }
-    return jb.wrap_array(arr);
+    return "[" + arr + "]";
 }
 
 fn __fmt_file(body: String) -> String {

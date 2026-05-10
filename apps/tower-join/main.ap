@@ -94,178 +94,36 @@ fn __unified_walk(lang: std::lang::Lang, node: Int, in_import: Bool) -> String {
     return acc;
 }
 
-// Count occurrences of a tag-prefix (`tag:`) in a tagged-string
-// accumulator. Used to decide whether a tower role is populated.
-fn __count_tag(acc: String, tag: String) -> Int {
-    let prefix = tag + ":";
-    let plen = len(prefix);
-    let mut from = 0;
-    let total = len(acc);
-    let mut count = 0;
-    while from < total {
-        let rest = acc[from..total];
-        let nl = std::str::index_of(rest, "\n");
-        let mut line = "";
-        if nl < 0 {
-            line = rest;
-            from = total;
-        } else {
-            line = rest[0..nl];
-            from = from + nl + 1;
-        }
-        if len(line) >= plen {
-            let head = line[0..plen];
-            if head == prefix { count = count + 1; }
-        }
-    }
-    return count;
-}
-
-// Collect the bodies of all lines whose tag matches `tag` into a
-// JSON array of quoted strings.
-fn __collect_tag_array(acc: String, tag: String) -> String {
-    let prefix = tag + ":";
-    let plen = len(prefix);
-    let mut from = 0;
-    let total = len(acc);
-    let mut arr = "[";
-    let mut first = true;
-    while from < total {
-        let rest = acc[from..total];
-        let nl = std::str::index_of(rest, "\n");
-        let mut line = "";
-        if nl < 0 {
-            line = rest;
-            from = total;
-        } else {
-            line = rest[0..nl];
-            from = from + nl + 1;
-        }
-        if len(line) > plen {
-            let head = line[0..plen];
-            if head == prefix {
-                let body = line[plen..len(line)];
-                if first {
-                    arr = arr + "\"" + body + "\"";
-                    first = false;
-                } else {
-                    arr = arr + ", \"" + body + "\"";
-                }
-            }
-        }
-    }
-    return arr + "]";
-}
-
-// First body of a tag, or "" if absent. Used for PKG (one per file).
-fn __first_tag_body(acc: String, tag: String) -> String {
-    let prefix = tag + ":";
-    let plen = len(prefix);
-    let mut from = 0;
-    let total = len(acc);
-    while from < total {
-        let rest = acc[from..total];
-        let nl = std::str::index_of(rest, "\n");
-        let mut line = "";
-        if nl < 0 {
-            line = rest;
-            from = total;
-        } else {
-            line = rest[0..nl];
-            from = from + nl + 1;
-        }
-        if len(line) > plen {
-            let head = line[0..plen];
-            if head == prefix {
-                return line[plen..len(line)];
-            }
-        }
-    }
-    return "";
-}
-
 // Collect TYPE entries with their motion-form rewrites.
+// Walks the accumulator via std::tagged::Accumulator + iter::Lines
+// so the line-scan logic stays in the std seed; the per-body
+// transform (name → motion via `r`) lives here.
+//
+// Return uses an inline `[ + inner + ]` rather than
+// `jb.wrap_array(inner)` because at v0 a cross-locus method's
+// result, when returned directly from a free fn after another
+// cross-locus method call also touched a sub-locus arena, can
+// come back as "" at the caller — likely a return-boundary
+// deep-copy that does not chase into sub-locus arenas. Inline
+// concat allocates in the local region and round-trips cleanly.
+// Tracked in notes/aperio-friction.md.
 fn __collect_types_with_motion(acc: String, r: std::lang::Morpheme) -> String {
-    let prefix = "TYPE:";
-    let plen = len(prefix);
+    let ta = std::tagged::Accumulator { };
+    let it = std::iter::Lines { };
+    let jb = std::json::Builder { };
+    let bodies = ta.each_body(acc, "TYPE");
+    let mut inner = "";
     let mut from = 0;
-    let total = len(acc);
-    let mut arr = "[";
-    let mut first = true;
-    while from < total {
-        let rest = acc[from..total];
-        let nl = std::str::index_of(rest, "\n");
-        let mut line = "";
-        if nl < 0 {
-            line = rest;
-            from = total;
-        } else {
-            line = rest[0..nl];
-            from = from + nl + 1;
-        }
-        if len(line) > plen {
-            let head = line[0..plen];
-            if head == prefix {
-                let name = line[plen..len(line)];
-                let motion = r.name_to_motion(name);
-                let entry = "{\"name\": \"" + name + "\", \"motion\": \""
-                    + motion + "\"}";
-                if first { arr = arr + entry; first = false; }
-                else { arr = arr + ", " + entry; }
-            }
-        }
+    while from >= 0 {
+        let name = it.line_at(bodies, from);
+        from = it.next_idx(bodies, from);
+        if len(name) == 0 { continue; }
+        let motion = r.name_to_motion(name);
+        let entry = "{\"name\": \"" + name + "\", \"motion\": \""
+            + motion + "\"}";
+        inner = jb.append_entry(inner, entry);
     }
-    return arr + "]";
-}
-
-// Locus name proposal. v0: file-stem + "L". E.g.,
-// `main.go` → `MainL`, `request_cache.go` → `RequestCacheL`.
-// Per the design doc, the operational tower's role would
-// otherwise win for naming, but file-stem is a simpler and
-// equally-defensible v0 default.
-fn __propose_locus_name(file: String) -> String {
-    // Strip ".go" suffix.
-    let n = len(file);
-    if n < 3 { return "?L"; }
-    let stem = file[0..n-3];
-    // Capitalize first char + remove underscores. v0 keeps
-    // existing CamelCase intact; Go file names are usually
-    // snake_case (`request_cache.go`).
-    let sn = len(stem);
-    if sn == 0 { return "?L"; }
-    let mut out = "";
-    let mut i = 0;
-    let mut next_upper = true;
-    while i < sn {
-        let c = stem[i..i+1];
-        if c == "_" {
-            next_upper = true;
-        } else {
-            if next_upper {
-                // ASCII uppercase via lookup; bail on non-letter.
-                let lower_idx = std::str::index_of("abcdefghijklmnopqrstuvwxyz", c);
-                if lower_idx >= 0 {
-                    out = out + "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[lower_idx..lower_idx+1];
-                } else {
-                    out = out + c;
-                }
-                next_upper = false;
-            } else {
-                out = out + c;
-            }
-        }
-        i = i + 1;
-    }
-    return out + "L";
-}
-
-fn __ends_with_source(name: String, flavor: String) -> Bool {
-    let n = len(name);
-    if flavor == "go" {
-        if n < 3 { return false; }
-        return name[n-3..n] == ".go";
-    }
-    return false;
+    return "[" + inner + "]";
 }
 
 fn __per_file_entry(lang: std::lang::Lang, r: std::lang::Morpheme,
@@ -278,17 +136,20 @@ fn __per_file_entry(lang: std::lang::Lang, r: std::lang::Morpheme,
     let root = std::ts::root_node(tree);
     let acc = __unified_walk(lang, root, false);
 
-    let pkg = __first_tag_body(acc, "PKG");
-    let imports = __collect_tag_array(acc, "IMP");
+    let ta = std::tagged::Accumulator { };
+    let nc = std::name::Convention { strip: ".go" };
+
+    let pkg = ta.first_body(acc, "PKG");
+    let imports = ta.collect_array(acc, "IMP");
     let types_with_motion = __collect_types_with_motion(acc, r);
 
-    let has_main = __count_tag(acc, "OP_MAIN") > 0;
-    let has_init = __count_tag(acc, "OP_INIT") > 0;
-    let n_handlers = __count_tag(acc, "OP_HANDLER");
-    let n_spawns = __count_tag(acc, "OP_SPAWN");
-    let n_loops = __count_tag(acc, "OP_LOOP");
-    let n_imports = __count_tag(acc, "IMP");
-    let n_types = __count_tag(acc, "TYPE");
+    let has_main = ta.count(acc, "OP_MAIN") > 0;
+    let has_init = ta.count(acc, "OP_INIT") > 0;
+    let n_handlers = ta.count(acc, "OP_HANDLER");
+    let n_spawns = ta.count(acc, "OP_SPAWN");
+    let n_loops = ta.count(acc, "OP_LOOP");
+    let n_imports = ta.count(acc, "IMP");
+    let n_types = ta.count(acc, "TYPE");
 
     let has_op = has_main || has_init || n_handlers > 0
                  || n_spawns > 0 || n_loops > 0;
@@ -304,10 +165,10 @@ fn __per_file_entry(lang: std::lang::Lang, r: std::lang::Morpheme,
     if agreement >= 2 { verdict = "locus"; }
     else if agreement == 1 { verdict = "type_or_fn"; }
 
-    let proposed = __propose_locus_name(name);
+    let proposed = nc.propose_locus_name(name);
 
-    let handlers = __collect_tag_array(acc, "OP_HANDLER");
-    let spawns = __collect_tag_array(acc, "OP_SPAWN");
+    let handlers = ta.collect_array(acc, "OP_HANDLER");
+    let spawns = ta.collect_array(acc, "OP_SPAWN");
 
     let mut op_section = "{\"main\": ";
     if has_main { op_section = op_section + "true"; } else { op_section = op_section + "false"; }
@@ -332,7 +193,11 @@ fn __per_file_entry(lang: std::lang::Lang, r: std::lang::Morpheme,
         + "    }";
 }
 
-fn __append_entry(arr: String, entry: String) -> String {
+// Pretty-print append: ",\n    " separator for the multi-line
+// files array. std::json::Builder.append_entry uses ", "
+// (single-line), which doesn't fit this layout; keep this one
+// helper local.
+fn __pretty_append(arr: String, entry: String) -> String {
     if len(arr) == 0 { return entry; }
     return arr + ",\n    " + entry;
 }
@@ -347,41 +212,31 @@ fn __tower_join_drive(dir: String, flavor: String) {
         return;
     }
 
+    let it = std::iter::Lines { };
     let mut files_arr = "";
     let mut from = 0;
     let mut n_locus = 0;
     let mut n_type_or_fn = 0;
     let mut n_structural = 0;
     let mut n_total = 0;
-    while from < total {
-        let rest = entries[from..total];
-        let nl = std::str::index_of(rest, "\n");
-        let mut name = "";
-        if nl < 0 {
-            name = rest;
-            from = total;
+    while from >= 0 {
+        let name = it.line_at(entries, from);
+        from = it.next_idx(entries, from);
+        if len(name) == 0 { continue; }
+        if std::io::fs::extension(name) != ".go" { continue; }
+        let entry = __per_file_entry(lang, r, dir, name);
+        if len(entry) == 0 { continue; }
+        files_arr = __pretty_append(files_arr, entry);
+        n_total = n_total + 1;
+        // Cheap re-classify by substring matching the verdict in
+        // the entry. JSON building is unidirectional; we don't
+        // keep typed state.
+        if std::str::index_of(entry, "\"verdict\": \"locus\"") >= 0 {
+            n_locus = n_locus + 1;
+        } else if std::str::index_of(entry, "\"verdict\": \"type_or_fn\"") >= 0 {
+            n_type_or_fn = n_type_or_fn + 1;
         } else {
-            name = rest[0..nl];
-            from = from + nl + 1;
-        }
-        if len(name) > 0 {
-            if __ends_with_source(name, flavor) {
-                let entry = __per_file_entry(lang, r, dir, name);
-                if len(entry) > 0 {
-                    files_arr = __append_entry(files_arr, entry);
-                    n_total = n_total + 1;
-                    // Cheap re-classify by substring matching the
-                    // verdict in the entry. JSON building is
-                    // unidirectional; we don't keep typed state.
-                    if std::str::index_of(entry, "\"verdict\": \"locus\"") >= 0 {
-                        n_locus = n_locus + 1;
-                    } else if std::str::index_of(entry, "\"verdict\": \"type_or_fn\"") >= 0 {
-                        n_type_or_fn = n_type_or_fn + 1;
-                    } else {
-                        n_structural = n_structural + 1;
-                    }
-                }
-            }
+            n_structural = n_structural + 1;
         }
     }
 
