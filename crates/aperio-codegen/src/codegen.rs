@@ -11668,6 +11668,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_str_parse_int(args, scope)?;
                 Ok(())
             }
+            // m84: parse_request also reachable in statement
+            // position (rare — usually you keep the result), but
+            // wire it for completeness so `std::http::parse_request(raw);`
+            // doesn't error.
+            ["std", "http", "parse_request"] => {
+                let _ = self.lower_user_fn_call(
+                    "__parse_http_request",
+                    args,
+                    scope,
+                )?;
+                Ok(())
+            }
+            // m85: void-returning response writer. Routes to the
+            // bare-name stdlib fn `__write_http_response`.
+            ["std", "http", "write_response"] => {
+                let _ = self.lower_user_fn_call(
+                    "__write_http_response",
+                    args,
+                    scope,
+                )?;
+                Ok(())
+            }
             ["std", "str", "can_parse_int"] => {
                 let _ = self.lower_std_str_can_parse_int(args, scope)?;
                 Ok(())

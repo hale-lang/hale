@@ -146,6 +146,42 @@ fn __parse_http_request(raw: String) -> std::http::Request {
     };
 }
 
+// m85 — write a Response to a Stream as HTTP/1.1 wire bytes.
+//
+// Wire shape:
+//   HTTP/1.1 <status> <phrase>\r\n
+//   Content-Type: <content_type>\r\n
+//   Content-Length: <byte length of body>\r\n
+//   Connection: close\r\n
+//   \r\n
+//   <body>
+//
+// Each Stream.send call ships one chunk through the m72
+// length-prefix-framed TCP substrate, but TCP is a stream —
+// peers see the raw bytes concatenated, which is what HTTP
+// expects. v0 sends headers + body separately to keep the
+// String concat work bounded; for very large bodies a future
+// milestone might stream chunks through the same Stream.
+//
+// `Connection: close` is hardcoded so the client knows the
+// connection terminates after this response. Keep-alive
+// would need a different request-handling loop in the
+// callback (read another request after responding); that's
+// deferred until persistent connections are actually
+// useful — most curl/browser doc-fetches close after one
+// request anyway.
+fn __write_http_response(s: std::io::tcp::Stream, resp: std::http::Response) {
+    let phrase = __status_phrase(resp.status);
+    let body_len = len(resp.body);
+    let status_line = "HTTP/1.1 " + to_string(resp.status) + " " + phrase + "\r\n";
+    let ct_header = "Content-Type: " + resp.content_type + "\r\n";
+    let cl_header = "Content-Length: " + to_string(body_len) + "\r\n";
+    let conn_header = "Connection: close\r\n\r\n";
+    let header = status_line + ct_header + cl_header + conn_header;
+    s.send(header);
+    s.send(resp.body);
+}
+
 // m81: Stream locus — owns one connected TCP fd, exposes
 // send/recv via fn members, closes on dissolve. User code
 // receives a Stream as the parameter to a callback (via
