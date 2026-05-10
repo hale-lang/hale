@@ -1,5 +1,6 @@
-//! m81: Stream locus + send/recv methods + non-self method
-//! call support + low-level TCP primitives.
+//! m81 + m82: Stream locus + send/recv methods + non-self
+//! method call support + low-level TCP primitives + the
+//! locus-all-the-way-down lifecycle fix.
 //!
 //! What ships:
 //!   - `__StdIoTcpStream` locus (bundled stdlib.ap) with
@@ -11,14 +12,12 @@
 //!     lotus_tcp_recv_str / lotus_tcp_connect.
 //!   - Non-self method calls (`obj.method(args)`) — the
 //!     language addition needed for `s.send(msg)` style.
-//!
-//! Known v0 limitation: `let s = Stream { conn_fd: fd };
-//! s.send(...)` triggers Stream's dissolve at the end of the
-//! struct-literal expression (custom dissolves on ephemeral
-//! locus instantiations fire eagerly), which closes the fd
-//! before the method call runs. The intended Stream usage
-//! is *as a child locus inside Listener's run()*, which m82
-//! lands. m81 verifies the pieces that compose into m82.
+//!   - m82: locus-all-the-way-down. `let s = Stream { conn_fd:
+//!     fd }; s.send(...)` now works — the binding is the
+//!     user-visible handle, the locus instance lives until
+//!     the binding's enclosing fn returns, and dissolve fires
+//!     at scope exit instead of at the end of the
+//!     struct-literal expression.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -147,6 +146,64 @@ fn tcp_primitives_round_trip_via_connect_send_recv() {
     assert!(
         stdout.contains("got=ECHO:hello-stream"),
         "expected echoed bytes; got: {:?}",
+        stdout
+    );
+}
+
+#[test]
+fn stream_let_binding_round_trips_via_send_recv() {
+    // m82: the documented-broken pattern from m81. With locus-
+    // all-the-way-down, `let s = Stream { conn_fd: fd }` defers
+    // Stream's dissolve to end-of-fn instead of end-of-
+    // struct-literal-expression, so the user-visible binding
+    // (the handle `s`) stays valid for subsequent method calls.
+    // Round-trips through a real Rust echo server to prove the
+    // fd is open across send + recv and only closes when main
+    // returns.
+    let port = pick_free_port();
+    let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind");
+    let (server_done_tx, server_done_rx) = mpsc::channel::<()>();
+    thread::spawn(move || {
+        let (mut sock, _) = listener.accept().expect("accept");
+        let mut buf = [0u8; 64];
+        let n = sock.read(&mut buf).expect("read");
+        let echo = format!(
+            "ECHO-LET:{}",
+            String::from_utf8_lossy(&buf[..n])
+        );
+        sock.write_all(echo.as_bytes()).expect("write");
+        let _ = sock.shutdown(std::net::Shutdown::Both);
+        let _ = server_done_tx.send(());
+    });
+
+    let src = format!(
+        r#"
+        fn main() {{
+            let fd = std::io::tcp::__connect("127.0.0.1", {});
+            let s = std::io::tcp::Stream {{ conn_fd: fd }};
+            s.send("via-let");
+            let resp = s.recv(64);
+            println("got=", resp);
+        }}
+        "#,
+        port
+    );
+    let bin = build_aperio("let_binding", &src);
+    let out = Command::new(&bin).output().expect("run aperio");
+    let _ = std::fs::remove_file(&bin);
+    let _ = server_done_rx
+        .recv_timeout(std::time::Duration::from_secs(2));
+
+    assert!(
+        out.status.success(),
+        "non-zero: {:?}\nstderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("got=ECHO-LET:via-let"),
+        "expected echoed bytes via let-bound Stream; got: {:?}",
         stdout
     );
 }

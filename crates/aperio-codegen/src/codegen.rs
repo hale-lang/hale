@@ -188,6 +188,7 @@ pub fn build_executable(
         serializers: BTreeMap::new(),
         generic_fn_templates: BTreeMap::new(),
         generic_locus_templates: BTreeMap::new(),
+        defer_next_locus_dissolve: false,
     };
 
     cx.declare_builtins();
@@ -430,6 +431,22 @@ struct Cx<'ctx, 'p> {
     /// resolution (`let c: Cache<Int, String> = Cache { ... };`),
     /// matching the m61b/m61c pattern for generic structs.
     generic_locus_templates: BTreeMap<String, LocusDecl>,
+    /// m82: locus-all-the-way-down lifecycle. Set true by
+    /// `Stmt::Let` lowering immediately before evaluating the RHS
+    /// when that RHS is a locus struct literal. Consumed (via
+    /// `std::mem::take`) by `lower_locus_instantiation`, which
+    /// then routes the locus into the enclosing fn's
+    /// `deferred_dissolves` frame instead of dissolving eagerly
+    /// at the end of the struct-literal expression. The decoupling
+    /// the user-visible binding (`s`) holds the handle; the locus
+    /// instance lives until its binding's scope ends. Cleared
+    /// between any two RHS lowerings; nested instantiations inside
+    /// the same RHS evaluation (e.g. `Outer { inner: Inner{...} }`)
+    /// only consume it for the outermost call, leaving inner
+    /// instantiations on the eager path. Statement-position locus
+    /// literals (`Stream { ... };`) are unaffected — the flag
+    /// only fires from `Stmt::Let`.
+    defer_next_locus_dissolve: bool,
 }
 
 /// m60: paired serialize / deserialize fns synthesized per bus
@@ -7485,7 +7502,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     },
                     _ => value,
                 };
-                let (val, ty) = self.lower_expr(value_to_lower, scope)?;
+                // m82: if the RHS is a locus struct literal, signal
+                // `lower_locus_instantiation` to defer the locus's
+                // dissolve to the enclosing fn's scope-exit flush
+                // instead of firing eagerly at the end of the
+                // struct-literal expression. The binding is the
+                // user-visible handle; the locus instance lives
+                // until that handle goes out of scope. Set
+                // immediately before lowering the RHS — consumed
+                // (via `std::mem::take`) by the outermost
+                // instantiation, leaving any nested locus literals
+                // inside the RHS on the eager path. Cleared after
+                // lowering regardless of whether the flag was
+                // consumed (defensive — guards against the RHS
+                // bailing out before reaching an instantiation).
+                if self.expr_is_locus_literal(value_to_lower) {
+                    self.defer_next_locus_dissolve = true;
+                }
+                let lower_result = self.lower_expr(value_to_lower, scope);
+                self.defer_next_locus_dissolve = false;
+                let (val, ty) = lower_result?;
                 let alloca = self.alloca_for(&ty, &name.name)?;
                 self.builder
                     .build_store(alloca, val)
@@ -12517,12 +12553,49 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// and run() if present. The locus is ephemeral: when the
     /// surrounding fn returns the alloca is reclaimed. Long-lived
     /// loci wait on the cooperative scheduler + region allocator.
+    /// m82: classify whether an expression is a struct literal
+    /// that resolves to a locus (user-declared or stdlib-bundled).
+    /// Used by `Stmt::Let` to gate `defer_next_locus_dissolve`:
+    /// only locus literals produce a deferred-dissolve binding;
+    /// user-type literals, scalars, calls, etc. stay on the eager
+    /// path. Stdlib path-qualified locus literals
+    /// (`std::io::tcp::Stream { ... }`) are matched via
+    /// `stdlib_locus_for_path` so they get the same treatment as
+    /// bare-name user loci.
+    fn expr_is_locus_literal(&self, e: &Expr) -> bool {
+        if let Expr::Struct { path, .. } = e {
+            if path.segments.len() == 1 {
+                return self
+                    .user_loci
+                    .contains_key(&path.segments[0].name);
+            }
+            let segs: Vec<&str> = path
+                .segments
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect();
+            if let Some(mangled) = stdlib_locus_for_path(&segs) {
+                return self.user_loci.contains_key(mangled);
+            }
+        }
+        false
+    }
+
     fn lower_locus_instantiation(
         &mut self,
         locus_name: &str,
         inits: &[StructInit],
         scope: &Scope<'ctx>,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
+        // m82: the let-binding above us may have signaled that
+        // this locus's dissolve should be deferred to the
+        // enclosing fn's scope-exit flush. Take the flag now —
+        // before any nested `lower_expr` calls below — so default
+        // / override expressions that themselves construct loci
+        // don't accidentally consume our flag and skip their own
+        // eager dissolve. Outermost instantiation owns it; nested
+        // ones see false.
+        let defer_for_let = std::mem::take(&mut self.defer_next_locus_dissolve);
         let info = self
             .user_loci
             .get(locus_name)
@@ -13466,7 +13539,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(after_run_bb);
         }
-        if !is_long_lived {
+        // m82: `defer_for_let` joins `is_long_lived` as a reason to
+        // route this locus through the deferred-dissolve frame
+        // instead of dissolving eagerly here. Both end up on the
+        // same flush path at fn-exit (drain → __dissolve_closures
+        // → dissolve → arena_destroy), preserving F.4 ordering.
+        // The semantic distinction:
+        //   - `is_long_lived` (locus has bus subscriptions): MUST
+        //     defer so the locus stays alive to receive published
+        //     events between birth and scope exit.
+        //   - `defer_for_let` (this is a let-binding RHS): chooses
+        //     to defer so user code can call methods on the bound
+        //     handle after the struct-literal expression returns.
+        // Pinned loci already took the `is_pinned` branch above
+        // and don't reach this block.
+        let defer = is_long_lived || defer_for_let;
+        if !defer {
             // drain → __dissolve_closures → dissolve. Mirrors the
             // interpreter ordering in eval.rs::dissolve_locus:
             // drain body fires first, then dissolve-epoch closures
@@ -13521,9 +13609,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // setup. If we hit this, the locus instantiation is
             // outside any tracked scope and won't get cleaned up.
             return Err(CodegenError::Unsupported(format!(
-                "long-lived locus `{}` instantiated outside any tracked \
-                 scope (no deferred-dissolve frame)",
-                locus_name
+                "deferred-dissolve locus `{}` instantiated outside any tracked \
+                 scope (no deferred-dissolve frame); long-lived={}, let-bound={}",
+                locus_name, is_long_lived, defer_for_let,
             )));
         }
 
