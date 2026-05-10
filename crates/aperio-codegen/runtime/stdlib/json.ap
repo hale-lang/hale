@@ -1,0 +1,83 @@
+// std::json::Builder — small JSON-shape helpers.
+//
+// Each emitter app independently re-implemented the
+// "append-entry with comma separator" pattern (three apps
+// open-code __append_entry verbatim). import-graph also
+// has a __build_imports_array helper that combines line
+// iteration with the append pattern.
+//
+// The Builder is honest about its scope: no parser, no
+// pretty-printing, no schema validation. Just the small
+// concatenation operations that show up in app code when
+// glueing JSON output together.
+//
+// Quoting note: v0 `quote` is a placeholder — it wraps the
+// value in `"` without escaping embedded `"` or `\`. App
+// values today (Go identifiers, paths, log strings) don't
+// contain those characters, so the no-op is functionally
+// correct for current consumers. The hook exists so a future
+// escaping pass lands without touching every call site.
+locus __StdJsonBuilder {
+    params { }
+
+    // Append `entry` to `arr`, prefixing with ", " when `arr`
+    // already has content. Returns the new accumulator.
+    fn append_entry(arr: String, entry: String) -> String {
+        if len(arr) == 0 { return entry; }
+        return arr + ", " + entry;
+    }
+
+    // Wrap `s` in double-quotes. v0: no escaping (see header).
+    // Always returns `"` + s + `"`.
+    fn quote(s: String) -> String {
+        return "\"" + s + "\"";
+    }
+
+    // Wrap a comma-joined `entries` string in `[...]`. Useful
+    // after a sequence of append_entry calls have built the
+    // inner CSV.
+    fn wrap_array(entries: String) -> String {
+        return "[" + entries + "]";
+    }
+
+    // Wrap a comma-joined `fields` string in `{...}`. Mirrors
+    // wrap_array for objects.
+    fn wrap_object(fields: String) -> String {
+        return "{" + fields + "}";
+    }
+
+    // Build a JSON array from a "\n"-separated list of items.
+    // Each non-empty line is appended verbatim (caller already
+    // quoted it if needed). Empty lines are skipped. The
+    // common case is a list of pre-quoted strings, but raw
+    // numbers or pre-built sub-objects work too.
+    fn build_array(items: String) -> String {
+        let it = std::iter::Lines { };
+        let mut from = 0;
+        let mut inner = "";
+        while from >= 0 {
+            let line = it.line_at(items, from);
+            from = it.next_idx(items, from);
+            if len(line) == 0 { continue; }
+            inner = self.append_entry(inner, line);
+        }
+        return self.wrap_array(inner);
+    }
+
+    // Build a JSON array of quoted strings from a "\n"-
+    // separated list. Convenience over build_array + caller-
+    // side quoting; mirrors what apps/import-graph open-coded
+    // before this extraction.
+    fn build_quoted_array(items: String) -> String {
+        let it = std::iter::Lines { };
+        let mut from = 0;
+        let mut inner = "";
+        while from >= 0 {
+            let line = it.line_at(items, from);
+            from = it.next_idx(items, from);
+            if len(line) == 0 { continue; }
+            inner = self.append_entry(inner, self.quote(line));
+        }
+        return self.wrap_array(inner);
+    }
+}

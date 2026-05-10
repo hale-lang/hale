@@ -397,6 +397,9 @@ const STDLIB_AP_SOURCE: &str = concat!(
     "\n",
     // name.ap is independent — only uses std::str::index_of.
     include_str!("../runtime/stdlib/name.ap"),
+    "\n",
+    // json.ap depends on iter.ap for build_array's line walk.
+    include_str!("../runtime/stdlib/json.ap"),
 );
 
 /// Maps each user-facing stdlib path (locus OR type) to the
@@ -414,6 +417,7 @@ const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "io", "tcp", "Listener"], "__StdIoTcpListener"),
     (&["std", "io", "tcp", "Stream"], "__StdIoTcpStream"),
     (&["std", "iter", "Lines"], "__StdIterLines"),
+    (&["std", "json", "Builder"], "__StdJsonBuilder"),
     (&["std", "lang", "Lang"], "__StdLangLang"),
     (&["std", "lang", "Morpheme"], "__StdLangMorpheme"),
     (&["std", "log", "LogEvent"], "__StdLogEvent"),

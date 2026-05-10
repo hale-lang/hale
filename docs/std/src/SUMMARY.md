@@ -31,6 +31,7 @@
 # Phase 7: Corpus-extraction helpers
 
 - [`std::iter`](./iter.md)
+- [`std::json`](./json.md)
 - [`std::name`](./name.md)
 - [`std::tagged`](./tagged.md)
 
