@@ -1759,6 +1759,43 @@ int lotus_env_var_exists(const char *name) {
 }
 
 /*
+ * m78: minimal string parsing primitives.
+ *
+ * Atoi-style: returns 0 when the input doesn't look like an
+ * integer. Callers that need to distinguish "0" from "bad
+ * input" probe with the boolean sibling. Implemented via
+ * strtoll so leading whitespace and a leading sign are
+ * accepted, but trailing garbage rejects (the strict shape).
+ *
+ * v0 scope: signed 64-bit integers in base 10. Hex / octal /
+ * underscores wait on a richer parsing library. The
+ * sufficient case for "parse a port from argv" is base 10
+ * with optional leading minus.
+ */
+
+int64_t lotus_str_parse_int(const char *s) {
+    if (!s || !*s) return 0;
+    char *end = NULL;
+    errno = 0;
+    long long v = strtoll(s, &end, 10);
+    if (errno != 0 || !end || *end != '\0') {
+        return 0;
+    }
+    return (int64_t)v;
+}
+
+int lotus_str_can_parse_int(const char *s) {
+    if (!s || !*s) return 0;
+    char *end = NULL;
+    errno = 0;
+    (void)strtoll(s, &end, 10);
+    if (errno != 0 || !end || *end != '\0') {
+        return 0;
+    }
+    return 1;
+}
+
+/*
  * m58: deployment-config subject binding.
  *
  * Layered on top of the m57 AF_UNIX transport: a startup config

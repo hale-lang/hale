@@ -1396,6 +1396,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             env_var_exists_ty,
             None,
         );
+
+        // m78: minimal string-parsing primitives.
+        // declare i64 @lotus_str_parse_int(ptr s)
+        let parse_int_ty = i64_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_str_parse_int", parse_int_ty, None);
+        // declare i32 @lotus_str_can_parse_int(ptr s)
+        let can_parse_ty = i32_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_str_can_parse_int",
+            can_parse_ty,
+            None,
+        );
     }
 
     /// Mark the program as containing at least one `bus subscribe`
@@ -11325,6 +11338,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_env_var_exists(args, scope)?;
                 Ok(())
             }
+            ["std", "str", "parse_int"] => {
+                let _ = self.lower_std_str_parse_int(args, scope)?;
+                Ok(())
+            }
+            ["std", "str", "can_parse_int"] => {
+                let _ = self.lower_std_str_can_parse_int(args, scope)?;
+                Ok(())
+            }
             _ => Err(CodegenError::Unsupported(format!(
                 "stdlib path `{}` — not implemented",
                 segs.join("::")
@@ -11367,6 +11388,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "env", "var"] => self.lower_std_env_var(args, scope),
             ["std", "env", "var_exists"] => {
                 self.lower_std_env_var_exists(args, scope)
+            }
+            ["std", "str", "parse_int"] => {
+                self.lower_std_str_parse_int(args, scope)
+            }
+            ["std", "str", "can_parse_int"] => {
+                self.lower_std_str_can_parse_int(args, scope)
             }
             _ => Err(CodegenError::Unsupported(format!(
                 "stdlib path `{}` in expression position — not implemented",
@@ -11514,6 +11541,88 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_int_s_extend(conn_i32, i64_t, "conn.i64")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok((conn_i64.into(), LotusType::Int))
+    }
+
+    /// Lower `std::str::parse_int(s: String) -> Int`. Atoi-ish:
+    /// returns 0 on parse failure or empty input. Disambiguate
+    /// via `std::str::can_parse_int` if needed. Strict trailing-
+    /// char check — "42abc" rejects, returns 0.
+    fn lower_std_str_parse_int(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::parse_int takes 1 arg (s), got {}",
+                args.len()
+            )));
+        }
+        let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
+        if s_ty != LotusType::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::parse_int: s must be String, got {:?}",
+                s_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_str_parse_int")
+            .expect("lotus_str_parse_int declared");
+        let call = self
+            .builder
+            .build_call(f, &[s_val.into()], "parse.int.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let v = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((v, LotusType::Int))
+    }
+
+    /// Lower `std::str::can_parse_int(s: String) -> Bool`.
+    fn lower_std_str_can_parse_int(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::can_parse_int takes 1 arg (s), got {}",
+                args.len()
+            )));
+        }
+        let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
+        if s_ty != LotusType::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::can_parse_int: s must be String, got {:?}",
+                s_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let f = self
+            .module
+            .get_function("lotus_str_can_parse_int")
+            .expect("lotus_str_can_parse_int declared");
+        let call = self
+            .builder
+            .build_call(f, &[s_val.into()], "can.parse.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ret_i32 = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let ret_bool = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                ret_i32,
+                i32_t.const_zero(),
+                "can.parse.bool",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((ret_bool.into(), LotusType::Bool))
     }
 
     /// Lower `std::env::args_count() -> Int`. Returns argc as
