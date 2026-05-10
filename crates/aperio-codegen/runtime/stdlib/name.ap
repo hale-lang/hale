@@ -1,0 +1,104 @@
+// std::name::Convention — orthography helpers (snake_case,
+// CamelCase, file-stem ↔ locus-name).
+//
+// Both apps/onboard and apps/tower-join open-coded an
+// identical `__propose_locus_name(file)` helper before this
+// extraction: strip the source-language extension, split on
+// underscores, capitalize each segment, append "L". The work
+// is purely orthographic — not language-specific in the
+// per-tree-sitter-flavor sense — so it sits in its own
+// namespace rather than inside std::lang.
+//
+// The dot-prefixed extension (".go", ".rs") is a param so the
+// same locus serves every flavor the codebase-onboarder grows
+// to handle. The extension is supplied (rather than detected)
+// because callers usually know which flavor they're targeting
+// — and v0 doesn't have option types to express "detect from
+// the path."
+locus __StdNameConvention {
+    params {
+        // Source-extension stripped by propose_locus_name.
+        // Pass ".go" for Go, ".rs" for Rust, etc.
+        strip: String = ".go";
+    }
+
+    // Capitalize an ASCII letter; pass any other character
+    // through unchanged.
+    fn cap(c: String) -> String {
+        let idx = std::str::index_of("abcdefghijklmnopqrstuvwxyz", c);
+        if idx < 0 { return c; }
+        return "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[idx..idx+1];
+    }
+
+    // Lower an ASCII letter; pass any other character through
+    // unchanged.
+    fn low(c: String) -> String {
+        let idx = std::str::index_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ", c);
+        if idx < 0 { return c; }
+        return "abcdefghijklmnopqrstuvwxyz"[idx..idx+1];
+    }
+
+    // snake_case → CamelCase. "request_cache" → "RequestCache".
+    // The very first character of the input is also capitalized
+    // (so the output is PascalCase, not camelCase — the common
+    // case for type/locus naming).
+    fn snake_to_camel(s: String) -> String {
+        let n = len(s);
+        let mut out = "";
+        let mut i = 0;
+        let mut next_upper = true;
+        while i < n {
+            let c = s[i..i+1];
+            if c == "_" {
+                next_upper = true;
+            } else {
+                if next_upper {
+                    out = out + self.cap(c);
+                    next_upper = false;
+                } else {
+                    out = out + c;
+                }
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    // CamelCase → snake_case. "RequestCache" → "request_cache".
+    // Splits before each uppercase letter (except at offset 0).
+    fn camel_to_snake(s: String) -> String {
+        let n = len(s);
+        let mut out = "";
+        let mut i = 0;
+        while i < n {
+            let c = s[i..i+1];
+            let up_idx = std::str::index_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ", c);
+            if up_idx >= 0 && i > 0 {
+                out = out + "_" + self.low(c);
+            } else {
+                out = out + self.low(c);
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    // Strip the configured extension from `file`. If `file`
+    // doesn't end with `self.strip`, returns it unchanged.
+    fn strip_extension(file: String) -> String {
+        let fl = len(file);
+        let xl = len(self.strip);
+        if fl < xl { return file; }
+        if file[fl-xl..fl] != self.strip { return file; }
+        return file[0..fl-xl];
+    }
+
+    // File-stem → CamelCased locus name. "request_cache.go" →
+    // "RequestCacheL" when strip=".go". Returns "?L" for inputs
+    // that strip down to an empty stem.
+    fn propose_locus_name(file: String) -> String {
+        let stem = self.strip_extension(file);
+        if len(stem) == 0 { return "?L"; }
+        return self.snake_to_camel(stem) + "L";
+    }
+}
