@@ -1,0 +1,18 @@
+[book]
+title = "The Aperio Standard Library"
+authors = ["Riley Rook"]
+description = "Reference for the batteries-included Aperio stdlib (in active development)."
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "local"
+edit-url-template = ""
+
+[output.html.search]
+enable = true
+
+# mdbook-linkcheck temporarily disabled: 0.7.7 doesn't grok mdbook 0.5.x's
+# RenderContext schema. Re-enable when upstream catches up.

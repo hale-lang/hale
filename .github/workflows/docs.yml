@@ -1,0 +1,53 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+
+jobs:
+  build:
+    name: Build mdbook subtrees
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/mdbook
+            ~/.cargo/bin/mdbook-toc
+          key: mdbook-${{ runner.os }}-v1
+
+      - name: Install mdbook + preprocessors
+        run: |
+          set -e
+          for tool in mdbook mdbook-toc; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              cargo install --locked "$tool"
+            fi
+          done
+
+      - name: Build the Book
+        run: mdbook build docs/book
+
+      - name: Build the Reference
+        run: mdbook build docs/reference
+
+      - name: Build the Standard Library docs
+        run: mdbook build docs/std
+
+      # Notes:
+      # - Deploy step intentionally absent. Docs stay local-only until
+      #   the language goes public. When that time comes, add an
+      #   actions/deploy-pages step here gated by the appropriate
+      #   event / ref.
+      # - mdbook-admonish + mdbook-linkcheck deferred — each has a
+      #   compat issue with mdbook 0.5.x. Re-add when upstream catches up.

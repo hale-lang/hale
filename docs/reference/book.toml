@@ -1,0 +1,32 @@
+[book]
+title = "The Aperio Reference"
+authors = ["Riley Rook"]
+description = "Formal grammar and semantics of the Aperio language."
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "local"
+edit-url-template = ""
+no-section-label = false
+
+[output.html.search]
+enable = true
+limit-results = 30
+teaser-word-count = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 2
+boost-paragraph = 1
+expand = true
+heading-split-level = 3
+
+[preprocessor.toc]
+command = "mdbook-toc"
+renderer = ["html"]
+
+# mdbook-admonish + mdbook-linkcheck temporarily disabled: each has a
+# version-compat issue with mdbook 0.5.x. Re-enable when upstream
+# catches up.

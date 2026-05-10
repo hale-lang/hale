@@ -1,14 +1,42 @@
 # Aperio — session checkpoint
 
 **Read this first** if you're picking up the Aperio work
-in a new session. State as of **Phase Z: rename complete**
-(language is **Aperio** /ah-PEH-ree-oh/ — Latin "I open / I
-reveal"; the runtime substrate stays *lotus*; file ext `.ap`,
-CLI `aperio`, crates `aperio-{syntax,types,runtime,codegen,cli}`;
-C-runtime symbols `lotus_arena_*` / `lotus_bus_*` /
-`lotus_transport_*` / `lotus_str_*` are intentionally
-preserved — they're the substrate's mechanics, not Aperio's
-user-facing toolchain). All 132 tests still pass post-rename.
+in a new session. State as of **Phase 0: docs system shipped**.
+Three mdbook subtrees stubbed under `docs/`:
+
+- `docs/book/` — The Aperio Programming Language (12-chapter tutorial
+  outline, intro page filled, chapters stubbed).
+- `docs/reference/` — The Aperio Reference (lexical / types /
+  expressions / statements / loci / bus / closures / recovery /
+  generics / memory / runtime / deployment / grammar / glossary
+  index, glossary substantively populated with ~40 entries
+  (Aperio + lotus + locus + lifecycle + closure + ClosureViolation
+  + on_failure + recovery vocab + memory + composition + scheduling
+  + design framings F.4/F.8/F.9/F.14)).
+- `docs/std/` — placeholder roadmap until Phase 1+ libraries ship.
+
+`docs/STYLE.md` documents conventions (Aperio vs lotus terminology,
+heading anchors, glossary linking, code-block tagging, per-reference-
+page template, Since: annotations). `docs/README.md` covers local
+build/preview. `.github/workflows/docs.yml` builds + caches the three
+trees on every PR / push to main; **no deploy step** until the
+go-public gate flips.
+
+All three subtrees build cleanly under `mdbook build` with `mdbook` +
+`mdbook-toc`. `mdbook-admonish` and `mdbook-linkcheck` are deferred:
+each has a compat issue with mdbook 0.5.x. Re-add when upstream
+catches up.
+
+Phase Z (the Aperio rename) preceded this:
+- Language renamed `lotus` → **Aperio** (/ah-PEH-ree-oh/, Latin "I
+  open / I reveal").
+- Runtime substrate stays *lotus*. File ext `.ap`, CLI `aperio`,
+  crates `aperio-{syntax,types,runtime,codegen,cli}`.
+- C-runtime symbols `lotus_arena_*` / `lotus_bus_*` / `lotus_transport_*`
+  / `lotus_str_*` intentionally preserved — substrate mechanics, not
+  Aperio toolchain.
+
+All 132 tests still pass post-rename + post-docs-stand-up.
 
 Last *milestone* before the rename was **m70: per-field
 cross-process wire format with String support**. Replaces the m60 memcpy

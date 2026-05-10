@@ -18,6 +18,23 @@ purpose — they're the substrate's mechanics, not Aperio's user-facing
 toolchain. Aperio is the language; lotus is what an Aperio program *is*
 at runtime.)
 
+## Docs
+
+Aperio's documentation lives under [`docs/`](./docs/) as three mdbook
+subtrees:
+
+- **The Aperio Programming Language** ([`docs/book/`](./docs/book/)) —
+  layered tutorial.
+- **The Aperio Reference** ([`docs/reference/`](./docs/reference/)) —
+  formal grammar + semantics.
+- **The Aperio Standard Library** ([`docs/std/`](./docs/std/)) —
+  stdlib roadmap (libraries in active development).
+
+The docs are local-only until the language is ready for public release.
+See [`docs/README.md`](./docs/README.md) for local build/preview
+instructions; [`docs/STYLE.md`](./docs/STYLE.md) for authoring
+conventions.
+
 **Status.** v0 compiler runs Aperio programs end-to-end via a
 tree-walking interpreter AND emits native ELF binaries via LLVM
 for a substantial subset of the language including the full
