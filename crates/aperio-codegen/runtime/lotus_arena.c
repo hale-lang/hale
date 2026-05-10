@@ -44,6 +44,8 @@
 #include <unistd.h>
 #include <errno.h>
 #include <time.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
 /* Default chunk size: 64KB. Big enough that most loci fit in
  * one chunk, small enough that a leaf locus that allocates a
@@ -1579,6 +1581,130 @@ int lotus_tcp_accept_one(int listen_fd) {
 int lotus_tcp_close_fd(int fd) {
     if (fd < 0) return 0;
     return close(fd);
+}
+
+/*
+ * m74: filesystem primitives (`std::io::fs::*` substrate).
+ *
+ * One-shot synchronous file operations. POSIX wrappers, no
+ * caching, no buffering — the same shape POSIX presents,
+ * surfaced through a small C ABI that codegen calls from the
+ * `std::io::fs::__*` magic-path stdlib primitives.
+ *
+ * Shape choice: each function takes raw pointers + sizes and
+ * returns either a count (read/size) or 0/-1 status (write/
+ * exists). No opaque file-handle struct because Phase-1 file
+ * operations are one-shot — there's no lifetime-of-a-stream
+ * concept to manage. A future milestone that needs streaming
+ * reads/writes adds a separate `lotus_fs_open` / `_read` /
+ * `_close` family alongside this one.
+ *
+ * read_dir is deliberately deferred: the variable-length
+ * output story (NUL-separated buffer? iteration model? per-
+ * entry callback?) deserves its own design pass and is not
+ * needed for the m76 capstone (which reads + writes a config
+ * file and a log file, not a directory listing).
+ */
+
+/* Read up to `out_cap` bytes from `path` into `out_buf`.
+ * Returns bytes read (>=0) on success, -1 on error (errno set).
+ * If the file is larger than `out_cap` the surplus is silently
+ * dropped — the caller decides whether that's acceptable by
+ * comparing the return against the cap. Files larger than what
+ * fits in size_t are not supported (extremely rare on the v0
+ * target). */
+ssize_t lotus_fs_read_file(const char *path,
+                           void *out_buf,
+                           size_t out_cap) {
+    if (!path || (!out_buf && out_cap > 0)) {
+        errno = EINVAL;
+        return -1;
+    }
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        /* keep the diagnostic terse — perror would be noisy
+         * for the common "file not found" case; callers that
+         * want to distinguish errors check errno. */
+        return -1;
+    }
+    char *p = (char *)out_buf;
+    size_t left = out_cap;
+    ssize_t total = 0;
+    while (left > 0) {
+        ssize_t r = read(fd, p, left);
+        if (r > 0) {
+            p     += (size_t)r;
+            left  -= (size_t)r;
+            total += r;
+            continue;
+        }
+        if (r == 0) break;             /* EOF */
+        if (errno == EINTR) continue;  /* interrupted; retry */
+        close(fd);
+        return -1;
+    }
+    close(fd);
+    return total;
+}
+
+/* Write exactly `len` bytes from `buf` to `path`. Truncates
+ * any existing file. Returns 0 on success, -1 on error. */
+int lotus_fs_write_file(const char *path,
+                        const void *buf,
+                        size_t len) {
+    if (!path || (!buf && len > 0)) {
+        errno = EINVAL;
+        return -1;
+    }
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        return -1;
+    }
+    const char *p = (const char *)buf;
+    size_t left = len;
+    while (left > 0) {
+        ssize_t w = write(fd, p, left);
+        if (w > 0) {
+            p    += (size_t)w;
+            left -= (size_t)w;
+            continue;
+        }
+        if (w < 0 && errno == EINTR) continue;
+        close(fd);
+        return -1;
+    }
+    /* close return matters for write_file: a deferred filesystem
+     * error (e.g. NFS write-back) surfaces here, not in write(). */
+    if (close(fd) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+/* Returns the size of `path` in bytes, or -1 on error. Follows
+ * symlinks (stat, not lstat). */
+int64_t lotus_fs_file_size(const char *path) {
+    if (!path) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct stat st;
+    if (stat(path, &st) < 0) {
+        return -1;
+    }
+    return (int64_t)st.st_size;
+}
+
+/* Returns 1 if `path` exists, 0 otherwise. Errors that aren't
+ * "doesn't exist" (e.g. EACCES on a parent dir) also return 0;
+ * the caller can disambiguate via errno if needed. */
+int lotus_fs_file_exists(const char *path) {
+    if (!path) {
+        errno = EINVAL;
+        return 0;
+    }
+    struct stat st;
+    return stat(path, &st) == 0 ? 1 : 0;
 }
 
 /*
