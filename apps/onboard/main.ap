@@ -30,6 +30,20 @@
 // Usage:
 //   aperio build apps/onboard/main.ap
 //   apps/onboard/main [SRC_DIR] [LANG_FLAVOR]
+//
+// The three-step ritual in main() — instantiate Resolver,
+// collapse OnboardConfig, hand to OnboardL — is the exemplary
+// Aperio composition: locus (resolution flow), type (shape
+// contract), locus (app run). Tests bypass the Resolver by
+// constructing OnboardConfig directly.
+
+// Shape contract — every helper takes this Config instead of
+// loose params, so adding fields (max_depth, exclude paths,
+// etc.) doesn't ripple through signatures.
+type OnboardConfig {
+    dir: String;
+    flavor: String;
+}
 
 // ---- Per-file unified walk (shared shape with tower-join). ----
 
@@ -297,76 +311,102 @@ fn __render_call_row(d: Int, callee: String, where_at: String,
 // Recursive outward walk. Returns the tree text rooted at
 // `caller`. Cycles broken via `visited`; overall depth capped
 // at `max_depth` so a tangled program can't blow the output.
-// Walk every .go file in `dir` and return a combined
-// tagged-string accumulator. FN_DEF, IMP_FILE, and OP_MAIN
-// lines stamp the file as `file_prefix + filename` so the
-// outward walker's __lookup_fn_file resolves across dir
-// boundaries unambiguously. The user-given dir is walked with
-// file_prefix="" so files appear as bare names; sibling dirs
-// pulled in via local imports use a relative-path prefix like
-// "cmd/" or "src/alerts/".
-fn __walk_dir_tagged(lang: std::lang::Lang, dir: String,
-                     file_prefix: String) -> String {
-    let entries = std::io::fs::list_dir(dir);
-    if len(entries) == 0 { return ""; }
+// Cross-dir walk callback. The Walk seed hands us each
+// parsed file; we emit a tagged-string fragment with the
+// bare file name attached to the rows the outward + inward
+// towers need (IMP_FILE, FN_DEF, OP_MAIN). WIRE and CALL
+// pass through unchanged — they don't need file context.
+// Other __unified_walk rows (PKG, TYPE, OP_INIT, OP_HANDLER,
+// OP_SPAWN, OP_LOOP) are dropped here; the per-file
+// rendering pass picks them up separately when it re-parses.
+//
+// The fn-pointer signature can't carry a `file_prefix`
+// (fn-pointers can't capture state at v0); the user-dir walk
+// emits bare names and the sibling-dir walks go through
+// __prefix_stamp afterwards to add the relative-path prefix.
+fn __cross_dir_callback(lang: std::lang::Lang, name: String,
+                        root: Int) -> String {
+    let walk = __unified_walk(lang, root, false, "");
     let it = std::iter::Lines { };
     let mut out = "";
     let mut from = 0;
     while from >= 0 {
-        let name = it.line_at(entries, from);
-        from = it.next_idx(entries, from);
-        if len(name) == 0 { continue; }
-        if std::io::fs::extension(name) != ".go" { continue; }
-        let path = dir + "/" + name;
-        let src = std::io::fs::read_file(path);
-        if len(src) == 0 { continue; }
-        let tree = lang.parse(src);
-        if tree == 0 { continue; }
-        let root = std::ts::root_node(tree);
-        let walk = __unified_walk(lang, root, false, "");
-        let stamped_file = file_prefix + name;
-        // Re-emit the walker output with each FN_DEF /
-        // IMP_FILE / OP_MAIN stamped with the file's prefixed
-        // name. WIRE and CALL lines pass through unchanged.
-        let it2 = std::iter::Lines { };
-        let mut sfrom = 0;
-        while sfrom >= 0 {
-            let line = it2.line_at(walk, sfrom);
-            sfrom = it2.next_idx(walk, sfrom);
-            if len(line) == 0 { continue; }
-            if len(line) > 4 {
-                if line[0..4] == "IMP:" {
-                    let imp = line[4..len(line)];
-                    out = out + "IMP_FILE:" + stamped_file
-                        + ":" + imp + "\n";
-                    continue;
-                }
-            }
-            if len(line) > 5 {
-                if line[0..5] == "WIRE:" {
-                    out = out + line + "\n";
-                    continue;
-                }
-                if line[0..5] == "CALL:" {
-                    out = out + line + "\n";
-                    continue;
-                }
-            }
-            if len(line) > 7 {
-                if line[0..7] == "FN_DEF:" {
-                    let fname = line[7..len(line)];
-                    out = out + "FN_DEF:" + fname + ":"
-                        + stamped_file + "\n";
-                    continue;
-                }
-            }
-            if len(line) >= 8 {
-                if line[0..8] == "OP_MAIN:" {
-                    out = out + "OP_MAIN:" + stamped_file + "\n";
-                    continue;
-                }
+        let line = it.line_at(walk, from);
+        from = it.next_idx(walk, from);
+        if len(line) == 0 { continue; }
+        if len(line) > 4 {
+            if line[0..4] == "IMP:" {
+                let imp = line[4..len(line)];
+                out = out + "IMP_FILE:" + name + ":" + imp + "\n";
+                continue;
             }
         }
+        if len(line) > 5 {
+            if line[0..5] == "WIRE:" { out = out + line + "\n"; continue; }
+            if line[0..5] == "CALL:" { out = out + line + "\n"; continue; }
+        }
+        if len(line) > 7 {
+            if line[0..7] == "FN_DEF:" {
+                let fname = line[7..len(line)];
+                out = out + "FN_DEF:" + fname + ":" + name + "\n";
+                continue;
+            }
+        }
+        if len(line) >= 8 {
+            if line[0..8] == "OP_MAIN:" {
+                out = out + "OP_MAIN:" + name + "\n";
+                continue;
+            }
+        }
+    }
+    return out;
+}
+
+// Sibling-dir prefix-stamping. Walks the cross-dir callback's
+// output and prepends `prefix` to the file portion of each
+// IMP_FILE / FN_DEF / OP_MAIN row, leaving WIRE / CALL rows
+// unchanged. Called once per sibling-dir walk so the outward
+// tower's file lookups resolve like "cmd/setup.go" instead of
+// colliding with a user-dir "setup.go".
+fn __prefix_stamp(rows: String, prefix: String) -> String {
+    if len(prefix) == 0 { return rows; }
+    let it = std::iter::Lines { };
+    let mut out = "";
+    let mut from = 0;
+    while from >= 0 {
+        let line = it.line_at(rows, from);
+        from = it.next_idx(rows, from);
+        if len(line) == 0 { continue; }
+        if len(line) > 9 {
+            if line[0..9] == "IMP_FILE:" {
+                let body = line[9..len(line)];
+                let colon = std::str::index_of(body, ":");
+                if colon < 0 { out = out + line + "\n"; continue; }
+                let file = body[0..colon];
+                let rest = body[colon..len(body)];
+                out = out + "IMP_FILE:" + prefix + file + rest + "\n";
+                continue;
+            }
+        }
+        if len(line) > 7 {
+            if line[0..7] == "FN_DEF:" {
+                let body = line[7..len(line)];
+                let colon = std::str::index_of(body, ":");
+                if colon < 0 { out = out + line + "\n"; continue; }
+                let fname = body[0..colon];
+                let file = body[colon+1..len(body)];
+                out = out + "FN_DEF:" + fname + ":" + prefix + file + "\n";
+                continue;
+            }
+        }
+        if len(line) >= 8 {
+            if line[0..8] == "OP_MAIN:" {
+                let file = line[8..len(line)];
+                out = out + "OP_MAIN:" + prefix + file + "\n";
+                continue;
+            }
+        }
+        out = out + line + "\n";
     }
     return out;
 }
@@ -974,8 +1014,8 @@ fn __render_unknowns(unknowns: String) -> String {
     return out;
 }
 
-fn __drive(dir: String, flavor: String) {
-    let lang = std::lang::Lang { flavor: flavor };
+fn __drive(cfg: OnboardConfig) {
+    let lang = std::lang::Lang { flavor: cfg.flavor };
 
     // Per-codebase overrides: an agent driving the session
     // resolves <unknown:X> markers and writes its decisions to
@@ -983,22 +1023,22 @@ fn __drive(dir: String, flavor: String) {
     // and pass to the morpheme rewriter so subsequent runs
     // honor agent-resolved vocabulary without contaminating
     // the universal seed.
-    let overrides_path = dir + "/.aperio-overrides";
+    let overrides_path = cfg.dir + "/.aperio-overrides";
     let mut overrides_text = "";
     if std::io::fs::file_exists(overrides_path) {
         overrides_text = std::io::fs::read_file(overrides_path);
     }
-    let r = std::lang::Morpheme { flavor: flavor, overrides: overrides_text };
-    let entries = std::io::fs::list_dir(dir);
+    let r = std::lang::Morpheme { flavor: cfg.flavor, overrides: overrides_text };
+    let entries = std::io::fs::list_dir(cfg.dir);
     let total = len(entries);
     if total == 0 {
-        println("(empty or unreadable dir: ", dir, ")");
+        println("(empty or unreadable dir: ", cfg.dir, ")");
         return;
     }
 
     println("============================================================");
-    println("  Aperio recognition: ", dir);
-    println("  flavor: ", flavor);
+    println("  Aperio recognition: ", cfg.dir);
+    println("  flavor: ", cfg.flavor);
     if len(overrides_text) > 0 {
         println("  overrides: .aperio-overrides loaded (", len(overrides_text), " bytes)");
     }
@@ -1016,7 +1056,7 @@ fn __drive(dir: String, flavor: String) {
     //     the codebase itself.
     let mut module_name = "";
     let mut module_root = "";
-    let mod_root_candidate = __find_module_root(dir);
+    let mod_root_candidate = __find_module_root(cfg.dir);
     if len(mod_root_candidate) > 0 {
         module_root = mod_root_candidate;
         let mod_text = std::io::fs::read_file(module_root + "/go.mod");
@@ -1035,7 +1075,17 @@ fn __drive(dir: String, flavor: String) {
     // describing," which is always rooted in the user-given
     // dir. A sibling pkg with its own main is a different
     // binary's entrypoint and not relevant to this run.
-    let user_walk = __walk_dir_tagged(lang, dir, "");
+    //
+    // std::source::Walk drives the per-file iteration; the
+    // __cross_dir_callback callback emits the tagged rows the
+    // towers consume. Sibling-dir walks go through
+    // __prefix_stamp so files resolve as "cmd/setup.go" vs.
+    // user-dir's bare "setup.go".
+    let w = std::source::Walk {
+        flavor: cfg.flavor,
+        on_file: __cross_dir_callback,
+    };
+    let user_walk = w.each_file(cfg.dir);
     let mut combined = user_walk;
     if len(module_name) > 0 {
         let local_imps = __collect_local_imports(user_walk, module_name);
@@ -1053,8 +1103,8 @@ fn __drive(dir: String, flavor: String) {
             let ml = len(module_name);
             let mut sib_prefix = "";
             if len(imp) > ml { sib_prefix = imp[ml+1..len(imp)] + "/"; }
-            combined = combined + __walk_dir_tagged(lang, sib_dir,
-                                                    sib_prefix);
+            let sib_walk = w.each_file(sib_dir);
+            combined = combined + __prefix_stamp(sib_walk, sib_prefix);
         }
     }
 
@@ -1122,7 +1172,7 @@ fn __drive(dir: String, flavor: String) {
         else { name = rest[0..nl]; from = from + nl + 1; }
         if len(name) > 0 {
             if std::io::fs::extension(name) == ".go" {
-                let block = __render_per_file(lang, r, dir, name, wires, fn_defs);
+                let block = __render_per_file(lang, r, cfg.dir, name, wires, fn_defs);
                 if len(block) > 0 {
                     all_files_section = all_files_section + block;
                     if std::str::index_of(block, "[locus]") >= 0 {
@@ -1134,7 +1184,7 @@ fn __drive(dir: String, flavor: String) {
                     }
                     // Walk again for unknowns. Cheap, and avoids
                     // threading another return value through render.
-                    let path = dir + "/" + name;
+                    let path = cfg.dir + "/" + name;
                     let src = std::io::fs::read_file(path);
                     if len(src) > 0 {
                         let tree = lang.parse(src);
@@ -1184,22 +1234,27 @@ fn __drive(dir: String, flavor: String) {
 
 locus OnboardL {
     params {
-        dir: String = "apps/operational-graph/fixture";
-        flavor: String = "go";
+        config: OnboardConfig = OnboardConfig {
+            dir: "apps/operational-graph/fixture",
+            flavor: "go",
+        };
     }
     run() {
-        __drive(self.dir, self.flavor);
+        __drive(self.config);
     }
 }
 
+// The three-step ritual: instantiate Resolver, collapse
+// OnboardConfig, hand to OnboardL. Resolver layers default →
+// env (APERIO_DIR / APERIO_FLAVOR) → CLI (argv[1] / argv[2]).
 fn main() {
-    let mut dir = "apps/operational-graph/fixture";
-    let mut flavor = "go";
-    if std::env::args_count() > 1 {
-        dir = std::env::arg(1);
-    }
-    if std::env::args_count() > 2 {
-        flavor = std::env::arg(2);
-    }
-    OnboardL { dir: dir, flavor: flavor };
+    let r = std::cli::Resolver {
+        env_prefix: "APERIO_",
+        argv_keys:  "dir\nflavor\n",
+    };
+    let cfg = OnboardConfig {
+        dir:    r.get("dir",    "apps/operational-graph/fixture"),
+        flavor: r.get("flavor", "go"),
+    };
+    OnboardL { config: cfg };
 }

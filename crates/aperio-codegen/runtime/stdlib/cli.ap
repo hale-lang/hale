@@ -1,0 +1,129 @@
+// std::cli::Resolver — layered config resolution.
+//
+// **Namespace lotus per `std::lang::Morpheme`.** Params hold
+// per-instance configuration; methods are self-composing pure
+// queries (`self.upper`, `self.argv_position` chain into the
+// public `get`); no birth/run/dissolve lifecycle. The Resolver
+// is the focus of control for the question "where does this
+// value come from" and nothing more.
+//
+// **The bloom point is the params.** An `APERIO_`-prefix
+// Resolver and a `MYAPP_`-prefix Resolver are the same seed
+// bloomed differently. The argv_keys list reshapes the
+// positional argv mapping without touching the locus body.
+// One seed, many config rituals.
+//
+// **The consumer's Config type is the collapse target.**
+// Per the types-vs-loci axiom, the Resolver (flow) feeds a
+// caller-defined shape type (data). The three-step ritual in
+// `main()` reads as one sentence of the axiom: instantiate
+// resolver, compose Config, hand to app. Tests can bypass
+// the resolver entirely by constructing the Config by hand.
+//
+// **Precedence (highest first).** CLI positional argv beats
+// env beats fallback. Matches Unix convention. Empty / unset
+// at any layer falls through; only a non-empty value at a
+// higher layer wins.
+//
+// Use site:
+//
+//   type OnboardConfig {
+//       dir: String;
+//       flavor: String;
+//       max_depth: Int;
+//   }
+//
+//   fn main() {
+//       let r = std::cli::Resolver {
+//           env_prefix: "APERIO_",
+//           argv_keys:  "dir\nflavor\nmax_depth\n",
+//       };
+//       let cfg = OnboardConfig {
+//           dir:       r.get("dir",       "apps/onboard/fixture"),
+//           flavor:    r.get("flavor",    "go"),
+//           max_depth: r.get_int("max_depth", 4),
+//       };
+//       OnboardL { config: cfg };
+//   }
+locus __StdCliResolver {
+    params {
+        // Environment-variable prefix. Each `get(key, ...)`
+        // looks up `<prefix><UPPER(key)>` in the process env.
+        // E.g., prefix="APERIO_", key="dir" → APERIO_DIR.
+        env_prefix: String = "APERIO_";
+
+        // Newline-separated positional argv keys. The first
+        // line maps to argv[1], the second to argv[2], etc.
+        // Keys not listed here have no CLI source — they
+        // skip the CLI layer and fall through to env/fallback.
+        argv_keys: String = "";
+    }
+
+    // ASCII upper-case. Same shape as `__StdLangMorpheme.to_lower`,
+    // mirrored for the env-key normalization path.
+    fn upper(s: String) -> String {
+        let n = len(s);
+        let mut out = "";
+        let mut i = 0;
+        while i < n {
+            let c = s[i..i+1];
+            let idx = std::str::index_of("abcdefghijklmnopqrstuvwxyz", c);
+            if idx >= 0 {
+                out = out + "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[idx..idx+1];
+            } else {
+                out = out + c;
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    // Find the 1-based positional argv slot for `key`. Returns
+    // -1 when the key is not declared in argv_keys. The slot
+    // counter only advances for non-empty lines so a stray
+    // blank line in the argv_keys string doesn't shift the
+    // remaining positions.
+    fn argv_position(key: String) -> Int {
+        let total = len(self.argv_keys);
+        let mut pos = 1;
+        let mut from = 0;
+        while from < total {
+            let rest = self.argv_keys[from..total];
+            let nl = std::str::index_of(rest, "\n");
+            let mut line = "";
+            if nl < 0 { line = rest; from = total; }
+            else { line = rest[0..nl]; from = from + nl + 1; }
+            if line == key { return pos; }
+            if len(line) > 0 { pos = pos + 1; }
+        }
+        return -1;
+    }
+
+    // Resolve `key` against CLI > env > fallback. The highest
+    // populated layer wins; empty / unset at a layer means
+    // fall through to the next.
+    fn get(key: String, fallback: String) -> String {
+        let pos = self.argv_position(key);
+        if pos > 0 && std::env::args_count() > pos {
+            return std::env::arg(pos);
+        }
+        let env_key = self.env_prefix + self.upper(key);
+        if std::env::var_exists(env_key) {
+            return std::env::var(env_key);
+        }
+        return fallback;
+    }
+
+    // Resolve `key` as an Int. Same precedence as `get`;
+    // non-parseable values fall through to `fallback` rather
+    // than crash. A typo'd `--depth foo` becomes the default
+    // instead of a runtime panic — a better failure mode for
+    // a config tool than aborting the app's first lifecycle
+    // method before any work happens.
+    fn get_int(key: String, fallback: Int) -> Int {
+        let s = self.get(key, "");
+        if len(s) == 0 { return fallback; }
+        if !std::str::can_parse_int(s) { return fallback; }
+        return std::str::parse_int(s);
+    }
+}

@@ -30,9 +30,11 @@
 
 # Phase 7: Corpus-extraction helpers
 
+- [`std::cli`](./cli.md)
 - [`std::iter`](./iter.md)
 - [`std::json`](./json.md)
 - [`std::name`](./name.md)
+- [`std::source`](./source.md)
 - [`std::tagged`](./tagged.md)
 
 # Primitives

@@ -27,6 +27,11 @@
 //   aperio build apps/tower-join/main.ap
 //   apps/tower-join/main [SRC_DIR] [LANG_FLAVOR]
 
+type TowerJoinConfig {
+    dir: String;
+    flavor: String;
+}
+
 // Morpheme rewriter comes from `std::lang::Morpheme` (stdlib).
 // See `notes/onboarding-shape-rules.md` for the agent-driven
 // model that motivates a small seed table + agent-resolved
@@ -117,15 +122,15 @@ fn __collect_types_with_motion(acc: String, r: std::lang::Morpheme) -> String {
     return jb.wrap_array(inner);
 }
 
-fn __per_file_entry(lang: std::lang::Lang, r: std::lang::Morpheme,
-                    dir: String, name: String) -> String {
-    let path = dir + "/" + name;
-    let src = std::io::fs::read_file(path);
-    if len(src) == 0 { return ""; }
-    let tree = lang.parse(src);
-    if tree == 0 { return ""; }
-    let root = std::ts::root_node(tree);
+// Per-file callback for std::source::Walk. Returns the
+// pretty-printed per-file entry preceded by the array
+// separator. The drive loop strips the leading separator on
+// the assembled output so the resulting `files` array is
+// well-formed without per-iteration first-vs-not-first
+// bookkeeping (which a fn-pointer can't carry at v0).
+fn __tower_join_per_file(lang: std::lang::Lang, name: String, root: Int) -> String {
     let acc = __unified_walk(lang, root, false);
+    let r = std::lang::Morpheme { flavor: "go" };
 
     let ta = std::tagged::Accumulator { };
     let nc = std::name::Convention { strip: ".go" };
@@ -171,7 +176,7 @@ fn __per_file_entry(lang: std::lang::Lang, r: std::lang::Morpheme,
     if n_loops > 0 { op_section = op_section + "true"; } else { op_section = op_section + "false"; }
     op_section = op_section + "}";
 
-    return "{\n      \"name\": \"" + name + "\",\n"
+    let entry = "{\n      \"name\": \"" + name + "\",\n"
         + "      \"package\": \"" + pkg + "\",\n"
         + "      \"verdict\": \"" + verdict + "\",\n"
         + "      \"agreement\": " + to_string(agreement) + ",\n"
@@ -182,54 +187,57 @@ fn __per_file_entry(lang: std::lang::Lang, r: std::lang::Morpheme,
         + "        \"domain\": " + types_with_motion + "\n"
         + "      }\n"
         + "    }";
+    // Always prepend the multi-line array separator. The
+    // drive loop strips it once for the first entry.
+    return ",\n    " + entry;
 }
 
-// Pretty-print append: ",\n    " separator for the multi-line
-// files array. std::json::Builder.append_entry uses ", "
-// (single-line), which doesn't fit this layout; keep this one
-// helper local.
-fn __pretty_append(arr: String, entry: String) -> String {
-    if len(arr) == 0 { return entry; }
-    return arr + ",\n    " + entry;
+// Count non-overlapping occurrences of `needle` in `s`.
+fn __count_substring(s: String, needle: String) -> Int {
+    let nlen = len(needle);
+    if nlen == 0 { return 0; }
+    let total = len(s);
+    let mut from = 0;
+    let mut count = 0;
+    while from < total {
+        let rest = s[from..total];
+        let idx = std::str::index_of(rest, needle);
+        if idx < 0 { return count; }
+        count = count + 1;
+        from = from + idx + nlen;
+    }
+    return count;
 }
 
-fn __tower_join_drive(dir: String, flavor: String) {
-    let lang = std::lang::Lang { flavor: flavor };
-    let r = std::lang::Morpheme { flavor: flavor };
-    let entries = std::io::fs::list_dir(dir);
-    let total = len(entries);
-    if total == 0 {
+fn __tower_join_drive(cfg: TowerJoinConfig) {
+    let entries = std::io::fs::list_dir(cfg.dir);
+    if len(entries) == 0 {
         println("{\"files\": [], \"error\": \"empty or unreadable dir\"}");
         return;
     }
 
-    let it = std::iter::Lines { };
-    let mut files_arr = "";
-    let mut from = 0;
-    let mut n_locus = 0;
-    let mut n_type_or_fn = 0;
-    let mut n_structural = 0;
-    let mut n_total = 0;
-    while from >= 0 {
-        let name = it.line_at(entries, from);
-        from = it.next_idx(entries, from);
-        if len(name) == 0 { continue; }
-        if std::io::fs::extension(name) != ".go" { continue; }
-        let entry = __per_file_entry(lang, r, dir, name);
-        if len(entry) == 0 { continue; }
-        files_arr = __pretty_append(files_arr, entry);
-        n_total = n_total + 1;
-        // Cheap re-classify by substring matching the verdict in
-        // the entry. JSON building is unidirectional; we don't
-        // keep typed state.
-        if std::str::index_of(entry, "\"verdict\": \"locus\"") >= 0 {
-            n_locus = n_locus + 1;
-        } else if std::str::index_of(entry, "\"verdict\": \"type_or_fn\"") >= 0 {
-            n_type_or_fn = n_type_or_fn + 1;
-        } else {
-            n_structural = n_structural + 1;
+    let w = std::source::Walk {
+        flavor:  cfg.flavor,
+        on_file: __tower_join_per_file,
+    };
+    let raw = w.each_file(cfg.dir);
+
+    // Strip the leading ",\n    " that the first callback
+    // emission carried (the callback always prepends; we
+    // strip exactly once at the boundary).
+    let separator = ",\n    ";
+    let slen = len(separator);
+    let mut files_arr = raw;
+    if len(files_arr) >= slen {
+        if files_arr[0..slen] == separator {
+            files_arr = files_arr[slen..len(files_arr)];
         }
     }
+
+    let n_locus = __count_substring(files_arr, "\"verdict\": \"locus\"");
+    let n_type_or_fn = __count_substring(files_arr, "\"verdict\": \"type_or_fn\"");
+    let n_structural = __count_substring(files_arr, "\"verdict\": \"structural\"");
+    let n_total = n_locus + n_type_or_fn + n_structural;
 
     let summary = "{\"total_files\": " + to_string(n_total)
         + ", \"loci\": " + to_string(n_locus)
@@ -237,8 +245,8 @@ fn __tower_join_drive(dir: String, flavor: String) {
         + ", \"structural\": " + to_string(n_structural) + "}";
 
     println("{");
-    println("  \"dir\": \"", dir, "\",");
-    println("  \"flavor\": \"", flavor, "\",");
+    println("  \"dir\": \"", cfg.dir, "\",");
+    println("  \"flavor\": \"", cfg.flavor, "\",");
     println("  \"summary\": ", summary, ",");
     println("  \"files\": [");
     println("    ", files_arr);
@@ -248,22 +256,24 @@ fn __tower_join_drive(dir: String, flavor: String) {
 
 locus TowerJoinL {
     params {
-        dir: String = "apps/operational-graph/fixture";
-        flavor: String = "go";
+        config: TowerJoinConfig = TowerJoinConfig {
+            dir: "apps/operational-graph/fixture",
+            flavor: "go",
+        };
     }
     run() {
-        __tower_join_drive(self.dir, self.flavor);
+        __tower_join_drive(self.config);
     }
 }
 
 fn main() {
-    let mut dir = "apps/operational-graph/fixture";
-    let mut flavor = "go";
-    if std::env::args_count() > 1 {
-        dir = std::env::arg(1);
-    }
-    if std::env::args_count() > 2 {
-        flavor = std::env::arg(2);
-    }
-    TowerJoinL { dir: dir, flavor: flavor };
+    let r = std::cli::Resolver {
+        env_prefix: "APERIO_",
+        argv_keys:  "dir\nflavor\n",
+    };
+    let cfg = TowerJoinConfig {
+        dir:    r.get("dir",    "apps/operational-graph/fixture"),
+        flavor: r.get("flavor", "go"),
+    };
+    TowerJoinL { config: cfg };
 }

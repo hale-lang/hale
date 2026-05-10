@@ -1,0 +1,108 @@
+// std::source::Walk — directory-of-source-files iteration.
+//
+// **Namespace lotus.** Params hold per-walk configuration —
+// the source-language flavor, the file extension to match,
+// and the per-file callback. The single public method
+// `each_file(dir)` drives the iteration: list, filter, parse,
+// dispatch. No birth/run/dissolve — the walk is one-shot.
+//
+// **The bloom point is `on_file`.** The Walk locus owns the
+// *shape of iteration*; each consumer supplies its own per-file
+// fn to extract whatever it cares about — import lists, type
+// names, tower tags, JSON entries. The same seed is bloomed
+// differently per consumer; the iteration mechanics live in
+// std exactly once. When locus-as-callback lands post-v1, the
+// bloom unit upgrades from `fn` to `locus` without changing
+// the seed's surface.
+//
+// **State stays in the caller.** Fn-pointer callbacks can't
+// capture state at v0, so any state the caller needs to thread
+// across files (running counters, first-vs-not-first flags,
+// file-prefix stamps) is folded into the returned String
+// fragment and post-processed by the caller after `each_file`
+// returns. The walker returns the simple concatenation of all
+// fragments; richer joins are the caller's responsibility.
+//
+// **Empty / unparseable files are silently skipped.** Each
+// per-file guard mirrors the hand-rolled idiom this seed
+// replaces — empty read = skip, parse failure = skip — so
+// migration preserves behavior byte-for-byte.
+//
+// Use site:
+//
+//   fn __my_per_file(lang: std::lang::Lang, name: String,
+//                    root: Int) -> String {
+//       // extract whatever this app cares about
+//       return ...;
+//   }
+//
+//   fn __drive(cfg: MyConfig) {
+//       let w = std::source::Walk {
+//           flavor: cfg.flavor,
+//           on_file: __my_per_file,
+//       };
+//       let body = w.each_file(cfg.dir);
+//       // wrap body in JSON / tagged-accumulator / report
+//   }
+
+// Default per-file callback. Returns empty string — lets a
+// caller instantiate Walk without configuring on_file when
+// they only care about the side-effects (rare) or are
+// building a Walk for tests.
+fn __std_source_walk_noop(lang: std::lang::Lang, name: String,
+                          root: Int) -> String {
+    return "";
+}
+
+locus __StdSourceWalk {
+    params {
+        // Source-language flavor — passed straight to the
+        // `std::lang::Lang` locus the walker instantiates
+        // internally. "go" is the v0 default; "rust" /
+        // "python" etc. become valid as Lang grows flavors.
+        flavor: String = "go";
+
+        // File extension to match. Includes the leading dot
+        // by convention (matches `std::io::fs::extension`'s
+        // return shape). Files in `dir` whose extension
+        // doesn't equal this are skipped silently.
+        ext: String = ".go";
+
+        // The per-file callback. The walker hands the
+        // configured Lang locus, the bare file name (no dir
+        // prefix), and the parsed tree's root node to the
+        // callback for each matched file. The callback's
+        // returned String is concatenated into the walk's
+        // final output verbatim.
+        on_file: fn(std::lang::Lang, String, Int) -> String
+                = __std_source_walk_noop;
+    }
+
+    // Iterate every file in `dir` whose extension matches
+    // `self.ext`. For each, read + parse via Lang and invoke
+    // `on_file(lang, name, root)`. Returns the simple
+    // concatenation of all on_file fragments in directory
+    // iteration order.
+    fn each_file(dir: String) -> String {
+        let lang = std::lang::Lang { flavor: self.flavor };
+        let entries = std::io::fs::list_dir(dir);
+        if len(entries) == 0 { return ""; }
+        let it = std::iter::Lines { };
+        let mut out = "";
+        let mut from = 0;
+        while from >= 0 {
+            let name = it.line_at(entries, from);
+            from = it.next_idx(entries, from);
+            if len(name) == 0 { continue; }
+            if std::io::fs::extension(name) != self.ext { continue; }
+            let path = dir + "/" + name;
+            let src = std::io::fs::read_file(path);
+            if len(src) == 0 { continue; }
+            let tree = lang.parse(src);
+            if tree == 0 { continue; }
+            let root = std::ts::root_node(tree);
+            out = out + self.on_file(lang, name, root);
+        }
+        return out;
+    }
+}

@@ -33,6 +33,11 @@
 //   - Aliased imports collapse: `import f "fmt"` → `"fmt"`.
 //   - No JSON escaping (Go names don't contain `"` or `\`).
 
+type ImportGraphConfig {
+    dir: String;
+    flavor: String;
+}
+
 // Recursively collect all string-literal texts found under
 // `node`, with surrounding quotes stripped (via Lang),
 // separated by "\n". For an import-decl this yields one line
@@ -55,19 +60,13 @@ fn __collect_imports(lang: std::lang::Lang, node: Int) -> String {
     return acc;
 }
 
-// Extract one file's tower entry as a JSON object string.
-// Empty string return signals "skip this file" (read or parse
-// failure); the caller drops it from the array.
-fn __extract_file(lang: std::lang::Lang, path: String, name: String) -> String {
-    let src = std::io::fs::read_file(path);
-    if len(src) == 0 { return ""; }
-    let tree = lang.parse(src);
-    if tree == 0 { return ""; }
-    let root = std::ts::root_node(tree);
-
+// Per-file callback for std::source::Walk. Emits the per-file
+// JSON object prefixed with "ENTRY:" so the drive loop can
+// strip the marker and reassemble entries with proper JSON
+// commas between them.
+fn __import_per_file(lang: std::lang::Lang, name: String, root: Int) -> String {
     let mut pkg = "?";
     let mut imports_raw = "";
-
     let n = std::ts::node_named_child_count(root);
     let mut i = 0;
     while i < n {
@@ -80,35 +79,37 @@ fn __extract_file(lang: std::lang::Lang, path: String, name: String) -> String {
         }
         i = i + 1;
     }
-
     let jb = std::json::Builder { };
     let imports_json = jb.build_quoted_array(imports_raw);
-    return "{\"id\": \"" + name + "\", \"package\": \"" + pkg
+    let entry = "{\"id\": \"" + name + "\", \"package\": \"" + pkg
         + "\", \"imports\": " + imports_json + "}";
+    return "ENTRY:" + entry + "\n";
 }
 
-fn __import_graph_drive(dir: String, flavor: String) {
-    let lang = std::lang::Lang { flavor: flavor };
-    let entries = std::io::fs::list_dir(dir);
-    let total = len(entries);
-    if total == 0 {
+fn __import_graph_drive(cfg: ImportGraphConfig) {
+    let entries = std::io::fs::list_dir(cfg.dir);
+    if len(entries) == 0 {
         println("{\"files\": [], \"error\": \"empty or unreadable dir\"}");
         return;
     }
 
+    let w = std::source::Walk {
+        flavor:  cfg.flavor,
+        on_file: __import_per_file,
+    };
+    let rows = w.each_file(cfg.dir);
+
     let it = std::iter::Lines { };
-    let mut json = "{\n  \"dir\": \"" + dir + "\",\n  \"flavor\": \"" + flavor
+    let mut json = "{\n  \"dir\": \"" + cfg.dir + "\",\n  \"flavor\": \"" + cfg.flavor
         + "\",\n  \"files\": [";
     let mut first = true;
     let mut from = 0;
     while from >= 0 {
-        let name = it.line_at(entries, from);
-        from = it.next_idx(entries, from);
-        if len(name) == 0 { continue; }
-        if std::io::fs::extension(name) != ".go" { continue; }
-        let path = dir + "/" + name;
-        let entry = __extract_file(lang, path, name);
-        if len(entry) == 0 { continue; }
+        let row = it.line_at(rows, from);
+        from = it.next_idx(rows, from);
+        if len(row) <= 6 { continue; }
+        if row[0..6] != "ENTRY:" { continue; }
+        let entry = row[6..len(row)];
         if first {
             json = json + "\n    " + entry;
             first = false;
@@ -122,22 +123,24 @@ fn __import_graph_drive(dir: String, flavor: String) {
 
 locus ImportGraphL {
     params {
-        dir: String = "apps/import-graph/fixture";
-        flavor: String = "go";
+        config: ImportGraphConfig = ImportGraphConfig {
+            dir: "apps/import-graph/fixture",
+            flavor: "go",
+        };
     }
     run() {
-        __import_graph_drive(self.dir, self.flavor);
+        __import_graph_drive(self.config);
     }
 }
 
 fn main() {
-    let mut dir = "apps/import-graph/fixture";
-    let mut flavor = "go";
-    if std::env::args_count() > 1 {
-        dir = std::env::arg(1);
-    }
-    if std::env::args_count() > 2 {
-        flavor = std::env::arg(2);
-    }
-    ImportGraphL { dir: dir, flavor: flavor };
+    let r = std::cli::Resolver {
+        env_prefix: "APERIO_",
+        argv_keys:  "dir\nflavor\n",
+    };
+    let cfg = ImportGraphConfig {
+        dir:    r.get("dir",    "apps/import-graph/fixture"),
+        flavor: r.get("flavor", "go"),
+    };
+    ImportGraphL { config: cfg };
 }

@@ -29,6 +29,11 @@
 //   aperio build apps/domain-graph/main.ap
 //   apps/domain-graph/main [SRC_DIR] [LANG_FLAVOR]
 
+type DomainGraphConfig {
+    dir: String;
+    flavor: String;
+}
+
 // Recurse only under a type-decl to find type-spec leaves.
 // `lang` provides the per-flavor classifier; the recursion is
 // grammar-agnostic.
@@ -70,48 +75,59 @@ fn __collect_type_names(lang: std::lang::Lang, node: Int) -> String {
     return acc;
 }
 
-fn __domain_drive(dir: String, flavor: String) {
-    let lang = std::lang::Lang { flavor: flavor };
-    let entries = std::io::fs::list_dir(dir);
-    let total_e = len(entries);
-    if total_e == 0 {
+// Per-file callback for std::source::Walk. Emits one
+// "TYPE:<file>:<typename>" row per type declaration; the
+// drive loop post-processes these into JSON entries.
+fn __domain_per_file(lang: std::lang::Lang, name: String, root: Int) -> String {
+    let names = __collect_type_names(lang, root);
+    let it = std::iter::Lines { };
+    let mut out = "";
+    let mut from = 0;
+    while from >= 0 {
+        let tname = it.line_at(names, from);
+        from = it.next_idx(names, from);
+        if len(tname) == 0 { continue; }
+        out = out + "TYPE:" + name + ":" + tname + "\n";
+    }
+    return out;
+}
+
+fn __domain_drive(cfg: DomainGraphConfig) {
+    let entries = std::io::fs::list_dir(cfg.dir);
+    if len(entries) == 0 {
         println("{\"types\": [], \"error\": \"empty or unreadable dir\"}");
         return;
     }
 
-    // One namespace-lotus instance for the whole walk.
-    let r = std::lang::Morpheme { flavor: flavor };
+    let w = std::source::Walk {
+        flavor:  cfg.flavor,
+        on_file: __domain_per_file,
+    };
+    let rows = w.each_file(cfg.dir);
+
+    let r = std::lang::Morpheme { flavor: cfg.flavor };
     let it = std::iter::Lines { };
     let jb = std::json::Builder { };
-
     let mut types_arr = "";
     let mut from = 0;
     while from >= 0 {
-        let name = it.line_at(entries, from);
-        from = it.next_idx(entries, from);
-        if len(name) == 0 { continue; }
-        if std::io::fs::extension(name) != ".go" { continue; }
-        let path = dir + "/" + name;
-        let src = std::io::fs::read_file(path);
-        if len(src) == 0 { continue; }
-        let tree = lang.parse(src);
-        if tree == 0 { continue; }
-        let root = std::ts::root_node(tree);
-        let names = __collect_type_names(lang, root);
-        let mut nfrom = 0;
-        while nfrom >= 0 {
-            let tname = it.line_at(names, nfrom);
-            nfrom = it.next_idx(names, nfrom);
-            if len(tname) == 0 { continue; }
-            let motion = r.name_to_motion(tname);
-            let entry = "{\"name\": \"" + tname
-                + "\", \"motion\": \"" + motion
-                + "\", \"file\": \"" + name + "\"}";
-            types_arr = jb.append_entry(types_arr, entry);
-        }
+        let row = it.line_at(rows, from);
+        from = it.next_idx(rows, from);
+        if len(row) <= 5 { continue; }
+        if row[0..5] != "TYPE:" { continue; }
+        let body = row[5..len(row)];
+        let colon = std::str::index_of(body, ":");
+        if colon < 0 { continue; }
+        let file = body[0..colon];
+        let tname = body[colon+1..len(body)];
+        let motion = r.name_to_motion(tname);
+        let entry = "{\"name\": \"" + tname
+            + "\", \"motion\": \"" + motion
+            + "\", \"file\": \"" + file + "\"}";
+        types_arr = jb.append_entry(types_arr, entry);
     }
 
-    let json = "{\n  \"dir\": \"" + dir + "\",\n  \"flavor\": \"" + flavor
+    let json = "{\n  \"dir\": \"" + cfg.dir + "\",\n  \"flavor\": \"" + cfg.flavor
         + "\",\n  \"domain\": {\n"
         + "    \"types\": [" + types_arr + "]\n"
         + "  }\n}";
@@ -120,22 +136,24 @@ fn __domain_drive(dir: String, flavor: String) {
 
 locus DomainGraphL {
     params {
-        dir: String = "apps/domain-graph/fixture";
-        flavor: String = "go";
+        config: DomainGraphConfig = DomainGraphConfig {
+            dir: "apps/domain-graph/fixture",
+            flavor: "go",
+        };
     }
     run() {
-        __domain_drive(self.dir, self.flavor);
+        __domain_drive(self.config);
     }
 }
 
 fn main() {
-    let mut dir = "apps/domain-graph/fixture";
-    let mut flavor = "go";
-    if std::env::args_count() > 1 {
-        dir = std::env::arg(1);
-    }
-    if std::env::args_count() > 2 {
-        flavor = std::env::arg(2);
-    }
-    DomainGraphL { dir: dir, flavor: flavor };
+    let r = std::cli::Resolver {
+        env_prefix: "APERIO_",
+        argv_keys:  "dir\nflavor\n",
+    };
+    let cfg = DomainGraphConfig {
+        dir:    r.get("dir",    "apps/domain-graph/fixture"),
+        flavor: r.get("flavor", "go"),
+    };
+    DomainGraphL { config: cfg };
 }

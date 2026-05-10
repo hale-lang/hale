@@ -33,6 +33,11 @@
 //   aperio build apps/operational-graph/main.ap
 //   apps/operational-graph/main [SRC_DIR] [LANG_FLAVOR]
 
+type OperationalGraphConfig {
+    dir: String;
+    flavor: String;
+}
+
 // Per-file walk. Recurses through all named children. Tagged-
 // string accumulator: each finding is one line `TAG:detail`,
 // the caller bins lines by tag for the final JSON. The
@@ -68,6 +73,14 @@ fn __walk(lang: std::lang::Lang, node: Int, file: String) -> String {
         i = i + 1;
     }
     return acc;
+}
+
+// Per-file callback for std::source::Walk. Hands the bare
+// file name through to the tagged-row walker so each emitted
+// row carries the file the finding came from.
+fn __operational_per_file(lang: std::lang::Lang, name: String,
+                          root: Int) -> String {
+    return __walk(lang, root, name);
 }
 
 // Build a JSON array of entries from the tagged accumulator,
@@ -116,31 +129,18 @@ fn __fmt_goroutine(body: String) -> String {
     return "{\"file\": \"" + file + "\", \"kind\": \"" + kind + "\"}";
 }
 
-fn __operational_drive(dir: String, flavor: String) {
-    let lang = std::lang::Lang { flavor: flavor };
-    let entries = std::io::fs::list_dir(dir);
-    let total = len(entries);
-    if total == 0 {
+fn __operational_drive(cfg: OperationalGraphConfig) {
+    let entries = std::io::fs::list_dir(cfg.dir);
+    if len(entries) == 0 {
         println("{\"operational\": {}, \"error\": \"empty or unreadable dir\"}");
         return;
     }
 
-    let it = std::iter::Lines { };
-    let mut acc = "";
-    let mut from = 0;
-    while from >= 0 {
-        let name = it.line_at(entries, from);
-        from = it.next_idx(entries, from);
-        if len(name) == 0 { continue; }
-        if std::io::fs::extension(name) != ".go" { continue; }
-        let path = dir + "/" + name;
-        let src = std::io::fs::read_file(path);
-        if len(src) == 0 { continue; }
-        let tree = lang.parse(src);
-        if tree == 0 { continue; }
-        let root = std::ts::root_node(tree);
-        acc = acc + __walk(lang, root, name);
-    }
+    let w = std::source::Walk {
+        flavor:  cfg.flavor,
+        on_file: __operational_per_file,
+    };
+    let acc = w.each_file(cfg.dir);
 
     let main_arr = __collect_section(acc, "MAIN", __fmt_file);
     let init_arr = __collect_section(acc, "INIT", __fmt_file);
@@ -148,7 +148,7 @@ fn __operational_drive(dir: String, flavor: String) {
     let goroutines_arr = __collect_section(acc, "GOROUTINE", __fmt_goroutine);
     let loops_arr = __collect_section(acc, "LOOP", __fmt_file);
 
-    let json = "{\n  \"dir\": \"" + dir + "\",\n  \"flavor\": \"" + flavor
+    let json = "{\n  \"dir\": \"" + cfg.dir + "\",\n  \"flavor\": \"" + cfg.flavor
         + "\",\n  \"operational\": {\n"
         + "    \"main\": " + main_arr + ",\n"
         + "    \"init\": " + init_arr + ",\n"
@@ -161,22 +161,24 @@ fn __operational_drive(dir: String, flavor: String) {
 
 locus OperationalGraphL {
     params {
-        dir: String = "apps/operational-graph/fixture";
-        flavor: String = "go";
+        config: OperationalGraphConfig = OperationalGraphConfig {
+            dir: "apps/operational-graph/fixture",
+            flavor: "go",
+        };
     }
     run() {
-        __operational_drive(self.dir, self.flavor);
+        __operational_drive(self.config);
     }
 }
 
 fn main() {
-    let mut dir = "apps/operational-graph/fixture";
-    let mut flavor = "go";
-    if std::env::args_count() > 1 {
-        dir = std::env::arg(1);
-    }
-    if std::env::args_count() > 2 {
-        flavor = std::env::arg(2);
-    }
-    OperationalGraphL { dir: dir, flavor: flavor };
+    let r = std::cli::Resolver {
+        env_prefix: "APERIO_",
+        argv_keys:  "dir\nflavor\n",
+    };
+    let cfg = OperationalGraphConfig {
+        dir:    r.get("dir",    "apps/operational-graph/fixture"),
+        flavor: r.get("flavor", "go"),
+    };
+    OperationalGraphL { config: cfg };
 }

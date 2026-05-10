@@ -400,6 +400,19 @@ const STDLIB_AP_SOURCE: &str = concat!(
     "\n",
     // json.ap depends on iter.ap for build_array's line walk.
     include_str!("../runtime/stdlib/json.ap"),
+    "\n",
+    // cli.ap is independent — only uses std::str::index_of,
+    // std::str::parse_int / can_parse_int, and std::env::*
+    // path calls. Lands after the other corpus helpers by
+    // convention.
+    include_str!("../runtime/stdlib/cli.ap"),
+    "\n",
+    // source.ap depends on iter.ap (Lines for entry iteration)
+    // and references std::lang::Lang in its on_file fn-pointer
+    // type — lang.ap must be declared before this file's parse
+    // pass A1 resolves param types. lang.ap lands at line ~385
+    // above, so source.ap lands here without issue.
+    include_str!("../runtime/stdlib/source.ap"),
 );
 
 /// Maps each user-facing stdlib path (locus OR type) to the
@@ -412,6 +425,7 @@ const STDLIB_AP_SOURCE: &str = concat!(
 /// is just the path → name mapping. Keep sorted by path for
 /// review.
 const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
+    (&["std", "cli", "Resolver"], "__StdCliResolver"),
     (&["std", "http", "Request"], "__StdHttpRequest"),
     (&["std", "http", "Response"], "__StdHttpResponse"),
     (&["std", "io", "tcp", "Listener"], "__StdIoTcpListener"),
@@ -424,6 +438,7 @@ const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "log", "Logger"], "__StdLogLogger"),
     (&["std", "log", "StdoutSink"], "__StdLogStdoutSink"),
     (&["std", "name", "Convention"], "__StdNameConvention"),
+    (&["std", "source", "Walk"], "__StdSourceWalk"),
     (&["std", "tagged", "Accumulator"], "__StdTaggedAccumulator"),
 ];
 
