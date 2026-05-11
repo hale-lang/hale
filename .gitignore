@@ -33,6 +33,7 @@ apps/*/out/
 # (apps/ferryman/ → apps/ferryman/ferryman). Match per app
 # directory; the .ap-source files are explicitly preserved.
 apps/ferryman/ferryman
+apps/reload-demo/reload-demo
 
 # Aperio example build artifacts (compiled binaries sit next
 # to main.ap after `aperio build`).

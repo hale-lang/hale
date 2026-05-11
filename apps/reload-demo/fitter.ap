@@ -1,0 +1,58 @@
+// fitter.ap — the application-layer kernel for the
+// curve-geometry-fitting role.
+//
+// Reads a MarketStateL, fits a curve via SegmentL,
+// publishes the resulting ModelOverlay on "model.curve".
+// Subscribers (ReloadL instances under any MarketStateL)
+// receive it and reparameterize.
+//
+// FitterAppL is the "application-layer kernel" the user
+// named — its params + bus surface together describe what
+// this app does with the shared market substrate, separate
+// from the substrate's own kernel (B/c/sigma/phi at the
+// market tier).
+
+locus FitterAppL {
+    params {
+        coord: String = "app.fitter";
+        B: Int = 100;
+        c: Int = 10;
+        sigma: Int = 1;
+        phi: Float = 0.5;
+    }
+
+    bus {
+        publish "model.curve" of type ModelOverlay;
+    }
+
+    fn kernel() -> Kernel {
+        return Kernel {
+            coord: self.coord,
+            B: self.B,
+            c: self.c,
+            sigma: self.sigma,
+            phi: self.phi,
+        };
+    }
+
+    fn fit_and_publish_from(market: MarketStateL) {
+        let s = market.fit();
+        // Cache reads. Calling locus-returning method results
+        // multiple times in the same scope can return stale
+        // values on the second-call path; bind once.
+        let n = s.count();
+        let sl = s.slope();
+        let ic = s.intercept();
+        let mc = market.count();
+        if n >= 2 {
+            let m = ModelOverlay {
+                source_coord: self.coord,
+                slope: sl,
+                intercept: ic,
+                t_origin: 0.0,
+                n_samples: mc,
+            };
+            "model.curve" <- m;
+        }
+    }
+}
