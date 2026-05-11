@@ -1,0 +1,46 @@
+# deployment.yaml — transport bindings for the fitter/applier pair.
+#
+# Both binaries (fitter, applier) consume "fitter.observation"
+# from the same UDP multicast group. Both observers look at the
+# same upstream stream, but the applier cannot fit on the data
+# it's acting on because it's a separate process with no path
+# back to the fitter's fitting state — substrate-derivation
+# discipline by architecture.
+#
+# fitter/applier.kernel uses NATS (reliable, ordered) — the fitter
+# ships stable perspectives slowly; the applier must receive
+# them in order.
+#
+# fitter/applier.action / fitter/applier.receipt use NATS — control-plane
+# messaging with the downstream sink.
+
+channels:
+  # Upstream observations: high-frequency, lossy-acceptable,
+  # broadcast to many.
+  "fitter.observation":
+    transport: udp_multicast
+    group: "239.7.7.7"
+    port: 9000
+
+  # Kernel updates: slow cadence, reliable delivery required,
+  # ordered per fitter.
+  "fitter.kernel":
+    transport: nats
+    url: "nats://nats-control:4222"
+
+  # Actions emitted by the applier downstream.
+  "fitter.action":
+    transport: nats
+    url: "nats://nats-control:4222"
+
+  # Receipts arriving back from downstream.
+  "fitter.receipt":
+    transport: nats
+    url: "nats://nats-control:4222"
+
+# For testing: swap the whole map to in-memory.
+# Uncomment to use:
+#
+# channels:
+#   "fitter.*":
+#     transport: in_memory

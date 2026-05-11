@@ -537,7 +537,7 @@ pointer into the subscriber's own arena, valid until that
 subscriber dissolves — independently of when the publisher's
 locus dissolves. This unblocks `self.current_kernel = msg`
 patterns where the subscriber stores a payload reference across
-multiple bus events (trellis-demo's central pattern).
+multiple bus events (fitter-applier-demo's central pattern).
 
 m20 deliberately keeps free fns + main on the program-wide arena
 (no per-call arena yet) and doesn't yet specialize per projection

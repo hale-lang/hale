@@ -963,7 +963,7 @@ struct LocusInfo<'ctx> {
 
 /// Maximum number of children any locus struct's built-in
 /// `children` array can hold. v0 codegen uses a fixed cap to
-/// avoid resize / heap dance; trellis-grade loci typically have
+/// avoid resize / heap dance; production-grade loci typically have
 /// O(few-dozen) coordinatees, and 04-modes' AggregatorL only
 /// instantiates 3.
 const CHILDREN_CAP: u32 = 16;

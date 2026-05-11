@@ -9,7 +9,7 @@
 //!
 //! `run` and `check` accept a single .ap file or a directory.
 //! When given a directory, every .ap file in it is treated as
-//! one bundle (multi-file project — e.g. trellis-pair).
+//! one bundle (multi-file project — e.g. fitter-applier-pair).
 
 use std::collections::BTreeMap;
 use std::env;

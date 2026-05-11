@@ -287,9 +287,9 @@ closure tests and respect substrate-derivation anchoring.
 
 ```
 bus {
-    subscribe "trellis.observation" as on_observation of type Observation;
-    subscribe "trellis.kernel.updates" as on_kernel of type KernelUpdate;
-    publish "trellis.drift" of type DriftReport;
+    subscribe "fitter.observation" as on_observation of type Observation;
+    subscribe "fitter.kernel.updates" as on_kernel of type KernelUpdate;
+    publish "fitter.drift" of type DriftReport;
 }
 ```
 
@@ -1079,7 +1079,7 @@ A locus emits a message on a declared subject with the `<-`
 operator at statement position:
 
 ```
-"trellis.action" <- action_value;
+"fitter.action" <- action_value;
 ```
 
 The left side names a subject declared in the locus's

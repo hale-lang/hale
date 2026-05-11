@@ -1,5 +1,5 @@
 //! Integration test: every example program parses AND
-//! typechecks. Multi-file projects (trellis-pair) are checked
+//! typechecks. Multi-file projects (fitter-applier-pair) are checked
 //! as a bundle. This is the Phase 0 exit-gate test for
 //! milestone 2 — Phase 1.
 

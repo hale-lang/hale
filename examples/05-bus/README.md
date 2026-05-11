@@ -142,7 +142,7 @@ Three things, all resolved in this commit:
   (`fn on_x(x) -> Y`). Reserved for later.
 - Closure tests over bus message rates / counts (e.g.,
   "messages received ~~ messages handled within 0"). Natural
-  follow-up for trellis.
+  follow-up for fitter/applier.
 - Multi-channel coordination (one locus subscribing to N
   channels, publishing on M).
 - Error handling on bus dispatch (handler panic, transport
@@ -162,7 +162,7 @@ finish; then dissolves.
 
 ## Next on the ladder
 
-`trellis-pair` — analyst and executor binaries on a shared
+`fitter-applier-pair` — analyst and executor binaries on a shared
 schema, communicating via UDP multicast. The full first
 program. Exercises everything we've built so far plus
 perspective serialization, the analyst↔executor cyclic-closure

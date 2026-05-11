@@ -13,7 +13,7 @@ on:
 
 jobs:
   build:
-    name: Build mdbook subtrees
+    name: Build mdbook
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,20 +35,8 @@ jobs:
             fi
           done
 
-      - name: Build the Quickstart
-        run: mdbook build docs/quickstart
-
-      - name: Build the Grimoire
-        run: mdbook build docs/grimoire
-
-      - name: Build the Book
-        run: mdbook build docs/book
-
-      - name: Build the Reference
-        run: mdbook build docs/reference
-
-      - name: Build the Standard Library docs
-        run: mdbook build docs/std
+      - name: Build docs
+        run: mdbook build docs
 
       # Notes:
       # - Deploy step intentionally absent. Docs stay local-only until

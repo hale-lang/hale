@@ -145,7 +145,7 @@ When v1 ships, expected conventions:
   package boundary, matching Cargo and Go-module conventions.)
 - The `aperio-` prefix marks first-party seeds maintained by
   the Aperio language project. Examples: `aperio-iter`,
-  `aperio-codebase-onboarder`, `aperio-trellis`.
+  `aperio-codebase-onboarder`, `aperio-fitter-applier`.
 - Community seeds use any prefix or no prefix. Domain-specific
   seeds may include the domain name: `acme-billing`,
   `darkforest-events`.
@@ -153,6 +153,12 @@ When v1 ships, expected conventions:
   library; user seeds expose via their own top-level namespace
   matching the seed name (or via path declared in the
   manifest).
+
+How the seed grows once named is governed by the *rolling* rule —
+see "Rolling the design" in
+`notes/agent-onboarding/aperio-styleguide.md`. Naming a seed is the
+boundary act; rolling is what keeps the catalog inside that
+boundary small enough to hold in head.
 
 ## Why seed (and not grimoire / arcanum / spell / package)
 

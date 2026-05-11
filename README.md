@@ -65,7 +65,7 @@ Compiler:
   enforced (contract compatibility, closure cycle, match
   exhaustiveness, k_max, immutable bindings, etc.).
 - **Reference runtime (interpreter):** executes the example
-  ladder end-to-end except multi-binary trellis-pair, which
+  ladder end-to-end except multi-binary fitter-applier-pair, which
   waits on cross-process entry-point selection.
 - **Native codegen (LLVM):** emits ELF binaries. Full
   lifecycle quartet (birth / accept / run / drain / dissolve),
@@ -159,7 +159,7 @@ formalizes them in compilable language.
 
 ```
 spec/                       formal grammar + memory model + design rationale
-examples/                   ~50 pedagogical programs (hello-world → trellis-pair)
+examples/                   ~50 pedagogical programs (hello-world → fitter-applier-pair)
 apps/                       production-shape Aperio programs (real apps, not demos)
 docs/{quickstart,grimoire,book,reference,std}/   five mdbook trees
 notes/                      design plans, friction logs, agent-onboarding

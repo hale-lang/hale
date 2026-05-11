@@ -147,4 +147,4 @@ back and we'll redesign.
 bus channel and emits typed messages back. Adds the `bus { }`
 block, transport binding via deployment config, and the
 fitter/applier split's messaging primitive. After 05, the
-trellis fitter/applier pair is reachable.
+fitter/applier pair is reachable.

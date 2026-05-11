@@ -1,7 +1,7 @@
 # Examples
 
 A ladder of Aperio programs from the smallest viable shape
-(`hello-world/`) up to a multi-binary capstone (`trellis-pair/`).
+(`hello-world/`) up to a multi-binary capstone (`fitter-applier-pair/`).
 Each example has a `main.ap` (or, for multi-binary projects,
 named entry points) and a `README.md` walk-through.
 
@@ -15,9 +15,9 @@ introduces one new substrate primitive on top of the previous.
 - `01-` through `50-` — the layered tutorial: lifecycle, types,
   contracts, bus, closures, scheduling, recovery, accumulators,
   generics.
-- `trellis-demo/` — single-process orchestration of the
+- `fitter-applier-demo/` — single-process orchestration of the
   feedback-loop pattern (fitter + applier in one binary).
-- `trellis-pair/` — the production-shaped multi-binary form:
+- `fitter-applier-pair/` — the production-shaped multi-binary form:
   separate fitter and applier processes communicating over a
   typed bus.
 

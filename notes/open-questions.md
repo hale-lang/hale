@@ -219,7 +219,7 @@ implementation syntax (per-projection-class translations,
 `@projection rich fn ...` annotations, runtime injection of
 new translations) is deferred until an example forces it.
 
-When to pull forward: when trellis-pair (or a comparable
+When to pull forward: when fitter-applier-pair (or a comparable
 substantive program) shows that single-implementation-per-field
 is hitting limits — most likely when projection-class-specific
 projections of the same contracted value start being needed at

@@ -22,12 +22,8 @@ Thumbs.db
 /target/
 # Cargo.lock IS committed (binary workspace, reproducible builds).
 
-# mdbook build output (per-subtree). Source lives in docs/<tree>/src/.
-docs/quickstart/book/
-docs/grimoire/book/
-docs/book/book/
-docs/reference/book/
-docs/std/book/
+# mdbook build output. Source lives in docs/src/.
+docs/book/
 
 # Aperio app build artifacts (binaries + generated content)
 apps/*/main

@@ -122,5 +122,5 @@ These appear in subsequent examples (planned, not yet written):
   (placeholder transport). Adds `bus { subscribe ... ; }`.
 
 When all five are written and compile cleanly, the v0.1 spec
-is empirically validated at the smallest scale. The trellis
+is empirically validated at the smallest scale. The fitter/applier
 fitter/applier pair is the next step beyond.

@@ -14,7 +14,7 @@
 // market-data preprocessing: an unbounded stream comes in on
 // one subject, a derived statistic (here, the mean of the
 // last 4 values) comes out on another. In a production
-// trellis the upstream subject would be `quote.last_trade`
+// fitter/applier the upstream subject would be `quote.last_trade`
 // or similar; the downstream subject would feed whatever
 // regime depends on smoothed inputs.
 //

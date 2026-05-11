@@ -1,31 +1,35 @@
 # Aperio docs
 
-This directory holds the Aperio language docs as five mdbook subtrees,
-arranged as four onboarding paths plus the formal reference:
+The Aperio language docs are a single mdbook served from
+`docs/`. Sources live under `docs/src/`; build output lands at
+`docs/book/` (gitignored).
 
-| Tree | Title | Role |
-|---|---|---|
-| `quickstart/` | **The Aperio Quickstart** | Five-minute install + hello-world tour. |
-| `grimoire/` | **The Aperio Grimoire** | Magical onboarding — spell-cast register, four-moment arc (arrival → reveal → vocabulary → emergence). |
-| `book/` | **The Aperio Programming Language** | Technical onboarding — substrate-up, Rust-Book-shaped layered tutorial. |
-| `reference/` | **The Aperio Reference** | Formal grammar + semantics + glossary. |
-| `std/` | **The Aperio Standard Library** | Stdlib roadmap + per-module docs (Phases 1–5). |
+Five sections, four onboarding paths plus the formal reference,
+all in one TOC:
+
+| Section | Role |
+|---|---|
+| **Quickstart** | Five-minute install + hello-world tour. |
+| **The Grimoire** | Magical onboarding — spell-cast register, four-moment arc (arrival → reveal → vocabulary → emergence). |
+| **The Aperio Programming Language** | Technical onboarding — substrate-up, Rust-Book-shaped layered tutorial. |
+| **Reference** | Formal grammar + semantics + conventions + glossary. |
+| **Standard Library** | Stdlib roadmap + per-module docs (Phases 1–5). |
 
 The grimoire and the technical book teach the same material in
-different registers. Readers pick a doorway; the reference and std
-trees are the destination either way.
+different registers. Readers pick a doorway; the reference and
+std sections are the destination either way.
 
 Authoring conventions live in [`STYLE.md`](./STYLE.md).
 
 ## Status
 
 **Local-only.** These docs are in active development and not yet
-public. The CI workflow validates that `mdbook build` succeeds and
-linkcheck passes; nothing is published.
+public. The CI workflow validates that `mdbook build docs`
+succeeds; nothing is published.
 
-When the language is ready for a public release, the deploy step lands
-in `.github/workflows/docs.yml`. Until then, read locally with `mdbook
-serve` (below).
+When the language is ready for a public release, the deploy step
+lands in `.github/workflows/docs.yml`. Until then, read locally
+with `mdbook serve` (below).
 
 ## Building locally
 
@@ -35,43 +39,39 @@ Install mdbook and the preprocessors used by the docs:
 cargo install mdbook mdbook-toc
 ```
 
-(`mdbook-admonish` and `mdbook-linkcheck` are on the roadmap — both
-currently have compat issues with mdbook 0.5.x. Add them back when
-upstream catches up.)
+(`mdbook-admonish` and `mdbook-linkcheck` are on the roadmap —
+both currently have compat issues with mdbook 0.5.x. Add them
+back when upstream catches up.)
 
-Serve a subtree at `http://localhost:3000`:
-
-```bash
-mdbook serve docs/quickstart    # the five-minute tour
-mdbook serve docs/grimoire      # the spell-cast onboarding
-mdbook serve docs/book          # the technical tutorial
-mdbook serve docs/reference     # the formal reference
-mdbook serve docs/std           # the stdlib roadmap
-```
-
-(They use the default port 3000; serve them one at a time, or pass
-`-p <port>` for multiple.)
-
-To build static output without serving:
+Serve the book at `http://localhost:3000`:
 
 ```bash
-mdbook build docs/quickstart
-mdbook build docs/grimoire
-mdbook build docs/book
-mdbook build docs/reference
-mdbook build docs/std
+mdbook serve docs
 ```
 
-Each tree's HTML lands in `docs/<tree>/book/`.
+Or build static output without serving:
 
-## Code blocks
+```bash
+mdbook build docs
+```
 
-Aperio code in docs is tagged `aperio`. Code blocks are meant to compile
-under `aperio build`; CI doctest enforcement (the
+HTML lands in `docs/book/`.
+
+## Code blocks and syntax highlighting
+
+Aperio code in docs is tagged `aperio`. Code blocks are meant to
+compile under `aperio build`; CI doctest enforcement (the
 `mdbook-aperio-test` preprocessor) is a follow-up milestone.
+
+Aperio syntax highlighting is provided by a custom
+`docs/theme/highlight.js` — a bundle based on mdbook's default
+highlight.js with an Aperio language module appended. See
+[`docs/theme/README.md`](./theme/README.md) for how to rebuild
+it when mdbook upgrades or the keyword set changes.
 
 ## Linking convention
 
 First use of a glossary term on a page links to its
-[glossary entry](./reference/src/glossary.md); subsequent uses are bare.
-See [`STYLE.md`](./STYLE.md) for the full convention list.
+[glossary entry](./src/reference/glossary.md); subsequent uses
+are bare. See [`STYLE.md`](./STYLE.md) for the full convention
+list.

@@ -8,7 +8,7 @@ to the process exit code.
 `Decimal` is a distinct type from `Float` — `1.5d` literal,
 `Decimal` ascription, propagating through `+`, `-`, `*`, `/`.
 The two paths agree on arithmetic for values that are exact
-multiples of representable f64 quantities (the trellis-demo
+multiples of representable f64 quantities (the fitter-applier-demo
 case); for inputs like `100.40d` that aren't representable, v0
 output may differ in the last few digits between interpreter
 (Rust f64 `Display`, shortest-round-trip) and codegen (`printf
@@ -35,13 +35,13 @@ $ echo $?
 
 The numeric values are equivalent up to f64 representation; the
 differing display formats are a v0 hack. Real fixed-point or
-arbitrary-precision Decimal lands with the trellis production
+arbitrary-precision Decimal lands with the production
 deployment work, where price-tick precision actually matters.
 
 ## Why this is interesting
 
 This is the codegen-arc piece that keeps the path moving toward
-`trellis-demo` as a build target. Decimals + return-from-main
+`fitter-applier-demo` as a build target. Decimals + return-from-main
 are both small individually but bring the codegen surface
-closer to what the trellis pipeline writes. Closures and
+closer to what the fitter/applier pipeline writes. Closures and
 modes are the two remaining big chunks.

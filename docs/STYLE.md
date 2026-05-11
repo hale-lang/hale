@@ -1,8 +1,16 @@
 # Aperio docs style guide
 
-Conventions for writing pages in `docs/book/`, `docs/reference/`, and
-`docs/std/`. Following these makes the docs feel coherent across pages
-and makes them work well for both human and AI readers.
+Conventions for writing pages in `docs/src/book/`,
+`docs/src/reference/`, `docs/src/std/`, `docs/src/quickstart/`,
+and `docs/src/grimoire/`. Following these makes the docs feel
+coherent across pages and makes them work well for both human
+and AI readers.
+
+This file is for *docs authoring*. For Aperio *code* style —
+naming, patterns, anti-patterns, the rolling rule — see the
+[Conventions](./src/reference/conventions/index.md) section of
+the reference. The two complement each other; this file is
+about prose, that section is about code.
 
 ## Aperio vs lotus terminology
 
@@ -60,7 +68,7 @@ register is not a license for hype.
 First use of a glossary term on a page links to its glossary entry:
 
 ```markdown
-... a [locus](../reference/src/glossary.md#locus) is the unit of structure ...
+... a [locus](../reference/glossary.md#locus) is the unit of structure ...
 ```
 
 Subsequent uses on the same page are bare. This is a writing discipline,
@@ -149,8 +157,8 @@ alone.
 The first time a glossary term appears on a page, define it inline (one
 phrase) AND link to the glossary:
 
-> A [locus](../reference/src/glossary.md#locus) — the unit of structure
-> inside a [lotus](../reference/src/glossary.md#lotus) — has a lifecycle,
+> A [locus](../reference/glossary.md#locus) — the unit of structure
+> inside a [lotus](../reference/glossary.md#lotus) — has a lifecycle,
 > an arena, and ...
 
 This trades a tiny redundancy for self-containedness. Worth it.
@@ -177,10 +185,15 @@ syntax in one find-replace pass.
 
 ## File names
 
-- Book chapters: `NN-slug.md` (numbered prefix matches SUMMARY.md order).
-- Reference pages: `slug.md` or `subdir/slug.md` (no numbering — the
-  reference is browsed by index, not read in sequence).
-- Examples accompanying chapters: `docs/book/examples/chapter-NN/<slug>/`.
+- Book chapters: `docs/src/book/NN-slug.md` (numbered prefix matches
+  SUMMARY.md order).
+- Reference pages: `docs/src/reference/slug.md` or
+  `docs/src/reference/subdir/slug.md` (no numbering — the reference is
+  browsed by index, not read in sequence).
+- Conventions subpages: `docs/src/reference/conventions/slug.md`. Each
+  page follows the per-reference-page template except the pattern
+  catalog, which uses one H3 per pattern.
+- Examples accompanying chapters: `docs/examples/chapter-NN/<slug>/`.
 
 ## Avoid
 

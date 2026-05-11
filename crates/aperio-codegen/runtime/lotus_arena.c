@@ -1141,7 +1141,7 @@ void lotus_decimal_to_string(int64_t hi, uint64_t lo, char *buf) {
  * the kernel-level transport substrate. m58 wires deployment-config
  * subject -> transport URL routing on top of these primitives;
  * m59 adds per-payload serializers; m60 weaves multi-binary builds
- * + trellis-pair end-to-end. Source-level lotus stays
+ * + fitter-applier-pair end-to-end. Source-level lotus stays
  * transport-agnostic per notes/open-questions #8.
  *
  * Lifecycle:

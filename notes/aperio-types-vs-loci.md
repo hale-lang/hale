@@ -174,4 +174,9 @@ codebase explicitly names it." One-tower presence is
   rewrite them.
 - Aperio's two-primitive split (types and loci). This note
   doesn't add a third primitive; it just sharpens the
-  contract for the existing two.
+  contract for the existing two. The same principle in
+  miniature governs new entries to the pattern catalog — see
+  "Rolling the design" in
+  `notes/agent-onboarding/aperio-styleguide.md`. New primitives
+  earn their slot by sharpening the existing contract, not by
+  inventing a third category.

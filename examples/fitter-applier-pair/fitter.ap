@@ -1,0 +1,74 @@
+// fitter.ap — the fitter binary.
+//
+// Consumes Observation messages from the upstream observation
+// stream (UDP multicast in production). Computes a fitted
+// Kernel. Ships kernels to the applier only once the
+// multi-perspective-stability commit-rule fires
+// (validation_count >= 3).
+//
+// Runs in resolution-mode regime: structure-finding, slow
+// clock, holding multiple perspectives in flight, only
+// publishing the converged ones. The applier is the
+// bulk-mode counterpart that applies these kernels at high
+// frequency.
+
+import "fitter-applier-pair/shared";
+
+locus FitterL {
+    params {
+        // Locus capacity parameters
+        B: Int = 1000;
+        c: Int = 10;
+        sigma: Int = 1;
+        phi: Float = 1.0;
+
+        // Locus state
+        latest_kernel: Kernel = Kernel {
+            scale: 1.0d,
+            valid_after: `2026-01-01T00:00:00Z`,
+            perspective_id: 0,
+        };
+        published_count: Int = 0;
+        validation_count: Int = 0;
+    }
+
+    bus {
+        subscribe "fitter.observation" as on_observation of type Observation;
+        publish   "fitter.kernel"                        of type Kernel;
+    }
+
+    fn on_observation(obs: Observation) {
+        // Update fitted kernel from the new observation.
+        // In production this is real curve fitting; here a
+        // stub that increments perspective_id each time.
+        self.latest_kernel = Kernel {
+            scale: self.latest_kernel.scale,
+            valid_after: obs.timestamp,
+            perspective_id: self.latest_kernel.perspective_id + 1,
+        };
+        self.validation_count = self.validation_count + 1;
+
+        // Wrap as a perspective, ship if stable.
+        let p = KernelPerspective {
+            kernel: self.latest_kernel,
+            validation_count: self.validation_count,
+        };
+        if p.is_stable() {
+            "fitter.kernel" <- self.latest_kernel;
+            self.published_count = self.published_count + 1;
+        }
+    }
+
+    // Closure: published kernels track validation events at the
+    // expected rate. Loose tolerance because publishing only
+    // happens after the stability threshold; some early
+    // validations are absorbed before the first publish.
+    closure publish_keeps_pace {
+        self.published_count ~~ self.validation_count - 2 within 1;
+        epoch tick;
+    }
+}
+
+fn main() {
+    FitterL { };
+}

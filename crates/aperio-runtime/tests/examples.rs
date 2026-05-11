@@ -4,7 +4,7 @@
 //! "Runnable" means: single-binary projects whose surface stays
 //! within v0's executable subset (no bus router, no scheduler).
 //! Projects that hit deferred features (05-bus subscriptions,
-//! trellis-pair multi-binary) are listed as deferred.
+//! fitter-applier-pair multi-binary) are listed as deferred.
 
 use std::path::PathBuf;
 
@@ -134,8 +134,8 @@ fn bus_runs() {
 }
 
 #[test]
-fn trellis_demo_runs() {
-    assert_eq!(parse_and_run("trellis-demo/main.ap").unwrap(), 0);
+fn fitter_applier_demo_runs() {
+    assert_eq!(parse_and_run("fitter-applier-demo/main.ap").unwrap(), 0);
 }
 
 /// Ring-buffer transport delivers the same observable result
@@ -160,7 +160,7 @@ fn bus_runs_under_ringbuffer_transport() {
 // 05-bus exits immediately under v0 (the bus router is a
 // no-op), so it doesn't exercise observable behavior.
 
-// trellis-pair has two `fn main()` files (analyst, executor)
+// fitter-applier-pair has two `fn main()` files (analyst, executor)
 // — the CLI doesn't yet partition by entry point, so the
 // `lotus run` integration is deferred until the bus router
 // + per-binary entry-point selection lands.

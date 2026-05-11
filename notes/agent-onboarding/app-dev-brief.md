@@ -367,7 +367,7 @@ correct program."
   C symbols stay `lotus_*` by design; that is not a typo, do
   not "fix" it. The repo directory is currently `lotus-lang/`
   for historical reasons; that is not a typo either.
-- **Trellis** is a project name that uses Aperio. The
+- **fitter/applier** is a project name that uses Aperio. The
   financial-trading domain has been generalized: types are
   `Observation / Kernel / Action / Receipt`; loci are
   `FitterL / ApplierL`.
