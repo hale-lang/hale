@@ -1,0 +1,174 @@
+// fixed.ap — Fixed-point Int shape for money math.
+//
+// Market venues quote prices and sizes in decimal but
+// floating-point binary representations bite when you compose
+// adds, multiplies, and equality checks across millions of
+// ticks. This library carries money as a 64-bit integer with a
+// fixed 10^10 scale. One scale unit = 10^-10 of a quote unit
+// (so 1.00 quote = 10_000_000_000 raw; sub-pip resolution).
+//
+// The scale is a compile-time constant baked into every fn
+// here. A configurable-scale variant would be a separate
+// namespace lotus (e.g. `FixedSlotL { params { scale: Int; } }`)
+// — left as a follow-up. v0 ships one scale.
+//
+// All arithmetic is closed under Fixed → Fixed. Multiplication
+// and division rescale to keep the invariant. Helpers cover
+// the surface a BookL or pricing kernel actually uses:
+// from-Int / add / sub / neg / mul / div / abs / sign queries
+// / equality / ordering. Out: trig / sqrt / log (no need until
+// a curve fitter lands; would compose with the Float surface
+// once `std::math` finishes shipping per friction-log
+// float-surface-gaps).
+
+type Fixed {
+    raw: Int;
+}
+
+// 10^10 — chosen for sub-pip resolution against double-digit
+// quote prices. Stays comfortably inside i64 for any realistic
+// price-quantity product:
+//   max raw  ≈ 9.2e18 / 1e10 = 9.2e8 quote units = 920M
+//   typical trade ≤ 1e6 in quote units, so headroom is wide.
+// If you ever need bigger, that's a fixed_mul / fixed_div
+// overflow risk to address with i128 intermediates — flagged
+// in the README v0 → vNext section.
+fn fixed_scale() -> Int {
+    return 10000000000;
+}
+
+// Zero-valued Fixed. Use as identity / default.
+fn fixed_zero() -> Fixed {
+    return Fixed { raw: 0 };
+}
+
+// Construct from a whole-Int quote unit. `fixed_from_int(1)`
+// is exactly one quote unit (1.0).
+fn fixed_from_int(n: Int) -> Fixed {
+    return Fixed { raw: n * fixed_scale() };
+}
+
+// Direct raw-storage constructor. Caller is responsible for
+// the scale invariant. Use to deserialize values that arrived
+// pre-scaled (e.g. when an upstream feed already encodes at
+// 10^10).
+fn fixed_from_raw(raw: Int) -> Fixed {
+    return Fixed { raw: raw };
+}
+
+// Construct from `n` quote units scaled by 10^`exp_neg`. So
+// `fixed_from_scaled(1234, 2)` builds 12.34. Used when a feed
+// quotes "price 12345 with 2 decimal places."
+//
+// `exp_neg` must be in [0, 10]. Out-of-range is clamped at 0
+// for non-negative cases (raw == n) or scaled to the limit at
+// 10 (raw == n / 1) — both stay closed under i64.
+fn fixed_from_scaled(n: Int, exp_neg: Int) -> Fixed {
+    let mut k = exp_neg;
+    if k < 0 { k = 0; }
+    if k > 10 { k = 10; }
+    // raw = n * 10^(10 - k)
+    let mut mult = 1;
+    let mut i = 0;
+    let exponent = 10 - k;
+    while i < exponent {
+        mult = mult * 10;
+        i = i + 1;
+    }
+    return Fixed { raw: n * mult };
+}
+
+fn fixed_add(a: Fixed, b: Fixed) -> Fixed {
+    return Fixed { raw: a.raw + b.raw };
+}
+
+fn fixed_sub(a: Fixed, b: Fixed) -> Fixed {
+    return Fixed { raw: a.raw - b.raw };
+}
+
+fn fixed_neg(a: Fixed) -> Fixed {
+    return Fixed { raw: -a.raw };
+}
+
+fn fixed_abs(a: Fixed) -> Fixed {
+    if a.raw < 0 {
+        return Fixed { raw: -a.raw };
+    }
+    return Fixed { raw: a.raw };
+}
+
+// Truncating multiply. (a * b) / scale — keeps the invariant.
+// Truncation, not banker's-rounding, because a market-book
+// rarely cares about the half-pip-down direction and explicit
+// rounding can be layered on top when a workload needs it.
+fn fixed_mul(a: Fixed, b: Fixed) -> Fixed {
+    return Fixed { raw: (a.raw * b.raw) / fixed_scale() };
+}
+
+// Truncating divide. (a * scale) / b — keeps the invariant.
+// Returns zero when `b` is zero (graceful) instead of trapping;
+// callers that care about /0 detection should `fixed_is_zero(b)`
+// first.
+fn fixed_div(a: Fixed, b: Fixed) -> Fixed {
+    if b.raw == 0 {
+        return Fixed { raw: 0 };
+    }
+    return Fixed { raw: (a.raw * fixed_scale()) / b.raw };
+}
+
+// Average of two — used for mid-price. Inline rather than
+// composing `fixed_div(fixed_add(a, b), fixed_from_int(2))` to
+// avoid an unnecessary multiply.
+fn fixed_avg(a: Fixed, b: Fixed) -> Fixed {
+    return Fixed { raw: (a.raw + b.raw) / 2 };
+}
+
+fn fixed_eq(a: Fixed, b: Fixed) -> Bool {
+    return a.raw == b.raw;
+}
+
+fn fixed_lt(a: Fixed, b: Fixed) -> Bool {
+    return a.raw < b.raw;
+}
+
+fn fixed_le(a: Fixed, b: Fixed) -> Bool {
+    return a.raw <= b.raw;
+}
+
+fn fixed_gt(a: Fixed, b: Fixed) -> Bool {
+    return a.raw > b.raw;
+}
+
+fn fixed_ge(a: Fixed, b: Fixed) -> Bool {
+    return a.raw >= b.raw;
+}
+
+fn fixed_is_zero(a: Fixed) -> Bool {
+    return a.raw == 0;
+}
+
+fn fixed_is_pos(a: Fixed) -> Bool {
+    return a.raw > 0;
+}
+
+// Render as a decimal string with a fixed 4 fractional digits.
+// "12.3400" for 12.34, "0.0001" for 1 / 10000. v0 keeps the
+// fractional width fixed; configurable width is a follow-up
+// (would take a `digits: Int` parameter and round / pad).
+fn fixed_to_string(a: Fixed) -> String {
+    let mut raw = a.raw;
+    let mut sign = "";
+    if raw < 0 {
+        sign = "-";
+        raw = -raw;
+    }
+    let whole = raw / fixed_scale();
+    // Truncate to 4 fractional digits: divide by 10^(10-4) = 10^6.
+    let frac = (raw / 1000000) % 10000;
+    let mut frac_s = to_string(frac);
+    // Left-pad frac to 4 digits.
+    while len(frac_s) < 4 {
+        frac_s = "0" + frac_s;
+    }
+    return sign + to_string(whole) + "." + frac_s;
+}

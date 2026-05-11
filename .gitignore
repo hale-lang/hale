@@ -34,6 +34,7 @@ apps/*/out/
 # directory; the .ap-source files are explicitly preserved.
 apps/ferryman/ferryman
 apps/reload-demo/reload-demo
+apps/market-book/market-book
 
 # Aperio example build artifacts (compiled binaries sit next
 # to main.ap after `aperio build`).

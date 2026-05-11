@@ -1,0 +1,165 @@
+// main.ap — orchestration for market-book.
+//
+// Wires the two-lotus simulation: one MdGatewayL publishing
+// the synthetic feed, two BookL subscribers reconstructing the
+// book independently. Both books receive every message; both
+// arrive at the same final state. That's the "embeddable
+// library" point — any number of consumers can attach to the
+// same gateway bus and converge on identical state without
+// coordination.
+//
+// In a real two-binary deployment (gateway in one process,
+// app + book in another), the bus would be std::bus::tcp and
+// every subscribe / publish would cross a wire. The lotus
+// declarations don't change. v0 simulates within one process
+// to exercise the message path without depending on the TCP
+// adapter shipping first.
+
+// Decimal-tolerance helper for Int compare. Fixed-point math
+// is exact, so equality is sound; this helper exists to
+// produce a uniform "ASSERTION FAILED: <label>" output shape
+// across the suite for diagnostics. Aperio's std::test ships
+// `assert_eq_int(...)` but it doesn't include the
+// expected-vs-actual diagnostic on failure that's most useful
+// for a math-heavy demo.
+fn assert_eq_raw(actual: Int, expected: Int, label: String) {
+    if actual == expected {
+        return;
+    }
+    println("ASSERTION FAILED: ", label);
+    println("  expected raw: ", to_string(expected));
+    println("  actual raw:   ", to_string(actual));
+    std::process::exit(1);
+}
+
+fn assert_eq_fixed(actual: Fixed, expected: Fixed, label: String) {
+    if actual.raw == expected.raw {
+        return;
+    }
+    println("ASSERTION FAILED: ", label);
+    println("  expected: ", fixed_to_string(expected),
+            " (raw=", to_string(expected.raw), ")");
+    println("  actual:   ", fixed_to_string(actual),
+            " (raw=", to_string(actual.raw), ")");
+    std::process::exit(1);
+}
+
+fn assert_true(cond: Bool, label: String) {
+    if cond {
+        return;
+    }
+    println("ASSERTION FAILED: ", label);
+    std::process::exit(1);
+}
+
+fn main() {
+    println("=== market-book: snapshot + delta over bus ===");
+    println("");
+
+    // The "two apps sharing the same inner lotus" pattern,
+    // taken from the user's framing in reload-demo and carried
+    // over: one gateway, two independent books. They share
+    // declaration, not state — but converge on the same state
+    // because the bus dispatches every message to every
+    // subscriber.
+    let gateway = MdGatewayL { coord: "gateway.synth" };
+    let book_a  = BookL       { coord: "book.a" };
+    let book_b  = BookL       { coord: "book.b" };
+
+    println("gateway: coord=", gateway.coord,
+            " venue=", gateway.venue);
+    println("book_a:  coord=", book_a.coord);
+    println("book_b:  coord=", book_b.coord);
+    println("");
+
+    // Both books start empty. is_stable() returns true for an
+    // empty book — the invariant ("no inflight + not crossed")
+    // holds vacuously when there's nothing to cross. Worth
+    // capturing: stability is a *contract* state, not a
+    // usefulness verdict.
+    assert_eq_raw(book_a.depth_bids(), 0, "book_a starts with no bids");
+    assert_eq_raw(book_a.depth_asks(), 0, "book_a starts with no asks");
+
+    // Drive the synthetic feed.
+    gateway.emit_synthetic_feed();
+
+    // Drain the cooperative bus queue. Every published message
+    // dispatches to every subscriber in subject order.
+    yield;
+
+    println("--- post-feed state ---");
+    book_a.print_top(8);
+    println("");
+
+    // Expected post-feed shape:
+    //   bids: 100/1200, 99/500, 98/300
+    //   asks: 102/400, 103/200       (101 removed by delta)
+    //   best bid 100, best ask 102, spread 2.00, mid 101.00
+    let bid_count_expected = 3;
+    let ask_count_expected = 2;
+
+    assert_eq_raw(book_a.depth_bids(), bid_count_expected,
+        "book_a depth_bids == 3");
+    assert_eq_raw(book_a.depth_asks(), ask_count_expected,
+        "book_a depth_asks == 2");
+
+    // Best bid 100.00, best ask 102.00.
+    let bb_expected = fixed_from_int(100);
+    let ba_expected = fixed_from_int(102);
+    let spread_expected = fixed_from_int(2);
+    let mid_expected = fixed_from_int(101);
+
+    assert_eq_fixed(book_a.best_bid(), bb_expected,
+        "book_a best_bid == 100.00");
+    assert_eq_fixed(book_a.best_ask(), ba_expected,
+        "book_a best_ask == 102.00");
+    assert_eq_fixed(book_a.spread(), spread_expected,
+        "book_a spread == 2.00");
+    assert_eq_fixed(book_a.mid(), mid_expected,
+        "book_a mid == 101.00");
+
+    // Updated quantity from the bid delta.
+    let q1200 = fixed_from_int(1200);
+    assert_eq_fixed(book_a.best_bid_qty(), q1200,
+        "book_a best_bid_qty == 1200 (after delta update)");
+
+    // Removed level should be absent.
+    let p101 = fixed_from_int(101);
+    assert_eq_fixed(book_a.find_ask_qty(p101), fixed_zero(),
+        "book_a ask @ 101 absent (delta removed)");
+
+    // Untouched levels survive deltas.
+    let p99  = fixed_from_int(99);
+    let q500 = fixed_from_int(500);
+    let p102 = fixed_from_int(102);
+    let q400 = fixed_from_int(400);
+    assert_eq_fixed(book_a.find_bid_qty(p99),  q500,
+        "book_a bid @ 99 qty == 500");
+    assert_eq_fixed(book_a.find_ask_qty(p102), q400,
+        "book_a ask @ 102 qty == 400");
+
+    // Stability invariants.
+    assert_true(book_a.is_stable(),
+        "book_a is_stable after snapshot + deltas");
+    assert_eq_raw(book_a.crossed_raw(), 0,
+        "book_a crossed_raw == 0");
+
+    // Both subscribers see identical state. The bus dispatches
+    // every payload to every subscriber; with no per-book
+    // private mutation, convergence is by construction.
+    assert_eq_raw(book_b.depth_bids(), book_a.depth_bids(),
+        "book_b depth_bids matches book_a");
+    assert_eq_raw(book_b.depth_asks(), book_a.depth_asks(),
+        "book_b depth_asks matches book_a");
+    assert_eq_fixed(book_b.best_bid(), book_a.best_bid(),
+        "book_b best_bid matches book_a");
+    assert_eq_fixed(book_b.best_ask(), book_a.best_ask(),
+        "book_b best_ask matches book_a");
+    assert_eq_fixed(book_b.mid(), book_a.mid(),
+        "book_b mid matches book_a");
+    assert_eq_fixed(book_b.spread(), book_a.spread(),
+        "book_b spread matches book_a");
+
+    println("");
+    println("all market-book assertions passed");
+}
