@@ -1622,6 +1622,36 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[i32_t.into(), i32_t.into()], false);
         self.module
             .add_function("lotus_tcp_recv_str", tcp_recv_str_ty, None);
+        // Phase 2g: binary-safe TCP recv. Mirrors recv_str's signature
+        // (fd, max_bytes) but returns a Bytes blob (length-prefix +
+        // body), so embedded NUL bytes survive.
+        // declare ptr @lotus_tcp_recv_bytes(i32 fd, i32 max_bytes)
+        let tcp_recv_bytes_ty =
+            ptr_t.fn_type(&[i32_t.into(), i32_t.into()], false);
+        self.module
+            .add_function("lotus_tcp_recv_bytes", tcp_recv_bytes_ty, None);
+        // Phase 2g: cross-shape converters anchored in the global
+        // payload arena so the result outlives the call site.
+        // declare ptr @lotus_str_from_bytes(ptr bytes)
+        let str_from_bytes_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_str_from_bytes", str_from_bytes_ty, None);
+        // declare ptr @lotus_bytes_from_str(ptr str)
+        let bytes_from_str_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_bytes_from_str", bytes_from_str_ty, None);
+        // declare i64 @lotus_bytes_at(ptr bytes, i64 i)
+        let bytes_at_ty =
+            i64_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
+        self.module
+            .add_function("lotus_bytes_at", bytes_at_ty, None);
+        // declare ptr @lotus_bytes_slice(ptr bytes, i64 lo, i64 hi)
+        let bytes_slice_ty = ptr_t.fn_type(
+            &[ptr_t.into(), i64_t.into(), i64_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_bytes_slice", bytes_slice_ty, None);
 
         // m75: filesystem primitives reachable from Aperio source
         // via the `std::io::fs::*` magic-path calls. The C-level
@@ -12503,6 +12533,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_io_tcp_send_bytes(args, scope)?;
                 Ok(())
             }
+            // Phase 2g: binary-safe TCP recv + Bytes/String surface.
+            // Statement position is unusual for these (the values
+            // are normally bound), but we wire them so a discarded
+            // call doesn't error.
+            ["std", "io", "tcp", "__recv_bytes"] => {
+                let _ = self.lower_std_io_tcp_recv_bytes(args, scope)?;
+                Ok(())
+            }
+            ["std", "str", "from_bytes"] => {
+                let _ = self.lower_std_str_from_bytes(args, scope)?;
+                Ok(())
+            }
+            ["std", "bytes", "from_string"] => {
+                let _ = self.lower_std_bytes_from_string(args, scope)?;
+                Ok(())
+            }
+            ["std", "bytes", "at"] => {
+                let _ = self.lower_std_bytes_at(args, scope)?;
+                Ok(())
+            }
+            ["std", "bytes", "slice"] => {
+                let _ = self.lower_std_bytes_slice(args, scope)?;
+                Ok(())
+            }
             ["std", "io", "fs", "read_file"] => {
                 let _ = self.lower_std_io_fs_read_file(args, scope)?;
                 Ok(())
@@ -12778,6 +12832,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "io", "tcp", "__send_bytes"] => {
                 self.lower_std_io_tcp_send_bytes(args, scope)
+            }
+            // Phase 2g: binary-safe TCP recv + Bytes/String surface.
+            ["std", "io", "tcp", "__recv_bytes"] => {
+                self.lower_std_io_tcp_recv_bytes(args, scope)
+            }
+            ["std", "str", "from_bytes"] => {
+                self.lower_std_str_from_bytes(args, scope)
+            }
+            ["std", "bytes", "from_string"] => {
+                self.lower_std_bytes_from_string(args, scope)
+            }
+            ["std", "bytes", "at"] => {
+                self.lower_std_bytes_at(args, scope)
+            }
+            ["std", "bytes", "slice"] => {
+                self.lower_std_bytes_slice(args, scope)
             }
             ["std", "io", "fs", "read_file"] => {
                 self.lower_std_io_fs_read_file(args, scope)
@@ -14450,6 +14520,241 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .left()
             .expect("returns ptr");
         Ok((ptr, CodegenTy::String))
+    }
+
+    /// Phase 2g: lower `std::io::tcp::__recv_bytes(fd: Int,
+    /// max_bytes: Int) -> Bytes`. Mirrors `__recv` but returns
+    /// a length-prefixed Bytes blob anchored in the global
+    /// payload arena, so embedded NUL bytes survive intact.
+    /// Empty Bytes (length 0) on EOF, fd errors, or cap <= 0.
+    fn lower_std_io_tcp_recv_bytes(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__recv_bytes takes 2 args (fd, max_bytes), got {}",
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        if fd_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__recv_bytes: fd must be Int, got {:?}",
+                fd_ty
+            )));
+        }
+        let (max_val, max_ty) = self.lower_expr(&args[1], scope)?;
+        if max_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__recv_bytes: max_bytes must be Int, got {:?}",
+                max_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let fd_i32 = self
+            .builder
+            .build_int_truncate(fd_val.into_int_value(), i32_t, "recvb.fd.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let max_i32 = self
+            .builder
+            .build_int_truncate(
+                max_val.into_int_value(),
+                i32_t,
+                "recvb.max.i32",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_tcp_recv_bytes")
+            .expect("lotus_tcp_recv_bytes declared");
+        let call = self
+            .builder
+            .build_call(f, &[fd_i32.into(), max_i32.into()], "recvb.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::Bytes))
+    }
+
+    /// Phase 2g: lower `std::str::from_bytes(b: Bytes) -> String`.
+    /// Allocates a (len+1)-byte buffer in the global payload arena,
+    /// memcpys the Bytes body, NUL-terminates. Embedded NULs in the
+    /// source persist in the buffer but the strlen-based String view
+    /// will truncate at the first — by design (callers who need
+    /// NUL-safe handling stay in Bytes).
+    fn lower_std_str_from_bytes(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::from_bytes takes 1 arg (b), got {}",
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::from_bytes: b must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_str_from_bytes")
+            .expect("lotus_str_from_bytes declared");
+        let call = self
+            .builder
+            .build_call(f, &[b_val.into()], "str_from_bytes.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::String))
+    }
+
+    /// Phase 2g: lower `std::bytes::from_string(s: String) -> Bytes`.
+    /// strlen the source, allocate a Bytes blob of that length in
+    /// the global payload arena, memcpy the body. Symmetric inverse
+    /// of std::str::from_bytes.
+    fn lower_std_bytes_from_string(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::from_string takes 1 arg (s), got {}",
+                args.len()
+            )));
+        }
+        let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
+        if s_ty != CodegenTy::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::from_string: s must be String, got {:?}",
+                s_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bytes_from_str")
+            .expect("lotus_bytes_from_str declared");
+        let call = self
+            .builder
+            .build_call(f, &[s_val.into()], "bytes_from_str.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::Bytes))
+    }
+
+    /// Phase 2g: lower `std::bytes::at(b: Bytes, i: Int) -> Int`.
+    /// Byte-as-Int accessor — returns the i-th byte's unsigned
+    /// value (0..255) sign-extended into i64. Returns -1 if i is
+    /// out of range. Pairs with std::bytes::slice and std::bytes::
+    /// from_string for binary protocol parsing.
+    fn lower_std_bytes_at(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::at takes 2 args (b, i), got {}",
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::at: b must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let (i_val, i_ty) = self.lower_expr(&args[1], scope)?;
+        if i_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::at: i must be Int, got {:?}",
+                i_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bytes_at")
+            .expect("lotus_bytes_at declared");
+        let call = self
+            .builder
+            .build_call(f, &[b_val.into(), i_val.into()], "bytes_at.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ret = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((ret, CodegenTy::Int))
+    }
+
+    /// Phase 2g: lower `std::bytes::slice(b: Bytes, lo: Int, hi: Int)
+    /// -> Bytes`. Half-open range [lo, hi); out-of-range bounds
+    /// clamp; hi <= lo yields an empty Bytes. The result is a copy
+    /// (not a view) so it composes with deep-copy-shaped lifetime
+    /// conventions.
+    fn lower_std_bytes_slice(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 3 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::slice takes 3 args (b, lo, hi), got {}",
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::slice: b must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let (lo_val, lo_ty) = self.lower_expr(&args[1], scope)?;
+        if lo_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::slice: lo must be Int, got {:?}",
+                lo_ty
+            )));
+        }
+        let (hi_val, hi_ty) = self.lower_expr(&args[2], scope)?;
+        if hi_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::slice: hi must be Int, got {:?}",
+                hi_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bytes_slice")
+            .expect("lotus_bytes_slice declared");
+        let call = self
+            .builder
+            .build_call(
+                f,
+                &[b_val.into(), lo_val.into(), hi_val.into()],
+                "bytes_slice.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::Bytes))
     }
 
     /// Lower `std::io::tcp::__close_fd(fd: Int) -> Int`. Returns

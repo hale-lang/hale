@@ -1851,6 +1851,16 @@ const char *lotus_tcp_recv_str(int fd, int max_bytes) {
     return buf;
 }
 
+/* Phase 2g: forward decls for the lotus_*_bytes helpers below.
+ * Their bodies live next to the other global-payload-arena
+ * wrappers (after lotus_bus_payload_arena_alloc at ~line 2814)
+ * because that's where g_bus_payload_arena is first declared. */
+void *lotus_tcp_recv_bytes(int fd, int max_bytes);
+const char *lotus_str_from_bytes(const void *b);
+void *lotus_bytes_from_str(const char *s);
+int64_t lotus_bytes_at(const void *b, int64_t i);
+void *lotus_bytes_slice(const void *b, int64_t lo, int64_t hi);
+
 /*
  * m74: filesystem primitives (`std::io::fs::*` substrate).
  *
@@ -2709,6 +2719,189 @@ const char *lotus_fs_extension_global(const char *path) {
     char *out = lotus_str_clone(g_bus_payload_arena, ext);
     pthread_mutex_unlock(&g_bus_payload_arena_mutex);
     return out ? out : empty;
+}
+
+/*
+ * Phase 2g: allocate a zero-length Bytes blob in the global
+ * payload arena. Used as the "empty / error" return shape for
+ * recv_bytes and the bytes_* helpers so callers always get a
+ * well-formed blob (length=0 visible via lotus_bytes_len) rather
+ * than NULL.
+ */
+static void *lotus_bytes_empty_global(void) {
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            return NULL;
+        }
+    }
+    void *empty = lotus_bytes_create(g_bus_payload_arena, 0);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    return empty;
+}
+
+/*
+ * Phase 2g: binary-safe TCP recv. Mirrors lotus_tcp_recv_str's
+ * allocation + read(2) shape but builds a Bytes blob (length
+ * prefix + body) instead of a NUL-terminated string, so embedded
+ * NUL bytes survive intact. The blob is anchored in the lazy
+ * global payload arena, matching the lifetime convention of
+ * lotus_fs_read_bytes_global — callers can stash the pointer
+ * past the call site without m49 deep-copy plumbing.
+ *
+ * Returns a Bytes blob with length 0 on fd/cap errors or EOF;
+ * the caller distinguishes "empty" from "error" via the explicit
+ * length, since the truncate-on-NUL hazard that motivated this
+ * primitive is exactly the case where length-on-the-wire matters.
+ */
+void *lotus_tcp_recv_bytes(int fd, int max_bytes) {
+    if (fd < 0 || max_bytes <= 0) {
+        return lotus_bytes_empty_global();
+    }
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            return NULL;
+        }
+    }
+    /* Allocate the body at the cap, read into it, then patch the
+     * length prefix down to the actual bytes read. lotus_bytes_create
+     * sets prefix=cap initially; partial reads (the common case)
+     * need the prefix corrected so callers see the true length. */
+    void *blob = lotus_bytes_create(g_bus_payload_arena, (int64_t)max_bytes);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    if (!blob) {
+        return lotus_bytes_empty_global();
+    }
+    char *body = (char *)lotus_bytes_data(blob);
+    ssize_t n;
+    for (;;) {
+        n = read(fd, body, (size_t)max_bytes);
+        if (n >= 0) break;
+        if (errno == EINTR) continue;
+        /* read error: hand back an empty Bytes so downstream code
+         * sees length=0 and can detect "nothing read". The reserved
+         * arena memory leaks until program exit (matches recv_str's
+         * convention). */
+        return lotus_bytes_empty_global();
+    }
+    /* Patch the length prefix down to the actual bytes read. */
+    *(int64_t *)blob = (int64_t)n;
+    return blob;
+}
+
+/*
+ * Phase 2g: Bytes → String conversion. Allocates a (len+1)-byte
+ * buffer in the global payload arena, memcpys the Bytes body
+ * into it, and NUL-terminates. Embedded NUL bytes survive in
+ * the buffer but the resulting String's strlen-based view will
+ * truncate at the first one — callers who need NUL-safe handling
+ * should stay in Bytes. The conversion is for the common case
+ * of "received bytes I'm pretty sure are UTF-8 / ASCII and want
+ * to treat as a String".
+ */
+const char *lotus_str_from_bytes(const void *b) {
+    static const char empty[1] = { 0 };
+    if (!b) return empty;
+    int64_t len = lotus_bytes_len(b);
+    if (len <= 0) return empty;
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            return empty;
+        }
+    }
+    char *buf = (char *)lotus_arena_alloc(
+        g_bus_payload_arena, (size_t)len + 1, 1);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    if (!buf) return empty;
+    memcpy(buf, (const char *)b + sizeof(int64_t), (size_t)len);
+    buf[(size_t)len] = '\0';
+    return buf;
+}
+
+/*
+ * Phase 2g: String → Bytes conversion. strlen the source string,
+ * allocate a Bytes blob of that length in the global payload
+ * arena, memcpy the body. Symmetric inverse of lotus_str_from_bytes.
+ * Useful for handing String data to send_bytes when the payload
+ * is text but the protocol surface demands the binary-safe call.
+ */
+void *lotus_bytes_from_str(const char *s) {
+    if (!s) {
+        return lotus_bytes_empty_global();
+    }
+    int64_t len = (int64_t)strlen(s);
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            return NULL;
+        }
+    }
+    void *blob = lotus_bytes_create(g_bus_payload_arena, len);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    if (!blob) {
+        return lotus_bytes_empty_global();
+    }
+    memcpy(lotus_bytes_data(blob), s, (size_t)len);
+    return blob;
+}
+
+/*
+ * Phase 2g: byte-as-Int accessor — returns the i-th byte's
+ * unsigned value (0..255) sign-extended into an Int (i64). Used
+ * by binary protocol parsers (WebSocket frame headers, framing
+ * length fields, etc.) that need to peek at a single byte. Out
+ * of range (i < 0 or i >= len) returns -1 — bytes never go
+ * negative on read, so -1 is a clean sentinel.
+ */
+int64_t lotus_bytes_at(const void *b, int64_t i) {
+    if (!b) return -1;
+    int64_t len = lotus_bytes_len(b);
+    if (i < 0 || i >= len) return -1;
+    const unsigned char *body =
+        (const unsigned char *)b + sizeof(int64_t);
+    return (int64_t)body[i];
+}
+
+/*
+ * Phase 2g: Bytes slice — returns a fresh Bytes blob containing
+ * the half-open range [lo, hi). Out-of-range bounds clamp to the
+ * source length; hi <= lo yields an empty blob. The result is a
+ * copy (not a view) so it composes with deep-copy-shaped lifetime
+ * conventions; anchored in the global payload arena.
+ */
+void *lotus_bytes_slice(const void *b, int64_t lo, int64_t hi) {
+    if (!b) return lotus_bytes_empty_global();
+    int64_t len = lotus_bytes_len(b);
+    if (lo < 0) lo = 0;
+    if (hi > len) hi = len;
+    if (hi <= lo) return lotus_bytes_empty_global();
+    int64_t out_len = hi - lo;
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            return NULL;
+        }
+    }
+    void *blob = lotus_bytes_create(g_bus_payload_arena, out_len);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    if (!blob) return lotus_bytes_empty_global();
+    memcpy(
+        lotus_bytes_data(blob),
+        (const char *)b + sizeof(int64_t) + lo,
+        (size_t)out_len);
+    return blob;
 }
 
 void lotus_bus_remote_destroy_all(void) {

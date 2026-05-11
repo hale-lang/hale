@@ -36,6 +36,15 @@ locus __StdIoTcpStream {
     fn recv(max_bytes: Int) -> String {
         return std::io::tcp::__recv(self.conn_fd, max_bytes);
     }
+    // Phase 2g: binary-safe recv. Returns up to max_bytes as a
+    // length-prefixed Bytes blob — embedded NUL bytes survive,
+    // unlike `recv` (which uses NUL-terminated String). Use this
+    // for binary protocols (WebSocket frames, raw market feeds,
+    // file uploads, custom RPC formats) or any read whose payload
+    // may contain zero bytes.
+    fn recv_bytes(max_bytes: Int) -> Bytes {
+        return std::io::tcp::__recv_bytes(self.conn_fd, max_bytes);
+    }
     dissolve() {
         std::io::tcp::__close_fd(self.conn_fd);
     }
