@@ -874,7 +874,7 @@ void lotus_set_core_affinity(unsigned long tid, int core) {
  * literal lives as a module-global; a concat / slice result
  * lives in an arena, owned by the caller's locus. All string
  * ops preserve the "value is a pointer" shape — Codegen's
- * LotusType::String maps to a basic ptr_t at the LLVM level
+ * CodegenTy::String maps to a basic ptr_t at the LLVM level
  * regardless of provenance.
  *
  * Lifetimes follow the spec/memory.md region rule: results land

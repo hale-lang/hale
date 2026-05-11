@@ -166,9 +166,9 @@ The user picked **seed** from a small set of candidates.
 Captured here so the choice doesn't get re-litigated:
 
 - **grimoire** — strong in-register fit, but conflicts with
-  `docs/grimoire/` (the teaching grimoire). Disambiguating "The
-  Grimoire (docs)" vs. "a grimoire (code unit)" is workable but
-  adds cognitive load in a register that's already metaphor-
+  `docs/src/grimoire/` (the teaching grimoire). Disambiguating
+  "The Grimoire (docs)" vs. "a grimoire (code unit)" is workable
+  but adds cognitive load in a register that's already metaphor-
   heavy.
 - **arcanum** — clean register fit, no collision. Less
   approachable than seed for newcomers. Plural form *arcana* is

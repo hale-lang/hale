@@ -1,4 +1,4 @@
-//! Recursive-descent parser for lotus.
+//! Recursive-descent parser for Aperio.
 //!
 //! Produces an [`ast::Program`] from a token stream. Hand-written
 //! per the team's choice (better diagnostic quality and direct
@@ -1235,7 +1235,7 @@ impl Parser {
             // m80: function-pointer type — `fn(T1, T2) -> R` or
             // `fn(T1, T2)` for void-returning. Parses as a
             // TypeExpr::Function the codegen layer maps to
-            // LotusType::FnPtr.
+            // CodegenTy::FnPtr.
             TokenKind::Fn => {
                 let kw = self.bump();
                 self.expect(TokenKind::LParen, "(")?;

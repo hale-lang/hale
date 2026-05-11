@@ -475,7 +475,7 @@ fn generic_locus_overridden_at_instantiation() {
 
 // === m62 ====================================================
 // Generic free fns. Inference at the call site pins type args
-// from actual arg LotusTypes; per-instantiation specialized
+// from actual arg CodegenTys; per-instantiation specialized
 // fn bodies synthesize on-demand and land in user_fns under
 // the mangled name.
 

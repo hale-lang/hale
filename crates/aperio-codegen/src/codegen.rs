@@ -32,7 +32,7 @@ use aperio_syntax::ast::*;
 /// `Int` so type-driven dispatch (e.g. `time::sleep` accepts only
 /// Duration) stays correct at the codegen layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum LotusType {
+enum CodegenTy {
     Int,
     Float,
     Bool,
@@ -88,7 +88,7 @@ enum LotusType {
     /// with the locus). v0 is fixed-size only; growable arrays
     /// would need a length field + reallocation policy that the
     /// region allocator's bump-list shape doesn't fit cleanly.
-    Array(Box<LotusType>, u64),
+    Array(Box<CodegenTy>, u64),
     /// Tuple `(T1, T2, ...)`. Anonymous heterogeneous record;
     /// arity-fixed at compile time, no field names. Lowered as
     /// a pointer to an arena-allocated anonymous LLVM struct.
@@ -96,17 +96,17 @@ enum LotusType {
     /// order, and access happens through numeric field syntax
     /// (`t.0`, `t.1`, ...) or via tuple-destructuring let /
     /// match patterns.
-    Tuple(Vec<LotusType>),
+    Tuple(Vec<CodegenTy>),
     /// m80: function pointer. `fn(T1, T2) -> R` or `fn(T1, T2)`
     /// for void-returning. At LLVM level, stored as a `ptr` (raw
     /// function pointer); calls go through `build_indirect_call`
     /// with an `inkwell::FunctionType` synthesized from this
-    /// LotusType's args + ret. Used by stdlib loci that take a
+    /// CodegenTy's args + ret. Used by stdlib loci that take a
     /// user-supplied callback (m82's Listener.on_connection); also
     /// available for general user-code callback patterns.
     FnPtr {
-        args: Vec<LotusType>,
-        ret: Option<Box<LotusType>>,
+        args: Vec<CodegenTy>,
+        ret: Option<Box<CodegenTy>>,
     },
 }
 
@@ -237,7 +237,7 @@ pub fn build_executable(
     // Drop the lotus runtime C source next to the object file so
     // clang compiles + links it into the same binary. The C
     // source is bundled into the codegen crate via include_str!,
-    // so the lotus binary is self-contained — no separate
+    // so the Aperio binary is self-contained — no separate
     // runtime install needed. Name is keyed off the object path
     // so parallel `cargo test` invocations don't race on a
     // shared filename in `/tmp`.
@@ -478,7 +478,7 @@ struct Cx<'ctx, 'p> {
     /// `None` means we're in `main` (the C entry point) or outside
     /// any user fn — `return` is rejected there. Inner `None` means
     /// the user fn has no return type (void return).
-    current_user_fn_ret: Option<Option<LotusType>>,
+    current_user_fn_ret: Option<Option<CodegenTy>>,
     /// Set while lowering a locus lifecycle method body so that
     /// `self.X` reads/writes lower to GEP+load/store on the struct
     /// pointer passed as the method's first arg.
@@ -580,7 +580,7 @@ struct Cx<'ctx, 'p> {
     /// `generics: Vec<GenericParam>` is non-empty. Call sites
     /// look here to find templates and trigger on-demand
     /// instantiation: lower_call_expr infers concrete type args
-    /// from the actual arg LotusTypes, mangles, and synthesizes
+    /// from the actual arg CodegenTys, mangles, and synthesizes
     /// + lowers a per-instantiation specialized fn body. The
     /// resulting specialized FunctionValue lands in `user_fns`
     /// keyed by mangled name, so subsequent calls with the same
@@ -685,7 +685,7 @@ struct EnumInfo {
 struct EnumVariantInfo {
     name: String,
     /// Field types in declaration order. Empty for no-payload.
-    field_tys: Vec<LotusType>,
+    field_tys: Vec<CodegenTy>,
 }
 
 /// m46 / m46-vocab: which accumulator form a slot implements.
@@ -728,8 +728,8 @@ enum AccumulatorKind {
 struct AccumulatorSlot {
     kind: AccumulatorKind,
     inner_expr: Option<Expr>,
-    ty: LotusType,
-    inner_ty: LotusType,
+    ty: CodegenTy,
+    inner_ty: CodegenTy,
     field_idx: u32,
     field_idx_2: Option<u32>,
 }
@@ -737,15 +737,15 @@ struct AccumulatorSlot {
 #[derive(Debug, Clone)]
 struct FnSig<'ctx> {
     func: FunctionValue<'ctx>,
-    params: Vec<LotusType>,
+    params: Vec<CodegenTy>,
     /// Per-param default-value expression. Same length as
     /// `params`. `None` = required arg; `Some(expr)` = caller can
     /// omit and the default will be evaluated at the call site.
     /// Defaults must form a suffix (typecheck-validated at fn
     /// declaration), so callers omit a contiguous tail.
     defaults: Vec<Option<Expr>>,
-    /// `None` = void (no return type in the lotus declaration).
-    ret: Option<LotusType>,
+    /// `None` = void (no return type in the Aperio declaration).
+    ret: Option<CodegenTy>,
 }
 
 /// Compiled locus type. Lifecycle methods take `self_ptr` as their
@@ -755,7 +755,7 @@ struct FnSig<'ctx> {
 struct LocusInfo<'ctx> {
     struct_ty: StructType<'ctx>,
     /// Field name → (index in struct, field type).
-    fields: BTreeMap<String, (u32, LotusType)>,
+    fields: BTreeMap<String, (u32, CodegenTy)>,
     /// Field initializers in declaration order. Each entry is
     /// (name, default_init). Overrides at instantiation sites
     /// replace the default for that field. Default-init can be a
@@ -996,7 +996,7 @@ enum DefaultInit {
 struct TypeInfo<'ctx> {
     struct_ty: StructType<'ctx>,
     /// Field name → (index in struct, field type).
-    fields: BTreeMap<String, (u32, LotusType)>,
+    fields: BTreeMap<String, (u32, CodegenTy)>,
     /// Field declaration order; needed because a struct literal
     /// might list fields in a different order than the type
     /// declaration, and field stores still go to the right
@@ -1013,7 +1013,7 @@ struct SelfCx<'ctx> {
     locus_name: String,
     struct_ty: StructType<'ctx>,
     self_ptr: PointerValue<'ctx>,
-    fields: BTreeMap<String, (u32, LotusType)>,
+    fields: BTreeMap<String, (u32, CodegenTy)>,
 }
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
@@ -2197,7 +2197,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let struct_layout: Option<(
             StructType<'ctx>,
             Vec<String>,
-            BTreeMap<String, (u32, LotusType)>,
+            BTreeMap<String, (u32, CodegenTy)>,
         )>;
         let enum_size: Option<inkwell::values::IntValue<'ctx>>;
         if let Some(info) = self.user_types.get(type_name).cloned() {
@@ -2216,7 +2216,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // per-variant per-field serialization is post-v1.
             for v in &info.variants {
                 for ft in &v.field_tys {
-                    if matches!(ft, LotusType::String) {
+                    if matches!(ft, CodegenTy::String) {
                         return Err(CodegenError::Unsupported(format!(
                             "bus payload `{}` variant `{}` has a String \
                              field; cross-process String inside an enum \
@@ -2382,7 +2382,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         dst: PointerValue<'ctx>,
         struct_ty: StructType<'ctx>,
         field_order: &[String],
-        fields: &BTreeMap<String, (u32, LotusType)>,
+        fields: &BTreeMap<String, (u32, CodegenTy)>,
     ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
         let i64_t = self.context.i64_type();
         let i8_t = self.context.i8_type();
@@ -2415,7 +2415,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             };
 
             match &field_ty {
-                LotusType::String => {
+                CodegenTy::String => {
                     // Wire: i64 LE length + N bytes (no NUL).
                     let str_ptr = self
                         .builder
@@ -2479,13 +2479,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_store(cursor_alloca, after_bytes)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
-                LotusType::Int
-                | LotusType::Float
-                | LotusType::Bool
-                | LotusType::Time
-                | LotusType::Duration
-                | LotusType::Decimal => {
-                    let nbytes = lotus_type_size_bytes(self.context, &field_ty);
+                CodegenTy::Int
+                | CodegenTy::Float
+                | CodegenTy::Bool
+                | CodegenTy::Time
+                | CodegenTy::Duration
+                | CodegenTy::Decimal => {
+                    let nbytes = codegen_ty_size_bytes(self.context, &field_ty);
                     let nbytes_iv = i64_t.const_int(nbytes, false);
                     self.emit_memcpy_call(
                         dst_at_cursor,
@@ -2536,7 +2536,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         dst: PointerValue<'ctx>,
         struct_ty: StructType<'ctx>,
         field_order: &[String],
-        fields: &BTreeMap<String, (u32, LotusType)>,
+        fields: &BTreeMap<String, (u32, CodegenTy)>,
     ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
         let i64_t = self.context.i64_type();
         let i8_t = self.context.i8_type();
@@ -2569,7 +2569,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             };
 
             match &field_ty {
-                LotusType::String => {
+                CodegenTy::String => {
                     // Read 8-byte length prefix.
                     let len_alloca = self
                         .builder
@@ -2673,13 +2673,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_store(cursor_alloca, after_bytes)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
-                LotusType::Int
-                | LotusType::Float
-                | LotusType::Bool
-                | LotusType::Time
-                | LotusType::Duration
-                | LotusType::Decimal => {
-                    let nbytes = lotus_type_size_bytes(self.context, &field_ty);
+                CodegenTy::Int
+                | CodegenTy::Float
+                | CodegenTy::Bool
+                | CodegenTy::Time
+                | CodegenTy::Duration
+                | CodegenTy::Decimal => {
+                    let nbytes = codegen_ty_size_bytes(self.context, &field_ty);
                     let nbytes_iv = i64_t.const_int(nbytes, false);
                     self.emit_memcpy_call(
                         dst_field_ptr,
@@ -3109,12 +3109,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if let LocusMember::Bus(bb) = member {
                     for bm in &bb.members {
                         if let BusMember::Publish { ty, .. } = bm {
-                            if let Ok(lt) = self.type_expr_to_lotus(ty) {
+                            if let Ok(lt) = self.type_expr_to_codegen_ty(ty) {
                                 match lt {
-                                    LotusType::TypeRef(n) => {
+                                    CodegenTy::TypeRef(n) => {
                                         payload_types.insert(n);
                                     }
-                                    LotusType::Enum(n) => {
+                                    CodegenTy::Enum(n) => {
                                         payload_types.insert(n);
                                     }
                                     _ => {}
@@ -3389,23 +3389,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(BlockEnd::Open)
     }
 
-    /// Map a `TypeExpr` to the codegen's `LotusType`. Scalar
+    /// Map a `TypeExpr` to the codegen's `CodegenTy`. Scalar
     /// primitives + bare locus type names are supported; arrays /
     /// tuples / generics wait.
-    fn type_expr_to_lotus(
+    fn type_expr_to_codegen_ty(
         &self,
         t: &TypeExpr,
-    ) -> Result<LotusType, CodegenError> {
+    ) -> Result<CodegenTy, CodegenError> {
         match t {
             TypeExpr::Primitive(p, _) => match p {
-                PrimType::Int => Ok(LotusType::Int),
-                PrimType::Float => Ok(LotusType::Float),
-                PrimType::Bool => Ok(LotusType::Bool),
-                PrimType::String => Ok(LotusType::String),
-                PrimType::Duration => Ok(LotusType::Duration),
-                PrimType::Decimal => Ok(LotusType::Decimal),
-                PrimType::Time => Ok(LotusType::Time),
-                PrimType::Bytes => Ok(LotusType::Bytes),
+                PrimType::Int => Ok(CodegenTy::Int),
+                PrimType::Float => Ok(CodegenTy::Float),
+                PrimType::Bool => Ok(CodegenTy::Bool),
+                PrimType::String => Ok(CodegenTy::String),
+                PrimType::Duration => Ok(CodegenTy::Duration),
+                PrimType::Decimal => Ok(CodegenTy::Decimal),
+                PrimType::Time => Ok(CodegenTy::Time),
+                PrimType::Bytes => Ok(CodegenTy::Bytes),
                 other => Err(CodegenError::Unsupported(format!(
                     "type primitive `{:?}` in signature",
                     other
@@ -3416,11 +3416,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             {
                 let name = &path.segments[0].name;
                 if self.user_loci.contains_key(name) {
-                    Ok(LotusType::LocusRef(name.clone()))
+                    Ok(CodegenTy::LocusRef(name.clone()))
                 } else if self.user_types.contains_key(name) {
-                    Ok(LotusType::TypeRef(name.clone()))
+                    Ok(CodegenTy::TypeRef(name.clone()))
                 } else if self.user_enums.contains_key(name) {
-                    Ok(LotusType::Enum(name.clone()))
+                    Ok(CodegenTy::Enum(name.clone()))
                 } else {
                     Err(CodegenError::Unsupported(format!(
                         "unknown type name `{}` in signature",
@@ -3433,7 +3433,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // name table the struct-literal lowering uses; resolves
             // to the bundled-stdlib locus's LocusRef. Without this,
             // `fn(std::io::tcp::Stream)` would parse but fail in
-            // type_expr_to_lotus when building the FnPtr's arg
+            // type_expr_to_codegen_ty when building the FnPtr's arg
             // tys. Generic-arg paths over stdlib types are not
             // a v0 concern (no generic stdlib loci yet).
             TypeExpr::Named { path, generic_args, .. }
@@ -3451,17 +3451,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     ))
                 })?;
                 if self.user_loci.contains_key(mangled) {
-                    Ok(LotusType::LocusRef(mangled.to_string()))
+                    Ok(CodegenTy::LocusRef(mangled.to_string()))
                 } else if self.user_types.contains_key(mangled) {
                     // m84: path-qualified stdlib `type` records.
                     // `std::http::Request` in a fn signature
                     // resolves to TypeRef("__StdHttpRequest").
-                    Ok(LotusType::TypeRef(mangled.to_string()))
+                    Ok(CodegenTy::TypeRef(mangled.to_string()))
                 } else {
                     Err(CodegenError::Unsupported(format!(
                         "qualified type `{}` (mangled `{}`) declared in stdlib \
                          path-renames table but not registered in user_loci or \
-                         user_types yet — sequencing issue: type_expr_to_lotus \
+                         user_types yet — sequencing issue: type_expr_to_codegen_ty \
                          called before pass A0/A1 populated this name",
                         segs.join("::"),
                         mangled,
@@ -3484,14 +3484,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     generic_args,
                 )?;
                 if self.user_types.contains_key(&mangled) {
-                    Ok(LotusType::TypeRef(mangled))
+                    Ok(CodegenTy::TypeRef(mangled))
                 } else if self.user_enums.contains_key(&mangled) {
-                    Ok(LotusType::Enum(mangled))
+                    Ok(CodegenTy::Enum(mangled))
                 } else if self.user_loci.contains_key(&mangled) {
                     // m63: generic locus instantiation —
                     // resolves to a LocusRef pointing at the
                     // synthesized concrete locus.
-                    Ok(LotusType::LocusRef(mangled))
+                    Ok(CodegenTy::LocusRef(mangled))
                 } else {
                     Err(CodegenError::Unsupported(format!(
                         "generic instantiation `{}` not synthesized — \
@@ -3502,7 +3502,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
             TypeExpr::Array { elem, size, .. } => {
-                let elem_ty = self.type_expr_to_lotus(elem)?;
+                let elem_ty = self.type_expr_to_codegen_ty(elem)?;
                 let n = match size {
                     Some(Expr::Literal(Literal::Int(n), _)) if *n > 0 => *n as u64,
                     Some(_) => {
@@ -3517,7 +3517,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         ));
                     }
                 };
-                Ok(LotusType::Array(Box::new(elem_ty), n))
+                Ok(CodegenTy::Array(Box::new(elem_ty), n))
             }
             TypeExpr::Tuple(parts, _) => {
                 if parts.len() < 2 {
@@ -3528,20 +3528,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 let mut elem_tys = Vec::with_capacity(parts.len());
                 for p in parts {
-                    elem_tys.push(self.type_expr_to_lotus(p)?);
+                    elem_tys.push(self.type_expr_to_codegen_ty(p)?);
                 }
-                Ok(LotusType::Tuple(elem_tys))
+                Ok(CodegenTy::Tuple(elem_tys))
             }
             TypeExpr::Function { params, ret, .. } => {
                 let mut arg_tys = Vec::with_capacity(params.len());
                 for p in params {
-                    arg_tys.push(self.type_expr_to_lotus(p)?);
+                    arg_tys.push(self.type_expr_to_codegen_ty(p)?);
                 }
                 let ret_ty = match ret {
-                    Some(r) => Some(Box::new(self.type_expr_to_lotus(r)?)),
+                    Some(r) => Some(Box::new(self.type_expr_to_codegen_ty(r)?)),
                     None => None,
                 };
-                Ok(LotusType::FnPtr {
+                Ok(CodegenTy::FnPtr {
                     args: arg_tys,
                     ret: ret_ty,
                 })
@@ -3564,10 +3564,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn declare_builtin_closure_violation_type(&mut self) {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i64_t = self.context.i64_type();
-        let mut fields: BTreeMap<String, (u32, LotusType)> = BTreeMap::new();
-        fields.insert("locus".into(), (0, LotusType::String));
-        fields.insert("closure".into(), (1, LotusType::String));
-        fields.insert("diff".into(), (2, LotusType::Int));
+        let mut fields: BTreeMap<String, (u32, CodegenTy)> = BTreeMap::new();
+        fields.insert("locus".into(), (0, CodegenTy::String));
+        fields.insert("closure".into(), (1, CodegenTy::String));
+        fields.insert("diff".into(), (2, CodegenTy::Int));
         let field_order = vec![
             "locus".to_string(),
             "closure".to_string(),
@@ -3686,7 +3686,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             TypeDeclBody::Enum(variants) => {
                 // m47 + payloads: register the enum's variants
                 // and compute the storage layout. Each variant's
-                // payload field types resolve via type_expr_to_lotus
+                // payload field types resolve via type_expr_to_codegen_ty
                 // (so nested struct / enum types are valid). For
                 // payload-bearing variants we measure the per-
                 // variant payload size (sum of field sizes,
@@ -3697,11 +3697,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let mut has_payload = false;
                 let mut max_bytes: u64 = 0;
                 for v in variants {
-                    let mut field_tys: Vec<LotusType> = Vec::new();
+                    let mut field_tys: Vec<CodegenTy> = Vec::new();
                     let mut bytes: u64 = 0;
                     for f in &v.fields {
-                        let lt = self.type_expr_to_lotus(f)?;
-                        bytes += lotus_type_size_bytes(self.context, &lt);
+                        let lt = self.type_expr_to_codegen_ty(f)?;
+                        bytes += codegen_ty_size_bytes(self.context, &lt);
                         field_tys.push(lt);
                     }
                     if !field_tys.is_empty() {
@@ -3727,12 +3727,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         };
 
-        let mut fields: BTreeMap<String, (u32, LotusType)> = BTreeMap::new();
+        let mut fields: BTreeMap<String, (u32, CodegenTy)> = BTreeMap::new();
         let mut field_order: Vec<String> = Vec::new();
         let mut llvm_field_tys: Vec<inkwell::types::BasicTypeEnum> =
             Vec::new();
         for (idx, f) in struct_fields.iter().enumerate() {
-            let ft = self.type_expr_to_lotus(&f.ty)?;
+            let ft = self.type_expr_to_codegen_ty(&f.ty)?;
             llvm_field_tys.push(self.llvm_basic_type(&ft));
             fields.insert(f.name.name.clone(), (idx as u32, ft));
             field_order.push(f.name.name.clone());
@@ -4088,35 +4088,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
-    /// m62: convert a LotusType back to a TypeExpr for the
+    /// m62: convert a CodegenTy back to a TypeExpr for the
     /// generic-fn inference path. The resulting TypeExpr is used
     /// to mangle the instantiation name and to substitute into
     /// the template's body — both purely structural operations,
     /// so the synthetic spans are fine.
-    fn lotus_type_to_type_expr(
-        t: &LotusType,
+    fn codegen_ty_to_type_expr(
+        t: &CodegenTy,
     ) -> Result<TypeExpr, CodegenError> {
         // Synthetic span for the synthesized TypeExpr — these
         // never surface in user-visible diagnostics because m62
         // structural ops only inspect shape, not source location.
         let span = aperio_syntax::span::Span::new(0, 0);
         match t {
-            LotusType::Int => Ok(TypeExpr::Primitive(PrimType::Int, span)),
-            LotusType::Float => {
+            CodegenTy::Int => Ok(TypeExpr::Primitive(PrimType::Int, span)),
+            CodegenTy::Float => {
                 Ok(TypeExpr::Primitive(PrimType::Float, span))
             }
-            LotusType::Bool => Ok(TypeExpr::Primitive(PrimType::Bool, span)),
-            LotusType::String => {
+            CodegenTy::Bool => Ok(TypeExpr::Primitive(PrimType::Bool, span)),
+            CodegenTy::String => {
                 Ok(TypeExpr::Primitive(PrimType::String, span))
             }
-            LotusType::Duration => {
+            CodegenTy::Duration => {
                 Ok(TypeExpr::Primitive(PrimType::Duration, span))
             }
-            LotusType::Decimal => {
+            CodegenTy::Decimal => {
                 Ok(TypeExpr::Primitive(PrimType::Decimal, span))
             }
-            LotusType::Time => Ok(TypeExpr::Primitive(PrimType::Time, span)),
-            LotusType::TypeRef(name) | LotusType::Enum(name) => {
+            CodegenTy::Time => Ok(TypeExpr::Primitive(PrimType::Time, span)),
+            CodegenTy::TypeRef(name) | CodegenTy::Enum(name) => {
                 Ok(TypeExpr::Named {
                     path: QualifiedName {
                         segments: vec![Ident {
@@ -4130,7 +4130,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 })
             }
             other => Err(CodegenError::Unsupported(format!(
-                "lotus_type_to_type_expr: form `{:?}` not supported \
+                "codegen_ty_to_type_expr: form `{:?}` not supported \
                  (m62 v0.1 limits inference to primitives + named \
                  types as generic args)",
                 other
@@ -4139,14 +4139,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// m62: structurally walk a declared TypeExpr against an
-    /// actual LotusType, recording bindings for any generic
+    /// actual CodegenTy, recording bindings for any generic
     /// param refs. `params` names which idents in the TypeExpr
     /// represent generic params (vs. concrete user types).
     /// Errors if a param binds to multiple distinct types
     /// (inconsistent inference).
     fn unify_generic_param_bindings(
         declared: &TypeExpr,
-        actual: &LotusType,
+        actual: &CodegenTy,
         params: &BTreeSet<String>,
         bindings: &mut BTreeMap<String, TypeExpr>,
     ) -> Result<(), CodegenError> {
@@ -4159,7 +4159,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 && generic_args.is_empty()
                 && params.contains(&path.segments[0].name)
             {
-                let bound = Self::lotus_type_to_type_expr(actual)?;
+                let bound = Self::codegen_ty_to_type_expr(actual)?;
                 let name = &path.segments[0].name;
                 if let Some(prior) = bindings.get(name) {
                     if prior != &bound {
@@ -4177,12 +4177,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         // Otherwise structural recurse where shapes match.
         match (declared, actual) {
-            (TypeExpr::Array { elem, .. }, LotusType::Array(a_elem, _)) => {
+            (TypeExpr::Array { elem, .. }, CodegenTy::Array(a_elem, _)) => {
                 Self::unify_generic_param_bindings(
                     elem, a_elem, params, bindings,
                 )
             }
-            (TypeExpr::Tuple(parts, _), LotusType::Tuple(a_parts))
+            (TypeExpr::Tuple(parts, _), CodegenTy::Tuple(a_parts))
                 if parts.len() == a_parts.len() =>
             {
                 for (p, a) in parts.iter().zip(a_parts) {
@@ -4202,11 +4202,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// m62: infer the concrete type-args tuple for a generic fn
     /// call by unifying each declared param TypeExpr against the
-    /// actual arg LotusType. Returns the args in the same order
+    /// actual arg CodegenTy. Returns the args in the same order
     /// as the template's `generics: Vec<GenericParam>`.
     fn infer_generic_fn_args(
         template: &FnDecl,
-        actual_arg_tys: &[LotusType],
+        actual_arg_tys: &[CodegenTy],
     ) -> Result<Vec<TypeExpr>, CodegenError> {
         let visible_args = template.params.len().min(actual_arg_tys.len());
         let generic_param_names: BTreeSet<String> = template
@@ -4369,17 +4369,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// to the original path. Idempotent: if `bare` is already a
     /// mangled name in `user_types`, the rewrite is skipped.
     /// m67: like resolve_generic_struct_path but takes a target
-    /// LotusType (the declared type at the use site — return slot
+    /// CodegenTy (the declared type at the use site — return slot
     /// or struct field) instead of a TypeExpr ascription. Used at
     /// return statements (where the target is the fn's declared
-    /// return LotusType) and struct field initializers (where the
-    /// target is the field's declared LotusType). The caller has
+    /// return CodegenTy) and struct field initializers (where the
+    /// target is the field's declared CodegenTy). The caller has
     /// already converted the source-position TypeExpr through
-    /// `type_expr_to_lotus`, so we get the mangled name directly.
-    fn resolve_generic_struct_path_for_lotus_type(
+    /// `type_expr_to_codegen_ty`, so we get the mangled name directly.
+    fn resolve_generic_struct_path_for_codegen_ty(
         &self,
         bare: &QualifiedName,
-        target: &LotusType,
+        target: &CodegenTy,
     ) -> Option<QualifiedName> {
         if bare.segments.len() != 1 {
             return None;
@@ -4392,9 +4392,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             return None;
         }
         let target_name = match target {
-            LotusType::TypeRef(n) => n,
-            LotusType::LocusRef(n) => n,
-            LotusType::Enum(n) => n,
+            CodegenTy::TypeRef(n) => n,
+            CodegenTy::LocusRef(n) => n,
+            CodegenTy::Enum(n) => n,
             _ => return None,
         };
         // The target must be a mangled monomorph of the bare name:
@@ -4974,7 +4974,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // REQUIRED for non-literal defaults (we don't infer a type
         // from an arbitrary expression here — the AST resolver
         // doesn't run in codegen v0).
-        let mut fields: BTreeMap<String, (u32, LotusType)> = BTreeMap::new();
+        let mut fields: BTreeMap<String, (u32, CodegenTy)> = BTreeMap::new();
         let mut defaults: Vec<(String, DefaultInit)> = Vec::new();
         let mut llvm_field_tys: Vec<inkwell::types::BasicTypeEnum> =
             Vec::new();
@@ -5006,19 +5006,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     };
                     // Try to lock in as a literal Const first; fall
                     // back to deferred Expr if that fails.
-                    let (default, default_ty): (DefaultInit, LotusType) =
+                    let (default, default_ty): (DefaultInit, CodegenTy) =
                         match param_value(default_expr) {
                             Ok(pv) => {
                                 let ty = match &pv {
-                                    ParamValue::Int(_) => LotusType::Int,
-                                    ParamValue::Float(_) => LotusType::Float,
-                                    ParamValue::Bool(_) => LotusType::Bool,
-                                    ParamValue::String(_) => LotusType::String,
+                                    ParamValue::Int(_) => CodegenTy::Int,
+                                    ParamValue::Float(_) => CodegenTy::Float,
+                                    ParamValue::Bool(_) => CodegenTy::Bool,
+                                    ParamValue::String(_) => CodegenTy::String,
                                     ParamValue::Duration(_) => {
-                                        LotusType::Duration
+                                        CodegenTy::Duration
                                     }
-                                    ParamValue::Decimal(_) => LotusType::Decimal,
-                                    ParamValue::Time(_) => LotusType::Time,
+                                    ParamValue::Decimal(_) => CodegenTy::Decimal,
+                                    ParamValue::Time(_) => CodegenTy::Time,
                                 };
                                 (DefaultInit::Const(pv), ty)
                             }
@@ -5034,7 +5034,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                         l.name.name, p.name.name
                                     ))
                                 })?;
-                                let ty = self.type_expr_to_lotus(ascribed)?;
+                                let ty = self.type_expr_to_codegen_ty(ascribed)?;
                                 // m61c: bare-name struct literal in
                                 // a typed param default rewrites to
                                 // the mangled monomorph at decl
@@ -5067,7 +5067,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             }
                         };
                     if let Some(ascribed) = &p.ty {
-                        let asc_ty = self.type_expr_to_lotus(ascribed)?;
+                        let asc_ty = self.type_expr_to_codegen_ty(ascribed)?;
                         if asc_ty != default_ty {
                             return Err(CodegenError::Unsupported(format!(
                                 "locus `{}` param `{}`: declared {:?}, \
@@ -5254,8 +5254,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         slots.push(AccumulatorSlot {
                             kind: AccumulatorKind::Count,
                             inner_expr: None,
-                            ty: LotusType::Int,
-                            inner_ty: LotusType::Int,
+                            ty: CodegenTy::Int,
+                            inner_ty: CodegenTy::Int,
                             field_idx: slot_idx,
                             field_idx_2: None,
                         });
@@ -5281,7 +5281,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         slots.push(AccumulatorSlot {
                             kind: AccumulatorKind::Mean,
                             inner_expr: Some(inner),
-                            ty: LotusType::Float,
+                            ty: CodegenTy::Float,
                             inner_ty,
                             field_idx: sum_idx,
                             field_idx_2: Some(count_idx),
@@ -5459,9 +5459,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 )));
                             }
                             let p = &lc.params[0];
-                            let child_ty = self.type_expr_to_lotus(&p.ty)?;
+                            let child_ty = self.type_expr_to_codegen_ty(&p.ty)?;
                             let child_locus = match &child_ty {
-                                LotusType::LocusRef(name) => name.clone(),
+                                CodegenTy::LocusRef(name) => name.clone(),
                                 other => {
                                     return Err(CodegenError::Unsupported(
                                         format!(
@@ -5505,11 +5505,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 let payload_type_name = ty
                                     .as_ref()
                                     .and_then(|t| {
-                                        self.type_expr_to_lotus(t).ok()
+                                        self.type_expr_to_codegen_ty(t).ok()
                                     })
                                     .and_then(|lt| match lt {
-                                        LotusType::TypeRef(n) => Some(n),
-                                        LotusType::Enum(n) => Some(n),
+                                        CodegenTy::TypeRef(n) => Some(n),
+                                        CodegenTy::Enum(n) => Some(n),
                                         _ => None,
                                     })
                                     .ok_or_else(|| {
@@ -5570,31 +5570,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 l.name.name, fd.name.name, p.name.name
                             )));
                         }
-                        let lt = self.type_expr_to_lotus(&p.ty)?;
+                        let lt = self.type_expr_to_codegen_ty(&p.ty)?;
                         llvm_param_tys.push(self.llvm_basic_type(&lt).into());
                     }
                     let fn_ty = match &fd.ret {
                         None => void_t.fn_type(&llvm_param_tys, false),
                         Some(t) => {
-                            let rt = self.type_expr_to_lotus(t)?;
+                            let rt = self.type_expr_to_codegen_ty(t)?;
                             match rt {
-                                LotusType::Int | LotusType::Duration => self
+                                CodegenTy::Int | CodegenTy::Duration => self
                                     .context
                                     .i64_type()
                                     .fn_type(&llvm_param_tys, false),
-                                LotusType::Float => self
+                                CodegenTy::Float => self
                                     .context
                                     .f64_type()
                                     .fn_type(&llvm_param_tys, false),
-                                LotusType::Decimal => self
+                                CodegenTy::Decimal => self
                                     .context
                                     .i128_type()
                                     .fn_type(&llvm_param_tys, false),
-                                LotusType::Bool => self
+                                CodegenTy::Bool => self
                                     .context
                                     .bool_type()
                                     .fn_type(&llvm_param_tys, false),
-                                LotusType::Enum(name) => {
+                                CodegenTy::Enum(name) => {
                                     if self
                                         .user_enums
                                         .get(name.as_str())
@@ -5610,14 +5610,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                             .fn_type(&llvm_param_tys, false)
                                     }
                                 }
-                                LotusType::String
-                                | LotusType::Bytes
-                                | LotusType::Time
-                                | LotusType::LocusRef(_)
-                                | LotusType::TypeRef(_)
-                                | LotusType::Array(_, _)
-                                | LotusType::Tuple(_)
-                                | LotusType::FnPtr { .. } => self
+                                CodegenTy::String
+                                | CodegenTy::Bytes
+                                | CodegenTy::Time
+                                | CodegenTy::LocusRef(_)
+                                | CodegenTy::TypeRef(_)
+                                | CodegenTy::Array(_, _)
+                                | CodegenTy::Tuple(_)
+                                | CodegenTy::FnPtr { .. } => self
                                     .context
                                     .ptr_type(AddressSpace::default())
                                     .fn_type(&llvm_param_tys, false),
@@ -5668,9 +5668,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             fd.params.len()
                         )));
                     }
-                    let child_ty = self.type_expr_to_lotus(&fd.params[0].ty)?;
+                    let child_ty = self.type_expr_to_codegen_ty(&fd.params[0].ty)?;
                     let child_locus_name = match &child_ty {
-                        LotusType::LocusRef(n) => n.clone(),
+                        CodegenTy::LocusRef(n) => n.clone(),
                         other => {
                             return Err(CodegenError::Unsupported(format!(
                                 "locus `{}` on_failure first param must be \
@@ -5679,8 +5679,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             )));
                         }
                     };
-                    let err_ty = self.type_expr_to_lotus(&fd.params[1].ty)?;
-                    if err_ty != LotusType::TypeRef("ClosureViolation".into())
+                    let err_ty = self.type_expr_to_codegen_ty(&fd.params[1].ty)?;
+                    if err_ty != CodegenTy::TypeRef("ClosureViolation".into())
                     {
                         return Err(CodegenError::Unsupported(format!(
                             "locus `{}` on_failure second param must be \
@@ -5735,31 +5735,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 l.name.name, mode_name, p.name.name
                             )));
                         }
-                        let lt = self.type_expr_to_lotus(&p.ty)?;
+                        let lt = self.type_expr_to_codegen_ty(&p.ty)?;
                         llvm_param_tys.push(self.llvm_basic_type(&lt).into());
                     }
                     let fn_ty = match &md.ret {
                         None => void_t.fn_type(&llvm_param_tys, false),
                         Some(t) => {
-                            let rt = self.type_expr_to_lotus(t)?;
+                            let rt = self.type_expr_to_codegen_ty(t)?;
                             match rt {
-                                LotusType::Int | LotusType::Duration => self
+                                CodegenTy::Int | CodegenTy::Duration => self
                                     .context
                                     .i64_type()
                                     .fn_type(&llvm_param_tys, false),
-                                LotusType::Float => self
+                                CodegenTy::Float => self
                                     .context
                                     .f64_type()
                                     .fn_type(&llvm_param_tys, false),
-                                LotusType::Decimal => self
+                                CodegenTy::Decimal => self
                                     .context
                                     .i128_type()
                                     .fn_type(&llvm_param_tys, false),
-                                LotusType::Bool => self
+                                CodegenTy::Bool => self
                                     .context
                                     .bool_type()
                                     .fn_type(&llvm_param_tys, false),
-                                LotusType::Enum(name) => {
+                                CodegenTy::Enum(name) => {
                                     if self
                                         .user_enums
                                         .get(name.as_str())
@@ -5775,14 +5775,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                             .fn_type(&llvm_param_tys, false)
                                     }
                                 }
-                                LotusType::String
-                                | LotusType::Bytes
-                                | LotusType::Time
-                                | LotusType::LocusRef(_)
-                                | LotusType::TypeRef(_)
-                                | LotusType::Array(_, _)
-                                | LotusType::Tuple(_)
-                                | LotusType::FnPtr { .. } => self
+                                CodegenTy::String
+                                | CodegenTy::Bytes
+                                | CodegenTy::Time
+                                | CodegenTy::LocusRef(_)
+                                | CodegenTy::TypeRef(_)
+                                | CodegenTy::Array(_, _)
+                                | CodegenTy::Tuple(_)
+                                | CodegenTy::FnPtr { .. } => self
                                     .context
                                     .ptr_type(AddressSpace::default())
                                     .fn_type(&llvm_param_tys, false),
@@ -6023,7 +6023,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     scope.locals.insert(
                         param_name.clone(),
-                        (slot, LotusType::LocusRef(child_locus.clone())),
+                        (slot, CodegenTy::LocusRef(child_locus.clone())),
                     );
                 }
 
@@ -6097,7 +6097,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             scope.locals.insert(
                 child_param_name,
-                (child_slot, LotusType::LocusRef(child_locus_name.clone())),
+                (child_slot, CodegenTy::LocusRef(child_locus_name.clone())),
             );
             let err_slot = self
                 .builder
@@ -6108,7 +6108,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             scope.locals.insert(
                 err_param_name,
-                (err_slot, LotusType::TypeRef("ClosureViolation".into())),
+                (err_slot, CodegenTy::TypeRef("ClosureViolation".into())),
             );
 
             let end = self.lower_block(&failure_decl.body, &mut scope)?;
@@ -6460,7 +6460,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.current_fn = Some(func);
                 let ret_ty = match &fd.ret {
                     None => None,
-                    Some(t) => Some(self.type_expr_to_lotus(t)?),
+                    Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
                 };
                 self.current_user_fn_ret = Some(ret_ty.clone());
                 self.current_self = Some(SelfCx {
@@ -6474,7 +6474,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
                 let mut scope = Scope::default();
                 for (i, p) in fd.params.iter().enumerate() {
-                    let lt = self.type_expr_to_lotus(&p.ty)?;
+                    let lt = self.type_expr_to_codegen_ty(&p.ty)?;
                     let alloca = self.alloca_for(&lt, &p.name.name)?;
                     let v = func
                         .get_nth_param((i + 1) as u32)
@@ -6686,7 +6686,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.current_fn = Some(func);
                 let ret_ty = match &md.ret {
                     None => None,
-                    Some(t) => Some(self.type_expr_to_lotus(t)?),
+                    Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
                 };
                 self.current_user_fn_ret = Some(ret_ty.clone());
                 self.current_self = Some(SelfCx {
@@ -6700,7 +6700,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
                 let mut scope = Scope::default();
                 for (i, p) in md.params.iter().enumerate() {
-                    let lt = self.type_expr_to_lotus(&p.ty)?;
+                    let lt = self.type_expr_to_codegen_ty(&p.ty)?;
                     let alloca = self.alloca_for(&lt, &p.name.name)?;
                     let v = func
                         .get_nth_param((i + 1) as u32)
@@ -6778,30 +6778,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     f.name.name, p.name.name
                 )));
             }
-            let lt = self.type_expr_to_lotus(&p.ty)?;
+            let lt = self.type_expr_to_codegen_ty(&p.ty)?;
             llvm_param_tys.push(self.llvm_basic_type(&lt).into());
             param_tys.push(lt);
             defaults.push(p.default.clone());
         }
         let ret_ty = match &f.ret {
-            Some(t) => Some(self.type_expr_to_lotus(t)?),
+            Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
             None => None,
         };
         let fn_ty = match &ret_ty {
-            Some(LotusType::Int) | Some(LotusType::Duration) => self
+            Some(CodegenTy::Int) | Some(CodegenTy::Duration) => self
                 .context
                 .i64_type()
                 .fn_type(&llvm_param_tys, false),
-            Some(LotusType::Float) => {
+            Some(CodegenTy::Float) => {
                 self.context.f64_type().fn_type(&llvm_param_tys, false)
             }
-            Some(LotusType::Decimal) => {
+            Some(CodegenTy::Decimal) => {
                 self.context.i128_type().fn_type(&llvm_param_tys, false)
             }
-            Some(LotusType::Bool) => {
+            Some(CodegenTy::Bool) => {
                 self.context.bool_type().fn_type(&llvm_param_tys, false)
             }
-            Some(LotusType::Enum(name)) => {
+            Some(CodegenTy::Enum(name)) => {
                 if self
                     .user_enums
                     .get(name.as_str())
@@ -6815,14 +6815,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.context.i32_type().fn_type(&llvm_param_tys, false)
                 }
             }
-            Some(LotusType::String)
-            | Some(LotusType::Bytes)
-            | Some(LotusType::Time)
-            | Some(LotusType::LocusRef(_))
-            | Some(LotusType::TypeRef(_))
-            | Some(LotusType::Array(_, _))
-            | Some(LotusType::Tuple(_))
-            | Some(LotusType::FnPtr { .. }) => self
+            Some(CodegenTy::String)
+            | Some(CodegenTy::Bytes)
+            | Some(CodegenTy::Time)
+            | Some(CodegenTy::LocusRef(_))
+            | Some(CodegenTy::TypeRef(_))
+            | Some(CodegenTy::Array(_, _))
+            | Some(CodegenTy::Tuple(_))
+            | Some(CodegenTy::FnPtr { .. }) => self
                 .context
                 .ptr_type(AddressSpace::default())
                 .fn_type(&llvm_param_tys, false),
@@ -7126,18 +7126,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn emit_return_value_deep_copy(
         &mut self,
         value: BasicValueEnum<'ctx>,
-        ty: &LotusType,
+        ty: &CodegenTy,
         dest_arena: PointerValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         match ty {
-            LotusType::Int
-            | LotusType::Float
-            | LotusType::Bool
-            | LotusType::Decimal
-            | LotusType::Time
-            | LotusType::Duration
-            | LotusType::FnPtr { .. } => Ok(value),
-            LotusType::Enum(name) => {
+            CodegenTy::Int
+            | CodegenTy::Float
+            | CodegenTy::Bool
+            | CodegenTy::Decimal
+            | CodegenTy::Time
+            | CodegenTy::Duration
+            | CodegenTy::FnPtr { .. } => Ok(value),
+            CodegenTy::Enum(name) => {
                 let info = self
                     .user_enums
                     .get(name.as_str())
@@ -7156,7 +7156,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     _ => Ok(value),
                 }
             }
-            LotusType::String => {
+            CodegenTy::String => {
                 let f = self
                     .module
                     .get_function("lotus_str_clone")
@@ -7174,7 +7174,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("lotus_str_clone returns ptr");
                 Ok(res)
             }
-            LotusType::Bytes => {
+            CodegenTy::Bytes => {
                 // m89: Bytes returned from a fn is shipped through
                 // the same lazy-global-payload arena that
                 // read_bytes uses, so the returned pointer is
@@ -7188,7 +7188,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // the payload moved.
                 Ok(value)
             }
-            LotusType::Tuple(elem_tys) => {
+            CodegenTy::Tuple(elem_tys) => {
                 // Allocate a fresh tuple-storage struct in
                 // dest_arena, then recursively deep-copy each
                 // element. Layout matches Expr::Tuple lowering so
@@ -7270,7 +7270,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Ok(new_tup.into())
             }
-            LotusType::Array(elem_ty, n) => {
+            CodegenTy::Array(elem_ty, n) => {
                 // m51: deep-copy a fixed-size array. Allocate
                 // `[n x llvm(elem)]` in dest_arena, GEP each slot
                 // in the source, recurse on the element value, and
@@ -7354,7 +7354,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Ok(new_arr.into())
             }
-            LotusType::TypeRef(name) => {
+            CodegenTy::TypeRef(name) => {
                 // m51: deep-copy a user-defined struct. Allocate a
                 // fresh struct in dest_arena, walk each declared
                 // field by its struct slot index, recursively copy
@@ -7439,7 +7439,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Ok(new_struct.into())
             }
-            LotusType::LocusRef(_) => Err(CodegenError::Unsupported(format!(
+            CodegenTy::LocusRef(_) => Err(CodegenError::Unsupported(format!(
                 "free-fn return of {:?}: locus references shouldn't \
                  cross arena boundaries — pass via bus instead",
                 ty
@@ -7494,7 +7494,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Load the variant's payload fields from src_ptr, then
             // deep-copy each one into dest_arena.
             let raw_fields = self.load_enum_payload_fields(info, src_ptr, i)?;
-            let mut copied_fields: Vec<(BasicValueEnum<'ctx>, LotusType)> =
+            let mut copied_fields: Vec<(BasicValueEnum<'ctx>, CodegenTy)> =
                 Vec::with_capacity(raw_fields.len());
             for (val, fty) in raw_fields {
                 let copied = self.emit_return_value_deep_copy(
@@ -7561,7 +7561,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// call sites.
     /// m62: lower a call to a generic free fn. Lowers each arg
     /// once (so side effects fire at most once), infers concrete
-    /// type args from the resulting LotusTypes, mangles, and —
+    /// type args from the resulting CodegenTys, mangles, and —
     /// if this instantiation hasn't been seen before — synthesizes
     /// + lowers a specialized fn body (saving and restoring
     /// builder state so the surrounding caller's IR isn't
@@ -7572,8 +7572,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         name: &str,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<Option<(BasicValueEnum<'ctx>, LotusType)>, CodegenError> {
-        let mut arg_pairs: Vec<(BasicValueEnum<'ctx>, LotusType)> =
+    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
+        let mut arg_pairs: Vec<(BasicValueEnum<'ctx>, CodegenTy)> =
             Vec::with_capacity(args.len());
         for a in args {
             arg_pairs.push(self.lower_expr(a, scope)?);
@@ -7592,7 +7592,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 arg_pairs.len()
             )));
         }
-        let arg_tys: Vec<LotusType> =
+        let arg_tys: Vec<CodegenTy> =
             arg_pairs.iter().map(|(_, t)| t.clone()).collect();
         let inferred = Self::infer_generic_fn_args(&template, &arg_tys)?;
         let mangled = Self::mangle_generic_name(name, &inferred)?;
@@ -7692,7 +7692,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         name: &str,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<Option<(BasicValueEnum<'ctx>, LotusType)>, CodegenError> {
+    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
         let sig = self
             .user_fns
             .get(name)
@@ -7847,7 +7847,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // discard return value.
                             let _ = self
                                 .lower_generic_fn_call(name, args, scope)?;
-                        } else if let Some((slot_ptr, LotusType::FnPtr {
+                        } else if let Some((slot_ptr, CodegenTy::FnPtr {
                             args: arg_tys,
                             ret: ret_ty,
                         })) = scope.locals.get(name).cloned()
@@ -7973,7 +7973,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Stmt::LetTuple { names, value, .. } => {
                 let (tup_val, tup_ty) = self.lower_expr(value, scope)?;
                 let elem_tys = match &tup_ty {
-                    LotusType::Tuple(ts) => ts.clone(),
+                    CodegenTy::Tuple(ts) => ts.clone(),
                     other => {
                         return Err(CodegenError::Unsupported(format!(
                             "let-tuple destructure expects a tuple rhs, \
@@ -8110,7 +8110,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             ))
                         })?;
                     let (elem_ty, n) = match ty {
-                        LotusType::Array(elem, n) => (*elem, n),
+                        CodegenTy::Array(elem, n) => (*elem, n),
                         other => {
                             return Err(CodegenError::Unsupported(format!(
                                 "indexed assignment to non-array local \
@@ -8126,7 +8126,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                         .into_pointer_value();
                     let (idx_val, idx_ty) = self.lower_expr(idx_expr, scope)?;
-                    if idx_ty != LotusType::Int {
+                    if idx_ty != CodegenTy::Int {
                         return Err(CodegenError::Unsupported(format!(
                             "array index must be Int, got {:?}",
                             idx_ty
@@ -8257,7 +8257,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<BlockEnd, CodegenError> {
         let (cond_v, cond_ty) =
             self.lower_expr(&ifs.cond, scope)?;
-        if cond_ty != LotusType::Bool {
+        if cond_ty != CodegenTy::Bool {
             return Err(CodegenError::Unsupported(format!(
                 "if condition must be Bool; got {:?}",
                 cond_ty
@@ -8336,7 +8336,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // header: evaluate cond and branch
         self.builder.position_at_end(header_bb);
         let (cond_v, cond_ty) = self.lower_expr(cond, scope)?;
-        if cond_ty != LotusType::Bool {
+        if cond_ty != CodegenTy::Bool {
             return Err(CodegenError::Unsupported(format!(
                 "while condition must be Bool; got {:?}",
                 cond_ty
@@ -8369,7 +8369,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// m36: lower a `len(x)` builtin call. v0 supports two
     /// argument shapes: a String (calls `lotus_str_len` for an
     /// O(strlen) length count) and a fixed-size Array (compile-
-    /// time N from `LotusType::Array(_, N)`). Returns Int.
+    /// time N from `CodegenTy::Array(_, N)`). Returns Int.
     /// Tuples / TypeRef receivers are deliberately rejected —
     /// no use case asks for tuple-arity at runtime, and structs
     /// have a fixed field set known at the type level.
@@ -8377,7 +8377,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "`len` expects exactly 1 argument, got {}",
@@ -8386,7 +8386,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         match ty {
-            LotusType::String => {
+            CodegenTy::String => {
                 let len_fn = self
                     .module
                     .get_function("lotus_str_len")
@@ -8402,9 +8402,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("lotus_str_len returns i64");
-                Ok((val, LotusType::Int))
+                Ok((val, CodegenTy::Int))
             }
-            LotusType::Bytes => {
+            CodegenTy::Bytes => {
                 // m89: Bytes carries an explicit length prefix —
                 // not strlen, since binary data may have embedded
                 // NULs. lotus_bytes_len reads the i64 at offset 0.
@@ -8423,11 +8423,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("lotus_bytes_len returns i64");
-                Ok((val, LotusType::Int))
+                Ok((val, CodegenTy::Int))
             }
-            LotusType::Array(_, n) => {
+            CodegenTy::Array(_, n) => {
                 let val = self.context.i64_type().const_int(n, true);
-                Ok((val.into(), LotusType::Int))
+                Ok((val.into(), CodegenTy::Int))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`len` not supported for argument type {:?}",
@@ -8445,7 +8445,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         name: &str,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         let arity = if name == "abs" { 1 } else { 2 };
         if args.len() != arity {
             return Err(CodegenError::Unsupported(format!(
@@ -8467,7 +8467,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         match at {
-            LotusType::Int | LotusType::Duration | LotusType::Decimal => {
+            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal => {
                 let pred = match name {
                     "min" => inkwell::IntPredicate::SLT,
                     "max" => inkwell::IntPredicate::SGT,
@@ -8488,7 +8488,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((v, at))
             }
-            LotusType::Float => {
+            CodegenTy::Float => {
                 let pred = match name {
                     "min" => inkwell::FloatPredicate::OLT,
                     "max" => inkwell::FloatPredicate::OGT,
@@ -8519,16 +8519,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_abs(
         &mut self,
         v: BasicValueEnum<'ctx>,
-        ty: &LotusType,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        ty: &CodegenTy,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         match ty {
-            LotusType::Int | LotusType::Duration | LotusType::Decimal => {
+            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal => {
                 // m48: Decimal lives in i128 so the int-abs path
                 // works for it directly — same neg + select shape
                 // as Int / Duration, just with the i128 zero
                 // constant instead of i64.
                 let zero: inkwell::values::IntValue<'ctx> =
-                    if matches!(ty, LotusType::Decimal) {
+                    if matches!(ty, CodegenTy::Decimal) {
                         i128_const(self.context, 0)
                     } else {
                         self.context.i64_type().const_int(0, true)
@@ -8553,7 +8553,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((chosen, ty.clone()))
             }
-            LotusType::Float => {
+            CodegenTy::Float => {
                 let fv = v.into_float_value();
                 let neg = self
                     .builder
@@ -8590,7 +8590,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         name: &str,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 2 {
             return Err(CodegenError::Unsupported(format!(
                 "`{}` expects exactly 2 arguments, got {}",
@@ -8600,7 +8600,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (sv, st) = self.lower_expr(&args[0], scope)?;
         let (pv, pt) = self.lower_expr(&args[1], scope)?;
-        if !matches!(st, LotusType::String) || !matches!(pt, LotusType::String) {
+        if !matches!(st, CodegenTy::String) || !matches!(pt, CodegenTy::String) {
             return Err(CodegenError::Unsupported(format!(
                 "`{}` expects two String args; got {:?} and {:?}",
                 name, st, pt
@@ -8635,11 +8635,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 &format!("str.{}.bool", name),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((v.into(), LotusType::Bool))
+        Ok((v.into(), CodegenTy::Bool))
     }
 
     /// m37: lower a `to_string(x)` builtin call. Routes by the
-    /// argument's LotusType to the right snprintf-backed runtime
+    /// argument's CodegenTy to the right snprintf-backed runtime
     /// helper; result is a fresh arena-owned NUL-terminated
     /// buffer formatted exactly like `println` would render the
     /// same value, so a value written via to_string + concat
@@ -8650,7 +8650,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "`to_string` expects exactly 1 argument, got {}",
@@ -8659,7 +8659,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         let res = self.value_to_string(v, &ty)?;
-        Ok((res, LotusType::String))
+        Ok((res, CodegenTy::String))
     }
 
     /// m47-payloads-followup: convert any single value to a
@@ -8672,12 +8672,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn value_to_string(
         &mut self,
         v: BasicValueEnum<'ctx>,
-        ty: &LotusType,
+        ty: &CodegenTy,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         let ty = ty.clone();
         match ty {
-            LotusType::String => Ok(v),
-            LotusType::Int => {
+            CodegenTy::String => Ok(v),
+            CodegenTy::Int => {
                 let arena_ptr = self.current_arena_ptr()?;
                 let f = self
                     .module
@@ -8696,7 +8696,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("lotus_str_from_int returns ptr");
                 Ok(res)
             }
-            LotusType::Duration => {
+            CodegenTy::Duration => {
                 let arena_ptr = self.current_arena_ptr()?;
                 let f = self
                     .module
@@ -8715,7 +8715,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("lotus_str_from_duration returns ptr");
                 Ok(res)
             }
-            LotusType::Float => {
+            CodegenTy::Float => {
                 let arena_ptr = self.current_arena_ptr()?;
                 let f = self
                     .module
@@ -8734,7 +8734,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("lotus_str_from_float returns ptr");
                 Ok(res)
             }
-            LotusType::Decimal => {
+            CodegenTy::Decimal => {
                 let arena_ptr = self.current_arena_ptr()?;
                 let i128_v = v.into_int_value();
                 let i64_t = self.context.i64_type();
@@ -8768,7 +8768,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("lotus_str_from_decimal returns ptr");
                 Ok(res)
             }
-            LotusType::Bool => {
+            CodegenTy::Bool => {
                 let true_ptr = self.global_string("true");
                 let false_ptr = self.global_string("false");
                 let res = self
@@ -8782,7 +8782,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok(res)
             }
-            LotusType::Enum(enum_name) => {
+            CodegenTy::Enum(enum_name) => {
                 let info = self
                     .user_enums
                     .get(&enum_name)
@@ -8996,11 +8996,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         scrut_val: BasicValueEnum<'ctx>,
         lit_val: BasicValueEnum<'ctx>,
-        ty: &LotusType,
+        ty: &CodegenTy,
         name: &str,
     ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
         match ty {
-            LotusType::Int | LotusType::Duration | LotusType::Bool | LotusType::Decimal => self
+            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Bool | CodegenTy::Decimal => self
                 .builder
                 .build_int_compare(
                     inkwell::IntPredicate::EQ,
@@ -9009,7 +9009,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     name,
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
-            LotusType::Float => self
+            CodegenTy::Float => self
                 .builder
                 .build_float_compare(
                     inkwell::FloatPredicate::OEQ,
@@ -9022,7 +9022,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // the lotus_str_eq runtime helper. Used both by match
             // arms with String literals and by enum-deep-eq when
             // a payload field is String-typed.
-            LotusType::String | LotusType::Time => {
+            CodegenTy::String | CodegenTy::Time => {
                 let eq_fn = self
                     .module
                     .get_function("lotus_str_eq")
@@ -9121,7 +9121,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Binding sub-pattern. Entries are applied at
             // pattern_target's start (guard_bb if guarded,
             // else body_bb).
-            let mut bindings: Vec<(String, BasicValueEnum<'ctx>, LotusType)> =
+            let mut bindings: Vec<(String, BasicValueEnum<'ctx>, CodegenTy)> =
                 Vec::new();
 
             match &arm.pattern {
@@ -9167,7 +9167,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // Nested tuple patterns aren't needed for the
                     // shapes the language exposes today.
                     let elem_tys = match &scrutinee_ty {
-                        LotusType::Tuple(ts) => ts.clone(),
+                        CodegenTy::Tuple(ts) => ts.clone(),
                         other => {
                             return Err(CodegenError::Unsupported(format!(
                                 "tuple pattern against non-tuple \
@@ -9317,7 +9317,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 enum_name, variant_name
                             ))
                         })?;
-                    if !matches!(scrutinee_ty, LotusType::Enum(ref n) if n == &enum_name)
+                    if !matches!(scrutinee_ty, CodegenTy::Enum(ref n) if n == &enum_name)
                     {
                         return Err(CodegenError::Unsupported(format!(
                             "constructor pattern `{}::{}` against \
@@ -9446,10 +9446,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     bindings: &[(
                 String,
                 BasicValueEnum<'ctx>,
-                LotusType,
+                CodegenTy,
             )]|
              -> Result<
-                Vec<(String, Option<(PointerValue<'ctx>, LotusType)>)>,
+                Vec<(String, Option<(PointerValue<'ctx>, CodegenTy)>)>,
                 CodegenError,
             > {
                 let mut out = Vec::with_capacity(bindings.len());
@@ -9467,14 +9467,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(out)
             };
 
-            let saved: Vec<(String, Option<(PointerValue<'ctx>, LotusType)>)>;
+            let saved: Vec<(String, Option<(PointerValue<'ctx>, CodegenTy)>)>;
             if let (Some(gbb), Some(guard_expr)) = (guard_bb, arm.guard.as_ref()) {
                 // Guard-check path: install binding so the guard
                 // can see it, evaluate the guard, cond-branch.
                 self.builder.position_at_end(gbb);
                 saved = install_bindings(self, scope, &bindings)?;
                 let (gv, gty) = self.lower_expr(guard_expr, scope)?;
-                if gty != LotusType::Bool {
+                if gty != CodegenTy::Bool {
                     return Err(CodegenError::Unsupported(format!(
                         "match arm guard must have type Bool, got {:?}",
                         gty
@@ -9570,7 +9570,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Three iterator shapes today: `self.children` (built-in
         // fixed-cap array on accept-declaring loci),
         // `lo..hi` / `lo..=hi` integer ranges (counted loop), and
-        // arbitrary expressions of LotusType::Array.
+        // arbitrary expressions of CodegenTy::Array.
         let is_self_children = matches!(iter, Expr::Field { receiver, name, .. }
             if matches!(receiver.as_ref(), Expr::KwSelf(_))
                 && name.name == "children");
@@ -9700,7 +9700,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let prev = scope.locals.insert(
             var_name.name.clone(),
-            (local_slot, LotusType::LocusRef(child_locus)),
+            (local_slot, CodegenTy::LocusRef(child_locus)),
         );
         self.loops.push(LoopFrame {
             continue_bb: inc_bb,
@@ -9759,7 +9759,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<BlockEnd, CodegenError> {
         let (lo_val, lo_ty) = self.lower_expr(lo, scope)?;
         let (hi_val, hi_ty) = self.lower_expr(hi, scope)?;
-        if lo_ty != LotusType::Int || hi_ty != LotusType::Int {
+        if lo_ty != CodegenTy::Int || hi_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "for-range bounds must be Int (got {:?}..{:?})",
                 lo_ty, hi_ty
@@ -9820,13 +9820,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         self.builder.position_at_end(body_bb);
-        let local_slot = self.alloca_for(&LotusType::Int, &var_name.name)?;
+        let local_slot = self.alloca_for(&CodegenTy::Int, &var_name.name)?;
         self.builder
             .build_store(local_slot, i)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let prev = scope
             .locals
-            .insert(var_name.name.clone(), (local_slot, LotusType::Int));
+            .insert(var_name.name.clone(), (local_slot, CodegenTy::Int));
         self.loops.push(LoopFrame {
             continue_bb: inc_bb,
             break_bb: exit_bb,
@@ -9869,7 +9869,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(BlockEnd::Open)
     }
 
-    /// `for x in arr` over a LotusType::Array iterator. Iterates
+    /// `for x in arr` over a CodegenTy::Array iterator. Iterates
     /// 0..N where N is the array's static size, GEPs each slot,
     /// loads it, binds it as `x` for the body.
     fn lower_for_array(
@@ -9881,7 +9881,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<BlockEnd, CodegenError> {
         let (arr_val, arr_ty) = self.lower_expr(iter, scope)?;
         let (elem_ty, n) = match arr_ty {
-            LotusType::Array(elem, n) => (*elem, n),
+            CodegenTy::Array(elem, n) => (*elem, n),
             other => {
                 return Err(CodegenError::Unsupported(format!(
                     "for-loop iterator must be an array (got {:?})",
@@ -10034,7 +10034,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 None => i32_t.const_int(0, false),
                 Some(e) => {
                     let (v, ty) = self.lower_expr(e, scope)?;
-                    if ty != LotusType::Int {
+                    if ty != CodegenTy::Int {
                         return Err(CodegenError::Unsupported(format!(
                             "`return` from main must carry Int (exit code); \
                              got {:?}",
@@ -10090,7 +10090,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let e_to_lower: &Expr = match e {
                     Expr::Struct { path, inits, span } => {
                         match self
-                            .resolve_generic_struct_path_for_lotus_type(
+                            .resolve_generic_struct_path_for_codegen_ty(
                                 path,
                                 &declared_ty,
                             )
@@ -10163,34 +10163,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     fn alloca_for(
         &self,
-        ty: &LotusType,
+        ty: &CodegenTy,
         name: &str,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
         match ty {
-            LotusType::Int | LotusType::Duration => self
+            CodegenTy::Int | CodegenTy::Duration => self
                 .builder
                 .build_alloca(self.context.i64_type(), name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
-            LotusType::FnPtr { .. } => self
+            CodegenTy::FnPtr { .. } => self
                 .builder
                 .build_alloca(
                     self.context.ptr_type(AddressSpace::default()),
                     name,
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
-            LotusType::Float => self
+            CodegenTy::Float => self
                 .builder
                 .build_alloca(self.context.f64_type(), name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
-            LotusType::Decimal => self
+            CodegenTy::Decimal => self
                 .builder
                 .build_alloca(self.context.i128_type(), name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
-            LotusType::Bool => self
+            CodegenTy::Bool => self
                 .builder
                 .build_alloca(self.context.bool_type(), name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
-            LotusType::Enum(en) => {
+            CodegenTy::Enum(en) => {
                 let payload = self
                     .user_enums
                     .get(en.as_str())
@@ -10206,13 +10206,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))
                 }
             }
-            LotusType::String
-            | LotusType::Bytes
-            | LotusType::Time
-            | LotusType::LocusRef(_)
-            | LotusType::TypeRef(_)
-            | LotusType::Array(_, _)
-            | LotusType::Tuple(_) => self
+            CodegenTy::String
+            | CodegenTy::Bytes
+            | CodegenTy::Time
+            | CodegenTy::LocusRef(_)
+            | CodegenTy::TypeRef(_)
+            | CodegenTy::Array(_, _)
+            | CodegenTy::Tuple(_) => self
                 .builder
                 .build_alloca(self.context.ptr_type(AddressSpace::default()), name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
@@ -10223,7 +10223,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         e: &Expr,
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         match e {
             // m46: `sum(expr)` inside a closure assertion is the
             // accumulator load (sample-update already ran);
@@ -10242,26 +10242,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             Expr::Literal(Literal::Int(n), _) => {
                 let v = self.context.i64_type().const_int(*n as u64, true);
-                Ok((v.into(), LotusType::Int))
+                Ok((v.into(), CodegenTy::Int))
             }
             Expr::Literal(Literal::Float(f), _) => {
                 let v = self.context.f64_type().const_float(*f);
-                Ok((v.into(), LotusType::Float))
+                Ok((v.into(), CodegenTy::Float))
             }
             Expr::Literal(Literal::Bool(b), _) => {
                 let v = self.context.bool_type().const_int(*b as u64, false);
-                Ok((v.into(), LotusType::Bool))
+                Ok((v.into(), CodegenTy::Bool))
             }
             Expr::Literal(Literal::String(s), _) => {
                 let p = self.global_string(s);
-                Ok((p.into(), LotusType::String))
+                Ok((p.into(), CodegenTy::String))
             }
             Expr::Literal(Literal::Duration(ns), _) => {
                 // Duration literals are i64 nanoseconds at the
                 // lowered level; tracked as Duration so callers
                 // like `time::sleep` enforce the typed contract.
                 let v = self.context.i64_type().const_int(*ns as u64, true);
-                Ok((v.into(), LotusType::Duration))
+                Ok((v.into(), CodegenTy::Duration))
             }
             Expr::Literal(Literal::Decimal(s), _) => {
                 // m48: lower Decimal literals to i128 mantissa
@@ -10279,14 +10279,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     ))
                 })?;
                 let v = i128_const(self.context, mantissa);
-                Ok((v.into(), LotusType::Decimal))
+                Ok((v.into(), CodegenTy::Decimal))
             }
             Expr::Literal(Literal::Time(s), _) => {
                 // v0 codegen mirrors the interpreter: store the
                 // source spelling as a NUL-terminated global. Real
                 // i64-since-epoch arithmetic lands later.
                 let p = self.global_string(s);
-                Ok((p.into(), LotusType::Time))
+                Ok((p.into(), CodegenTy::Time))
             }
             Expr::Path(qn) => {
                 // m47 + payloads: enum variant construction
@@ -10319,13 +10319,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 tag as u32,
                                 &[],
                             )?;
-                            return Ok((v.into(), LotusType::Enum(enum_name)));
+                            return Ok((v.into(), CodegenTy::Enum(enum_name)));
                         }
                         let v = self
                             .context
                             .i32_type()
                             .const_int(tag as u64, false);
-                        return Ok((v.into(), LotusType::Enum(enum_name)));
+                        return Ok((v.into(), CodegenTy::Enum(enum_name)));
                     }
                 }
                 Err(CodegenError::Unsupported(format!(
@@ -10368,7 +10368,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .func
                         .as_global_value()
                         .as_pointer_value();
-                    let fn_ty = LotusType::FnPtr {
+                    let fn_ty = CodegenTy::FnPtr {
                         args: sig.params.clone(),
                         ret: sig.ret.clone().map(Box::new),
                     };
@@ -10424,7 +10424,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // m35: numeric tuple field access (`t.0`, `t.1`).
                 // The parser stores the digit string as the field
                 // name; if the receiver is a tuple, GEP+load.
-                if let LotusType::Tuple(elems) = &recv_ty {
+                if let CodegenTy::Tuple(elems) = &recv_ty {
                     let i = name.name.parse::<usize>().map_err(|_| {
                         CodegenError::Unsupported(format!(
                             "tuple field access expects a numeric index; \
@@ -10463,7 +10463,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     return Ok((val, elems[i].clone()));
                 }
                 let (struct_ty, fields, ref_kind) = match &recv_ty {
-                    LotusType::LocusRef(n) => {
+                    CodegenTy::LocusRef(n) => {
                         let info = self
                             .user_loci
                             .get(n)
@@ -10471,7 +10471,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .expect("LocusRef points to a declared locus");
                         (info.struct_ty, info.fields, format!("locus `{}`", n))
                     }
-                    LotusType::TypeRef(n) => {
+                    CodegenTy::TypeRef(n) => {
                         let info = self
                             .user_types
                             .get(n)
@@ -10606,7 +10606,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Expr::Ident(i)
                     if matches!(
                         scope.locals.get(&i.name).map(|(_, t)| t),
-                        Some(LotusType::FnPtr { .. })
+                        Some(CodegenTy::FnPtr { .. })
                     ) =>
                 {
                     let (slot_ptr, fn_ty) = scope
@@ -10615,7 +10615,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .cloned()
                         .expect("matched FnPtr above");
                     let (arg_tys, ret_ty) = match fn_ty {
-                        LotusType::FnPtr { args, ret } => (args, ret),
+                        CodegenTy::FnPtr { args, ret } => (args, ret),
                         _ => unreachable!(),
                     };
                     let ptr_t = self
@@ -10695,7 +10695,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let name = path.segments[0].name.clone();
                 let ptr =
                     self.lower_locus_instantiation(&name, inits, scope)?;
-                Ok((ptr.into(), LotusType::LocusRef(name)))
+                Ok((ptr.into(), CodegenTy::LocusRef(name)))
             }
             // m81 + m84: path-qualified stdlib literal in expression
             // position. `std::io::tcp::Stream { conn_fd }` resolves
@@ -10718,10 +10718,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 })?;
                 if self.user_loci.contains_key(mangled) {
                     let ptr = self.lower_locus_instantiation(mangled, inits, scope)?;
-                    Ok((ptr.into(), LotusType::LocusRef(mangled.to_string())))
+                    Ok((ptr.into(), CodegenTy::LocusRef(mangled.to_string())))
                 } else if self.user_types.contains_key(mangled) {
                     let ptr = self.lower_user_type_instantiation(mangled, inits, scope)?;
-                    Ok((ptr.into(), LotusType::TypeRef(mangled.to_string())))
+                    Ok((ptr.into(), CodegenTy::TypeRef(mangled.to_string())))
                 } else {
                     Err(CodegenError::Unsupported(format!(
                         "stdlib path `{}` (mangled `{}`) not found in \
@@ -10737,7 +10737,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             {
                 let name = path.segments[0].name.clone();
                 let ptr = self.lower_user_type_instantiation(&name, inits, scope)?;
-                Ok((ptr.into(), LotusType::TypeRef(name)))
+                Ok((ptr.into(), CodegenTy::TypeRef(name)))
             }
             Expr::Array(parts, _) => {
                 // Lower an array literal `[a, b, c]` into an arena
@@ -10756,7 +10756,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 let mut elem_vals: Vec<BasicValueEnum<'ctx>> =
                     Vec::with_capacity(parts.len());
-                let mut elem_ty: Option<LotusType> = None;
+                let mut elem_ty: Option<CodegenTy> = None;
                 for p in parts {
                     let (v, t) = self.lower_expr(p, scope)?;
                     if let Some(prev) = &elem_ty {
@@ -10801,7 +10801,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_store(slot, *v)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
-                Ok((arr_ptr.into(), LotusType::Array(Box::new(elem_ty), n)))
+                Ok((arr_ptr.into(), CodegenTy::Array(Box::new(elem_ty), n)))
             }
             Expr::Tuple(parts, _) => {
                 // m35: tuple literal `(a, b, ...)`. Lower each
@@ -10819,7 +10819,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 let mut elem_vals: Vec<BasicValueEnum<'ctx>> =
                     Vec::with_capacity(parts.len());
-                let mut elem_tys: Vec<LotusType> =
+                let mut elem_tys: Vec<CodegenTy> =
                     Vec::with_capacity(parts.len());
                 for p in parts {
                     let (v, t) = self.lower_expr(p, scope)?;
@@ -10853,7 +10853,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_store(slot, *v)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
-                Ok((tup_ptr.into(), LotusType::Tuple(elem_tys)))
+                Ok((tup_ptr.into(), CodegenTy::Tuple(elem_tys)))
             }
             Expr::Index { receiver, index, .. } => {
                 // m36: range-indexed receivers do slicing, not
@@ -10865,7 +10865,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // since the helper takes exclusive `hi`.
                 if let Expr::Range { lo, hi, inclusive, .. } = index.as_ref() {
                     let (recv_val, recv_ty) = self.lower_expr(receiver, scope)?;
-                    if !matches!(recv_ty, LotusType::String) {
+                    if !matches!(recv_ty, CodegenTy::String) {
                         return Err(CodegenError::Unsupported(format!(
                             "range slicing only supported on String in v0, \
                              not {:?}",
@@ -10874,7 +10874,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                     let (lo_v, lo_t) = self.lower_expr(lo, scope)?;
                     let (hi_v, hi_t) = self.lower_expr(hi, scope)?;
-                    if lo_t != LotusType::Int || hi_t != LotusType::Int {
+                    if lo_t != CodegenTy::Int || hi_t != CodegenTy::Int {
                         return Err(CodegenError::Unsupported(format!(
                             "string slice bounds must be Int; got \
                              {:?}..{:?}",
@@ -10910,18 +10910,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .try_as_basic_value()
                         .left()
                         .expect("lotus_str_slice returns ptr");
-                    return Ok((v, LotusType::String));
+                    return Ok((v, CodegenTy::String));
                 }
                 let (recv_val, recv_ty) = self.lower_expr(receiver, scope)?;
                 let (idx_val, idx_ty) = self.lower_expr(index, scope)?;
-                if idx_ty != LotusType::Int {
+                if idx_ty != CodegenTy::Int {
                     return Err(CodegenError::Unsupported(format!(
                         "array index must be Int, got {:?}",
                         idx_ty
                     )));
                 }
                 match recv_ty {
-                    LotusType::Array(elem_ty, n) => {
+                    CodegenTy::Array(elem_ty, n) => {
                         let i32_t = self.context.i32_type();
                         let arr_ty = self.llvm_array_storage_type(&elem_ty, n);
                         let recv_ptr = recv_val.into_pointer_value();
@@ -10963,52 +10963,52 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn const_param(
         &mut self,
         v: &ParamValue,
-    ) -> (BasicValueEnum<'ctx>, LotusType) {
+    ) -> (BasicValueEnum<'ctx>, CodegenTy) {
         match v {
             ParamValue::Int(n) => (
                 self.context.i64_type().const_int(*n as u64, true).into(),
-                LotusType::Int,
+                CodegenTy::Int,
             ),
             ParamValue::Float(f) => (
                 self.context.f64_type().const_float(*f).into(),
-                LotusType::Float,
+                CodegenTy::Float,
             ),
             ParamValue::Bool(b) => (
                 self.context.bool_type().const_int(*b as u64, false).into(),
-                LotusType::Bool,
+                CodegenTy::Bool,
             ),
-            ParamValue::String(s) => (self.global_string(s).into(), LotusType::String),
+            ParamValue::String(s) => (self.global_string(s).into(), CodegenTy::String),
             ParamValue::Duration(ns) => (
                 self.context.i64_type().const_int(*ns as u64, true).into(),
-                LotusType::Duration,
+                CodegenTy::Duration,
             ),
             ParamValue::Decimal(m) => (
                 i128_const(self.context, *m).into(),
-                LotusType::Decimal,
+                CodegenTy::Decimal,
             ),
             ParamValue::Time(s) => {
-                (self.global_string(s).into(), LotusType::Time)
+                (self.global_string(s).into(), CodegenTy::Time)
             }
         }
     }
 
     fn llvm_basic_type(
         &self,
-        t: &LotusType,
+        t: &CodegenTy,
     ) -> inkwell::types::BasicTypeEnum<'ctx> {
         match t {
-            LotusType::Int | LotusType::Duration => {
+            CodegenTy::Int | CodegenTy::Duration => {
                 self.context.i64_type().into()
             }
-            LotusType::FnPtr { .. } => {
+            CodegenTy::FnPtr { .. } => {
                 // m80: function pointers store as raw `ptr`. The
                 // FunctionType for indirect calls is synthesized
                 // from the FnPtr's args/ret at the call site, not
                 // baked into the storage layout.
                 self.context.ptr_type(AddressSpace::default()).into()
             }
-            LotusType::Float => self.context.f64_type().into(),
-            LotusType::Decimal => {
+            CodegenTy::Float => self.context.f64_type().into(),
+            CodegenTy::Decimal => {
                 // m48: Decimal is an i128 mantissa with implicit
                 // scale 9 (mantissa × 10^-9). Distinct from Float
                 // at the type level so type-checking stays strict
@@ -11017,8 +11017,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // adjustment in mul/div, not f64.
                 self.context.i128_type().into()
             }
-            LotusType::Bool => self.context.bool_type().into(),
-            LotusType::Enum(name) => {
+            CodegenTy::Bool => self.context.bool_type().into(),
+            CodegenTy::Enum(name) => {
                 // m47 + payloads: no-payload enums stay as i32
                 // tags (value semantics, no allocation). Once a
                 // variant carries a payload, the whole enum
@@ -11036,13 +11036,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     _ => self.context.i32_type().into(),
                 }
             }
-            LotusType::String
-            | LotusType::Bytes
-            | LotusType::Time
-            | LotusType::LocusRef(_)
-            | LotusType::TypeRef(_)
-            | LotusType::Array(_, _)
-            | LotusType::Tuple(_) => {
+            CodegenTy::String
+            | CodegenTy::Bytes
+            | CodegenTy::Time
+            | CodegenTy::LocusRef(_)
+            | CodegenTy::TypeRef(_)
+            | CodegenTy::Array(_, _)
+            | CodegenTy::Tuple(_) => {
                 self.context.ptr_type(AddressSpace::default()).into()
             }
         }
@@ -11053,11 +11053,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// reading a numeric tuple field, destructuring in a let,
     /// or matching a tuple pattern. Element types come from
     /// `llvm_basic_type` so nested tuples / arrays / records are
-    /// stored as pointers (matching the rest of the LotusType
+    /// stored as pointers (matching the rest of the CodegenTy
     /// representation).
     fn llvm_tuple_storage_type(
         &self,
-        elems: &[LotusType],
+        elems: &[CodegenTy],
     ) -> inkwell::types::StructType<'ctx> {
         let field_tys: Vec<inkwell::types::BasicTypeEnum<'ctx>> = elems
             .iter()
@@ -11067,11 +11067,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// LLVM `[N x T]` for the element type + size of an Array
-    /// LotusType. Used at array-literal allocation time + at GEP
+    /// CodegenTy. Used at array-literal allocation time + at GEP
     /// time when indexing or iterating.
     fn llvm_array_storage_type(
         &self,
-        elem: &LotusType,
+        elem: &CodegenTy,
         n: u64,
     ) -> inkwell::types::ArrayType<'ctx> {
         match self.llvm_basic_type(elem) {
@@ -11089,13 +11089,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         op: BinOp,
         lv: BasicValueEnum<'ctx>,
         rv: BasicValueEnum<'ctx>,
-        ty: &LotusType,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        ty: &CodegenTy,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         use inkwell::IntPredicate as IP;
         use inkwell::FloatPredicate as FP;
         let ty_owned = ty.clone();
         match (op, ty_owned) {
-            (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, LotusType::Int) => {
+            (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, CodegenTy::Int) => {
                 let l = lv.into_int_value();
                 let r = rv.into_int_value();
                 let v = match op {
@@ -11107,13 +11107,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     _ => unreachable!(),
                 };
                 let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v.into(), LotusType::Int))
+                Ok((v.into(), CodegenTy::Int))
             }
             // Duration arithmetic — add/sub produce Duration. Mul
             // / div / mod don't have natural Duration semantics
             // (multiply by a scalar would, but we don't have
             // scalar-by-Duration overloads yet).
-            (BinOp::Add | BinOp::Sub, LotusType::Duration) => {
+            (BinOp::Add | BinOp::Sub, CodegenTy::Duration) => {
                 let l = lv.into_int_value();
                 let r = rv.into_int_value();
                 let v = match op {
@@ -11122,10 +11122,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     _ => unreachable!(),
                 };
                 let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v.into(), LotusType::Duration))
+                Ok((v.into(), CodegenTy::Duration))
             }
             (BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq,
-                LotusType::Duration) =>
+                CodegenTy::Duration) =>
             {
                 let l = lv.into_int_value();
                 let r = rv.into_int_value();
@@ -11142,9 +11142,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_int_compare(pred, l, r, "dcmp")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v.into(), LotusType::Bool))
+                Ok((v.into(), CodegenTy::Bool))
             }
-            (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, LotusType::Float) => {
+            (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, CodegenTy::Float) => {
                 let l = lv.into_float_value();
                 let r = rv.into_float_value();
                 let v = match op {
@@ -11155,9 +11155,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     _ => unreachable!(),
                 };
                 let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v.into(), LotusType::Float))
+                Ok((v.into(), CodegenTy::Float))
             }
-            (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, LotusType::Decimal) => {
+            (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, CodegenTy::Decimal) => {
                 // m48: Decimal arithmetic on i128 mantissa with
                 // implicit scale 9. Add/Sub/Mod: direct i128 ops
                 // (the mantissas already share the implicit
@@ -11194,10 +11194,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     _ => unreachable!(),
                 };
                 let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v.into(), LotusType::Decimal))
+                Ok((v.into(), CodegenTy::Decimal))
             }
             (BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq,
-                LotusType::Int) =>
+                CodegenTy::Int) =>
             {
                 let l = lv.into_int_value();
                 let r = rv.into_int_value();
@@ -11214,10 +11214,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_int_compare(pred, l, r, "icmp")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v.into(), LotusType::Bool))
+                Ok((v.into(), CodegenTy::Bool))
             }
             (BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq,
-                LotusType::Decimal) =>
+                CodegenTy::Decimal) =>
             {
                 let l = lv.into_int_value();
                 let r = rv.into_int_value();
@@ -11234,10 +11234,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_int_compare(pred, l, r, "deccmp")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v.into(), LotusType::Bool))
+                Ok((v.into(), CodegenTy::Bool))
             }
             (BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq,
-                LotusType::Float) =>
+                CodegenTy::Float) =>
             {
                 let l = lv.into_float_value();
                 let r = rv.into_float_value();
@@ -11254,7 +11254,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_float_compare(pred, l, r, "fcmp")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v.into(), LotusType::Bool))
+                Ok((v.into(), CodegenTy::Bool))
             }
             // m47-followup + payloads: enum equality.
             //   - No-payload enums: values are i32 tags; integer
@@ -11266,7 +11266,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             //     `!=` is the negation of the eq result.
             // Ord-style operators (<, >, <=, >=) aren't supported
             // — declaration order isn't a meaningful ordering.
-            (BinOp::Eq | BinOp::NotEq, LotusType::Enum(name)) => {
+            (BinOp::Eq | BinOp::NotEq, CodegenTy::Enum(name)) => {
                 let info = self
                     .user_enums
                     .get(&name)
@@ -11302,27 +11302,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
                     _ => unreachable!(),
                 };
-                Ok((v.into(), LotusType::Bool))
+                Ok((v.into(), CodegenTy::Bool))
             }
-            (BinOp::And, LotusType::Bool) => {
+            (BinOp::And, CodegenTy::Bool) => {
                 let v = self
                     .builder
                     .build_and(lv.into_int_value(), rv.into_int_value(), "and")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v.into(), LotusType::Bool))
+                Ok((v.into(), CodegenTy::Bool))
             }
-            (BinOp::Or, LotusType::Bool) => {
+            (BinOp::Or, CodegenTy::Bool) => {
                 let v = self
                     .builder
                     .build_or(lv.into_int_value(), rv.into_int_value(), "or")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v.into(), LotusType::Bool))
+                Ok((v.into(), CodegenTy::Bool))
             }
             // m36: String concatenation. The result lives in the
             // current arena (caller's locus or program-wide); the
             // C runtime helper memcpy's both operands into a fresh
             // NUL-terminated buffer.
-            (BinOp::Add, LotusType::String) => {
+            (BinOp::Add, CodegenTy::String) => {
                 let arena_ptr = self.current_arena_ptr()?;
                 let concat_fn = self
                     .module
@@ -11343,11 +11343,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("lotus_str_concat returns ptr");
-                Ok((v, LotusType::String))
+                Ok((v, CodegenTy::String))
             }
             // m36: String equality / inequality via strcmp wrapper.
             // The C helper returns i32 0/1; we truncate to i1.
-            (BinOp::Eq | BinOp::NotEq, LotusType::String) => {
+            (BinOp::Eq | BinOp::NotEq, CodegenTy::String) => {
                 let eq_fn = self
                     .module
                     .get_function("lotus_str_eq")
@@ -11383,7 +11383,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 } else {
                     is_eq
                 };
-                Ok((result.into(), LotusType::Bool))
+                Ok((result.into(), CodegenTy::Bool))
             }
             _ => Err(CodegenError::Unsupported(format!(
                 "binop {:?} on {:?}",
@@ -11396,26 +11396,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         op: UnaryOp,
         v: BasicValueEnum<'ctx>,
-        ty: &LotusType,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+        ty: &CodegenTy,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         let ty_owned = ty.clone();
         match (op, ty_owned) {
-            (UnaryOp::Neg, LotusType::Int) => {
+            (UnaryOp::Neg, CodegenTy::Int) => {
                 let zero = self.context.i64_type().const_int(0, true);
                 let r = self
                     .builder
                     .build_int_sub(zero, v.into_int_value(), "neg")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((r.into(), LotusType::Int))
+                Ok((r.into(), CodegenTy::Int))
             }
-            (UnaryOp::Neg, LotusType::Float) => {
+            (UnaryOp::Neg, CodegenTy::Float) => {
                 let r = self
                     .builder
                     .build_float_neg(v.into_float_value(), "fneg")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((r.into(), LotusType::Float))
+                Ok((r.into(), CodegenTy::Float))
             }
-            (UnaryOp::Neg, LotusType::Decimal) => {
+            (UnaryOp::Neg, CodegenTy::Decimal) => {
                 // m48: Decimal lives in i128; negate via subtract
                 // from i128 zero, mirroring Int's neg lowering.
                 let zero = i128_const(self.context, 0);
@@ -11423,14 +11423,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_int_sub(zero, v.into_int_value(), "decneg")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((r.into(), LotusType::Decimal))
+                Ok((r.into(), CodegenTy::Decimal))
             }
-            (UnaryOp::Not, LotusType::Bool) => {
+            (UnaryOp::Not, CodegenTy::Bool) => {
                 let r = self
                     .builder
                     .build_not(v.into_int_value(), "not")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((r.into(), LotusType::Bool))
+                Ok((r.into(), CodegenTy::Bool))
             }
             _ => Err(CodegenError::Unsupported(format!(
                 "unop {:?} on {:?}",
@@ -11470,16 +11470,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             let (val, ty) = self.lower_expr(a, scope)?;
             match &ty {
-                LotusType::Int => {
+                CodegenTy::Int => {
                     format.push_str("%lld");
                     printf_args.push(BasicMetadataValueEnum::IntValue(val.into_int_value()));
                 }
-                LotusType::Float => {
+                CodegenTy::Float => {
                     format.push_str("%g");
                     printf_args
                         .push(BasicMetadataValueEnum::FloatValue(val.into_float_value()));
                 }
-                LotusType::Decimal => {
+                CodegenTy::Decimal => {
                     // m48: render the i128 mantissa via the
                     // C runtime helper into a stack buffer, then
                     // splice the buffer in as %s. Splitting i128
@@ -11529,7 +11529,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     format.push_str("%s");
                     printf_args.push(BasicMetadataValueEnum::PointerValue(buf));
                 }
-                LotusType::Bool => {
+                CodegenTy::Bool => {
                     // No printf %b; widen to a string at format
                     // time via a select on the lowered i1.
                     let true_s = self.global_string("true");
@@ -11543,13 +11543,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         chosen.into_pointer_value(),
                     ));
                 }
-                LotusType::String | LotusType::Time => {
+                CodegenTy::String | CodegenTy::Time => {
                     format.push_str("%s");
                     printf_args.push(BasicMetadataValueEnum::PointerValue(
                         val.into_pointer_value(),
                     ));
                 }
-                LotusType::Duration => {
+                CodegenTy::Duration => {
                     // Match the interpreter's `<ns>ns` rendering so
                     // both paths produce identical stdout.
                     format.push_str("%lldns");
@@ -11557,39 +11557,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         val.into_int_value(),
                     ));
                 }
-                LotusType::LocusRef(name) => {
+                CodegenTy::LocusRef(name) => {
                     return Err(CodegenError::Unsupported(format!(
                         "println of a locus value (LocusRef `{}`) — \
                          lotus has no Display protocol yet",
                         name
                     )));
                 }
-                LotusType::TypeRef(name) => {
+                CodegenTy::TypeRef(name) => {
                     return Err(CodegenError::Unsupported(format!(
                         "println of a type value (TypeRef `{}`) — \
                          print individual fields instead",
                         name
                     )));
                 }
-                LotusType::Array(_, _) => {
+                CodegenTy::Array(_, _) => {
                     return Err(CodegenError::Unsupported(
                         "println of an array — print individual \
                          elements via indexing or iteration".into(),
                     ));
                 }
-                LotusType::Tuple(_) => {
+                CodegenTy::Tuple(_) => {
                     return Err(CodegenError::Unsupported(
                         "println of a tuple — print individual \
                          components via .0 / .1 / let-destructure".into(),
                     ));
                 }
-                LotusType::FnPtr { .. } => {
+                CodegenTy::FnPtr { .. } => {
                     return Err(CodegenError::Unsupported(
                         "println of a function pointer — function \
                          values have no surface representation".into(),
                     ));
                 }
-                LotusType::Bytes => {
+                CodegenTy::Bytes => {
                     // m89: print Bytes as `<bytes len=N>` so it's
                     // identifiable in logs without dumping
                     // potentially-binary content. Users who want the
@@ -11616,7 +11616,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     format.push_str("<bytes len=%lld>");
                     printf_args.push(BasicMetadataValueEnum::IntValue(len_v));
                 }
-                LotusType::Enum(enum_name) => {
+                CodegenTy::Enum(enum_name) => {
                     // m47-followup + payloads: render the enum
                     // value via the shared value_to_string path —
                     // for no-payload enums it returns a pointer
@@ -11700,7 +11700,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         qn: &QualifiedName,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         let segs: Vec<&str> =
             qn.segments.iter().map(|s| s.name.as_str()).collect();
         if segs.first() == Some(&"std") {
@@ -11742,7 +11742,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         args.len()
                     )));
                 }
-                let mut field_vals: Vec<(BasicValueEnum<'ctx>, LotusType)> =
+                let mut field_vals: Vec<(BasicValueEnum<'ctx>, CodegenTy)> =
                     Vec::with_capacity(args.len());
                 for (j, a) in args.iter().enumerate() {
                     let (v, ty) = self.lower_expr(a, scope)?;
@@ -11759,7 +11759,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     variant_idx as u32,
                     &field_vals,
                 )?;
-                Ok((ptr.into(), LotusType::Enum(enum_name.to_string())))
+                Ok((ptr.into(), CodegenTy::Enum(enum_name.to_string())))
             }
             _ => Err(CodegenError::Unsupported(format!(
                 "path call `{}` in expression position",
@@ -11775,7 +11775,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_time_monotonic(
         &mut self,
         args: &[Expr],
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if !args.is_empty() {
             return Err(CodegenError::Unsupported(format!(
                 "time::monotonic takes 0 arguments, got {}",
@@ -11828,7 +11828,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .builder
             .build_int_add(sec_ns, nsec, "now.ns")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((total.into(), LotusType::Duration))
+        Ok((total.into(), CodegenTy::Duration))
     }
 
     /// Lower `time::sleep(duration)` to a monotonic-clock,
@@ -11860,7 +11860,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (val, ty) = self.lower_expr(&args[0], scope)?;
-        if ty != LotusType::Duration {
+        if ty != CodegenTy::Duration {
             return Err(CodegenError::Unsupported(format!(
                 "time::sleep expects Duration, got {:?}",
                 ty
@@ -12293,7 +12293,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         segs: &[&str],
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         match segs {
             ["std", "process", "pid"] => self.lower_std_process_pid(args),
             ["std", "io", "tcp", "__listen_socket"] => {
@@ -12480,7 +12480,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (code_val, code_ty) = self.lower_expr(&args[0], scope)?;
-        if code_ty != LotusType::Int {
+        if code_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "std::process::exit: code must be Int, got {:?}",
                 code_ty
@@ -12521,7 +12521,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_std_process_pid(
         &mut self,
         args: &[Expr],
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if !args.is_empty() {
             return Err(CodegenError::Unsupported(format!(
                 "std::process::pid takes 0 arguments, got {}",
@@ -12546,7 +12546,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .builder
             .build_int_s_extend(pid_i32, i64_t, "pid.i64")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((pid_i64.into(), LotusType::Int))
+        Ok((pid_i64.into(), CodegenTy::Int))
     }
 
     /// Lower `std::io::tcp::__listen_socket(host: String,
@@ -12560,7 +12560,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 2 {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__listen_socket takes 2 args (host, port), got {}",
@@ -12568,14 +12568,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
-        if host_ty != LotusType::String {
+        if host_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__listen_socket: host must be String, got {:?}",
                 host_ty
             )));
         }
         let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
-        if port_ty != LotusType::Int {
+        if port_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__listen_socket: port must be Int, got {:?}",
                 port_ty
@@ -12604,7 +12604,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .builder
             .build_int_s_extend(fd_i32, i64_t, "fd.i64")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((fd_i64.into(), LotusType::Int))
+        Ok((fd_i64.into(), CodegenTy::Int))
     }
 
     /// Lower `std::io::tcp::__connect(host: String, port: Int)
@@ -12613,7 +12613,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 2 {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__connect takes 2 args (host, port), got {}",
@@ -12621,14 +12621,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
-        if host_ty != LotusType::String {
+        if host_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__connect: host must be String, got {:?}",
                 host_ty
             )));
         }
         let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
-        if port_ty != LotusType::Int {
+        if port_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__connect: port must be Int, got {:?}",
                 port_ty
@@ -12657,7 +12657,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .builder
             .build_int_s_extend(fd_i32, i64_t, "connfd.i64")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((fd_i64.into(), LotusType::Int))
+        Ok((fd_i64.into(), CodegenTy::Int))
     }
 
     /// Lower `std::io::tcp::__accept_one(listen_fd: Int) -> Int`.
@@ -12666,7 +12666,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__accept_one takes 1 arg (listen_fd), got {}",
@@ -12674,7 +12674,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
-        if fd_ty != LotusType::Int {
+        if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__accept_one: listen_fd must be Int, got {:?}",
                 fd_ty
@@ -12703,7 +12703,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .builder
             .build_int_s_extend(conn_i32, i64_t, "conn.i64")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((conn_i64.into(), LotusType::Int))
+        Ok((conn_i64.into(), CodegenTy::Int))
     }
 
     /// Lower `std::str::parse_int(s: String) -> Int`. Atoi-ish:
@@ -12714,7 +12714,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::parse_int takes 1 arg (s), got {}",
@@ -12722,7 +12722,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
-        if s_ty != LotusType::String {
+        if s_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::parse_int: s must be String, got {:?}",
                 s_ty
@@ -12740,7 +12740,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .try_as_basic_value()
             .left()
             .expect("returns i64");
-        Ok((v, LotusType::Int))
+        Ok((v, CodegenTy::Int))
     }
 
     /// Lower `std::str::index_of(s: String, sub: String) -> Int`.
@@ -12754,7 +12754,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 2 {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::index_of takes 2 args (s, sub), got {}",
@@ -12762,14 +12762,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
-        if s_ty != LotusType::String {
+        if s_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::index_of: s must be String, got {:?}",
                 s_ty
             )));
         }
         let (sub_val, sub_ty) = self.lower_expr(&args[1], scope)?;
-        if sub_ty != LotusType::String {
+        if sub_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::index_of: sub must be String, got {:?}",
                 sub_ty
@@ -12791,7 +12791,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .try_as_basic_value()
             .left()
             .expect("returns i64");
-        Ok((v, LotusType::Int))
+        Ok((v, CodegenTy::Int))
     }
 
     /// Lower `std::str::can_parse_int(s: String) -> Bool`.
@@ -12799,7 +12799,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::can_parse_int takes 1 arg (s), got {}",
@@ -12807,7 +12807,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
-        if s_ty != LotusType::String {
+        if s_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::can_parse_int: s must be String, got {:?}",
                 s_ty
@@ -12836,7 +12836,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 "can.parse.bool",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((ret_bool.into(), LotusType::Bool))
+        Ok((ret_bool.into(), CodegenTy::Bool))
     }
 
     // ---- m96: std::ts (tree-sitter) lowering helpers ----
@@ -12854,7 +12854,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "std::ts::parse_go takes 1 arg (src), got {}",
@@ -12862,7 +12862,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (src_val, src_ty) = self.lower_expr(&args[0], scope)?;
-        if src_ty != LotusType::String {
+        if src_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "std::ts::parse_go: src must be String, got {:?}",
                 src_ty
@@ -12880,7 +12880,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .try_as_basic_value()
             .left()
             .expect("returns i64");
-        Ok((v, LotusType::Int))
+        Ok((v, CodegenTy::Int))
     }
 
     /// Single-Int-arg → Int helper. Used by `root_node`, child-
@@ -12892,7 +12892,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
         path: &str,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "{} takes 1 arg, got {}",
@@ -12901,7 +12901,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
-        if ty != LotusType::Int {
+        if ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "{}: arg must be Int, got {:?}",
                 path, ty
@@ -12919,7 +12919,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .try_as_basic_value()
             .left()
             .expect("returns i64");
-        Ok((r, LotusType::Int))
+        Ok((r, CodegenTy::Int))
     }
 
     /// Two-Int-arg → Int helper. Used by `node_child` and
@@ -12930,7 +12930,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
         path: &str,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 2 {
             return Err(CodegenError::Unsupported(format!(
                 "{} takes 2 args, got {}",
@@ -12939,14 +12939,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (a, at) = self.lower_expr(&args[0], scope)?;
-        if at != LotusType::Int {
+        if at != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "{}: arg 0 must be Int, got {:?}",
                 path, at
             )));
         }
         let (b, bt) = self.lower_expr(&args[1], scope)?;
-        if bt != LotusType::Int {
+        if bt != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "{}: arg 1 must be Int, got {:?}",
                 path, bt
@@ -12964,7 +12964,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .try_as_basic_value()
             .left()
             .expect("returns i64");
-        Ok((r, LotusType::Int))
+        Ok((r, CodegenTy::Int))
     }
 
     /// Single-Int-arg → String helper. Used by `node_kind` and
@@ -12978,7 +12978,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
         path: &str,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "{} takes 1 arg, got {}",
@@ -12987,7 +12987,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
-        if ty != LotusType::Int {
+        if ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "{}: arg must be Int, got {:?}",
                 path, ty
@@ -13005,7 +13005,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .try_as_basic_value()
             .left()
             .expect("returns ptr");
-        Ok((r, LotusType::String))
+        Ok((r, CodegenTy::String))
     }
 
     /// Lower `std::env::args_count() -> Int`. Returns argc as
@@ -13013,7 +13013,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_std_env_args_count(
         &mut self,
         args: &[Expr],
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if !args.is_empty() {
             return Err(CodegenError::Unsupported(format!(
                 "std::env::args_count takes 0 args, got {}",
@@ -13038,7 +13038,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .builder
             .build_int_s_extend(raw, i64_t, "argc.i64")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((ext.into(), LotusType::Int))
+        Ok((ext.into(), CodegenTy::Int))
     }
 
     /// Lower `std::env::arg(i: Int) -> String`. Returns argv[i]
@@ -13049,7 +13049,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "std::env::arg takes 1 arg (index), got {}",
@@ -13057,7 +13057,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (i_val, i_ty) = self.lower_expr(&args[0], scope)?;
-        if i_ty != LotusType::Int {
+        if i_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "std::env::arg: index must be Int, got {:?}",
                 i_ty
@@ -13080,7 +13080,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .try_as_basic_value()
             .left()
             .expect("returns ptr");
-        Ok((ptr, LotusType::String))
+        Ok((ptr, CodegenTy::String))
     }
 
     /// Lower `std::env::var(name: String) -> String`. Returns the
@@ -13090,7 +13090,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "std::env::var takes 1 arg (name), got {}",
@@ -13098,7 +13098,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (name_val, name_ty) = self.lower_expr(&args[0], scope)?;
-        if name_ty != LotusType::String {
+        if name_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "std::env::var: name must be String, got {:?}",
                 name_ty
@@ -13116,7 +13116,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .try_as_basic_value()
             .left()
             .expect("returns ptr");
-        Ok((ptr, LotusType::String))
+        Ok((ptr, CodegenTy::String))
     }
 
     /// Lower `std::env::var_exists(name: String) -> Bool`.
@@ -13124,7 +13124,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "std::env::var_exists takes 1 arg (name), got {}",
@@ -13132,7 +13132,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (name_val, name_ty) = self.lower_expr(&args[0], scope)?;
-        if name_ty != LotusType::String {
+        if name_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "std::env::var_exists: name must be String, got {:?}",
                 name_ty
@@ -13161,7 +13161,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 "var.exists.bool",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((ret_bool.into(), LotusType::Bool))
+        Ok((ret_bool.into(), CodegenTy::Bool))
     }
 
     /// m89: Lower `std::io::fs::read_bytes(path: String) -> Bytes`.
@@ -13174,7 +13174,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::read_bytes takes 1 arg (path), got {}",
@@ -13182,7 +13182,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != LotusType::String {
+        if path_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::read_bytes: path must be String, got {:?}",
                 path_ty
@@ -13200,7 +13200,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .try_as_basic_value()
             .left()
             .expect("lotus_fs_read_bytes_global returns ptr");
-        Ok((v, LotusType::Bytes))
+        Ok((v, CodegenTy::Bytes))
     }
 
     /// m90: Lower `std::io::fs::list_dir(path: String) -> String`.
@@ -13211,7 +13211,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::list_dir takes 1 arg (path), got {}",
@@ -13219,7 +13219,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != LotusType::String {
+        if path_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::list_dir: path must be String, got {:?}",
                 path_ty
@@ -13237,7 +13237,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .try_as_basic_value()
             .left()
             .expect("lotus_fs_list_dir_global returns ptr");
-        Ok((v, LotusType::String))
+        Ok((v, CodegenTy::String))
     }
 
     /// m89: Lower `std::io::tcp::__send_bytes(fd: Int, b: Bytes) -> Int`.
@@ -13249,7 +13249,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 2 {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__send_bytes takes 2 args (fd, bytes), got {}",
@@ -13257,14 +13257,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
-        if fd_ty != LotusType::Int {
+        if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__send_bytes: fd must be Int, got {:?}",
                 fd_ty
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[1], scope)?;
-        if b_ty != LotusType::Bytes {
+        if b_ty != CodegenTy::Bytes {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__send_bytes: bytes must be Bytes, got {:?}",
                 b_ty
@@ -13303,7 +13303,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .builder
             .build_int_s_extend(ret_i32, i64_t, "send_bytes.i64")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((ret_i64.into(), LotusType::Int))
+        Ok((ret_i64.into(), CodegenTy::Int))
     }
 
     /// Lower `std::io::fs::read_file(path: String) -> String`.
@@ -13320,7 +13320,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::read_file takes 1 arg (path), got {}",
@@ -13328,7 +13328,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != LotusType::String {
+        if path_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::read_file: path must be String, got {:?}",
                 path_ty
@@ -13439,7 +13439,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_store(nul_ptr, i8_t.const_zero())
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        Ok((buf_ptr.into(), LotusType::String))
+        Ok((buf_ptr.into(), CodegenTy::String))
     }
 
     /// Lower `std::io::fs::write_file(path: String, content:
@@ -13451,7 +13451,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 2 {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::write_file takes 2 args (path, content), got {}",
@@ -13459,14 +13459,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != LotusType::String {
+        if path_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::write_file: path must be String, got {:?}",
                 path_ty
             )));
         }
         let (content_val, content_ty) = self.lower_expr(&args[1], scope)?;
-        if content_ty != LotusType::String {
+        if content_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::write_file: content must be String, got {:?}",
                 content_ty
@@ -13510,7 +13510,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .builder
             .build_int_s_extend(ret_i32, i64_t, "wf.ret.i64")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((ret_i64.into(), LotusType::Int))
+        Ok((ret_i64.into(), CodegenTy::Int))
     }
 
     /// Lower `std::io::fs::file_size(path: String) -> Int`.
@@ -13519,7 +13519,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::file_size takes 1 arg (path), got {}",
@@ -13527,7 +13527,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != LotusType::String {
+        if path_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::file_size: path must be String, got {:?}",
                 path_ty
@@ -13546,7 +13546,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .left()
             .expect("returns i64")
             .into_int_value();
-        Ok((size_i64.into(), LotusType::Int))
+        Ok((size_i64.into(), CodegenTy::Int))
     }
 
     /// Lower `std::io::fs::file_exists(path: String) -> Bool`.
@@ -13555,7 +13555,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::file_exists takes 1 arg (path), got {}",
@@ -13563,7 +13563,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != LotusType::String {
+        if path_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::file_exists: path must be String, got {:?}",
                 path_ty
@@ -13595,7 +13595,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let _ = i1_t; // silence unused warning if any
-        Ok((ret_bool.into(), LotusType::Bool))
+        Ok((ret_bool.into(), CodegenTy::Bool))
     }
 
     /// Lower `std::io::fs::extension(path: String) -> String`.
@@ -13607,7 +13607,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::extension takes 1 arg (path), got {}",
@@ -13615,7 +13615,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != LotusType::String {
+        if path_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::extension: path must be String, got {:?}",
                 path_ty
@@ -13633,7 +13633,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .try_as_basic_value()
             .left()
             .expect("lotus_fs_extension_global returns ptr");
-        Ok((v, LotusType::String))
+        Ok((v, CodegenTy::String))
     }
 
     /// Lower `std::io::tcp::__send(fd: Int, msg: String) -> Int`.
@@ -13643,7 +13643,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 2 {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__send takes 2 args (fd, msg), got {}",
@@ -13651,14 +13651,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
-        if fd_ty != LotusType::Int {
+        if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__send: fd must be Int, got {:?}",
                 fd_ty
             )));
         }
         let (msg_val, msg_ty) = self.lower_expr(&args[1], scope)?;
-        if msg_ty != LotusType::String {
+        if msg_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__send: msg must be String, got {:?}",
                 msg_ty
@@ -13687,7 +13687,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .builder
             .build_int_s_extend(ret_i32, i64_t, "send.ret.i64")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((ret_i64.into(), LotusType::Int))
+        Ok((ret_i64.into(), CodegenTy::Int))
     }
 
     /// Lower `std::io::tcp::__recv(fd: Int, max_bytes: Int) ->
@@ -13698,7 +13698,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 2 {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__recv takes 2 args (fd, max_bytes), got {}",
@@ -13706,14 +13706,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
-        if fd_ty != LotusType::Int {
+        if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__recv: fd must be Int, got {:?}",
                 fd_ty
             )));
         }
         let (max_val, max_ty) = self.lower_expr(&args[1], scope)?;
-        if max_ty != LotusType::Int {
+        if max_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__recv: max_bytes must be Int, got {:?}",
                 max_ty
@@ -13740,7 +13740,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .try_as_basic_value()
             .left()
             .expect("returns ptr");
-        Ok((ptr, LotusType::String))
+        Ok((ptr, CodegenTy::String))
     }
 
     /// Lower `std::io::tcp::__close_fd(fd: Int) -> Int`. Returns
@@ -13750,7 +13750,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__close_fd takes 1 arg (fd), got {}",
@@ -13758,7 +13758,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
-        if fd_ty != LotusType::Int {
+        if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__close_fd: fd must be Int, got {:?}",
                 fd_ty
@@ -13787,7 +13787,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .builder
             .build_int_s_extend(ret_i32, i64_t, "close.i64")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((ret_i64.into(), LotusType::Int))
+        Ok((ret_i64.into(), CodegenTy::Int))
     }
 
     /// Statement-level locus instantiation `T { f: v, ... };`.
@@ -14900,7 +14900,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         method_name: &str,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<Option<(BasicValueEnum<'ctx>, LotusType)>, CodegenError> {
+    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
         let cs = self.current_self.as_ref().cloned().ok_or_else(|| {
             CodegenError::Unsupported(format!(
                 "self.{}(...) outside a locus method",
@@ -14918,7 +14918,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if let Some((field_idx, field_ty)) =
             cs.fields.get(method_name).cloned()
         {
-            if let LotusType::FnPtr {
+            if let CodegenTy::FnPtr {
                 args: arg_tys,
                 ret: ret_ty,
             } = field_ty
@@ -14978,7 +14978,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // Synthesize the LLVM FunctionType from the
                 // FnPtr's args/ret. For void-returning FnPtrs the
                 // call returns no usable value; for value-returning
-                // we propagate the result + LotusType up.
+                // we propagate the result + CodegenTy up.
                 let fn_ty = match &ret_ty {
                     None => self
                         .context
@@ -15122,7 +15122,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     sig.params[i].default.as_ref().expect("checked above");
                 self.lower_expr(default_expr, scope)?
             };
-            let want = self.type_expr_to_lotus(&sig.params[i].ty)?;
+            let want = self.type_expr_to_codegen_ty(&sig.params[i].ty)?;
             if ty != want {
                 return Err(CodegenError::Unsupported(format!(
                     "self.{} arg {} type mismatch: expected {:?}, got {:?}",
@@ -15142,7 +15142,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         match &sig.ret {
             None => Ok(None),
             Some(t) => {
-                let rt = self.type_expr_to_lotus(t)?;
+                let rt = self.type_expr_to_codegen_ty(t)?;
                 let v = call
                     .try_as_basic_value()
                     .left()
@@ -15170,12 +15170,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn emit_fnptr_indirect_call(
         &mut self,
         fn_value_ptr: PointerValue<'ctx>,
-        arg_tys: &[LotusType],
-        ret_ty: Option<&LotusType>,
+        arg_tys: &[CodegenTy],
+        ret_ty: Option<&CodegenTy>,
         args: &[Expr],
         scope: &Scope<'ctx>,
         callee_label: &str,
-    ) -> Result<Option<(BasicValueEnum<'ctx>, LotusType)>, CodegenError> {
+    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
         if args.len() != arg_tys.len() {
             return Err(CodegenError::Unsupported(format!(
                 "{} (fn pointer): expected {} args, got {}",
@@ -15266,10 +15266,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         method_name: &str,
         args: &[Expr],
         scope: &Scope<'ctx>,
-    ) -> Result<Option<(BasicValueEnum<'ctx>, LotusType)>, CodegenError> {
+    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
         let (recv_val, recv_ty) = self.lower_expr(receiver_expr, scope)?;
         let locus_name = match recv_ty {
-            LotusType::LocusRef(n) => n,
+            CodegenTy::LocusRef(n) => n,
             other => {
                 return Err(CodegenError::Unsupported(format!(
                     "method call on non-locus value of type {:?}",
@@ -15354,7 +15354,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     })?;
                 self.lower_expr(default_expr, scope)?
             };
-            let want = self.type_expr_to_lotus(&sig.params[i].ty)?;
+            let want = self.type_expr_to_codegen_ty(&sig.params[i].ty)?;
             if ty != want {
                 return Err(CodegenError::Unsupported(format!(
                     "{}.{} arg {} type mismatch: expected {:?}, got {:?}",
@@ -15374,7 +15374,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         match &sig.ret {
             None => Ok(None),
             Some(t) => {
-                let rt = self.type_expr_to_lotus(t)?;
+                let rt = self.type_expr_to_codegen_ty(t)?;
                 let v = call
                     .try_as_basic_value()
                     .left()
@@ -15466,7 +15466,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     struct_ty,
                     self_ptr,
                     slot.field_idx,
-                    &LotusType::Int,
+                    &CodegenTy::Int,
                     name,
                 )?;
             }
@@ -15485,7 +15485,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     struct_ty,
                     self_ptr,
                     count_idx,
-                    &LotusType::Int,
+                    &CodegenTy::Int,
                     &format!("{}.count", name),
                 )?;
             }
@@ -15498,7 +15498,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         struct_ty: inkwell::types::StructType<'ctx>,
         self_ptr: PointerValue<'ctx>,
         field_idx: u32,
-        ty: &LotusType,
+        ty: &CodegenTy,
         name: &str,
     ) -> Result<(), CodegenError> {
         let slot_ptr = self
@@ -15506,19 +15506,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_struct_gep(struct_ty, self_ptr, field_idx, name)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         match ty {
-            LotusType::Int | LotusType::Duration => {
+            CodegenTy::Int | CodegenTy::Duration => {
                 let z = self.context.i64_type().const_int(0, false);
                 self.builder
                     .build_store(slot_ptr, z)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-            LotusType::Float => {
+            CodegenTy::Float => {
                 let z = self.context.f64_type().const_float(0.0);
                 self.builder
                     .build_store(slot_ptr, z)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-            LotusType::Decimal => {
+            CodegenTy::Decimal => {
                 let z = i128_const(self.context, 0);
                 self.builder
                     .build_store(slot_ptr, z)
@@ -15578,7 +15578,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     struct_ty,
                     self_ptr,
                     slot.field_idx,
-                    &LotusType::Int,
+                    &CodegenTy::Int,
                     one.into(),
                     name,
                 )?;
@@ -15612,7 +15612,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     struct_ty,
                     self_ptr,
                     count_idx,
-                    &LotusType::Int,
+                    &CodegenTy::Int,
                     one.into(),
                     &format!("{}.count", name),
                 )?;
@@ -15626,7 +15626,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         struct_ty: inkwell::types::StructType<'ctx>,
         self_ptr: PointerValue<'ctx>,
         field_idx: u32,
-        ty: &LotusType,
+        ty: &CodegenTy,
         sample_val: BasicValueEnum<'ctx>,
         name: &str,
     ) -> Result<(), CodegenError> {
@@ -15635,7 +15635,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_struct_gep(struct_ty, self_ptr, field_idx, name)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         match ty {
-            LotusType::Int | LotusType::Duration => {
+            CodegenTy::Int | CodegenTy::Duration => {
                 let i64_t = self.context.i64_type();
                 let prev = self
                     .builder
@@ -15654,7 +15654,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_store(slot_ptr, next)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-            LotusType::Float => {
+            CodegenTy::Float => {
                 let f64_t = self.context.f64_type();
                 let prev = self
                     .builder
@@ -15673,7 +15673,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_store(slot_ptr, next)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-            LotusType::Decimal => {
+            CodegenTy::Decimal => {
                 let i128_t = self.context.i128_type();
                 let prev = self
                     .builder
@@ -15713,7 +15713,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Mean: load sum + count, divide, cast to f64, return as Float.
     fn lower_accumulator_load(
         &mut self,
-    ) -> Result<(BasicValueEnum<'ctx>, LotusType), CodegenError> {
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         let ctx = self.accumulator_ctx.as_mut().ok_or_else(|| {
             CodegenError::Unsupported(
                 "internal: lower_accumulator_load called without ctx".into(),
@@ -15747,10 +15747,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     struct_ty,
                     self_ptr,
                     slot.field_idx,
-                    &LotusType::Int,
+                    &CodegenTy::Int,
                     &format!("acc[{}].count.load", slot.field_idx),
                 )?;
-                Ok((v, LotusType::Int))
+                Ok((v, CodegenTy::Int))
             }
             AccumulatorKind::Mean => {
                 let count_idx = slot
@@ -15785,7 +15785,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // Cast both to f64, divide.
                 let f64_t = self.context.f64_type();
                 let sum_f = match slot.inner_ty {
-                    LotusType::Int | LotusType::Duration => self
+                    CodegenTy::Int | CodegenTy::Duration => self
                         .builder
                         .build_signed_int_to_float(
                             sum_v.into_int_value(),
@@ -15795,8 +15795,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| {
                             CodegenError::LlvmEmit(e.to_string())
                         })?,
-                    LotusType::Float => sum_v.into_float_value(),
-                    LotusType::Decimal => {
+                    CodegenTy::Float => sum_v.into_float_value(),
+                    CodegenTy::Decimal => {
                         // Decimal sum is i128 with implicit scale 9.
                         // Cast to f64 then divide by 10^9 so the
                         // result is in real units before the
@@ -15839,7 +15839,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_float_div(sum_f, count_f, "mean.div")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((mean.into(), LotusType::Float))
+                Ok((mean.into(), CodegenTy::Float))
             }
         }
     }
@@ -15849,7 +15849,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         struct_ty: inkwell::types::StructType<'ctx>,
         self_ptr: PointerValue<'ctx>,
         field_idx: u32,
-        ty: &LotusType,
+        ty: &CodegenTy,
         name: &str,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         let slot_ptr = self
@@ -15862,15 +15862,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let v: BasicValueEnum<'ctx> = match ty {
-            LotusType::Int | LotusType::Duration => self
+            CodegenTy::Int | CodegenTy::Duration => self
                 .builder
                 .build_load(self.context.i64_type(), slot_ptr, name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
-            LotusType::Float => self
+            CodegenTy::Float => self
                 .builder
                 .build_load(self.context.f64_type(), slot_ptr, name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
-            LotusType::Decimal => self
+            CodegenTy::Decimal => self
                 .builder
                 .build_load(self.context.i128_type(), slot_ptr, name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
@@ -15970,7 +15970,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut int_diff: Option<inkwell::values::IntValue<'ctx>> = None;
 
         let pass = match &lt {
-            LotusType::Int | LotusType::Duration | LotusType::Decimal => {
+            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal => {
                 let l = lv.into_int_value();
                 let r = rv.into_int_value();
                 let t = tv.into_int_value();
@@ -15980,7 +15980,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 int_diff = Some(diff);
                 let zero: inkwell::values::IntValue<'ctx> =
-                    if matches!(lt, LotusType::Decimal) {
+                    if matches!(lt, CodegenTy::Decimal) {
                         i128_const(self.context, 0)
                     } else {
                         self.context.i64_type().const_int(0, false)
@@ -16012,7 +16012,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             }
-            LotusType::Float => {
+            CodegenTy::Float => {
                 let l = lv.into_float_value();
                 let r = rv.into_float_value();
                 let t = tv.into_float_value();
@@ -16529,7 +16529,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (val, ty) = self.lower_expr(&args[0], scope)?;
         let locus_name = match &ty {
-            LotusType::LocusRef(n) => n.clone(),
+            CodegenTy::LocusRef(n) => n.clone(),
             other => {
                 return Err(CodegenError::Unsupported(format!(
                     "{}() requires a locus reference; got {:?}",
@@ -16615,7 +16615,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (val, ty) = self.lower_expr(&args[0], scope)?;
         let locus_name = match &ty {
-            LotusType::LocusRef(n) => n.clone(),
+            CodegenTy::LocusRef(n) => n.clone(),
             other => {
                 return Err(CodegenError::Unsupported(format!(
                     "quarantine() requires a locus reference; got {:?}",
@@ -16775,7 +16775,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Read err.locus + err.closure off the violation, format
         // the standard violation message, dprintf to stderr, exit.
         let (val, ty) = self.lower_expr(&args[0], scope)?;
-        if ty != LotusType::TypeRef("ClosureViolation".into()) {
+        if ty != CodegenTy::TypeRef("ClosureViolation".into()) {
             return Err(CodegenError::Unsupported(format!(
                 "bubble() requires a ClosureViolation; got {:?}",
                 ty
@@ -16888,7 +16888,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )
         })?;
         let (subj_val, subj_ty) = self.lower_expr(subject, scope)?;
-        if subj_ty != LotusType::String {
+        if subj_ty != CodegenTy::String {
             return Err(CodegenError::Unsupported(format!(
                 "bus send subject must be String; got {:?}",
                 subj_ty
@@ -16903,7 +16903,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // is governed by the per-type serializer rather than
         // implicit struct-layout assumption.
         let (payload_type_name, payload_struct_ty) = match &payload_ty {
-            LotusType::TypeRef(name) => {
+            CodegenTy::TypeRef(name) => {
                 let info = self
                     .user_types
                     .get(name)
@@ -16916,7 +16916,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     })?;
                 (name.clone(), info.struct_ty)
             }
-            LotusType::Enum(name) => {
+            CodegenTy::Enum(name) => {
                 let info = self
                     .user_enums
                     .get(name)
@@ -17068,12 +17068,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .expect("field declared by declare_user_type");
             // m67: rewrite a bare-name struct literal in field-
             // init position to its mangled monomorph using the
-            // field's declared LotusType as the target.
+            // field's declared CodegenTy as the target.
             let rewritten;
             let expr_to_lower: &Expr = match expr {
                 Expr::Struct { path, inits, span } => {
                     match self
-                        .resolve_generic_struct_path_for_lotus_type(
+                        .resolve_generic_struct_path_for_codegen_ty(
                             path,
                             &declared_ty,
                         )
@@ -17154,7 +17154,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         info: &EnumInfo,
         tag: u32,
-        field_vals: &[(BasicValueEnum<'ctx>, LotusType)],
+        field_vals: &[(BasicValueEnum<'ctx>, CodegenTy)],
     ) -> Result<PointerValue<'ctx>, CodegenError> {
         let storage_ty = self.enum_storage_struct(info);
         let size = storage_ty
@@ -17172,7 +17172,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if !field_vals.is_empty() {
             // Body lives at field index 1. We GEP into the body
             // byte array and use it as a base; each field stores
-            // at an 8-byte stride (per lotus_type_size_bytes,
+            // at an 8-byte stride (per codegen_ty_size_bytes,
             // which rounds everything to 8 except Decimal at 16).
             let body_ptr = self
                 .builder
@@ -17198,7 +17198,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder
                     .build_store(slot_ptr, *val)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                offset += lotus_type_size_bytes(self.context, ty);
+                offset += codegen_ty_size_bytes(self.context, ty);
             }
         }
         Ok(ptr)
@@ -17376,13 +17376,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         info: &EnumInfo,
         enum_ptr: PointerValue<'ctx>,
         variant_idx: usize,
-    ) -> Result<Vec<(BasicValueEnum<'ctx>, LotusType)>, CodegenError> {
+    ) -> Result<Vec<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
         let storage_ty = self.enum_storage_struct(info);
         let body_ptr = self
             .builder
             .build_struct_gep(storage_ty, enum_ptr, 1, "enum.body.ptr")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let mut out: Vec<(BasicValueEnum<'ctx>, LotusType)> = Vec::new();
+        let mut out: Vec<(BasicValueEnum<'ctx>, CodegenTy)> = Vec::new();
         let mut offset: u64 = 0;
         let i8_t = self.context.i8_type();
         let v = info.variants[variant_idx].clone();
@@ -17407,7 +17407,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_load(llvm_ty, slot_ptr, "enum.field")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             out.push((val, ty.clone()));
-            offset += lotus_type_size_bytes(self.context, ty);
+            offset += codegen_ty_size_bytes(self.context, ty);
         }
         Ok(out)
     }
@@ -17661,7 +17661,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
 #[derive(Default)]
 struct Scope<'ctx> {
-    locals: BTreeMap<String, (PointerValue<'ctx>, LotusType)>,
+    locals: BTreeMap<String, (PointerValue<'ctx>, CodegenTy)>,
 }
 
 #[derive(Debug, Clone)]
@@ -17772,12 +17772,12 @@ fn i128_const<'ctx>(
 /// Decimal at i128 takes 16 bytes; everything else (Int/Float/
 /// String-ptr/Bool/Duration/Time/LocusRef/TypeRef/Array/Tuple/
 /// Enum-as-pointer/Enum-as-i32) round-trips at 8.
-fn lotus_type_size_bytes<'ctx>(
+fn codegen_ty_size_bytes<'ctx>(
     _ctx: &'ctx inkwell::context::Context,
-    t: &LotusType,
+    t: &CodegenTy,
 ) -> u64 {
     match t {
-        LotusType::Decimal => 16,
+        CodegenTy::Decimal => 16,
         _ => 8,
     }
 }
@@ -17828,7 +17828,7 @@ fn collect_sum_calls(expr: &Expr, out: &mut Vec<(AccumulatorKind, Option<Expr>)>
     }
 }
 
-/// m46: infer the LotusType of an accumulator's inner expression.
+/// m46: infer the CodegenTy of an accumulator's inner expression.
 /// v0 supports `self.X` reads only, where X is a numeric param —
 /// type comes straight from the locus's param map (`fields`).
 /// Anything else errors with a concrete message naming the closure
@@ -17837,8 +17837,8 @@ fn infer_accumulator_inner_type(
     locus_name: &str,
     closure_name: &str,
     inner: &Expr,
-    fields: &BTreeMap<String, (u32, LotusType)>,
-) -> Result<LotusType, CodegenError> {
+    fields: &BTreeMap<String, (u32, CodegenTy)>,
+) -> Result<CodegenTy, CodegenError> {
     if let Expr::Field { receiver, name, .. } = inner {
         if let Expr::KwSelf(_) = receiver.as_ref() {
             let (_, ty) = fields.get(&name.name).ok_or_else(|| {
@@ -17849,10 +17849,10 @@ fn infer_accumulator_inner_type(
                 ))
             })?;
             match ty {
-                LotusType::Int
-                | LotusType::Float
-                | LotusType::Decimal
-                | LotusType::Duration => return Ok(ty.clone()),
+                CodegenTy::Int
+                | CodegenTy::Float
+                | CodegenTy::Decimal
+                | CodegenTy::Duration => return Ok(ty.clone()),
                 other => {
                     return Err(CodegenError::Unsupported(format!(
                         "closure `{}` on locus `{}`: accumulator `sum(self.{})` \

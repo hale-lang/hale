@@ -22,7 +22,7 @@ Aperio is a structured-concurrency language whose central
 abstraction is the locus, and whose load-bearing property is that
 *every design in the system is a lotus*: memory, lifecycle,
 contracts, schedulers, bus transports, modes, perspectives, function
-scope (see `docs/grimoire/src/06-the-same-shape.md`).
+scope (see `docs/src/grimoire/06-the-same-shape.md`).
 
 The thesis driving this work: **a 3D rendering of the lotus that
 both human and agent can see and discuss is a feedback-loop
@@ -54,7 +54,7 @@ m87+m88), 3 (HTTP server, m86), 4 (text/markdown, m91), 5
 `http.ap`, `text.ap`, `test.ap`). **Three open language-design
 questions from this plan are resolved by that work:**
 
-- ✅ **Function pointers** (m80 — `LotusType::FnPtr`).
+- ✅ **Function pointers** (m80 — `CodegenTy::FnPtr`).
   `ShellL { on_byte: fn(Byte) -> () }` shape works.
 - ✅ **Bytes return values** (m89 — Bytes codegen + `read_bytes`).
   Serialized AST payloads are expressible.
@@ -370,7 +370,7 @@ crates/aperio-codegen/src/codegen.rs
     - new include_str!() entry in STDLIB_AP_SOURCE concat
     - libc backers in declare_builtins)
 
-docs/std/src/roadmap.md
+docs/src/std/roadmap.md
 └── (modified: Phase 6 (m96 onwards) added with the IDE as the
               named forcing function)
 ```
@@ -488,7 +488,7 @@ roadmap will save it.
 - `Cargo.toml` — workspace member additions if any new crates are
   introduced (default: stay in `aperio-codegen/runtime/` per
   existing pattern).
-- `docs/std/src/roadmap.md` — extend Phase plan to include Phase 6
+- `docs/src/std/roadmap.md` — extend Phase plan to include Phase 6
   (m96 onwards) with the IDE as forcing function.
 
 **To reuse (existing, no changes):**

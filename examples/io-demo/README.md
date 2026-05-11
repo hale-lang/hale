@@ -70,11 +70,11 @@ APERIO_IO_DEMO_CONFIG_PATH=/tmp/my-config \
 
 - The Listener accepts exactly one connection then exits.
   Servers that handle many connections wait on the
-  multi-accept arc (see `docs/std/src/io/tcp.md`).
+  multi-accept arc (see `docs/src/std/io/tcp.md`).
 - Binary payloads with embedded NULs would truncate at
   `write_file` time. UTF-8 strings only for v0.
 - `parse_int` is base 10 only and doesn't trim whitespace
-  (see `docs/std/src/str.md`).
+  (see `docs/src/std/str.md`).
 
 ## Integration test
 

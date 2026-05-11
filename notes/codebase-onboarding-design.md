@@ -18,8 +18,8 @@ codebase onboarder.
 
 **The thesis:** there are four doorways into Aperio:
 
-1. **Curious devs** — `docs/grimoire/`. Already shipped.
-2. **Technical devs** — `docs/book/`. Already shipped.
+1. **Curious devs** — `docs/src/grimoire/`. Already shipped.
+2. **Technical devs** — `docs/src/book/`. Already shipped.
 3. **Devs with existing codebases** — *this product*. They
    never have to learn Aperio's primitives in the abstract;
    they see *their own code* already exhibiting them.

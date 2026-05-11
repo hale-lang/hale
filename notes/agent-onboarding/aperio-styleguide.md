@@ -502,7 +502,7 @@ not from speculation.
   that informs how the codebase-onboarder treats foreign code.
 - `notes/agent-onboarding/app-dev-brief.md` — the **what** brief
   this styleguide complements.
-- `docs/grimoire/src/06-the-same-shape.md` — the perceptual
+- `docs/src/grimoire/06-the-same-shape.md` — the perceptual
   primer for "every axis is the same shape, including
   inward."
 - `notes/aperio-refactor-proposal.md` — concrete recommendations

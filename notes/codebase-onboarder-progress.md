@@ -103,7 +103,7 @@ the std seed:
 | `std::json::Builder`      | JSON-shape glue helpers                  | done   |
 
 All five extractions ship with stdlib doc pages
-(`docs/std/src/{iter,tagged,name,json}.md`) and ~25 new tests
+(`docs/src/std/{iter,tagged,name,json}.md`) and ~25 new tests
 across `crates/aperio-codegen/tests/stdlib_{iter,tagged,name,json}.rs`
 plus a 6-shape test in `stdlib_fs.rs`. Workspace test count
 moved from 290 → 312 across this arc.

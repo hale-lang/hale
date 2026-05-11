@@ -1,6 +1,6 @@
 //! m80: function-pointer language addition.
 //!
-//! Aperio gains first-class function values: `LotusType::FnPtr`,
+//! Aperio gains first-class function values: `CodegenTy::FnPtr`,
 //! `fn(T) -> R` parser support, fn-name-as-value lowering, and
 //! indirect calls through fn-pointer fields on locus self. The
 //! end-to-end test:

@@ -8,7 +8,7 @@ Bundled with the toolchain, no separate install required.
 > (markdown) at m91, Phase 5 (doc-server capstone) at m92,
 > stdlib organization (per-domain `.ap` files) at m93. **Phase 6
 > (substrate for the IDE) underway:** m94 bus subject wildcards,
-> m95 `std::log` namespace. See `docs/std/src/roadmap.md` for
+> m95 `std::log` namespace. See `docs/src/std/roadmap.md` for
 > the v1.x plan and the per-phase tables below for what shipped
 > under each. The aspirational "v0 module map" section near the
 > bottom of this file was sketched pre-rename; treat the
@@ -38,7 +38,7 @@ plumbing and the language additions Phase 3 needed.
 | m77 | `std::env::args_count` / `arg` / `var` / `var_exists`. Lifted main's signature to `i32 @main(i32, ptr)` so codegen captures argc/argv into a runtime stash via `lotus_env_init` in main's prelude. |
 | m78 | `std::str::parse_int` / `can_parse_int`. strtoll-based, base 10, strict trailing-char check. |
 | m79 | `std::time::sleep` / `monotonic` aliases under `std::*` namespace; `std::process::exit(code)`. |
-| m80 | Function-pointer language addition. `LotusType::FnPtr`, parser support for `fn(T) -> R` types, codegen lowering of fn names as values + indirect calls through fn-pointer fields. The Phase 3 prerequisite. |
+| m80 | Function-pointer language addition. `CodegenTy::FnPtr`, parser support for `fn(T) -> R` types, codegen lowering of fn names as values + indirect calls through fn-pointer fields. The Phase 3 prerequisite. |
 | m81 | Stream locus + non-self method calls + `__send` / `__recv` / `__connect` primitives. New `lower_external_method_call` for `obj.method(args)`. Bundled `__StdIoTcpStream` declaration. |
 
 ## Language addition driven by m81 — m82 (locus-all-the-way-down)
@@ -163,7 +163,7 @@ Adding a real module system is deferred until something forces it
 (probably Phase 3+ when the HTTP server or Phase 5 doc-server
 example pushes against single-file organization). The
 import-mechanism choice is recorded in
-`docs/std/src/roadmap.md` and the project memory.
+`docs/src/std/roadmap.md` and the project memory.
 
 ## Design principles
 

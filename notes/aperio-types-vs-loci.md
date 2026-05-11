@@ -123,7 +123,7 @@ implicit. Concrete edits queued (not yet applied):
   citing this note. The split has been operationally clear in
   codegen (`type` records have no lifecycle, `locus` does) but
   hasn't been stated as a design axiom.
-- **`docs/grimoire/src/06-the-same-shape.md`** — extend the
+- **`docs/src/grimoire/06-the-same-shape.md`** — extend the
   "every axis is the same shape" section with the recursive-
   inward point. Currently the chapter lists axes (memory,
   lifecycle, contracts, schedulers, transports, modes,

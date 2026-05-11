@@ -1,13 +1,27 @@
 // Aperio stdlib — std::text.
 //
-// Markdown → HTML rendering. Comes after core.ap because
-// __md_to_html depends on `__replace_all` and `__html_escape`
-// declared there. No locus or type declarations — this file
-// is pure free-fn body.
+// Holds two distinct concerns under one namespace, by file-shape
+// convention:
 //
-// User code reaches the renderer via
-// `std::text::md_to_html(md)` — path-call dispatch in codegen
-// routes to `__md_to_html` below.
+//   1. Markdown → HTML rendering as free fns
+//      (`__md_to_html` and helpers). User code reaches it via
+//      `std::text::md_to_html(md)` path-call dispatch in codegen,
+//      which routes to `__md_to_html` below. The file lives after
+//      core.ap in the concat order so `__replace_all` and
+//      `__html_escape` are in scope.
+//
+//   2. The Sink namespace lotus (`__StdTextSink`) at the bottom
+//      of the file. User-facing as `std::text::Sink`. Streams
+//      text to a destination so callers don't accumulate a giant
+//      String in memory. See the bottom of the file for the
+//      tagged-destination antipattern note (v0 limitation pending
+//      a real interface mechanism — F.14 follow-on).
+//
+// Two shapes in one file is unusual but appropriate here: the
+// namespace is cohesive (everything is text), the file is small
+// (<250 lines), and splitting would make doc pages awkward
+// (`std::text` would become a stub pointing at sub-pages for one
+// locus and three free fns).
 
 // m91 — std::text::md_to_html (block-level only).
 //

@@ -164,18 +164,44 @@ between.
 
 ## What is shipped (your toolbox)
 
-Stdlib namespaces you can use right now:
+Stdlib namespaces you can use right now. Per-namespace reference
+pages live at `docs/src/std/<name>.md`.
+
+I/O and protocol:
 
 - `std::io::fs::{read_file, write_file, file_exists, file_size, read_bytes, list_dir}`
 - `std::io::tcp::{Listener, Stream}` — Listener accepts many; Stream `.send()` / `.send_bytes()` / `.recv()`
 - `std::http::{Request, Response, parse_request, write_response}`
-- `std::text::md_to_html(md: String) -> String` (block-level only)
-- `std::test::{assert, assert_eq_int, assert_eq_str}`
+
+Bare path-call surfaces:
+
 - `std::env::{args_count, arg, var, var_exists}`
 - `std::str::{parse_int, can_parse_int, index_of}`
 - `std::time::{sleep, monotonic}`
 - `std::process::{pid, exit}`
-- `std::log::{Logger, LogEvent, StdoutSink}` — structured logging on the bus with cascading namespaces (m95). See `docs/std/src/log.md`.
+- `std::test::{assert, assert_eq_int, assert_eq_str}`
+- `std::text::md_to_html(md: String) -> String` (block-level markdown only)
+- `std::ts::*` — tree-sitter substrate (Go only at v0); handle-based
+  Int IDs for tree/node values, `parse_go`, `root_node`, `node_kind`,
+  `node_named_child`, etc.
+
+Namespace lotuses (instantiate once, dispatch through it):
+
+- `std::cli::Resolver` — layered argv → env → fallback config resolution
+- `std::iter::Lines` — cursor-shape newline iteration over a String
+- `std::json::Builder` — JSON-shape glue helpers
+- `std::lang::{Lang, Morpheme}` — language-aware text + name decomposition
+- `std::log::{Logger, LogEvent, StdoutSink}` — structured logging on the bus with cascading namespaces (m95)
+- `std::name::Convention` — snake/Camel orthography + file-stem → LocusL
+- `std::source::Walk` — directory walk with `on_file` callback hook
+- `std::tagged::Accumulator` — TAG:body line accumulator parsing
+- `std::text::Sink` — stdout / in-memory streaming text destination
+- `std::yaml::{Builder, Reader}` — block-style YAML emitter + schema-aware reader
+
+Most namespace lotuses follow the same shape — empty/config-only
+`params { }`, methods are self-composing pure queries. See
+`std::lang::Morpheme` and `std::cli::Resolver` for canonical
+examples; the styleguide's pattern catalog grounds them.
 
 Built-in functions, no path needed: `print`, `println`, `len`,
 `to_string`, `min`, `max`, `abs`, `starts_with`, `contains`.
@@ -235,19 +261,19 @@ Reading order for a cold start:
    ~200 lines composing seven stdlib namespaces. The largest
    real Aperio program in the repo and the closest analogue to
    what you will be writing.
-5. **`docs/std/src/`** — reference. Per-namespace pages with
+5. **`docs/src/std/`** — reference. Per-namespace pages with
    Synopsis / Semantics / Examples. Authoritative for surface
    you can call.
-6. **`docs/reference/src/`** — language reference. Authoritative
+6. **`docs/src/reference/`** — language reference. Authoritative
    for syntax and semantics. Long; consult on demand, not in
    one sitting.
-7. **`docs/book/src/`** — the human-style tutorial. Useful if
+7. **`docs/src/book/`** — the human-style tutorial. Useful if
    the reference's prescriptive register is hard to extract a
    mental model from.
 
-The grimoire (`docs/grimoire/src/`) is a vibes-first onboarding
+The grimoire (`docs/src/grimoire/`) is a vibes-first onboarding
 path written in meta-spell register. You are an agent; you
-will get more out of `docs/book/` and `docs/reference/`.
+will get more out of `docs/src/book/` and `docs/src/reference/`.
 
 ## Running and testing
 
@@ -390,6 +416,18 @@ correct program."
 4. If still stuck, log a friction entry with the smallest
    repro and stop. The compiler session can act on a clear
    repro; it cannot act on prose frustration.
+
+## Sister documents
+
+- `notes/agent-onboarding/aperio-styleguide.md` — the **how**
+  to this brief's **what**. Pattern catalog with one example
+  each, naming conventions, composition guidance.
+- `notes/agent-onboarding/compiler-session-brief.md` — the
+  brief for the *other* kind of session: agents that work on
+  the compiler proper (`crates/`, `spec/`, `docs/src/reference/`).
+  If you find yourself wanting to edit `crates/` to add a
+  primitive, you have crossed into compiler-session territory
+  — log the friction instead, or hand off.
 
 ---
 

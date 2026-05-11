@@ -35,7 +35,7 @@ This milestone also paves the way for fn params and locus
 fields of user-type kind, both of which compile cleanly today
 with no further changes — all that's needed is at-call-site
 type-checking, which already happens through the unified
-`type_expr_to_lotus` path.
+`type_expr_to_codegen_ty` path.
 
 ## What's not lowered yet
 
