@@ -169,14 +169,16 @@ pages live at `docs/src/std/<name>.md`.
 
 I/O and protocol:
 
-- `std::io::fs::{read_file, write_file, write_file_append, mkdir, file_exists, file_size, read_bytes, list_dir}`
-- `std::io::tcp::{Listener, Stream}` — Listener accepts many; Stream `.send()` / `.send_bytes()` / `.recv()`
+- `std::io::fs::{read_file, write_file, write_file_append, mkdir, file_exists, file_size, extension, read_bytes, list_dir, list_dir_count, list_dir_at, read_file_status}`
+- `std::io::tcp::{Listener, Stream}` — Listener accepts many; Stream `.send()` / `.send_bytes()` / `.recv()` / `.recv_bytes()` (Phase 2g; binary-safe receive)
 - `std::http::{Request, Response, parse_request, write_response}`
 
 Bare path-call surfaces:
 
 - `std::env::{args_count, arg, var, var_exists}`
-- `std::str::{parse_int, can_parse_int, index_of}`
+- `std::str::{parse_int, can_parse_int, index_of, from_bytes}`
+- `std::bytes::{from_string, at, slice}` — Phase 2g binary-safe helpers; `len(b)` is the bare-name builtin
+- `std::math::{sqrt, exp, log, pow, floor, ceil}` — libm primitives; `Int → Float` widens automatically at fn-arg sites (Phase 2c)
 - `std::time::{sleep, monotonic}`
 - `std::process::{pid, exit}`
 - `std::test::{assert, assert_eq_int, assert_eq_str}`
@@ -184,6 +186,13 @@ Bare path-call surfaces:
 - `std::ts::*` — tree-sitter substrate (Go only at v0); handle-based
   Int IDs for tree/node values, `parse_go`, `root_node`, `node_kind`,
   `node_named_child`, etc.
+
+Language-level (Phase 2 ergonomics arc, 2026-05-11):
+
+- **`if` as expression / block-tail values** — `let x = if cond { i } else { j };`; block's last item without trailing `;` is its value. Else branch required for the value form; arm types must match.
+- **`[val; N]` array repetition** — `let r: [Float; 8] = [0.0; 8];`. N is a non-negative Int literal at v0.
+- **`Int → Float` implicit widening** — fires at let-binding type ascription and fn-arg sites where the parameter is Float; one-way only.
+- **Structural interfaces** — `interface I { fn ...; ... }`; loci satisfy implicitly. `std::text::Sink` is the canonical stdlib instance (StdoutSink / StringSink / FileSink variants).
 
 Namespace lotuses (instantiate once, dispatch through it):
 
@@ -408,10 +417,14 @@ Examples of valid entries:
   in one locus. Hit: parser rejects multiple accept signatures.
   Workaround: split the supervisor in two. Why it matters:
   blocks any locus that supervises heterogeneous children."
-- "Tried `let names: [String] = std::io::fs::list_dir(p);`. Hit:
-  `list_dir` returns newline-separated `String`, not `[String]`.
-  Workaround: split on `\n` manually. Why it matters: every
-  caller does the same split — wants a `[String]` overload."
+- "Tried `let line = lines[i];` after `let lines = some_fn();`
+  expecting dynamic-array indexing. Hit: arrays in v0 are
+  fixed-size `[T; N]` with N a compile-time literal; there is no
+  dynamic-length array type. Workaround: index-API pattern
+  (`count` + `at(i)` path-calls, like `std::io::fs::list_dir_count`
+  + `list_dir_at`). Why it matters: every shape that wants to
+  return a variable-length collection has to invent its own
+  index-API pair until dynamic arrays land."
 
 What is **not** a friction entry: a bug in your own code, a
 lint you disagree with, a stylistic preference. The bar is
