@@ -113,14 +113,27 @@ declares an interface-typed param: missing-method, arity-
 mismatch, param-type, or return-type mismatches all produce
 typed diagnostics at typecheck time.
 
-**v0.1 scope (Phase A).** Interface declarations parse, register,
-and the typechecker enforces the structural rule. **Codegen
-vtable dispatch is deferred to Phase B**; passing a locus where
-an interface is expected currently errors at codegen with a
-friendly Phase-B-pending message. Library design proceeds against
-the locked syntax; the `std::text::Sink` migration (separate
+**v0.1 scope (Phase A + Phase B).** Interface declarations
+parse, register, and the typechecker enforces the structural
+rule (Phase A, shipped 2026-05-10). **Codegen vtable dispatch
+(Phase B) is shipped 2026-05-11.** Interface values are fat
+pointers `{data, vtable}` allocated in the current arena; the
+data slot holds the underlying locus pointer (same single-ptr
+ABI as `LocusRef`) and the vtable slot holds a per-(locus,
+interface) static global of fn pointers indexed by interface-
+method declaration order. A locus flowing into an interface
+slot coerces at the call site; method calls on an interface
+value lower as indirect calls through `vtable[i]` with the
+data pointer passed as the implicit self arg.
+
+Interface values are usable as fn parameters and as receivers
+for method calls. The `std::text::Sink` migration (separate
 StdoutSink / StringSink / FileSink loci behind one Sink
-interface) waits for Phase B.
+interface) is a stdlib follow-up: now unblocked, but ships in
+a later milestone. Returning an interface value from a fn,
+storing one in a locus param/field, or putting interfaces in
+arrays/tuples is not yet supported — deep-copy across arena
+boundaries for the fat pointer is a Phase B follow-up.
 
 Interfaces have no default methods at v0; the body is signature-
 only. No interface inheritance, no multi-interface bounds on

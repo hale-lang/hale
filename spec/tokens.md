@@ -52,8 +52,10 @@ interface
 `interface` (F.20) declares a structural interface — a named set
 of method signatures. Any locus whose method set is a superset
 structurally satisfies the interface (no `impl I for L`
-declaration). Phase A: typecheck-only; codegen vtable dispatch
-deferred to Phase B.
+declaration). Phase A (typecheck) and Phase B (codegen vtable
+dispatch) both shipped 2026-05-11; interface values are usable as
+fn params and method-call receivers. Returning / storing
+interface values across arena boundaries is a Phase B follow-up.
 
 ### Locus member keywords
 

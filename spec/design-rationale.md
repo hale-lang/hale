@@ -1423,34 +1423,43 @@ a concrete arg.
 - *Interface inheritance / extension* (`interface SuperSink :
   Sink { ... }`). Reject for v0; same scope-creep argument.
 
-**Implementation status (Phase A).**
+**Implementation status (Phase A + Phase B).**
 
-- **Parser / AST / resolver / typechecker:** shipped. The
-  `interface` keyword parses, `InterfaceDecl` lands in the
-  AST, `TopSymbol::Interface` registers in the bundle scope,
-  the typechecker enforces the structural-impl rule at every
-  call site where a fn declares an interface-typed param.
-  Mismatches produce typed diagnostics (missing method,
+- **Phase A — parser / AST / resolver / typechecker (shipped
+  2026-05-10).** The `interface` keyword parses, `InterfaceDecl`
+  lands in the AST, `TopSymbol::Interface` registers in the
+  bundle scope, the typechecker enforces the structural-impl
+  rule at every call site where a fn declares an interface-typed
+  param. Mismatches produce typed diagnostics (missing method,
   arity, param type, return type).
-- **Codegen — DEFERRED to Phase B.** The interface declaration
-  itself emits no IR; passing a locus where an interface is
-  expected currently lowers as if the locus were the concrete
-  param type (no fat pointer, no vtable, no runtime
-  polymorphism). At-a-distance method dispatch through the
-  interface — `let sink: Sink = StdoutSinkL { }; sink.line(...)`
-  with `sink` bound at runtime — is the next milestone. The
-  shape that *does* work end-to-end at v0: pass a concrete
-  locus to a fn taking an interface-typed param; method calls
-  in the body resolve direct-by-name against the concrete type.
-  Heterogeneous storage (`Vec<Sink>` of mixed-impl) waits for
-  vtable codegen.
-
-**Phase B sketch (vtable, follow-up).** Interface values become
-fat pointers: `(data_ptr, vtable_ptr)`. Per (locus, interface)
-pair, codegen synthesizes a static vtable global with fn-pointers
-indexed by interface-method declaration order. Method calls
-through an interface value lower as indirect calls through the
-vtable. Reuses the m80 `build_indirect_call` machinery.
+- **Phase B — codegen vtable dispatch (shipped 2026-05-11).**
+  `CodegenTy::Interface(name)` represents an interface value at
+  the codegen layer; LLVM-level layout is a single `ptr` to an
+  arena-allocated `{i8* data, i8* vtable}` fat-pointer struct
+  (uniform single-pointer ABI matching `LocusRef`). Per (locus,
+  interface) pair, `ensure_vtable` synthesizes a static
+  `[N x ptr]` global `__vt.<locus>.<iface>` holding the locus's
+  methods in interface-declaration order. At call sites where a
+  fn declares an interface-typed param, `coerce_to_interface`
+  arena-allocs the fat-pointer struct and stores
+  `data = locus_ptr`, `vtable = __vt.<locus>.<iface>`. Method
+  calls on an interface receiver lower in
+  `lower_iface_method_call`: load data + vtable, GEP to the
+  method's slot (decl-order index), `build_indirect_call`
+  through the m80 machinery with `data` as the implicit self
+  arg. End-to-end coverage in
+  `crates/aperio-codegen/tests/interface_dispatch.rs`.
+- **Phase B follow-ups (deferred).** Returning an interface
+  value from a fn, storing one in a locus param/field, putting
+  interfaces in arrays/tuples — all need fat-pointer deep-copy
+  across arena boundaries (the data pointer inside the fat
+  pointer would dangle without it). `emit_return_value_deep_copy`
+  currently rejects Interface returns with a pointer at this
+  follow-up. Heterogeneous storage (`Vec<Sink>` of mixed-impl)
+  needs the same follow-up plus array-of-interface lowering.
+  The `std::text::Sink` stdlib migration is unblocked at the
+  language level and ships in a separate milestone to keep this
+  commit's blast radius bounded.
 
 ### F.21 Cascading-dimension interface (sketch)
 

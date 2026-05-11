@@ -108,6 +108,18 @@ enum CodegenTy {
         args: Vec<CodegenTy>,
         ret: Option<Box<CodegenTy>>,
     },
+    /// F.20 Phase B: interface value. The string carries the
+    /// interface name; method order + signatures live in
+    /// `Cx.user_interfaces`. Lowered as a `ptr` at the LLVM
+    /// level pointing to an arena-allocated fat-pointer struct
+    /// `{ i8* data, i8* vtable }`. `data` is the underlying
+    /// locus pointer (single-pointer LocusRef ABI); `vtable`
+    /// is a per-(locus, interface) static global of fn pointers
+    /// indexed by interface-method declaration order. Built at
+    /// the call site where a locus flows into an interface slot;
+    /// dispatch loads vtable[i] and indirect-calls with data
+    /// as the implicit self arg.
+    Interface(String),
 }
 
 /// Did the last lowered statement leave the current basic block
@@ -204,6 +216,7 @@ pub fn build_executable(
         generic_fn_templates: BTreeMap::new(),
         generic_locus_templates: BTreeMap::new(),
         defer_next_locus_dissolve: false,
+        vtables: BTreeMap::new(),
     };
 
     cx.declare_builtins();
@@ -505,12 +518,13 @@ struct Cx<'ctx, 'p> {
     /// supports no-payload-only enums; an enum value is an i32
     /// holding the variant's tag.
     user_enums: BTreeMap<String, EnumInfo>,
-    /// F.20 Phase A: user-declared interface names. Codegen
-    /// recognizes them in type position only to surface a
-    /// friendly Phase-B-pending error; they don't carry methods
-    /// at the codegen layer (the typechecker enforces structural
-    /// impl). When Phase B (vtable dispatch) lands, this map will
-    /// grow to include method tables for vtable synthesis.
+    /// F.20: user-declared interface names. Phase A registers
+    /// them here so `type_expr_to_codegen_ty` can resolve an
+    /// interface-typed signature slot to `CodegenTy::Interface`.
+    /// Phase B reads method order + signatures lazily from the
+    /// AST when synthesizing a per-(locus, interface) vtable
+    /// (the typechecker already enforces structural impl, so
+    /// codegen just needs the layout, not a re-verified table).
     user_interfaces: BTreeSet<String>,
     /// Bus state generated when any locus declares a subscribe.
     /// `Some` iff the program contains at least one `bus subscribe`
@@ -622,6 +636,16 @@ struct Cx<'ctx, 'p> {
     /// literals (`Stream { ... };`) are unaffected — the flag
     /// only fires from `Stmt::Let`.
     defer_next_locus_dissolve: bool,
+    /// F.20 Phase B: per-(locus, interface) vtable globals.
+    /// Synthesized lazily by `ensure_vtable` the first time a
+    /// given locus is coerced to a given interface. Layout is
+    /// `[N x ptr]` where N is the interface's method count and
+    /// element i is the locus's method matching interface
+    /// method i (by declaration order). The symbol name is
+    /// `__vt.<locus>.<iface>`. Stored as a `GlobalValue` so the
+    /// fat-pointer build site can take its address without a
+    /// re-emit.
+    vtables: BTreeMap<(String, String), inkwell::values::GlobalValue<'ctx>>,
 }
 
 /// m60: paired serialize / deserialize fns synthesized per bus
@@ -2852,12 +2876,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // handlers can therefore read err.locus and err.closure.
         self.declare_builtin_closure_violation_type();
 
-        // F.20 Phase A: register interface declarations by name.
-        // The codegen layer uses this only to surface a friendlier
-        // error when an interface type appears in a fn signature
-        // (vtable codegen is Phase B and not shipped). Method
-        // tables stay in the typechecker; codegen doesn't need
-        // them yet.
+        // F.20: register interface declarations by name. The
+        // codegen layer uses this in two places: signature lowering
+        // (`Interface(name)` in CodegenTy) and Phase-B vtable
+        // synthesis (lazy lookup of method order from the AST).
         for item in &self.program.items {
             if let TopDecl::Interface(i) = item {
                 self.user_interfaces.insert(i.name.name.clone());
@@ -3458,16 +3480,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 } else if self.user_enums.contains_key(name) {
                     Ok(CodegenTy::Enum(name.clone()))
                 } else if self.user_interfaces.contains(name) {
-                    Err(CodegenError::Unsupported(format!(
-                        "interface type `{}` in fn signature: structural \
-                         interfaces are typecheck-only at v0 (F.20 Phase A). \
-                         Vtable dispatch (Phase B) is the next milestone. \
-                         For now, declare the param with the concrete locus \
-                         type. The typechecker still enforces the structural \
-                         impl rule everywhere — Phase B will lift this \
-                         codegen restriction without changing source.",
-                        name
-                    )))
+                    // F.20 Phase B: interface type in signature
+                    // position. Lowered as a fat pointer (data +
+                    // vtable); coercion from a concrete locus is
+                    // built at the call site, dispatch through
+                    // the vtable is emitted at the method-call site.
+                    Ok(CodegenTy::Interface(name.clone()))
                 } else {
                     Err(CodegenError::Unsupported(format!(
                         "unknown type name `{}` in signature",
@@ -5670,7 +5688,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 | CodegenTy::TypeRef(_)
                                 | CodegenTy::Array(_, _)
                                 | CodegenTy::Tuple(_)
-                                | CodegenTy::FnPtr { .. } => self
+                                | CodegenTy::FnPtr { .. }
+                                | CodegenTy::Interface(_) => self
                                     .context
                                     .ptr_type(AddressSpace::default())
                                     .fn_type(&llvm_param_tys, false),
@@ -5835,7 +5854,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 | CodegenTy::TypeRef(_)
                                 | CodegenTy::Array(_, _)
                                 | CodegenTy::Tuple(_)
-                                | CodegenTy::FnPtr { .. } => self
+                                | CodegenTy::FnPtr { .. }
+                                | CodegenTy::Interface(_) => self
                                     .context
                                     .ptr_type(AddressSpace::default())
                                     .fn_type(&llvm_param_tys, false),
@@ -6875,7 +6895,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Some(CodegenTy::TypeRef(_))
             | Some(CodegenTy::Array(_, _))
             | Some(CodegenTy::Tuple(_))
-            | Some(CodegenTy::FnPtr { .. }) => self
+            | Some(CodegenTy::FnPtr { .. })
+            | Some(CodegenTy::Interface(_)) => self
                 .context
                 .ptr_type(AddressSpace::default())
                 .fn_type(&llvm_param_tys, false),
@@ -7497,6 +7518,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                  cross arena boundaries — pass via bus instead",
                 ty
             ))),
+            CodegenTy::Interface(_) => Err(CodegenError::Unsupported(format!(
+                "free-fn return of {:?}: interface values shouldn't \
+                 cross arena boundaries at v0 — the data pointer \
+                 inside the fat pointer would dangle. Interface return \
+                 deep-copy is a Phase B follow-up; for now, take an \
+                 interface arg and dispatch from the caller's frame.",
+                ty
+            ))),
         }
     }
 
@@ -7798,12 +7827,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let default = sig.defaults[i].as_ref().expect("checked above");
                 self.lower_expr(default, scope)?
             };
-            if ty != sig.params[i] {
+            // F.20 Phase B: implicit locus → interface coercion. If
+            // the param is an Interface and the arg is a LocusRef
+            // (typechecker already verified the structural impl),
+            // build the fat pointer at the call site. Other type
+            // mismatches still error.
+            let v = if let (CodegenTy::Interface(iface), CodegenTy::LocusRef(l)) =
+                (&sig.params[i], &ty)
+            {
+                let fat = self.coerce_to_interface(
+                    v.into_pointer_value(),
+                    l,
+                    iface,
+                )?;
+                fat.into()
+            } else if ty != sig.params[i] {
                 return Err(CodegenError::Unsupported(format!(
                     "fn `{}` arg {} type mismatch: expected {:?}, got {:?}",
                     name, i, sig.params[i], ty
                 )));
-            }
+            } else {
+                v
+            };
             llvm_args.push(v.into());
         }
         let call = self
@@ -10283,7 +10328,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::LocusRef(_)
             | CodegenTy::TypeRef(_)
             | CodegenTy::Array(_, _)
-            | CodegenTy::Tuple(_) => self
+            | CodegenTy::Tuple(_)
+            | CodegenTy::Interface(_) => self
                 .builder
                 .build_alloca(self.context.ptr_type(AddressSpace::default()), name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
@@ -11129,7 +11175,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::LocusRef(_)
             | CodegenTy::TypeRef(_)
             | CodegenTy::Array(_, _)
-            | CodegenTy::Tuple(_) => {
+            | CodegenTy::Tuple(_)
+            | CodegenTy::Interface(_) => {
                 self.context.ptr_type(AddressSpace::default()).into()
             }
         }
@@ -11723,6 +11770,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     printf_args.push(BasicMetadataValueEnum::PointerValue(
                         s.into_pointer_value(),
                     ));
+                }
+                CodegenTy::Interface(name) => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "println of an interface value (`{}`) — \
+                         interface values have no surface \
+                         representation; call a method on it instead",
+                        name
+                    )));
                 }
             }
         }
@@ -15509,6 +15564,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
     ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
         let (recv_val, recv_ty) = self.lower_expr(receiver_expr, scope)?;
+        // F.20 Phase B: dispatch through an interface fat pointer.
+        // The receiver value is a pointer to a `{data, vtable}`
+        // struct laid out by `coerce_to_interface`. Load data
+        // (the underlying locus pointer) for the implicit self
+        // arg, load vtable, GEP to the method-index slot, load
+        // the fn pointer, and indirect-call. Method index is the
+        // method's position in the interface's declaration list.
+        if let CodegenTy::Interface(iface_name) = &recv_ty {
+            return self.lower_iface_method_call(
+                recv_val.into_pointer_value(),
+                iface_name,
+                method_name,
+                args,
+                scope,
+            );
+        }
         let locus_name = match recv_ty {
             CodegenTy::LocusRef(n) => n,
             other => {
@@ -15623,6 +15694,188 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(Some((v, rt)))
             }
         }
+    }
+
+    /// F.20 Phase B: lower a method call where the receiver is an
+    /// interface value. The receiver is the fat-pointer struct
+    /// produced by `coerce_to_interface`; data slot holds the
+    /// underlying locus pointer, vtable slot holds the
+    /// `__vt.<locus>.<iface>` global address. Method index in the
+    /// vtable is the method's position in the interface's
+    /// declaration list; the LLVM FunctionType for the indirect
+    /// call is synthesized from the interface method signature
+    /// (with `self: ptr` prepended to match the locus-method ABI).
+    fn lower_iface_method_call(
+        &mut self,
+        fat_ptr: PointerValue<'ctx>,
+        iface_name: &str,
+        method_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
+        let iface_decl = self
+            .program
+            .items
+            .iter()
+            .find_map(|item| match item {
+                TopDecl::Interface(i) if i.name.name == iface_name => {
+                    Some(i.clone())
+                }
+                _ => None,
+            })
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "interface `{}` not declared",
+                    iface_name
+                ))
+            })?;
+        let (method_idx, method_sig) = iface_decl
+            .methods
+            .iter()
+            .enumerate()
+            .find(|(_, m)| m.name.name == method_name)
+            .map(|(i, m)| (i, m.clone()))
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "interface `{}` has no method `{}`",
+                    iface_name, method_name
+                ))
+            })?;
+        if args.len() != method_sig.params.len() {
+            return Err(CodegenError::Unsupported(format!(
+                "{}.{} (interface): expected {} arg(s), got {}",
+                iface_name,
+                method_name,
+                method_sig.params.len(),
+                args.len()
+            )));
+        }
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let fat_struct_ty = self.iface_fat_struct_ty();
+        // Load data ptr (slot 0) and vtable ptr (slot 1).
+        let data_slot_ptr = self
+            .builder
+            .build_struct_gep(fat_struct_ty, fat_ptr, 0, "iface.data.gep")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let data_ptr = self
+            .builder
+            .build_load(ptr_t, data_slot_ptr, "iface.data")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        let vtable_slot_ptr = self
+            .builder
+            .build_struct_gep(fat_struct_ty, fat_ptr, 1, "iface.vtable.gep")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let vtable_ptr = self
+            .builder
+            .build_load(ptr_t, vtable_slot_ptr, "iface.vtable")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        // Index into the vtable: `[N x ptr]`. We treat the vtable
+        // pointer as a flat `[max x ptr]` and GEP with the method
+        // index — LLVM is type-erased on the runtime side, so the
+        // exact N in the array_type doesn't matter for the GEP.
+        let vtable_ty = ptr_t.array_type(iface_decl.methods.len() as u32);
+        let i32_t = self.context.i32_type();
+        let zero = i32_t.const_zero();
+        let idx = i32_t.const_int(method_idx as u64, false);
+        let fn_slot_ptr = unsafe {
+            self.builder
+                .build_in_bounds_gep(
+                    vtable_ty,
+                    vtable_ptr,
+                    &[zero, idx],
+                    &format!("iface.{}.{}.slot", iface_name, method_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+        let fn_ptr = self
+            .builder
+            .build_load(ptr_t, fn_slot_ptr, "iface.fn")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        // Lower args; check each against the interface-declared
+        // type. The typechecker already enforces structural impl
+        // against the interface signature, so the locus's matching
+        // method has compatible types.
+        let mut llvm_args: Vec<BasicMetadataValueEnum<'ctx>> =
+            Vec::with_capacity(args.len() + 1);
+        let mut llvm_param_tys: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
+            Vec::with_capacity(args.len() + 1);
+        llvm_args.push(data_ptr.into());
+        llvm_param_tys.push(ptr_t.into());
+        for (i, a) in args.iter().enumerate() {
+            let (v, ty) = self.lower_expr(a, scope)?;
+            let want = self.type_expr_to_codegen_ty(&method_sig.params[i].ty)?;
+            // Same Locus→Interface coercion the free-fn call site
+            // does — keeps interface-typed method params usable.
+            let (v, ty) = if let (
+                CodegenTy::Interface(iname),
+                CodegenTy::LocusRef(l),
+            ) = (&want, &ty)
+            {
+                let fat = self.coerce_to_interface(
+                    v.into_pointer_value(),
+                    l,
+                    iname,
+                )?;
+                (fat.into(), want.clone())
+            } else {
+                (v, ty)
+            };
+            if ty != want {
+                return Err(CodegenError::Unsupported(format!(
+                    "{}.{} (interface) arg {} type mismatch: expected {:?}, got {:?}",
+                    iface_name, method_name, i, want, ty
+                )));
+            }
+            llvm_args.push(v.into());
+            llvm_param_tys.push(self.llvm_basic_type(&want).into());
+        }
+        let ret_codegen_ty = match &method_sig.ret {
+            Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
+            None => None,
+        };
+        let fn_ty = match &ret_codegen_ty {
+            None => self.context.void_type().fn_type(&llvm_param_tys, false),
+            Some(rt) => match self.llvm_basic_type(rt) {
+                inkwell::types::BasicTypeEnum::IntType(t) => {
+                    t.fn_type(&llvm_param_tys, false)
+                }
+                inkwell::types::BasicTypeEnum::FloatType(t) => {
+                    t.fn_type(&llvm_param_tys, false)
+                }
+                inkwell::types::BasicTypeEnum::PointerType(t) => {
+                    t.fn_type(&llvm_param_tys, false)
+                }
+                other => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "interface method return type {:?} not yet supported \
+                         by Phase B dispatch",
+                        other
+                    )));
+                }
+            },
+        };
+        let call = self
+            .builder
+            .build_indirect_call(
+                fn_ty,
+                fn_ptr,
+                &llvm_args,
+                &format!("iface.{}.{}.call", iface_name, method_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(match ret_codegen_ty {
+            None => None,
+            Some(rt) => {
+                let v = call
+                    .try_as_basic_value()
+                    .left()
+                    .expect("non-void interface dispatch yields a value");
+                Some((v, rt))
+            }
+        })
     }
 
     /// Lower one closure assertion `left ~~ right within tol` as
@@ -17691,6 +17944,117 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         g.set_linkage(inkwell::module::Linkage::Internal);
         g.set_constant(true);
         Ok(g)
+    }
+
+    /// F.20 Phase B: synthesize (once) and return the LLVM global
+    /// holding the vtable for a (locus, interface) pair. The vtable
+    /// is `[N x ptr]` where N is the interface's method count and
+    /// slot i is the locus method that satisfies interface method i
+    /// (matched by name; the typechecker has already verified the
+    /// structural impl). Cached in `self.vtables` keyed by
+    /// (locus, iface) so multiple coercion sites share one global.
+    fn ensure_vtable(
+        &mut self,
+        locus_name: &str,
+        iface_name: &str,
+    ) -> Result<inkwell::values::GlobalValue<'ctx>, CodegenError> {
+        let key = (locus_name.to_string(), iface_name.to_string());
+        if let Some(g) = self.vtables.get(&key) {
+            return Ok(*g);
+        }
+        // Find the interface decl in the AST so we can pull method
+        // order. Method bodies are not allowed (no defaults at v0);
+        // signatures-only is exactly what we need.
+        let iface_methods: Vec<String> = self
+            .program
+            .items
+            .iter()
+            .find_map(|item| match item {
+                TopDecl::Interface(i) if i.name.name == iface_name => Some(
+                    i.methods.iter().map(|m| m.name.name.clone()).collect(),
+                ),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "vtable synth: interface `{}` not declared",
+                    iface_name
+                ))
+            })?;
+        let info = self.user_loci.get(locus_name).cloned().ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "vtable synth: locus `{}` not declared",
+                locus_name
+            ))
+        })?;
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let mut entries: Vec<inkwell::values::PointerValue<'ctx>> =
+            Vec::with_capacity(iface_methods.len());
+        for method_name in &iface_methods {
+            let func = info.user_methods.get(method_name).ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "vtable synth: locus `{}` has no method `{}` (interface `{}`)",
+                    locus_name, method_name, iface_name
+                ))
+            })?;
+            entries.push(func.as_global_value().as_pointer_value());
+        }
+        let array_ty = ptr_t.array_type(entries.len() as u32);
+        let init = ptr_t.const_array(&entries);
+        let global_name = format!("__vt.{}.{}", locus_name, iface_name);
+        let g = self.module.add_global(array_ty, None, &global_name);
+        g.set_initializer(&init);
+        g.set_linkage(inkwell::module::Linkage::Internal);
+        g.set_constant(true);
+        self.vtables.insert(key, g);
+        Ok(g)
+    }
+
+    /// F.20 Phase B: build a fat-pointer interface value from a
+    /// concrete locus pointer. Allocates a 16-byte `{data, vtable}`
+    /// struct in the current arena, stores the locus pointer at
+    /// slot 0 and the per-(locus, iface) vtable global address at
+    /// slot 1, and returns a pointer to the struct. The returned
+    /// pointer is the LLVM-level representation of a value whose
+    /// CodegenTy is `Interface(iface_name)`.
+    fn coerce_to_interface(
+        &mut self,
+        locus_val: PointerValue<'ctx>,
+        locus_name: &str,
+        iface_name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let vtable = self.ensure_vtable(locus_name, iface_name)?;
+        let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let fat_struct_ty = self
+            .context
+            .struct_type(&[ptr_t.into(), ptr_t.into()], false);
+        let size_val = i64_t.const_int(16, false);
+        let fat_ptr =
+            self.arena_alloc(size_val, &format!("iface.{}.fat", iface_name))?;
+        let data_slot = self
+            .builder
+            .build_struct_gep(fat_struct_ty, fat_ptr, 0, "iface.data.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(data_slot, locus_val)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let vtable_slot = self
+            .builder
+            .build_struct_gep(fat_struct_ty, fat_ptr, 1, "iface.vtable.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(vtable_slot, vtable.as_pointer_value())
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(fat_ptr)
+    }
+
+    /// The LLVM struct type for an interface fat pointer, used by
+    /// coercion (store) and dispatch (load) sites so both agree on
+    /// slot layout. Two ptr slots: data, then vtable.
+    fn iface_fat_struct_ty(&self) -> inkwell::types::StructType<'ctx> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        self.context.struct_type(&[ptr_t.into(), ptr_t.into()], false)
     }
 
     /// Allocate `size` bytes through the lotus region allocator.

@@ -169,7 +169,7 @@ single-file-app-monolith. Spec entry: F.19 in
 `spec/design-rationale.md`. Example: `examples/multi-file-seed/`.
 Regression test: `crates/aperio-codegen/tests/multi_file_build.rs`.
 
-## F.20 — structural interfaces, Phase A (2026-05-11)
+## F.20 — structural interfaces, Phase A + Phase B (2026-05-11)
 
 `interface Name { fn ...; ... }` declares a structural interface.
 Any locus whose method set is a superset structurally satisfies
@@ -180,10 +180,24 @@ Structural impl-check fires at every call site where a fn
 declares an interface-typed param (missing-method / arity /
 type / return-type diagnostics).
 
-**Phase B (deferred):** codegen vtable dispatch. Currently a
-locus passed where an interface is expected errors at codegen
-with a friendly Phase-B-pending message. The `std::text::Sink`
-migration waits for Phase B.
+**Phase B (shipped):** codegen vtable dispatch. Interface values
+lower as fat pointers `{data, vtable}` allocated in the current
+arena; the data slot is the underlying locus pointer (same
+ABI as `LocusRef`), the vtable slot points at a per-(locus,
+interface) static global of fn pointers indexed by interface-
+method declaration order. A locus flowing into an interface
+slot coerces at the call site; method calls on an interface
+value lower as indirect calls through `vtable[i]` with the data
+pointer passed as the implicit self arg. End-to-end coverage
+in `crates/aperio-codegen/tests/interface_dispatch.rs`.
+
+**Phase B follow-ups (deferred):** returning an interface value
+from a fn, storing one in a locus param/field, or putting
+interfaces in arrays/tuples — all need fat-pointer deep-copy
+across arena boundaries. The `std::text::Sink` migration
+(separate StdoutSink / StringSink / FileSink loci behind one
+Sink interface) is unblocked but ships in a follow-up
+milestone to keep this commit's blast radius bounded.
 
 Resolves (partial) `notes/aperio-friction.md` 2026-05-10
 sink-as-tagged-locus. Spec entry: F.20 in

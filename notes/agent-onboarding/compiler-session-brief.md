@@ -314,30 +314,42 @@ Real shape-debt the v0 surface carries that future work will
 relieve. Listed here so a fresh compiler session doesn't
 re-rediscover the antipatterns or attempt premature fixes.
 
-### Sink-as-tagged-locus (`std::text::Sink`) [PARTIAL — F.20 Phase A shipped]
+### Sink-as-tagged-locus (`std::text::Sink`) [PARTIAL — F.20 Phase A + B shipped; stdlib migration pending]
 
 `__StdTextSink` in `crates/aperio-codegen/runtime/stdlib/text.ap`
 still uses `if self.dest == "string" { ... } else { ... }` to
-branch between an in-memory buffer and stdout streaming.
+branch between an in-memory buffer and stdout streaming. The
+language-level blocker is gone; the stdlib migration itself
+remains as a follow-up.
 
-- **F.20 Phase A (shipped).** Structural interface declarations
-  (`interface Sink { fn write(s: String); ... }`) parse,
-  register, and the typechecker enforces the structural-impl
-  rule at every call site where a fn declares an interface-
-  typed param (missing method / arity / type / return-type
-  diagnostics). Library code can be designed against the new
-  syntax today; tests in `crates/aperio-types/src/lib.rs`
-  cover the rule.
-- **Phase B (deferred).** Codegen vtable dispatch — passing a
-  locus where an interface is expected currently errors at
-  codegen time with a friendly Phase-B-pending message. The
-  Sink migration (replace tagged dispatch with separate
-  StdoutSink / StringSink / FileSink loci behind one `Sink`
-  interface) waits for Phase B. Phase B sketch lives in
-  `spec/design-rationale.md` F.20: fat pointers
-  `(data, vtable)` + per-(locus, interface) vtable globals
-  + indirect dispatch reusing the m80 `build_indirect_call`
-  machinery.
+- **F.20 Phase A (shipped 2026-05-10).** Structural interface
+  declarations (`interface Sink { fn write(s: String); ... }`)
+  parse, register, and the typechecker enforces the structural-
+  impl rule at every call site where a fn declares an
+  interface-typed param (missing method / arity / type /
+  return-type diagnostics). Tests in
+  `crates/aperio-types/src/lib.rs` cover the rule.
+- **F.20 Phase B (shipped 2026-05-11).** Codegen vtable
+  dispatch. `CodegenTy::Interface(name)` lowers as a fat
+  pointer `{data, vtable}` arena-allocated at the coercion
+  site; per-(locus, interface) static globals
+  `__vt.<locus>.<iface>` hold fn pointers in interface-
+  method-declaration order; method calls on an interface
+  receiver indirect through `vtable[i]` with `data` as the
+  implicit self arg (reusing the m80 `build_indirect_call`
+  machinery). End-to-end coverage in
+  `crates/aperio-codegen/tests/interface_dispatch.rs`.
+  Interface values are usable as fn params + method-call
+  receivers; cross-arena uses (returning, storing in locus
+  fields, arrays/tuples of interfaces) are a Phase B follow-up
+  — the data pointer would dangle without fat-pointer
+  deep-copy.
+- **Sink stdlib migration (pending).** Replace the tagged
+  `__StdTextSink` with separate StdoutSinkL / StringSinkL /
+  FileSinkL loci behind one `Sink` interface. Unblocked at
+  the language level; lands in its own commit so the codegen
+  commit and the stdlib seed shake-up stay independently
+  reviewable.
 - **F.21 cascading-dimension interface (sketch).** Paired
   follow-up for the substrate-aware n-dim case (the
   `std::lotus::Grow` family). Spec entry; no implementation.
