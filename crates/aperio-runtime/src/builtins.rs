@@ -295,7 +295,17 @@ pub fn time_sleep(args: &[Value]) -> Result<Value, String> {
     Ok(Value::Unit)
 }
 
-/// Sleep `ns` nanoseconds on CLOCK_MONOTONIC, retrying on EINTR.
+/// Sleep `ns` nanoseconds, retrying on EINTR.
+///
+/// Linux: `clock_nanosleep(CLOCK_MONOTONIC, 0, ...)` for an
+/// explicitly-monotonic relative sleep.
+///
+/// macOS / other non-Linux POSIX: `nanosleep(...)`. `clock_nanosleep`
+/// isn't exposed by Apple's libc; `nanosleep` is the standard
+/// relative-sleep primitive. Both functions take a relative
+/// timespec when the absolute-flag is 0, so the call sequence is
+/// equivalent — the clock-source distinction only matters for
+/// TIMER_ABSTIME (absolute) sleeps, which we don't use.
 fn monotonic_sleep_ns(ns: i64) {
     if ns <= 0 {
         return;
@@ -306,6 +316,7 @@ fn monotonic_sleep_ns(ns: i64) {
     };
     let mut rem = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     loop {
+        #[cfg(target_os = "linux")]
         let r = unsafe {
             libc::clock_nanosleep(
                 libc::CLOCK_MONOTONIC,
@@ -313,6 +324,23 @@ fn monotonic_sleep_ns(ns: i64) {
                 &req,
                 &mut rem,
             )
+        };
+        #[cfg(not(target_os = "linux"))]
+        let r = {
+            // nanosleep returns 0 on success or -1 with errno set.
+            // Normalize to clock_nanosleep's shape (return errno
+            // directly) so the EINTR check below works on both.
+            // std::io::Error::last_os_error() reads errno
+            // portably — `libc::__error()` works on macOS but not
+            // on every non-Linux POSIX.
+            let rc = unsafe { libc::nanosleep(&req, &mut rem) };
+            if rc == 0 {
+                0
+            } else {
+                std::io::Error::last_os_error()
+                    .raw_os_error()
+                    .unwrap_or(libc::EIO)
+            }
         };
         if r == 0 {
             return;
