@@ -650,9 +650,17 @@ locus __StdLangMorpheme {
     }
 
     // Split a CamelCase identifier into morphemes, separated by
-    // "\n". "OrderProcessor" → "Order\nProcessor\n". (Acronyms
-    // run together; "HTTPClient" → "HTTPClient" is a known v0
-    // limitation — the agent can split + reclassify.)
+    // "\n". "OrderProcessor" → "Order\nProcessor\n".
+    //
+    // Acronyms stay together. The split rule: emit a boundary
+    // before an uppercase char iff (a) the previous char is
+    // lowercase (the normal CamelCase boundary) or (b) the next
+    // char is lowercase (the acronym-ends-and-a-new-word-starts
+    // boundary, e.g. the C in "HTTPClient"). Consecutive
+    // uppers without a trailing lowercase stay clumped — so
+    // "URL" stays "URL" and "HTTPClient" splits as
+    // "HTTP\nClient". Prevents the single-letter morpheme
+    // noise ("H\nT\nT\nP\nClient") that earlier v0 produced.
     fn split_camel(name: String) -> String {
         let n = len(name);
         if n == 0 { return ""; }
@@ -662,8 +670,17 @@ locus __StdLangMorpheme {
         while i < n {
             let c = name[i..i+1];
             if self.is_upper(c) {
-                out = out + name[start..i] + "\n";
-                start = i;
+                let prev = name[i-1..i];
+                let prev_lower = !self.is_upper(prev);
+                let mut next_lower = false;
+                if i + 1 < n {
+                    let next = name[i+1..i+2];
+                    next_lower = !self.is_upper(next);
+                }
+                if prev_lower || next_lower {
+                    out = out + name[start..i] + "\n";
+                    start = i;
+                }
             }
             i = i + 1;
         }
