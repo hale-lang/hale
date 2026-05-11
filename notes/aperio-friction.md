@@ -60,13 +60,14 @@ What is **not** a friction entry:
 **Workaround:** None needed — fixed in the m49 free-fn epilogue (`emit_fn_exit_epilogue` in `crates/aperio-codegen/src/codegen.rs`). The epilogue used to run `flush_dissolve_frame()` BEFORE the return-value deep-copy; this freed any let-bound sub-locus arenas while `ret_alloca` still pointed into one of them, so the subsequent `lotus_str_clone` read freed memory (the freshly-freed page often still contained the right bytes for a single-locus fn, hiding the bug; a second sub-locus dissolve was enough to clobber the chunk). Fix swaps the order: deep-copy first (caller_arena is the parent caller's region, unaffected by this fn's flush), then flush, then destroy the per-call subregion. Returning `jb.wrap_array(...)` directly now round-trips through the caller boundary correctly.
 **Why it matters:** Cross-locus composition is the std seed's whole point. The fix lets `__collect_types_with_motion` (apps/tower-join) and `__collect_section` (apps/operational-graph) return `jb.wrap_array(arr)` directly instead of inline `[ + arr + ]`. Verified byte-identical fixture output for both apps and all 312 workspace tests stay green.
 
-## 2026-05-10 sink-as-tagged-locus
+## 2026-05-10 sink-as-tagged-locus [PARTIAL FIX 2026-05-10 ergonomics arc — F.20 Phase A]
 
 **Source:** ferryman render OOM fix
 **Tried:** Define `std::text::Sink` with multiple destination implementations (stdout streaming, in-memory buffer for tests, eventually file) so the renderer threads `sink: Sink` through the walk and writes rows as produced instead of returning concatenated Strings up the recursion.
 **Hit:** Aperio v0 has no interfaces / traits. The next-closest shape is one locus with a `dest: String` param branching inside every method: `if self.dest == "string" { self.buf = self.buf + s; } else { print(s); }`. Adding a third destination edits every method; the type system can't see which destinations exist; unused params (`buf` in stdout mode) sit in every instance.
 **Workaround:** Wrote the tagged-locus version. Functionally correct, ergonomically poor.
 **Why it matters:** Sink-shape polymorphism keeps recurring — `std::log::StdoutSink` is bus-coupled because there was no other way to abstract a destination; the renderer's OOM was caused by the same gap pushing it toward in-memory String accumulation. A real interface mechanism would let StdoutSink / StringSink / FileSink coexist as separate loci with one surface, eliminating the inner dispatch entirely.
+**Phase A resolution:** F.20 ships the structural-interface declaration (`interface Sink { fn write(s: String); ... }`) plus the structural-impl rule enforced at every call site where a fn declares an interface-typed param (typechecker fires "locus X does not satisfy interface Y: missing method Z" / arity / type / return-type diagnostics). Tests in `crates/aperio-types/src/lib.rs` cover the satisfying / missing-method / arity-mismatch cases. Library design can proceed against the locked syntax. **Phase B (codegen vtable dispatch) still pending** — until then, calling a fn with an interface-typed param errors at codegen time with a friendly message pointing at the next milestone. The Sink migration in stdlib waits for Phase B; the typecheck-only ship lets future code design with interfaces without a binary-build path yet.
 
 ## 2026-05-10 reader-list_item-quadratic-concat
 
@@ -77,10 +78,49 @@ What is **not** a friction entry:
 **Why it matters:** The Reader cannot return a substring efficiently because Aperio v0 has no O(1) string-view primitive — `s[a..b]` allocates and copies, and immutable Strings make any builder pattern collapse to the same O(N²) shape (a list-of-chunks "StringBuilder" stored as a tagged-accumulator hits the same `buf = buf + sep + chunk` quadratic). Two paths forward at the language level: (a) add a rope / chunk-list / lazy-concat primitive to the C runtime so `s1 + s2` is O(1); (b) add a string-view type with explicit (text, start, end) so Reader can return slices without copying. Either unblocks the ferryman partner-codebase target. Until then, the codebase-onboarder ceiling is "small-to-medium codebases" — not the multi-binary Cobra monorepos the partner-demo arc was aimed at.
 
 
-## 2026-05-10 single-file-app-monolith
+## 2026-05-10 small-ergonomics-roundup [FIXED 2026-05-10 ergonomics arc]
+
+**Source:** apps/ssg + apps/log-router + apps/tcp-echo FRICTION logs (cross-referenced; not editing the per-app logs from the compiler session per the territory rule).
+**Tried:** Four small primitives apps were waiting on:
+1. `std::io::fs::mkdir(path)` so an SSG can self-bootstrap its output directory (apps/ssg `no-mkdir` entry).
+2. `std::io::fs::write_file_append(path, content)` so a log sink can append per-event without buffer-everything-at-dissolve (apps/log-router `write-file-truncates-no-append` entry).
+3. `eprintln(args...)` / `eprint(args...)` builtins so debug output doesn't contaminate stdout (apps/log-router `no-eprintln-cant-isolate-debug-output` entry; also gates std::log::StdoutSink WARN/ERROR routing per the std::log doc page).
+4. `String + Int` (and Float / Bool / Decimal / Duration / Time) auto-coerces via `to_string` so `"port=" + port` works (apps/tcp-echo `to_string-int-via-concatenation` entry). Symmetric — `port + " is the port"` also works.
+**Hit:** N/A — feature requests, not friction.
+**Resolution:** All four shipped end-to-end. C runtime: `lotus_fs_mkdir(path)` (single-level, mode 0755), `lotus_fs_write_file_append(path, buf, len)` (`O_WRONLY | O_CREAT | O_APPEND`, no truncate). Codegen: `lower_std_io_fs_mkdir`, `lower_std_io_fs_write_file_append`, `eprintln`/`eprint` routed through `dprintf(2, ...)` (avoids the cross-libc `stderr` FILE* macro shape), and `String + <printable>` BinOp::Add gets a value_to_string coercion before lower_binop. All three fs calls return `Int` (0/-1 sentinels per existing convention). The String+Int auto-coerce mirrors the existing println/eprintln-style mixed-type compose; chained forms (`"a=" + a + " b=" + b`) work because each `+` resolves left-associatively into a String. Apps that were waiting on these can now call them at the bare-name surface without further changes; per-app FRICTION entries can be marked resolved by the next app-dev session that touches them.
+
+## 2026-05-10 single-file-app-monolith [FIXED 2026-05-10 ergonomics arc]
 
 **Source:** ferryman render OOM fix (immediately after the Sink entry above)
 **Tried:** Split `apps/ferryman/main.ap` (2,295 lines + ~290 uncommitted) into `skeleton.ap`, `render.ap`, `topology.ap`, `main.ap` — same `apps/ferryman/` dir, shared namespace, like Go's per-directory package.
 **Hit:** Aperio has no per-directory package model. Each `.ap` file is its own translation unit; user code can't reference identifiers across files. The build is `aperio build apps/ferryman/main.ap`, one file in.
 **Workaround:** Keep everything in `main.ap`. Threading Sink through ~30 functions in a single file is harder to review than threading it through four small files in a directory would be.
 **Why it matters:** The stdlib itself already cheats around this — `STDLIB_AP_SOURCE = concat!(include_str!(...))` of 12 files in `crates/aperio-codegen/runtime/stdlib/` proves codegen can swallow multiple files as one seed; the constraint is a surface gap, not an implementation one. Surfacing it to user code (e.g., `aperio build apps/ferryman/` treats the dir as one seed) would unlock app-level file decomposition today and remove the perverse incentive to grow monolith `.ap` files. Compounds with the Sink friction above: missing interfaces + missing per-dir packages together push every "should be 4 small files with 3 implementations" toward one big file with one tagged locus.
+**Resolution:** `aperio build <dir>` now treats every `.ap` file in the directory as one seed. Top-level decls (loci, types, free fns, perspectives, consts) declared in any file are visible to every other file in the same directory, in one shared scope. Single-file `aperio build foo.ap` keeps working. Binary defaults to the directory's basename (`apps/ferryman/` → `apps/ferryman/ferryman`). File order in the merged bundle is alphabetical (deterministic; resolution is order-free because the typechecker flattens all top-level decls into one bundle scope before name resolution). Same shape Go gets from per-package visibility. Ferryman + any future multi-concern app can decompose freely. See `examples/multi-file-seed/` and `crates/aperio-codegen/tests/multi_file_build.rs`.
+
+## 2026-05-10 closure-keyword-shadows-helper-ident
+
+**Source:** lotus-harness library sketches (examples/51-geom-segment)
+**Tried:** Write a small Float-tolerance helper `fn approx(actual: Float, expected: Float, eps: Float, label: String)` to fill the `assert_eq_float` gap in std::test (m87 ships int / str eq only).
+**Hit:** `parse error: expected function name, got Approx`. `approx` is reserved at the lexer level as the long-form spelling of the `~~` closure-assertion operator (per spec/tokens.md "Closure keywords"), so it can't appear in identifier position even where context is unambiguous.
+**Workaround:** Renamed to `near_eq`. Cheap one-time rename; the friction is the reservation surface, not this fix.
+**Why it matters:** Reserving every closure-vocabulary word at the lexer level (rather than only in closure-block context) shadows a natural pool of math-shaped identifier names (`approx`, `within` as a free fn, etc.). Either narrow the reservation to contextual (closure-block-only) the way mode keywords are admitted post-`.` per F.10, or have the lexer admit them as Idents and let the parser do the structural check.
+
+## 2026-05-10 if-needs-block-value
+
+**Source:** lotus-harness library sketches (examples/54-geom-leading-edge)
+**Tried:** Inside the windowed-regression `fit()` method, compute a physical storage index conditionally: `let phys = if self.n < 8 { i } else { (self.head + i) % 8 };`. Rust-shaped block-value if.
+**Hit:** `parse error: expected ;, got RBrace`. The bare `i` in the then-block is parsed as a statement and trips immediately — Aperio's blocks are statement-sequences with no implicit "last expression is the value." `if_expr = if_stmt` per the grammar, but `if_stmt`'s blocks contain `statement*`, not `statement* expression?`.
+**Workaround:** Rewrote as `let mut phys = i; if self.n >= 8 { phys = (self.head + i) % 8; }`. Verbose but works.
+**Why it matters:** Hits every place a small conditional value would be cleanest — index selection, default-fallback, ternary-ish expressions. Adding a Rust-shaped trailing-expression rule (the block's last token, if it's an expression and not followed by `;`, becomes the block's value) is a localized parser change. Match arms already have an expression branch (`match_arm = pattern [ "if" expression ] "->" ( expression | block )`), so the asymmetry with `if` is jarring.
+
+## 2026-05-10 float-surface-gaps
+
+**Source:** lotus-harness library sketches (examples/51..58)
+**Tried:** Write numeric Segment / Decay / Ring / Correlator with the usual helpers: an Int running count and a Float accumulator, Pearson `r` (not `r²`), exponential time-decay, sqrt-based stddev.
+**Hit:** Three gaps that compound:
+  1. No `Int → Float` coercion or `int_to_float(...)` builtin. `let nf: Float = self.n;` where `n: Int` is rejected; no obvious workaround beyond carrying a parallel `nf: Float` field updated alongside.
+  2. No `sqrt` / `exp` / `pow` in stdlib. `std::math` is sketched aspirationally in `spec/stdlib.md`'s v0 module map but not shipped.
+  3. No Float array-literal repetition syntax (`[0.0; 8]`). Array defaults must enumerate every element.
+**Workaround:** (1) parallel Int+Float counters in every accumulator locus; (2) report `r²` instead of `r`, use plain EMA instead of time-weighted decay, skip variance/stddev; (3) write `[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]` literally in every fixed-cap ring.
+**Why it matters:** Numeric primitives are the substrate for triangulator-class apps (leading-edge geometry, multi-feed correlation, momentum). Each workaround is small; together they make every Float-heavy library noisier than it should be. `std::math::{sqrt,exp,pow,log}` would unlock real time-weighted decay (`exp(-dt/tau)`), Pearson `r` (sqrt of `r²`), proper stddev. Int→Float coercion at `let nf: Float = self.n;` would drop ~10% of every accumulator locus's surface. Array-default repetition (`[0.0; N]`) is cosmetic but compounds with the no-generic-`Ring<N>` situation.

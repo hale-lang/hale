@@ -166,6 +166,12 @@ impl Interpreter {
                 // serialize_as are observed by the bus router. v0
                 // doesn't run that path.
             }
+            TopDecl::Interface(_) => {
+                // Interfaces are pure type-level — method
+                // signatures only, no bodies. The interpreter
+                // handles interface dispatch lazily at call time
+                // by looking the method up on the receiver locus.
+            }
         }
     }
 

@@ -5,11 +5,16 @@
 //!     aperio parse <file.ap>          parse and print the AST
 //!     aperio check <file.ap | dir>    parse + typecheck (no run)
 //!     aperio run   <file.ap | dir>    parse + typecheck + interpret
-//!     aperio build <file.ap>          parse + typecheck + emit native binary
+//!     aperio build <file.ap | dir>    parse + typecheck + emit native binary
 //!
-//! `run` and `check` accept a single .ap file or a directory.
-//! When given a directory, every .ap file in it is treated as
-//! one bundle (multi-file project — e.g. fitter-applier-pair).
+//! `run`, `check`, and `build` all accept a single .ap file or a
+//! directory. The directory shape is the per-dir seed model — every
+//! .ap file in the directory contributes to one bundle (one binary
+//! when built); top-level decls in any file are visible to every
+//! file in the same directory. File order: alphabetical by name.
+//! Output binary defaults to the directory name (apps/ferryman/ →
+//! apps/ferryman/ferryman) for dir targets, or the basename minus
+//! .ap for file targets (hello-world.ap → hello-world).
 
 use std::collections::BTreeMap;
 use std::env;
@@ -50,7 +55,7 @@ fn usage() {
     eprintln!("    aperio parse <file.ap>          parse and print the AST");
     eprintln!("    aperio check <file.ap | dir>    parse + typecheck");
     eprintln!("    aperio run   <file.ap | dir>    parse + typecheck + interpret");
-    eprintln!("    aperio build <file.ap>          parse + typecheck + emit native binary");
+    eprintln!("    aperio build <file.ap | dir>    parse + typecheck + emit native binary");
 }
 
 fn run_lex_file(path: &Path) -> ExitCode {
@@ -349,21 +354,63 @@ fn run_program(target: &Path) -> ExitCode {
 }
 
 fn run_build(target: &Path) -> ExitCode {
-    if !target.is_file() {
-        eprintln!("`aperio build` accepts a single .ap file (imports \
-                   resolve from the file's directory)");
-        return ExitCode::from(1);
-    }
-    let (program, sources) = match parse_with_imports(target) {
-        Ok(x) => x,
-        Err(errors) => {
-            for (path, d, src) in &errors {
-                eprintln!("{}:", path.display());
-                eprintln!("  {}", d.render(src));
+    // File targets follow `import "..."` directives starting from
+    // the entry's directory; directory targets bundle every .ap
+    // file in the directory as one seed (the per-dir package
+    // model — apps/ferryman/{main,render,topology}.ap → one
+    // binary). The directory shape is the user-facing answer to
+    // the single-file-app-monolith friction; the file shape stays
+    // for backwards compatibility and for one-off scripts.
+    let (program, sources, output) = if target.is_file() {
+        let (program, sources) = match parse_with_imports(target) {
+            Ok(x) => x,
+            Err(errors) => {
+                for (path, d, src) in &errors {
+                    eprintln!("{}:", path.display());
+                    eprintln!("  {}", d.render(src));
+                }
+                return ExitCode::from(1);
             }
-            return ExitCode::from(1);
-        }
+        };
+        // hello-world.ap → hello-world
+        let output = target.with_extension("");
+        (program, sources, output)
+    } else if target.is_dir() {
+        let files = match collect_ap_files(target) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{}", e);
+                return ExitCode::from(1);
+            }
+        };
+        let (programs, sources) = match parse_files(&files) {
+            Ok(x) => x,
+            Err(code) => return code,
+        };
+        let merged = match merge_programs(programs.values()) {
+            Some(m) => m,
+            None => {
+                eprintln!("no .ap files in {}", target.display());
+                return ExitCode::from(1);
+            }
+        };
+        // apps/ferryman/ → ferryman; output lands next to target.
+        let bin_name = target
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "main".to_string());
+        let mut output = target.to_path_buf();
+        output.push(&bin_name);
+        let path_sources: BTreeMap<PathBuf, String> = sources
+            .into_iter()
+            .map(|(k, v)| (k, v))
+            .collect();
+        (merged, path_sources, output)
+    } else {
+        eprintln!("not a file or directory: {}", target.display());
+        return ExitCode::from(1);
     };
+
     // Typecheck before lowering. Render diagnostics against the
     // entry-file's source — diagnostic spans currently point into
     // the merged item stream which doesn't have a single source
@@ -381,8 +428,6 @@ fn run_build(target: &Path) -> ExitCode {
         }
         return ExitCode::from(1);
     }
-    // Output binary alongside the source: hello-world.ap → hello-world.
-    let output = target.with_extension("");
     match aperio_codegen::build_executable(&program, &output) {
         Ok(()) => {
             eprintln!("built: {}", output.display());
@@ -393,4 +438,30 @@ fn run_build(target: &Path) -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+/// Merge a set of parsed Programs into a single Program by
+/// concatenating their items. Used by directory-target builds:
+/// every .ap file in the directory contributes its top-level
+/// decls to one bundle, in alphabetical filename order (per
+/// `collect_ap_files`'s sort). Returns `None` if the iterator
+/// yielded zero programs. Mirrors the merge step inside
+/// `parse_with_imports` but without the import-following
+/// (directory targets see every file by enumeration; nothing to
+/// follow).
+fn merge_programs<'a, I>(programs: I) -> Option<Program>
+where
+    I: IntoIterator<Item = &'a Program>,
+{
+    let mut iter = programs.into_iter();
+    let first = iter.next()?;
+    let mut merged = Program {
+        items: first.items.clone(),
+        imports: Vec::new(),
+        span: first.span,
+    };
+    for p in iter {
+        merged.items.extend(p.items.clone());
+    }
+    Some(merged)
 }

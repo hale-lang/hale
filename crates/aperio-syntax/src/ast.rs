@@ -29,6 +29,7 @@ pub enum TopDecl {
     Const(ConstDecl),
     Fn(FnDecl),
     Module(ModuleDecl),
+    Interface(InterfaceDecl),
 }
 
 impl TopDecl {
@@ -40,8 +41,35 @@ impl TopDecl {
             TopDecl::Const(c) => c.span,
             TopDecl::Fn(f) => f.span,
             TopDecl::Module(m) => m.span,
+            TopDecl::Interface(i) => i.span,
         }
     }
+}
+
+/// Structural interface — a named set of method signatures. Any
+/// locus that declares the same set of methods (by name + arity
+/// + types) implicitly satisfies the interface; no `impl I for L`
+/// declaration. Cross-locus polymorphism uses fat-pointer
+/// dispatch (data + vtable). Interfaces are the v0 answer to
+/// the Sink-as-tagged-locus friction. Per spec/design-rationale.md
+/// F.20.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InterfaceDecl {
+    pub name: Ident,
+    /// Method signatures the interface requires. Order is
+    /// significant — vtable layout follows declaration order
+    /// so that `vtable[i]` corresponds to `methods[i]`. Method
+    /// bodies are not allowed (no default methods at v0).
+    pub methods: Vec<InterfaceMethodSig>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InterfaceMethodSig {
+    pub name: Ident,
+    pub params: Vec<Param>,
+    pub ret: Option<TypeExpr>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -130,6 +130,7 @@ pub enum TokenKind {
     Nil,
     Tier,
     KwSelf,
+    Interface,
 
     // (Primitive type names are not keywords. They are predefined
     // identifiers — `Int`, `Uint`, `Float`, `Decimal`, `String`,
@@ -442,6 +443,7 @@ impl<'a> Lexer<'a> {
             // Reserved
             "trait" => TokenKind::Trait,
             "impl" => TokenKind::Impl,
+            "interface" => TokenKind::Interface,
             "async" => TokenKind::Async,
             "await" => TokenKind::Await,
             "yield" => TokenKind::Yield,

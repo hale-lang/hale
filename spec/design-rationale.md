@@ -1357,6 +1357,170 @@ became a hidden no-op. The check makes match safe by default.
 When enum-variant patterns land (deferred — requires enum
 typing surface), the rule extends to "every variant covered."
 
+### F.20 Structural interfaces (Go-shaped)
+
+```
+interface Sink {
+    fn write(s: String);
+    fn line(s: String);
+    fn newline();
+}
+
+locus StdoutSinkL {
+    params { }
+    fn write(s: String) { print(s); }
+    fn line(s: String) { println(s); }
+    fn newline() { println(""); }
+}
+
+fn render(sink: Sink) {
+    sink.line("hello");
+}
+
+fn main() {
+    let s = StdoutSinkL { };
+    render(s);   // implicit: StdoutSinkL satisfies Sink
+}
+```
+
+**Commits to.** A new top-level declaration form,
+`interface Name { fn ...; fn ...; }`, declaring a named set of
+method signatures. A locus *structurally* satisfies an interface
+iff for every method in the interface, the locus has a method
+with the same name, same arity, compatible param types, and a
+compatible return type. **No `impl I for L` declaration** —
+satisfaction is implicit (Go's shape, not Rust's). Interfaces
+admit no default methods at v0; the body is signature-only.
+
+**Why.** Multiple friction-log entries pointed at the same gap:
+`std::text::Sink` shipped as a tagged-locus antipattern (one
+locus with `dest: String` branching on every method) because
+there was no interface mechanism; `std::log::StdoutSink` had to
+couple through the bus for the same reason. Structural interfaces
+let `StdoutSinkL` / `StringSinkL` / `FileSinkL` coexist as
+separate loci with one shared surface, eliminating the inner
+dispatch entirely. The Go-shape (structural, no `impl`
+declaration) is the simplest mechanism that solves the friction
+without adding a trait/impl-coherence design surface that v0
+isn't ready for.
+
+The structural rule keeps the type-system surface small: no new
+"this locus implements that interface" relationship to track in
+metadata; the resolver knows about loci and interfaces
+independently, and the typechecker walks the satisfaction-check
+on demand at each call site where an interface-typed param meets
+a concrete arg.
+
+**Considered and rejected.**
+
+- *Rust-style `impl Sink for StdoutSinkL { ... }`.* Reject for
+  v0; adds a separate declaration that has to be kept in sync
+  with both sides, and introduces orphan-rule / coherence
+  questions. The Go shape (structural, implicit) is simpler.
+- *Default methods.* Reject for v0; one obvious-shape interface
+  is enough; defaults force decisions about override resolution.
+  Add when a real workload needs them.
+- *Interface inheritance / extension* (`interface SuperSink :
+  Sink { ... }`). Reject for v0; same scope-creep argument.
+
+**Implementation status (Phase A).**
+
+- **Parser / AST / resolver / typechecker:** shipped. The
+  `interface` keyword parses, `InterfaceDecl` lands in the
+  AST, `TopSymbol::Interface` registers in the bundle scope,
+  the typechecker enforces the structural-impl rule at every
+  call site where a fn declares an interface-typed param.
+  Mismatches produce typed diagnostics (missing method,
+  arity, param type, return type).
+- **Codegen — DEFERRED to Phase B.** The interface declaration
+  itself emits no IR; passing a locus where an interface is
+  expected currently lowers as if the locus were the concrete
+  param type (no fat pointer, no vtable, no runtime
+  polymorphism). At-a-distance method dispatch through the
+  interface — `let sink: Sink = StdoutSinkL { }; sink.line(...)`
+  with `sink` bound at runtime — is the next milestone. The
+  shape that *does* work end-to-end at v0: pass a concrete
+  locus to a fn taking an interface-typed param; method calls
+  in the body resolve direct-by-name against the concrete type.
+  Heterogeneous storage (`Vec<Sink>` of mixed-impl) waits for
+  vtable codegen.
+
+**Phase B sketch (vtable, follow-up).** Interface values become
+fat pointers: `(data_ptr, vtable_ptr)`. Per (locus, interface)
+pair, codegen synthesizes a static vtable global with fn-pointers
+indexed by interface-method declaration order. Method calls
+through an interface value lower as indirect calls through the
+vtable. Reuses the m80 `build_indirect_call` machinery.
+
+### F.21 Cascading-dimension interface (sketch)
+
+A second interface form, *cascading-dimension*, paired with F.20
+for the substrate-aware case: arena management + arbitrary
+n-dim cascading flow (the `std::lotus::Grow` family — see
+`docs/src/std/roadmap.md` "Future arc — Lotus harness for
+n-dim growth"). Where F.20 is "any locus matching these methods
+satisfies," F.21 is "this locus participates in the cascade
+along these axes, with these arena-bound translation impls per
+axis." Specific shape lives in F.14 (three-way interface +
+translation impls) once a workload forces the design.
+
+**v0 status:** sketched only; not implemented. F.20 ships first
+because it solves the immediate friction (Sink). F.21 ships
+when the n-dim growth arc has its first concrete demo (mdgw or
+triangulator).
+
+### F.19 Per-directory seed model
+
+A directory of `.ap` files compiles as one **seed**: every
+top-level decl (locus, type, free fn, perspective, const) in
+any file in the directory is visible to every other file in
+the same directory, in one shared scope. `aperio build <dir>`,
+`aperio run <dir>`, and `aperio check <dir>` accept directory
+targets and bundle every `.ap` file under them; `aperio build
+<file.ap>` keeps working for one-file apps.
+
+File order in the merged bundle is **alphabetical by filename**
+(deterministic). Resolution is order-free — the typechecker
+flattens all top-level decls into one bundle scope before name
+lookup, so a fn declared in `z.ap` is callable from `a.ap`
+without ceremony.
+
+There is no per-file visibility (no `pub`, no Go-style
+uppercase-exported convention). Anything declared at the top
+level is visible to every file in the seed. Cross-seed
+imports — one `apps/myapp` reaching into another `apps/lib` —
+remain deferred (the `module` keyword is reserved with no
+semantics; see `notes/open-questions.md` Q18).
+
+**Why.** Single-file apps grew unwieldy quickly (ferryman hit
+~2,300 lines before this milestone landed). The friction log
+entry `notes/aperio-friction.md` 2026-05-10 single-file-app-
+monolith captured the canonical case. The implementation cost
+was small — the typechecker's `Bundle` already accepted multiple
+programs, and `aperio run` / `aperio check` already handled
+directory targets; only `aperio build` had a hard "single .ap
+file" check. Lifting it cost a CLI refactor plus a merge step.
+The user-visible shape mirrors Go's per-package model.
+
+**Considered and rejected.**
+
+- *Per-file visibility (`pub` modifier).* Reject for v0; adds
+  declaration-level decoration without a forcing function in
+  any current app. Apps decompose by *concern* (one file per
+  concern), not by visibility ladder. If a real cross-seed
+  module system adds export controls later, that's where the
+  feature lives.
+- *Explicit per-file `import` directives within the same dir.*
+  Reject; the per-package shared-scope model is what makes
+  Go's per-dir packages ergonomic. Adding intra-directory
+  imports would re-introduce the friction the milestone exists
+  to remove.
+- *Build-system manifest file (`aperio.toml` listing files).*
+  Reject for v0; the directory IS the manifest. Filesystem
+  enumeration covers every multi-file shape we need; a manifest
+  becomes interesting if we add cross-seed imports or external
+  dependencies.
+
 ## 16. What's deferred
 
 The grammar in v0 does **not** specify:

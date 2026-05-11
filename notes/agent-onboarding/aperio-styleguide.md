@@ -19,13 +19,22 @@ projection, it is a **locus**. If it is pure data (record,
 returnable by value, no flow), it is a **type**. There is no
 third category.
 
-These are also the **only two things a seed exports** (see
-`notes/aperio-seed.md`). Free fns are seed-internal
-implementation; they do not cross seed boundaries. If a free fn
-exists at the top level of an app or stdlib file, it is either
-(a) a `return`-bearing helper called by a lifecycle method, (b) an
-extension hook for a `fn`-pointer param, or (c) a smell that
-wants extracting into a method on a namespace lotus.
+A seed exports loci, types, and **free fns**. Within one seed
+(one directory; per the per-dir seed model — see app-dev brief),
+every top-level decl is visible to every file in the seed. Free
+fns are first-class seed members alongside loci and types — use
+them when the operation has no flow (lifecycle, contracts,
+mutable state) and isn't naturally a method on an existing
+locus. The styleguide's earlier "free fns are seed-internal" rule
+predated dir-seeds; with dir-seeds shipped, free fns are a
+proper unit of code organization, not a smell.
+
+That said: when a *coherent vocabulary* of free fns forms (three
+or more helpers all answering the same question), the
+namespace-lotus form often reads better — it makes the
+vocabulary nameable and self-composing. Use the pattern catalog
+below to decide; don't preemptively extract every fn into a
+locus.
 
 ## The recursive principle
 
@@ -258,10 +267,15 @@ Conventions:
 - If you find yourself adding methods to the type, you've
   discovered it's actually a locus — change the keyword.
 
-### 6. Free fn — sparingly
+### 6. Free fn — first-class seed member
 
-Free fns at the top of a file are appropriate in three cases
-and only three:
+Free fns are first-class seed members. Every top-level decl in
+a seed (one directory) is visible to every file in the seed.
+Use a free fn when the operation has no flow (no lifecycle, no
+contracts, no mutable state) and isn't naturally a method on
+an existing locus.
+
+Common shapes:
 
 1. **`return`-bearing helpers** called from lifecycle method
    bodies (which cannot themselves use `return` at v0). See
@@ -269,12 +283,18 @@ and only three:
 2. **Extension hooks** passed via fn-pointer params (e.g.,
    `on_connection: fn(Stream)`). The hook is named at the top
    level so a caller can pass it by name.
-3. **Genuinely-isolated helpers** that don't fit any namespace.
-   Rare. If three such helpers accumulate, they probably form
-   a namespace lotus you haven't extracted yet.
+3. **Standalone helpers** that compose with the rest of the
+   seed: format / parse / convert / classify utilities that
+   don't carry state.
 
-Free fns are NOT exported across seed boundaries. Anything you
-want another seed to call should live as a method on a locus.
+When a *coherent vocabulary* of three or more free fns forms
+(e.g., snake/camel + lookup + suffix-rule + name-to-motion all
+about morphology), the namespace-lotus form often reads better —
+it makes the vocabulary nameable and self-composing. The pattern
+catalog's `std::lang::Morpheme` and `std::cli::Resolver` are
+worked examples of vocabularies that earned promotion. Helpers
+that don't form a coherent vocabulary stay as free fns; not
+every fn wants a locus.
 
 ## Naming conventions
 
@@ -285,16 +305,15 @@ want another seed to call should live as a method on a locus.
 | Stdlib mangled internal  | `__Std<Domain><Name>`                   | `__StdHttpRequest`       |
 | Locus method / type field | snake_case                             | `name_to_motion`         |
 | Lifecycle method         | drop `fn` keyword                       | `run() { ... }`          |
-| Free helper fn           | `__name` (leading underscores)          | `__drive`, `__walk`      |
+| Free fn (stdlib internal) | `__name` (leading underscores) for stdlib seeds; bare snake_case for app seeds | `__drive` (stdlib); `say` (app) |
 | Bus subject              | dot-separated, lowercase                | `log.app.db`             |
 | Constants                | UPPER_SNAKE in stdlib; rare elsewhere   | `STDLIB_AP_SOURCE`       |
 
-The leading-`__` on free helpers is doing two jobs: (1) marking
-them as "implementation detail, don't call across seed
-boundaries"; (2) avoiding name conflicts with stdlib path-call
-dispatch in user code. Once user-defined seeds ship and the
-manifest is the export source of truth, this convention may
-relax for non-stdlib code.
+The leading-`__` on stdlib free fns avoids name conflicts with
+stdlib path-call dispatch in user code. App seeds don't share
+that constraint and shouldn't carry the prefix — bare names
+like `say(s)` or `make_config()` read better and are the
+expected shape for in-seed helpers.
 
 ## Composition patterns
 
@@ -452,9 +471,11 @@ won't repeatedly rediscover them.
   loci must live in the std seed (bundled at codegen) or get
   duplicated in apps. See `notes/aperio-seed.md` for the v1+
   plan.
-- **No multi-file Aperio modules.** → An app is a single
-  `apps/<name>/main.ap` file; cross-app shared code goes
-  through the std seed.
+- **No cross-seed imports yet.** → Within one seed
+  (one directory), all `.ap` files share a top-level scope;
+  multi-file decomposition works (`aperio build apps/<name>/`).
+  Sharing code *across* apps still requires routing through
+  the std seed or duplicating.
 - **No `List<T>` generic.** → Manual newline-string accumulators
   are the v0 idiom for "list of things" (see the
   tagged-accumulator pattern in `apps/onboard/main.ap` or

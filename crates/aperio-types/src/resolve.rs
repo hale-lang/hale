@@ -60,6 +60,7 @@ fn collect_type_names(
             TopDecl::Locus(l) => insert_name(known, &l.name, diags),
             TopDecl::Type(t) => insert_name(known, &t.name, diags),
             TopDecl::Perspective(p) => insert_name(known, &p.name, diags),
+            TopDecl::Interface(i) => insert_name(known, &i.name, diags),
             TopDecl::Module(m) => collect_type_names(&m.items, known, diags),
             _ => {}
         }
@@ -100,8 +101,46 @@ fn register_top_decls(
             TopDecl::Module(m) => {
                 register_top_decls(&m.items, known, scope, diags);
             }
+            TopDecl::Interface(i) => register_interface(i, known, scope, diags),
         }
     }
+}
+
+fn register_interface(
+    decl: &aperio_syntax::ast::InterfaceDecl,
+    known: &BTreeMap<String, Span>,
+    scope: &mut TopScope,
+    diags: &mut Vec<Diag>,
+) {
+    let methods = decl
+        .methods
+        .iter()
+        .map(|m| crate::symbol::InterfaceMethodInfo {
+            name: m.name.name.clone(),
+            params: m
+                .params
+                .iter()
+                .map(|p| (p.name.name.clone(), resolve_type_expr(&p.ty, known)))
+                .collect(),
+            ret: match &m.ret {
+                Some(te) => resolve_type_expr(te, known),
+                None => Ty::Unit,
+            },
+            span: m.span,
+        })
+        .collect();
+    let info = crate::symbol::InterfaceInfo {
+        name: decl.name.name.clone(),
+        methods,
+        span: decl.span,
+    };
+    register_symbol(
+        scope,
+        &decl.name.name,
+        TopSymbol::Interface(info),
+        decl.span,
+        diags,
+    );
 }
 
 fn register_locus(

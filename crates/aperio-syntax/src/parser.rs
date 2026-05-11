@@ -282,11 +282,54 @@ impl Parser {
             TokenKind::Const => self.parse_const_decl().map(TopDecl::Const),
             TokenKind::Fn => self.parse_fn_decl().map(TopDecl::Fn),
             TokenKind::Module => self.parse_module_decl().map(TopDecl::Module),
+            TokenKind::Interface => self.parse_interface_decl().map(TopDecl::Interface),
             other => Err(Diag::parse(
                 self.peek_token().span,
                 format!("expected top-level declaration, got {:?}", other),
             )),
         }
+    }
+
+    // === interface =======================================
+
+    fn parse_interface_decl(&mut self) -> Result<InterfaceDecl, Diag> {
+        let kw = self.expect(TokenKind::Interface, "interface")?;
+        let name = self.expect_ident("interface name")?;
+        self.expect(TokenKind::LBrace, "{")?;
+        let mut methods = Vec::new();
+        while !matches!(self.peek(), TokenKind::RBrace) {
+            // Each method: `fn name(params...) -> ret;` — bodyless.
+            // Default methods (with bodies) are deferred.
+            let kw_fn = self.expect(TokenKind::Fn, "fn")?;
+            let mname = self.expect_ident("method name")?;
+            self.expect(TokenKind::LParen, "(")?;
+            let mut params = Vec::new();
+            if !matches!(self.peek(), TokenKind::RParen) {
+                params.push(self.parse_param()?);
+                while self.eat(&TokenKind::Comma) {
+                    params.push(self.parse_param()?);
+                }
+            }
+            let close = self.expect(TokenKind::RParen, ")")?;
+            let ret = if self.eat(&TokenKind::Arrow) {
+                Some(self.parse_type_expr()?)
+            } else {
+                None
+            };
+            self.expect(TokenKind::Semi, ";")?;
+            methods.push(InterfaceMethodSig {
+                name: mname,
+                params,
+                ret,
+                span: kw_fn.span.merge(close.span),
+            });
+        }
+        let close = self.expect(TokenKind::RBrace, "}")?;
+        Ok(InterfaceDecl {
+            name,
+            methods,
+            span: kw.span.merge(close.span),
+        })
     }
 
     // === locus ===========================================

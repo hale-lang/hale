@@ -1,0 +1,13 @@
+// Greeting helpers. Lives in the same seed as main.ap; the
+// `greeting` and `say` functions are callable from any file in
+// this directory without an `import` statement (Aperio v0 has
+// no module system; per-dir seeds give the same shape Go gets
+// from per-package visibility).
+
+fn greeting(who: String) -> String {
+    return "hello, " + who + "!";
+}
+
+fn say(phrase: String) {
+    println(phrase);
+}

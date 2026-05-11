@@ -130,7 +130,7 @@ Things that **do not exist** in Aperio v0. Do not write them.
 | Closures as values | Function pointers exist (`fn(T) -> R`); inline closures-as-values do not. Pass named functions. **A fn-pointer callback (e.g., `Listener.on_connection`) cannot capture surrounding state** — if your callback needs context, either reconstruct it inside the callback (cheap loci like `Logger` are fine to re-instantiate) or route the context through the bus. |
 | `let x: T = ...;` (type ascription) | Yes for fn params, yes for `let mut x: Int = -1`, but you usually elide it. The parser is fine either way. |
 | `var` / `final` / `const T` keywords | `let` (immutable) and `let mut` (mutable). `const` exists at top level only. |
-| Multi-file projects | Single `main.ap` per app. Multi-file module support is planned, not shipped. |
+| Cross-seed `import` / `use` / module system | No. **Within one seed (one directory), every `.ap` file shares a top-level scope** — see "Multi-file apps" below. Cross-seed imports come later. |
 | Method syntax on builtin types | `len(s)`, `to_string(n)` — function call form, not `s.len()`. |
 | Locus methods called on locus var | Only via stdlib types that explicitly support it (`Stream.send(msg)`, `Stream.recv(n)`). User loci communicate via the bus. |
 | Trailing commas in fn param lists | Parser rejects them. Bites everyone once. |
@@ -169,7 +169,7 @@ pages live at `docs/src/std/<name>.md`.
 
 I/O and protocol:
 
-- `std::io::fs::{read_file, write_file, file_exists, file_size, read_bytes, list_dir}`
+- `std::io::fs::{read_file, write_file, write_file_append, mkdir, file_exists, file_size, read_bytes, list_dir}`
 - `std::io::tcp::{Listener, Stream}` — Listener accepts many; Stream `.send()` / `.send_bytes()` / `.recv()`
 - `std::http::{Request, Response, parse_request, write_response}`
 
@@ -203,10 +203,13 @@ Most namespace lotuses follow the same shape — empty/config-only
 `std::lang::Morpheme` and `std::cli::Resolver` for canonical
 examples; the styleguide's pattern catalog grounds them.
 
-Built-in functions, no path needed: `print`, `println`, `len`,
-`to_string`, `min`, `max`, `abs`, `starts_with`, `contains`.
-(So you write `starts_with(path, "/usr")` and `len(s)`, not
-`std::str::starts_with(...)` or `s.len()`.)
+Built-in functions, no path needed: `print`, `println`,
+`eprint`, `eprintln`, `len`, `to_string`, `min`, `max`, `abs`,
+`starts_with`, `contains`. (So you write
+`starts_with(path, "/usr")` and `len(s)`, not
+`std::str::starts_with(...)` or `s.len()`.) The `e`-prefixed
+print variants route to stderr; useful for debug output that
+shouldn't contaminate stdout.
 
 Closure-block-only vocabulary: `sum`, `prod`, `length`, `empty`.
 These appear inside `closure { ... }` bodies as primitives over
@@ -235,7 +238,7 @@ If your program needs any of these, log a friction entry:
 - Multiple distinct accept types in one locus
 - HTTP keep-alive, custom request headers, header maps
 - HTTP bodies > 8 KB (single recv assumed)
-- Multi-file source (until module support lands)
+- Cross-seed module import / `use` (within one seed, multi-file works — see below)
 - Filesystem errno disambiguation (only `-1` / `false` / `""`)
 - Inline markdown formatting (`**bold**`, `*italic*`, links)
 - Graphics, UI, embedded shell, MCP server
@@ -274,6 +277,49 @@ Reading order for a cold start:
 The grimoire (`docs/src/grimoire/`) is a vibes-first onboarding
 path written in meta-spell register. You are an agent; you
 will get more out of `docs/src/book/` and `docs/src/reference/`.
+
+## Multi-file apps (per-directory seed model)
+
+When your app outgrows one file, decompose into multiple `.ap`
+files in the same directory. **Every `.ap` file in `apps/<name>/`
+is one seed**: top-level decls (loci, types, free fns,
+perspectives, consts) declared in any file are visible to every
+other file in the same directory, in one shared scope. No
+`import`, no `use`, no `pub` — same shape Go gets from
+per-package visibility.
+
+```
+apps/myapp/
+    main.ap          # the AppL locus + fn main()
+    config.ap        # type Config + load_config()
+    render.ap        # rendering helpers
+    sink.ap          # output destinations
+```
+
+Build the directory, not a single file:
+
+```
+aperio build apps/myapp        # binary at apps/myapp/myapp
+./apps/myapp/myapp
+```
+
+Single-file `aperio build apps/myapp/main.ap` keeps working
+for one-file apps and one-off scripts.
+
+File order in the merged bundle is **alphabetical by filename**
+(deterministic, but order doesn't affect resolution — the
+typechecker flattens all top-level decls before name lookup).
+Pick any naming scheme that reads well.
+
+There is no per-file visibility (nothing like `pub` or Go's
+uppercase-exported convention). Anything declared at the top
+level is visible to every file in the seed. Decompose by
+*concern* (one file per concern, helpers grouped with their
+caller); don't try to encode visibility through file boundaries.
+
+Cross-seed imports (one `apps/myapp` reaching into another
+`apps/lib`) are not supported yet. If you need shared code
+across apps, either copy-paste or add it to the std seed.
 
 ## Running and testing
 

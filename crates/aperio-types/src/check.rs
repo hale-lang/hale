@@ -272,6 +272,13 @@ impl<'a> Checker<'a> {
                 // types are checked when something instantiates
                 // them via struct literal.
             }
+            TopDecl::Interface(_) => {
+                // Interface declarations are pure type-level —
+                // method signatures only, no bodies. The resolver
+                // collected them; the structural impl-check fires
+                // at the use site (call expression where the
+                // expected type is an interface).
+            }
         }
     }
 
@@ -841,6 +848,84 @@ impl<'a> Checker<'a> {
     /// locus params (when accessing a locus handle's exposed
     /// state — milestone 2 just exposes all params), and
     /// perspective params.
+    /// Verify that a locus structurally implements an interface:
+    /// for every method the interface declares, the locus has a
+    /// method with the same name, same arity, compatible param
+    /// types, and a compatible return type. Returns Err with a
+    /// human-readable message on the first mismatch.
+    ///
+    /// Both arguments are top-symbol names. Caller has already
+    /// verified that `iface_name` resolves to a TopSymbol::Interface.
+    /// `locus_name` may be any TopSymbol — non-locus returns Err.
+    fn check_structural_impl(
+        &self,
+        locus_name: &str,
+        iface_name: &str,
+    ) -> Result<(), String> {
+        let iface = match self.top.lookup(iface_name) {
+            Some(TopSymbol::Interface(i)) => i,
+            _ => return Ok(()),
+        };
+        let locus = match self.top.lookup(locus_name) {
+            Some(TopSymbol::Locus(l)) => l,
+            _ => {
+                return Err(format!(
+                    "type `{}` cannot satisfy interface `{}` — only loci satisfy interfaces",
+                    locus_name, iface_name
+                ));
+            }
+        };
+        for im in &iface.methods {
+            let lm = locus.methods.iter().find(|lm| lm.name == im.name);
+            let lm = match lm {
+                Some(m) => m,
+                None => {
+                    return Err(format!(
+                        "locus `{}` does not satisfy interface `{}`: missing method `{}`",
+                        locus_name, iface_name, im.name
+                    ));
+                }
+            };
+            if lm.params.len() != im.params.len() {
+                return Err(format!(
+                    "locus `{}` method `{}` arity does not match interface `{}`: expected {} arg(s), locus has {}",
+                    locus_name,
+                    im.name,
+                    iface_name,
+                    im.params.len(),
+                    lm.params.len()
+                ));
+            }
+            for (i, (lp, ip)) in
+                lm.params.iter().zip(im.params.iter()).enumerate()
+            {
+                let want = &ip.1;
+                if !want.assignable_from(lp) {
+                    return Err(format!(
+                        "locus `{}` method `{}` arg #{} type mismatch: interface `{}` requires `{}`, locus has `{}`",
+                        locus_name,
+                        im.name,
+                        i,
+                        iface_name,
+                        want.display(),
+                        lp.display()
+                    ));
+                }
+            }
+            if !im.ret.assignable_from(&lm.ret) {
+                return Err(format!(
+                    "locus `{}` method `{}` return type mismatch: interface `{}` requires `{}`, locus returns `{}`",
+                    locus_name,
+                    im.name,
+                    iface_name,
+                    im.ret.display(),
+                    lm.ret.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn field_ty(&self, ty: &Ty, name: &str) -> Option<Ty> {
         match ty {
             // Numeric tuple field access: `t.0`, `t.1`. Parser
@@ -914,12 +999,14 @@ impl<'a> Checker<'a> {
                             params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
                             ret: Box::new(sig.ret.clone()),
                         },
-                        // Locus / Type / Perspective names used in
-                        // expression position resolve to the type
-                        // (struct-literal or call site).
+                        // Locus / Type / Perspective / Interface
+                        // names used in expression position resolve
+                        // to the type (struct-literal, call site,
+                        // or interface-typed binding).
                         TopSymbol::Locus(_)
                         | TopSymbol::Type(_)
-                        | TopSymbol::Perspective(_) => Ty::Named(id.name.clone()),
+                        | TopSymbol::Perspective(_)
+                        | TopSymbol::Interface(_) => Ty::Named(id.name.clone()),
                     }
                 } else {
                     Ty::Unknown
@@ -998,8 +1085,44 @@ impl<'a> Checker<'a> {
                     }
                 }
                 let callee_ty = self.check_expr(callee);
-                for a in args {
-                    let _ = self.check_expr(a);
+                let arg_tys: Vec<Ty> = args.iter().map(|a| self.check_expr(a)).collect();
+                // F.20: when a fn param is an interface type, the
+                // arg's locus type must structurally satisfy the
+                // interface (have the required methods with
+                // compatible signatures). Permissive on Unknown,
+                // permissive on shape mismatch — the existing
+                // checker doesn't enforce arg-vs-param positional
+                // typing in general; this fires *only* when the
+                // param is an interface, so we don't widen the
+                // call-site checking surface beyond that.
+                if let Ty::Function { params, .. } = &callee_ty {
+                    for (i, (param_ty, arg_ty)) in
+                        params.iter().zip(arg_tys.iter()).enumerate()
+                    {
+                        if let (Ty::Named(iface_name), Ty::Named(arg_name)) =
+                            (param_ty, arg_ty)
+                        {
+                            // Look up param-named symbol; only
+                            // check if it actually resolves to an
+                            // interface (not a locus / type /
+                            // perspective).
+                            let is_iface = matches!(
+                                self.top.lookup(iface_name),
+                                Some(TopSymbol::Interface(_))
+                            );
+                            if is_iface {
+                                if let Err(msg) =
+                                    self.check_structural_impl(arg_name, iface_name)
+                                {
+                                    let span = args
+                                        .get(i)
+                                        .map(|e| e.span())
+                                        .unwrap_or_else(|| Span::new(0, 0));
+                                    self.diags.push(Diag::ty(span, msg));
+                                }
+                            }
+                        }
+                    }
                 }
                 match callee_ty {
                     Ty::Function { ret, .. } => *ret,
@@ -1102,8 +1225,49 @@ impl<'a> Checker<'a> {
         self.check_expr(expr)
     }
 
+    /// Whether a value of type `t` can be auto-coerced to String
+    /// inside a `String + <t>` expression. Mirrors the codegen
+    /// `value_to_string_supports` set: every primitive that
+    /// `to_string(...)` accepts, plus enums (which render as their
+    /// variant name).
+    fn ty_is_printable(t: &Ty) -> bool {
+        match t {
+            Ty::Prim(p) => matches!(
+                p,
+                PrimType::String
+                    | PrimType::Int
+                    | PrimType::Bool
+                    | PrimType::Float
+                    | PrimType::Decimal
+                    | PrimType::Duration
+                    | PrimType::Time
+            ),
+            // Named types: enums render via to_string at codegen.
+            // The typechecker doesn't distinguish enum vs struct
+            // here without more lookup work; permit and let
+            // codegen reject if the type isn't actually printable
+            // (struct with no Display rendering would still error
+            // there).
+            Ty::Named(_) => true,
+            _ => false,
+        }
+    }
+
     fn binop_ty(&mut self, op: BinOp, lt: &Ty, rt: &Ty, span: Span) -> Ty {
         use BinOp::*;
+        // Ergonomics arc: `String + <printable>` and the symmetric
+        // form auto-coerce in codegen via value_to_string. The
+        // typechecker mirrors that by short-circuiting on the
+        // mixed-String add as a permitted shape that yields String.
+        if matches!(op, Add) {
+            let l_str = matches!(lt, Ty::Prim(PrimType::String));
+            let r_str = matches!(rt, Ty::Prim(PrimType::String));
+            if (l_str && Self::ty_is_printable(rt))
+                || (r_str && Self::ty_is_printable(lt))
+            {
+                return Ty::Prim(PrimType::String);
+            }
+        }
         match op {
             Add | Sub | Mul | Div | Mod | BitAnd | BitOr | BitXor | Shl | Shr => {
                 if !lt.assignable_from(rt) && !rt.assignable_from(lt) {

@@ -2082,6 +2082,59 @@ int lotus_fs_write_file(const char *path,
     return 0;
 }
 
+/* Append `len` bytes of `buf` to `path`. Creates the file with
+ * mode 0644 if it doesn't exist; otherwise opens existing for
+ * append. Returns 0 on success, -1 on error (errno set).
+ * Companion to lotus_fs_write_file (which truncates); ergonomics
+ * milestone resolves the apps/log-router friction "no append
+ * primitive forces buffer-everything-then-flush at dissolve". */
+int lotus_fs_write_file_append(const char *path,
+                               const void *buf,
+                               size_t len) {
+    if (!path || (!buf && len > 0)) {
+        errno = EINVAL;
+        return -1;
+    }
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd < 0) {
+        return -1;
+    }
+    const char *p = (const char *)buf;
+    size_t left = len;
+    while (left > 0) {
+        ssize_t w = write(fd, p, left);
+        if (w > 0) {
+            p    += (size_t)w;
+            left -= (size_t)w;
+            continue;
+        }
+        if (w < 0 && errno == EINTR) continue;
+        close(fd);
+        return -1;
+    }
+    if (close(fd) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+/* Create the directory at `path` with mode 0755. Returns 0 on
+ * success, -1 on error (errno set; EEXIST when the directory
+ * already exists). NOT recursive — callers that want
+ * `mkdir -p`-style semantics should test parent existence
+ * themselves. Resolves apps/ssg friction "no mkdir / create_dir
+ * forces shell-out via README precondition". */
+int lotus_fs_mkdir(const char *path) {
+    if (!path) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (mkdir(path, 0755) < 0) {
+        return -1;
+    }
+    return 0;
+}
+
 /* Returns the size of `path` in bytes, or -1 on error. Follows
  * symlinks (stat, not lstat). */
 int64_t lotus_fs_file_size(const char *path) {

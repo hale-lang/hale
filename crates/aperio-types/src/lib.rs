@@ -527,4 +527,122 @@ mod tests {
             diags
         );
     }
+
+    // F.20 structural interfaces — typechecker recognizes the
+    // declaration and enforces the structural-impl rule at every
+    // call site where a fn declares an interface-typed param.
+
+    #[test]
+    fn ok_locus_satisfies_interface() {
+        let src = r#"
+            interface Sink {
+                fn write(s: String);
+                fn line(s: String);
+            }
+            locus StdoutSinkL {
+                params { }
+                fn write(s: String) { print(s); }
+                fn line(s: String) { println(s); }
+            }
+            fn render(sink: Sink) { }
+            fn main() {
+                let s = StdoutSinkL { };
+                render(s);
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "expected clean check on satisfying locus; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_locus_missing_interface_method() {
+        let src = r#"
+            interface Sink {
+                fn write(s: String);
+                fn line(s: String);
+            }
+            locus BrokenL {
+                params { }
+                fn write(s: String) { print(s); }
+            }
+            fn render(sink: Sink) { }
+            fn main() {
+                let s = BrokenL { };
+                render(s);
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| {
+                d.message.contains("does not satisfy interface")
+                    && d.message.contains("missing method `line`")
+            }),
+            "expected missing-method diagnostic, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_string_plus_int_auto_coerces() {
+        let src = r#"
+            fn main() {
+                let port = 8080;
+                let msg = "port=" + port;
+                println(msg);
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "expected clean check on String + Int auto-coerce; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_int_plus_string_auto_coerces() {
+        let src = r#"
+            fn main() {
+                let n = 42;
+                let msg = n + " items";
+                println(msg);
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "expected clean check on Int + String (symmetric); got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_locus_interface_arity_mismatch() {
+        let src = r#"
+            interface Greet {
+                fn hello(name: String);
+            }
+            locus BadArityL {
+                params { }
+                fn hello(name: String, extra: Int) { }
+            }
+            fn welcome(g: Greet) { }
+            fn main() {
+                let g = BadArityL { };
+                welcome(g);
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| {
+                d.message.contains("arity does not match interface")
+            }),
+            "expected arity-mismatch diagnostic, got: {:?}",
+            diags
+        );
+    }
 }

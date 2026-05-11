@@ -190,6 +190,7 @@ pub fn build_executable(
         user_loci: BTreeMap::new(),
         user_types: BTreeMap::new(),
         user_enums: BTreeMap::new(),
+        user_interfaces: BTreeSet::new(),
         bus_state: None,
         deferred_dissolves: Vec::new(),
         in_main: false,
@@ -504,6 +505,13 @@ struct Cx<'ctx, 'p> {
     /// supports no-payload-only enums; an enum value is an i32
     /// holding the variant's tag.
     user_enums: BTreeMap<String, EnumInfo>,
+    /// F.20 Phase A: user-declared interface names. Codegen
+    /// recognizes them in type position only to surface a
+    /// friendly Phase-B-pending error; they don't carry methods
+    /// at the codegen layer (the typechecker enforces structural
+    /// impl). When Phase B (vtable dispatch) lands, this map will
+    /// grow to include method tables for vtable synthesis.
+    user_interfaces: BTreeSet<String>,
     /// Bus state generated when any locus declares a subscribe.
     /// `Some` iff the program contains at least one `bus subscribe`
     /// declaration. Bus storage itself lives in the C runtime
@@ -1606,6 +1614,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i32_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64_t.into()], false);
         self.module
             .add_function("lotus_fs_write_file", fs_write_ty, None);
+
+        // declare i32 @lotus_fs_write_file_append(ptr path, ptr buf, i64 len)
+        // ergonomics arc — returns 0 or -1; opens with O_APPEND
+        // instead of O_TRUNC. Companion to write_file.
+        let fs_write_append_ty =
+            i32_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64_t.into()], false);
+        self.module
+            .add_function("lotus_fs_write_file_append", fs_write_append_ty, None);
+
+        // declare i32 @lotus_fs_mkdir(ptr path)
+        // ergonomics arc — returns 0 on success, -1 on error
+        // (errno set; EEXIST if dir already exists). Single-level
+        // only; not recursive.
+        let fs_mkdir_ty = i32_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_fs_mkdir", fs_mkdir_ty, None);
 
         // declare i64 @lotus_fs_file_size(ptr path)
         // returns size or -1.
@@ -2828,6 +2852,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // handlers can therefore read err.locus and err.closure.
         self.declare_builtin_closure_violation_type();
 
+        // F.20 Phase A: register interface declarations by name.
+        // The codegen layer uses this only to surface a friendlier
+        // error when an interface type appears in a fn signature
+        // (vtable codegen is Phase B and not shipped). Method
+        // tables stay in the typechecker; codegen doesn't need
+        // them yet.
+        for item in &self.program.items {
+            if let TopDecl::Interface(i) = item {
+                self.user_interfaces.insert(i.name.name.clone());
+            }
+        }
+
         // Pass A0: declare every user-defined `type` so locus
         // params, fn signatures, and struct literals can reference
         // them by name regardless of source order. Plain data
@@ -3421,6 +3457,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     Ok(CodegenTy::TypeRef(name.clone()))
                 } else if self.user_enums.contains_key(name) {
                     Ok(CodegenTy::Enum(name.clone()))
+                } else if self.user_interfaces.contains(name) {
+                    Err(CodegenError::Unsupported(format!(
+                        "interface type `{}` in fn signature: structural \
+                         interfaces are typecheck-only at v0 (F.20 Phase A). \
+                         Vtable dispatch (Phase B) is the next milestone. \
+                         For now, declare the param with the concrete locus \
+                         type. The typechecker still enforces the structural \
+                         impl rule everywhere — Phase B will lift this \
+                         codegen restriction without changing source.",
+                        name
+                    )))
                 } else {
                     Err(CodegenError::Unsupported(format!(
                         "unknown type name `{}` in signature",
@@ -4557,6 +4604,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     /* Perspective / Module type-bearing positions
                      * could grow into this when those features
                      * land in v0.1 codegen. */
+                }
+                TopDecl::Interface(_) => {
+                    /* Interface declarations have no body to walk
+                     * for generic uses. Method signatures are
+                     * captured separately during the impl-check
+                     * pass. */
                 }
             }
         }
@@ -8646,6 +8699,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// reads identical to the same value passed to println.
     /// String passes through (so `to_string` is the identity on
     /// String — handy in generic-feeling helper fns).
+    /// Whether `value_to_string` can render a value of this type
+    /// inline. Used by the `String + <printable>` auto-coercion
+    /// in lower_expr's BinOp::Add branch — types not in this set
+    /// fall back to the existing mixed-type error.
+    fn value_to_string_supports(ty: &CodegenTy) -> bool {
+        matches!(
+            ty,
+            CodegenTy::String
+                | CodegenTy::Int
+                | CodegenTy::Bool
+                | CodegenTy::Float
+                | CodegenTy::Decimal
+                | CodegenTy::Duration
+                | CodegenTy::Time
+                | CodegenTy::Enum(_)
+        )
+    }
+
     fn lower_to_string_builtin(
         &mut self,
         args: &[Expr],
@@ -10519,6 +10590,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Expr::Binary { op, left, right, span: _ } => {
                 let (lv, lt) = self.lower_expr(left, scope)?;
                 let (rv, rt) = self.lower_expr(right, scope)?;
+                // Ergonomics arc: `String + <printable>` and
+                // `<printable> + String` auto-coerce the non-String
+                // side via value_to_string. Resolves the apps/tcp-echo
+                // friction "String + Int rejected even though
+                // println('p=', n) works." Other mixed-type binops
+                // remain errors.
+                if *op == BinOp::Add && lt != rt {
+                    if lt == CodegenTy::String && Self::value_to_string_supports(&rt) {
+                        let coerced = self.value_to_string(rv, &rt)?;
+                        return self.lower_binop(*op, lv, coerced, &CodegenTy::String);
+                    }
+                    if rt == CodegenTy::String && Self::value_to_string_supports(&lt) {
+                        let coerced = self.value_to_string(lv, &lt)?;
+                        return self.lower_binop(*op, coerced, rv, &CodegenTy::String);
+                    }
+                }
                 if lt != rt {
                     return Err(CodegenError::Unsupported(format!(
                         "binary op operands of mixed types {:?} and {:?}",
@@ -11439,19 +11526,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
-    /// Lower a `print` / `println` call. Args resolve through the
-    /// current scope and (when set) the current `self` struct, so
-    /// the same lowering serves both ordinary fn bodies and
-    /// lifecycle-method bodies.
+    /// Lower a `print` / `println` / `eprint` / `eprintln` call.
+    /// Args resolve through the current scope and (when set) the
+    /// current `self` struct, so the same lowering serves both
+    /// ordinary fn bodies and lifecycle-method bodies. The `e`-
+    /// prefixed variants route to stderr via fprintf; the bare
+    /// variants stay on stdout via printf.
     fn lower_print_call(
         &mut self,
         name: &str,
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(), CodegenError> {
-        if name != "println" && name != "print" {
+        if name != "println" && name != "print"
+            && name != "eprintln" && name != "eprint"
+        {
             return Err(CodegenError::Unsupported(format!("builtin `{}`", name)));
         }
+        let to_stderr = name == "eprintln" || name == "eprint";
+        let with_newline = name == "println" || name == "eprintln";
         let mut format = String::new();
         let mut printf_args: Vec<BasicMetadataValueEnum> =
             Vec::with_capacity(args.len() + 1);
@@ -11633,18 +11726,40 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         }
-        if name == "println" {
+        if with_newline {
             format.push('\n');
         }
         let fmt_ptr = self.global_string(&format);
         printf_args[0] = BasicMetadataValueEnum::PointerValue(fmt_ptr);
-        let printf = self
-            .module
-            .get_function("printf")
-            .expect("printf declared");
-        self.builder
-            .build_call(printf, &printf_args, "printf_call")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        if to_stderr {
+            // dprintf(2, fmt, args...) — write directly to fd 2
+            // (stderr) without depending on the libc `stderr` FILE*
+            // global, which is a macro-expanded function-call on
+            // some libcs and an extern global on others. dprintf is
+            // already declared for the closure-violation report and
+            // is the cheapest cross-libc path.
+            let i32_t = self.context.i32_type();
+            let fd_two = i32_t.const_int(2, false);
+            let mut dprintf_args: Vec<BasicMetadataValueEnum> =
+                Vec::with_capacity(printf_args.len() + 1);
+            dprintf_args.push(BasicMetadataValueEnum::IntValue(fd_two));
+            dprintf_args.extend(printf_args.iter().cloned());
+            let dprintf = self
+                .module
+                .get_function("dprintf")
+                .expect("dprintf declared");
+            self.builder
+                .build_call(dprintf, &dprintf_args, "dprintf_call")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        } else {
+            let printf = self
+                .module
+                .get_function("printf")
+                .expect("printf declared");
+            self.builder
+                .build_call(printf, &printf_args, "printf_call")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         Ok(())
     }
 
@@ -12063,6 +12178,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_io_fs_write_file(args, scope)?;
                 Ok(())
             }
+            ["std", "io", "fs", "write_file_append"] => {
+                let _ = self.lower_std_io_fs_write_file_append(args, scope)?;
+                Ok(())
+            }
+            ["std", "io", "fs", "mkdir"] => {
+                let _ = self.lower_std_io_fs_mkdir(args, scope)?;
+                Ok(())
+            }
             ["std", "io", "fs", "file_size"] => {
                 let _ = self.lower_std_io_fs_file_size(args, scope)?;
                 Ok(())
@@ -12328,6 +12451,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "io", "fs", "write_file"] => {
                 self.lower_std_io_fs_write_file(args, scope)
+            }
+            ["std", "io", "fs", "write_file_append"] => {
+                self.lower_std_io_fs_write_file_append(args, scope)
+            }
+            ["std", "io", "fs", "mkdir"] => {
+                self.lower_std_io_fs_mkdir(args, scope)
             }
             ["std", "io", "fs", "file_size"] => {
                 self.lower_std_io_fs_file_size(args, scope)
@@ -13509,6 +13638,118 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let ret_i64 = self
             .builder
             .build_int_s_extend(ret_i32, i64_t, "wf.ret.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((ret_i64.into(), CodegenTy::Int))
+    }
+
+    /// Lower `std::io::fs::write_file_append(path, content) -> Int`.
+    /// Same shape as write_file but opens the file with O_APPEND
+    /// instead of O_TRUNC. Returns 0 on success, -1 on error.
+    /// Resolves the apps/log-router friction "no append primitive
+    /// forces buffer-everything-then-flush at dissolve."
+    fn lower_std_io_fs_write_file_append(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::fs::write_file_append takes 2 args (path, content), got {}",
+                args.len()
+            )));
+        }
+        let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
+        if path_ty != CodegenTy::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::fs::write_file_append: path must be String, got {:?}",
+                path_ty
+            )));
+        }
+        let (content_val, content_ty) = self.lower_expr(&args[1], scope)?;
+        if content_ty != CodegenTy::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::fs::write_file_append: content must be String, got {:?}",
+                content_ty
+            )));
+        }
+        let i64_t = self.context.i64_type();
+        let len_fn = self
+            .module
+            .get_function("lotus_str_len")
+            .expect("lotus_str_len declared");
+        let len_call = self
+            .builder
+            .build_call(len_fn, &[content_val.into()], "wfa.len")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let len_i64 = len_call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64")
+            .into_int_value();
+        let f = self
+            .module
+            .get_function("lotus_fs_write_file_append")
+            .expect("lotus_fs_write_file_append declared");
+        let call = self
+            .builder
+            .build_call(
+                f,
+                &[path_val.into(), content_val.into(), len_i64.into()],
+                "fs.wfa.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ret_i32 = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let ret_i64 = self
+            .builder
+            .build_int_s_extend(ret_i32, i64_t, "wfa.ret.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((ret_i64.into(), CodegenTy::Int))
+    }
+
+    /// Lower `std::io::fs::mkdir(path: String) -> Int`. Single-
+    /// level only (NOT recursive). Returns 0 on success, -1 on
+    /// error (errno set; EEXIST if the dir already exists).
+    /// Resolves the apps/ssg friction "no mkdir / create_dir
+    /// forces shell-out via README precondition."
+    fn lower_std_io_fs_mkdir(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::fs::mkdir takes 1 arg (path), got {}",
+                args.len()
+            )));
+        }
+        let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
+        if path_ty != CodegenTy::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::fs::mkdir: path must be String, got {:?}",
+                path_ty
+            )));
+        }
+        let i64_t = self.context.i64_type();
+        let f = self
+            .module
+            .get_function("lotus_fs_mkdir")
+            .expect("lotus_fs_mkdir declared");
+        let call = self
+            .builder
+            .build_call(f, &[path_val.into()], "fs.mkdir.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ret_i32 = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let ret_i64 = self
+            .builder
+            .build_int_s_extend(ret_i32, i64_t, "mkdir.ret.i64")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok((ret_i64.into(), CodegenTy::Int))
     }

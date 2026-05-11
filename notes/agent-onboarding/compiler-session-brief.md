@@ -314,48 +314,51 @@ Real shape-debt the v0 surface carries that future work will
 relieve. Listed here so a fresh compiler session doesn't
 re-rediscover the antipatterns or attempt premature fixes.
 
-### Sink-as-tagged-locus (`std::text::Sink`)
+### Sink-as-tagged-locus (`std::text::Sink`) [PARTIAL — F.20 Phase A shipped]
 
 `__StdTextSink` in `crates/aperio-codegen/runtime/stdlib/text.ap`
-uses `if self.dest == "string" { ... } else { ... }` to branch
-between an in-memory buffer and stdout streaming. Adding a
-third destination (e.g. file) edits every method; the type
-system can't see which destinations exist; unused params
-(`buf` in stdout mode) sit in every instance.
+still uses `if self.dest == "string" { ... } else { ... }` to
+branch between an in-memory buffer and stdout streaming.
 
-- **Why it persists.** No interface / multi-impl-per-contract
-  mechanism in v0. The friction-log entry
-  (`notes/aperio-friction.md` 2026-05-10 sink-as-tagged-locus)
-  documents the workaround.
-- **What unblocks the fix.** F.14 (three-way interface; per-
-  projection-class translation impls) lifted from typing rule
-  to surface syntax. With multi-impl-per-contract,
-  `StdoutSink` / `StringSink` / `FileSink` become separate
-  loci with one shared `Sink` contract; the inner dispatch
-  disappears.
-- **Don't preempt.** A migration ahead of the interface
-  mechanism would just rewrite the antipattern in a different
-  shape. Wait for F.14 to land.
+- **F.20 Phase A (shipped).** Structural interface declarations
+  (`interface Sink { fn write(s: String); ... }`) parse,
+  register, and the typechecker enforces the structural-impl
+  rule at every call site where a fn declares an interface-
+  typed param (missing method / arity / type / return-type
+  diagnostics). Library code can be designed against the new
+  syntax today; tests in `crates/aperio-types/src/lib.rs`
+  cover the rule.
+- **Phase B (deferred).** Codegen vtable dispatch — passing a
+  locus where an interface is expected currently errors at
+  codegen time with a friendly Phase-B-pending message. The
+  Sink migration (replace tagged dispatch with separate
+  StdoutSink / StringSink / FileSink loci behind one `Sink`
+  interface) waits for Phase B. Phase B sketch lives in
+  `spec/design-rationale.md` F.20: fat pointers
+  `(data, vtable)` + per-(locus, interface) vtable globals
+  + indirect dispatch reusing the m80 `build_indirect_call`
+  machinery.
+- **F.21 cascading-dimension interface (sketch).** Paired
+  follow-up for the substrate-aware n-dim case (the
+  `std::lotus::Grow` family). Spec entry; no implementation.
 
-### Single-file-app-monolith
+### Single-file-app-monolith [RESOLVED]
 
-App-dev sessions can't decompose an app into multiple `.ap`
-files in the same directory; each `.ap` is its own
-translation unit. The friction log
-(`apps/ferryman/FRICTION.md` 2026-05-10 single-file-app-monolith)
-captured this.
+App-dev sessions can now decompose an app into multiple `.ap`
+files in the same directory: `aperio build apps/<name>/` treats
+every `.ap` in the directory as one seed. Top-level decls
+declared in any file are visible to every other file in the
+same directory, in one shared scope. Same shape Go gets from
+per-package visibility. File order is alphabetical;
+resolution is order-free (typechecker flattens the bundle
+before name lookup). Single-file `aperio build foo.ap` keeps
+working. See `examples/multi-file-seed/` and the
+`crates/aperio-codegen/tests/multi_file_build.rs` regression.
 
-- **Why it persists.** No per-directory package model in v0.
-  The grammar reserves `module` as a keyword but doesn't
-  resolve module-loading semantics
-  (`notes/open-questions.md` Q18).
-- **What unblocks the fix.** Module loading semantics +
-  `aperio build apps/<name>/` treating the directory as one
-  seed (the stdlib seed already cheats this way via
-  `concat!(include_str!(...))`).
-- **Don't preempt.** The compiler-internal cheat for stdlib
-  is fine; don't surface it to user code without a real
-  module system design.
+Cross-seed imports (one app reaching into another, or a real
+module system) remain deferred. The `module` keyword is still
+reserved with no semantics; `notes/open-questions.md` Q18 is
+still the tracking entry.
 
 ### Two-form `std::*` surface
 

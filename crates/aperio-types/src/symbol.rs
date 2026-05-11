@@ -30,6 +30,7 @@ pub enum TopSymbol {
     Perspective(PerspectiveInfo),
     Const(ConstInfo),
     Fn(FnSig),
+    Interface(InterfaceInfo),
 }
 
 impl TopSymbol {
@@ -40,8 +41,26 @@ impl TopSymbol {
             TopSymbol::Perspective(p) => p.span,
             TopSymbol::Const(c) => c.span,
             TopSymbol::Fn(f) => f.span,
+            TopSymbol::Interface(i) => i.span,
         }
     }
+}
+
+/// Resolved interface — a named set of method signatures. Order
+/// is significant (vtable layout follows declaration order).
+#[derive(Debug, Clone)]
+pub struct InterfaceInfo {
+    pub name: String,
+    pub methods: Vec<InterfaceMethodInfo>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceMethodInfo {
+    pub name: String,
+    pub params: Vec<(String, Ty)>,
+    pub ret: Ty,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
