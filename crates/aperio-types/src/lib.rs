@@ -277,6 +277,56 @@ mod tests {
     }
 
     #[test]
+    fn ok_approx_within_as_idents_outside_closure() {
+        // F.10-style contextual narrowing (2026-05-11): `approx`
+        // and `within` are not reserved at the lexer level, so
+        // they can appear as free-fn / let-binding identifiers
+        // outside closure bodies. Resolves
+        // notes/aperio-friction.md 2026-05-10
+        // closure-keyword-shadows-helper-ident.
+        let src = r#"
+            fn approx(actual: Float, expected: Float, eps: Float) -> Bool {
+                let diff = actual - expected;
+                let within = -eps;
+                return diff > within;
+            }
+            fn main() {
+                let ok = approx(3.14, 3.14159, 0.01);
+                println("ok=", ok);
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "expected `approx` / `within` to parse as idents; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_approx_keyword_inside_closure_still_works() {
+        // The contextual narrowing must still admit the
+        // long-form `approx` spelling inside closure assertions
+        // (alongside the `~~` operator). `approx` is the infix
+        // operator-keyword: `LEFT approx RIGHT within TOL`.
+        let src = r#"
+            locus L {
+                params { x: Int = 0; }
+                closure stays_low {
+                    self.x approx 0 within 100;
+                }
+            }
+            fn main() { L { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "expected long-form `approx` inside closure to parse; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
     fn err_match_not_exhaustive() {
         let src = r#"
             fn main() {

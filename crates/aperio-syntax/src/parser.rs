@@ -859,15 +859,36 @@ impl Parser {
 
     fn parse_closure_assertion(&mut self) -> Result<ClosureAssertion, Diag> {
         let left = self.parse_expr()?;
-        // Either ~~ or `approx` keyword
-        if !(self.eat(&TokenKind::TildeTilde) || self.eat(&TokenKind::Approx)) {
+        // Either ~~ or the contextual `approx` ident-keyword.
+        // `approx` is intentionally NOT a lexer-level keyword
+        // (it lexes as Ident) so `fn approx(...)` is admissible
+        // outside closure bodies; here we recognize it by name.
+        let approx_kw = matches!(
+            self.peek(),
+            TokenKind::Ident(s) if s == "approx"
+        );
+        if approx_kw {
+            self.bump();
+        } else if !self.eat(&TokenKind::TildeTilde) {
             return Err(Diag::parse(
                 self.peek_token().span,
                 "expected `~~` or `approx` in closure assertion",
             ));
         }
         let right = self.parse_expr()?;
-        self.expect(TokenKind::Within, "within")?;
+        // `within` is the contextual tolerance-keyword. Same
+        // rationale as `approx`.
+        let within_kw = matches!(
+            self.peek(),
+            TokenKind::Ident(s) if s == "within"
+        );
+        if !within_kw {
+            return Err(Diag::parse(
+                self.peek_token().span,
+                "expected `within` after closure-assertion right-hand side",
+            ));
+        }
+        self.bump();
         let tolerance = self.parse_expr()?;
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(ClosureAssertion {

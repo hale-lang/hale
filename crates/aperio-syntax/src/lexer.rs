@@ -84,10 +84,17 @@ pub enum TokenKind {
     Pinned,
 
     // Keywords — closure
+    //
+    // F.10-style contextual narrowing (2026-05-11): `approx` and
+    // `within` are NOT reserved at the lexer level — they lex as
+    // Ident. The parser recognizes them inside closure-block
+    // bodies only (see parse_closure_assertion). This frees the
+    // math-shaped identifier pool (`fn approx(...)`, `let within
+    // = ...`) outside that context. `closure`, `epoch`,
+    // `persists_through`, and `resets_on` stay reserved because
+    // they are unambiguously block-introducers / clause-leaders.
     Closure,
     Epoch,
-    Within,
-    Approx,
     PersistsThrough,
     ResetsOn,
 
@@ -388,11 +395,11 @@ impl<'a> Lexer<'a> {
             "cooperative" => TokenKind::Cooperative,
             "pinned" => TokenKind::Pinned,
 
-            // Closure
+            // Closure. `approx` and `within` deliberately
+            // omitted — they lex as Ident and are recognized
+            // contextually inside closure blocks (F.10-style).
             "closure" => TokenKind::Closure,
             "epoch" => TokenKind::Epoch,
-            "within" => TokenKind::Within,
-            "approx" => TokenKind::Approx,
             "persists_through" => TokenKind::PersistsThrough,
             "resets_on" => TokenKind::ResetsOn,
 

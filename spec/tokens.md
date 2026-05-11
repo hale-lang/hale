@@ -91,9 +91,18 @@ schedule        cooperative     pinned
 ### Closure keywords
 
 ```
-closure         epoch           within          approx
-persists_through resets_on
+closure         epoch           persists_through    resets_on
 ```
+
+`approx` and `within` are **contextual keywords**, recognized
+only inside a `closure { ... }` block body (and only in the
+specific positions the closure-assertion grammar admits them).
+They lex as ordinary Idents elsewhere, so `fn approx(...)` and
+`let within = ...` are admissible outside closure bodies. Same
+F.10-style narrowing the mode-keyword family uses
+post-dot. Shipped 2026-05-11; resolves
+`notes/aperio-friction.md` 2026-05-10
+`closure-keyword-shadows-helper-ident`.
 
 ### Recovery primitives
 
