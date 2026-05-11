@@ -117,7 +117,7 @@ What is **not** a friction entry:
 **Workaround:** Rewrote as `let mut phys = i; if self.n >= 8 { phys = (self.head + i) % 8; }`. Verbose but works.
 **Why it matters:** Hits every place a small conditional value would be cleanest — index selection, default-fallback, ternary-ish expressions. Adding a Rust-shaped trailing-expression rule (the block's last token, if it's an expression and not followed by `;`, becomes the block's value) is a localized parser change. Match arms already have an expression branch (`match_arm = pattern [ "if" expression ] "->" ( expression | block )`), so the asymmetry with `if` is jarring.
 
-## 2026-05-10 float-surface-gaps
+## 2026-05-10 float-surface-gaps [PARTIAL FIX 2026-05-11 — Int→Float coerce + std::math shipped; [val; N] still pending]
 
 **Source:** lotus-harness library sketches (examples/51..58)
 **Tried:** Write numeric Segment / Decay / Ring / Correlator with the usual helpers: an Int running count and a Float accumulator, Pearson `r` (not `r²`), exponential time-decay, sqrt-based stddev.
@@ -127,6 +127,7 @@ What is **not** a friction entry:
   3. No Float array-literal repetition syntax (`[0.0; 8]`). Array defaults must enumerate every element.
 **Workaround:** (1) parallel Int+Float counters in every accumulator locus; (2) report `r²` instead of `r`, use plain EMA instead of time-weighted decay, skip variance/stddev; (3) write `[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]` literally in every fixed-cap ring.
 **Why it matters:** Numeric primitives are the substrate for triangulator-class apps (leading-edge geometry, multi-feed correlation, momentum). Each workaround is small; together they make every Float-heavy library noisier than it should be. `std::math::{sqrt,exp,pow,log}` would unlock real time-weighted decay (`exp(-dt/tau)`), Pearson `r` (sqrt of `r²`), proper stddev. Int→Float coercion at `let nf: Float = self.n;` would drop ~10% of every accumulator locus's surface. Array-default repetition (`[0.0; N]`) is cosmetic but compounds with the no-generic-`Ring<N>` situation.
+**Resolution (2026-05-11, sub-bullets 1 + 2):** Codegen now widens Int → Float via `sitofp` at let-binding type-ascription sites (`let nf: Float = int_expr;`) and at fn-arg sites where the param is `Float` and the arg is `Int`. The widening is one-way only — `Float → Int` narrowing stays explicit; `Decimal` and other lossy mixes still reject. `std::math::{sqrt, exp, log, floor, ceil}` (unary) and `std::math::pow` (binary) ship as path-call dispatches routing to libm; `declare_builtins` adds the extern decls, `lower_std_math_unary` / `lower_std_math_binary` carry the arg coercion + libm-call sequence; arg widening Int→Float happens inside those helpers. End-to-end coverage in `crates/aperio-codegen/tests/math_and_int_float.rs`. Sub-bullet 3 (`[val; N]` array repetition) is Phase 2d in the post-F.20-Phase-B planning arc; the literal-enumeration workaround stays until that ships.
 
 ## 2026-05-11 nested-locus-child-field-reads-return-garbage
 

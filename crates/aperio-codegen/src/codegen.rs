@@ -1786,6 +1786,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // declare i64 @lotus_ts_node_is_named(i64 node_id)
         self.module
             .add_function("lotus_ts_node_is_named", ts_count_ty, None);
+
+        // libm Float primitives — std::math::{sqrt, exp, log, floor,
+        // ceil} (single-arg) and std::math::pow (two-arg). Each is a
+        // straight pass-through to libm; the link line already pulls
+        // libm transitively via libc on Linux. Resolves
+        // notes/aperio-friction.md 2026-05-10 float-surface-gaps
+        // (the `std::math` sub-bullet). v0 cut is the six fns above;
+        // sin/cos/tan/atan2 etc. come in a follow-up when a workload
+        // surfaces the need.
+        let f64_t = self.context.f64_type();
+        let math_unary_ty = f64_t.fn_type(&[f64_t.into()], false);
+        let math_binary_ty = f64_t.fn_type(&[f64_t.into(), f64_t.into()], false);
+        self.module.add_function("sqrt", math_unary_ty, None);
+        self.module.add_function("exp", math_unary_ty, None);
+        self.module.add_function("log", math_unary_ty, None);
+        self.module.add_function("floor", math_unary_ty, None);
+        self.module.add_function("ceil", math_unary_ty, None);
+        self.module.add_function("pow", math_binary_ty, None);
     }
 
     /// Mark the program as containing at least one `bus subscribe`
@@ -7845,7 +7863,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // the param is an Interface and the arg is a LocusRef
             // (typechecker already verified the structural impl),
             // build the fat pointer at the call site. Other type
-            // mismatches still error.
+            // mismatches still error — except Int → Float, which
+            // widens via sitofp (resolves notes/aperio-friction.md
+            // 2026-05-10 float-surface-gaps).
             let v = if let (CodegenTy::Interface(iface), CodegenTy::LocusRef(l)) =
                 (&sig.params[i], &ty)
             {
@@ -7855,6 +7875,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     iface,
                 )?;
                 fat.into()
+            } else if sig.params[i] == CodegenTy::Float && ty == CodegenTy::Int {
+                let widened = self.coerce_to_float(
+                    v,
+                    &ty,
+                    &format!("fn `{}` arg {}", name, i),
+                )?;
+                widened.into()
             } else if ty != sig.params[i] {
                 return Err(CodegenError::Unsupported(format!(
                     "fn `{}` arg {} type mismatch: expected {:?}, got {:?}",
@@ -8074,7 +8101,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 let lower_result = self.lower_expr(value_to_lower, scope);
                 self.defer_next_locus_dissolve = false;
-                let (val, ty) = lower_result?;
+                let (mut val, mut ty) = lower_result?;
+                // Int → Float widening at a Float-ascribed let
+                // binding. `let nf: Float = self.n;` where `n: Int`
+                // is the canonical case. Resolves
+                // notes/aperio-friction.md 2026-05-10
+                // float-surface-gaps (sub-bullet 1). Other
+                // ascription/RHS mismatches stay at the existing
+                // mismatch behavior — this is a one-way widening
+                // only, not a general coercion surface.
+                if let Some(asc) = ascribed.as_ref() {
+                    if let Ok(asc_ty) = self.type_expr_to_codegen_ty(asc) {
+                        if asc_ty == CodegenTy::Float && ty == CodegenTy::Int {
+                            let widened = self.coerce_to_float(
+                                val,
+                                &ty,
+                                &format!("let {}: Float", name.name),
+                            )?;
+                            val = widened.into();
+                            ty = CodegenTy::Float;
+                        }
+                    }
+                }
                 let alloca = self.alloca_for(&ty, &name.name)?;
                 self.builder
                     .build_store(alloca, val)
@@ -12654,9 +12702,144 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // sleep is statement-only; trying to use it in an
             // expression falls through to the catch-all error.
             ["std", "time", "monotonic"] => self.lower_time_monotonic(args),
+            // std::math::* libm Float primitives. Resolves
+            // notes/aperio-friction.md 2026-05-10 float-surface-gaps
+            // (the `std::math` sub-bullet). v0 cut: unary
+            // sqrt/exp/log/floor/ceil + binary pow. Each lowers to
+            // a libm call through the extern decl in
+            // declare_builtins; arg type-checked as Float.
+            ["std", "math", "sqrt"] => {
+                self.lower_std_math_unary("sqrt", args, scope)
+            }
+            ["std", "math", "exp"] => {
+                self.lower_std_math_unary("exp", args, scope)
+            }
+            ["std", "math", "log"] => {
+                self.lower_std_math_unary("log", args, scope)
+            }
+            ["std", "math", "floor"] => {
+                self.lower_std_math_unary("floor", args, scope)
+            }
+            ["std", "math", "ceil"] => {
+                self.lower_std_math_unary("ceil", args, scope)
+            }
+            ["std", "math", "pow"] => {
+                self.lower_std_math_binary("pow", args, scope)
+            }
             _ => Err(CodegenError::Unsupported(format!(
                 "stdlib path `{}` in expression position — not implemented",
                 segs.join("::")
+            ))),
+        }
+    }
+
+    /// std::math::<sqrt|exp|log|floor|ceil> — single Float arg →
+    /// Float result. Routes to the libm extern declared in
+    /// declare_builtins. Int args coerce to Float via sitofp at
+    /// the call site (same Int→Float widening this commit adds).
+    fn lower_std_math_unary(
+        &mut self,
+        libm_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::math::{} takes 1 argument, got {}",
+                libm_name,
+                args.len()
+            )));
+        }
+        let (v, ty) = self.lower_expr(&args[0], scope)?;
+        let f = self.coerce_to_float(v, &ty, &format!("std::math::{}", libm_name))?;
+        let func = self
+            .module
+            .get_function(libm_name)
+            .expect("libm fn declared in declare_builtins");
+        let call = self
+            .builder
+            .build_call(
+                func,
+                &[f.into()],
+                &format!("std::math::{}.call", libm_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let result = call
+            .try_as_basic_value()
+            .left()
+            .expect("libm unary returns f64");
+        Ok((result, CodegenTy::Float))
+    }
+
+    /// std::math::pow — two Float args → Float result. Same
+    /// libm pass-through pattern as the unary helper. Int args
+    /// coerce.
+    fn lower_std_math_binary(
+        &mut self,
+        libm_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::math::{} takes 2 arguments, got {}",
+                libm_name,
+                args.len()
+            )));
+        }
+        let (a_val, a_ty) = self.lower_expr(&args[0], scope)?;
+        let a_f = self.coerce_to_float(a_val, &a_ty, &format!("std::math::{} arg 0", libm_name))?;
+        let (b_val, b_ty) = self.lower_expr(&args[1], scope)?;
+        let b_f = self.coerce_to_float(b_val, &b_ty, &format!("std::math::{} arg 1", libm_name))?;
+        let func = self
+            .module
+            .get_function(libm_name)
+            .expect("libm fn declared in declare_builtins");
+        let call = self
+            .builder
+            .build_call(
+                func,
+                &[a_f.into(), b_f.into()],
+                &format!("std::math::{}.call", libm_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let result = call
+            .try_as_basic_value()
+            .left()
+            .expect("libm binary returns f64");
+        Ok((result, CodegenTy::Float))
+    }
+
+    /// Widen an Int value to Float, or pass through if it's
+    /// already Float. Used at Float-typed slot boundaries
+    /// (std::math fn args, let-binding ascription, fn-arg sites)
+    /// to admit Int literals / Int-typed expressions in Float
+    /// position. Resolves notes/aperio-friction.md 2026-05-10
+    /// float-surface-gaps (the `Int → Float coercion` sub-bullet).
+    /// Float → Int narrowing remains explicit (no implicit
+    /// truncation); Decimal → Float and other lossy mixes also
+    /// stay rejected.
+    fn coerce_to_float(
+        &self,
+        v: BasicValueEnum<'ctx>,
+        ty: &CodegenTy,
+        callee_label: &str,
+    ) -> Result<inkwell::values::FloatValue<'ctx>, CodegenError> {
+        match ty {
+            CodegenTy::Float => Ok(v.into_float_value()),
+            CodegenTy::Int => {
+                let f64_t = self.context.f64_type();
+                self.builder
+                    .build_signed_int_to_float(
+                        v.into_int_value(),
+                        f64_t,
+                        "int.to.float",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))
+            }
+            other => Err(CodegenError::Unsupported(format!(
+                "{}: expected Float (or Int via widening), got {:?}",
+                callee_label, other
             ))),
         }
     }
