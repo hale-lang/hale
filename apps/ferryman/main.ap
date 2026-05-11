@@ -1992,6 +1992,292 @@ locus SkeletonL {
     }
 }
 
+// ============================================================
+// Render stage — consumes the enriched lotus.yaml and prints
+// the partner-facing report. The renderer is pure presentation:
+// it reads yaml cells via std::yaml::Reader and emits text via
+// std::text::Sink. No tree-sitter calls, no morpheme rewriting.
+// Absent enrichment cells fall back gracefully — skeleton alone
+// produces a usable report; enrichment is additive.
+//
+// Sink-threaded shape: rows are emitted as they're produced
+// instead of being concatenated up the recursion. Output memory
+// stays O(longest single row) rather than O(report size). A
+// previous in-memory-concat version OOM-killed the host on
+// grease's 45k-line skeleton — the conversion to Sink is the
+// fix.
+// ============================================================
+
+// Render the outward-tower row for one node. `recv` is "" for
+// bare-identifier callees; otherwise prepended as "recv.name".
+// Row composition stays as `+` because the result is bounded
+// (one row); the OOM hazard is unbounded *cross-row* accumulation,
+// which the Sink eliminates.
+fn __render_outward_row(sink: std::text::Sink, d: Int,
+                        recv: String, name: String,
+                        site: String) {
+    let indent = __tree_indent(d);
+    let mut label = name;
+    if len(recv) > 0 { label = recv + "." + name; }
+    sink.line(indent + "├─ " + label + "  " + site);
+}
+
+// Recursively render one outward-tower node + its children.
+fn __render_node(sink: std::text::Sink, node_text: String, depth: Int) {
+    let r = std::yaml::Reader { text: node_text };
+    let call_name = r.scalar("call");
+    let recv = r.scalar("receiver");
+    let site = r.scalar("site");
+    __render_outward_row(sink, depth, recv, call_name, site);
+    let n = r.list_count("children");
+    let mut i = 0;
+    while i < n {
+        let child_text = r.list_item("children", i);
+        __render_node(sink, child_text, depth + 1);
+        i = i + 1;
+    }
+}
+
+// Render the outward tower section of one binary.
+fn __render_outward_tower_yaml(sink: std::text::Sink,
+                               bin_reader: std::yaml::Reader) {
+    let tower_text = bin_reader.nested("outward_tower");
+    if len(tower_text) == 0 { return; }
+    let t = std::yaml::Reader { text: tower_text };
+    let root = t.scalar("root");
+    let root_file = t.scalar("root_file");
+    sink.line("Outward tower — what main() does at runtime");
+    sink.line("-------------------------------------------");
+    sink.newline();
+    sink.line(root + "()  (" + root_file + ")");
+    let n = t.list_count("nodes");
+    let mut i = 0;
+    while i < n {
+        let node_text = t.list_item("nodes", i);
+        __render_node(sink, node_text, 0);
+        i = i + 1;
+    }
+    sink.newline();
+}
+
+// Render the inward tower section.
+fn __render_inward_tower_yaml(sink: std::text::Sink,
+                              bin_reader: std::yaml::Reader) {
+    let tower_text = bin_reader.nested("inward_tower");
+    if len(tower_text) == 0 { return; }
+    let t = std::yaml::Reader { text: tower_text };
+    let n = t.list_count("files");
+    if n == 0 { return; }
+    sink.line("Inward tower — what main()'s package needs");
+    sink.line("------------------------------------------");
+    sink.newline();
+    let mut i = 0;
+    while i < n {
+        let f_text = t.list_item("files", i);
+        let fr = std::yaml::Reader { text: f_text };
+        let fname = fr.scalar("file");
+        // Compose imports as a comma-joined list (path:kind).
+        // Bounded per-file, stays as `+`.
+        let m = fr.list_count("imports");
+        let mut joined = "";
+        let mut j = 0;
+        while j < m {
+            let imp_text = fr.list_item("imports", j);
+            let ir = std::yaml::Reader { text: imp_text };
+            let path = ir.scalar("path");
+            let kind = ir.scalar("kind");
+            if j > 0 { joined = joined + ", "; }
+            joined = joined + path + " (" + kind + ")";
+            j = j + 1;
+        }
+        if len(joined) == 0 {
+            sink.line(fname + "  ←  (none)");
+        } else {
+            sink.line(fname + "  ←  " + joined);
+        }
+        i = i + 1;
+    }
+    sink.newline();
+}
+
+// Render the per-file box for one file entry. Mechanical signals
+// only (no enrichment cells); the renderer falls back gracefully
+// when enriched fields like `classification` and `contributes_to`
+// are absent.
+fn __render_file_box_yaml(sink: std::text::Sink, file_text: String) {
+    let fr = std::yaml::Reader { text: file_text };
+    let fname = fr.scalar("file");
+    let pkg = fr.scalar("package");
+    let has_main = fr.scalar("has_main");
+    let has_init = fr.scalar("has_init");
+    let n_handlers = fr.scalar("n_handlers");
+    let n_spawns = fr.scalar("n_spawns");
+    let n_loops = fr.scalar("n_loops");
+    sink.line("+-- " + fname + "  (package " + pkg + ") ----");
+    sink.line("  has_main      " + has_main);
+    sink.line("  has_init      " + has_init);
+    sink.line("  n_handlers    " + n_handlers);
+    sink.line("  n_spawns      " + n_spawns);
+    sink.line("  n_loops       " + n_loops);
+    if fr.has("classification") {
+        sink.line("  classification " + fr.scalar("classification"));
+    }
+    if fr.has("contributes_to") {
+        sink.line("  contributes   " + fr.scalar("contributes_to"));
+    }
+}
+
+// Render the optional `summary` paragraph if present.
+fn __render_summary_yaml(sink: std::text::Sink,
+                         bin_reader: std::yaml::Reader) {
+    if !bin_reader.has("summary") { return; }
+    let s = bin_reader.scalar("summary");
+    if len(s) == 0 { return; }
+    sink.line(s);
+    sink.newline();
+}
+
+// Render the optional `unknowns` block if present. Each entry is
+// surfaced prominently so an agent can act on it next.
+fn __render_unknowns_yaml(sink: std::text::Sink,
+                          bin_reader: std::yaml::Reader) {
+    let n = bin_reader.list_count("unknowns");
+    if n == 0 { return; }
+    sink.line("Unknowns (agent-actionable)");
+    sink.line("---------------------------");
+    let mut i = 0;
+    while i < n {
+        let u_text = bin_reader.list_item("unknowns", i);
+        let ur = std::yaml::Reader { text: u_text };
+        sink.line("  * " + ur.scalar("kind") + " : " + ur.scalar("target"));
+        if ur.has("file") {
+            sink.line("      file:   " + ur.scalar("file"));
+        }
+        if ur.has("why") {
+            sink.line("      why:    " + ur.scalar("why"));
+        }
+        if ur.has("action") {
+            sink.line("      action: " + ur.scalar("action"));
+        }
+        i = i + 1;
+    }
+    sink.newline();
+}
+
+// Render the optional `loci` block if present (enrichment-only).
+fn __render_loci_yaml(sink: std::text::Sink,
+                      bin_reader: std::yaml::Reader) {
+    let n = bin_reader.list_count("loci");
+    if n == 0 { return; }
+    sink.line("Loci (cross-tower agreement)");
+    sink.line("----------------------------");
+    let mut i = 0;
+    while i < n {
+        let l_text = bin_reader.list_item("loci", i);
+        let lr = std::yaml::Reader { text: l_text };
+        let lname = lr.scalar("name");
+        let verdict = lr.scalar("verdict");
+        let agreement = lr.scalar("agreement");
+        let shape = lr.scalar("shape");
+        let mut head = "+-- " + lname + "  [" + verdict + "]";
+        if len(agreement) > 0 {
+            head = head + "  agreement=" + agreement + "/3";
+        }
+        sink.line(head + " ----");
+        if len(shape) > 0 {
+            sink.line("  shape         " + shape);
+        }
+        if lr.has("motion") {
+            sink.line("  motion        " + lr.scalar("motion"));
+        }
+        if lr.has("source_name") {
+            sink.line("  source_name   " + lr.scalar("source_name"));
+        }
+        if lr.has("prose") {
+            sink.line("  prose         " + lr.scalar("prose"));
+        }
+        i = i + 1;
+    }
+    sink.newline();
+}
+
+// Render one binary's full block.
+fn __render_binary_yaml(sink: std::text::Sink, bin_text: String,
+                        idx: Int, total: Int) {
+    let r = std::yaml::Reader { text: bin_text };
+    let rel = r.scalar("rel_path");
+    let pkg = r.scalar("package");
+    let entry = r.scalar("entrypoint_file");
+    sink.newline();
+    sink.line(">>> Binary " + to_string(idx) + "/"
+              + to_string(total) + ": " + rel);
+    sink.newline();
+    sink.line("------------------------------------------------------------");
+    sink.line("  Binary: " + rel);
+    sink.line("  package: " + pkg);
+    sink.line("  entrypoint_file: " + entry);
+    sink.line("------------------------------------------------------------");
+    sink.newline();
+    __render_summary_yaml(sink, r);
+    __render_loci_yaml(sink, r);
+    let nf = r.list_count("files");
+    let mut i = 0;
+    while i < nf {
+        let f_text = r.list_item("files", i);
+        __render_file_box_yaml(sink, f_text);
+        i = i + 1;
+    }
+    sink.newline();
+    __render_outward_tower_yaml(sink, r);
+    __render_inward_tower_yaml(sink, r);
+    __render_unknowns_yaml(sink, r);
+}
+
+fn __render_report(sink: std::text::Sink, yaml_text: String) {
+    let r = std::yaml::Reader { text: yaml_text };
+    let codebase = r.nested("codebase");
+    let cr = std::yaml::Reader { text: codebase };
+    let root = cr.scalar("root");
+    let flavor = cr.scalar("flavor");
+    let module_name = cr.scalar("module_name");
+    let n = r.list_count("binaries");
+    sink.line("============================================================");
+    sink.line("  Aperio recognition: " + root);
+    sink.line("  flavor: " + flavor);
+    if len(module_name) > 0 {
+        sink.line("  module: " + module_name);
+    }
+    sink.line("  binaries: " + to_string(n) + " discovered");
+    sink.line("============================================================");
+    let mut i = 0;
+    while i < n {
+        let bin_text = r.list_item("binaries", i);
+        __render_binary_yaml(sink, bin_text, i + 1, n);
+        i = i + 1;
+    }
+}
+
+// v0 lifecycle bodies reject `return`, so short-circuit logic
+// factors into this free helper called from RenderL.run().
+fn __do_render(yaml_path: String) {
+    let text = std::io::fs::read_file(yaml_path);
+    if len(text) == 0 {
+        println("error: yaml file empty or unreadable: ", yaml_path);
+        return;
+    }
+    let sink = std::text::Sink { dest: "stdout" };
+    __render_report(sink, text);
+}
+
+locus RenderL {
+    params {
+        yaml_path: String = "";
+    }
+    run() {
+        __do_render(self.yaml_path);
+    }
+}
+
 // The three-step ritual: instantiate Resolver, collapse
 // FerrymanConfig, hand to FerrymanL. Resolver layers default →
 // env (APERIO_DIR / APERIO_FLAVOR) → CLI (argv[1] / argv[2]).
@@ -2008,6 +2294,15 @@ fn main() {
             if std::env::args_count() > 2 { repo = std::env::arg(2); }
             if std::env::args_count() > 3 { out_path = std::env::arg(3); }
             SkeletonL { repo: repo, out_path: out_path, flavor: "go" };
+            return;
+        }
+        if std::env::arg(1) == "render" {
+            if std::env::args_count() < 3 {
+                println("usage: ferryman render <enriched.lotus.yaml>");
+                return;
+            }
+            let yaml_path = std::env::arg(2);
+            RenderL { yaml_path: yaml_path };
             return;
         }
     }
