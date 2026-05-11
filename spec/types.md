@@ -91,6 +91,43 @@ compiled-in schema. Used for fitter↔applier communication
 - A `stable_when { ... }` block (commit predicate)
 - Optional `serialize_as TypeV1` annotation
 
+## Interface types (F.20)
+
+An `interface I { fn ...; ... }` declaration introduces a
+**structural interface type** I — a named set of method
+signatures. A locus L satisfies I iff for every method in I, L
+declares a method with the same name, the same arity, compatible
+param types, and a compatible return type. Satisfaction is
+**implicit**: there is no `impl I for L` declaration.
+
+Interface types appear in fn parameter positions:
+
+```
+fn render(sink: Sink) {
+    sink.line("hello");
+}
+```
+
+The structural-impl check fires at every call site where a fn
+declares an interface-typed param: missing-method, arity-
+mismatch, param-type, or return-type mismatches all produce
+typed diagnostics at typecheck time.
+
+**v0.1 scope (Phase A).** Interface declarations parse, register,
+and the typechecker enforces the structural rule. **Codegen
+vtable dispatch is deferred to Phase B**; passing a locus where
+an interface is expected currently errors at codegen with a
+friendly Phase-B-pending message. Library design proceeds against
+the locked syntax; the `std::text::Sink` migration (separate
+StdoutSink / StringSink / FileSink loci behind one Sink
+interface) waits for Phase B.
+
+Interfaces have no default methods at v0; the body is signature-
+only. No interface inheritance, no multi-interface bounds on
+generics, no interface equality. F.21 sketches a paired
+substrate-aware (cascading-dimension) interface form for the
+n-dim growth case; not implemented at v0.
+
 ## Type compatibility
 
 ### Subtyping
@@ -295,8 +332,11 @@ in the current scope.
 
 Per `notes/open-questions.md` and design-rationale §16:
 
-- **Trait / interface system.** No `trait` keyword in v0.
-  Generic constraints limited to projection class.
+- **Trait system.** No `trait` keyword in v0 (reserved). Generic
+  constraints limited to projection class + `Numeric`. The
+  structural `interface` form (F.20) ships as the v0 interface
+  mechanism; full traits with `impl I for L` declarations and
+  generic bounds remain deferred.
 - **Refinement types** (e.g., `int where x > 0`). Deferred.
 - **Effect / capability system.** Substrate-derivation tracking
   is currently runtime-enforced via closure tests; future

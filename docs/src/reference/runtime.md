@@ -166,12 +166,25 @@ transport is a runtime extension, not a language change.
 
 | Name | Purpose |
 |---|---|
+| `print(args...)` | Format and write to stdout, no trailing newline |
 | `println(args...)` | Format and write to stdout, newline-terminated |
+| `eprint(args...)` | Format and write to stderr (fd 2), no trailing newline |
+| `eprintln(args...)` | Format and write to stderr (fd 2), newline-terminated |
 | `len(s)` | Byte length of a `String` |
+| `to_string(v)` | Render any printable primitive (Int/Float/Bool/Decimal/Duration/Time/enum) as a `String` |
 | `time::sleep(d)` | Sleep on `CLOCK_MONOTONIC` with EINTR retry |
 | `time::monotonic()` | Read `CLOCK_MONOTONIC` |
 | `yield;` | Cooperative cell boundary |
 | `check_closures();` | Fire all explicit-epoch closures on the calling locus |
+
+The `e`-prefixed print variants route to stderr via `dprintf(2, ...)`,
+sidestepping the cross-libc `stderr` FILE* macro shape.
+
+`String + <printable>` is auto-coerced (since the 2026-05-11
+ergonomics arc): `"port=" + port` works without explicit
+`to_string`. The coercion is symmetric (`port + " is the port"`)
+and chained (`"a=" + a + " b=" + b`); the non-String operand is
+rendered through `value_to_string` and then concatenated.
 
 Recovery primitives (`restart`, `restart_in_place`,
 `quarantine`, `bubble`) are valid only inside `on_failure`

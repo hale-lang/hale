@@ -137,6 +137,58 @@ header documents its constraint.
 - **`aperio test` CLI runner.** Phase 2 v1.0 — currently the
   Rust integration harness fills the role.
 
+## Ergonomics arc — small wins (2026-05-11)
+
+Driven by friction-log triage; bundled because each is one
+primitive at the C-runtime + codegen seams. None capstones; each
+resolves a specific friction-log entry.
+
+| Add | Resolves | Surface |
+|---|---|---|
+| `std::io::fs::mkdir(path) -> Int` | `apps/ssg` `no-mkdir` | Single-level mkdir, mode 0755. Returns 0 / -1. Wraps libc `mkdir`; not recursive. |
+| `std::io::fs::write_file_append(path, content) -> Int` | `apps/log-router` `write-file-truncates-no-append` | Companion to `write_file`. Opens with `O_WRONLY \| O_CREAT \| O_APPEND` (no truncate). Returns 0 / -1. |
+| `eprintln(args...)` / `eprint(args...)` builtins | `apps/log-router` `no-eprintln-cant-isolate-debug-output` | Bare-name builtins like `print` / `println`. Route through `dprintf(2, ...)` to avoid the cross-libc `stderr` FILE* macro. Same compose-many-args shape as `println`. |
+| `String + <printable>` auto-coerce | `apps/tcp-echo` `to_string-int-via-concatenation` | Mixed-type `+` where one side is `String` and the other is `Int` / `Float` / `Bool` / `Decimal` / `Duration` / `Time` / enum auto-coerces the non-String side via `value_to_string`. Symmetric (`port + " is the port"` works) and chained. |
+
+## F.19 — per-directory seed model (2026-05-11)
+
+`aperio build <dir>` accepts a directory and bundles every `.ap`
+file in the directory as one seed (one binary). Top-level decls
+in any file are visible to every file in the same directory, in
+one shared scope — same shape Go gets from per-package
+visibility. `aperio build <file.ap>` keeps working for
+single-file apps.
+
+File order in the merged bundle is alphabetical; resolution is
+order-free (the typechecker flattens before name lookup). Binary
+defaults to the directory's basename
+(`apps/ferryman/` → `apps/ferryman/ferryman`).
+
+Resolves `notes/aperio-friction.md` 2026-05-10
+single-file-app-monolith. Spec entry: F.19 in
+`spec/design-rationale.md`. Example: `examples/multi-file-seed/`.
+Regression test: `crates/aperio-codegen/tests/multi_file_build.rs`.
+
+## F.20 — structural interfaces, Phase A (2026-05-11)
+
+`interface Name { fn ...; ... }` declares a structural interface.
+Any locus whose method set is a superset structurally satisfies
+it; satisfaction is implicit (no `impl I for L`).
+
+**Phase A (shipped):** parser, AST, resolver, typechecker.
+Structural impl-check fires at every call site where a fn
+declares an interface-typed param (missing-method / arity /
+type / return-type diagnostics).
+
+**Phase B (deferred):** codegen vtable dispatch. Currently a
+locus passed where an interface is expected errors at codegen
+with a friendly Phase-B-pending message. The `std::text::Sink`
+migration waits for Phase B.
+
+Resolves (partial) `notes/aperio-friction.md` 2026-05-10
+sink-as-tagged-locus. Spec entry: F.20 in
+`spec/design-rationale.md`.
+
 ## Path resolution (m71)
 
 `.ap` source references stdlib symbols by fully-qualified path:

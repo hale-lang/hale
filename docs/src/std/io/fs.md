@@ -99,6 +99,85 @@ fn main() {
 }
 ```
 
+### `std::io::fs::write_file_append`
+
+#### Synopsis
+
+```aperio
+fn write_file_append(path: String, content: String) -> Int
+```
+
+Append `content` to the file at `path`. Creates the file with
+mode 0644 if it doesn't exist; otherwise opens existing for
+append. Returns 0 on success, -1 on error.
+
+#### Semantics
+
+- Companion to `write_file` (which truncates). Opens with
+  `O_WRONLY | O_CREAT | O_APPEND` and no `O_TRUNC`, so each call
+  extends the file rather than replacing it.
+- Bounded buffering pattern dissolves: a long-running sink can
+  call `write_file_append` per event instead of accumulating in
+  memory and flushing at dissolve.
+- Length passed via `lotus_str_len`; same NUL-truncation caveat
+  as `write_file` applies (use binary-safe primitives if you
+  need to write embedded NULs).
+- Returns -1 on any IO error; errno is set on the C side but
+  not surfaced at the Aperio level (consistent with the v0
+  errno-collapse convention).
+
+#### Examples
+
+A log sink that writes each event as it arrives:
+
+```aperio
+fn append_event(path: String, line: String) {
+    let r = std::io::fs::write_file_append(path, line + "\n");
+    if r != 0 {
+        eprintln("append failed: ", path);
+    }
+}
+```
+
+### `std::io::fs::mkdir`
+
+#### Synopsis
+
+```aperio
+fn mkdir(path: String) -> Int
+```
+
+Create the directory at `path` with mode 0755. Returns 0 on
+success, -1 on error. Single-level only — *not* recursive.
+
+#### Semantics
+
+- Wraps libc `mkdir(path, 0755)`. If the parent directory does
+  not exist, the call fails with `-1` (errno set to ENOENT on
+  the C side).
+- If the directory already exists, the call returns -1 (errno
+  EEXIST). Test via `file_exists` first if "create-or-noop"
+  semantics are desired.
+- For `mkdir -p`-style recursive creation, walk the path and
+  call `mkdir` on each segment yourself. v0 keeps the surface
+  minimal.
+
+#### Examples
+
+Self-bootstrapping output directory in a CLI:
+
+```aperio
+fn ensure_output_dir(out: String) {
+    if std::io::fs::file_exists(out) == 0 {
+        let r = std::io::fs::mkdir(out);
+        if r != 0 {
+            eprintln("mkdir failed: ", out);
+            std::process::exit(1);
+        }
+    }
+}
+```
+
 ### `std::io::fs::file_size`
 
 #### Synopsis
@@ -290,7 +369,12 @@ do.
 
 - **No streaming**: the entire file is read into memory in
   one call. Large files (hundreds of MB+) are uncomfortable.
-  `read_bytes` has the same constraint.
+  `read_bytes` has the same constraint. (`write_file_append`
+  helps for the write side: long-running sinks can append
+  per event without buffering.)
+- **`mkdir` is single-level**: no recursive `mkdir -p` shape.
+  Walk the path and call `mkdir` per segment for recursive
+  creation.
 - **`list_dir` returns String, not [String]**: caller splits
   on `\n`. Generic-backed sibling waits on `List<T>`.
 - **No recursive directory walk**: `list_dir` is one level.

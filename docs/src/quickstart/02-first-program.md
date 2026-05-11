@@ -50,3 +50,11 @@ repository.
 
 To compile to a native ELF binary instead of running the interpreter,
 use `aperio build hello.ap` — the binary lands next to the source.
+
+When your program outgrows one file, decompose into multiple `.ap`
+files in a directory and build the directory: `aperio build apps/myapp/`.
+Every `.ap` file in the directory contributes to one bundle (one
+binary); top-level decls in any file are visible to every other
+file. Same shape Go gets from per-package visibility. See
+`examples/multi-file-seed/` for the smallest demo;
+`spec/design-rationale.md` F.19 for the rationale.

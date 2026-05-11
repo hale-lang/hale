@@ -196,6 +196,15 @@ methods (m34) accept defaults as normal.
     Filesystem? Package registry? Both? Probably both,
     filesystem-first like Go's vendor + go.mod.
 
+    **Partially resolved (F.19, 2026-05-11):** within one
+    seed (one directory), every `.ap` file shares a top-level
+    scope — same shape Go gets from per-package visibility.
+    `aperio build <dir>` bundles the directory; no `import`
+    needed for in-seed cross-file refs. **Cross-seed imports
+    (one app reaching into another, or a package registry)
+    remain deferred** — the `module` keyword is reserved with
+    no semantics yet.
+
 19. **Is there a standard library?**
     Yes (eventually). Reductions other than sum/prod, time
     arithmetic, decimal arithmetic, common collections,

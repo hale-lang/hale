@@ -29,9 +29,19 @@ top_decl          = locus_decl
                   | const_decl
                   | function_decl
                   | module_decl
+                  | interface_decl
                   ;
 
 module_decl       = "module" , IDENTIFIER , "{" , { top_decl } , "}" ;
+
+(* F.20 — structural interface. Declares a named set of method
+   signatures; any locus whose method set is a superset
+   structurally satisfies the interface (no `impl I for L`). *)
+interface_decl    = "interface" , IDENTIFIER , "{" ,
+                    { interface_method_sig } , "}" ;
+interface_method_sig
+                  = "fn" , IDENTIFIER , "(" , [ param_list ] , ")" ,
+                    [ "->" , type_expr ] , ";" ;
 
 
 (* === 2. Locus declaration ====================================== *)

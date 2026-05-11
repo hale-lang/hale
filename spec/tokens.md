@@ -46,7 +46,14 @@ simplifies tooling.
 ```
 locus           perspective     type            const
 fn              import          export          module
+interface
 ```
+
+`interface` (F.20) declares a structural interface — a named set
+of method signatures. Any locus whose method set is a superset
+structurally satisfies the interface (no `impl I for L`
+declaration). Phase A: typecheck-only; codegen vtable dispatch
+deferred to Phase B.
 
 ### Locus member keywords
 

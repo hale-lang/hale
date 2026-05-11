@@ -43,6 +43,7 @@
       - [Primitives](./reference/types/primitives.md)
       - [Structs and enums](./reference/types/structs-and-enums.md)
       - [Generics](./reference/types/generics.md)
+      - [Interfaces](./reference/types/interfaces.md)
       - [Perspectives and projection classes](./reference/types/perspectives.md)
     - [Expressions](./reference/expressions/index.md)
     - [Statements](./reference/statements/index.md)
