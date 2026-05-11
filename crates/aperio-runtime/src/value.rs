@@ -131,6 +131,12 @@ pub struct LocusHandle {
 #[derive(Debug, Clone)]
 pub struct FnRef {
     pub decl: Rc<FnDecl>,
+    /// 3a fix: when this FnRef was produced by reading a method off
+    /// a locus value (`lf.feed`), the receiver is captured here so
+    /// `call_fn` can push it onto `self_stack` before evaluating
+    /// the body. `None` for free fns and for unresolved method
+    /// references that don't have a bound receiver.
+    pub bound_self: Option<LocusHandle>,
 }
 
 #[derive(Clone)]

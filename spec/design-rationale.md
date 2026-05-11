@@ -1530,17 +1530,185 @@ The user-visible shape mirrors Go's per-package model.
   becomes interesting if we add cross-seed imports or external
   dependencies.
 
-### F.22 Capacity-tuple as N-D allocator surface (planned)
+### F.22 Capacity-tuple as N-D allocator surface
 
-The substrate-conditioned tuple form of capacity, instantiated at
-Aperio's allocator surface. Each locus's capacity is an N-D tuple
-of allocator slots (Arena, Pool, Heap at v0); parents override
-slots at accept hooks; the current 1D collapse (one arena at
-slot 0) is the v0 baseline. Operationalizes The Design's
-multi-dimensional capacity principle at Aperio's substrate.
-F-number reserved here so 2026-05-11 ergonomics-arc entries
-(F.23, F.24) don't overlap with the planned arc; concrete spec
-text lands when implementation begins.
+Every locus declares its storage discipline as an N-tuple of
+**capacity slots**. Slot 0 is the locus's own Arena (the v0 1D
+baseline — wholesale-free at dissolve). Loci that need richer
+discipline declare additional slots in a `capacity` block:
+
+```
+locus FooL {
+    capacity {
+        pool entries of Int;        // slot 1: cell-recycling of Int-sized
+        heap registry of Command;   // slot 2: growable, individual free
+    }
+    params { ... }
+}
+```
+
+**Domain framing — three capacity modes, not three allocator
+strategies.** Each slot kind is a *commitment the locus makes
+about its own state*, not a hidden implementation detail:
+
+- **Arena** — *"I'm scratch — everything I touch dies with me."*
+  Single bump arena, wholesale-free at dissolve. The locus
+  retains nothing across its own lifetime boundary.
+- **Pool of T** — *"I hold a bounded shape of recyclable state."*
+  Fixed-size cells; values come and go but the population is
+  bounded. Map-bucket recycling, fixed-shape registries,
+  per-handler scratch frames.
+- **Heap of T** — *"I hold growable state bounded by my own
+  lifetime."* Individual cells alloc/free during the locus's
+  life; wholesale teardown at dissolve. Growable Vec backing,
+  rope chunk-lists, anything whose retained size isn't known
+  at birth.
+
+Slot 0 (Arena) is implicit because the simplest commitment —
+"everything dies with me" — is the case where the locus *makes
+no extra promise* about its state, and shouldn't have to write
+it down.
+
+**Slot ABI.** Each declared slot adds a field to the locus
+struct (`__slot_<name>: ptr`) initialized at instantiation and
+torn down at dissolve. Access is method-shaped via the
+locus-scoped slot handle:
+
+```
+let cell = self.entries.acquire();   // pool: borrow a cell
+self.entries.release(cell);          // pool: return cell
+let p = self.registry.alloc();       // heap: alloc a Command
+self.registry.free(p);               // heap: free a Command
+```
+
+Slot names are identifiers resolved at typecheck against the
+current locus's declared slots — *not* stringly-typed
+path-calls. Mirrors F.16's "synthetic self-field" precedent:
+`self.entries` reads as a member of `self`, with member-typed
+methods rather than a free-fn taking a name parameter.
+
+**Slot lifetime (F.4 ordering).** Slots are created at
+instantiation in declaration order, after slot 0 initializes,
+before the locus's own field initializers run. Slots are
+destroyed in *reverse* declaration order at dissolve, before
+the slot-0 Arena itself dissolves. Matches F.4's
+reverse-instantiation cascade rule for let-bound loci.
+
+**Slot 0 parent-override is the existing chunked/recognition
+machinery.** The v0 codegen already lets a chunked-class
+parent allocate a child's slot 0 (Arena) as a sub-region of
+its own — `lower_locus_instantiation` checks
+`parent_accepts_us && parent.projection_class in {Chunked,
+Recognition}` and routes through `lotus_arena_create_subregion`.
+F.22 formalizes that machinery as "projection class governs
+parent-override of slot 0." No new behavior at v0 — F.22
+*names* the existing capability so future slot-1..N overrides
+sit on a consistent vocabulary.
+
+**Slot 1..N parent-override (deferred to v1.x).** A future
+extension lets a parent declare `capacity { pool entries of
+Int as_parent_for ChildL; }` so that any `ChildL` accepted by
+this parent gets its `entries` slot pointer replaced with the
+parent's at accept time. Generalizes the chunked-class
+sub-region hand-off to all slot kinds. Spec text waits for the
+first workload that demands it.
+
+**Restrictions (v0).**
+
+1. **Slot element type must be a value-shape**, not a
+   `LocusRef`. Loci have lifecycle; cell recycling
+   (Pool.release) would orphan the locus, and individual heap
+   free would race with the locus's own dissolve. Loci go
+   under `self.children` via `accept(c: ChildL)` per the
+   existing membership model; slots are for *types*. The
+   typechecker rejects `pool X of SomeL` and `heap Y of SomeL`
+   with a diagnostic pointing at this rule.
+
+2. **Slot pointers don't cross the bus.** A slot lives in the
+   locus's own address space; the wire format has no shape
+   for "give me a cell of your pool back." `synthesize_serializer`
+   rejects any payload type whose field would resolve to a
+   slot.
+
+3. **`Pool of T` and `Heap of T` use the same `T`-as-cell
+   convention.** Element size and alignment come from
+   `T`'s LLVM struct layout. The slot itself stores
+   `lotus_pool_t *` / `lotus_heap_t *`; the user-visible
+   `acquire` / `alloc` return `*T`-shaped pointers.
+
+**Naming note.** F.22's `pool` slot is distinct from
+`spec/memory.md`'s `RecognitionPool` (the bitmap-backed
+fixed-cap pool that the Recognition projection class uses
+internally for slot 0). Both are "pools of cells" in the
+substrate sense, but the Recognition pool is part of
+projection-class semantics (slot 0 storage strategy for
+recognition-classed loci), whereas F.22's pool slot is a
+user-declared slot at 1..N with chunked-+-free-list backing
+and no projection-class entanglement. The two systems may
+unify in v1.x once F.22 slots 1..N stabilize.
+
+**Why.** The 1D collapse forced every long-lived data
+structure into wholesale-free semantics. Growable types — Map,
+Vec, ropes — leaked per-mutation until the enclosing locus
+dissolved. Workarounds (fixed-cap parallel arrays as locus
+params) burned per-instance footprint and obscured the
+intent — `notes/aperio-friction.md`
+`dense-locus-storage-bloat` is the canonical writeup.
+F.22 names the substrate distinction so the same locus can
+hold "what dies with me" (Arena) and "what I recycle / grow
+during my life" (Pool, Heap), in language the locus *writes
+down* rather than smuggles in via runtime convention.
+Operationalizes The Design's multi-dimensional capacity
+principle at Aperio's substrate.
+
+**Considered and rejected.**
+
+- *Per-allocation slot annotation* (`pool_alloc(...)` /
+  `heap_alloc(...)` at every callsite). Too fine-grained;
+  locus-level declaration matches the lotus principle that
+  *flow lives at the locus boundary*, not at every callsite.
+- *Stringly-typed slot access* (`std::alloc::pool_acquire("entries")`).
+  Loses compile-time check that the slot exists on the
+  current locus. The `self.entries.acquire()` form catches
+  typos at typecheck and reads as native locus surface, not
+  as a stdlib escape hatch.
+- *Slot kinds as first-class types* (`Pool<T>` as a type you
+  can store in a field). Conflates storage discipline with
+  shape. F.22 keeps slots as declarations; the eventual
+  Map / Vec stdlib types name which slot they bind to in
+  their own declarations.
+- *Untyped Heap* (`heap registry;` with no element type).
+  Tempting for "I want raw bytes" but loses the codegen-side
+  size/align inference that Pool gets for free, and produces
+  weaker typecheck diagnostics. Keep the symmetry: every
+  non-Arena slot names its cell type.
+- *Heap as the default*. Would invert the v0 substrate's
+  cheapest-default-fastest-path. Arena stays default; Heap
+  is opt-in.
+- *Slots hold LocusRef cells*. Loci have lifecycle; the
+  existing `self.children` mechanism is the right surface
+  for "this locus has these sub-loci." Slots are for values.
+
+**Implementation pointers.**
+
+- `crates/aperio-codegen/runtime/lotus_arena.c` — adds
+  `lotus_pool_*` and `lotus_heap_*` symbol families.
+- `crates/aperio-syntax/src/ast.rs` — `LocusMember::Capacity`
+  variant carrying `Vec<CapacitySlot { name, kind, elem_ty }>`.
+- `crates/aperio-codegen/src/codegen.rs` —
+  `declare_locus_struct` extends the struct layout with one
+  field per declared slot; `lower_locus_instantiation`
+  initializes each slot after slot 0; `flush_dissolve_frame`
+  walks slots in reverse before slot-0 arena destroy.
+- `crates/aperio-codegen/src/codegen.rs` — `lower_expr` for
+  `Expr::Field { Self, name }` checks the slot table before
+  the field table, so `self.entries` resolves to a slot handle
+  type rather than erroring.
+
+**Pickup pointers for implementation.** This session locked
+the spec; implementation tasks are tracked at the friction
+plan level (`crates/aperio-codegen/runtime/lotus_arena.c`
+gets Pool + Heap primitives first; codegen surface follows).
 
 ### F.23 Int → Float widening at let/arg sites (Phase 2c, 2026-05-11)
 

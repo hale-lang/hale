@@ -685,6 +685,18 @@
         <code style="font-size: 1em; padding: 0; color: var(--ink-soft); background: transparent;">apps/</code>
         directory for worked examples beyond the book's scope.
       </p>
+      <p>
+        <strong style="color: var(--ink);">One convention</strong> threads through every example: the
+        outermost encapsulation of an app is a
+        <em class="term">locus</em>, never a bare <code>fn main()</code>
+        with helpers. <code>main</code> reads argv (when needed) and
+        instantiates the outer locus; the locus's lifecycle owns the
+        run. This is the
+        <em class="term">apps-are-loci</em> rule from
+        <code>notes/agent-onboarding/aperio-styleguide.md</code>: when
+        everything is a lotus, everything is reusable, and the shape
+        is consistent at every layer including the top.
+      </p>
     </div>
 
     <!-- ════════════ PART I separator ════════════ -->
@@ -880,9 +892,15 @@ ticker dissolving</span></pre>
     }
 }
 
+<span class="kw">locus</span> <span class="id">Ch3DemoL</span> {
+    <span class="lc">run</span>() {
+        <span class="id">CounterL</span> { };              <span class="com">// uses default count = 0</span>
+        <span class="id">CounterL</span> { count: <span class="lit">100</span> }; <span class="com">// overridden at instantiation</span>
+    }
+}
+
 <span class="kw">fn</span> <span class="id">main</span>() {
-    <span class="id">CounterL</span> { };              <span class="com">// uses default count = 0</span>
-    <span class="id">CounterL</span> { count: <span class="lit">100</span> }; <span class="com">// overridden at instantiation</span>
+    <span class="id">Ch3DemoL</span> { };
 }</pre>
 
 <pre class="run"><span class="prompt">$</span> aperio run apps/ch03/main.ap
@@ -955,10 +973,16 @@ final count: 105</span></pre>
     std::math::sqrt(dx * dx + dy * dy)
 }
 
+<span class="kw">locus</span> <span class="id">Ch4DemoL</span> {
+    <span class="lc">run</span>() {
+        <span class="kw">let</span> p = <span class="id">Point</span> { x: <span class="lit">0.0</span>, y: <span class="lit">0.0</span> };
+        <span class="kw">let</span> q = <span class="id">Point</span> { x: <span class="lit">3.0</span>, y: <span class="lit">4.0</span> };
+        println(<span class="lit">"distance = "</span> + distance(p, q));
+    }
+}
+
 <span class="kw">fn</span> <span class="id">main</span>() {
-    <span class="kw">let</span> p = <span class="id">Point</span> { x: <span class="lit">0.0</span>, y: <span class="lit">0.0</span> };
-    <span class="kw">let</span> q = <span class="id">Point</span> { x: <span class="lit">3.0</span>, y: <span class="lit">4.0</span> };
-    println(<span class="lit">"distance = "</span> + distance(p, q));
+    <span class="id">Ch4DemoL</span> { };
 }</pre>
 
 <pre class="run"><span class="prompt">$</span> aperio run apps/ch04/main.ap
@@ -1355,12 +1379,18 @@ tree dissolve</span></pre>
     sink.line(<span class="lit">"world"</span>);
 }
 
+<span class="kw">locus</span> <span class="id">Ch9DemoL</span> {
+    <span class="lc">run</span>() {
+        <span class="kw">let</span> a = <span class="id">StdoutSinkL</span> { };
+        <span class="kw">let</span> b = <span class="id">StringSinkL</span> { };
+        render(a);
+        render(b);
+        println(<span class="lit">"captured: "</span> + b.buf);
+    }
+}
+
 <span class="kw">fn</span> <span class="id">main</span>() {
-    <span class="kw">let</span> a = <span class="id">StdoutSinkL</span> { };
-    <span class="kw">let</span> b = <span class="id">StringSinkL</span> { };
-    render(a);
-    render(b);
-    println(<span class="lit">"captured: "</span> + b.buf);
+    <span class="id">Ch9DemoL</span> { };
 }</pre>
 
 <pre class="run"><span class="prompt">$</span> aperio run apps/ch09/main.ap
@@ -1428,9 +1458,15 @@ world</span></pre>
     }
 }
 
+<span class="kw">locus</span> <span class="id">BusDemoL</span> {
+    <span class="lc">run</span>() {
+        <span class="id">ListenerL</span> { };
+        <span class="id">EmitterL</span> { };
+    }
+}
+
 <span class="kw">fn</span> <span class="id">main</span>() {
-    <span class="id">ListenerL</span> { };
-    <span class="id">EmitterL</span> { };
+    <span class="id">BusDemoL</span> { };
 }</pre>
 
 <pre class="run"><span class="prompt">$</span> aperio run apps/ch10/main.ap
@@ -1491,11 +1527,18 @@ got click: home</span></pre>
     }
 }
 
+<span class="kw">locus</span> <span class="id">EchoServerL</span> {
+    <span class="kw">params</span> { port: <span class="id">Int</span> = <span class="lit">9000</span>; }
+    <span class="lc">run</span>() {
+        std::io::tcp::<span class="id">Listener</span> {
+            port: self.port,
+            on_connection: on_connection
+        };
+    }
+}
+
 <span class="kw">fn</span> <span class="id">main</span>() {
-    std::io::tcp::<span class="id">Listener</span> {
-        port: <span class="lit">9000</span>,
-        on_connection: on_connection
-    };
+    <span class="id">EchoServerL</span> { };
 }</pre>
 
 <pre class="run"><span class="prompt">$</span> aperio run apps/ch11/main.ap &amp;
@@ -1647,6 +1690,10 @@ got click: home</span></pre>
     <span class="lc">accept</span>(p: <span class="id">ParticipantL</span>) {
         println(<span class="lit">"["</span> + self.id + <span class="lit">"] welcome "</span> + p.name);
     }
+    <span class="lc">run</span>() {
+        <span class="id">ParticipantL</span> { name: <span class="lit">"alice"</span> };
+        <span class="id">ParticipantL</span> { name: <span class="lit">"bob"</span> };
+    }
 }</pre>
 
         <p>
@@ -1658,12 +1705,21 @@ got click: home</span></pre>
           large channel with thousands of mostly-idle members. The
           body never changes.
         </p>
+        <p>
+          Note where the participants are instantiated:
+          <em class="term">inside</em> <code>RoomL.run()</code>. That
+          is what makes them children of <code>RoomL</code> — the
+          parent-child relationship comes from the
+          <em class="term">syntactic enclosure</em> of the
+          instantiation site, not from any
+          <code>room.add(...)</code> call. The room's
+          <code>accept()</code> fires for each, in order, before each
+          child's <code>birth()</code> runs.
+        </p>
 
-        <p class="filepath">apps/chat/shared/demo_room.ap</p>
+        <p class="filepath">apps/chat/shared/main.ap</p>
 <pre class="code"><span class="kw">fn</span> <span class="id">main</span>() {
-    <span class="kw">let</span> r = <span class="id">RoomL</span> { id: <span class="lit">"#general"</span> };
-    <span class="id">ParticipantL</span> { name: <span class="lit">"alice"</span> };
-    <span class="id">ParticipantL</span> { name: <span class="lit">"bob"</span> };
+    <span class="id">RoomL</span> { id: <span class="lit">"#general"</span> };
 }</pre>
 
 <pre class="run"><span class="prompt">$</span> aperio run apps/chat/shared/
@@ -1675,8 +1731,13 @@ alice left
 bob left</span></pre>
 
         <p>
-          The room model works in-process today. In Chapter 15 we
-          wire it across two binaries via the bus.
+          The room is the app's outer locus. Hardcoded membership in
+          the run() body is a learning fixture — in Chapter 15 the
+          gateway will spawn participants externally via per-TCP
+          callbacks, and the room concept becomes mostly a subject
+          namespace. The locus structure here teaches the room's
+          <em class="term">shape</em>; the network plumbing comes
+          later.
         </p>
 
         <!-- ═════ DIFF · chapter 13 ═════ -->
@@ -1875,6 +1936,7 @@ bob left</span></pre>
             body: body, ts: std::time::now()
         };
     }
+    <span class="com">// p dissolves at fn return (m82) — closes the participant</span>
 }
 
 <span class="kw">locus</span> <span class="id">FanoutL</span> {
@@ -1887,14 +1949,53 @@ bob left</span></pre>
     }
 }
 
+<span class="kw">locus</span> <span class="id">GatewayL</span> {
+    <span class="kw">params</span> { port: <span class="id">Int</span> = <span class="lit">9001</span>; }
+    <span class="lc">birth</span>() { println(<span class="lit">"gateway up on :"</span> + self.port); }
+    <span class="lc">run</span>() {
+        <span class="id">FanoutL</span> { };
+        std::io::tcp::<span class="id">Listener</span> {
+            port: self.port,
+            on_connection: on_connection
+        };
+    }
+    <span class="lc">dissolve</span>() { println(<span class="lit">"gateway down"</span>); }
+}
+
 <span class="kw">fn</span> <span class="id">main</span>() {
-    <span class="id">RoomL</span> { id: <span class="lit">"#general"</span> };
-    <span class="id">FanoutL</span> { };
-    std::io::tcp::<span class="id">Listener</span> {
-        port: <span class="lit">9001</span>,
-        on_connection: on_connection
-    };
+    <span class="kw">let mut</span> port = <span class="lit">9001</span>;
+    <span class="kw">if</span> std::env::args_count() &gt; <span class="lit">1</span> {
+        port = std::str::parse_int(std::env::arg(<span class="lit">1</span>));
+    }
+    <span class="id">GatewayL</span> { port: port };
 }</pre>
+
+        <p>
+          <code>GatewayL</code> is the gateway's outer locus —
+          apps-are-loci, so the gateway has one. Its
+          <code>run()</code> instantiates <code>FanoutL</code> (the
+          bus bridge) and the TCP listener as
+          <em class="term">children of GatewayL</em>. SIGINT
+          triggers <code>drain()</code> on the runtime root, which
+          cascades into GatewayL, which cascades depth-first to its
+          children: the Listener drains (closing every per-connection
+          Stream — and each Stream's <code>dissolve()</code> closes
+          its fd); FanoutL drains; GatewayL drains and dissolves.
+          Every fd is closed, every arena freed, in order.
+        </p>
+        <p>
+          A note on the room model from Chapter 13: in this
+          gateway the <em class="term">RoomL</em> from ch13 doesn't
+          appear directly. Each TCP connection's
+          <code>ParticipantL</code> is a child of
+          <code>on_connection</code>'s implicit locus (per fn
+          scope), not of any RoomL. The "room" in this distributed
+          system is mostly a <em class="term">subject
+          namespace</em> — the chat.fanout / chat.in subjects
+          identify the room. RoomL from ch13 is the in-process
+          teaching model; the distributed shape is what you see
+          here.
+        </p>
 
         <p>
           The flow: terminal stdin → gateway TCP → gateway publishes
@@ -1902,10 +2003,7 @@ bob left</span></pre>
           <code>FanoutL</code> republishes on
           <code>chat.in</code> → every terminal that subscribed gets
           it. Each terminal sees its own message echoed back along
-          with everyone else's. SIGINT on the gateway drains the
-          listener (closing every stream), drains the FanoutL
-          (no-op), drains the RoomL (cascading to participants);
-          dissolve frees every arena.
+          with everyone else's.
         </p>
 
         <div class="note">
@@ -1922,7 +2020,7 @@ bob left</span></pre>
         <div class="diff">
           <p class="diff-head">
             <span>codebase at chapter 15</span>
-            <span class="diff-stat">+ 1 directory · 1 file · 2 declarations</span>
+            <span class="diff-stat">+ 1 directory · 1 file · 3 declarations</span>
           </p>
 <pre class="diff-tree">apps/chat/
 ├── <span class="dim">shared/</span>
@@ -1933,18 +2031,21 @@ bob left</span></pre>
 └── gateway/                        <span class="new">new directory</span>
     └── <span class="filename">main.ap</span>                     <span class="new">new · TCP gateway</span></pre>
           <p class="diff-decls">
+            <span class="plus">+</span><span class="name">locus GatewayL</span> &nbsp;<span class="meta">apps-are-loci · the gateway's outer encapsulation</span><br>
             <span class="plus">+</span><span class="name">fn on_connection</span> &nbsp;<span class="meta">per-stream callback, instantiates ParticipantL</span><br>
             <span class="plus">+</span><span class="name">locus FanoutL</span> &nbsp;<span class="meta">subscribes <code>chat.fanout</code>, republishes <code>chat.in</code></span><br>
-            <span class="reused">·</span><span class="reused-name">reuses ParticipantL, RoomL</span> &nbsp;<span class="meta">from chapter 13 · unchanged</span><br>
+            <span class="reused">·</span><span class="reused-name">reuses ParticipantL</span> &nbsp;<span class="meta">from chapter 13 · one per TCP connection</span><br>
             <span class="reused">·</span><span class="reused-name">reuses ChatMessage</span> &nbsp;<span class="meta">from chapter 12 · the wire schema</span><br>
             <span class="reused">·</span><span class="reused-name">reuses std::io::tcp::Listener</span> &nbsp;<span class="meta">from chapter 11 · the network primitive</span>
           </p>
         </div>
 
         <div class="takeaway">
-          The gateway listens, accepts streams, and uses the bus to
-          fan messages between them. Every load-bearing piece —
-          Listener, ParticipantL, RoomL, ChatMessage — came from an
+          The gateway is itself a locus (apps-are-loci). Inside it,
+          FanoutL and the TCP Listener are children, with the drain
+          cascade flowing leaves-first to every connection's Stream
+          and its per-connection ParticipantL. Every load-bearing
+          piece — Listener, ParticipantL, ChatMessage — came from an
           earlier chapter, composed into a new context without
           edits.
         </div>

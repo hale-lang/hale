@@ -2912,6 +2912,262 @@ void *lotus_bytes_slice(const void *b, int64_t lo, int64_t hi) {
 }
 
 /*
+ * ws-echo `bytes-construction-from-ints`: build a one-byte Bytes
+ * blob from an Int (low 8 bits). Companion to the recv side
+ * for outbound binary protocols (WebSocket frame headers,
+ * length-encoded prefixes, etc.). Anchored in the program-
+ * lifetime payload arena so the returned pointer matches the
+ * lifetime conventions of recv_bytes / bytes_slice. The Int
+ * argument is taken mod 256 — callers that pre-mask explicitly
+ * are no-ops; callers passing larger ints lose the high bits
+ * silently, matching how `b << 8` truncates.
+ */
+void *lotus_bytes_from_int(int64_t v) {
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            return NULL;
+        }
+    }
+    void *blob = lotus_bytes_create(g_bus_payload_arena, 1);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    if (!blob) return lotus_bytes_empty_global();
+    unsigned char *body = (unsigned char *)lotus_bytes_data(blob);
+    body[0] = (unsigned char)(v & 0xFF);
+    return blob;
+}
+
+/*
+ * ws-echo `bytes-construction-from-ints`: concatenate two Bytes
+ * blobs into a fresh one. Composes with from_int to assemble
+ * arbitrary outbound payloads (recursive: from_int + concat builds
+ * any byte sequence). Either argument may be NULL/empty; the
+ * result mirrors the non-empty side (or is empty if both are).
+ */
+void *lotus_bytes_concat(const void *a, const void *b) {
+    int64_t la = a ? lotus_bytes_len(a) : 0;
+    int64_t lb = b ? lotus_bytes_len(b) : 0;
+    int64_t total = la + lb;
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            return NULL;
+        }
+    }
+    void *blob = lotus_bytes_create(g_bus_payload_arena, total);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    if (!blob) return lotus_bytes_empty_global();
+    char *body = (char *)lotus_bytes_data(blob);
+    if (la > 0) {
+        memcpy(body, (const char *)a + sizeof(int64_t), (size_t)la);
+    }
+    if (lb > 0) {
+        memcpy(body + la, (const char *)b + sizeof(int64_t), (size_t)lb);
+    }
+    return blob;
+}
+
+/*
+ * ws-echo `sha1-base64-missing`: SHA-1 of a Bytes blob,
+ * returning the 20-byte digest as Bytes. Stand-alone
+ * implementation per RFC 3174 to avoid pulling in OpenSSL
+ * just for the WebSocket handshake. Single-shot API: no
+ * streaming Update/Final pair; callers that need streaming
+ * can build it on top.
+ */
+static uint32_t sha1_rotl(uint32_t v, int n) {
+    return (v << n) | (v >> (32 - n));
+}
+
+void *lotus_crypto_sha1(const void *b) {
+    int64_t len = b ? lotus_bytes_len(b) : 0;
+    const unsigned char *msg =
+        b ? (const unsigned char *)b + sizeof(int64_t) : NULL;
+
+    uint32_t h0 = 0x67452301u;
+    uint32_t h1 = 0xEFCDAB89u;
+    uint32_t h2 = 0x98BADCFEu;
+    uint32_t h3 = 0x10325476u;
+    uint32_t h4 = 0xC3D2E1F0u;
+
+    /* Build padded message: original + 0x80 + zeros + 8-byte big-endian
+     * length (in bits). Total length is multiple of 64. */
+    uint64_t bit_len = (uint64_t)len * 8u;
+    int64_t padded_len = len + 1;   /* original + 0x80 */
+    /* pad zeros until padded_len % 64 == 56 */
+    int64_t mod = padded_len % 64;
+    int64_t pad_zeros = (mod <= 56) ? (56 - mod) : (56 + 64 - mod);
+    padded_len += pad_zeros + 8;     /* +8 for length field */
+
+    unsigned char *buf = (unsigned char *)malloc((size_t)padded_len);
+    if (!buf) return lotus_bytes_empty_global();
+    if (len > 0) memcpy(buf, msg, (size_t)len);
+    buf[len] = 0x80;
+    for (int64_t i = len + 1; i < padded_len - 8; i++) buf[i] = 0;
+    for (int i = 0; i < 8; i++) {
+        buf[padded_len - 1 - i] = (unsigned char)(bit_len >> (i * 8));
+    }
+
+    for (int64_t off = 0; off < padded_len; off += 64) {
+        uint32_t w[80];
+        for (int i = 0; i < 16; i++) {
+            w[i] = ((uint32_t)buf[off + i * 4 + 0] << 24)
+                 | ((uint32_t)buf[off + i * 4 + 1] << 16)
+                 | ((uint32_t)buf[off + i * 4 + 2] << 8)
+                 | ((uint32_t)buf[off + i * 4 + 3]);
+        }
+        for (int i = 16; i < 80; i++) {
+            w[i] = sha1_rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+        }
+        uint32_t a = h0, ba = h1, c = h2, d = h3, e = h4;
+        for (int i = 0; i < 80; i++) {
+            uint32_t f, k;
+            if (i < 20)      { f = (ba & c) | (~ba & d);         k = 0x5A827999u; }
+            else if (i < 40) { f = ba ^ c ^ d;                    k = 0x6ED9EBA1u; }
+            else if (i < 60) { f = (ba & c) | (ba & d) | (c & d); k = 0x8F1BBCDCu; }
+            else             { f = ba ^ c ^ d;                    k = 0xCA62C1D6u; }
+            uint32_t temp = sha1_rotl(a, 5) + f + e + k + w[i];
+            e = d;
+            d = c;
+            c = sha1_rotl(ba, 30);
+            ba = a;
+            a = temp;
+        }
+        h0 += a; h1 += ba; h2 += c; h3 += d; h4 += e;
+    }
+    free(buf);
+
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            return NULL;
+        }
+    }
+    void *blob = lotus_bytes_create(g_bus_payload_arena, 20);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    if (!blob) return lotus_bytes_empty_global();
+    unsigned char *dgst = (unsigned char *)lotus_bytes_data(blob);
+    uint32_t hs[5] = { h0, h1, h2, h3, h4 };
+    for (int i = 0; i < 5; i++) {
+        dgst[i * 4 + 0] = (unsigned char)(hs[i] >> 24);
+        dgst[i * 4 + 1] = (unsigned char)(hs[i] >> 16);
+        dgst[i * 4 + 2] = (unsigned char)(hs[i] >> 8);
+        dgst[i * 4 + 3] = (unsigned char)(hs[i]);
+    }
+    return blob;
+}
+
+/*
+ * ws-echo `sha1-base64-missing`: Base64 encode a Bytes blob,
+ * returning a NUL-terminated String (standard alphabet,
+ * with `=` padding to a multiple of 4). Anchored in the
+ * payload arena.
+ */
+static const char b64_alpha[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+const char *lotus_text_base64_encode(const void *b) {
+    int64_t len = b ? lotus_bytes_len(b) : 0;
+    const unsigned char *src =
+        b ? (const unsigned char *)b + sizeof(int64_t) : NULL;
+    int64_t out_len = ((len + 2) / 3) * 4;
+
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            return NULL;
+        }
+    }
+    char *out = (char *)lotus_arena_alloc(
+        g_bus_payload_arena, (size_t)(out_len + 1), 1);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    if (!out) return "";
+
+    int64_t i = 0, j = 0;
+    while (i + 3 <= len) {
+        uint32_t v = ((uint32_t)src[i] << 16)
+                   | ((uint32_t)src[i + 1] << 8)
+                   |  (uint32_t)src[i + 2];
+        out[j + 0] = b64_alpha[(v >> 18) & 0x3F];
+        out[j + 1] = b64_alpha[(v >> 12) & 0x3F];
+        out[j + 2] = b64_alpha[(v >> 6) & 0x3F];
+        out[j + 3] = b64_alpha[v & 0x3F];
+        i += 3;
+        j += 4;
+    }
+    int64_t rem = len - i;
+    if (rem == 1) {
+        uint32_t v = (uint32_t)src[i] << 16;
+        out[j + 0] = b64_alpha[(v >> 18) & 0x3F];
+        out[j + 1] = b64_alpha[(v >> 12) & 0x3F];
+        out[j + 2] = '=';
+        out[j + 3] = '=';
+        j += 4;
+    } else if (rem == 2) {
+        uint32_t v = ((uint32_t)src[i] << 16) | ((uint32_t)src[i + 1] << 8);
+        out[j + 0] = b64_alpha[(v >> 18) & 0x3F];
+        out[j + 1] = b64_alpha[(v >> 12) & 0x3F];
+        out[j + 2] = b64_alpha[(v >> 6) & 0x3F];
+        out[j + 3] = '=';
+        j += 4;
+    }
+    out[j] = '\0';
+    return out;
+}
+
+/*
+ * ws-echo `random-seed-missing`: minimal RNG surface. xorshift64*
+ * seeded from monotonic time (cheap, library-internal use only
+ * — NOT cryptographic). Suitable for nonces, retry jitter, test
+ * shuffles. Single shared state guarded by a mutex; v1 doesn't
+ * try to be thread-safe-fast.
+ */
+static uint64_t g_rand_state = 0;
+static pthread_mutex_t g_rand_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void lotus_rand_seed_from_time(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t s = (uint64_t)ts.tv_sec * 1000000000ULL
+               + (uint64_t)ts.tv_nsec;
+    if (s == 0) s = 0x9E3779B97F4A7C15ULL;     /* avoid 0 */
+    pthread_mutex_lock(&g_rand_mutex);
+    g_rand_state = s;
+    pthread_mutex_unlock(&g_rand_mutex);
+}
+
+int64_t lotus_rand_next_int(int64_t max) {
+    pthread_mutex_lock(&g_rand_mutex);
+    if (g_rand_state == 0) {
+        /* Auto-seed on first use so callers that forget the
+         * explicit seed still get distinct values per process. */
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        g_rand_state = (uint64_t)ts.tv_sec * 1000000000ULL
+                     + (uint64_t)ts.tv_nsec;
+        if (g_rand_state == 0) g_rand_state = 0x9E3779B97F4A7C15ULL;
+    }
+    /* xorshift64* */
+    uint64_t x = g_rand_state;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    g_rand_state = x;
+    uint64_t mixed = x * 0x2545F4914F6CDD1DULL;
+    pthread_mutex_unlock(&g_rand_mutex);
+    if (max <= 0) return 0;
+    return (int64_t)(mixed % (uint64_t)max);
+}
+
+/*
  * Phase 2e: index-API surface over the existing
  * lotus_fs_list_dir_global() cache. Returning a real `[String]`
  * waits on dynamic-array codegen support; meanwhile the

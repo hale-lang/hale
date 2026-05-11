@@ -141,6 +141,7 @@ impl Interpreter {
                     f.name.name.clone(),
                     Value::Fn(FnRef {
                         decl: Rc::new(f.clone()),
+                        bound_self: None,
                     }),
                 );
             }
@@ -248,6 +249,20 @@ impl Interpreter {
             }
         }
         self.env.push();
+        // 3a fix: if this FnRef carries a bound receiver (i.e. it
+        // came from `locus_value.method`), push it onto self_stack
+        // so the body's `self.X` reads / writes resolve to the
+        // captured locus. Without this the interpreter and codegen
+        // paths diverge — codegen passes self_ptr as the first arg
+        // at every method call, but the interpreter relied on an
+        // ambient self_stack that's empty when the call originates
+        // in a free fn.
+        let pushed_self = if let Some(handle) = f.bound_self.clone() {
+            self.self_stack.push(handle);
+            true
+        } else {
+            false
+        };
         for (i, param) in f.decl.params.iter().enumerate() {
             let v = if i < args.len() {
                 args[i].clone()
@@ -260,6 +275,9 @@ impl Interpreter {
         }
         let result = self.exec_block(&f.decl.body);
         self.env.pop();
+        if pushed_self {
+            self.self_stack.pop();
+        }
         match result {
             Ok(()) => Ok(Value::Unit),
             Err(Signal::Return(v)) => Ok(v),
@@ -1263,8 +1281,16 @@ impl Interpreter {
                 }
                 // Try a method (mode or fn member) named `name`.
                 if let Some(method) = lookup_method(&handle.decl, name) {
+                    // 3a fix: bind the receiver onto the FnRef so
+                    // `call_fn` pushes it onto `self_stack` before
+                    // evaluating the body. Without this, every
+                    // `self.X` inside the method errors with
+                    // "self referenced outside a locus body" when
+                    // the call came from a free fn (no ambient
+                    // self).
                     return Ok(Value::Fn(FnRef {
                         decl: Rc::new(method),
+                        bound_self: Some(handle.clone()),
                     }));
                 }
                 Err(Signal::Error(format!(

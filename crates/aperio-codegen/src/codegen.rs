@@ -1652,6 +1652,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_bytes_slice", bytes_slice_ty, None);
+        // ws-echo: outbound construction primitives.
+        // declare ptr @lotus_bytes_from_int(i64 v)
+        let bytes_from_int_ty = ptr_t.fn_type(&[i64_t.into()], false);
+        self.module
+            .add_function("lotus_bytes_from_int", bytes_from_int_ty, None);
+        // declare ptr @lotus_bytes_concat(ptr a, ptr b)
+        let bytes_concat_ty =
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        self.module
+            .add_function("lotus_bytes_concat", bytes_concat_ty, None);
+        // ws-echo: SHA-1 + base64 for the WebSocket handshake.
+        // declare ptr @lotus_crypto_sha1(ptr bytes)
+        let sha1_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_crypto_sha1", sha1_ty, None);
+        // declare ptr @lotus_text_base64_encode(ptr bytes)
+        let b64_encode_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_text_base64_encode", b64_encode_ty, None);
+        // ws-echo: cheap RNG (xorshift64*) for nonces / jitter.
+        let void_t = self.context.void_type();
+        let rand_seed_ty = void_t.fn_type(&[], false);
+        self.module
+            .add_function("lotus_rand_seed_from_time", rand_seed_ty, None);
+        let rand_next_ty = i64_t.fn_type(&[i64_t.into()], false);
+        self.module
+            .add_function("lotus_rand_next_int", rand_next_ty, None);
 
         // Phase 2e: list_dir index API. count + at over the
         // cached newline-blob; both share the global payload arena.
@@ -2627,12 +2654,58 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_store(cursor_alloca, after)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
+                CodegenTy::TypeRef(nested_name) => {
+                    // Nested user-struct: recurse on its field
+                    // layout. The slot at `src_field_ptr` holds a
+                    // pointer to the nested storage (TypeRef
+                    // values are heap-allocated structs); load
+                    // it, then walk the nested fields starting at
+                    // the current dst cursor.
+                    let nested_info = self
+                        .user_types
+                        .get(nested_name.as_str())
+                        .cloned()
+                        .ok_or_else(|| {
+                            CodegenError::Unsupported(format!(
+                                "bus payload field `{}: {}` — nested \
+                                 type not declared",
+                                fname, nested_name
+                            ))
+                        })?;
+                    let nested_src = self
+                        .builder
+                        .build_load(
+                            self.context.ptr_type(AddressSpace::default()),
+                            src_field_ptr,
+                            "ser.nested.load",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_pointer_value();
+                    let nested_written = self.emit_per_field_serialize(
+                        nested_src,
+                        dst_at_cursor,
+                        nested_info.struct_ty,
+                        &nested_info.field_order,
+                        &nested_info.fields,
+                    )?;
+                    let after = self
+                        .builder
+                        .build_int_add(
+                            cursor_iv,
+                            nested_written,
+                            "ser.cursor.after.nested",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_store(cursor_alloca, after)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
                 other => {
                     return Err(CodegenError::Unsupported(format!(
                         "bus payload field `{}: {:?}` — m70 wire format \
-                         supports primitives and String only; nested \
-                         structs / enums / arrays / tuples cross-process \
-                         are post-v1 polish",
+                         supports primitives, String, and nested structs \
+                         (whose leaves are primitives/String); arrays / \
+                         tuples / enums cross-process are post-v1 polish",
                         fname, other
                     )));
                 }
@@ -2821,10 +2894,72 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_store(cursor_alloca, after)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
+                CodegenTy::TypeRef(nested_name) => {
+                    // Nested user-struct: allocate a fresh nested
+                    // storage in the payload arena, recurse to
+                    // deserialize its fields, and store the new
+                    // pointer into dst's slot.
+                    let nested_info = self
+                        .user_types
+                        .get(nested_name.as_str())
+                        .cloned()
+                        .ok_or_else(|| {
+                            CodegenError::Unsupported(format!(
+                                "bus payload field `{}: {}` — nested \
+                                 type not declared",
+                                fname, nested_name
+                            ))
+                        })?;
+                    let nested_size = nested_info
+                        .struct_ty
+                        .size_of()
+                        .expect("nested struct ty has known size");
+                    let alloc_fn = self
+                        .module
+                        .get_function("lotus_bus_payload_arena_alloc")
+                        .expect("lotus_bus_payload_arena_alloc declared");
+                    let nested_dst = self
+                        .builder
+                        .build_call(
+                            alloc_fn,
+                            &[
+                                nested_size.into(),
+                                i64_t.const_int(8, false).into(),
+                            ],
+                            "de.nested.alloc",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .try_as_basic_value()
+                        .left()
+                        .expect("payload arena alloc returns ptr")
+                        .into_pointer_value();
+                    let nested_consumed = self.emit_per_field_deserialize_size(
+                        src_at_cursor,
+                        nested_dst,
+                        nested_info.struct_ty,
+                        &nested_info.field_order,
+                        &nested_info.fields,
+                    )?;
+                    self.builder
+                        .build_store(dst_field_ptr, nested_dst)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let after = self
+                        .builder
+                        .build_int_add(
+                            cursor_iv,
+                            nested_consumed,
+                            "de.cursor.after.nested",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_store(cursor_alloca, after)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
                 other => {
                     return Err(CodegenError::Unsupported(format!(
                         "bus payload field `{}: {:?}` — m70 wire format \
-                         supports primitives and String only",
+                         supports primitives, String, and nested structs \
+                         (whose leaves are primitives/String)",
                         fname, other
                     )));
                 }
@@ -2835,6 +2970,247 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .size_of()
             .expect("payload struct has known size");
         Ok(struct_size)
+    }
+
+    /// Variant of `emit_per_field_deserialize` that returns the
+    /// number of *wire bytes* consumed rather than the in-memory
+    /// struct size. Needed by the nested-struct recursion in
+    /// `emit_per_field_deserialize` so the caller can advance its
+    /// wire cursor by the consumed amount. Same body, different
+    /// return.
+    fn emit_per_field_deserialize_size(
+        &mut self,
+        src: PointerValue<'ctx>,
+        dst: PointerValue<'ctx>,
+        struct_ty: StructType<'ctx>,
+        field_order: &[String],
+        fields: &BTreeMap<String, (u32, CodegenTy)>,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        let i64_t = self.context.i64_type();
+        let i8_t = self.context.i8_type();
+        let cursor_alloca = self
+            .builder
+            .build_alloca(i64_t, "de.nested.cursor")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(cursor_alloca, i64_t.const_int(0, false))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        for fname in field_order {
+            let (idx, field_ty) = fields
+                .get(fname)
+                .cloned()
+                .expect("field declared in field_order also present in fields");
+            let dst_field_ptr = self
+                .builder
+                .build_struct_gep(struct_ty, dst, idx, "de.nested.field.ptr")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let cursor_iv = self
+                .builder
+                .build_load(i64_t, cursor_alloca, "de.nested.cursor.load")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_int_value();
+            let src_at_cursor = unsafe {
+                self.builder
+                    .build_gep(i8_t, src, &[cursor_iv], "de.nested.src.cursor")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            };
+
+            match &field_ty {
+                CodegenTy::String => {
+                    let len_alloca = self
+                        .builder
+                        .build_alloca(i64_t, "de.nested.str.len.alloca")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.emit_memcpy_call(
+                        len_alloca,
+                        src_at_cursor,
+                        i64_t.const_int(8, false),
+                        "de.nested.str.memcpy.len",
+                    )?;
+                    let str_len = self
+                        .builder
+                        .build_load(i64_t, len_alloca, "de.nested.str.len")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_int_value();
+                    let after_len = self
+                        .builder
+                        .build_int_add(
+                            cursor_iv,
+                            i64_t.const_int(8, false),
+                            "de.nested.cursor.after.len",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let src_after_len = unsafe {
+                        self.builder
+                            .build_gep(
+                                i8_t,
+                                src,
+                                &[after_len],
+                                "de.nested.src.after.len",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    };
+                    let alloc_size = self
+                        .builder
+                        .build_int_add(
+                            str_len,
+                            i64_t.const_int(1, false),
+                            "de.nested.str.alloc.size",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let alloc_fn = self
+                        .module
+                        .get_function("lotus_bus_payload_arena_alloc")
+                        .expect("lotus_bus_payload_arena_alloc declared");
+                    let buf = self
+                        .builder
+                        .build_call(
+                            alloc_fn,
+                            &[
+                                alloc_size.into(),
+                                i64_t.const_int(1, false).into(),
+                            ],
+                            "de.nested.str.alloc",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .try_as_basic_value()
+                        .left()
+                        .expect("payload arena alloc returns ptr")
+                        .into_pointer_value();
+                    self.emit_memcpy_call(
+                        buf,
+                        src_after_len,
+                        str_len,
+                        "de.nested.str.memcpy.bytes",
+                    )?;
+                    let nul_slot = unsafe {
+                        self.builder
+                            .build_gep(
+                                i8_t,
+                                buf,
+                                &[str_len],
+                                "de.nested.str.nul.ptr",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    };
+                    self.builder
+                        .build_store(nul_slot, i8_t.const_int(0, false))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_store(dst_field_ptr, buf)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let after_bytes = self
+                        .builder
+                        .build_int_add(
+                            after_len,
+                            str_len,
+                            "de.nested.cursor.after.bytes",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_store(cursor_alloca, after_bytes)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                CodegenTy::Int
+                | CodegenTy::Float
+                | CodegenTy::Bool
+                | CodegenTy::Time
+                | CodegenTy::Duration
+                | CodegenTy::Decimal => {
+                    let nbytes = codegen_ty_size_bytes(self.context, &field_ty);
+                    let nbytes_iv = i64_t.const_int(nbytes, false);
+                    self.emit_memcpy_call(
+                        dst_field_ptr,
+                        src_at_cursor,
+                        nbytes_iv,
+                        "de.nested.fixed.memcpy",
+                    )?;
+                    let after = self
+                        .builder
+                        .build_int_add(
+                            cursor_iv,
+                            nbytes_iv,
+                            "de.nested.cursor.after",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_store(cursor_alloca, after)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                CodegenTy::TypeRef(nested_name) => {
+                    let nested_info = self
+                        .user_types
+                        .get(nested_name.as_str())
+                        .cloned()
+                        .ok_or_else(|| {
+                            CodegenError::Unsupported(format!(
+                                "bus payload field `{}: {}` — nested \
+                                 type not declared",
+                                fname, nested_name
+                            ))
+                        })?;
+                    let nested_size = nested_info
+                        .struct_ty
+                        .size_of()
+                        .expect("nested struct ty has known size");
+                    let alloc_fn = self
+                        .module
+                        .get_function("lotus_bus_payload_arena_alloc")
+                        .expect("lotus_bus_payload_arena_alloc declared");
+                    let nested_dst = self
+                        .builder
+                        .build_call(
+                            alloc_fn,
+                            &[
+                                nested_size.into(),
+                                i64_t.const_int(8, false).into(),
+                            ],
+                            "de.nested.deep.alloc",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .try_as_basic_value()
+                        .left()
+                        .expect("payload arena alloc returns ptr")
+                        .into_pointer_value();
+                    let nested_consumed = self.emit_per_field_deserialize_size(
+                        src_at_cursor,
+                        nested_dst,
+                        nested_info.struct_ty,
+                        &nested_info.field_order,
+                        &nested_info.fields,
+                    )?;
+                    self.builder
+                        .build_store(dst_field_ptr, nested_dst)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let after = self
+                        .builder
+                        .build_int_add(
+                            cursor_iv,
+                            nested_consumed,
+                            "de.nested.cursor.after.nested",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_store(cursor_alloca, after)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                other => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "bus payload field `{}: {:?}` — m70 wire format \
+                         supports primitives, String, and nested structs",
+                        fname, other
+                    )));
+                }
+            }
+        }
+
+        let total = self
+            .builder
+            .build_load(i64_t, cursor_alloca, "de.nested.cursor.final")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        Ok(total)
     }
 
     /// m70: emit a call to `lotus_str_len(s)` and return the
@@ -8292,6 +8668,134 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let (slot_ptr, slot_ty, slot_name) = if target.head.name
                     == "self"
                 {
+                    // market-book: `self.<arrayField>[i] = v`.
+                    // Two-segment self-target (Field, Index) that
+                    // mirrors the let-bound `arr[i] = v` path:
+                    // GEP into the self struct's field slot,
+                    // load the array pointer, GEP at the
+                    // computed index, store. Without this branch
+                    // every BookL ladder helper would have to
+                    // copy-out / mutate-locally / write-back the
+                    // entire fixed-cap array per single-slot
+                    // update — quadratic on ladder size.
+                    if target.tail.len() == 2 {
+                        if let (
+                            LValueSeg::Field(fname_ident),
+                            LValueSeg::Index(idx_expr),
+                        ) = (&target.tail[0], &target.tail[1])
+                        {
+                            let cs = self
+                                .current_self
+                                .as_ref()
+                                .cloned()
+                                .ok_or_else(|| {
+                                    CodegenError::Unsupported(
+                                        "`self.X[i] =` outside a locus method"
+                                            .to_string(),
+                                    )
+                                })?;
+                            let (field_idx, field_ty) = cs
+                                .fields
+                                .get(&fname_ident.name)
+                                .cloned()
+                                .ok_or_else(|| {
+                                    CodegenError::Unsupported(format!(
+                                        "no field `{}` on locus self",
+                                        fname_ident.name
+                                    ))
+                                })?;
+                            let (elem_ty, n) = match field_ty {
+                                CodegenTy::Array(elem, n) => (*elem, n),
+                                other => {
+                                    return Err(CodegenError::Unsupported(format!(
+                                        "indexed assignment to non-array \
+                                         self field `{}` (type {:?})",
+                                        fname_ident.name, other
+                                    )));
+                                }
+                            };
+                            let field_slot_ptr = self
+                                .builder
+                                .build_struct_gep(
+                                    cs.struct_ty,
+                                    cs.self_ptr,
+                                    field_idx,
+                                    &format!("self.{}.idx_ptr", fname_ident.name),
+                                )
+                                .map_err(|e| {
+                                    CodegenError::LlvmEmit(e.to_string())
+                                })?;
+                            let ptr_t = self
+                                .context
+                                .ptr_type(AddressSpace::default());
+                            let arr_ptr = self
+                                .builder
+                                .build_load(
+                                    ptr_t,
+                                    field_slot_ptr,
+                                    &format!(
+                                        "self.{}.arr",
+                                        fname_ident.name
+                                    ),
+                                )
+                                .map_err(|e| {
+                                    CodegenError::LlvmEmit(e.to_string())
+                                })?
+                                .into_pointer_value();
+                            let (idx_val, idx_ty) =
+                                self.lower_expr(idx_expr, scope)?;
+                            if idx_ty != CodegenTy::Int {
+                                return Err(CodegenError::Unsupported(format!(
+                                    "array index must be Int, got {:?}",
+                                    idx_ty
+                                )));
+                            }
+                            let i32_t = self.context.i32_type();
+                            let storage_ty =
+                                self.llvm_array_storage_type(&elem_ty, n);
+                            let slot_ptr = unsafe {
+                                self.builder
+                                    .build_gep(
+                                        storage_ty,
+                                        arr_ptr,
+                                        &[
+                                            i32_t.const_int(0, false),
+                                            idx_val.into_int_value(),
+                                        ],
+                                        &format!(
+                                            "self.{}.slot",
+                                            fname_ident.name
+                                        ),
+                                    )
+                                    .map_err(|e| {
+                                        CodegenError::LlvmEmit(e.to_string())
+                                    })?
+                            };
+                            let (rhs, rhs_ty) =
+                                self.lower_expr(value, scope)?;
+                            if rhs_ty != elem_ty {
+                                return Err(CodegenError::Unsupported(format!(
+                                    "type mismatch in `self.{}[idx] = ...`: \
+                                     slot {:?} vs rhs {:?}",
+                                    fname_ident.name, elem_ty, rhs_ty
+                                )));
+                            }
+                            if !matches!(op, AssignOp::Eq) {
+                                return Err(CodegenError::Unsupported(format!(
+                                    "compound assignment `{:?}` on \
+                                     `self.{}[idx]` is not supported; \
+                                     use `=` only",
+                                    op, fname_ident.name
+                                )));
+                            }
+                            self.builder
+                                .build_store(slot_ptr, rhs)
+                                .map_err(|e| {
+                                    CodegenError::LlvmEmit(e.to_string())
+                                })?;
+                            return Ok(BlockEnd::Open);
+                        }
+                    }
                     if target.tail.len() != 1 {
                         return Err(CodegenError::Unsupported(format!(
                             "assignment target `self.{}` with {} segment(s) \
@@ -10672,6 +11176,97 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         ))
                     },
                 )?;
+                // 3b: F.16 built-in `self.k_max`. Computed from
+                // the locus's B / c / sigma / phi params on every
+                // read so the bound floats with mutable params.
+                // Formula: `k_max = B / [(1-phi)c + phi*sigma]`.
+                // The interpreter computes the same expression in
+                // `read_field` for Value::Locus; codegen lowers it
+                // here so `aperio build` matches `aperio run` for
+                // capacity-cascade demos. Int params are widened
+                // to Float before the arithmetic; phi must already
+                // be Float.
+                if name.name == "k_max" {
+                    let load_field = |this: &mut Self, fname: &str| {
+                        let (fidx, fty) = cs
+                            .fields
+                            .get(fname)
+                            .cloned()
+                            .ok_or_else(|| {
+                                CodegenError::Unsupported(format!(
+                                    "self.k_max requires param `{}` on locus `{}`",
+                                    fname, cs.locus_name
+                                ))
+                            })?;
+                        let ptr = this
+                            .builder
+                            .build_struct_gep(
+                                cs.struct_ty,
+                                cs.self_ptr,
+                                fidx,
+                                &format!("self.{}.k_max.ptr", fname),
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        let llvm_ty = this.llvm_basic_type(&fty);
+                        let val = this
+                            .builder
+                            .build_load(
+                                llvm_ty,
+                                ptr,
+                                &format!("self.{}.k_max", fname),
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        Ok::<_, CodegenError>((val, fty))
+                    };
+                    let (b_v, b_ty) = load_field(self, "B")?;
+                    let (c_v, c_ty) = load_field(self, "c")?;
+                    let (sigma_v, sigma_ty) = load_field(self, "sigma")?;
+                    let (phi_v, phi_ty) = load_field(self, "phi")?;
+                    let b_f = self.coerce_to_float(b_v, &b_ty, "self.k_max.B")?;
+                    let c_f = self.coerce_to_float(c_v, &c_ty, "self.k_max.c")?;
+                    let sigma_f = self.coerce_to_float(
+                        sigma_v,
+                        &sigma_ty,
+                        "self.k_max.sigma",
+                    )?;
+                    let phi_f = match phi_ty {
+                        CodegenTy::Float => phi_v.into_float_value(),
+                        other => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "self.k_max requires param `phi` of type \
+                                 Float, got {:?}",
+                                other
+                            )));
+                        }
+                    };
+                    let f64_t = self.context.f64_type();
+                    let one = f64_t.const_float(1.0);
+                    let one_minus_phi = self
+                        .builder
+                        .build_float_sub(one, phi_f, "k_max.1mphi")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let term_left = self
+                        .builder
+                        .build_float_mul(one_minus_phi, c_f, "k_max.term_left")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let term_right = self
+                        .builder
+                        .build_float_mul(phi_f, sigma_f, "k_max.term_right")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let denom = self
+                        .builder
+                        .build_float_add(
+                            term_left,
+                            term_right,
+                            "k_max.denom",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let k_max = self
+                        .builder
+                        .build_float_div(b_f, denom, "k_max")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    return Ok((k_max.into(), CodegenTy::Float));
+                }
                 let (idx, ty) = cs.fields.get(&name.name).cloned().ok_or_else(
                     || {
                         CodegenError::Unsupported(format!(
@@ -11569,6 +12164,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     BinOp::Mul => self.builder.build_int_mul(l, r, "mul"),
                     BinOp::Div => self.builder.build_int_signed_div(l, r, "sdiv"),
                     BinOp::Mod => self.builder.build_int_signed_rem(l, r, "srem"),
+                    _ => unreachable!(),
+                };
+                let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((v.into(), CodegenTy::Int))
+            }
+            // ws-echo: bitwise ops on Int. Parser+typechecker
+            // already accept these; interpreter handles them in
+            // eval_binop. Wiring `&`, `|`, `^`, `<<`, `>>` here
+            // closes the parity gap so WebSocket frame parsing
+            // and similar packed-bit work doesn't have to fall
+            // back on the arithmetic-emulation workaround
+            // (`b & 0x80` → `b >= 128`, XOR via per-bit loop).
+            // `>>` defaults to logical right shift — matches the
+            // interpreter's `i64 >> i64` semantics for the
+            // protocol-bit use case; an arithmetic variant can
+            // ship as a stdlib fn if a workload needs it.
+            (BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr,
+                CodegenTy::Int) =>
+            {
+                let l = lv.into_int_value();
+                let r = rv.into_int_value();
+                let v = match op {
+                    BinOp::BitAnd => self.builder.build_and(l, r, "band"),
+                    BinOp::BitOr => self.builder.build_or(l, r, "bor"),
+                    BinOp::BitXor => self.builder.build_xor(l, r, "bxor"),
+                    BinOp::Shl => self.builder.build_left_shift(l, r, "bshl"),
+                    BinOp::Shr => self.builder.build_right_shift(l, r, false, "bshr"),
                     _ => unreachable!(),
                 };
                 let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -12580,6 +13202,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_bytes_slice(args, scope)?;
                 Ok(())
             }
+            ["std", "bytes", "from_int"] => {
+                let _ = self.lower_std_bytes_from_int(args, scope)?;
+                Ok(())
+            }
+            ["std", "bytes", "concat"] => {
+                let _ = self.lower_std_bytes_concat(args, scope)?;
+                Ok(())
+            }
+            ["std", "crypto", "sha1"] => {
+                let _ = self.lower_std_crypto_sha1(args, scope)?;
+                Ok(())
+            }
+            ["std", "text", "base64", "encode"] => {
+                let _ = self.lower_std_text_base64_encode(args, scope)?;
+                Ok(())
+            }
+            ["std", "rand", "seed_from_time"] => {
+                self.lower_std_rand_seed_from_time(args)?;
+                Ok(())
+            }
+            ["std", "rand", "next_int"] => {
+                let _ = self.lower_std_rand_next_int(args, scope)?;
+                Ok(())
+            }
             // Phase 2e: list_dir index API.
             ["std", "io", "fs", "list_dir_count"] => {
                 let _ = self.lower_std_io_fs_list_dir_count(args, scope)?;
@@ -12886,6 +13532,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "bytes", "slice"] => {
                 self.lower_std_bytes_slice(args, scope)
             }
+            ["std", "bytes", "from_int"] => {
+                self.lower_std_bytes_from_int(args, scope)
+            }
+            ["std", "bytes", "concat"] => {
+                self.lower_std_bytes_concat(args, scope)
+            }
+            ["std", "crypto", "sha1"] => {
+                self.lower_std_crypto_sha1(args, scope)
+            }
+            ["std", "text", "base64", "encode"] => {
+                self.lower_std_text_base64_encode(args, scope)
+            }
+            ["std", "rand", "next_int"] => {
+                self.lower_std_rand_next_int(args, scope)
+            }
             // Phase 2e: list_dir index API.
             ["std", "io", "fs", "list_dir_count"] => {
                 self.lower_std_io_fs_list_dir_count(args, scope)
@@ -12945,6 +13606,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     CodegenError::Unsupported(
                         "std::http::parse_request returns Request but \
                          called in a position that expects no value"
+                            .to_string(),
+                    )
+                })
+            }
+            // ws-echo: per-request header lookup. Delegates to
+            // the stdlib-internal `__http_request_header` fn.
+            ["std", "http", "header"] => {
+                let result = self.lower_user_fn_call(
+                    "__http_request_header",
+                    args,
+                    scope,
+                )?;
+                result.ok_or_else(|| {
+                    CodegenError::Unsupported(
+                        "std::http::header returns String but called \
+                         in a position that expects no value"
                             .to_string(),
                     )
                 })
@@ -14805,6 +15482,234 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok((ptr, CodegenTy::Bytes))
     }
 
+    /// ws-echo `bytes-construction-from-ints`: lower
+    /// `std::bytes::from_int(v: Int) -> Bytes`. Builds a single-
+    /// byte Bytes blob from the low 8 bits of `v`. Anchored in
+    /// the program-lifetime payload arena, so the returned
+    /// pointer matches recv_bytes / bytes_slice lifetime
+    /// conventions and can flow through bus payloads without
+    /// extra copying.
+    fn lower_std_bytes_from_int(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::from_int takes 1 arg (v), got {}",
+                args.len()
+            )));
+        }
+        let (v_val, v_ty) = self.lower_expr(&args[0], scope)?;
+        if v_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::from_int: v must be Int, got {:?}",
+                v_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bytes_from_int")
+            .expect("lotus_bytes_from_int declared");
+        let call = self
+            .builder
+            .build_call(f, &[v_val.into()], "bytes_from_int.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::Bytes))
+    }
+
+    /// ws-echo `bytes-construction-from-ints`: lower
+    /// `std::bytes::concat(a: Bytes, b: Bytes) -> Bytes`.
+    /// Returns a fresh Bytes containing `a` followed by `b`,
+    /// allocated in the program-lifetime payload arena. With
+    /// `from_int`, recursive concat composes any outbound
+    /// byte sequence (WebSocket frame headers, length prefixes,
+    /// custom binary protocols).
+    fn lower_std_bytes_concat(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::concat takes 2 args (a, b), got {}",
+                args.len()
+            )));
+        }
+        let (a_val, a_ty) = self.lower_expr(&args[0], scope)?;
+        if a_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::concat: a must be Bytes, got {:?}",
+                a_ty
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[1], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::concat: b must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bytes_concat")
+            .expect("lotus_bytes_concat declared");
+        let call = self
+            .builder
+            .build_call(
+                f,
+                &[a_val.into(), b_val.into()],
+                "bytes_concat.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::Bytes))
+    }
+
+    /// ws-echo `sha1-base64-missing`: lower
+    /// `std::crypto::sha1(b: Bytes) -> Bytes`. Returns a 20-byte
+    /// digest. Stand-alone implementation in the C runtime per
+    /// RFC 3174 — no OpenSSL dependency. Anchored in the
+    /// program-lifetime payload arena.
+    fn lower_std_crypto_sha1(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::sha1 takes 1 arg (b), got {}",
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::sha1: b must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_crypto_sha1")
+            .expect("lotus_crypto_sha1 declared");
+        let call = self
+            .builder
+            .build_call(f, &[b_val.into()], "sha1.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::Bytes))
+    }
+
+    /// ws-echo `sha1-base64-missing`: lower
+    /// `std::text::base64::encode(b: Bytes) -> String`. Standard
+    /// alphabet, `=` padding to multiple of 4. Anchored in the
+    /// payload arena.
+    fn lower_std_text_base64_encode(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::text::base64::encode takes 1 arg (b), got {}",
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::text::base64::encode: b must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_text_base64_encode")
+            .expect("lotus_text_base64_encode declared");
+        let call = self
+            .builder
+            .build_call(f, &[b_val.into()], "b64.encode.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::String))
+    }
+
+    /// ws-echo `random-seed-missing`: lower
+    /// `std::rand::seed_from_time()` — re-seed the shared xorshift64*
+    /// state from CLOCK_MONOTONIC. Library-internal use only; not
+    /// cryptographically secure. Statement-position only.
+    fn lower_std_rand_seed_from_time(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<(), CodegenError> {
+        if !args.is_empty() {
+            return Err(CodegenError::Unsupported(format!(
+                "std::rand::seed_from_time takes 0 args, got {}",
+                args.len()
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_rand_seed_from_time")
+            .expect("lotus_rand_seed_from_time declared");
+        self.builder
+            .build_call(f, &[], "rand.seed")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// ws-echo `random-seed-missing`: lower
+    /// `std::rand::next_int(max: Int) -> Int` — uniform-ish int in
+    /// [0, max). max <= 0 returns 0. Auto-seeds from monotonic
+    /// time on first call so callers that forget the explicit
+    /// seed still get distinct values per process run.
+    fn lower_std_rand_next_int(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::rand::next_int takes 1 arg (max), got {}",
+                args.len()
+            )));
+        }
+        let (max_val, max_ty) = self.lower_expr(&args[0], scope)?;
+        if max_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::rand::next_int: max must be Int, got {:?}",
+                max_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_rand_next_int")
+            .expect("lotus_rand_next_int declared");
+        let call = self
+            .builder
+            .build_call(f, &[max_val.into()], "rand.next.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let v = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((v, CodegenTy::Int))
+    }
+
     /// Phase 2e: lower `std::io::fs::list_dir_count(path: String)
     /// -> Int`. Returns the number of entries in `path` (skipping
     /// `.` / `..`), 0 on error or empty directory. Shares the
@@ -15076,7 +15981,134 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // entries whose let never executed.
         let early_defer = defer_for_let
             || !info.subscriptions.is_empty();
-        let self_ptr = if early_defer && self.current_fn.is_some() {
+        // 3d+3e: if the current self's locus accepts a child of
+        // this locus's type, the parent is about to retain a
+        // pointer to this instance via its synthetic
+        // `__children[]` array (appended below in the accept/
+        // append block). When the parent reads through that
+        // array later — including in a *different* lifecycle
+        // method than the one we're being instantiated in — a
+        // stack alloca would dangle the moment the spawning
+        // method returns. Detect that case here and route the
+        // struct allocation through the parent's arena so it
+        // lives until the parent's arena is destroyed. The
+        // deferred-dissolve push at the end of this fn is also
+        // suppressed so the spawning method's exit flush
+        // doesn't tear the child down. v1 trade-off: the
+        // child's drain()/dissolve() bodies don't fire on
+        // process exit — a children-cascade at parent dissolve
+        // would tighten this; deferred to v1.x. See the
+        // resolution note in notes/aperio-friction.md
+        // `nested-locus-child-field-reads-return-garbage`.
+        let parent_accepts_us = if let Some(cs) = self.current_self.as_ref() {
+            self.user_loci
+                .get(&cs.locus_name)
+                .and_then(|p| p.accept_param.as_ref().cloned())
+                .map(|(_, child_ty)| child_ty == locus_name)
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        // m90 (3f fix): if the current fn declares `-> Self` for this
+        // locus, the instance can escape to the caller. A stack alloca
+        // becomes dangling the moment the method returns, so the first
+        // post-return read of `s.field` (or `s.method()`) sees still-
+        // valid stack memory but the second sees overwritten state.
+        // Detect the escape ahead of time and heap-allocate via the
+        // program-lifetime payload arena instead. The eager dissolve
+        // + arena_destroy are also skipped below — the locus is
+        // semantically "moved" to the caller and lives for the
+        // program. v1 trade-off; a return-slot ABI (caller-provided
+        // out-pointer + scoped dissolve in the caller's frame) would
+        // tighten this without leaking. The same heap path also
+        // covers `let s = X{}; ...; return s;` because the let-bound
+        // literal is instantiated with `current_user_fn_ret` still
+        // pointing at the matching LocusRef.
+        let returns_this_locus = self
+            .current_user_fn_ret
+            .as_ref()
+            .and_then(|r| r.as_ref())
+            .map(|t| matches!(t, CodegenTy::LocusRef(n) if n == locus_name))
+            .unwrap_or(false);
+        let self_ptr = if returns_this_locus {
+            let alloc_fn = self
+                .module
+                .get_function("lotus_bus_payload_arena_alloc")
+                .expect("lotus_bus_payload_arena_alloc declared");
+            let i64_t = self.context.i64_type();
+            let size = info
+                .struct_ty
+                .size_of()
+                .expect("locus struct ty has known size");
+            self.builder
+                .build_call(
+                    alloc_fn,
+                    &[size.into(), i64_t.const_int(8, false).into()],
+                    &format!("{}.self.heap", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_bus_payload_arena_alloc returns ptr")
+                .into_pointer_value()
+        } else if parent_accepts_us {
+            // 3d+3e fix: allocate the child struct in parent's arena.
+            // Lives until parent's arena_destroy, so cross-lifecycle
+            // reads through self.children stay valid (e.g. child
+            // birthed in parent's birth(), read in parent's run()).
+            let parent_self = self
+                .current_self
+                .as_ref()
+                .cloned()
+                .expect("parent_accepts_us implies current_self");
+            let parent_info = self
+                .user_loci
+                .get(&parent_self.locus_name)
+                .cloned()
+                .expect("parent locus declared");
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let arena_field_ptr = self
+                .builder
+                .build_struct_gep(
+                    parent_info.struct_ty,
+                    parent_self.self_ptr,
+                    parent_info.arena_field_idx,
+                    &format!("{}.parent_arena.gep", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let parent_arena = self
+                .builder
+                .build_load(
+                    ptr_t,
+                    arena_field_ptr,
+                    &format!("{}.parent_arena", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let alloc_fn = self
+                .module
+                .get_function("lotus_arena_alloc")
+                .expect("lotus_arena_alloc declared");
+            let i64_t = self.context.i64_type();
+            let size = info
+                .struct_ty
+                .size_of()
+                .expect("locus struct ty has known size");
+            self.builder
+                .build_call(
+                    alloc_fn,
+                    &[
+                        parent_arena.into(),
+                        size.into(),
+                        i64_t.const_int(8, false).into(),
+                    ],
+                    &format!("{}.self.in_parent_arena", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_arena_alloc returns ptr")
+                .into_pointer_value()
+        } else if early_defer && self.current_fn.is_some() {
             self.alloca_in_entry_with_nulled_arena(
                 info.struct_ty,
                 info.arena_field_idx,
@@ -16023,7 +17055,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         //     handle after the struct-literal expression returns.
         // Pinned loci already took the `is_pinned` branch above
         // and don't reach this block.
-        let defer = is_long_lived || defer_for_let;
+        // m90 (3f fix): when this instantiation will escape via fn
+        // return (returns_this_locus from above), suppress the
+        // eager dissolve + arena_destroy and DO NOT push onto the
+        // deferred_dissolves frame either — the fn-exit flush
+        // would otherwise dissolve it on the way out. The locus
+        // leaks (heap allocation + uncleaned arena live until
+        // process exit); see the alloca branch above for the
+        // trade-off note.
+        // 3d+3e fix: parent-accepted children behave the same way
+        // — the parent's children-array retains the pointer past
+        // the spawning fn's stack frame, so dissolve happens at
+        // parent's arena_destroy (which frees the child's struct
+        // memory wholesale). The child's drain/dissolve method
+        // bodies are skipped for v1; a children-cascade at parent
+        // dissolve tightens this in v1.x.
+        let defer = is_long_lived
+            || defer_for_let
+            || returns_this_locus
+            || parent_accepts_us;
         if !defer {
             // drain → __dissolve_closures → dissolve. Mirrors the
             // interpreter ordering in eval.rs::dissolve_locus:
@@ -16071,6 +17121,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // composite-default literals, ClosureViolations, bus
             // payload copies it received — goes here.
             self.emit_locus_arena_destroy(&info, self_ptr, locus_name)?;
+        } else if returns_this_locus {
+            // Intentionally no-op: see m90 note above. The locus
+            // outlives this fn's frame by design.
+        } else if parent_accepts_us {
+            // Intentionally no-op: see 3d+3e note above. Parent's
+            // arena_destroy will wholesale-free the child struct
+            // when the parent itself dissolves. Drain/dissolve
+            // bodies don't fire on the child — v1 trade-off,
+            // matches `returns_this_locus`.
         } else if let Some(top) = self.deferred_dissolves.last_mut() {
             top.push((self_ptr, locus_name.to_string(), None));
         } else {

@@ -23,16 +23,21 @@
 // (path-rewritten to `__StdHttp*` at codegen time).
 //
 // Request carries the parsed request line (method, path,
-// HTTP version) and the raw body String. Headers are NOT
-// surfaced in v0 — adding them needs either a generic
-// String→String map type or a fixed-size array of
-// (key, value) tuples; both are deferred to a later
-// milestone. Most static-content servers don't need request
-// headers, and the doc server (Phase 5) certainly doesn't.
+// HTTP version), the body, and a raw `headers` block
+// containing all header lines joined by `\r\n` (no trailing
+// CRLF). Users look up individual headers via the free fn
+// `std::http::header(req, name)` which walks the block.
+// Headers stay packed (not parsed into a map) because v0 has
+// no map type and a fixed-cap key/value array adds enough
+// machinery for marginal benefit on the typical < 30 headers
+// per request. Lookup is case-sensitive at v1 — callers that
+// need RFC-7230 case-insensitive semantics pre-normalize the
+// header name.
 type __StdHttpRequest {
     method: String;
     path: String;
     version: String;
+    headers: String;
     body: String;
 }
 
@@ -87,17 +92,24 @@ fn __parse_http_request(raw: String) -> std::http::Request {
             method: "",
             path: "",
             version: "",
+            headers: "",
             body: ""
         };
     }
     let request_line = raw[0..line_end];
     let raw_len = len(raw);
 
-    // Body: everything past the first `\r\n\r\n` — empty if
-    // not present (e.g. on a header-less GET).
+    // Headers + body: split at `\r\n\r\n`. Headers are the
+    // raw lines between request-line end and that double-CRLF,
+    // joined as they appear on the wire (no trailing CRLF).
     let header_end = std::str::index_of(raw, "\r\n\r\n");
+    let mut headers = "";
     let mut body = "";
     if header_end >= 0 {
+        let headers_start = line_end + 2;
+        if headers_start < header_end {
+            headers = raw[headers_start..header_end];
+        }
         let body_start = header_end + 4;
         if body_start < raw_len {
             body = raw[body_start..raw_len];
@@ -111,6 +123,7 @@ fn __parse_http_request(raw: String) -> std::http::Request {
             method: "",
             path: "",
             version: "",
+            headers: headers,
             body: body
         };
     }
@@ -124,6 +137,7 @@ fn __parse_http_request(raw: String) -> std::http::Request {
             method: method,
             path: after_method,
             version: "",
+            headers: headers,
             body: body
         };
     }
@@ -135,8 +149,58 @@ fn __parse_http_request(raw: String) -> std::http::Request {
         method: method,
         path: path,
         version: version,
+        headers: headers,
         body: body
     };
+}
+
+// Header lookup. Walks the packed `req.headers` block looking
+// for a line whose prefix matches `name:` (case-sensitive at
+// v1). Returns the value with leading whitespace trimmed, or
+// an empty String if the header isn't present. WebSocket
+// upgrade and most modern HTTP clients send fixed-case names,
+// so this lookup form covers the common case; callers needing
+// RFC-7230 case-insensitive lookup can normalize the input or
+// scan multiple casings.
+fn __http_request_header(req: std::http::Request, name: String) -> String {
+    let headers = req.headers;
+    let total = len(headers);
+    if total <= 0 {
+        return "";
+    }
+    let needle = name + ":";
+    let needle_len = len(needle);
+    let mut cursor = 0;
+    while cursor < total {
+        // Find end of current line; fall through to total on
+        // the last unterminated entry (joined-by-CRLF block
+        // has no trailing CRLF).
+        let rel = std::str::index_of(headers[cursor..total], "\r\n");
+        let line_end = if rel < 0 { total } else { cursor + rel };
+        let line = headers[cursor..line_end];
+        let line_len = len(line);
+        if line_len >= needle_len {
+            let head = line[0..needle_len];
+            if head == needle {
+                // Trim leading whitespace on the value side.
+                let mut vstart = needle_len;
+                while vstart < line_len {
+                    let ch = line[vstart..(vstart + 1)];
+                    if ch == " " {
+                        vstart = vstart + 1;
+                    } else {
+                        return line[vstart..line_len];
+                    }
+                }
+                return "";
+            }
+        }
+        if rel < 0 {
+            return "";
+        }
+        cursor = line_end + 2;
+    }
+    return "";
 }
 
 // m85 — write a Response to a Stream as HTTP/1.1 wire bytes.
