@@ -139,6 +139,40 @@ locus __StdYamlBuilder {
 locus __StdYamlReader {
     params {
         text: String = "";
+
+        // Cursor cache for the list_count + in-order list_item
+        // iteration pattern. Without it, each list_item(key, i)
+        // re-walks the section from the top (__find_header is
+        // O(N), then advancing `seen` to i is O(i)), so a loop
+        // over N items costs O(N²). With it, list_count records
+        // the first item's byte offset, and successive list_item
+        // calls extract from the cursor and advance it — turning
+        // the iteration into O(N) total.
+        //
+        // Cache semantics:
+        //   cursor_key      key the cache is for; "" = no cache
+        //   cursor_pos      byte offset of the next `  - ` line,
+        //                   or -1 when there are no more items
+        //   cursor_next_idx index of the next item the cursor
+        //                   will serve (always 0 right after the
+        //                   matching list_count)
+        //
+        // Fast path fires only when (key, idx) matches the
+        // cursor exactly — the renderer's idiom
+        // `for i in 0..list_count(k): list_item(k, i)` hits it
+        // every iteration. Any other access pattern (random
+        // index, two interleaved keys, list_item without a prior
+        // list_count) falls back to the O(walk) implementation,
+        // which stays byte-correct.
+        //
+        // Param visibility: these are written by list_count and
+        // consumed by list_item; users instantiating Reader
+        // should only set `text`. The sentinel defaults make
+        // a freshly-built Reader behave as the pre-cache version
+        // until list_count primes the cursor.
+        cursor_key:      String = "";
+        cursor_pos:      Int    = -1;
+        cursor_next_idx: Int    = 0;
     }
 
     // ---- Internal helpers ----
@@ -251,26 +285,94 @@ locus __StdYamlReader {
 
     fn list_count(key: String) -> Int {
         let hdr = self.__find_header(key);
-        if hdr < 0 { return 0; }
+        if hdr < 0 {
+            // No section — invalidate any cache so a later
+            // list_item(key, ...) takes the fallback path.
+            self.cursor_key = "";
+            self.cursor_pos = -1;
+            self.cursor_next_idx = 0;
+            return 0;
+        }
         let it = std::iter::Lines { };
         // Advance to the line after the header.
         let mut from = it.next_idx(self.text, hdr);
         let mut count = 0;
+        let mut first_item_pos = -1;
         while from >= 0 {
+            let here = from;
             let line = it.line_at(self.text, from);
             from = it.next_idx(self.text, from);
             if len(line) == 0 { continue; }
             // Top-level key reached — end of section.
-            if self.__at_col_zero(line) { return count; }
+            if self.__at_col_zero(line) { break; }
             // Item start is `  - ` at column 2 (= 4 leading chars).
             if len(line) >= 4 {
-                if line[0..4] == "  - " { count = count + 1; }
+                if line[0..4] == "  - " {
+                    if first_item_pos < 0 { first_item_pos = here; }
+                    count = count + 1;
+                }
             }
         }
+        // Prime the cursor for an in-order list_item loop.
+        self.cursor_key = key;
+        self.cursor_pos = first_item_pos;
+        self.cursor_next_idx = 0;
         return count;
     }
 
+    // Extract the item at self.cursor_pos and advance the cursor
+    // to the next `  - ` line in the same section (or -1 if the
+    // section is exhausted). Mirrors the walking semantics of the
+    // fallback list_item: blank lines skipped, short continuation
+    // lines emit a bare "\n".
+    fn __list_item_from_cursor() -> String {
+        let it = std::iter::Lines { };
+        let item_start = self.cursor_pos;
+        let first = it.line_at(self.text, item_start);
+        let mut buf = first[4..len(first)] + "\n";
+        let mut from = it.next_idx(self.text, item_start);
+        let mut next_item_pos = -1;
+        let mut done = false;
+        while from >= 0 && !done {
+            let here = from;
+            let line = it.line_at(self.text, from);
+            from = it.next_idx(self.text, from);
+            if len(line) == 0 { continue; }
+            if self.__at_col_zero(line) { done = true; continue; }
+            let mut is_item = false;
+            if len(line) >= 4 {
+                if line[0..4] == "  - " { is_item = true; }
+            }
+            if is_item {
+                next_item_pos = here;
+                done = true;
+                continue;
+            }
+            if len(line) > 4 {
+                buf = buf + line[4..len(line)] + "\n";
+            } else {
+                buf = buf + "\n";
+            }
+        }
+        self.cursor_pos = next_item_pos;
+        self.cursor_next_idx = self.cursor_next_idx + 1;
+        return buf;
+    }
+
     fn list_item(key: String, idx: Int) -> String {
+        // Fast path: in-order iteration after a matching
+        // list_count. cursor_pos < 0 means the cache was either
+        // never primed for this key or has run past the last
+        // item, in which case the fallback walk handles it.
+        if key == self.cursor_key {
+            if idx == self.cursor_next_idx {
+                if self.cursor_pos >= 0 {
+                    return self.__list_item_from_cursor();
+                }
+            }
+        }
+        // Fallback: original walk-from-start. Byte-identical
+        // semantics to the pre-cache version.
         let hdr = self.__find_header(key);
         if hdr < 0 { return ""; }
         let it = std::iter::Lines { };
