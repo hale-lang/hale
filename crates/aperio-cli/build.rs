@@ -96,4 +96,28 @@ fn main() {
         "cargo:rustc-env=APERIO_CODEGEN_DIR={}",
         codegen_dir.display()
     );
+
+    // macOS: LLVM 18+ links against zstd, but the homebrew
+    // `llvm@18` formula ships its libs in
+    // `/opt/homebrew/Cellar/llvm@18/.../lib` while libzstd lives
+    // in `/opt/homebrew/lib` (Apple Silicon) or `/usr/local/lib`
+    // (Intel). The default linker search path includes neither,
+    // so users hit `ld: library 'zstd' not found` on first build.
+    // We inject the standard homebrew library dirs into the link
+    // search path; cargo accepts paths that don't exist on the
+    // host without warning, so this is a no-op on Linux.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        for path in [
+            "/opt/homebrew/lib",
+            "/opt/homebrew/opt/zstd/lib",
+            "/opt/homebrew/opt/llvm@18/lib",
+            "/usr/local/lib",
+            "/usr/local/opt/zstd/lib",
+            "/usr/local/opt/llvm@18/lib",
+        ] {
+            if std::path::Path::new(path).is_dir() {
+                println!("cargo:rustc-link-search=native={}", path);
+            }
+        }
+    }
 }
