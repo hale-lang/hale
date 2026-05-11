@@ -2278,17 +2278,132 @@ locus RenderL {
     }
 }
 
-// The three-step ritual: instantiate Resolver, collapse
-// FerrymanConfig, hand to FerrymanL. Resolver layers default →
-// env (APERIO_DIR / APERIO_FLAVOR) → CLI (argv[1] / argv[2]).
+// ============================================================
+// DriveL — the bare-repo invocation. The default UX.
 //
-// New: when argv[1] is "skeleton", dispatch to SkeletonL with
-// argv[2] = repo and argv[3] = output path (default
-// `skeleton.lotus.yaml`). All other invocations run the legacy
-// FerrymanL renderer.
+// `ferryman <repo> [--lang=go]` constructs DriveL { repo: <arg>,
+// flavor: <flag or "" for auto-detect> } and runs it. DriveL
+// orchestrates the static pipeline: creates <repo>/.ferryman/,
+// emits 00-tree.yaml (stage 0, FS lotus), 01-skeleton.yaml
+// (stages 1-3 combined under the existing skeleton stage at
+// v0), and PROMPT.md (the agent's protocol so it ships with
+// the tool, not just with the source tree).
+//
+// Stage 5 (render) is not invoked by DriveL at v0 — the
+// renderer consumes a single enriched.yaml shape, while DriveL
+// writes 00 + 01 separately. Wiring render to consume the
+// multi-file structure lands in a follow-up commit; for now
+// the user runs `ferryman render .ferryman/01-skeleton.yaml`
+// after enrichment to see the report.
+// ============================================================
+
+locus DriveL {
+    params {
+        repo:   String = "";
+        flavor: String = "";   // empty → auto-detect from manifests
+    }
+    run() {
+        __drive_pipeline(self.repo, self.flavor);
+    }
+}
+
+// v0 lifecycle bodies reject `return`, so the early-exit paths
+// (empty repo, unknown flavor) factor into this free helper.
+fn __drive_pipeline(repo_in: String, flavor_in: String) {
+    if len(repo_in) == 0 {
+        println("usage: ferryman <repo> [--lang=go]");
+        return;
+    }
+
+    let mut flavor = flavor_in;
+    if len(flavor) == 0 { flavor = __detect_flavor(repo_in); }
+    if flavor == "unknown" {
+        println("error: could not detect language flavor at ", repo_in);
+        println("  hint: pass --lang=go (or rust, node, python)");
+        return;
+    }
+
+    let out_dir = repo_in + "/.ferryman";
+    std::io::fs::mkdir(out_dir);
+
+    println("============================================================");
+    println("  Aperio recognition: ", repo_in);
+    println("  flavor: ", flavor);
+    println("  output: ", out_dir);
+    println("============================================================");
+    println("");
+
+    // Stage 0 — filesystem lotus.
+    println("[stage 0] filesystem lotus...");
+    let tree_yaml = __build_tree_yaml(repo_in, flavor);
+    let tree_path = out_dir + "/00-tree.yaml";
+    std::io::fs::write_file(tree_path, tree_yaml);
+    println("           ", tree_path, " (", len(tree_yaml), " bytes)");
+
+    // Stage 1-3 (combined at v0) — existing skeleton extraction.
+    println("[stage 1] static analysis (operational + harmonic + domain)...");
+    let skel_yaml = __build_skeleton(repo_in, flavor);
+    let skel_path = out_dir + "/01-skeleton.yaml";
+    std::io::fs::write_file(skel_path, skel_yaml);
+    println("           ", skel_path, " (", len(skel_yaml), " bytes)");
+
+    // Stage 4 prep — emit the agent prompt alongside the data
+    // so an agent reading the .ferryman/ directory has its
+    // instructions without needing to fetch them.
+    println("[stage 4] writing agent prompt...");
+    let prompt_path = out_dir + "/PROMPT.md";
+    PromptL { dest_path: prompt_path };
+
+    println("");
+    println("Next steps:");
+    println("  1. Point an agent at ", prompt_path);
+    println("  2. The agent reads 00-tree.yaml + 01-skeleton.yaml + source");
+    println("  3. The agent writes 04-enriched.yaml");
+    println("  4. Run `ferryman render ", out_dir, "/01-skeleton.yaml` to see");
+    println("     the current (pre-enrichment) report");
+}
+
+// Scan argv for `--lang=<value>`. Returns the value or "" if
+// not present. Simple linear scan; v0 has no real flag parser.
+fn __find_lang_flag() -> String {
+    let n = std::env::args_count();
+    let mut i = 1;
+    while i < n {
+        let arg = std::env::arg(i);
+        if len(arg) >= 7 {
+            if arg[0..7] == "--lang=" {
+                return arg[7..len(arg)];
+            }
+        }
+        i = i + 1;
+    }
+    return "";
+}
+
+// True iff `s` starts with "--". Used to distinguish a flag
+// from a repo path in the bare-arg form of main().
+fn __looks_like_flag(s: String) -> Bool {
+    if len(s) < 2 { return false; }
+    if s[0..2] != "--" { return false; }
+    return true;
+}
+
+// Dispatch sequence:
+//
+//   ferryman skeleton <repo> <out.yaml>        — existing
+//   ferryman render <yaml>                     — existing
+//   ferryman prompt [write <path>]             — new (PromptL)
+//   ferryman <repo> [--lang=go]                — new default (DriveL)
+//   ferryman                                   — legacy fallback
+//                                                (FerrymanL on the
+//                                                default fixture)
+//
+// The legacy resolver-based path is kept so the regression tests
+// against apps/operational-graph/fixture keep working unchanged.
 fn main() {
     if std::env::args_count() > 1 {
-        if std::env::arg(1) == "skeleton" {
+        let cmd = std::env::arg(1);
+        if cmd == "skeleton" {
             let mut repo = "apps/operational-graph/fixture";
             let mut out_path = "skeleton.lotus.yaml";
             if std::env::args_count() > 2 { repo = std::env::arg(2); }
@@ -2296,13 +2411,32 @@ fn main() {
             SkeletonL { repo: repo, out_path: out_path, flavor: "go" };
             return;
         }
-        if std::env::arg(1) == "render" {
+        if cmd == "render" {
             if std::env::args_count() < 3 {
                 println("usage: ferryman render <enriched.lotus.yaml>");
                 return;
             }
             let yaml_path = std::env::arg(2);
             RenderL { yaml_path: yaml_path };
+            return;
+        }
+        if cmd == "prompt" {
+            let mut dest = "";
+            if std::env::args_count() > 3 {
+                if std::env::arg(2) == "write" {
+                    dest = std::env::arg(3);
+                }
+            }
+            PromptL { dest_path: dest };
+            return;
+        }
+        // Bare-arg form: treat the first positional as a repo
+        // path so `ferryman /path/to/repo` is the easy default.
+        // Flags-only invocations (no repo) fall through to the
+        // legacy resolver.
+        if !__looks_like_flag(cmd) {
+            let flavor_flag = __find_lang_flag();
+            DriveL { repo: cmd, flavor: flavor_flag };
             return;
         }
     }

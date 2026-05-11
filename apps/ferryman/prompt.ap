@@ -1,0 +1,170 @@
+// apps/ferryman/prompt.ap
+//
+// `ferryman prompt` — emit the agent-enrichment protocol text
+// so an LLM session (Claude Code or equivalent) running over a
+// codebase can pick up the protocol without needing to fetch
+// it from the aperio repo. The text is intentionally compact:
+// what an agent needs to start an enrichment run. The full
+// protocol with worked examples lives at
+// `notes/agent-onboarding/ferryman-enrichment-protocol.md` in
+// the aperio source tree.
+//
+// Two destinations, same emission:
+//   ferryman prompt                  — prints to stdout
+//   ferryman prompt write <path>     — writes to <path>
+//   ferryman <repo>                  — DriveL writes to
+//                                      <repo>/.ferryman/PROMPT.md
+//
+// PromptL is a Pattern-1 app locus (outermost when invoked via
+// `ferryman prompt`); the dest_path param chooses between
+// stdout streaming and file write.
+
+locus PromptL {
+    params {
+        dest_path: String = "";   // "" = stdout; else file path
+    }
+    run() {
+        __emit_prompt(self.dest_path);
+    }
+}
+
+// v0 lifecycle bodies reject `return`, so the short-circuit
+// for empty path → stdout factors into a free helper.
+fn __emit_prompt(dest_path: String) {
+    let text = __prompt_text();
+    if len(dest_path) == 0 {
+        print(text);
+        return;
+    }
+    std::io::fs::write_file(dest_path, text);
+    println("prompt written: ", dest_path,
+            " (", len(text), " bytes)");
+}
+
+// The protocol text. Kept compact for working-context fit;
+// the long-form reference is at
+// `notes/agent-onboarding/ferryman-enrichment-protocol.md`.
+fn __prompt_text() -> String {
+    let mut t = "";
+    t = t + "# Ferryman agent enrichment protocol\n";
+    t = t + "\n";
+    t = t + "You are the AGENT stage of ferryman's codebase-onboarding\n";
+    t = t + "pipeline. Ferryman ran its static stages and wrote .yaml\n";
+    t = t + "files under `.ferryman/`. Your job is to read those plus\n";
+    t = t + "the source they point at, apply the rules below, and write\n";
+    t = t + "back an enriched yaml that the render stage will consume.\n";
+    t = t + "\n";
+    t = t + "## Inputs\n";
+    t = t + "\n";
+    t = t + "  .ferryman/00-tree.yaml      filesystem lotus (dirs + files\n";
+    t = t + "                              with roles)\n";
+    t = t + "  .ferryman/01-skeleton.yaml  per-binary towers (operational\n";
+    t = t + "                              calls + harmonic imports +\n";
+    t = t + "                              domain names — all syntactic)\n";
+    t = t + "\n";
+    t = t + "Both yamls are honest about what syntax can see. Anywhere they\n";
+    t = t + "leave a gap (kind: \"method\" with lowercase receiver, an\n";
+    t = t + "unclassified locus candidate, a missing summary) is space\n";
+    t = t + "for you to fill from source.\n";
+    t = t + "\n";
+    t = t + "## Output\n";
+    t = t + "\n";
+    t = t + "Write `.ferryman/04-enriched.yaml`. Same schema as\n";
+    t = t + "01-skeleton, plus optional enrichment cells. The render\n";
+    t = t + "stage merges 00 + 04 (or 00 + 01 if 04 is absent) and\n";
+    t = t + "emits the report.\n";
+    t = t + "\n";
+    t = t + "## The rule that drives every classification\n";
+    t = t + "\n";
+    t = t + "**Three-tower agreement.** A source-level node is a locus iff\n";
+    t = t + ">=2 of the three towers (operational / harmonic / domain)\n";
+    t = t + "point at it with coherent roles:\n";
+    t = t + "\n";
+    t = t + "  operational — runs over time (loops, spawns, lifecycle,\n";
+    t = t + "                long-lived state, handler registration)\n";
+    t = t + "  harmonic    — imported by many siblings, or imports many\n";
+    t = t + "                (a backbone node in the package graph)\n";
+    t = t + "  domain      — named as an Agent noun (-er/-or/-ar, e.g.\n";
+    t = t + "                Worker, Server) or Entity noun (Cache, Bus,\n";
+    t = t + "                Pool, Pipeline, Manager)\n";
+    t = t + "\n";
+    t = t + "Two towers agree → it's a locus. One tower only → it's\n";
+    t = t + "structural artifact (type / free fn / glue), not its own\n";
+    t = t + "locus. Three towers agree → the codebase explicitly names\n";
+    t = t + "it as a locus.\n";
+    t = t + "\n";
+    t = t + "## Cells to fill\n";
+    t = t + "\n";
+    t = t + "Per file (under `binaries[i].files[j]`):\n";
+    t = t + "  classification:  short phrase, what the file does\n";
+    t = t + "                   (\"http transport\", \"persistence\",\n";
+    t = t + "                   \"command dispatch\")\n";
+    t = t + "  contributes_to:  which locus or subject (\"trade lifecycle\",\n";
+    t = t + "                   \"auth flow\")\n";
+    t = t + "\n";
+    t = t + "Per binary (under `binaries[i]`):\n";
+    t = t + "  summary:  2-4 sentence prose recognition of what the\n";
+    t = t + "            binary does at runtime\n";
+    t = t + "  loci:     list of identified loci (see schema below)\n";
+    t = t + "  unknowns: list of things you couldn't resolve, with why\n";
+    t = t + "\n";
+    t = t + "Loci entries:\n";
+    t = t + "  - name:        source identifier of the locus\n";
+    t = t + "    verdict:     \"locus\" | \"type\" | \"unknown\"\n";
+    t = t + "    agreement:   \"2\" or \"3\" (how many towers agreed)\n";
+    t = t + "    shape:       \"service\" | \"namespace\" | \"subscriber\"\n";
+    t = t + "                 | \"spawned-child\" | \"shape-type\"\n";
+    t = t + "    motion:      present-participle, agent/entity nouns ONLY\n";
+    t = t + "                 (serving, remembering, validating).\n";
+    t = t + "                 OMIT for shape nouns (Request, Config, User).\n";
+    t = t + "    prose:       one-line domain reading of meaning\n";
+    t = t + "\n";
+    t = t + "Unknowns entries:\n";
+    t = t + "  - kind:    \"package\" | \"locus\" | \"motion\" | \"contributes_to\"\n";
+    t = t + "    target:  the specific symbol or file involved\n";
+    t = t + "    file:    where the unresolved item appears (optional)\n";
+    t = t + "    why:     one-sentence reason you couldn't resolve\n";
+    t = t + "    action:  what a downstream reader could do to resolve\n";
+    t = t + "\n";
+    t = t + "## Honest-unknowns rule\n";
+    t = t + "\n";
+    t = t + "An honest unknown is more useful than a confident\n";
+    t = t + "fabrication. If you cannot justify a classification from\n";
+    t = t + "source, log an `unknowns` entry instead of guessing. Three\n";
+    t = t + "specific guards:\n";
+    t = t + "\n";
+    t = t + "  - Do NOT invent motion forms for Shape nouns. A Request,\n";
+    t = t + "    User, or Config is data, not flow. No `motion:` field.\n";
+    t = t + "  - Do NOT classify a locus you didn't read. Looking at the\n";
+    t = t + "    name in a tower row is not enough; open the file.\n";
+    t = t + "  - Do NOT fabricate `summary` from the file list alone.\n";
+    t = t + "    The summary is a runtime reading; pre-scan source.\n";
+    t = t + "\n";
+    t = t + "## Workflow\n";
+    t = t + "\n";
+    t = t + "Per binary:\n";
+    t = t + "\n";
+    t = t + "  1. Read the binary block from 01-skeleton.yaml. Note the\n";
+    t = t + "     rel_path, file list, outward-tower roots, imports.\n";
+    t = t + "  2. Pre-scan the source files in <root>/<rel_path>. Look\n";
+    t = t + "     for types, top-level fns, long-lived state, framework\n";
+    t = t + "     usage patterns.\n";
+    t = t + "  3. Resolve the `kind: \"method\"` ambiguity in the outward\n";
+    t = t + "     tower: lowercase receiver might be a package call or a\n";
+    t = t + "     local var. Check imports first; then scan the file for\n";
+    t = t + "     a matching var declaration.\n";
+    t = t + "  4. Identify candidate loci by the three-tower rule. Open\n";
+    t = t + "     each candidate's file to verify before classifying.\n";
+    t = t + "  5. Write the cells. Log unknowns for what you couldn't\n";
+    t = t + "     justify.\n";
+    t = t + "  6. Run `ferryman <repo> --render` to see the report.\n";
+    t = t + "\n";
+    t = t + "## Where the long-form reference lives\n";
+    t = t + "\n";
+    t = t + "  notes/agent-onboarding/ferryman-enrichment-protocol.md\n";
+    t = t + "\n";
+    t = t + "in the aperio source tree, if you have access to it. The\n";
+    t = t + "long form covers worked examples, failure modes, and the\n";
+    t = t + "kind-value taxonomy in full.\n";
+    return t;
+}

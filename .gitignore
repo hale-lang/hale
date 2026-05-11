@@ -29,6 +29,16 @@ docs/book/
 apps/*/main
 apps/*/out/
 
+# Multi-file-seed binaries take the directory name as the output
+# (apps/ferryman/ → apps/ferryman/ferryman). Match per app
+# directory; the .ap-source files are explicitly preserved.
+apps/ferryman/ferryman
+
 # Aperio example build artifacts (compiled binaries sit next
 # to main.ap after `aperio build`).
 examples/*/main
+
+# Ferryman recognition output. Lands in <repo>/.ferryman/ wherever
+# ferryman is pointed; the apps/operational-graph/fixture path
+# is the in-repo smoke-test target.
+.ferryman/

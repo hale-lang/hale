@@ -1,0 +1,409 @@
+// apps/ferryman/tree.ap
+//
+// Stage 0 of the ferryman pipeline — the filesystem lotus.
+// Walks the repo, filters via the standard skip list plus the
+// repo's .gitignore (line-by-line simple patterns), classifies
+// file roles from extension + well-known manifest names, and
+// emits a yaml block describing the codebase's directory/file
+// structure.
+//
+// This is the cheapest stage and the only one that scales to
+// any codebase size — no tree-sitter, no per-binary call-tree
+// walking. A partner pointing ferryman at their codebase sees
+// the tree first; subsequent stages drill into specific
+// binaries.
+//
+// Output yaml shape (written to <repo>/.ferryman/00-tree.yaml
+// by DriveL in main.ap):
+//
+//   schema_version: "1"
+//   codebase:
+//     root: "<absolute repo path>"
+//     flavor: "go"
+//     filter: "default + .gitignore"
+//   dirs:
+//     - "cmd"
+//     - "cmd/investigator"
+//     - "src/secman"
+//   files:
+//     - path: "cmd/investigator/main.go"
+//       role: "entrypoint"
+//     - path: "go.mod"
+//       role: "manifest"
+//     - path: "src/secman/instance.go"
+//       role: "source"
+//
+// All paths in `dirs` and `files` are relative to
+// `codebase.root`. The yaml is emitted via std::yaml::Builder
+// for shape-consistency with the other stage yamls.
+
+// ---- flavor detection ----
+
+// Detect the codebase flavor by looking for well-known manifest
+// files at the repo root. Honest about its scope: returns
+// "unknown" rather than guessing when no manifest is present.
+// Caller passes an explicit flavor via --lang to override.
+fn __detect_flavor(repo: String) -> String {
+    if std::io::fs::file_exists(repo + "/go.mod") { return "go"; }
+    if std::io::fs::file_exists(repo + "/Cargo.toml") { return "rust"; }
+    if std::io::fs::file_exists(repo + "/package.json") { return "node"; }
+    if std::io::fs::file_exists(repo + "/pyproject.toml") { return "python"; }
+    if std::io::fs::file_exists(repo + "/setup.py") { return "python"; }
+    return "unknown";
+}
+
+// ---- skip-name policy ----
+
+// The standard noise list. Dirs whose basename matches any of
+// these are skipped wholesale; dot-prefixed names are also
+// skipped (matches Go / Rust / Node convention).
+fn __is_standard_skip(name: String) -> Bool {
+    if name == "vendor" { return true; }
+    if name == "node_modules" { return true; }
+    if name == ".git" { return true; }
+    if name == "target" { return true; }
+    if name == "dist" { return true; }
+    if name == "build" { return true; }
+    if name == "out" { return true; }
+    if name == "__pycache__" { return true; }
+    if name == ".aperio" { return true; }
+    if name == ".ferryman" { return true; }
+    if len(name) > 0 {
+        if name[0..1] == "." { return true; }
+    }
+    return false;
+}
+
+// ---- .gitignore (v0 honest subset) ----
+
+// Parse the repo's .gitignore into a tagged-string of
+// recognized patterns. v0 only handles exact-name patterns
+// ("foo") and extension globs ("*.ext"); lines containing "/"
+// (path patterns), "!" (negation), or non-trailing "*"
+// (general globbing) are dropped silently. Blank lines and
+// "#"-prefix comments are ignored.
+//
+// Tag format:
+//   NAME:<basename>     exact-name match against any path segment
+//   EXT:<ext>           file with this extension (no leading dot)
+fn __load_ignore_patterns(repo: String) -> String {
+    let path = repo + "/.gitignore";
+    if !std::io::fs::file_exists(path) { return ""; }
+    let text = std::io::fs::read_file(path);
+    let it = std::iter::Lines { };
+    let mut out = "";
+    let mut from = 0;
+    while from >= 0 {
+        let raw = it.line_at(text, from);
+        from = it.next_idx(text, from);
+        let line = __trim_ascii(raw);
+        if len(line) == 0 { continue; }
+        if line[0..1] == "#" { continue; }
+        if std::str::index_of(line, "/") >= 0 { continue; }
+        if line[0..1] == "!" { continue; }
+        // Strip trailing slash if any.
+        let n = len(line);
+        let mut clean = line;
+        if clean[n-1..n] == "/" { clean = clean[0..n-1]; }
+        // "*.ext" → EXT:ext.
+        if len(clean) >= 2 {
+            if clean[0..2] == "*." {
+                let ext = clean[2..len(clean)];
+                if std::str::index_of(ext, "*") < 0 {
+                    out = out + "EXT:" + ext + "\n";
+                }
+                continue;
+            }
+        }
+        // Bare name with no remaining globbing.
+        if std::str::index_of(clean, "*") < 0 {
+            out = out + "NAME:" + clean + "\n";
+        }
+    }
+    return out;
+}
+
+// Returns true iff `name` matches any loaded ignore pattern.
+// `is_dir` lets EXT patterns skip directories (extensions only
+// make sense for files).
+fn __matches_ignore(name: String, patterns: String,
+                    is_dir: Bool) -> Bool {
+    if len(patterns) == 0 { return false; }
+    let it = std::iter::Lines { };
+    let mut from = 0;
+    while from >= 0 {
+        let entry = it.line_at(patterns, from);
+        from = it.next_idx(patterns, from);
+        if len(entry) == 0 { continue; }
+        if entry[0..5] == "NAME:" {
+            let pat = entry[5..len(entry)];
+            if name == pat { return true; }
+        }
+        if !is_dir {
+            if len(entry) >= 4 {
+                if entry[0..4] == "EXT:" {
+                    let ext = entry[4..len(entry)];
+                    let dotted = "." + ext;
+                    let n = len(name);
+                    let m = len(dotted);
+                    if n >= m {
+                        if name[n-m..n] == dotted { return true; }
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+// Trim ASCII whitespace from both ends. Aperio v0 stdlib has no
+// str::trim; this is the small open-coded version per the
+// v0-friction-workarounds guidance in the styleguide.
+fn __trim_ascii(s: String) -> String {
+    let n = len(s);
+    let mut a = 0;
+    while a < n {
+        let c = s[a..a+1];
+        if c != " " && c != "\t" && c != "\r" { return __trim_right(s[a..n]); }
+        a = a + 1;
+    }
+    return "";
+}
+
+fn __trim_right(s: String) -> String {
+    let n = len(s);
+    let mut e = n;
+    while e > 0 {
+        let c = s[e-1..e];
+        if c != " " && c != "\t" && c != "\r" { return s[0..e]; }
+        e = e - 1;
+    }
+    return "";
+}
+
+// ---- file role classification ----
+
+// Well-known manifest filenames across flavors. Match by exact
+// basename; the role lookup runs after walking so the cost is
+// linear in file count, not per-name × manifests.
+fn __is_manifest_name(name: String) -> Bool {
+    if name == "go.mod" { return true; }
+    if name == "go.sum" { return true; }
+    if name == "Cargo.toml" { return true; }
+    if name == "Cargo.lock" { return true; }
+    if name == "package.json" { return true; }
+    if name == "package-lock.json" { return true; }
+    if name == "yarn.lock" { return true; }
+    if name == "pnpm-lock.yaml" { return true; }
+    if name == "pyproject.toml" { return true; }
+    if name == "setup.py" { return true; }
+    if name == "requirements.txt" { return true; }
+    if name == "Gemfile" { return true; }
+    if name == "Gemfile.lock" { return true; }
+    if name == "pom.xml" { return true; }
+    if name == "build.gradle" { return true; }
+    if name == "Makefile" { return true; }
+    return false;
+}
+
+// True iff the file is a test by per-flavor convention.
+fn __is_test_name(name: String, flavor: String) -> Bool {
+    let n = len(name);
+    if flavor == "go" {
+        // Go: foo_test.go
+        if n >= 8 {
+            if name[n-8..n] == "_test.go" { return true; }
+        }
+        return false;
+    }
+    if flavor == "rust" {
+        // Rust convention varies; tests/* dirs are common, but
+        // names alone are weak signal. Punt at v0.
+        return false;
+    }
+    if flavor == "python" {
+        // test_foo.py or foo_test.py
+        if n >= 5 {
+            if name[0..5] == "test_" { return true; }
+        }
+        if n >= 8 {
+            if name[n-8..n] == "_test.py" { return true; }
+        }
+        return false;
+    }
+    return false;
+}
+
+// True iff this is the flavor's main entrypoint file.
+fn __is_entrypoint_name(name: String, flavor: String) -> Bool {
+    if flavor == "go"     { return name == "main.go"; }
+    if flavor == "rust"   { return name == "main.rs"; }
+    if flavor == "node"   { return name == "index.js"; }
+    if flavor == "python" { return name == "__main__.py"; }
+    return false;
+}
+
+// True iff the file has a source extension for the flavor.
+// Sources we don't classify (unknown flavors, foreign extensions)
+// get role "other" so they show up in the tree but don't get
+// claimed as code.
+fn __is_source_name(name: String, flavor: String) -> Bool {
+    // std::io::fs::extension returns the dot-prefixed slice
+    // (".go", ".rs", "") to match the C convention.
+    let ext = std::io::fs::extension(name);
+    if flavor == "go"     { return ext == ".go"; }
+    if flavor == "rust"   { return ext == ".rs"; }
+    if flavor == "node"   { return ext == ".js" || ext == ".ts"
+                                || ext == ".jsx" || ext == ".tsx"; }
+    if flavor == "python" { return ext == ".py"; }
+    return false;
+}
+
+// Classify one file's role. Precedence: manifest > entrypoint
+// > test > source > other. Manifest wins over entrypoint
+// because `package.json` would otherwise hide behind the
+// entrypoint check on node flavor (it doesn't, but the
+// precedence is the simpler rule).
+fn __classify_file_role(name: String, flavor: String) -> String {
+    if __is_manifest_name(name)            { return "manifest"; }
+    if __is_entrypoint_name(name, flavor)  { return "entrypoint"; }
+    if __is_test_name(name, flavor)        { return "test"; }
+    if __is_source_name(name, flavor)      { return "source"; }
+    return "other";
+}
+
+// ---- walk ----
+
+// Walk `root` recursively. `prefix` is the path relative to the
+// original repo root; entries get tagged as "D|<rel>\n" for
+// dirs and "F|<rel>|<role>\n" for files. Caller renders the
+// tagged stream to yaml. Depth-capped to 8 levels (deeper than
+// __find_main_dirs's 6 since we want every dir, not just
+// binary-bearing ones).
+//
+// Honest about what list_dir tells us: an entry whose
+// list_dir returns "" is either a file or an empty directory.
+// We treat empty-list-dir results as files for classification.
+fn __walk_for_tree(repo_root: String, prefix: String,
+                   depth: Int, max_depth: Int,
+                   flavor: String,
+                   patterns: String) -> String {
+    if depth > max_depth { return ""; }
+    let scan_path = repo_root;
+    let mut actual_scan = scan_path;
+    if len(prefix) > 0 { actual_scan = repo_root + "/" + prefix; }
+    let entries = std::io::fs::list_dir(actual_scan);
+    if len(entries) == 0 { return ""; }
+
+    let it = std::iter::Lines { };
+    let mut out = "";
+    let mut from = 0;
+    while from >= 0 {
+        let name = it.line_at(entries, from);
+        from = it.next_idx(entries, from);
+        if len(name) == 0 { continue; }
+        if __is_standard_skip(name) { continue; }
+
+        let sub_rel = name;
+        let mut sub_with_prefix = sub_rel;
+        if len(prefix) > 0 { sub_with_prefix = prefix + "/" + name; }
+        let sub_abs = repo_root + "/" + sub_with_prefix;
+
+        let sub_entries = std::io::fs::list_dir(sub_abs);
+        let is_dir = len(sub_entries) > 0;
+
+        if __matches_ignore(name, patterns, is_dir) { continue; }
+
+        if is_dir {
+            out = out + "D|" + sub_with_prefix + "\n";
+            out = out + __walk_for_tree(repo_root, sub_with_prefix,
+                                        depth + 1, max_depth,
+                                        flavor, patterns);
+        } else {
+            let role = __classify_file_role(name, flavor);
+            out = out + "F|" + sub_with_prefix + "|" + role + "\n";
+        }
+    }
+    return out;
+}
+
+// ---- yaml emission ----
+
+// Split "D|path" or "F|path|role" — returns the path segment.
+fn __tagged_path(entry: String) -> String {
+    let n = len(entry);
+    if n < 2 { return ""; }
+    let rest = entry[2..n];
+    let bar = std::str::index_of(rest, "|");
+    if bar < 0 { return rest; }
+    return rest[0..bar];
+}
+
+// Split "F|path|role" — returns the role segment.
+fn __tagged_role(entry: String) -> String {
+    let n = len(entry);
+    if n < 2 { return ""; }
+    let rest = entry[2..n];
+    let bar = std::str::index_of(rest, "|");
+    if bar < 0 { return ""; }
+    return rest[bar+1..len(rest)];
+}
+
+// Build the full tree yaml for `repo` at the given `flavor`.
+// Caller writes to <repo>/.ferryman/00-tree.yaml.
+fn __build_tree_yaml(repo: String, flavor: String) -> String {
+    let patterns = __load_ignore_patterns(repo);
+    let walked = __walk_for_tree(repo, "", 0, 8, flavor, patterns);
+
+    let b = std::yaml::Builder { };
+    let mut out = "";
+    out = out + b.field_q(0, "schema_version", "1");
+    out = out + b.nested_open(0, "codebase");
+    out = out + b.field_q(1, "root", repo);
+    out = out + b.field_q(1, "flavor", flavor);
+    let mut filter_desc = "default";
+    if len(patterns) > 0 { filter_desc = "default + .gitignore"; }
+    out = out + b.field_q(1, "filter", filter_desc);
+
+    // Pass 1: dirs. Pass 2: files. Two passes over the tagged
+    // stream keep the yaml ordered the way humans expect to
+    // read it (structure first, contents second). The tagged
+    // stream itself is in walk order (alphabetical-ish per
+    // list_dir).
+    let it = std::iter::Lines { };
+    let mut any_dirs = false;
+    let mut from = 0;
+    while from >= 0 {
+        let entry = it.line_at(walked, from);
+        from = it.next_idx(walked, from);
+        if len(entry) == 0 { continue; }
+        if entry[0..1] != "D" { continue; }
+        if !any_dirs {
+            out = out + b.nested_open(0, "dirs");
+            any_dirs = true;
+        }
+        let path = __tagged_path(entry);
+        out = out + b.indent(1) + "- " + b.quote(path) + "\n";
+    }
+    if !any_dirs { out = out + b.empty_list(0, "dirs"); }
+
+    let mut any_files = false;
+    let mut from2 = 0;
+    while from2 >= 0 {
+        let entry = it.line_at(walked, from2);
+        from2 = it.next_idx(walked, from2);
+        if len(entry) == 0 { continue; }
+        if entry[0..1] != "F" { continue; }
+        if !any_files {
+            out = out + b.nested_open(0, "files");
+            any_files = true;
+        }
+        let path = __tagged_path(entry);
+        let role = __tagged_role(entry);
+        out = out + b.list_item_first_q(2, "path", path);
+        out = out + b.field_q(2, "role", role);
+    }
+    if !any_files { out = out + b.empty_list(0, "files"); }
+
+    return out;
+}
