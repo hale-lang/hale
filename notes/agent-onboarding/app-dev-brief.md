@@ -323,13 +323,30 @@ across apps, either copy-paste or add it to the std seed.
 
 ## Running and testing
 
-The CLI has two execution modes — **read this carefully**, several
-cold-start sessions have lost time to it:
+The CLI has two execution modes and accepts either a directory
+(dir-seed; preferred) or a single `.ap` file (one-off scripts):
 
 ```
-aperio run   apps/<your-app>/main.ap [args]   # interpreter
-aperio build apps/<your-app>/main.ap          # native binary at ./main
+aperio run   apps/<your-app>          [args]   # interpreter, dir-seed
+aperio build apps/<your-app>                   # native binary, dir-seed
 ```
+
+`run` / `build` / `check` all accept both shapes — directory or
+file. Use the directory form by default. F.19 (per-directory seed
+model) is what makes multi-file apps possible; defaulting to it
+means you don't have to migrate later when your app outgrows one
+file.
+
+**Where the binary lands.**
+
+| Invocation | Binary path |
+|---|---|
+| `aperio build apps/myapp`        | `apps/myapp/myapp` (dir basename, next to sources) |
+| `aperio build apps/myapp/main.ap` | `apps/myapp/main` (source path with `.ap` stripped) |
+| `aperio build hello.ap`           | `./hello` (source path with `.ap` stripped) |
+
+Run the produced binary by its full path — it does **not** land
+in cwd unless your source was in cwd.
 
 **`aperio run` (interpreter) does NOT support qualified-name
 struct/locus literals** like `std::http::Request { ... }`,
@@ -340,9 +357,13 @@ programs do), you must use `aperio build` and then run the
 produced binary.
 
 ```
-# Recommended pattern:
-target/debug/aperio build apps/<your-app>/main.ap
-./main                                    # binary lands in cwd
+# Recommended pattern (dir-seed):
+target/debug/aperio build apps/<your-app>
+./apps/<your-app>/<your-app>                  # run the binary
+
+# Single-file pattern (one-off scripts):
+target/debug/aperio build path/to/script.ap
+./path/to/script                              # binary next to source
 ```
 
 **Stale-CLI gotcha.** `target/debug/aperio` only updates when
@@ -353,7 +374,7 @@ silent miscompile is possible (subscribers may be quietly
 dropped, etc.). When in doubt, run via cargo to force freshness:
 
 ```
-cargo run -p aperio-cli --bin aperio -- build apps/<your-app>/main.ap
+cargo run -p aperio-cli --bin aperio -- build apps/<your-app>
 ```
 
 This is slower (cargo checks freshness on every invocation) but
