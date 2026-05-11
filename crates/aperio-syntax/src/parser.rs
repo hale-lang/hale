@@ -1965,7 +1965,33 @@ impl Parser {
                 self.bump();
                 let mut elems = Vec::new();
                 if !self.at(&TokenKind::RBracket) {
-                    elems.push(self.parse_expr()?);
+                    let first = self.parse_expr()?;
+                    // `[val; N]` repetition form. The semicolon
+                    // disambiguates from the comma-list shape.
+                    // N must be a const Int literal at v0 — no
+                    // const-eval engine yet; that's a follow-up
+                    // when a workload needs computed sizes.
+                    if self.eat(&TokenKind::Semi) {
+                        let count_expr = self.parse_expr()?;
+                        let count = match &count_expr {
+                            Expr::Literal(Literal::Int(n), _) if *n >= 0 => {
+                                *n as u64
+                            }
+                            _ => {
+                                return Err(Diag::parse(
+                                    count_expr.span(),
+                                    "array-repeat count must be a non-negative integer literal at v0",
+                                ));
+                            }
+                        };
+                        let close = self.expect(TokenKind::RBracket, "]")?;
+                        return Ok(Expr::ArrayRepeat {
+                            val: Box::new(first),
+                            count,
+                            span: span.merge(close.span),
+                        });
+                    }
+                    elems.push(first);
                     while self.eat(&TokenKind::Comma) {
                         elems.push(self.parse_expr()?);
                     }

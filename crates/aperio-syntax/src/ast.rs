@@ -689,6 +689,18 @@ pub enum Expr {
         inclusive: bool,
         span: Span,
     },
+    /// Array-literal repetition `[val; N]`. Evaluates `val` once
+    /// and fills an N-element fixed array with the result. `count`
+    /// must be a const Int literal at v0 (no const evaluation
+    /// engine); the parser enforces that by accepting only
+    /// integer-literal counts at parse time. Resolves
+    /// `notes/aperio-friction.md` 2026-05-10 float-surface-gaps
+    /// sub-bullet 3 (`[0.0; 8]` enumeration noise).
+    ArrayRepeat {
+        val: Box<Expr>,
+        count: u64,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -714,6 +726,7 @@ impl Expr {
             Expr::Prod(_, s) => *s,
             Expr::Approx { span, .. } => *span,
             Expr::Range { span, .. } => *span,
+            Expr::ArrayRepeat { span, .. } => *span,
         }
     }
 }

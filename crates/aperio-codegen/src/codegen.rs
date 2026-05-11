@@ -10998,6 +10998,51 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Ok((arr_ptr.into(), CodegenTy::Array(Box::new(elem_ty), n)))
             }
+            Expr::ArrayRepeat { val, count, .. } => {
+                // `[val; N]` — evaluate val once, fill N slots
+                // with the result. Same arena-allocation pattern
+                // as Expr::Array; the difference is just the
+                // single source value broadcast across the slots.
+                // Parser already enforced `count` is a non-negative
+                // Int literal.
+                let n = *count;
+                if n == 0 {
+                    return Err(CodegenError::Unsupported(
+                        "array-repeat with zero count is not yet \
+                         supported in v0 (empty arrays need a type \
+                         ascription mechanism)".into(),
+                    ));
+                }
+                let (v, elem_ty) = self.lower_expr(val, scope)?;
+                let i32_t = self.context.i32_type();
+                let arr_ty = self.llvm_array_storage_type(&elem_ty, n);
+                let bytes = arr_ty
+                    .size_of()
+                    .expect("array storage type has known size");
+                let arr_ptr =
+                    self.arena_alloc(bytes, "array.repeat.alloc")?;
+                for i in 0..n {
+                    let slot = unsafe {
+                        self.builder
+                            .build_gep(
+                                arr_ty,
+                                arr_ptr,
+                                &[
+                                    i32_t.const_int(0, false),
+                                    i32_t.const_int(i, false),
+                                ],
+                                &format!("array.rep.slot{}", i),
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?
+                    };
+                    self.builder
+                        .build_store(slot, v)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Ok((arr_ptr.into(), CodegenTy::Array(Box::new(elem_ty), n)))
+            }
             Expr::Tuple(parts, _) => {
                 // m35: tuple literal `(a, b, ...)`. Lower each
                 // component, allocate an anonymous struct in the

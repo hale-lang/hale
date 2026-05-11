@@ -1176,6 +1176,13 @@ impl<'a> Checker<'a> {
                 }
                 Ty::Array(Box::new(elem), Some(parts.len() as u64))
             }
+            Expr::ArrayRepeat { val, count, .. } => {
+                // `[val; N]` — same array shape, single element
+                // type repeated N times. Count is parser-validated
+                // as a non-negative Int literal.
+                let elem = self.check_expr_local(val);
+                Ty::Array(Box::new(elem), Some(*count))
+            }
             Expr::Struct { path, inits, span } => self.check_struct_literal(path, inits, *span),
             Expr::Block(b) => {
                 self.check_block(b);

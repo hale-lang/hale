@@ -1073,6 +1073,20 @@ impl Interpreter {
                 }
                 Ok(Value::Array(Rc::new(RefCell::new(vs))))
             }
+            Expr::ArrayRepeat { val, count, .. } => {
+                // `[val; N]` — interpreter evaluates val once,
+                // clones the resulting Value N times into the
+                // backing Vec. Cheaper than running eval N times
+                // for the same RHS and matches the codegen path's
+                // single-eval semantics.
+                let v = self.eval_expr(val)?;
+                let n = *count as usize;
+                let mut vs = Vec::with_capacity(n);
+                for _ in 0..n {
+                    vs.push(v.clone());
+                }
+                Ok(Value::Array(Rc::new(RefCell::new(vs))))
+            }
             Expr::Struct { path, inits, .. } => self.eval_struct_or_locus(path, inits),
             Expr::Block(b) => {
                 self.exec_block(b)?;
