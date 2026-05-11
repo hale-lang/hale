@@ -1,0 +1,330 @@
+// Aperio stdlib — std::yaml.
+//
+// Block-style YAML emitter (`Builder`) + schema-aware reader
+// (`Reader`). Designed for the codebase-onboarder's lotus.yaml
+// handoff: ferryman's skeleton stage emits via `Builder`, an
+// agent enriches the file by hand or via a Claude Code session,
+// ferryman's render stage reads back via `Reader`.
+//
+// Honest about scope. NOT a general YAML parser. v0:
+//   - block style only (no flow `[a, b, c]`, no `{k: v}`)
+//   - no multi-line literals (`|`, `>`)
+//   - no anchors / aliases / tags
+//   - 2-space indent step, fixed
+//   - quote() assumes no embedded `"` or `\` (mirrors json.ap's
+//     v0 quote punt — current consumers don't hit these)
+//
+// Reader assumes input came from Builder (well-formed block
+// style). Behaviour on hand-edited yaml is undefined past the
+// schema the consumer expects.
+//
+// Indent convention (Builder + Reader agree):
+//   level = the column the field key occupies, divided by 2.
+//   Each nested object descends by +1 level.
+//   Each list descends by +2 levels (one for the `- ` marker,
+//   one for the content column alignment). So:
+//       binaries:           # nested_open(0, "binaries")
+//         - name: echo      # list_item_first(2, "name", "echo")
+//           rel: cmd/echo   # field(2, "rel", "cmd/echo")
+//           files:          # nested_open(2, "files")
+//             - file: x.go  # list_item_first(4, "file", "x.go")
+
+locus __StdYamlBuilder {
+    params { }
+
+    // 2 spaces per level. level=0 → "".
+    fn indent(level: Int) -> String {
+        let mut s = "";
+        let mut i = 0;
+        while i < level {
+            s = s + "  ";
+            i = i + 1;
+        }
+        return s;
+    }
+
+    // Wrap s in double-quotes. v0: no escaping for embedded
+    // `"` or `\`. See header note.
+    fn quote(s: String) -> String {
+        return "\"" + s + "\"";
+    }
+
+    // Scalar field. Caller pre-formats Ints / Bools.
+    fn field(level: Int, key: String, value: String) -> String {
+        return self.indent(level) + key + ": " + value + "\n";
+    }
+
+    // Scalar field with quoted String value.
+    fn field_q(level: Int, key: String, value: String) -> String {
+        return self.indent(level) + key + ": " + self.quote(value) + "\n";
+    }
+
+    // Scalar field with Int value.
+    fn field_i(level: Int, key: String, value: Int) -> String {
+        return self.indent(level) + key + ": " + to_string(value) + "\n";
+    }
+
+    // Scalar field with Bool value.
+    fn field_b(level: Int, key: String, value: Bool) -> String {
+        let v = "false";
+        if value { v = "true"; }
+        return self.indent(level) + key + ": " + v + "\n";
+    }
+
+    // Explicit null. Useful for enrichment cells the agent left
+    // unfilled but wants to mark as "considered, no answer".
+    fn field_null(level: Int, key: String) -> String {
+        return self.indent(level) + key + ": null\n";
+    }
+
+    // Section header. Caller emits children at level + 1
+    // (nested object) or level + 2 (list items).
+    fn nested_open(level: Int, key: String) -> String {
+        return self.indent(level) + key + ":\n";
+    }
+
+    // Empty list shorthand.
+    fn empty_list(level: Int, key: String) -> String {
+        return self.indent(level) + key + ": []\n";
+    }
+
+    // Empty object shorthand.
+    fn empty_object(level: Int, key: String) -> String {
+        return self.indent(level) + key + ": {}\n";
+    }
+
+    // First field of a list item — places `- ` marker at
+    // (level - 1)*2 and key at level*2. Continuation fields of
+    // the same item use `field(level, ...)`.
+    fn list_item_first(level: Int, key: String, value: String) -> String {
+        return self.indent(level - 1) + "- " + key + ": " + value + "\n";
+    }
+
+    // List-item first field with quoted value.
+    fn list_item_first_q(level: Int, key: String, value: String) -> String {
+        return self.indent(level - 1) + "- " + key + ": " + self.quote(value) + "\n";
+    }
+
+    // List-item first field with Int value.
+    fn list_item_first_i(level: Int, key: String, value: Int) -> String {
+        return self.indent(level - 1) + "- " + key + ": " + to_string(value) + "\n";
+    }
+}
+
+
+// std::yaml::Reader — schema-aware string-walk over yaml text.
+//
+// Each Reader instance owns a text region that's already
+// normalized to column 0 — that is, the keys at this section's
+// top level start at column 0, list-item markers under those
+// keys at column 2, etc. The root Reader wraps the full file;
+// sub-Readers (returned from `list_item` / `nested`) wrap
+// extracted sub-text with leading indent stripped.
+//
+// API:
+//   scalar(key)        → value String, "" if missing
+//   has(key)           → Bool
+//   list_count(key)    → Int (0 if missing or empty `[]`)
+//   list_item(key, i)  → extracted item body String for index i
+//   nested(key)        → extracted nested object body String
+//
+// All extractions return raw String; the caller wraps in a
+// fresh Reader to navigate within.
+//
+// "Missing" semantics: any path that doesn't match returns the
+// empty / zero / "" value. The Reader doesn't distinguish
+// "absent" from "explicitly null" beyond what the renderer
+// chooses to check via `has()`.
+
+locus __StdYamlReader {
+    params {
+        text: String = "";
+    }
+
+    // ---- Internal helpers ----
+
+    fn __is_space(c: String) -> Bool {
+        if c == " " { return true; }
+        if c == "\t" { return true; }
+        return false;
+    }
+
+    fn trim_left(s: String) -> String {
+        let n = len(s);
+        let mut i = 0;
+        while i < n {
+            if !self.__is_space(s[i..i+1]) {
+                return s[i..n];
+            }
+            i = i + 1;
+        }
+        return "";
+    }
+
+    fn trim_right(s: String) -> String {
+        let n = len(s);
+        let mut e = n;
+        while e > 0 {
+            if !self.__is_space(s[e-1..e]) {
+                return s[0..e];
+            }
+            e = e - 1;
+        }
+        return "";
+    }
+
+    fn trim(s: String) -> String {
+        return self.trim_right(self.trim_left(s));
+    }
+
+    // Strip surrounding double-quotes if present.
+    fn strip_quotes(s: String) -> String {
+        let n = len(s);
+        if n < 2 { return s; }
+        if s[0..1] != "\"" { return s; }
+        if s[n-1..n] != "\"" { return s; }
+        return s[1..n-1];
+    }
+
+    // First char of `line` is not a space — i.e., the line
+    // lives at column 0 (top level of this Reader's section).
+    fn __at_col_zero(line: String) -> Bool {
+        if len(line) == 0 { return false; }
+        return !self.__is_space(line[0..1]);
+    }
+
+    // ---- Surface ----
+
+    fn scalar(key: String) -> String {
+        let needle = key + ":";
+        let nlen = len(needle);
+        let it = std::iter::Lines { };
+        let mut from = 0;
+        while from >= 0 {
+            let line = it.line_at(self.text, from);
+            from = it.next_idx(self.text, from);
+            if len(line) < nlen + 1 { continue; }
+            if line[0..nlen] != needle { continue; }
+            let rest = line[nlen..len(line)];
+            if rest[0..1] != " " { continue; }
+            let v = self.trim(rest);
+            return self.strip_quotes(v);
+        }
+        return "";
+    }
+
+    fn has(key: String) -> Bool {
+        let needle = key + ":";
+        let nlen = len(needle);
+        let it = std::iter::Lines { };
+        let mut from = 0;
+        while from >= 0 {
+            let line = it.line_at(self.text, from);
+            from = it.next_idx(self.text, from);
+            if len(line) < nlen { continue; }
+            if line[0..nlen] == needle { return true; }
+        }
+        return false;
+    }
+
+    // Find the header line "key:" at col 0 (with no trailing
+    // value). Return its starting byte offset, or -1 if not
+    // found. The header is the boundary between a nested block
+    // and a list under `key`.
+    fn __find_header(key: String) -> Int {
+        let needle = key + ":";
+        let nlen = len(needle);
+        let it = std::iter::Lines { };
+        let mut from = 0;
+        while from >= 0 {
+            let here = from;
+            let line = it.line_at(self.text, from);
+            from = it.next_idx(self.text, from);
+            if len(line) < nlen { continue; }
+            if line[0..nlen] != needle { continue; }
+            let rest = line[nlen..len(line)];
+            if len(self.trim(rest)) > 0 { continue; }
+            return here;
+        }
+        return -1;
+    }
+
+    fn list_count(key: String) -> Int {
+        let hdr = self.__find_header(key);
+        if hdr < 0 { return 0; }
+        let it = std::iter::Lines { };
+        // Advance to the line after the header.
+        let mut from = it.next_idx(self.text, hdr);
+        let mut count = 0;
+        while from >= 0 {
+            let line = it.line_at(self.text, from);
+            from = it.next_idx(self.text, from);
+            if len(line) == 0 { continue; }
+            // Top-level key reached — end of section.
+            if self.__at_col_zero(line) { return count; }
+            // Item start is `  - ` at column 2 (= 4 leading chars).
+            if len(line) >= 4 {
+                if line[0..4] == "  - " { count = count + 1; }
+            }
+        }
+        return count;
+    }
+
+    fn list_item(key: String, idx: Int) -> String {
+        let hdr = self.__find_header(key);
+        if hdr < 0 { return ""; }
+        let it = std::iter::Lines { };
+        let mut from = it.next_idx(self.text, hdr);
+        let mut seen = -1;
+        let mut buf = "";
+        let mut done = false;
+        while from >= 0 && !done {
+            let line = it.line_at(self.text, from);
+            from = it.next_idx(self.text, from);
+            if len(line) == 0 { continue; }
+            if self.__at_col_zero(line) { done = true; continue; }
+            let mut is_item = false;
+            if len(line) >= 4 {
+                if line[0..4] == "  - " { is_item = true; }
+            }
+            if is_item {
+                if seen == idx { done = true; continue; }
+                seen = seen + 1;
+                if seen == idx {
+                    buf = line[4..len(line)] + "\n";
+                }
+                continue;
+            }
+            if seen == idx {
+                if len(line) > 4 {
+                    buf = buf + line[4..len(line)] + "\n";
+                } else {
+                    buf = buf + "\n";
+                }
+            }
+        }
+        return buf;
+    }
+
+    fn nested(key: String) -> String {
+        let hdr = self.__find_header(key);
+        if hdr < 0 { return ""; }
+        let it = std::iter::Lines { };
+        let mut from = it.next_idx(self.text, hdr);
+        let mut buf = "";
+        let mut done = false;
+        while from >= 0 && !done {
+            let line = it.line_at(self.text, from);
+            from = it.next_idx(self.text, from);
+            if len(line) == 0 { continue; }
+            if self.__at_col_zero(line) { done = true; continue; }
+            // Strip 2 leading chars (one indent level).
+            if len(line) > 2 {
+                buf = buf + line[2..len(line)] + "\n";
+            } else {
+                buf = buf + "\n";
+            }
+        }
+        return buf;
+    }
+}

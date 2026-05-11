@@ -401,6 +401,12 @@ const STDLIB_AP_SOURCE: &str = concat!(
     // json.ap depends on iter.ap for build_array's line walk.
     include_str!("../runtime/stdlib/json.ap"),
     "\n",
+    // yaml.ap depends on iter.ap for Reader's line walks.
+    // Mirrors json.ap's shape (Builder is a namespace lotus
+    // returning Strings). Used by the codebase-onboarder's
+    // skeleton + render stages.
+    include_str!("../runtime/stdlib/yaml.ap"),
+    "\n",
     // cli.ap is independent — only uses std::str::index_of,
     // std::str::parse_int / can_parse_int, and std::env::*
     // path calls. Lands after the other corpus helpers by
@@ -440,6 +446,8 @@ const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "name", "Convention"], "__StdNameConvention"),
     (&["std", "source", "Walk"], "__StdSourceWalk"),
     (&["std", "tagged", "Accumulator"], "__StdTaggedAccumulator"),
+    (&["std", "yaml", "Builder"], "__StdYamlBuilder"),
+    (&["std", "yaml", "Reader"], "__StdYamlReader"),
 ];
 
 /// Look up the mangled name for a stdlib path (locus or type).
