@@ -68,6 +68,15 @@ What is **not** a friction entry:
 **Workaround:** Wrote the tagged-locus version. Functionally correct, ergonomically poor.
 **Why it matters:** Sink-shape polymorphism keeps recurring — `std::log::StdoutSink` is bus-coupled because there was no other way to abstract a destination; the renderer's OOM was caused by the same gap pushing it toward in-memory String accumulation. A real interface mechanism would let StdoutSink / StringSink / FileSink coexist as separate loci with one surface, eliminating the inner dispatch entirely.
 
+## 2026-05-10 reader-list_item-quadratic-concat
+
+**Source:** ferryman render against grease (45k-line skeleton, 36 binaries)
+**Tried:** Render the grease-skeleton yaml end-to-end with the Sink-streamed renderer + the new in-order Reader cursor cache. Memory is bounded on the renderer side (Sink streams to stdout) and walk count is bounded on the Reader side (cursor turns N list_item calls into O(N) total).
+**Hit:** Segfault at ~3.9GB RSS in ~1.8s on the 36-binary skeleton. Same ceiling without the cursor cache. Scale test: 1 binary = 451MB peak (139MB with cursor); 2 = 601MB; 5 = 3.2GB segfault; 10 = 3.6GB segfault. Per-binary blowup is ~18,000× (yaml input bytes → peak RSS). Root cause is the body builder inside `__StdYamlReader.list_item` and `.nested`: `buf = buf + line[4..]` in a loop allocates O(N²) bytes across N continuation lines, and Aperio's arena retains the intermediate buf values until the enclosing fn returns. The deeply-nested call-tree shape of grease's outward_tower section means a single top-level node's body contains its entire subtree as continuation lines, so N is in the thousands per item.
+**Workaround:** None at v0. Renders 1-2 grease binaries fine; full 36 OOM-segfaults under the 4GB ulimit. The Sink fix in the renderer was correct but only addressed the *upper* string-concat anti-pattern — the same shape remained inside Reader. Ferryman ships with the Sink + cursor wins (3× memory, 3× speed on 1-binary subset) as a partial step; partner-codebase scale waits.
+**Why it matters:** The Reader cannot return a substring efficiently because Aperio v0 has no O(1) string-view primitive — `s[a..b]` allocates and copies, and immutable Strings make any builder pattern collapse to the same O(N²) shape (a list-of-chunks "StringBuilder" stored as a tagged-accumulator hits the same `buf = buf + sep + chunk` quadratic). Two paths forward at the language level: (a) add a rope / chunk-list / lazy-concat primitive to the C runtime so `s1 + s2` is O(1); (b) add a string-view type with explicit (text, start, end) so Reader can return slices without copying. Either unblocks the ferryman partner-codebase target. Until then, the codebase-onboarder ceiling is "small-to-medium codebases" — not the multi-binary Cobra monorepos the partner-demo arc was aimed at.
+
+
 ## 2026-05-10 single-file-app-monolith
 
 **Source:** ferryman render OOM fix (immediately after the Sink entry above)
