@@ -1,0 +1,176 @@
+// 53-window-ring — std::window::ring sketch.
+//
+// Fixed-capacity ring buffer of (time, value) pairs. Pushes
+// always succeed; when full, the oldest entry is overwritten.
+// Iteration is oldest-first via `time_at(i)` / `value_at(i)`
+// for i in 0..len().
+//
+// Capacity is fixed at 8 in this sketch — Aperio v0 has no
+// generic `Ring<N>`. A real `std::window::ring` lands once
+// the projection-class-generics monomorphizer can specialize
+// over N, or once a `Recognition`-class pre-allocated pool
+// surface ships (per spec/memory.md).
+//
+// Lotus-first: state-bearing locus with mutable params per
+// the example-30 Aggregator pattern. No lifecycle — push-
+// driven only. Self-assigned arrays are rebuilt on each push
+// (indexed self-assignment is gated in v0 codegen per
+// examples/22-moving-average); the rebuild is O(capacity)
+// per push, fine for cap=8.
+//
+// Surface:
+//   - push(t: Float, v: Float)
+//   - len() -> Int                  — entries currently held
+//   - time_at(i: Int) -> Float      — oldest-first time
+//   - value_at(i: Int) -> Float     — oldest-first value
+//   - clear()
+//
+// Composition target: `std::geom::leading_edge` feeds a
+// sliding-window Segment by reading time_at / value_at
+// across len() entries.
+
+locus Ring {
+    params {
+        // 8-slot storage; -1 sentinel everywhere to make
+        // partial-fill bugs visible (Float -1.0 is fine in
+        // a ring of monotonic timestamps which are always
+        // non-negative in normal use).
+        times:  [Float; 8] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        values: [Float; 8] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+
+        // Next-write position. After cap pushes, head wraps
+        // back to 0 and overwrites the oldest entries.
+        head: Int = 0;
+
+        // Total pushes so far, NOT clamped to capacity. Used
+        // to distinguish "not yet full" (n < cap) from
+        // "wrapped" (n >= cap).
+        n: Int = 0;
+    }
+
+    fn push(t: Float, v: Float) {
+        // Rebuild times array with new value at self.head;
+        // indexed self-assignment isn't supported in v0
+        // codegen, so we map over the old contents.
+        let mut next_t = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let mut next_v = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let mut i = 0;
+        while i < 8 {
+            if i == self.head {
+                next_t[i] = t;
+                next_v[i] = v;
+            } else {
+                next_t[i] = self.times[i];
+                next_v[i] = self.values[i];
+            }
+            i = i + 1;
+        }
+        self.times = next_t;
+        self.values = next_v;
+        self.head = (self.head + 1) % 8;
+        self.n = self.n + 1;
+    }
+
+    fn len() -> Int {
+        if self.n < 8 {
+            return self.n;
+        }
+        return 8;
+    }
+
+    // Map oldest-first index (0..len) → physical storage index.
+    fn phys(i: Int) -> Int {
+        if self.n < 8 {
+            // Not yet wrapped — entries fill indices 0..n
+            // in physical order.
+            return i;
+        }
+        // Wrapped — oldest is at head; walk forward modulo 8.
+        return (self.head + i) % 8;
+    }
+
+    fn time_at(i: Int) -> Float {
+        return self.times[self.phys(i)];
+    }
+
+    fn value_at(i: Int) -> Float {
+        return self.values[self.phys(i)];
+    }
+
+    fn clear() {
+        self.times  = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        self.values = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        self.head = 0;
+        self.n = 0;
+    }
+}
+
+fn near_eq(actual: Float, expected: Float, eps: Float, label: String) {
+    let diff = abs(actual - expected);
+    if diff < eps {
+        return;
+    }
+    println("ASSERTION FAILED: ", label);
+    println("  expected: ", to_string(expected));
+    println("  actual:   ", to_string(actual));
+    println("  diff:     ", to_string(diff));
+    println("  eps:      ", to_string(eps));
+    std::process::exit(1);
+}
+
+fn main() {
+    // Case 1 — empty ring has len 0.
+    let r1 = Ring { };
+    std::test::assert_eq_int(r1.len(), 0, "case 1: empty len");
+
+    // Case 2 — partial fill, len matches push count.
+    r1.push(1.0, 10.0);
+    r1.push(2.0, 20.0);
+    r1.push(3.0, 30.0);
+    std::test::assert_eq_int(r1.len(), 3, "case 2: partial len");
+    near_eq(r1.time_at(0),  1.0, 0.0001, "case 2: time_at(0)");
+    near_eq(r1.value_at(0), 10.0, 0.0001, "case 2: value_at(0)");
+    near_eq(r1.time_at(2),  3.0, 0.0001, "case 2: time_at(2)");
+    near_eq(r1.value_at(2), 30.0, 0.0001, "case 2: value_at(2)");
+
+    // Case 3 — exactly full, len = 8, all entries readable
+    // oldest-first.
+    let r2 = Ring { };
+    let mut i = 0;
+    while i < 8 {
+        // Use Int-to-Float through Float arithmetic with 1.0.
+        let t = 0.0 + 1.0 * (1.0 + 0.0); // placeholder; rewritten below
+        r2.push(0.0, 0.0);
+        i = i + 1;
+    }
+    // Reset and push known points (t = 1..8, v = 10*t).
+    r2.clear();
+    r2.push(1.0,  10.0);
+    r2.push(2.0,  20.0);
+    r2.push(3.0,  30.0);
+    r2.push(4.0,  40.0);
+    r2.push(5.0,  50.0);
+    r2.push(6.0,  60.0);
+    r2.push(7.0,  70.0);
+    r2.push(8.0,  80.0);
+    std::test::assert_eq_int(r2.len(), 8, "case 3: full len");
+    near_eq(r2.time_at(0),  1.0, 0.0001, "case 3: oldest time");
+    near_eq(r2.time_at(7),  8.0, 0.0001, "case 3: newest time");
+    near_eq(r2.value_at(0), 10.0, 0.0001, "case 3: oldest value");
+    near_eq(r2.value_at(7), 80.0, 0.0001, "case 3: newest value");
+
+    // Case 4 — wrap: push two more, oldest two fall off.
+    r2.push(9.0,  90.0);
+    r2.push(10.0, 100.0);
+    std::test::assert_eq_int(r2.len(), 8, "case 4: wrapped len still 8");
+    near_eq(r2.time_at(0),  3.0, 0.0001, "case 4: oldest after wrap");
+    near_eq(r2.value_at(0), 30.0, 0.0001, "case 4: oldest value after wrap");
+    near_eq(r2.time_at(7),  10.0, 0.0001, "case 4: newest after wrap");
+    near_eq(r2.value_at(7), 100.0, 0.0001, "case 4: newest value after wrap");
+
+    // Case 5 — clear() resets.
+    r2.clear();
+    std::test::assert_eq_int(r2.len(), 0, "case 5: cleared len");
+
+    println("all ring tests passed");
+}

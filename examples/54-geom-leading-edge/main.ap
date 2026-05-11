@@ -1,0 +1,214 @@
+// 54-geom-leading-edge — std::geom::leading_edge sketch.
+//
+// Sliding-window linear regression. Pushes (t, v) into a
+// fixed-cap ring; on demand, fits a least-squares line through
+// the current window and reports slope / intercept / the
+// extrapolated value at any future time.
+//
+// Composition: LeadingEdge owns an 8-cap ring inline (Aperio
+// v0 has no generic Ring<N>; we inline the storage). On
+// slope() / intercept() / extrapolate() the body births an
+// ephemeral Segment, replays the ring's contents through it,
+// and reads the regression. The Segment dissolves at method
+// return — lotus-first composition, fresh substrate cell per
+// query.
+//
+// Real-world use: triangulator's leading-edge geometry on a
+// market-data feed. Push every tick; ask `extrapolate(t_now
+// + dt)` to predict where price is heading on the freshest
+// slope of the last 8 samples.
+//
+// Surface:
+//   - push(t: Float, v: Float)
+//   - len() -> Int
+//   - slope() -> Float
+//   - intercept() -> Float
+//   - extrapolate(t: Float) -> Float
+//   - clear()
+//
+// Two child loci in one file: Segment (the regression
+// accumulator from 51-geom-segment) and LeadingEdge (this
+// file's contribution). The Segment definition is duplicated
+// here because there's no cross-file module system yet.
+
+locus Segment {
+    params {
+        n: Int = 0;
+        nf: Float = 0.0;
+        sum_x: Float = 0.0;
+        sum_y: Float = 0.0;
+        sum_xx: Float = 0.0;
+        sum_xy: Float = 0.0;
+    }
+    fn push(t: Float, v: Float) {
+        self.n = self.n + 1;
+        self.nf = self.nf + 1.0;
+        self.sum_x = self.sum_x + t;
+        self.sum_y = self.sum_y + v;
+        self.sum_xx = self.sum_xx + t * t;
+        self.sum_xy = self.sum_xy + t * v;
+    }
+    fn slope() -> Float {
+        let num = self.nf * self.sum_xy - self.sum_x * self.sum_y;
+        let den = self.nf * self.sum_xx - self.sum_x * self.sum_x;
+        return num / den;
+    }
+    fn intercept() -> Float {
+        let m = self.slope();
+        return (self.sum_y - m * self.sum_x) / self.nf;
+    }
+    fn count() -> Int {
+        return self.n;
+    }
+}
+
+locus LeadingEdge {
+    params {
+        times:  [Float; 8] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        values: [Float; 8] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        head: Int = 0;
+        n: Int = 0;
+    }
+
+    fn push(t: Float, v: Float) {
+        let mut next_t = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let mut next_v = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let mut i = 0;
+        while i < 8 {
+            if i == self.head {
+                next_t[i] = t;
+                next_v[i] = v;
+            } else {
+                next_t[i] = self.times[i];
+                next_v[i] = self.values[i];
+            }
+            i = i + 1;
+        }
+        self.times = next_t;
+        self.values = next_v;
+        self.head = (self.head + 1) % 8;
+        self.n = self.n + 1;
+    }
+
+    fn len() -> Int {
+        if self.n < 8 {
+            return self.n;
+        }
+        return 8;
+    }
+
+    // Internal: replay current window into a fresh Segment.
+    // Returns the populated Segment by way of slope() /
+    // intercept() / extrapolate() — they're the only callers.
+    fn fit() -> Segment {
+        let s = Segment { };
+        let mut i = 0;
+        let cap = self.len();
+        while i < cap {
+            let mut phys = i;
+            if self.n >= 8 {
+                phys = (self.head + i) % 8;
+            }
+            s.push(self.times[phys], self.values[phys]);
+            i = i + 1;
+        }
+        return s;
+    }
+
+    fn slope() -> Float {
+        let s = self.fit();
+        if s.count() < 2 {
+            return 0.0;
+        }
+        return s.slope();
+    }
+
+    fn intercept() -> Float {
+        let s = self.fit();
+        if s.count() < 2 {
+            return 0.0;
+        }
+        return s.intercept();
+    }
+
+    fn extrapolate(t: Float) -> Float {
+        let s = self.fit();
+        if s.count() < 2 {
+            return 0.0;
+        }
+        return s.slope() * t + s.intercept();
+    }
+
+    fn clear() {
+        self.times  = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        self.values = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        self.head = 0;
+        self.n = 0;
+    }
+}
+
+fn near_eq(actual: Float, expected: Float, eps: Float, label: String) {
+    let diff = abs(actual - expected);
+    if diff < eps {
+        return;
+    }
+    println("ASSERTION FAILED: ", label);
+    println("  expected: ", to_string(expected));
+    println("  actual:   ", to_string(actual));
+    println("  diff:     ", to_string(diff));
+    println("  eps:      ", to_string(eps));
+    std::process::exit(1);
+}
+
+fn main() {
+    // Case 1 — exact line y = 2t + 1 across 5 points.
+    let le1 = LeadingEdge { };
+    le1.push(0.0, 1.0);
+    le1.push(1.0, 3.0);
+    le1.push(2.0, 5.0);
+    le1.push(3.0, 7.0);
+    le1.push(4.0, 9.0);
+    std::test::assert_eq_int(le1.len(), 5, "case 1: len");
+    near_eq(le1.slope(),     2.0, 0.0001, "case 1: slope");
+    near_eq(le1.intercept(), 1.0, 0.0001, "case 1: intercept");
+    near_eq(le1.extrapolate(5.0), 11.0, 0.0001, "case 1: extrapolate(5)");
+    near_eq(le1.extrapolate(10.0), 21.0, 0.0001, "case 1: extrapolate(10)");
+
+    // Case 2 — fill window, then add new points; older points
+    // drop off and slope reflects the new trend.
+    let le2 = LeadingEdge { };
+    // First 8 points on y = 1*t (slope 1, intercept 0).
+    le2.push(0.0, 0.0);
+    le2.push(1.0, 1.0);
+    le2.push(2.0, 2.0);
+    le2.push(3.0, 3.0);
+    le2.push(4.0, 4.0);
+    le2.push(5.0, 5.0);
+    le2.push(6.0, 6.0);
+    le2.push(7.0, 7.0);
+    near_eq(le2.slope(), 1.0, 0.0001, "case 2: initial slope");
+    // Now push 8 points on y = 3*t - 16 (slope 3, intercept
+    // -16). The window fully refreshes — all old slope-1
+    // points fall off — and the slope reads 3 exactly.
+    le2.push(8.0,  8.0);
+    le2.push(9.0,  11.0);
+    le2.push(10.0, 14.0);
+    le2.push(11.0, 17.0);
+    le2.push(12.0, 20.0);
+    le2.push(13.0, 23.0);
+    le2.push(14.0, 26.0);
+    le2.push(15.0, 29.0);
+    near_eq(le2.slope(),      3.0, 0.0001, "case 2: refreshed slope");
+    near_eq(le2.intercept(), -16.0, 0.0001, "case 2: refreshed intercept");
+
+    // Case 3 — degenerate: 1 point, slope returns 0.
+    let le3 = LeadingEdge { };
+    le3.push(0.0, 5.0);
+    near_eq(le3.slope(), 0.0, 0.0001, "case 3: 1-point slope is 0");
+
+    // Case 4 — clear() resets.
+    le1.clear();
+    std::test::assert_eq_int(le1.len(), 0, "case 4: cleared len");
+
+    println("all leading-edge tests passed");
+}

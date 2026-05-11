@@ -1,0 +1,168 @@
+// 57-geom-velocity — std::geom::velocity sketch.
+//
+// EMA-smoothed finite-difference derivative tracker. Pushes
+// (t, v) pairs; reports the first derivative dv/dt (velocity)
+// and second derivative d²v/dt² (acceleration), each
+// exponentially smoothed to suppress per-sample noise.
+//
+// Use case: momentum signals on a market-data leading edge.
+// Velocity > 0 with acceleration > 0 means "price rising and
+// rising faster" — a strong momentum tell. Composes with
+// `std::geom::leading_edge`'s slope output if you want a
+// regression-based velocity instead of finite-difference.
+//
+// Lotus-first: state-bearing locus with mutable params.
+// Two priming flags guard the first-sample and
+// second-sample edge cases (no derivative is defined from
+// fewer than 2 / 3 samples respectively).
+//
+// Surface:
+//   - push(t: Float, v: Float)
+//   - velocity() -> Float          — smoothed dv/dt
+//   - acceleration() -> Float      — smoothed d²v/dt²
+//   - count() -> Int
+//   - clear()
+
+locus Velocity {
+    params {
+        alpha: Float = 0.5;
+        // Tracking the previous sample's t and v for finite
+        // difference; primed becomes true after the first
+        // push.
+        primed: Bool = false;
+        last_t: Float = 0.0;
+        last_v: Float = 0.0;
+        // primed_vel becomes true after the FIRST velocity
+        // sample is taken (i.e., second push).
+        primed_vel: Bool = false;
+        last_velocity: Float = 0.0;
+        smooth_v: Float = 0.0;
+        smooth_a: Float = 0.0;
+        n: Int = 0;
+    }
+
+    fn push(t: Float, v: Float) {
+        if !self.primed {
+            self.last_t = t;
+            self.last_v = v;
+            self.primed = true;
+            self.n = 1;
+            return;
+        }
+        let dt = t - self.last_t;
+        if dt <= 0.0 {
+            return;
+        }
+        let raw_v = (v - self.last_v) / dt;
+        if !self.primed_vel {
+            // First velocity sample — seed the smoother.
+            self.smooth_v = raw_v;
+            self.primed_vel = true;
+        } else {
+            self.smooth_v = self.smooth_v * self.alpha
+                          + raw_v * (1.0 - self.alpha);
+            let raw_a = (raw_v - self.last_velocity) / dt;
+            self.smooth_a = self.smooth_a * self.alpha
+                          + raw_a * (1.0 - self.alpha);
+        }
+        self.last_velocity = raw_v;
+        self.last_t = t;
+        self.last_v = v;
+        self.n = self.n + 1;
+    }
+
+    fn velocity() -> Float {
+        return self.smooth_v;
+    }
+
+    fn acceleration() -> Float {
+        return self.smooth_a;
+    }
+
+    fn count() -> Int {
+        return self.n;
+    }
+
+    fn clear() {
+        self.primed = false;
+        self.primed_vel = false;
+        self.last_t = 0.0;
+        self.last_v = 0.0;
+        self.last_velocity = 0.0;
+        self.smooth_v = 0.0;
+        self.smooth_a = 0.0;
+        self.n = 0;
+    }
+}
+
+fn near_eq(actual: Float, expected: Float, eps: Float, label: String) {
+    let diff = abs(actual - expected);
+    if diff < eps {
+        return;
+    }
+    println("ASSERTION FAILED: ", label);
+    println("  expected: ", to_string(expected));
+    println("  actual:   ", to_string(actual));
+    println("  diff:     ", to_string(diff));
+    println("  eps:      ", to_string(eps));
+    std::process::exit(1);
+}
+
+fn main() {
+    // Case 1 — constant velocity. y = 2t over 30 samples,
+    // 0.1s apart. After enough pushes the smoother should
+    // be at velocity ~2 with acceleration ~0. (Int → Float
+    // coercion isn't available in v0, so we track `tf`
+    // explicitly instead of doing arithmetic with the loop
+    // counter.)
+    let v1 = Velocity { };
+    let mut tf = 0.0;
+    let mut j = 0;
+    while j < 30 {
+        v1.push(tf, 2.0 * tf);
+        tf = tf + 0.1;
+        j = j + 1;
+    }
+    near_eq(v1.velocity(),     2.0, 0.001, "case 1: constant velocity = 2");
+    near_eq(v1.acceleration(), 0.0, 0.001, "case 1: constant accel = 0");
+
+    // Case 2 — constant acceleration. y = 0.5 * t^2 (velocity
+    // = t, accel = 1). Push for t = 0..5 in 0.1 steps; check
+    // the smoother converges toward the average velocity (~2.5
+    // at t=5) and accel ~1.
+    let v2 = Velocity { };
+    let mut tf2 = 0.0;
+    let mut k = 0;
+    while k < 50 {
+        v2.push(tf2, 0.5 * tf2 * tf2);
+        tf2 = tf2 + 0.1;
+        k = k + 1;
+    }
+    // Final t ~ 4.9, instantaneous velocity ~ 4.9, EMA-smoothed
+    // lags toward the average — accept anywhere in (2.0, 4.9)
+    // and accel reasonably near 1.0.
+    std::test::assert(v2.velocity() > 2.0,  "case 2: velocity rising");
+    std::test::assert(v2.velocity() < 4.9,  "case 2: velocity lags raw");
+    near_eq(v2.acceleration(), 1.0, 0.3, "case 2: accel ~1");
+
+    // Case 3 — count tracks pushes.
+    std::test::assert_eq_int(v2.count(), 50, "case 3: 50 samples pushed");
+
+    // Case 4 — clear() resets state and primed flags so a
+    // post-clear push starts fresh.
+    v1.clear();
+    std::test::assert_eq_int(v1.count(), 0, "case 4: cleared count");
+    near_eq(v1.velocity(),     0.0, 0.0001, "case 4: cleared velocity");
+    near_eq(v1.acceleration(), 0.0, 0.0001, "case 4: cleared accel");
+
+    // Case 5 — non-monotonic time is ignored (dt <= 0).
+    let v3 = Velocity { };
+    v3.push(1.0, 10.0);
+    v3.push(2.0, 20.0);
+    let before = v3.count();
+    v3.push(1.5, 15.0); // earlier than last_t; should no-op
+    std::test::assert_eq_int(v3.count(), before,
+        "case 5: non-monotonic push ignored");
+
+    println("all velocity tests passed");
+}

@@ -1,0 +1,125 @@
+// 52-window-decay — std::window::decay sketch.
+//
+// Exponential moving average (EMA): each push updates the
+// accumulator's current value via
+//
+//     current = current * alpha + v * (1 - alpha)
+//
+// where alpha (in [0, 1]) is the weight on the prior current
+// — closer to 1 → longer memory, slower response; closer to 0
+// → shorter memory, faster response. The first push seeds
+// `current` directly so the accumulator doesn't ramp from
+// zero on startup.
+//
+// This is the prototype surface for `std::window::decay` per
+// the lotus-harness arc of `docs/src/std/roadmap.md`. Lives
+// in examples/ until the surface settles.
+//
+// Lotus-first: Ema is a state-bearing locus per the
+// example-30 Aggregator pattern. Params hold mutable state;
+// methods read and mutate via `self.X = ...`. No lifecycle —
+// pure push-driven accumulator. Callers compose by wiring a
+// bus subject to a `push`-shaped handler if they want stream
+// shape; the method API stays the primitive.
+//
+// Surface:
+//   - push(v: Float)            — fold a new sample in
+//   - value() -> Float          — current EMA
+//   - count() -> Int            — number of samples pushed
+//   - clear()                   — reset to empty
+//
+// Time-weighted decay (where the decay between samples depends
+// on monotonic-clock dt) needs `std::math::exp` which hasn't
+// landed; punted to a follow-up library `Decay` once exp/pow
+// ship.
+
+locus Ema {
+    params {
+        alpha: Float = 0.9;
+        current: Float = 0.0;
+        n: Int = 0;
+    }
+
+    fn push(v: Float) {
+        if self.n == 0 {
+            self.current = v;
+        } else {
+            self.current = self.current * self.alpha + v * (1.0 - self.alpha);
+        }
+        self.n = self.n + 1;
+    }
+
+    fn value() -> Float {
+        return self.current;
+    }
+
+    fn count() -> Int {
+        return self.n;
+    }
+
+    fn clear() {
+        self.current = 0.0;
+        self.n = 0;
+    }
+}
+
+// Float-tolerance comparator; same shape as 51-geom-segment.
+fn near_eq(actual: Float, expected: Float, eps: Float, label: String) {
+    let diff = abs(actual - expected);
+    if diff < eps {
+        return;
+    }
+    println("ASSERTION FAILED: ", label);
+    println("  expected: ", to_string(expected));
+    println("  actual:   ", to_string(actual));
+    println("  diff:     ", to_string(diff));
+    println("  eps:      ", to_string(eps));
+    std::process::exit(1);
+}
+
+fn main() {
+    // Case 1 — first push seeds current to v.
+    let e1 = Ema { alpha: 0.9 };
+    e1.push(5.0);
+    near_eq(e1.value(), 5.0, 0.0001, "case 1: first push seeds value");
+    std::test::assert_eq_int(e1.count(), 1, "case 1: count after first push");
+
+    // Case 2 — constant input → value converges to that input.
+    // Pushing 10.0 five more times after the first 5.0:
+    //   step 2: 5  * 0.9 + 10 * 0.1 = 5.5
+    //   step 3: 5.5* 0.9 + 10 * 0.1 = 5.95
+    //   step 4: 5.95*0.9 + 10 * 0.1 = 6.355
+    //   step 5: 6.355*0.9 + 10 * 0.1 = 6.7195
+    //   step 6: 6.7195*0.9 + 10 * 0.1 = 7.04755
+    e1.push(10.0);
+    near_eq(e1.value(), 5.5, 0.0001, "case 2: after 1 push of 10");
+    e1.push(10.0);
+    near_eq(e1.value(), 5.95, 0.0001, "case 2: after 2 pushes of 10");
+    e1.push(10.0);
+    e1.push(10.0);
+    e1.push(10.0);
+    near_eq(e1.value(), 7.04755, 0.0001, "case 2: after 5 pushes of 10");
+
+    // Case 3 — long run of the same value → state approaches it.
+    let e2 = Ema { alpha: 0.9 };
+    let mut i = 0;
+    while i < 200 {
+        e2.push(42.0);
+        i = i + 1;
+    }
+    near_eq(e2.value(), 42.0, 0.01, "case 3: long run converges to input");
+
+    // Case 4 — alpha = 0 means no memory; current = latest.
+    let e3 = Ema { alpha: 0.0 };
+    e3.push(1.0);
+    e3.push(2.0);
+    e3.push(3.0);
+    near_eq(e3.value(), 3.0, 0.0001, "case 4: alpha=0 → latest wins");
+
+    // Case 5 — clear() resets.
+    e1.clear();
+    std::test::assert_eq_int(e1.count(), 0, "case 5: cleared count");
+    near_eq(e1.value(), 0.0, 0.0001, "case 5: cleared value");
+
+    println("all decay tests passed");
+}

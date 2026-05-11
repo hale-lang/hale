@@ -1,0 +1,149 @@
+// 58-stat-correlate — std::stat::correlate sketch.
+//
+// Online Pearson correlation accumulator. Pushes (x, y)
+// pairs; reports r² (Pearson correlation squared) and
+// covariance.
+//
+// r is reported as r² (NOT r) because Aperio v0 has no
+// `sqrt`. r² is interpretable on its own — the fraction of
+// variance in y explained by x — and avoids the
+// square-root. Callers who need r can take sqrt(r²) downstream
+// once `std::math::sqrt` lands; the sign of r is recoverable
+// from `covariance()`'s sign.
+//
+// Use case: cross-feed correlation in a triangulator — do
+// two price sources actually agree on direction? r² near 1
+// means strongly correlated; near 0 means independent.
+//
+// Lotus-first: state-bearing locus, six-Float accumulator,
+// no lifecycle.
+//
+// Surface:
+//   - push(x: Float, y: Float)
+//   - r_squared() -> Float        — Pearson r², in [0, 1]
+//   - covariance() -> Float       — sample covariance
+//   - count() -> Int
+//   - clear()
+
+locus Correlator {
+    params {
+        n: Int = 0;
+        nf: Float = 0.0;
+        sum_x: Float = 0.0;
+        sum_y: Float = 0.0;
+        sum_xx: Float = 0.0;
+        sum_yy: Float = 0.0;
+        sum_xy: Float = 0.0;
+    }
+
+    fn push(x: Float, y: Float) {
+        self.n = self.n + 1;
+        self.nf = self.nf + 1.0;
+        self.sum_x = self.sum_x + x;
+        self.sum_y = self.sum_y + y;
+        self.sum_xx = self.sum_xx + x * x;
+        self.sum_yy = self.sum_yy + y * y;
+        self.sum_xy = self.sum_xy + x * y;
+    }
+
+    // r² = (n*Σxy - Σx*Σy)² / ((n*Σxx - (Σx)²) * (n*Σyy - (Σy)²))
+    fn r_squared() -> Float {
+        let num = self.nf * self.sum_xy - self.sum_x * self.sum_y;
+        let den_x = self.nf * self.sum_xx - self.sum_x * self.sum_x;
+        let den_y = self.nf * self.sum_yy - self.sum_y * self.sum_y;
+        let den = den_x * den_y;
+        if den <= 0.0 {
+            return 0.0;
+        }
+        return (num * num) / den;
+    }
+
+    // Population covariance: (Σxy - n*mean_x*mean_y) / n
+    //   = (n*Σxy - Σx*Σy) / n²
+    fn covariance() -> Float {
+        let num = self.nf * self.sum_xy - self.sum_x * self.sum_y;
+        return num / (self.nf * self.nf);
+    }
+
+    fn count() -> Int {
+        return self.n;
+    }
+
+    fn clear() {
+        self.n = 0;
+        self.nf = 0.0;
+        self.sum_x = 0.0;
+        self.sum_y = 0.0;
+        self.sum_xx = 0.0;
+        self.sum_yy = 0.0;
+        self.sum_xy = 0.0;
+    }
+}
+
+fn near_eq(actual: Float, expected: Float, eps: Float, label: String) {
+    let diff = abs(actual - expected);
+    if diff < eps {
+        return;
+    }
+    println("ASSERTION FAILED: ", label);
+    println("  expected: ", to_string(expected));
+    println("  actual:   ", to_string(actual));
+    println("  diff:     ", to_string(diff));
+    println("  eps:      ", to_string(eps));
+    std::process::exit(1);
+}
+
+fn main() {
+    // Case 1 — y = x (perfectly correlated). r² = 1, cov > 0.
+    let c1 = Correlator { };
+    c1.push(1.0, 1.0);
+    c1.push(2.0, 2.0);
+    c1.push(3.0, 3.0);
+    c1.push(4.0, 4.0);
+    c1.push(5.0, 5.0);
+    near_eq(c1.r_squared(), 1.0, 0.0001, "case 1: r² of y=x");
+    std::test::assert(c1.covariance() > 0.0, "case 1: cov(y=x) > 0");
+
+    // Case 2 — y = -x (perfectly anti-correlated). r² = 1
+    // (squared, sign drops out); cov < 0.
+    let c2 = Correlator { };
+    c2.push(1.0, -1.0);
+    c2.push(2.0, -2.0);
+    c2.push(3.0, -3.0);
+    c2.push(4.0, -4.0);
+    c2.push(5.0, -5.0);
+    near_eq(c2.r_squared(), 1.0, 0.0001, "case 2: r² of y=-x");
+    std::test::assert(c2.covariance() < 0.0, "case 2: cov(y=-x) < 0");
+
+    // Case 3 — y = 2x + 7 (linear with offset). Still r² = 1.
+    let c3 = Correlator { };
+    c3.push(0.0, 7.0);
+    c3.push(1.0, 9.0);
+    c3.push(2.0, 11.0);
+    c3.push(3.0, 13.0);
+    near_eq(c3.r_squared(), 1.0, 0.0001, "case 3: r² of y=2x+7");
+
+    // Case 4 — constant y (no variation in y). r² should be 0
+    // (or undefined; we return 0 by convention).
+    let c4 = Correlator { };
+    c4.push(1.0, 5.0);
+    c4.push(2.0, 5.0);
+    c4.push(3.0, 5.0);
+    c4.push(4.0, 5.0);
+    near_eq(c4.r_squared(), 0.0, 0.0001, "case 4: r² of y=const is 0");
+
+    // Case 5 — orthogonal pattern (x = 0,1,0,1; y = 0,0,1,1).
+    // These two are independent — r² should be near 0.
+    let c5 = Correlator { };
+    c5.push(0.0, 0.0);
+    c5.push(1.0, 0.0);
+    c5.push(0.0, 1.0);
+    c5.push(1.0, 1.0);
+    near_eq(c5.r_squared(), 0.0, 0.0001, "case 5: r² of orthogonal is 0");
+
+    // Case 6 — clear() resets.
+    c1.clear();
+    std::test::assert_eq_int(c1.count(), 0, "case 6: cleared count");
+
+    println("all correlate tests passed");
+}

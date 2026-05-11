@@ -81,6 +81,117 @@ useful to every Aperio program, not just the IDE.
 
 Detailed plan: `notes/aperio-ide-design.md` (in the repo).
 
+## Future arc — Lotus harness for n-dim growth (exploratory)
+
+> **Status:** Design exploration; not committed. The libraries
+> below are sketches driven by two concrete app shapes — a
+> market-data gateway (mdgw) and a price triangulator — both
+> hourglass-shaped (saturated input → modes-bearing waist →
+> multi-channel fanout).
+
+The driving observation: a class of applications takes the shape
+of an hourglass / double-pyramid prism — collect multidimensional
+state, project through a normalizing waist, fan back out via
+multiple channels. The deeper primitive both apps want is the
+**harness** that lets a lotus extend into any growth shape (stem,
+branch, fan, mesh, hourglass) without each shape needing bespoke
+wiring. The harness compiles down to existing substrate —
+`projection` + `schedule` annotations + bus-subject naming +
+F.9 closure-test wiring — making axis-shape the unit of decision
+rather than per-locus-hand-annotated.
+
+### Dimensional staging
+
+Per The Design's dimension-composition rule, libraries fall out
+per dimension:
+
+- **0-dim — single locus.** Already shipped.
+- **1-dim — a stem.** `std::lotus::Grow.along(axis)`; smallest
+  demos: single-symbol mdgw, single-window triangulator.
+- **2-dim — a branch.** Axis composition + junction closures
+  (`sum(branches) ~~ trunk within ε` at every fork).
+- **3-dim — a mesh.** Modes (bulk / harmonic / resolution) become
+  meaningful; waist has enough internal structure to project
+  three ways.
+- **n-dim — arbitrary composition.** No new structure; algebra
+  works at any depth.
+
+Static-vs-dynamic growth dissolves at this framing: outer axes
+are mostly configured-at-boot (Venue, Window-class, Model-class);
+inner axes are continuously growing (Time/Tick). The harness
+needs both regimes, at different depths.
+
+### Library inventory
+
+Marked **need** (load-bearing for demo apps), **probable** (real
+use wants it), or **stub** (sketch surface, punt body).
+
+| Namespace | Status | Surface |
+| --- | --- | --- |
+| `std::lotus` | need | Axis declaration + growth-tip + junction-closure + `Bridge.between` |
+| `std::io::ws` | need | Saturated single-connection WebSocket client; `: schedule pinned` |
+| `std::io::frame` | probable | Typed frame primitives — length-prefix, delimiter, JSON-blob, line |
+| `std::bus::udp_multicast` | need | Line-rate fanout adapter; best-effort, fanout-max=many, ordering=none |
+| `std::bus::tcp` | stub | Ordered, reliable, point-to-point |
+| `std::bus::nats` | stub | Broker-mediated, reliable, request-response |
+| `std::window::ring` | need | Monotonic-time-indexed ring buffer; Recognition-class allocator |
+| `std::window::decay` | probable | Decay-weighted accumulator |
+| `std::window::bucket` | stub | Time-bucketed aggregator; open-codable on `ring` |
+| `std::geom::segment` | need | Linear regression over (t, v) pairs; slope + intercept + residual |
+| `std::geom::leading_edge` | probable | Slope / curvature / acceleration at freshest point |
+| `std::geom::triangulate` | stub | Multi-source position estimator |
+| `market::book` (3p seed) | probable | Canonical L2 order book type |
+| `market::tick` (3p seed) | probable | Top-of-book canonical type |
+| `market::normalize` (3p) | stub | Per-venue → canonical layer |
+
+Plus pattern catalog entries (not libraries):
+
+- **`std::hourglass`** — waist-locus + ingest-locus + fanout-publish recipe.
+- **`std::stem`** / **`std::branch`** / **`std::fan`** — growth-shape variants.
+
+### Language extensions the harness needs
+
+Two proposals; neither committed:
+
+1. **Tier as coordinate.** Current `tier 4` (scalar) → `tier (4, 2, 1)` (n-tuple, one component per growth axis). Shape declared / inferred at compile time; concrete values assigned at birth from parent's tier + axis-step.
+2. **Runtime-readable `self.tier`.** Today tier is declaration-only. Expose as runtime-readable tuple (as `self.k_max` is per F.16). Enables positional bus-subject construction, bridge addressing, closure logging. Immutable after birth — recoordination = dissolve + rebirth.
+
+### Edge-loci and the bridge pattern
+
+Edges can themselves be loci when there's flow / work on them (normalizers, throttlers, multiplexers). Rule: **edge-locus's dim-span = endpoint dim-distance + 1**. Parent↔child edge spans 2 dims; sibling↔sibling edge spans 1 dim — but vertical-only flow forces sibling-bridges to be vertical children of the shared parent (the "bridge pattern": one extra vertical child mediating laterally-shaped flow through vertical edges).
+
+### Not in scope
+
+- `std::lotus::garden` — opportunistic-GC projection class on a graph-cyclicity axis. F.2 leaves the door open; no demo needs it.
+- `std::script::*` — embedded meta-language (Lua-inside-Aperio). Different question; locus-bounded guest evaluator.
+- Exchange-specific protocols (`fix`, `ouch`) — WebSocket covers the demo case.
+- NATS / TCP adapter bodies — stubs only; UDP multicast covers the demo.
+
+### Sketches landed (2026-05-10)
+
+Eight numbered examples exercise the surfaces above as pure-
+Aperio sketches. Each compiles via `aperio build` and passes
+its own `std::test::assert*` suite on run; exit 0 silent =
+green. Lifted to bundled stdlib (`crates/aperio-codegen/runtime/stdlib/`)
+when the surface settles and the path-rewrite list is updated.
+
+| Sketch | Surface | Status |
+| --- | --- | --- |
+| `examples/51-geom-segment` | `Segment` online linear-regression accumulator (`push` / `slope` / `intercept` / `count` / `clear`) | green |
+| `examples/52-window-decay` | `Ema` exponential moving average (`push` / `value` / `count` / `clear`) — discrete per-push `alpha`; time-weighted variant deferred until `std::math::exp` ships | green |
+| `examples/53-window-ring` | `Ring` 8-cap (t, v) ring buffer (`push` / `len` / `time_at` / `value_at` / `clear`); fixed cap until generic `Ring<N>` lands | green |
+| `examples/54-geom-leading-edge` | `LeadingEdge` windowed regression (ring + ephemeral Segment via `fit()`); `slope` / `intercept` / `extrapolate` | green |
+| `examples/55-geom-triangulate` | `Triangulator` parent locus accepting `LeadingEdge` children; modes `bulk` (mean) / `harmonic` (spread) / `resolution` (closest-to-mean) — the canonical hourglass-waist shape | green |
+| `examples/56-io-frame-line` | `LineFrame` line-oriented stream parser (`feed` / `next` / `lines_emitted` / `pending`); decoupled from TCP — same parser drives stdin, sockets, test buffers | green |
+| `examples/57-geom-velocity` | `Velocity` finite-difference d/dt + d²/dt² with EMA smoothing (`push` / `velocity` / `acceleration` / `count` / `clear`) | green |
+| `examples/58-stat-correlate` | `Correlator` online Pearson r² (`push` / `r_squared` / `covariance` / `count` / `clear`); `r` reported as `r²` until `std::math::sqrt` ships | green |
+
+Friction surfaced during this round logged at
+`notes/aperio-friction.md` (three entries dated 2026-05-10):
+closure-keyword-shadows-helper-ident, if-needs-block-value,
+float-surface-gaps. None blocked the sketches; each is a small
+ergonomics gap that compounds.
+
 ## How priorities are set
 
 The next milestone is chosen from friction signals — moments where

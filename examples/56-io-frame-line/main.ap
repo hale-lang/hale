@@ -1,0 +1,118 @@
+// 56-io-frame-line — std::io::frame::Line sketch.
+//
+// Line-oriented framing parser. Caller feeds in arbitrary
+// String chunks via `feed(more)`; the parser holds an
+// internal accumulator. `next()` returns the next complete
+// line (sans trailing `\n`) or "" if no line is currently
+// available. Caller calls `next()` repeatedly until "" to
+// drain available lines.
+//
+// Decoupled from any specific I/O substrate: the same Line
+// frame parser works for stdin, a TCP socket, a file read,
+// or a unit test that feeds in canned bytes. The bridging
+// between the parser and a TCP `Stream` belongs to a thin
+// adapter locus (LineSession or similar) that owns the
+// connection lifecycle.
+//
+// Lotus-first: state-bearing locus per example-30 pattern.
+// `feed` mutates the buffer; `next` consumes from it; no
+// lifecycle, no bus, no children — pure stream-state.
+//
+// Surface:
+//   - feed(more: String)              — append bytes
+//   - next() -> String                — pop next complete line
+//     (returns "" if no full line yet)
+//   - lines_emitted() -> Int          — running count
+//   - pending() -> Int                — bytes still in buffer
+
+locus LineFrame {
+    params {
+        buf: String = "";
+        emitted: Int = 0;
+    }
+
+    fn feed(more: String) {
+        self.buf = self.buf + more;
+    }
+
+    fn next() -> String {
+        let n = len(self.buf);
+        if n == 0 {
+            return "";
+        }
+        let idx = std::str::index_of(self.buf, "\n");
+        if idx < 0 {
+            return "";
+        }
+        let line = self.buf[0..idx];
+        self.buf = self.buf[(idx + 1)..n];
+        self.emitted = self.emitted + 1;
+        return line;
+    }
+
+    fn lines_emitted() -> Int {
+        return self.emitted;
+    }
+
+    fn pending() -> Int {
+        return len(self.buf);
+    }
+}
+
+fn main() {
+    // Case 1 — single feed, three complete lines, fourth
+    // incomplete.
+    let lf1 = LineFrame { };
+    lf1.feed("alpha\nbeta\ngamma\npartial");
+
+    let l1 = lf1.next();
+    std::test::assert_eq_str(l1, "alpha", "case 1: first line");
+
+    let l2 = lf1.next();
+    std::test::assert_eq_str(l2, "beta", "case 1: second line");
+
+    let l3 = lf1.next();
+    std::test::assert_eq_str(l3, "gamma", "case 1: third line");
+
+    let l4 = lf1.next();
+    std::test::assert_eq_str(l4, "", "case 1: no fourth line yet");
+
+    std::test::assert_eq_int(lf1.lines_emitted(), 3, "case 1: emitted count");
+    std::test::assert_eq_int(lf1.pending(), 7, "case 1: 'partial' = 7 bytes pending");
+
+    // Case 2 — feed the rest of the partial line.
+    lf1.feed("-done\n");
+    let l5 = lf1.next();
+    std::test::assert_eq_str(l5, "partial-done", "case 2: completed line");
+
+    let l6 = lf1.next();
+    std::test::assert_eq_str(l6, "", "case 2: nothing left");
+
+    std::test::assert_eq_int(lf1.lines_emitted(), 4, "case 2: emitted count after");
+    std::test::assert_eq_int(lf1.pending(), 0, "case 2: nothing pending");
+
+    // Case 3 — fragmented feed; line built across multiple
+    // feeds.
+    let lf2 = LineFrame { };
+    lf2.feed("hello");
+    let r1 = lf2.next();
+    std::test::assert_eq_str(r1, "", "case 3: no line yet");
+    lf2.feed(", ");
+    let r2 = lf2.next();
+    std::test::assert_eq_str(r2, "", "case 3: still no line");
+    lf2.feed("world\n");
+    let r3 = lf2.next();
+    std::test::assert_eq_str(r3, "hello, world", "case 3: line built across feeds");
+
+    // Case 4 — empty line in the middle of a stream.
+    let lf3 = LineFrame { };
+    lf3.feed("first\n\nthird\n");
+    let e1 = lf3.next();
+    std::test::assert_eq_str(e1, "first", "case 4: first");
+    let e2 = lf3.next();
+    std::test::assert_eq_str(e2, "", "case 4: empty line");
+    let e3 = lf3.next();
+    std::test::assert_eq_str(e3, "third", "case 4: third");
+
+    println("all line-frame tests passed");
+}

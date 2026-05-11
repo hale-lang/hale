@@ -28,3 +28,7 @@ docs/book/
 # Aperio app build artifacts (binaries + generated content)
 apps/*/main
 apps/*/out/
+
+# Aperio example build artifacts (compiled binaries sit next
+# to main.ap after `aperio build`).
+examples/*/main

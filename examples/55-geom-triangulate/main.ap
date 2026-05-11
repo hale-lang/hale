@@ -1,0 +1,255 @@
+// 55-geom-triangulate — std::geom::triangulate sketch.
+//
+// Multi-source position estimator. The Triangulator is a
+// parent locus that accepts LeadingEdge children — one per
+// price source / feed / sensor. Each child holds its own
+// sliding-window regression of incoming samples; the parent
+// combines those regressions through three modes:
+//
+//   - bulk:       arithmetic mean of every child's
+//                 extrapolation at t_target (the consensus
+//                 estimate; all sources weighted equally)
+//   - harmonic:   spread = max - min across children (how
+//                 much do the sources disagree at t_target)
+//   - resolution: the single child whose extrapolation is
+//                 closest to the bulk mean (most-central
+//                 source; least-outlier; the source the
+//                 cluster agrees with most)
+//
+// This is the heart of the triangulator app: each multicast
+// feed becomes a LeadingEdge child; the bulk/harmonic/
+// resolution triple is the lotus-first projection surface
+// downstream consumers query.
+//
+// Lotus-first: Triangulator IS the parent locus; LeadingEdges
+// are its children attached via accept(). Pushing happens
+// directly to the bound handle of each child; the parent
+// only reads via modes. Vertical-only flow: parent reads
+// children, children don't see siblings, children don't see
+// parent state.
+//
+// Surface (Triangulator):
+//   - accept(le: LeadingEdge)         — registers a child
+//   - mode bulk(t_target: Float) -> Float
+//   - mode harmonic(t_target: Float) -> Float
+//   - mode resolution(t_target: Float) -> Float
+
+locus Segment {
+    params {
+        n: Int = 0;
+        nf: Float = 0.0;
+        sum_x: Float = 0.0;
+        sum_y: Float = 0.0;
+        sum_xx: Float = 0.0;
+        sum_xy: Float = 0.0;
+    }
+    fn push(t: Float, v: Float) {
+        self.n = self.n + 1;
+        self.nf = self.nf + 1.0;
+        self.sum_x = self.sum_x + t;
+        self.sum_y = self.sum_y + v;
+        self.sum_xx = self.sum_xx + t * t;
+        self.sum_xy = self.sum_xy + t * v;
+    }
+    fn slope() -> Float {
+        let num = self.nf * self.sum_xy - self.sum_x * self.sum_y;
+        let den = self.nf * self.sum_xx - self.sum_x * self.sum_x;
+        return num / den;
+    }
+    fn intercept() -> Float {
+        let m = self.slope();
+        return (self.sum_y - m * self.sum_x) / self.nf;
+    }
+    fn count() -> Int {
+        return self.n;
+    }
+}
+
+locus LeadingEdge {
+    params {
+        times:  [Float; 8] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        values: [Float; 8] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        head: Int = 0;
+        n: Int = 0;
+    }
+
+    fn push(t: Float, v: Float) {
+        let mut next_t = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let mut next_v = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let mut i = 0;
+        while i < 8 {
+            if i == self.head {
+                next_t[i] = t;
+                next_v[i] = v;
+            } else {
+                next_t[i] = self.times[i];
+                next_v[i] = self.values[i];
+            }
+            i = i + 1;
+        }
+        self.times = next_t;
+        self.values = next_v;
+        self.head = (self.head + 1) % 8;
+        self.n = self.n + 1;
+    }
+
+    fn len() -> Int {
+        if self.n < 8 {
+            return self.n;
+        }
+        return 8;
+    }
+
+    fn fit() -> Segment {
+        let s = Segment { };
+        let mut i = 0;
+        let cap = self.len();
+        while i < cap {
+            let mut phys = i;
+            if self.n >= 8 {
+                phys = (self.head + i) % 8;
+            }
+            s.push(self.times[phys], self.values[phys]);
+            i = i + 1;
+        }
+        return s;
+    }
+
+    fn extrapolate(t: Float) -> Float {
+        let s = self.fit();
+        if s.count() < 2 {
+            return 0.0;
+        }
+        return s.slope() * t + s.intercept();
+    }
+}
+
+locus Triangulator {
+    accept(le: LeadingEdge) {
+        // default registration
+    }
+
+    // Mean extrapolation across all children.
+    mode bulk(t_target: Float) -> Float {
+        let mut sum = 0.0;
+        let mut count = 0.0;
+        for child in self.children {
+            sum = sum + child.extrapolate(t_target);
+            count = count + 1.0;
+        }
+        if count < 1.0 {
+            return 0.0;
+        }
+        return sum / count;
+    }
+
+    // Spread across children at t_target.
+    mode harmonic(t_target: Float) -> Float {
+        let mut lo = 1.0e18;
+        let mut hi = -1.0e18;
+        let mut count = 0;
+        for child in self.children {
+            let est = child.extrapolate(t_target);
+            if est < lo {
+                lo = est;
+            }
+            if est > hi {
+                hi = est;
+            }
+            count = count + 1;
+        }
+        if count < 1 {
+            return 0.0;
+        }
+        return hi - lo;
+    }
+
+    // The child whose extrapolation is closest to the mean.
+    // Two-pass: pass 1 computes the mean, pass 2 finds the
+    // child with min |est - mean|.
+    mode resolution(t_target: Float) -> Float {
+        let mut sum = 0.0;
+        let mut count = 0.0;
+        for child in self.children {
+            sum = sum + child.extrapolate(t_target);
+            count = count + 1.0;
+        }
+        if count < 1.0 {
+            return 0.0;
+        }
+        let mean = sum / count;
+        let mut best_dist = 1.0e18;
+        let mut best_est  = mean;
+        for child in self.children {
+            let est = child.extrapolate(t_target);
+            let dist = abs(est - mean);
+            if dist < best_dist {
+                best_dist = dist;
+                best_est  = est;
+            }
+        }
+        return best_est;
+    }
+
+    run() {
+        // Birth three feed-shaped children, push known data
+        // into each, then exercise the three modes.
+
+        // Feed 1: y = 2t (slope 2, intercept 0).
+        let f1 = LeadingEdge { };
+        f1.push(0.0, 0.0);
+        f1.push(1.0, 2.0);
+        f1.push(2.0, 4.0);
+        f1.push(3.0, 6.0);
+        f1.push(4.0, 8.0);
+
+        // Feed 2: y = 2t + 1 (slope 2, intercept 1) — parallel
+        // to feed 1 but shifted up.
+        let f2 = LeadingEdge { };
+        f2.push(0.0, 1.0);
+        f2.push(1.0, 3.0);
+        f2.push(2.0, 5.0);
+        f2.push(3.0, 7.0);
+        f2.push(4.0, 9.0);
+
+        // Feed 3: y = 2t + 2 (slope 2, intercept 2) — same
+        // slope, shifted higher.
+        let f3 = LeadingEdge { };
+        f3.push(0.0, 2.0);
+        f3.push(1.0, 4.0);
+        f3.push(2.0, 6.0);
+        f3.push(3.0, 8.0);
+        f3.push(4.0, 10.0);
+
+        // At t = 5, the three feeds extrapolate to 10, 11, 12.
+        // bulk (mean)        = 11.0
+        // harmonic (spread)  = 12 - 10 = 2.0
+        // resolution (closest-to-mean) = 11.0 (feed 2 is on the mean)
+        let b = self.bulk(5.0);
+        let h = self.harmonic(5.0);
+        let r = self.resolution(5.0);
+
+        near_eq(b, 11.0, 0.001, "triangulator bulk = mean of 10/11/12");
+        near_eq(h,  2.0, 0.001, "triangulator harmonic = spread 12-10");
+        near_eq(r, 11.0, 0.001, "triangulator resolution = closest-to-mean");
+
+        println("all triangulator tests passed");
+    }
+}
+
+fn near_eq(actual: Float, expected: Float, eps: Float, label: String) {
+    let diff = abs(actual - expected);
+    if diff < eps {
+        return;
+    }
+    println("ASSERTION FAILED: ", label);
+    println("  expected: ", to_string(expected));
+    println("  actual:   ", to_string(actual));
+    println("  diff:     ", to_string(diff));
+    println("  eps:      ", to_string(eps));
+    std::process::exit(1);
+}
+
+fn main() {
+    Triangulator { };
+}

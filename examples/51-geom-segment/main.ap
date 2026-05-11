@@ -1,0 +1,134 @@
+// 51-geom-segment — std::geom::segment sketch.
+//
+// Online linear-regression accumulator. Pushes (t, v) pairs;
+// reports slope and intercept of the least-squares fit through
+// the points pushed so far. Pure online math — no array, no
+// window; the accumulator state is six fields fitting any
+// number of points the caller has pushed.
+//
+// This is the prototype surface for `std::geom::segment` per
+// the lotus-harness arc of `docs/src/std/roadmap.md`. Lives in
+// examples/ until the surface settles; if it stays clean it
+// promotes to the bundled stdlib (geom.ap) and the codegen
+// path-rewrite list.
+//
+// Composition target: pair with a ring buffer of (t, v) for
+// sliding-window regression — push each new point, "unpush"
+// the falling-off point. This file implements the accumulator
+// only; windowing belongs to `std::window::ring`.
+//
+// Surface:
+//   - push(t: Float, v: Float)        — fold a new sample in
+//   - slope() -> Float                — least-squares slope
+//   - intercept() -> Float            — least-squares intercept
+//   - count() -> Int                  — number of points pushed
+//   - clear()                         — reset to empty
+//
+// Two count fields are kept (`n` for the human-readable Int
+// count, `nf` for the slope formula's Float arithmetic) because
+// Aperio v0 has no Int → Float coercion. Cheap.
+
+locus Segment {
+    params {
+        n: Int = 0;
+        nf: Float = 0.0;
+        sum_x: Float = 0.0;
+        sum_y: Float = 0.0;
+        sum_xx: Float = 0.0;
+        sum_xy: Float = 0.0;
+    }
+
+    fn push(t: Float, v: Float) {
+        self.n = self.n + 1;
+        self.nf = self.nf + 1.0;
+        self.sum_x = self.sum_x + t;
+        self.sum_y = self.sum_y + v;
+        self.sum_xx = self.sum_xx + t * t;
+        self.sum_xy = self.sum_xy + t * v;
+    }
+
+    // slope = (n·Σxy − Σx·Σy) / (n·Σxx − (Σx)²)
+    fn slope() -> Float {
+        let num = self.nf * self.sum_xy - self.sum_x * self.sum_y;
+        let den = self.nf * self.sum_xx - self.sum_x * self.sum_x;
+        return num / den;
+    }
+
+    // intercept = (Σy − slope·Σx) / n
+    fn intercept() -> Float {
+        let m = self.slope();
+        return (self.sum_y - m * self.sum_x) / self.nf;
+    }
+
+    fn count() -> Int {
+        return self.n;
+    }
+
+    fn clear() {
+        self.n = 0;
+        self.nf = 0.0;
+        self.sum_x = 0.0;
+        self.sum_y = 0.0;
+        self.sum_xx = 0.0;
+        self.sum_xy = 0.0;
+    }
+}
+
+// Float-tolerance comparator. std::test has no assert_eq_float
+// at v0.1 (m87), so compose via assert(cond, msg) + abs.
+fn near_eq(actual: Float, expected: Float, eps: Float, label: String) {
+    let diff = abs(actual - expected);
+    if diff < eps {
+        return;
+    }
+    println("ASSERTION FAILED: ", label);
+    println("  expected: ", to_string(expected));
+    println("  actual:   ", to_string(actual));
+    println("  diff:     ", to_string(diff));
+    println("  eps:      ", to_string(eps));
+    std::process::exit(1);
+}
+
+fn main() {
+    // Case 1 — exact line y = 2x + 1 through three points.
+    let s1 = Segment { };
+    s1.push(0.0, 1.0);
+    s1.push(1.0, 3.0);
+    s1.push(2.0, 5.0);
+    near_eq(s1.slope(),     2.0, 0.0001, "case 1: slope y=2x+1");
+    near_eq(s1.intercept(), 1.0, 0.0001, "case 1: intercept y=2x+1");
+    std::test::assert_eq_int(s1.count(), 3, "case 1: count");
+
+    // Case 2 — exact line y = -3x + 10 through four points.
+    let s2 = Segment { };
+    s2.push(0.0, 10.0);
+    s2.push(1.0, 7.0);
+    s2.push(2.0, 4.0);
+    s2.push(3.0, 1.0);
+    near_eq(s2.slope(),     -3.0, 0.0001, "case 2: slope y=-3x+10");
+    near_eq(s2.intercept(), 10.0, 0.0001, "case 2: intercept y=-3x+10");
+    std::test::assert_eq_int(s2.count(), 4, "case 2: count");
+
+    // Case 3 — noisy data; slope should be approximately the
+    // underlying trend (y = 2x + 1, plus small noise).
+    let s3 = Segment { };
+    s3.push(0.0, 1.1);
+    s3.push(1.0, 2.9);
+    s3.push(2.0, 5.05);
+    s3.push(3.0, 6.95);
+    s3.push(4.0, 9.1);
+    near_eq(s3.slope(), 2.0, 0.05, "case 3: noisy slope ~2.0");
+
+    // Case 4 — clear() resets state.
+    s1.clear();
+    std::test::assert_eq_int(s1.count(), 0, "case 4: cleared count");
+
+    // Case 5 — two-point exact line, negative slope.
+    let s4 = Segment { };
+    s4.push(1.0, 5.0);
+    s4.push(2.0, 3.0);
+    near_eq(s4.slope(),     -2.0, 0.0001, "case 5: slope of two points");
+    near_eq(s4.intercept(),  7.0, 0.0001, "case 5: intercept of two points");
+
+    println("all segment tests passed");
+}
