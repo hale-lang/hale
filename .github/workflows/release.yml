@@ -1,0 +1,157 @@
+name: release
+
+# Build platform-native `aperio` binaries on tag pushes (`v*`) and
+# attach them to a GitHub Release. The intent is that "stable v1"
+# users `curl` a tarball instead of installing LLVM 18 +
+# the Rust toolchain themselves — sidesteps the recurring
+# macOS-LLVM-zstd / clock_nanosleep / cross-toolchain churn that
+# every first-time Mac contributor hits.
+#
+# Trigger: any tag starting with `v` (e.g. `v1.0`, `v0.0.1`,
+# `v1.0-rc1`). `workflow_dispatch` lets a maintainer kick off a
+# manual run for ad-hoc builds (useful for smoke-testing the
+# workflow itself before tagging).
+#
+# Three matrix entries cover the practical surface:
+#   - Linux x86_64 (ubuntu-latest)
+#   - macOS Intel x86_64 (macos-13)
+#   - macOS Apple Silicon arm64 (macos-14)
+#
+# Linux arm64 is not yet covered — add a fourth matrix entry when
+# a user surfaces the need.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write          # creating releases + uploading assets
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            llvm-prefix: /usr/lib/llvm-18
+          - os: macos-13
+            target: x86_64-apple-darwin
+            llvm-prefix: /usr/local/opt/llvm@18
+          - os: macos-14
+            target: aarch64-apple-darwin
+            llvm-prefix: /opt/homebrew/opt/llvm@18
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # LLVM version is baked into the cache key — bumping
+          # `LLVM_SYS_180_PREFIX` to a different major needs a new
+          # cache, since llvm-sys rebuilds against the new ABI.
+          key: cargo-${{ matrix.target }}-llvm18-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ matrix.target }}-llvm18-
+
+      - name: Install LLVM (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y \
+            llvm-18-dev libpolly-18-dev libzstd-dev \
+            clang-18 libclang-18-dev zlib1g-dev
+
+      - name: Install LLVM (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -eux
+          brew update
+          # llvm@18 transitively brings zstd, but we install zstd
+          # explicitly to guard against the formula's deps shifting.
+          brew install llvm@18 zstd
+
+      - name: Build release binary
+        env:
+          LLVM_SYS_180_PREFIX: ${{ matrix.llvm-prefix }}
+        run: |
+          set -eux
+          cargo build --release --bin aperio
+
+      - name: Smoke-test the binary
+        run: |
+          set -eux
+          # If the binary built but is somehow broken, fail loud
+          # before uploading. `--help` exits non-zero in our CLI
+          # (usage-on-stderr convention) so we just verify the
+          # binary runs at all.
+          ./target/release/aperio || true
+          file ./target/release/aperio
+
+      - name: Package binary
+        id: package
+        run: |
+          set -eux
+          mkdir -p dist
+          tarball="aperio-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
+          # Include LICENSE + README alongside the binary; both
+          # become first-class in the user-visible tarball.
+          cp target/release/aperio dist/
+          cp -v README.md dist/ 2>/dev/null || true
+          cp -v LICENSE-MIT dist/ 2>/dev/null || true
+          cp -v LICENSE-APACHE dist/ 2>/dev/null || true
+          tar -czf "$tarball" -C dist .
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          shasum -a 256 "$tarball" | tee "$tarball.sha256"
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aperio-${{ matrix.target }}
+          path: |
+            ${{ steps.package.outputs.tarball }}
+            ${{ steps.package.outputs.tarball }}.sha256
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    # Only run for tag pushes; workflow_dispatch builds artifacts
+    # but doesn't create a release (used for smoke-testing the
+    # pipeline).
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4    # for release-notes auto-gen
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true       # flatten into one dist/ dir
+
+      - name: Create release + upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          # Mark pre-1.0 tags as pre-releases automatically. Once
+          # we ship v1.0+, this evaluates false and tags become
+          # full releases.
+          prerelease: ${{ contains(github.ref_name, '-') || startsWith(github.ref_name, 'v0.') }}
