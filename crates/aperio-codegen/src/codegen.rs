@@ -1079,11 +1079,28 @@ struct CapacitySlotLayout {
     /// `lotus_*_create(size, align)` call via inkwell's
     /// `size_of()` on the LLVM type.
     elem_ty: CodegenTy,
-    /// Index of the `__slot_<name>: ptr` field in the locus
-    /// struct's LLVM body. Used at instantiation (store the
-    /// create()-returned ptr here) and at dissolve (load the
-    /// ptr and call destroy()).
+    /// Index of the slot's field in the locus struct's LLVM body.
+    /// For default F.22 slots (form = None) the field is a `ptr`
+    /// holding the allocator pointer. For form-vec slots
+    /// (form = Some(SlotForm::Vec)) the field is an INLINE
+    /// `{ i64 cap, i64 len, ptr buf }` struct that lotus_vec_*
+    /// operates on by address.
     struct_field_idx: u32,
+    /// v1.x-FORM-2: which `@form(...)` lowering this slot uses.
+    /// `None` means the literal F.22 lowering (pool/heap allocator
+    /// pointer). `Some(SlotForm::Vec)` means the slot is the
+    /// inline storage for a `@form(vec)` locus.
+    form: Option<SlotForm>,
+}
+
+/// v1.x-FORM-2: which form lowering is in play for a capacity slot.
+/// Today only `Vec` exists; `HashMap` / `RingBuffer` land in FORM-4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlotForm {
+    /// `@form(vec)` — heap slot becomes an inline
+    /// `{ i64 cap, i64 len, ptr buf }` struct managed by
+    /// the `lotus_vec_*` C runtime.
+    Vec,
 }
 
 /// Maximum number of children any locus struct's built-in
@@ -1271,6 +1288,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let heap_destroy_ty = void_t.fn_type(&[ptr_t.into()], false);
         self.module
             .add_function("lotus_heap_destroy", heap_destroy_ty, None);
+
+        // v1.x-FORM-2: @form(vec) C runtime primitives. The vec lives
+        // inline as { i64 cap, i64 len, ptr buf } in the locus struct;
+        // lotus_vec_* operate on a pointer to that field.
+        //
+        // declare void  @lotus_vec_init(ptr vec)
+        // declare void  @lotus_vec_push(ptr vec, i64 elem_size, ptr elem)
+        // declare i32   @lotus_vec_get(ptr vec, i64 elem_size, i64 i, ptr out)
+        // declare i32   @lotus_vec_pop(ptr vec, i64 elem_size, ptr out)
+        // declare i64   @lotus_vec_len(ptr vec)
+        // declare i32   @lotus_vec_is_empty(ptr vec)
+        // declare void  @lotus_vec_destroy(ptr vec)
+        //
+        // get / pop / is_empty return i32 (1 = OK, 0 = err) at the C
+        // boundary. The fallible methods (get, pop) invert this at
+        // codegen time to match Aperio's i1 (true = err) ABI.
+        let i32_t = self.context.i32_type();
+        let vec_init_ty = void_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_vec_init", vec_init_ty, None);
+        let vec_push_ty =
+            void_t.fn_type(&[ptr_t.into(), i64_t.into(), ptr_t.into()], false);
+        self.module
+            .add_function("lotus_vec_push", vec_push_ty, None);
+        let vec_get_ty = i32_t.fn_type(
+            &[ptr_t.into(), i64_t.into(), i64_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module.add_function("lotus_vec_get", vec_get_ty, None);
+        let vec_pop_ty =
+            i32_t.fn_type(&[ptr_t.into(), i64_t.into(), ptr_t.into()], false);
+        self.module.add_function("lotus_vec_pop", vec_pop_ty, None);
+        let vec_len_ty = i64_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function("lotus_vec_len", vec_len_ty, None);
+        let vec_is_empty_ty = i32_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_vec_is_empty", vec_is_empty_ty, None);
+        let vec_destroy_ty = void_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_vec_destroy", vec_destroy_ty, None);
 
         // m36: string runtime helpers. Each takes a `ptr` for the
         // destination arena (where the result lives) plus the
@@ -5790,6 +5847,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // fn doesn't need to know the subscriber's specific locus
         // type to find the arena.
         let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
         llvm_field_tys.push(ptr_t.into());
         let arena_field_idx: u32 = 0;
         let mut idx: u32 = 1;
@@ -6111,12 +6169,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
 
         // F.22 capacity slots: walk every `capacity { ... }` block
-        // on this locus and append one `__slot_<name>: ptr` field
-        // per declared slot. Order is declaration order across all
-        // capacity blocks (concatenated). The slot's allocator
-        // pointer (lotus_pool_t* or lotus_heap_t*) lives in this
-        // field; per-slot create/destroy live in lower_locus_
-        // instantiation and emit_locus_arena_destroy.
+        // on this locus and append one slot field per declared slot.
+        // Order is declaration order across all capacity blocks
+        // (concatenated). Per-slot create/destroy live in
+        // lower_locus_instantiation and emit_locus_arena_destroy.
+        //
+        // Default lowering: the field is a `ptr` holding the
+        // allocator pointer (lotus_pool_t* or lotus_heap_t*).
+        //
+        // v1.x-FORM-2: if the locus carries `@form(vec)`, the heap
+        // slot becomes an inline `{ i64 cap, i64 len, ptr buf }`
+        // struct managed by the lotus_vec_* C runtime. No separate
+        // allocator pointer; the substrate lives in place.
         //
         // Restriction 1 (locus cell rejection) is also enforced
         // here at codegen — typecheck duplicates the check for
@@ -6125,6 +6189,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // (e.g. internal-test paths) AND grounds the error in
         // the same CodegenTy world the rest of codegen reasons
         // in.
+        let is_form_vec = l
+            .form
+            .as_ref()
+            .map(|f| f.name.name.as_str() == "vec")
+            .unwrap_or(false);
         let mut capacity_slots: Vec<CapacitySlotLayout> = Vec::new();
         let mut seen_slot_names: BTreeSet<String> = BTreeSet::new();
         for member in &l.members {
@@ -6167,13 +6236,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )));
                 }
                 let slot_field_idx = idx;
-                llvm_field_tys.push(ptr_t.into());
+                let form = if is_form_vec
+                    && matches!(slot.kind, CapacitySlotKind::Heap)
+                {
+                    // @form(vec): emit the inline { cap, len, buf }
+                    // struct instead of an allocator-pointer field.
+                    // Typecheck (PR3a) already verified exactly one
+                    // heap slot exists when @form(vec) is in play.
+                    let vec_struct_ty = self.context.struct_type(
+                        &[i64_t.into(), i64_t.into(), ptr_t.into()],
+                        false,
+                    );
+                    llvm_field_tys.push(vec_struct_ty.into());
+                    Some(SlotForm::Vec)
+                } else {
+                    llvm_field_tys.push(ptr_t.into());
+                    None
+                };
                 idx += 1;
                 capacity_slots.push(CapacitySlotLayout {
                     name: slot.name.name.clone(),
                     kind: slot.kind,
                     elem_ty,
                     struct_field_idx: slot_field_idx,
+                    form,
                 });
             }
         }
@@ -17260,30 +17346,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // type lays out at 8-byte alignment in the locus struct,
         // so cells inherit the same.
         for slot in &info.capacity_slots {
-            let cell_size = self
-                .llvm_basic_type(&slot.elem_ty)
-                .size_of()
-                .expect("cell type has known size at LLVM level");
-            let align_const = self.context.i64_type().const_int(8, false);
-            let create_fn_name = match slot.kind {
-                CapacitySlotKind::Pool => "lotus_pool_create",
-                CapacitySlotKind::Heap => "lotus_heap_create",
-            };
-            let create_fn = self
-                .module
-                .get_function(create_fn_name)
-                .expect("F.22 allocator extern declared");
-            let allocator_ptr = self
-                .builder
-                .build_call(
-                    create_fn,
-                    &[cell_size.into(), align_const.into()],
-                    &format!("{}.{}.create", locus_name, slot.name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .try_as_basic_value()
-                .left()
-                .expect("F.22 allocator create returns ptr");
             let slot_field_ptr = self
                 .builder
                 .build_struct_gep(
@@ -17293,9 +17355,59 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     &format!("{}.__slot_{}.ptr", locus_name, slot.name),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_store(slot_field_ptr, allocator_ptr)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+            match slot.form {
+                Some(SlotForm::Vec) => {
+                    // v1.x-FORM-2: form-vec slot. The field IS the
+                    // inline { cap, len, buf } struct; lotus_vec_init
+                    // takes its address and zeroes it in place.
+                    let init_fn = self
+                        .module
+                        .get_function("lotus_vec_init")
+                        .expect("lotus_vec_init extern declared");
+                    self.builder
+                        .build_call(
+                            init_fn,
+                            &[slot_field_ptr.into()],
+                            &format!("{}.{}.init", locus_name, slot.name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                None => {
+                    // Default F.22 lowering: allocate via
+                    // lotus_pool_create / lotus_heap_create and
+                    // store the returned allocator pointer in the
+                    // slot's ptr field.
+                    let cell_size = self
+                        .llvm_basic_type(&slot.elem_ty)
+                        .size_of()
+                        .expect("cell type has known size at LLVM level");
+                    let align_const =
+                        self.context.i64_type().const_int(8, false);
+                    let create_fn_name = match slot.kind {
+                        CapacitySlotKind::Pool => "lotus_pool_create",
+                        CapacitySlotKind::Heap => "lotus_heap_create",
+                    };
+                    let create_fn = self
+                        .module
+                        .get_function(create_fn_name)
+                        .expect("F.22 allocator extern declared");
+                    let allocator_ptr = self
+                        .builder
+                        .build_call(
+                            create_fn,
+                            &[cell_size.into(), align_const.into()],
+                            &format!("{}.{}.create", locus_name, slot.name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .try_as_basic_value()
+                        .left()
+                        .expect("F.22 allocator create returns ptr");
+                    self.builder
+                        .build_store(slot_field_ptr, allocator_ptr)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+            }
         }
 
         // Initialize each field. Overrides go through lower_expr in
@@ -18358,6 +18470,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .get(&cs.locus_name)
             .cloned()
             .expect("current_self points to a declared locus");
+        // v1.x-FORM-2 PR5: intercept synthesized @form(vec) methods
+        // on `self`. Same dispatch as the external-call site.
+        if let Some(form_result) = self.try_lower_form_vec_method(
+            &info,
+            cs.self_ptr,
+            &cs.locus_name,
+            method_name,
+            args,
+            scope,
+        )? {
+            return Ok(form_result);
+        }
         let func = info
             .user_methods
             .get(method_name)
@@ -18705,6 +18829,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     locus_name
                 ))
             })?;
+        // v1.x-FORM-2 PR5: intercept synthesized @form(vec) methods
+        // before the user_methods lookup. They aren't real LLVM fns;
+        // they lower inline to lotus_vec_* on the inline vec slot.
+        if let Some(form_result) = self.try_lower_form_vec_method(
+            &info,
+            recv_val.into_pointer_value(),
+            &locus_name,
+            method_name,
+            args,
+            scope,
+        )? {
+            return Ok(form_result);
+        }
         let func = info
             .user_methods
             .get(method_name)
@@ -19019,6 +19156,199 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // `let x = self.X.release(c);` is meaningless.
                 Ok(Some(None))
             }
+        }
+    }
+
+    /// v1.x-FORM-2 PR5: dispatch synthesized `@form(vec)` methods.
+    /// Receiver must be a `@form(vec)` locus instance (or `self`
+    /// inside such a locus). Routes to the `lotus_vec_*` C runtime
+    /// on the inline `{ cap, len, buf }` slot.
+    ///
+    /// Returns:
+    ///   Ok(None)        — receiver is not a form-vec locus, fall through
+    ///   Ok(Some(None))  — handled, void return (push)
+    ///   Ok(Some(Some))  — handled, value return (len, is_empty)
+    ///
+    /// `get` and `pop` are fallible; they land in PR6 once the
+    /// sret + i1 ABI is wired. Until then this helper emits a
+    /// "PR6 pending" diagnostic for those names.
+    fn try_lower_form_vec_method(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        locus_self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        method_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<
+        Option<Option<(BasicValueEnum<'ctx>, CodegenTy)>>,
+        CodegenError,
+    > {
+        let Some(slot) = info
+            .capacity_slots
+            .iter()
+            .find(|s| s.form == Some(SlotForm::Vec))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let is_synth = matches!(
+            method_name,
+            "push" | "get" | "pop" | "len" | "is_empty"
+        );
+        if !is_synth {
+            return Ok(None);
+        }
+
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        let i32_t = self.context.i32_type();
+        let vec_field_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                locus_self_ptr,
+                slot.struct_field_idx,
+                &format!("{}.__vec_{}.ptr", locus_name, slot.name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        match method_name {
+            "push" => {
+                if args.len() != 1 {
+                    return Err(CodegenError::Unsupported(format!(
+                        "@form(vec) `{}`.push: expects 1 arg, got {}",
+                        locus_name,
+                        args.len()
+                    )));
+                }
+                let (arg_val, arg_ty) =
+                    self.lower_expr(&args[0], scope)?;
+                if arg_ty != slot.elem_ty {
+                    return Err(CodegenError::Unsupported(format!(
+                        "@form(vec) `{}`.push arg type mismatch: \
+                         expected {:?}, got {:?}",
+                        locus_name, slot.elem_ty, arg_ty
+                    )));
+                }
+                // Materialize the arg in an alloca so we can hand
+                // its address to lotus_vec_push. The runtime
+                // memcpys elem_size bytes from this address.
+                let llvm_elem_ty =
+                    self.llvm_basic_type(&slot.elem_ty);
+                let arg_alloca = self
+                    .builder
+                    .build_alloca(
+                        llvm_elem_ty,
+                        &format!("{}.push.arg", locus_name),
+                    )
+                    .map_err(|e| {
+                        CodegenError::LlvmEmit(e.to_string())
+                    })?;
+                self.builder
+                    .build_store(arg_alloca, arg_val)
+                    .map_err(|e| {
+                        CodegenError::LlvmEmit(e.to_string())
+                    })?;
+                let elem_size = llvm_elem_ty
+                    .size_of()
+                    .expect("cell type has known size");
+                let push_fn = self
+                    .module
+                    .get_function("lotus_vec_push")
+                    .expect("lotus_vec_push extern declared");
+                self.builder
+                    .build_call(
+                        push_fn,
+                        &[
+                            vec_field_ptr.into(),
+                            elem_size.into(),
+                            arg_alloca.into(),
+                        ],
+                        &format!("{}.push.call", locus_name),
+                    )
+                    .map_err(|e| {
+                        CodegenError::LlvmEmit(e.to_string())
+                    })?;
+                Ok(Some(None))
+            }
+            "len" => {
+                if !args.is_empty() {
+                    return Err(CodegenError::Unsupported(format!(
+                        "@form(vec) `{}`.len: takes no args, got {}",
+                        locus_name,
+                        args.len()
+                    )));
+                }
+                let len_fn = self
+                    .module
+                    .get_function("lotus_vec_len")
+                    .expect("lotus_vec_len extern declared");
+                let result = self
+                    .builder
+                    .build_call(
+                        len_fn,
+                        &[vec_field_ptr.into()],
+                        &format!("{}.len.call", locus_name),
+                    )
+                    .map_err(|e| {
+                        CodegenError::LlvmEmit(e.to_string())
+                    })?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_vec_len returns i64");
+                let _ = i64_t;
+                Ok(Some(Some((result, CodegenTy::Int))))
+            }
+            "is_empty" => {
+                if !args.is_empty() {
+                    return Err(CodegenError::Unsupported(format!(
+                        "@form(vec) `{}`.is_empty: takes no args, got {}",
+                        locus_name,
+                        args.len()
+                    )));
+                }
+                let is_empty_fn = self
+                    .module
+                    .get_function("lotus_vec_is_empty")
+                    .expect("lotus_vec_is_empty extern declared");
+                let result_i32 = self
+                    .builder
+                    .build_call(
+                        is_empty_fn,
+                        &[vec_field_ptr.into()],
+                        &format!("{}.is_empty.call", locus_name),
+                    )
+                    .map_err(|e| {
+                        CodegenError::LlvmEmit(e.to_string())
+                    })?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_vec_is_empty returns i32")
+                    .into_int_value();
+                // Convert C i32 (1=true, 0=false) to Aperio i1 bool.
+                let zero = i32_t.const_int(0, false);
+                let result_i1 = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        result_i32,
+                        zero,
+                        &format!("{}.is_empty.bool", locus_name),
+                    )
+                    .map_err(|e| {
+                        CodegenError::LlvmEmit(e.to_string())
+                    })?;
+                let _ = ptr_t;
+                Ok(Some(Some((result_i1.into(), CodegenTy::Bool))))
+            }
+            "get" | "pop" => Err(CodegenError::Unsupported(format!(
+                "@form(vec) `{}`.{}: fallible synthesized method \
+                 — codegen lands in v1.x-FORM-2 PR6 (sret + i1 \
+                 ABI). Use the interpreter for now.",
+                locus_name, method_name
+            ))),
+            _ => unreachable!("is_synth guard"),
         }
     }
 
@@ -21583,29 +21913,49 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     &format!("{}.__slot_{}.ptr", locus_name, slot.name),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let allocator = self
-                .builder
-                .build_load(
-                    ptr_t,
-                    slot_field_ptr,
-                    &format!("{}.__slot_{}", locus_name, slot.name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let destroy_fn_name = match slot.kind {
-                CapacitySlotKind::Pool => "lotus_pool_destroy",
-                CapacitySlotKind::Heap => "lotus_heap_destroy",
-            };
-            let destroy_fn = self
-                .module
-                .get_function(destroy_fn_name)
-                .expect("F.22 allocator destroy extern declared");
-            self.builder
-                .build_call(
-                    destroy_fn,
-                    &[allocator.into()],
-                    &format!("{}.{}.destroy", locus_name, slot.name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            match slot.form {
+                Some(SlotForm::Vec) => {
+                    // v1.x-FORM-2: free the vec's malloc'd buffer
+                    // (if any). The struct field itself is part of
+                    // the locus and dies with the arena.
+                    let destroy_fn = self
+                        .module
+                        .get_function("lotus_vec_destroy")
+                        .expect("lotus_vec_destroy extern declared");
+                    self.builder
+                        .build_call(
+                            destroy_fn,
+                            &[slot_field_ptr.into()],
+                            &format!("{}.{}.destroy", locus_name, slot.name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                None => {
+                    let allocator = self
+                        .builder
+                        .build_load(
+                            ptr_t,
+                            slot_field_ptr,
+                            &format!("{}.__slot_{}", locus_name, slot.name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let destroy_fn_name = match slot.kind {
+                        CapacitySlotKind::Pool => "lotus_pool_destroy",
+                        CapacitySlotKind::Heap => "lotus_heap_destroy",
+                    };
+                    let destroy_fn = self
+                        .module
+                        .get_function(destroy_fn_name)
+                        .expect("F.22 allocator destroy extern declared");
+                    self.builder
+                        .build_call(
+                            destroy_fn,
+                            &[allocator.into()],
+                            &format!("{}.{}.destroy", locus_name, slot.name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+            }
         }
 
         let arena_field_ptr = self
