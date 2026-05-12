@@ -430,6 +430,11 @@ and modes; specific transports come from stdlib (`std::bus::*`).
   buffer. N appends are amortized O(N). `finish()` copies into
   the bus payload arena (program-lifetime) and frees the
   builder.
+- `lotus_str_lower(s) -> char*` / `lotus_str_upper(s) -> char*`
+  — ASCII case folding. One-pass byte-level fold; non-ASCII
+  bytes pass through unchanged. Allocates in the bus payload
+  arena. Used by `__http_request_header` for RFC 7230
+  case-insensitive lookup.
 
 ### Process control
 
