@@ -28,6 +28,20 @@ pub enum Ty {
     /// Unit / no value. The implicit return type of statements
     /// and functions without `-> ...`.
     Unit,
+    /// v1.x-FORM-1: the result type of a call to a `fallible(E)`
+    /// function. Models "either a success value of type T, or
+    /// an error has occurred carrying a payload of type E."
+    ///
+    /// A `Ty::Fallible` is NOT assignable to its success type —
+    /// the caller MUST address the error first, via an
+    /// `or`-disposition or a `match`. The typechecker rejects
+    /// bare consumption of fallible values with
+    /// `error: error not addressed`. `Expr::Or` unwraps a
+    /// fallible into its success type.
+    Fallible {
+        success: Box<Ty>,
+        payload: Box<Ty>,
+    },
     /// External or not-yet-resolved. Compatible with anything
     /// in milestone 2 — the checker is permissive about names
     /// it can't see (e.g., stdlib paths).
@@ -60,6 +74,9 @@ impl Ty {
                 format!("fn({}) -> {}", body.join(", "), ret.display())
             }
             Ty::Unit => "()".to_string(),
+            Ty::Fallible { success, payload } => {
+                format!("{} fallible({})", success.display(), payload.display())
+            }
             Ty::Unknown => "?".to_string(),
         }
     }

@@ -695,4 +695,482 @@ mod tests {
             diags
         );
     }
+
+    // === v1.x-FORM-1 PR2 fallible typecheck =============
+
+    #[test]
+    fn err_fallible_call_not_addressed_in_let() {
+        let src = r#"
+            type E { msg: String; }
+            fn parse(s: String) -> Int fallible(E) { return 0; }
+            fn main() {
+                let v = parse("42");
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| d.message.contains("error not addressed")),
+            "expected error-not-addressed diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_fallible_call_not_addressed_in_expr_stmt() {
+        let src = r#"
+            type E { }
+            fn doit() -> Int fallible(E) { return 0; }
+            fn main() {
+                doit();
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| d.message.contains("error not addressed")),
+            "expected error-not-addressed diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_fallible_addressed_via_or_raise() {
+        let src = r#"
+            type E { }
+            fn parse(s: String) -> Int fallible(E) { return 0; }
+            fn main() {
+                let v = parse("42") or raise;
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "expected clean check on `or raise`, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_fallible_addressed_via_or_substitute() {
+        let src = r#"
+            type E { }
+            fn parse(s: String) -> Int fallible(E) { return 0; }
+            fn main() {
+                let v = parse("42") or 99;
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "expected clean check on `or 99`, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_fallible_substitute_type_mismatch() {
+        let src = r#"
+            type E { }
+            fn parse(s: String) -> Int fallible(E) { return 0; }
+            fn main() {
+                let v = parse("42") or "not an int";
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("does not match success type")),
+            "expected substitute-type-mismatch diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_err_binding_in_or_substitute_rhs() {
+        let src = r#"
+            type E { code: Int; }
+            fn parse(s: String) -> Int fallible(E) { return 0; }
+            fn handle(e: E) -> Int { return e.code; }
+            fn main() {
+                let v = parse("42") or handle(err);
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "expected clean check on `or handle(err)`, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_or_on_non_fallible_expression() {
+        let src = r#"
+            fn main() {
+                let v = 1 + 1 or raise;
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("expects a fallible-typed")),
+            "expected non-fallible-or diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_fail_with_matching_payload_type() {
+        let src = r#"
+            type E { code: Int; }
+            fn parse(s: String) -> Int fallible(E) {
+                fail E { code: 1 };
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "expected clean check on matching-payload fail, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_fail_payload_type_mismatch() {
+        let src = r#"
+            type E { code: Int; }
+            type Other { msg: String; }
+            fn parse(s: String) -> Int fallible(E) {
+                fail Other { msg: "wrong type" };
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("fail: expected payload")),
+            "expected fail-payload-type-mismatch diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_right_associative_chain_typechecks() {
+        let src = r#"
+            type E { }
+            fn a() -> Int fallible(E) { return 0; }
+            fn b() -> Int fallible(E) { return 0; }
+            fn main() {
+                let v = a() or b() or raise;
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "expected clean check on chain, got: {:?}",
+            diags
+        );
+    }
+
+    // === v1.x-FORM-1 PR3 form-shape verification ========
+
+    #[test]
+    fn ok_form_vec_with_correct_shape() {
+        let src = r#"
+            @form(vec)
+            locus ItemListL {
+                capacity { heap items of Int; }
+            }
+            fn main() { ItemListL { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "expected clean check on @form(vec) with heap slot, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_form_vec_with_pool_slot() {
+        let src = r#"
+            @form(vec)
+            locus ItemListL {
+                capacity { pool items of Int; }
+            }
+            fn main() { ItemListL { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("@form(vec) requires a `heap` slot")),
+            "expected pool-rejected diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_form_vec_with_no_capacity() {
+        let src = r#"
+            @form(vec)
+            locus ItemListL {
+                params { x: Int = 0; }
+            }
+            fn main() { ItemListL { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("found no `capacity")),
+            "expected missing-capacity diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_form_vec_with_multiple_slots() {
+        let src = r#"
+            @form(vec)
+            locus L {
+                capacity {
+                    heap a of Int;
+                    heap b of Int;
+                }
+            }
+            fn main() { L { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("exactly one `heap`")),
+            "expected multiple-slots diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_form_vec_with_args() {
+        let src = r#"
+            @form(vec, cap = 64)
+            locus L {
+                capacity { heap items of Int; }
+            }
+            fn main() { L { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("@form(vec) takes no arguments")),
+            "expected vec-no-args diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_form_hashmap_not_yet_implemented() {
+        let src = r#"
+            @form(hashmap)
+            locus L {
+                capacity { pool entries of Int; }
+            }
+            fn main() { L { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("not yet implemented")),
+            "expected hashmap-deferred diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_form_unknown_name() {
+        let src = r#"
+            @form(banana)
+            locus L { }
+            fn main() { L { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| d.message.contains("unknown form")),
+            "expected unknown-form diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_locus_without_form_unaffected() {
+        // Regression guard: locus declarations without @form
+        // are completely unaffected by the form-shape checks.
+        let src = r#"
+            locus L {
+                capacity { pool entries of Int; }
+            }
+            fn main() { L { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "non-form locus regressed, got: {:?}",
+            diags
+        );
+    }
+
+    // === v1.x-FORM-1 PR3b form-method-synthesis ===========
+
+    #[test]
+    fn ok_form_vec_push_resolves() {
+        let src = r#"
+            @form(vec)
+            locus ItemListL {
+                capacity { heap items of Int; }
+            }
+            fn main() {
+                let l = ItemListL { };
+                l.push(42);
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "synthesized push should resolve, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_form_vec_get_fallible_addressed() {
+        let src = r#"
+            @form(vec)
+            locus ItemListL {
+                capacity { heap items of Int; }
+            }
+            fn main() {
+                let l = ItemListL { };
+                let v = l.get(0) or raise;
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "get + or raise should typecheck, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_form_vec_get_not_addressed() {
+        let src = r#"
+            @form(vec)
+            locus ItemListL {
+                capacity { heap items of Int; }
+            }
+            fn main() {
+                let l = ItemListL { };
+                let v = l.get(0);
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("error not addressed")),
+            "expected error-not-addressed on bare get(), got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_form_vec_pop_substitute_with_typed_err_handler() {
+        let src = r#"
+            @form(vec)
+            locus ItemListL {
+                capacity { heap items of Int; }
+            }
+            fn fallback(e: IndexError) -> Int { return -1; }
+            fn main() {
+                let l = ItemListL { };
+                let v = l.pop() or fallback(err);
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "pop + or handler(err) should typecheck (err typed as IndexError), \
+             got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_form_vec_len_and_is_empty_synthesized() {
+        let src = r#"
+            @form(vec)
+            locus ItemListL {
+                capacity { heap items of Int; }
+            }
+            fn main() {
+                let l = ItemListL { };
+                let n = l.len();
+                let e = l.is_empty();
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "synthesized len/is_empty should resolve, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_form_vec_with_struct_cell_type() {
+        // Cell type can be a user-defined struct; synthesized
+        // methods carry that T through.
+        let src = r#"
+            type Pair { x: Int; y: Int; }
+            @form(vec)
+            locus PairsL {
+                capacity { heap items of Pair; }
+            }
+            fn main() {
+                let l = PairsL { };
+                l.push(Pair { x: 1, y: 2 });
+                let p = l.get(0) or raise;
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "@form(vec) over a struct cell should typecheck, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_index_error_type_in_scope_when_form_used() {
+        // The synthesized IndexError type is callable as an
+        // ordinary type in user code when any form is used.
+        let src = r#"
+            @form(vec)
+            locus L {
+                capacity { heap items of Int; }
+            }
+            fn inspect(e: IndexError) -> Int { return e.index; }
+            fn main() { L { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "IndexError should be in scope when form is used, got: {:?}",
+            diags
+        );
+    }
 }

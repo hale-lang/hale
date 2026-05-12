@@ -569,6 +569,55 @@ Failures flow upward:
 Failures never flow laterally (sibling-to-sibling) — the
 framework's vertical-only-flow expressed at the runtime layer.
 
+## Fallible call semantics (v1.x-FORM-1)
+
+The runtime observes exactly one form of failure: closure
+violation. Value-level `fallible(T)` returns are an
+*addressing protocol* between immediate caller and callee —
+they don't constitute a separate runtime mechanism. See
+`notes/agent-onboarding/aperio-design-philosophy.md` § 2.
+
+### `fail` statement
+
+`fail <expr>;` inside a fallible fn body:
+
+1. Evaluates `<expr>` to a value `v` (typed as the fn's
+   declared payload type E).
+2. Exits the enclosing fallible fn body via the error path.
+3. The caller's `Expr::Call` sees the result as
+   `FallibleErr(v)` — a tagged value the immediate caller's
+   `or` clause is required to address.
+
+`fail` outside a fallible body is a typecheck error;
+statement-position recognition is also parser-gated to a
+fallible-body scope (so `let fail = 0;` outside such a body
+stays admissible).
+
+### `or` disposition
+
+`<expr> or <disp>` evaluates `<expr>`. If the result is a
+non-error value, that value is the expression's value
+(disposition is a no-op). If the result is `FallibleErr(p)`:
+
+- **`or raise`**: raises a closure violation carrying `p`
+  through the existing `bubble` / `on_failure` machinery.
+  The closure violation is uniform-opaque to handlers — they
+  may inspect `p` as diagnostic data but the payload is
+  consumed at the `or` site if surgical recovery is needed.
+- **`or <fallback>`**: binds `err` to `p` in scope and
+  evaluates `<fallback>`. Its result is the expression's
+  value. Type must match the success type.
+
+Chains are right-associative: `a() or b() or raise` reduces
+the value to the success type level by level.
+
+### Process exit
+
+If a closure violation bubbles past root with no `on_failure`
+catching it, the process exits with the violation's payload as
+the structured error report (same path as F.9). This is the
+*only* way the runtime ends a program against its will.
+
 ## Region lifetime guarantees
 
 Per `memory.md`:

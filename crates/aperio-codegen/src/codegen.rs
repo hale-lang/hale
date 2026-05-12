@@ -4757,6 +4757,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             },
             generics: Vec::new(),
             annotations: template.annotations.clone(),
+            form: template.form.clone(),
             members: new_members,
             span: template.span.clone(),
         })
@@ -4847,6 +4848,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .collect(),
                 ret: fd
                     .ret
+                    .as_ref()
+                    .map(|t| Self::substitute_type_expr(t, subst)),
+                fallible: fd
+                    .fallible
                     .as_ref()
                     .map(|t| Self::substitute_type_expr(t, subst)),
                 body: Self::substitute_block_type_ascriptions(
@@ -5075,6 +5080,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             &template.body,
             &subst,
         );
+        let new_fallible = template
+            .fallible
+            .as_ref()
+            .map(|t| Self::substitute_type_expr(t, &subst));
         Ok(FnDecl {
             name: Ident {
                 name: mangled_name.to_string(),
@@ -5083,6 +5092,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             generics: Vec::new(),
             params: new_params,
             ret: new_ret,
+            fallible: new_fallible,
             body: new_body,
             span: template.span.clone(),
         })
@@ -9382,6 +9392,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(BlockEnd::Open)
             }
             Stmt::Match(m) => self.lower_match_stmt(m, scope),
+            Stmt::Fail { .. } => Err(CodegenError::Unsupported(
+                "Stmt::Fail not yet lowered (v1.x-FORM-1 PR1 is parser-only; \
+                 codegen ships in PR6)"
+                    .into(),
+            )),
             Stmt::Expr(_) => Err(CodegenError::Unsupported(
                 "expression statement other than locus literal or builtin call"
                     .to_string(),

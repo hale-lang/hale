@@ -8,6 +8,59 @@
 > first; the substrate has commitments you can't see by reading
 > any one file in isolation.*
 
+## Active arc (read before picking up tools)
+
+The current implementation work is **v1.x-FORM-2** — making
+the `@form(vec)` annotation execute end-to-end. The session
+state lives in `notes/v1.x-checkpoint.md` and is your single
+canonical source for where the work stopped.
+
+What's done (commit-pending changes on the working tree):
+
+- **PR1**: lex + parse + AST for `@form(...)`, `fallible(T)`,
+  `fail <expr>;`, `<expr> or raise|<fallback>`. All four are
+  contextual keywords (lex as Ident).
+- **PR2**: `Ty::Fallible { success, payload }`; "error not
+  addressed" diagnostic; `err` implicit binding on `or`-
+  substitute RHS; `fail` body / payload-type checks.
+- **PR3a**: `@form(vec)` capacity-shape verification.
+- **PR3b**: synthesized `push`/`get`/`pop`/`len`/`is_empty`
+  on `@form(vec)` loci; `IndexError` injected as stdlib type
+  when any form is used.
+- **PR4**: `lotus_vec_*` C primitives in
+  `crates/aperio-codegen/runtime/lotus_arena.c`.
+- **PR7**: interpreter parity. End-to-end programs that use
+  `@form(vec)` + `fallible` + `or` + `fail` execute correctly
+  under `aperio run`.
+
+What's left:
+
+- **PR5**: codegen lowering for `@form(vec)` — replace the
+  heap-slot default lowering with the inline `{cap, len, buf}`
+  struct; dispatch method calls to `lotus_vec_*`.
+- **PR6**: codegen lowering for `fallible` / `fail` / `or` —
+  pick an ABI for fallible returns (likely flag + sret
+  payload), lower `fail` as return-with-error, lower
+  `or raise` as flag-check → closure-violation routing,
+  lower `or <fallback>` as flag-check → fallback eval with
+  `err` bound.
+- **PR8**: microbench harness for FORM-3 (10% gate vs
+  hand-written C).
+
+PR5 and PR6 are tightly coupled (the synthesized vec
+methods are fallible, so the disposition ABI is required for
+even a minimal end-to-end build). PR7 already validates the
+semantics — codegen is structural plumbing onto that.
+
+Canonical refs for this work:
+
+- `spec/forms.md` — full `@form(vec)` contract.
+- `notes/v1.x-checkpoint.md` — PR-by-PR status + entry points.
+- `~/.claude/projects/-home-riley-code-lotus-lang/memory/project_fallible_error_model.md`
+  — the axiom-and-motions model behind `fallible(T)`.
+- `notes/agent-onboarding/aperio-design-philosophy.md` § 2 —
+  the locked-in failure model.
+
 ## Read this first
 
 You have **zero training data** on Aperio or its compiler. The
@@ -396,7 +449,7 @@ Things you will reach for that **do not apply** here.
 | Adding a stdlib helper "for completeness" | The stdlib relieves real friction. Speculative additions create dead surface area. Wait for an entry in the friction log. |
 | Splitting a long file "for cleanliness" | `codegen.rs` is intentionally one file. Other crates are already small. If you genuinely need a new module, justify it in the commit. |
 | A trait system because "Rust does it that way" | Aperio doesn't have traits in v0 (reserved keyword, no semantics). Don't infer the language from compiler-internal Rust patterns. |
-| Adding `Option<T>` / `Result<T, E>` because they're missing | Same — the language uses sentinel values + sibling booleans. v0 doesn't have generics; sum-typed payloads are deferred. |
+| Adding `Option<T>` / `Result<T, E>` as parametric tagged enums | v1.x-FORM-1 ships `fallible(T)` as the value-level error protocol — the runtime mechanism stays closure violation (one mechanism, not two). `Option<T>` is replaced by the sentinel-with-predicate idiom (`parse_int` / `can_parse_int`) for "couldn't compute" cases. See `notes/agent-onboarding/aperio-design-philosophy.md` § 2. |
 | Renaming `lotus_*` symbols to `aperio_*` | The C-runtime symbol prefix is `lotus_*` by design. Don't "fix" it. |
 | Generalizing a feature "for future flexibility" | Don't. Aperio's substrate is small on purpose. New form is rare. |
 | Adding a feature flag for staged rollout | We have one branch and one binary; staged rollouts are deferred. Land the change or don't. |
@@ -410,7 +463,7 @@ After any compiler change:
 
 ```
 cargo build                       # whole workspace
-cargo test                        # all 343+ tests
+cargo test                        # all 551+ tests
 ```
 
 For codegen-level changes, run a representative app to confirm

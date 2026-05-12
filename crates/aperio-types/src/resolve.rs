@@ -42,12 +42,49 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
         collect_type_names(&program.items, &mut known_names, &mut diags);
     }
 
+    // v1.x-FORM-1 PR3b: pre-register form-specific stdlib type
+    // names (e.g. `IndexError` for `@form(vec)`) so that
+    // user-written `fn handle(err: IndexError)` resolves the
+    // type during pass 2. Idempotent: if the user has already
+    // declared `IndexError`, the user's declaration wins (the
+    // duplicate-name path in `insert_name` won't fire because
+    // we go through the known_names map directly here).
+    if bundle_uses_form_machinery(bundle) {
+        let zero = Span::new(0, 0);
+        known_names
+            .entry("IndexError".to_string())
+            .or_insert(zero);
+    }
+
     // Second pass: resolve and emit full TopSymbol entries.
     for program in bundle.programs.values() {
         register_top_decls(&program.items, &known_names, &mut scope, &mut diags);
     }
 
+    // v1.x-FORM-1 PR3b: inject the form-specific stdlib type
+    // structs (IndexError fields) into the scope so call sites
+    // that use them resolve. Idempotent — user-declared
+    // IndexError wins.
+    if bundle_uses_form_machinery(bundle) {
+        inject_form_stdlib_types(&mut scope);
+    }
+
     (scope, diags)
+}
+
+/// True when at least one locus in the bundle carries a
+/// `@form(...)` annotation. Used to gate stdlib-type injection
+/// so projects that don't use the form machinery don't get
+/// `IndexError` / similar names spuriously in scope.
+fn bundle_uses_form_machinery(bundle: &Bundle<'_>) -> bool {
+    fn scan_items(items: &[TopDecl]) -> bool {
+        items.iter().any(|item| match item {
+            TopDecl::Locus(l) => l.form.is_some(),
+            TopDecl::Module(m) => scan_items(&m.items),
+            _ => false,
+        })
+    }
+    bundle.programs.values().any(|p| scan_items(&p.items))
 }
 
 fn collect_type_names(
@@ -238,6 +275,7 @@ fn register_locus(
                         .map(|p| resolve_type_expr(&p.ty, known))
                         .collect(),
                     ret,
+                    fallible: None,
                 });
             }
             LocusMember::Fn(f) => {
@@ -245,6 +283,10 @@ fn register_locus(
                     Some(te) => resolve_type_expr(te, known),
                     None => Ty::Unit,
                 };
+                let fallible = f
+                    .fallible
+                    .as_ref()
+                    .map(|te| resolve_type_expr(te, known));
                 methods.push(MethodInfo {
                     name: f.name.name.clone(),
                     params: f
@@ -253,6 +295,7 @@ fn register_locus(
                         .map(|p| resolve_type_expr(&p.ty, known))
                         .collect(),
                     ret,
+                    fallible,
                 });
             }
             LocusMember::Contract(cb) => {
@@ -293,6 +336,22 @@ fn register_locus(
             for slot in &cb.slots {
                 capacity_slot_names.push(slot.name.name.clone());
             }
+        }
+    }
+
+    // v1.x-FORM-1 PR3b: synthesize standard methods for
+    // form-annotated loci. Method synthesis is form-specific:
+    // @form(vec) emits push/get/pop/len/is_empty over the cell
+    // type T derived from the heap slot. Shape-verification
+    // (PR3a) has already filtered out invalid form/capacity
+    // combinations and emitted diagnostics — here we soldier
+    // on best-effort even when the shape is invalid (returning
+    // Ty::Unknown for T) so downstream typechecks don't
+    // cascade additional errors past the form-shape diag.
+    if let Some(form) = &decl.form {
+        if form.name.name == "vec" {
+            let cell_ty = form_vec_cell_ty(decl, known);
+            synthesize_form_vec_methods(&mut methods, &cell_ty);
         }
     }
 
@@ -390,6 +449,10 @@ fn register_perspective(
                     Some(te) => resolve_type_expr(te, known),
                     None => Ty::Unit,
                 };
+                let fallible = f
+                    .fallible
+                    .as_ref()
+                    .map(|te| resolve_type_expr(te, known));
                 methods.push(MethodInfo {
                     name: f.name.name.clone(),
                     params: f
@@ -398,6 +461,7 @@ fn register_perspective(
                         .map(|p| resolve_type_expr(&p.ty, known))
                         .collect(),
                     ret,
+                    fallible,
                 });
             }
             PerspectiveMember::StableWhen(_) => {
@@ -407,6 +471,7 @@ fn register_perspective(
                     name: "is_stable".to_string(),
                     params: Vec::new(),
                     ret: Ty::Prim(PrimType::Bool),
+                    fallible: None,
                 });
             }
         }
@@ -457,10 +522,15 @@ fn register_fn(
         Some(te) => resolve_type_expr(te, known),
         None => Ty::Unit,
     };
+    let fallible = decl
+        .fallible
+        .as_ref()
+        .map(|te| resolve_type_expr(te, known));
     let sig = FnSig {
         name: decl.name.name.clone(),
         params,
         ret,
+        fallible,
         span: decl.span,
     };
     register_symbol(scope, &decl.name.name, TopSymbol::Fn(sig), decl.span, diags);
@@ -531,6 +601,112 @@ pub fn resolve_type_expr(te: &TypeExpr, known: &BTreeMap<String, Span>) -> Ty {
             }
         }
     }
+}
+
+/// v1.x-FORM-1 PR3b: derive the cell type T for a `@form(vec)`
+/// locus from its (single) heap slot. Shape verification
+/// happens in `check.rs`; this function is best-effort and
+/// returns `Ty::Unknown` when the shape is malformed so
+/// downstream typechecks don't cascade.
+fn form_vec_cell_ty(decl: &LocusDecl, known: &BTreeMap<String, Span>) -> Ty {
+    for member in &decl.members {
+        if let LocusMember::Capacity(cb) = member {
+            if let Some(slot) = cb.slots.first() {
+                return resolve_type_expr(&slot.elem_ty, known);
+            }
+        }
+    }
+    Ty::Unknown
+}
+
+/// v1.x-FORM-1 PR3b: synthesize the standard `@form(vec)`
+/// method set over cell type T. Method signatures match
+/// `spec/forms.md`:
+///   `push(x: T) -> ()`                          (infallible)
+///   `get(i: Int) -> T fallible(IndexError)`
+///   `pop() -> T fallible(IndexError)`
+///   `len() -> Int`                              (infallible)
+///   `is_empty() -> Bool`                        (infallible)
+///
+/// `IndexError` is a synthesized stdlib type; the resolver
+/// injects it into the top scope when the first form-locus
+/// is registered (see `inject_form_stdlib_types`).
+fn synthesize_form_vec_methods(methods: &mut Vec<MethodInfo>, cell_ty: &Ty) {
+    let index_err = Ty::Named("IndexError".to_string());
+    methods.push(MethodInfo {
+        name: "push".to_string(),
+        params: vec![cell_ty.clone()],
+        ret: Ty::Unit,
+        fallible: None,
+    });
+    methods.push(MethodInfo {
+        name: "get".to_string(),
+        params: vec![Ty::Prim(PrimType::Int)],
+        ret: cell_ty.clone(),
+        fallible: Some(index_err.clone()),
+    });
+    methods.push(MethodInfo {
+        name: "pop".to_string(),
+        params: Vec::new(),
+        ret: cell_ty.clone(),
+        fallible: Some(index_err),
+    });
+    methods.push(MethodInfo {
+        name: "len".to_string(),
+        params: Vec::new(),
+        ret: Ty::Prim(PrimType::Int),
+        fallible: None,
+    });
+    methods.push(MethodInfo {
+        name: "is_empty".to_string(),
+        params: Vec::new(),
+        ret: Ty::Prim(PrimType::Bool),
+        fallible: None,
+    });
+}
+
+/// v1.x-FORM-1 PR3b: inject form-specific stdlib types into the
+/// top scope so synthesized method signatures' payload types
+/// resolve. v1 injects `IndexError` (used by `@form(vec)`);
+/// future forms will inject their own payload types here.
+///
+/// Idempotent: if `IndexError` already exists in the scope
+/// (declared by user code or a stdlib `.ap` file), the
+/// injection is a no-op. This keeps the form machinery
+/// non-breaking for projects that already shipped their own
+/// IndexError shape.
+pub(crate) fn inject_form_stdlib_types(scope: &mut TopScope) {
+    if scope.symbols.contains_key("IndexError") {
+        return;
+    }
+    let zero = Span::new(0, 0);
+    scope.symbols.insert(
+        "IndexError".to_string(),
+        TopSymbol::Type(TypeInfo {
+            name: "IndexError".to_string(),
+            kind: TypeKind::Struct(vec![
+                FieldInfo {
+                    name: "kind".to_string(),
+                    ty: Ty::Prim(PrimType::String),
+                    has_default: false,
+                    span: zero,
+                },
+                FieldInfo {
+                    name: "index".to_string(),
+                    ty: Ty::Prim(PrimType::Int),
+                    has_default: false,
+                    span: zero,
+                },
+                FieldInfo {
+                    name: "len".to_string(),
+                    ty: Ty::Prim(PrimType::Int),
+                    has_default: false,
+                    span: zero,
+                },
+            ]),
+            span: zero,
+        }),
+    );
 }
 
 /// Best-effort literal-typing for params declared with a value

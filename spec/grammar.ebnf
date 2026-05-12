@@ -46,7 +46,21 @@ interface_method_sig
 
 (* === 2. Locus declaration ====================================== *)
 
-locus_decl        = "locus" , IDENTIFIER , [ locus_annotations ] ,
+(* v1.x-FORM-1: `@form(<name>, <args>...)` is a decorator-shaped
+   annotation that picks an efficient lowering and synthesizes a
+   standard method set. One form per locus in v1; composition is
+   deferred to v2. See spec/forms.md for the form library.
+
+   The `form` keyword is *contextual* — recognized only after `@`
+   in annotation-prefix position. Outside that position it's an
+   ordinary identifier. Same F.10-style narrowing the closure
+   family uses for `approx` / `within`. *)
+form_annotation   = "@" , "form" , "(" , IDENTIFIER ,
+                    { "," , form_arg } , ")" ;
+form_arg          = IDENTIFIER , "=" , expression ;
+
+locus_decl        = [ form_annotation ] , "locus" , IDENTIFIER ,
+                    [ locus_annotations ] ,
                     "{" , { locus_member } , "}" ;
 
 locus_annotations = ":" , locus_annotation , { "," , locus_annotation } ;
@@ -300,7 +314,23 @@ const_decl        = "const" , IDENTIFIER , ":" , type_expr , "=" ,
 
 function_decl     = "fn" , IDENTIFIER , [ generic_params ] ,
                     "(" , [ param_list ] , ")" ,
-                    [ "->" , type_expr ] , block ;
+                    [ "->" , type_expr ] , [ fallible_marker ] , block ;
+
+(* v1.x-FORM-1: a fallible fn's return type is "value of T, or
+   an error has occurred with payload P." Callers MUST address
+   the error via an `or` clause or a `match` (see expression
+   section); a bare call expression of fallible type is rejected
+   at typecheck with `error: error not addressed`.
+
+   The payload type P is an ordinary type expression — usually a
+   small user-defined `type` (e.g. `type ParseError { ... }`) or
+   a stdlib-supplied error type (e.g. `IndexError` from
+   @form(vec)).
+
+   `fallible` is a *contextual* keyword — recognized only
+   immediately after a function's return type and before its
+   body. Outside that position it's an ordinary identifier. *)
+fallible_marker   = "fallible" , "(" , type_expr , ")" ;
 
 param_list        = parameter , { "," , parameter } ;
 parameter         = IDENTIFIER , ":" , type_expr , [ "=" , expression ] ;
@@ -331,6 +361,7 @@ statement         = let_stmt
                   | continue_stmt
                   | yield_stmt
                   | recovery_stmt
+                  | fail_stmt
                   | block
                   | expr_stmt
                   ;
@@ -384,6 +415,16 @@ break_stmt        = "break" , ";" ;
 continue_stmt     = "continue" , ";" ;
 yield_stmt        = "yield" , ";" ;
 
+(* v1.x-FORM-1: `fail <expr>;` exits a fallible function via the
+   error path, attaching `<expr>` as the payload. Symmetric to
+   `return`: same syntactic shape, opposite exit mode. Only
+   legal inside a fallible fn body (typecheck rule).
+
+   `fail` is a *contextual* keyword — recognized only as the
+   leading token of a statement inside a fallible fn body.
+   Outside that position it's an ordinary identifier. *)
+fail_stmt         = "fail" , expression , ";" ;
+
 (* Recovery primitives. Statement-level only. *)
 recovery_stmt     = recovery_op , "(" , [ argument_list ] , ")" ,
                     [ recovery_modifier ] , ";" ;
@@ -411,7 +452,33 @@ expr_stmt         = expression , ";" ;
 
 expression        = assignment_expr ;
 
-assignment_expr   = logical_or_expr , [ assign_op , assignment_expr ] ;
+assignment_expr   = or_disposition_expr , [ assign_op , assignment_expr ] ;
+
+(* v1.x-FORM-1: `or`-disposition is the surface that addresses a
+   fallible call site's error. A bare expression of fallible
+   type — `vec.get(i)` where `get` is `fallible(IndexError)` —
+   is rejected at typecheck with `error: error not addressed`.
+   The caller addresses it with an `or` clause:
+
+     let v = vec.get(i) or raise;          (* → closure violation *)
+     let v = vec.get(i) or default;        (* → substitute *)
+     let v = vec.get(i) or handle(err);    (* → hand off; err in scope on RHS *)
+
+   `raise` is a *contextual* keyword — recognized only as the
+   immediate RHS of `or`. `err` is an *implicit binding*:
+   inside the RHS of `or`, the identifier `err` resolves to the
+   fallible call's payload value (typed as the fn's
+   fallible(T) marker). Outside that position, both are
+   ordinary identifiers.
+
+   Right-associative so `a() or b() or raise` chains as
+   `a() or (b() or raise)` — each `or` disposes one fallible
+   in turn, reducing toward a non-fallible value at the end of
+   the chain. The chain's value type is the underlying success
+   type, identical at each level. *)
+or_disposition_expr
+                  = logical_or_expr , [ or_clause ] ;
+or_clause         = "or" , ( "raise" | or_disposition_expr ) ;
 
 logical_or_expr   = logical_and_expr , { "||" , logical_and_expr } ;
 

@@ -468,6 +468,16 @@ impl Interpreter {
             }
             Stmt::Break(_) => Err(Signal::Break),
             Stmt::Continue(_) => Err(Signal::Continue),
+            Stmt::Fail { value, .. } => {
+                // v1.x-FORM-1 PR7: `fail <expr>;` evaluates the
+                // payload and exits the fallible fn body via the
+                // error path. We model this as a `Return` of a
+                // `Value::FallibleErr(payload)` — the call site
+                // sees the FallibleErr value and the immediate
+                // caller's `or` disposition handles it.
+                let payload = self.eval_expr(value)?;
+                Err(Signal::Return(Value::FallibleErr(Box::new(payload))))
+            }
             Stmt::Yield(_) => {
                 // Interpreter is single-threaded with synchronous
                 // bus dispatch — there's no pending-cell queue to
@@ -1127,6 +1137,16 @@ impl Interpreter {
                 {
                     return Ok(result);
                 }
+                // v1.x-FORM-1 PR7: `<vec-locus>.<form-method>(args)`
+                // intercepts before normal method dispatch when
+                // the receiver is a `@form(vec)` locus and the
+                // method name is one of the synthesized vec
+                // methods (push / get / pop / len / is_empty).
+                if let Some(result) =
+                    self.try_eval_form_vec_call(callee, args)?
+                {
+                    return Ok(result);
+                }
                 let callee_v = self.eval_expr(callee)?;
                 let mut arg_vs = Vec::with_capacity(args.len());
                 for a in args {
@@ -1272,6 +1292,39 @@ impl Interpreter {
                  iterator (e.g., `for i in 0..n`)"
                     .into(),
             )),
+            Expr::Or { inner, disposition, .. } => {
+                // v1.x-FORM-1 PR7: evaluate the inner. If it
+                // produced a Value::FallibleErr, apply the
+                // disposition; otherwise the inner succeeded
+                // and we pass its value through unchanged.
+                let inner_v = self.eval_expr(inner)?;
+                match inner_v {
+                    Value::FallibleErr(payload) => match disposition {
+                        OrDisposition::Raise(_) => {
+                            // `or raise` → closure violation
+                            // routed through the existing
+                            // bubble / on_failure machinery.
+                            Err(Signal::Bubble(*payload))
+                        }
+                        OrDisposition::Substitute(rhs) => {
+                            // Bind `err` to the payload in scope
+                            // and evaluate the substitute body.
+                            self.env.push();
+                            self.env.define("err", *payload);
+                            let result = self.eval_expr(rhs);
+                            self.env.pop();
+                            result
+                        }
+                    },
+                    // Inner produced a regular value — pass
+                    // through. (Typecheck rejects bare `or` on
+                    // non-fallible expressions in PR2, so we
+                    // should rarely reach this with a "useless"
+                    // or — but the no-op behavior is harmless
+                    // either way.)
+                    other => Ok(other),
+                }
+            }
         }
     }
 
@@ -1418,6 +1471,146 @@ impl Interpreter {
     /// slot call — caller falls through to ordinary dispatch.
     /// Returns Ok(Some(value)) on success (Value::Cell from
     /// acquire/alloc; Value::Unit from release/free).
+    /// v1.x-FORM-1 PR7: dispatch `<vec-locus>.push(...)` /
+    /// `.get(...)` / `.pop()` / `.len()` / `.is_empty()` against
+    /// the synthesized form-vec storage when the receiver is a
+    /// `@form(vec)` locus.
+    ///
+    /// Returns `Ok(None)` when the call doesn't match this
+    /// pattern — caller falls through to ordinary dispatch.
+    /// Returns `Ok(Some(value))` on success (including the
+    /// fallible flavor where `get` / `pop` may return
+    /// `Value::FallibleErr` on out-of-bounds / empty).
+    fn try_eval_form_vec_call(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Result<Option<Value>, Signal> {
+        let (receiver_expr, method_name) = match callee {
+            Expr::Field { receiver, name, .. } => (receiver, name.name.clone()),
+            _ => return Ok(None),
+        };
+        if !matches!(
+            method_name.as_str(),
+            "push" | "get" | "pop" | "len" | "is_empty"
+        ) {
+            return Ok(None);
+        }
+        // Evaluate the receiver and check it's a @form(vec) locus.
+        let recv_v = self.eval_expr(receiver_expr)?;
+        let handle = match recv_v {
+            Value::Locus(h) => h,
+            _ => return Ok(None),
+        };
+        let is_form_vec = handle
+            .decl
+            .form
+            .as_ref()
+            .map(|f| f.name.name == "vec")
+            .unwrap_or(false);
+        if !is_form_vec {
+            return Ok(None);
+        }
+        // Find the (single) vec-state slot. Shape verification
+        // (PR3a) guarantees exactly one heap slot on a valid
+        // @form(vec); we take the first vec-state slot we find
+        // and surface a clear error if storage is malformed.
+        let items_rc = {
+            let slots = handle.slots.borrow();
+            slots
+                .iter()
+                .find_map(|(_, st)| match st {
+                    SlotState::Vec { items } => Some(items.clone()),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    Signal::Error(format!(
+                        "@form(vec) locus `{}` has no vec-state slot \
+                         (form-shape verification should have caught this)",
+                        handle.name
+                    ))
+                })?
+        };
+        // Evaluate arguments before any mutation.
+        let mut arg_vs = Vec::with_capacity(args.len());
+        for a in args {
+            arg_vs.push(self.eval_expr(a)?);
+        }
+        match method_name.as_str() {
+            "push" => {
+                if arg_vs.len() != 1 {
+                    return Err(Signal::Error(format!(
+                        "@form(vec).push expects 1 arg, got {}",
+                        arg_vs.len()
+                    )));
+                }
+                items_rc.borrow_mut().push(arg_vs.into_iter().next().unwrap());
+                Ok(Some(Value::Unit))
+            }
+            "get" => {
+                if arg_vs.len() != 1 {
+                    return Err(Signal::Error(format!(
+                        "@form(vec).get expects 1 arg, got {}",
+                        arg_vs.len()
+                    )));
+                }
+                let i = match &arg_vs[0] {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(Signal::Error(format!(
+                            "@form(vec).get index must be Int; got {}",
+                            other.type_name()
+                        )));
+                    }
+                };
+                let items = items_rc.borrow();
+                if i < 0 || (i as usize) >= items.len() {
+                    let len = items.len() as i64;
+                    drop(items);
+                    Ok(Some(Value::FallibleErr(Box::new(
+                        index_error_value("out_of_bounds", i, len),
+                    ))))
+                } else {
+                    Ok(Some(items[i as usize].clone()))
+                }
+            }
+            "pop" => {
+                if !arg_vs.is_empty() {
+                    return Err(Signal::Error(format!(
+                        "@form(vec).pop expects 0 args, got {}",
+                        arg_vs.len()
+                    )));
+                }
+                let mut items = items_rc.borrow_mut();
+                match items.pop() {
+                    Some(v) => Ok(Some(v)),
+                    None => Ok(Some(Value::FallibleErr(Box::new(
+                        index_error_value("empty", 0, 0),
+                    )))),
+                }
+            }
+            "len" => {
+                if !arg_vs.is_empty() {
+                    return Err(Signal::Error(format!(
+                        "@form(vec).len expects 0 args, got {}",
+                        arg_vs.len()
+                    )));
+                }
+                Ok(Some(Value::Int(items_rc.borrow().len() as i64)))
+            }
+            "is_empty" => {
+                if !arg_vs.is_empty() {
+                    return Err(Signal::Error(format!(
+                        "@form(vec).is_empty expects 0 args, got {}",
+                        arg_vs.len()
+                    )));
+                }
+                Ok(Some(Value::Bool(items_rc.borrow().is_empty())))
+            }
+            _ => unreachable!("filtered at the top of the fn"),
+        }
+    }
+
     fn try_eval_capacity_slot_call(
         &mut self,
         callee: &Expr,
@@ -1452,6 +1645,12 @@ impl Interpreter {
                 Some(SlotState::Heap { elem_ty_name, .. }) => {
                     (CapacitySlotKind::Heap, elem_ty_name.clone())
                 }
+                // v1.x-FORM-1 PR7: vec slots don't expose the
+                // F.22 capacity-method surface (acquire/release/
+                // alloc/free) — they use the form-method
+                // dispatch path (push/get/pop/len/is_empty)
+                // routed elsewhere.
+                Some(SlotState::Vec { .. }) => return Ok(None),
                 None => return Ok(None),
             }
         };
@@ -1776,15 +1975,34 @@ impl Interpreter {
                         }
                         _ => None,
                     };
-                    let st = match slot.kind {
-                        CapacitySlotKind::Pool => SlotState::Pool {
-                            elem_ty_name,
-                            free: Vec::new(),
-                        },
-                        CapacitySlotKind::Heap => SlotState::Heap {
-                            elem_ty_name,
-                            live: Vec::new(),
-                        },
+                    // v1.x-FORM-1 PR7: when the enclosing locus
+                    // is `@form(vec)`, the single heap slot
+                    // becomes a contiguous vec backed by a
+                    // Rust Vec<Value>. Synthesized methods
+                    // (push/get/pop/len/is_empty) dispatch via
+                    // the form-method path in eval.rs.
+                    let is_form_vec = decl
+                        .form
+                        .as_ref()
+                        .map(|f| f.name.name == "vec")
+                        .unwrap_or(false);
+                    let st = if is_form_vec
+                        && matches!(slot.kind, CapacitySlotKind::Heap)
+                    {
+                        SlotState::Vec {
+                            items: Rc::new(RefCell::new(Vec::new())),
+                        }
+                    } else {
+                        match slot.kind {
+                            CapacitySlotKind::Pool => SlotState::Pool {
+                                elem_ty_name,
+                                free: Vec::new(),
+                            },
+                            CapacitySlotKind::Heap => SlotState::Heap {
+                                elem_ty_name,
+                                live: Vec::new(),
+                            },
+                        }
                     };
                     slots.insert(slot.name.name.clone(), st);
                 }
@@ -3074,6 +3292,7 @@ fn lookup_method(decl: &LocusDecl, name: &str) -> Option<FnDecl> {
                     generics: Vec::new(),
                     params: md.params.clone(),
                     ret: md.ret.clone(),
+                    fallible: None,
                     body: md.body.clone(),
                     span: md.span,
                 });
@@ -3311,4 +3530,19 @@ fn reduction(v: &Value, op: BinOp) -> Result<Value, String> {
 
 fn approx(l: &Value, r: &Value, tol: &Value) -> Result<Value, String> {
     approx_pass(l, r, tol).map(Value::Bool)
+}
+
+/// v1.x-FORM-1 PR7: construct an `IndexError` value matching the
+/// stdlib type synthesized by `inject_form_stdlib_types`. Used by
+/// `@form(vec).get` / `.pop` to surface a typed payload when the
+/// operation falls outside its valid index / non-empty contract.
+fn index_error_value(kind: &str, index: i64, len: i64) -> Value {
+    let mut fields: BTreeMap<String, Value> = BTreeMap::new();
+    fields.insert("kind".to_string(), Value::String(kind.to_string()));
+    fields.insert("index".to_string(), Value::Int(index));
+    fields.insert("len".to_string(), Value::Int(len));
+    Value::Struct {
+        name: "IndexError".to_string(),
+        fields: Rc::new(RefCell::new(fields)),
+    }
 }

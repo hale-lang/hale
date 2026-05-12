@@ -32,6 +32,12 @@ struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     diags: Vec<Diag>,
+    /// v1.x-FORM-1: tracks whether we're inside the body of a
+    /// fallible fn. When true, leading-statement `fail` Ident is
+    /// recognized as the fail-keyword. Outside that context,
+    /// `fail` lexes and parses as an ordinary identifier (so
+    /// `let fail = 0;` outside a fallible body stays admissible).
+    in_fallible_body: bool,
 }
 
 impl Parser {
@@ -40,6 +46,7 @@ impl Parser {
             tokens,
             pos: 0,
             diags: Vec::new(),
+            in_fallible_body: false,
         }
     }
 
@@ -275,6 +282,21 @@ impl Parser {
     }
 
     fn parse_top_decl(&mut self) -> Result<TopDecl, Diag> {
+        // v1.x-FORM-1: optional `@form(...)` annotation prefix.
+        // v1 recognizes this only as a prefix to `locus`.
+        if matches!(self.peek(), TokenKind::At) {
+            let form = self.parse_form_annotation()?;
+            if !matches!(self.peek(), TokenKind::Locus) {
+                return Err(Diag::parse(
+                    self.peek_token().span,
+                    "expected `locus` after `@form(...)` annotation",
+                ));
+            }
+            let mut locus = self.parse_locus_decl()?;
+            locus.span = form.span.merge(locus.span);
+            locus.form = Some(form);
+            return Ok(TopDecl::Locus(locus));
+        }
         match self.peek() {
             TokenKind::Locus => self.parse_locus_decl().map(TopDecl::Locus),
             TokenKind::Perspective => self.parse_perspective_decl().map(TopDecl::Perspective),
@@ -288,6 +310,44 @@ impl Parser {
                 format!("expected top-level declaration, got {:?}", other),
             )),
         }
+    }
+
+    /// v1.x-FORM-1: `@form(<name>, <args>...)`.
+    ///
+    /// The `form` keyword is contextual — recognized only after
+    /// `@` in annotation-prefix position. Outside that position
+    /// it lexes as ordinary Ident.
+    fn parse_form_annotation(&mut self) -> Result<FormAnnotation, Diag> {
+        let at = self.expect(TokenKind::At, "@")?;
+        let next = self.peek_token().clone();
+        let is_form = matches!(&next.kind, TokenKind::Ident(s) if s == "form");
+        if !is_form {
+            return Err(Diag::parse(
+                next.span,
+                "expected `form` after `@` (v1 recognizes only `@form(...)` annotations)",
+            ));
+        }
+        self.bump();
+        self.expect(TokenKind::LParen, "(")?;
+        let form_name = self.expect_ident("form name")?;
+        let mut args = Vec::new();
+        while self.eat(&TokenKind::Comma) {
+            let arg_name = self.expect_ident("form argument name")?;
+            self.expect(TokenKind::Eq, "=")?;
+            let value = self.parse_expr()?;
+            let span = arg_name.span.merge(value.span());
+            args.push(FormArg {
+                name: arg_name,
+                value,
+                span,
+            });
+        }
+        let close = self.expect(TokenKind::RParen, ")")?;
+        Ok(FormAnnotation {
+            name: form_name,
+            args,
+            span: at.span.merge(close.span),
+        })
     }
 
     // === interface =======================================
@@ -360,6 +420,7 @@ impl Parser {
             name,
             generics,
             annotations,
+            form: None,
             members,
             span: kw.span.merge(close.span),
         })
@@ -1250,15 +1311,50 @@ impl Parser {
         } else {
             None
         };
+        // v1.x-FORM-1: optional `fallible(T)` marker between
+        // return type and body. The keyword is contextual —
+        // recognized only here, as a bare ident named "fallible"
+        // followed immediately by `(`. Outside this position,
+        // `fallible` is an ordinary ident.
+        let fallible = self.parse_fallible_marker_opt()?;
+        // Push/pop fallible-body context around the body so
+        // `fail <expr>;` is recognized inside (and only inside)
+        // a fallible fn's body.
+        let prev_fallible = self.in_fallible_body;
+        self.in_fallible_body = fallible.is_some();
         let body = self.parse_block()?;
+        self.in_fallible_body = prev_fallible;
         Ok(FnDecl {
             name,
             generics,
             params,
             ret,
+            fallible,
             span: kw.span.merge(body.span),
             body,
         })
+    }
+
+    /// v1.x-FORM-1: contextual `fallible(T)` marker after a fn's
+    /// return type. Returns the payload TypeExpr when present.
+    fn parse_fallible_marker_opt(&mut self) -> Result<Option<TypeExpr>, Diag> {
+        let is_fallible = matches!(
+            self.peek(),
+            TokenKind::Ident(s) if s == "fallible"
+        );
+        if !is_fallible {
+            return Ok(None);
+        }
+        // Must be followed immediately by `(` — otherwise the
+        // ident is just a stray identifier and not a marker.
+        if !matches!(self.peek_at(1), TokenKind::LParen) {
+            return Ok(None);
+        }
+        self.bump(); // consume `fallible`
+        self.expect(TokenKind::LParen, "(")?;
+        let payload_ty = self.parse_type_expr()?;
+        self.expect(TokenKind::RParen, ")")?;
+        Ok(Some(payload_ty))
     }
 
     fn parse_module_decl(&mut self) -> Result<ModuleDecl, Diag> {
@@ -1435,6 +1531,16 @@ impl Parser {
         &mut self,
         stmts: &mut Vec<Stmt>,
     ) -> Result<Option<Expr>, Diag> {
+        // v1.x-FORM-1: `fail <expr>;` inside a fallible fn body.
+        // The keyword is contextual — only triggers when the
+        // parser is in a fallible-body scope. Outside that
+        // scope, leading-statement `fail` Ident falls through
+        // to expression parsing (so `fail();` is a call,
+        // `let fail = 0;` is a binding, etc.).
+        if self.in_fallible_body && self.peek_is_fail_kw() {
+            stmts.push(self.parse_fail_stmt()?);
+            return Ok(None);
+        }
         match self.peek() {
             TokenKind::Let
             | TokenKind::If
@@ -1456,6 +1562,27 @@ impl Parser {
             }
             _ => self.parse_expr_or_tail(stmts),
         }
+    }
+
+    /// True when peek is the contextual `fail` keyword in
+    /// statement-leading position. Used by parse_block_item to
+    /// recognize `fail <expr>;` inside a fallible fn body.
+    fn peek_is_fail_kw(&self) -> bool {
+        matches!(self.peek(), TokenKind::Ident(s) if s == "fail")
+    }
+
+    /// v1.x-FORM-1: `fail <expr>;`. Symmetric to `return` but
+    /// exits via the error path of the enclosing fallible fn.
+    /// Only reachable inside a fallible-body scope; the caller
+    /// (parse_block_item) gates that.
+    fn parse_fail_stmt(&mut self) -> Result<Stmt, Diag> {
+        let kw = self.bump(); // consume `fail` Ident
+        let value = self.parse_expr()?;
+        let semi = self.expect(TokenKind::Semi, ";")?;
+        Ok(Stmt::Fail {
+            value,
+            span: kw.span.merge(semi.span),
+        })
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, Diag> {
@@ -1878,7 +2005,10 @@ impl Parser {
         } else if self.eat(&TokenKind::DotDotEq) {
             true
         } else {
-            return Ok(lhs);
+            // No range; check for the v1.x-FORM-1 `or`-disposition
+            // postfix instead. Right-associative so
+            // `a() or b() or raise` chains correctly.
+            return self.parse_or_disposition_tail(lhs);
         };
         let rhs = self.parse_expr_bp(0)?;
         let span = lhs.span().merge(rhs.span());
@@ -1886,6 +2016,42 @@ impl Parser {
             lo: Box::new(lhs),
             hi: Box::new(rhs),
             inclusive,
+            span,
+        })
+    }
+
+    /// v1.x-FORM-1: `<expr> or <disposition>` postfix. Addresses
+    /// a fallible call site's error. The `or` keyword is
+    /// contextual — recognized in this position only (outside
+    /// of it, `or` lexes and parses as an ordinary identifier).
+    /// Right-associative: a chain `a() or b() or raise` parses
+    /// as `a() or (b() or raise)`.
+    ///
+    /// `raise` is also contextual — only as the immediate RHS
+    /// of `or`. Outside that position, `raise` is an ordinary
+    /// identifier.
+    fn parse_or_disposition_tail(&mut self, lhs: Expr) -> Result<Expr, Diag> {
+        let is_or = matches!(self.peek(), TokenKind::Ident(s) if s == "or");
+        if !is_or {
+            return Ok(lhs);
+        }
+        self.bump(); // consume `or`
+        let is_raise = matches!(self.peek(), TokenKind::Ident(s) if s == "raise");
+        let (disposition, end_span) = if is_raise {
+            let raise_tok = self.bump();
+            (OrDisposition::Raise(raise_tok.span), raise_tok.span)
+        } else {
+            // Substitute: RHS is itself a full expression (which
+            // may chain another `or` — that's how we get
+            // right-associativity).
+            let rhs = self.parse_expr()?;
+            let rhs_span = rhs.span();
+            (OrDisposition::Substitute(Box::new(rhs)), rhs_span)
+        };
+        let span = lhs.span().merge(end_span);
+        Ok(Expr::Or {
+            inner: Box::new(lhs),
+            disposition,
             span,
         })
     }
@@ -2568,5 +2734,290 @@ fn main() {
             }
             _ => panic!("expected fn"),
         }
+    }
+
+    // === v1.x-FORM-1 PR1 tests ============================
+
+    #[test]
+    fn parse_form_annotation_no_args() {
+        let src = r#"
+@form(vec)
+locus ItemListL {
+    capacity { heap items of Int; }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        match &prog.items[0] {
+            TopDecl::Locus(l) => {
+                let form = l.form.as_ref().expect("expected form annotation");
+                assert_eq!(form.name.name, "vec");
+                assert!(form.args.is_empty());
+            }
+            _ => panic!("expected locus"),
+        }
+    }
+
+    #[test]
+    fn parse_form_annotation_with_args() {
+        let src = r#"
+@form(ring_buffer, cap = 64)
+locus RecentL {
+    capacity { pool history of Int; }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        match &prog.items[0] {
+            TopDecl::Locus(l) => {
+                let form = l.form.as_ref().expect("expected form annotation");
+                assert_eq!(form.name.name, "ring_buffer");
+                assert_eq!(form.args.len(), 1);
+                assert_eq!(form.args[0].name.name, "cap");
+            }
+            _ => panic!("expected locus"),
+        }
+    }
+
+    #[test]
+    fn parse_form_rejects_non_locus_target() {
+        let src = r#"
+@form(vec)
+fn not_a_locus() { }
+"#;
+        let err = parse_str(src).expect_err("expected parse error");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("expected `locus`"),
+            "wrong error: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn parse_form_rejects_unknown_at_keyword() {
+        let src = r#"
+@derive(vec)
+locus L { }
+"#;
+        let err = parse_str(src).expect_err("expected parse error");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("expected `form`"),
+            "wrong error: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn parse_fallible_marker() {
+        let src = r#"
+type ParseError { message: string; }
+
+fn parse_int(s: string) -> Int fallible(ParseError) {
+    return 0;
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        // items[0] = type, items[1] = fn
+        match &prog.items[1] {
+            TopDecl::Fn(f) => {
+                assert_eq!(f.name.name, "parse_int");
+                let payload = f.fallible.as_ref().expect("expected fallible marker");
+                match payload {
+                    TypeExpr::Named { path, .. } => {
+                        assert_eq!(path.segments[0].name, "ParseError");
+                    }
+                    _ => panic!("expected named payload type, got {:?}", payload),
+                }
+            }
+            _ => panic!("expected fn"),
+        }
+    }
+
+    #[test]
+    fn parse_fallible_without_return_type() {
+        // `-> T` is optional; `fallible(E)` can stand alone.
+        let src = r#"
+type E { }
+
+fn f() fallible(E) {
+    return;
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        match &prog.items[1] {
+            TopDecl::Fn(f) => {
+                assert!(f.ret.is_none());
+                assert!(f.fallible.is_some());
+            }
+            _ => panic!("expected fn"),
+        }
+    }
+
+    #[test]
+    fn parse_fallible_as_ident_outside_fn_signature() {
+        // `fallible` is contextual — usable as an ordinary
+        // identifier outside fn signature return position.
+        let src = r#"
+fn main() {
+    let fallible = 42;
+}
+"#;
+        parse_str(src).expect("parse failed");
+    }
+
+    #[test]
+    fn parse_fail_stmt_inside_fallible_body() {
+        let src = r#"
+type E { code: Int; }
+
+fn f() -> Int fallible(E) {
+    fail E { code: 1 };
+    return 0;
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        match &prog.items[1] {
+            TopDecl::Fn(f) => {
+                let body = &f.body;
+                assert!(body.stmts.iter().any(|s| matches!(s, Stmt::Fail { .. })));
+            }
+            _ => panic!("expected fn"),
+        }
+    }
+
+    #[test]
+    fn parse_fail_as_ident_outside_fallible_body() {
+        // Outside a fallible fn, `fail` lexes as ident and the
+        // parser treats it as an ordinary name.
+        let src = r#"
+fn main() {
+    let fail = 42;
+}
+"#;
+        parse_str(src).expect("parse failed");
+    }
+
+    #[test]
+    fn parse_or_raise_disposition() {
+        let src = r#"
+type E { }
+fn get(i: Int) -> Int fallible(E) { return 0; }
+
+fn main() {
+    let v = get(0) or raise;
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        match &prog.items[2] {
+            TopDecl::Fn(f) => {
+                let stmt = &f.body.stmts[0];
+                match stmt {
+                    Stmt::Let { value, .. } => match value {
+                        Expr::Or {
+                            disposition: OrDisposition::Raise(_),
+                            ..
+                        } => {}
+                        other => panic!("expected raise disposition, got {:?}", other),
+                    },
+                    _ => panic!("expected let"),
+                }
+            }
+            _ => panic!("expected fn"),
+        }
+    }
+
+    #[test]
+    fn parse_or_substitute_disposition() {
+        let src = r#"
+type E { }
+fn get(i: Int) -> Int fallible(E) { return 0; }
+
+fn main() {
+    let v = get(0) or 99;
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        match &prog.items[2] {
+            TopDecl::Fn(f) => match &f.body.stmts[0] {
+                Stmt::Let {
+                    value:
+                        Expr::Or {
+                            disposition: OrDisposition::Substitute(rhs),
+                            ..
+                        },
+                    ..
+                } => {
+                    assert!(matches!(rhs.as_ref(), Expr::Literal(Literal::Int(99), _)));
+                }
+                _ => panic!("expected substitute(99) disposition"),
+            },
+            _ => panic!("expected fn"),
+        }
+    }
+
+    #[test]
+    fn parse_or_handler_call_with_err_binding() {
+        // `err` is just an ident in the AST; typecheck (PR2) is
+        // responsible for binding it to the payload. Parser
+        // accepts any expression on the substitute RHS.
+        let src = r#"
+type E { msg: string; }
+fn get(i: Int) -> Int fallible(E) { return 0; }
+fn handle(err: E) -> Int { return -1; }
+
+fn main() {
+    let v = get(0) or handle(err);
+}
+"#;
+        parse_str(src).expect("parse failed");
+    }
+
+    #[test]
+    fn parse_or_right_associative_chain() {
+        // a() or b() or raise → a() or (b() or raise)
+        let src = r#"
+type E { }
+fn a() -> Int fallible(E) { return 0; }
+fn b() -> Int fallible(E) { return 0; }
+
+fn main() {
+    let v = a() or b() or raise;
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        // Walk: outer is Or { inner: a(), disposition: Substitute(Or { inner: b(), disposition: Raise }) }
+        // items[0]=type, items[1]=fn a, items[2]=fn b, items[3]=main
+        match &prog.items[3] {
+            TopDecl::Fn(f) => match &f.body.stmts[0] {
+                Stmt::Let {
+                    value:
+                        Expr::Or {
+                            disposition: OrDisposition::Substitute(rhs),
+                            ..
+                        },
+                    ..
+                } => match rhs.as_ref() {
+                    Expr::Or {
+                        disposition: OrDisposition::Raise(_),
+                        ..
+                    } => {}
+                    other => panic!("inner should be raise disposition, got {:?}", other),
+                },
+                _ => panic!("expected outer substitute(inner) disposition"),
+            },
+            _ => panic!("expected fn"),
+        }
+    }
+
+    #[test]
+    fn parse_or_as_ident_in_non_postfix_position() {
+        // `or` is contextual — usable as an ordinary
+        // identifier when not in postfix-on-expression position.
+        let src = r#"
+fn main() {
+    let or = 5;
+}
+"#;
+        parse_str(src).expect("parse failed");
     }
 }

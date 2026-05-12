@@ -469,6 +469,113 @@ void lotus_heap_destroy(lotus_heap_t *h) {
 }
 
 /*
+ * @form(vec) substrate (v1.x-FORM-1 PR4).
+ *
+ * A contiguous, growable buffer of elements of a single fixed
+ * size. Inline in the locus's struct layout — codegen emits the
+ * three-field struct `{ cap, len, buf }` for each `heap items of T`
+ * slot under `@form(vec)`, and the functions below operate on
+ * that struct generically by taking `elem_size` (= sizeof(T))
+ * as an explicit parameter at each call site.
+ *
+ * The functions read/write the struct through a `void *` pointer
+ * to the vec's start. All `lotus_vec_<T>_t` layouts share the
+ * `{ size_t cap, size_t len, char *buf }` prefix — codegen
+ * monomorphizes the typedef per T, but the runtime sees only the
+ * common prefix. Element storage is contiguous in `buf`; the i-th
+ * element lives at `buf + i * elem_size`.
+ *
+ * Growth policy: capacity starts at 0 (no allocation at locus
+ * birth). The first `push` allocates a 4-element buffer. Each
+ * overflow doubles cap and `realloc`s. Shrink is not implemented
+ * in v1; `lotus_vec_destroy` releases the buffer at locus
+ * dissolution.
+ *
+ * Fallible operations (`get`, `pop`) return `int` (1 = success,
+ * 0 = error). Codegen in PR5/6 lifts that bool into the
+ * `Ty::Fallible { success: T, payload: IndexError }` surface the
+ * type system sees.
+ */
+
+typedef struct {
+    size_t cap;
+    size_t len;
+    char *buf;
+} lotus_vec_t;
+
+/* Initial buffer size on first push, in elements. Chosen as a
+ * small constant that avoids per-element malloc on tiny vecs
+ * without wasting space for short-lived ones. */
+#define LOTUS_VEC_INITIAL_CAP 4
+
+void lotus_vec_init(void *vec_ptr) {
+    if (!vec_ptr) return;
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    v->cap = 0;
+    v->len = 0;
+    v->buf = NULL;
+}
+
+void lotus_vec_push(void *vec_ptr, size_t elem_size, const void *elem) {
+    if (!vec_ptr || !elem) return;
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    if (v->len == v->cap) {
+        size_t new_cap = v->cap == 0 ? LOTUS_VEC_INITIAL_CAP : v->cap * 2;
+        char *new_buf = (char *)realloc(v->buf, new_cap * elem_size);
+        if (!new_buf) {
+            /* OOM. Per the design's failure surface, hardware
+             * traps re-raise as closure violations; PR5/6 wires
+             * that. For now, drop the push and signal via
+             * unchanged v (best-effort; codegen integration will
+             * add proper trap handling). */
+            return;
+        }
+        v->buf = new_buf;
+        v->cap = new_cap;
+    }
+    memcpy(v->buf + v->len * elem_size, elem, elem_size);
+    v->len += 1;
+}
+
+int lotus_vec_get(void *vec_ptr, size_t elem_size, int64_t i, void *out) {
+    if (!vec_ptr || !out) return 0;
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    if (i < 0 || (size_t)i >= v->len) return 0;
+    memcpy(out, v->buf + (size_t)i * elem_size, elem_size);
+    return 1;
+}
+
+int lotus_vec_pop(void *vec_ptr, size_t elem_size, void *out) {
+    if (!vec_ptr || !out) return 0;
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    if (v->len == 0) return 0;
+    v->len -= 1;
+    memcpy(out, v->buf + v->len * elem_size, elem_size);
+    return 1;
+}
+
+int64_t lotus_vec_len(void *vec_ptr) {
+    if (!vec_ptr) return 0;
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    return (int64_t)v->len;
+}
+
+int lotus_vec_is_empty(void *vec_ptr) {
+    if (!vec_ptr) return 1;
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    return v->len == 0 ? 1 : 0;
+}
+
+void lotus_vec_destroy(void *vec_ptr) {
+    if (!vec_ptr) return;
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    free(v->buf);
+    v->buf = NULL;
+    v->cap = 0;
+    v->len = 0;
+}
+
+/*
  * Cooperative scheduler — bus dispatch queue (m26 + m28b stage 1).
  *
  * Per The Design / lotus, every bus dispatch is a substrate

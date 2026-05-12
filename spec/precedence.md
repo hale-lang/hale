@@ -20,6 +20,7 @@ same precedence; their associativity is given in the right column.
 | 3 | `&&` | left | Logical and |
 | 2 | `\|\|` | left | Logical or |
 | 1 | `..` `..=` | non-assoc | Range (reserved; not yet permitted) |
+| 1 | `or` | right | Fallible disposition (v1.x-FORM-1; contextual). RHS is `raise` or another expression. |
 | 0 | `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` | right | Assignment |
 | -1 | `<-` | non-assoc | Bus send (statement-shape only) |
 
@@ -65,6 +66,27 @@ v0 does not provide turbofish; we'll add it if needed.
   `foo.bar`, `book.bid_side()`.
 - `::` accesses a name through a path: module, type, perspective:
   `messages::Book`, `Strategy::default()`.
+
+### Fallible disposition (`or`) binds looser than everything except assignment
+
+The `or` keyword is the fallible-disposition postfix (v1.x-
+FORM-1). It is **contextual** — recognized only when it
+appears as a postfix on an expression that the typechecker
+has marked `Ty::Fallible`. Outside that position, `or` is an
+ordinary identifier (so `let or = 5;` stays admissible).
+
+It is **right-associative** so a chain reduces step by step:
+
+```
+a() or b() or raise
+// parses as: a() or (b() or raise)
+```
+
+The RHS of `or` is either:
+- the contextual keyword `raise` (diverges via closure
+  violation routing), or
+- any expression of the success type (the substitute path;
+  `err` is implicitly bound to the payload in this scope).
 
 ### Bus send is a statement, not an expression
 
@@ -117,7 +139,13 @@ foo<T>(x)                  // generic instantiation, not (foo < T) > (x)
 Future operators expected to land at specific levels:
 
 - `..` / `..=` (range) — level 1, non-assoc
-- `?` (try / propagation) — level 13, postfix
 - `??` (nil-coalesce) — level 2, right-assoc
 
 These are reserved tokens; using them in v0 is a parse error.
+
+Note: `?` (try-propagation) was previously reserved at level
+13 but has been **cut** from the roadmap. The fallible-
+disposition operator `or` covers the same use case at the
+expression level without re-introducing a parallel
+upward-propagation mechanism at the value layer. See
+`notes/agent-onboarding/aperio-design-philosophy.md` § 2.

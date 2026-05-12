@@ -161,6 +161,7 @@ pub fn check_bundle(bundle: &Bundle<'_>, top: &TopScope) -> Vec<Diag> {
             current_locus: None,
             in_lifecycle: false,
             in_closure: false,
+            fallible_ctx: None,
         };
         for item in &program.items {
             cx.check_top_decl(item);
@@ -190,6 +191,12 @@ struct Checker<'a> {
     current_locus: Option<&'a LocusInfo>,
     in_lifecycle: bool,
     in_closure: bool,
+    /// v1.x-FORM-1: when inside a `fallible(E)` fn body, holds
+    /// `(success_ret, payload_E)`. Used to validate `return`
+    /// against the success type, `fail <expr>;` against the
+    /// payload type, and to gate the `err` implicit binding on
+    /// `or`-substitute RHS scopes.
+    fallible_ctx: Option<(Ty, Ty)>,
 }
 
 #[derive(Default)]
@@ -289,6 +296,15 @@ impl<'a> Checker<'a> {
         };
         let prev = self.current_locus.replace(info);
 
+        // v1.x-FORM-1: verify the form annotation's shape
+        // contract against the declared capacity. PR3 handles
+        // shape verification; method synthesis lands in PR3b
+        // (so call sites like `l.push(42)` still won't resolve
+        // yet — that's expected for this PR).
+        if let Some(form) = &decl.form {
+            self.check_form_shape(decl, form);
+        }
+
         // Validate that bus-subscribe handlers are declared on
         // the locus body (as fn members).
         let fn_members: BTreeMap<String, &FnDecl> = decl
@@ -327,6 +343,119 @@ impl<'a> Checker<'a> {
         }
 
         self.current_locus = prev;
+    }
+
+    /// v1.x-FORM-1: verify a `@form(<name>)` annotation's
+    /// shape contract against the locus's actual capacity
+    /// declaration. v1 ships `@form(vec)` shape checks;
+    /// other form names are rejected as "not yet implemented."
+    fn check_form_shape(&mut self, decl: &'a LocusDecl, form: &'a FormAnnotation) {
+        match form.name.name.as_str() {
+            "vec" => self.check_form_vec_shape(decl, form),
+            "hashmap" | "ring_buffer" => {
+                self.diags.push(Diag::ty(
+                    form.span,
+                    format!(
+                        "@form({}) recognized but not yet implemented \
+                         (FORM-4 work; v1 ships @form(vec) only)",
+                        form.name.name
+                    ),
+                ));
+            }
+            other => {
+                self.diags.push(Diag::ty(
+                    form.name.span,
+                    format!(
+                        "unknown form `{}`; v1 recognizes: vec, hashmap, \
+                         ring_buffer",
+                        other
+                    ),
+                ));
+            }
+        }
+    }
+
+    /// v1.x-FORM-1: `@form(vec)` requires exactly one capacity
+    /// slot, of kind `heap`, holding any cell type T. The slot
+    /// name is user-chosen and not part of the contract.
+    fn check_form_vec_shape(&mut self, decl: &'a LocusDecl, form: &'a FormAnnotation) {
+        if !form.args.is_empty() {
+            self.diags.push(Diag::ty(
+                form.span,
+                format!(
+                    "@form(vec) takes no arguments; got {} (vec has no \
+                     tuning knobs in v1 — drop the arg list)",
+                    form.args.len()
+                ),
+            ));
+        }
+        let capacity = decl.members.iter().find_map(|m| match m {
+            LocusMember::Capacity(cb) => Some(cb),
+            _ => None,
+        });
+        let cb = match capacity {
+            Some(cb) => cb,
+            None => {
+                self.diags.push(Diag::ty(
+                    form.span,
+                    "@form(vec) requires exactly one `heap` capacity slot; \
+                     found no `capacity { ... }` block on this locus"
+                        .to_string(),
+                ));
+                return;
+            }
+        };
+        match cb.slots.len() {
+            0 => {
+                self.diags.push(Diag::ty(
+                    cb.span,
+                    "@form(vec) requires exactly one `heap` capacity slot; \
+                     found an empty capacity block"
+                        .to_string(),
+                ));
+                return;
+            }
+            1 => {
+                let slot = &cb.slots[0];
+                match slot.kind {
+                    CapacitySlotKind::Heap => {
+                        // OK: the contract is satisfied.
+                        // Cell type T is whatever's declared;
+                        // PR3b synthesizes methods over it.
+                    }
+                    CapacitySlotKind::Pool => {
+                        self.diags.push(Diag::ty(
+                            slot.span,
+                            format!(
+                                "@form(vec) requires a `heap` slot; got `pool {} \
+                                 of ...`. Vec is the contiguous-growable shape; \
+                                 `pool` is the unordered free-list shape — they're \
+                                 different storage disciplines.",
+                                slot.name.name
+                            ),
+                        ));
+                    }
+                }
+                if slot.as_parent_for.is_some() {
+                    self.diags.push(Diag::ty(
+                        slot.span,
+                        "@form(vec) slot cannot also be an `as_parent_for` \
+                         override; form-lowered slots own their own allocator"
+                            .to_string(),
+                    ));
+                }
+            }
+            n => {
+                self.diags.push(Diag::ty(
+                    cb.span,
+                    format!(
+                        "@form(vec) requires exactly one `heap` capacity slot; \
+                         found {} slots. Vec is a single contiguous buffer.",
+                        n
+                    ),
+                ));
+            }
+        }
     }
 
     fn check_contract_compatibility(&mut self, parent: &LocusInfo) {
@@ -606,6 +735,16 @@ impl<'a> Checker<'a> {
         if locus.is_some() {
             self.current_locus = locus;
         }
+        // v1.x-FORM-1: push fallible_ctx if this fn is fallible.
+        let prev_fallible = self.fallible_ctx.take();
+        if let Some(payload_te) = &decl.fallible {
+            let success_ret = match &decl.ret {
+                Some(te) => resolve_type_expr(te, self.known),
+                None => Ty::Unit,
+            };
+            let payload = resolve_type_expr(payload_te, self.known);
+            self.fallible_ctx = Some((success_ret, payload));
+        }
         self.locals.push();
         for p in &decl.params {
             let ty = resolve_type_expr(&p.ty, self.known);
@@ -613,6 +752,7 @@ impl<'a> Checker<'a> {
         }
         self.check_block(&decl.body);
         self.locals.pop();
+        self.fallible_ctx = prev_fallible;
         self.current_locus = prev_locus;
     }
 
@@ -647,7 +787,7 @@ impl<'a> Checker<'a> {
     fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let { is_mut, name, ty, value, .. } => {
-                let got = self.check_expr(value);
+                let got = self.check_expr_addressed(value);
                 let bound = match ty {
                     Some(te) => {
                         let want = resolve_type_expr(te, self.known);
@@ -672,7 +812,7 @@ impl<'a> Checker<'a> {
                 );
             }
             Stmt::LetTuple { is_mut, names, ty, value, .. } => {
-                let got = self.check_expr(value);
+                let got = self.check_expr_addressed(value);
                 let elem_tys: Vec<Ty> = match (&got, ty) {
                     (Ty::Tuple(parts), _) if parts.len() == names.len() => {
                         parts.clone()
@@ -711,7 +851,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Stmt::Assign { target, value, span, .. } => {
-                let got = self.check_expr(value);
+                let got = self.check_expr_addressed(value);
                 let want = self.lvalue_ty(target);
                 if !want.assignable_from(&got) {
                     self.diags.push(Diag::ty(
@@ -774,10 +914,60 @@ impl<'a> Checker<'a> {
             }
             Stmt::Return(expr, _) => {
                 if let Some(e) = expr {
-                    let _ = self.check_expr(e);
+                    let got = self.check_expr_addressed(e);
+                    // v1.x-FORM-1: returning from a fallible fn
+                    // means returning the success value; payload
+                    // type is checked at `fail` sites instead.
+                    // Check that the returned type matches the fn's
+                    // declared success return type when in a
+                    // fallible body.
+                    if let Some((expected_ret, _)) = &self.fallible_ctx {
+                        if !expected_ret.assignable_from(&got) {
+                            self.diags.push(Diag::ty(
+                                e.span(),
+                                format!(
+                                    "return: expected `{}`, got `{}`",
+                                    expected_ret.display(),
+                                    got.display()
+                                ),
+                            ));
+                        }
+                    }
                 }
             }
             Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) => {}
+            Stmt::Fail { value, span } => {
+                // v1.x-FORM-1: `fail <expr>;` must appear inside
+                // a fallible fn body, and its payload type must
+                // match the fn's declared fallible(T) payload.
+                // The parser already gates statement-position
+                // recognition on the in-fallible-body flag, but
+                // we re-check at typecheck for completeness and
+                // to produce a clear diagnostic if a Fail node
+                // is constructed by other means (interpreter
+                // synth, future macro, etc.).
+                let payload_ty = self.check_expr_addressed(value);
+                match &self.fallible_ctx {
+                    None => self.diags.push(Diag::ty(
+                        *span,
+                        "fail: `fail <expr>;` is only valid inside a \
+                         fallible fn body (declared with `fallible(T)`)"
+                            .to_string(),
+                    )),
+                    Some((_, expected_payload)) => {
+                        if !expected_payload.assignable_from(&payload_ty) {
+                            self.diags.push(Diag::ty(
+                                value.span(),
+                                format!(
+                                    "fail: expected payload type `{}`, got `{}`",
+                                    expected_payload.display(),
+                                    payload_ty.display()
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
             Stmt::Block(b) => self.check_block(b),
             Stmt::Recovery { args, modifier, .. } => {
                 for a in args {
@@ -788,7 +978,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Stmt::Expr(e) => {
-                let _ = self.check_expr(e);
+                let _ = self.check_expr_addressed(e);
             }
         }
     }
@@ -1288,9 +1478,20 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
-                match callee_ty {
+                let base_ret = match callee_ty {
                     Ty::Function { ret, .. } => *ret,
                     _ => Ty::Unknown,
+                };
+                // v1.x-FORM-1: if the callee resolves to a
+                // fallible fn, wrap the result type so the
+                // caller is forced to address the error.
+                if let Some(payload) = self.callee_fallible_payload(callee) {
+                    Ty::Fallible {
+                        success: Box::new(base_ret),
+                        payload: Box::new(payload),
+                    }
+                } else {
+                    base_ret
                 }
             }
             Expr::Field { receiver, name, span } => {
@@ -1403,6 +1604,70 @@ impl<'a> Checker<'a> {
                 let _ = self.check_expr(hi);
                 Ty::Unknown
             }
+            Expr::Or { inner, disposition, span } => {
+                let inner_ty = self.check_expr(inner);
+                // Unwrap the fallible to get success + payload
+                // types. If the inner isn't actually fallible,
+                // the `or` clause is a no-op at best and likely
+                // a user mistake.
+                let (success, payload) = match inner_ty {
+                    Ty::Fallible { success, payload } => (*success, *payload),
+                    Ty::Unknown => (Ty::Unknown, Ty::Unknown),
+                    other => {
+                        self.diags.push(Diag::ty(
+                            inner.span(),
+                            format!(
+                                "`or` disposition expects a fallible-typed \
+                                 expression on the left; got `{}` (not fallible). \
+                                 Drop the `or` clause if the call can't fail.",
+                                other.display()
+                            ),
+                        ));
+                        return other;
+                    }
+                };
+                match disposition {
+                    OrDisposition::Raise(_) => {
+                        // `or raise` diverges via closure
+                        // violation; expression's value type is
+                        // the success type.
+                        success
+                    }
+                    OrDisposition::Substitute(rhs) => {
+                        // The implicit `err` binding is in scope
+                        // on the RHS, typed as the payload type.
+                        self.locals.push();
+                        self.locals.insert(
+                            "err",
+                            LocalSym {
+                                ty: payload.clone(),
+                                is_mut: false,
+                            },
+                        );
+                        let rhs_ty = self.check_expr(rhs);
+                        self.locals.pop();
+                        // The substitute RHS must produce a
+                        // value of the success type (or be a
+                        // nested `or` that ultimately produces
+                        // one). Permissive on Unknown so we
+                        // don't false-positive when the
+                        // typechecker can't see through a
+                        // stdlib path.
+                        if !success.assignable_from(&rhs_ty) {
+                            self.diags.push(Diag::ty(
+                                *span,
+                                format!(
+                                    "`or <substitute>`: fallback type `{}` \
+                                     does not match success type `{}`",
+                                    rhs_ty.display(),
+                                    success.display()
+                                ),
+                            ));
+                        }
+                        success
+                    }
+                }
+            }
         }
     }
 
@@ -1411,6 +1676,75 @@ impl<'a> Checker<'a> {
     /// it's identical; named to mark intent at the call sites.)
     fn check_expr_local(&mut self, expr: &Expr) -> Ty {
         self.check_expr(expr)
+    }
+
+    /// v1.x-FORM-1: check an expression that's expected to
+    /// produce a regular (non-fallible) value. If the expression
+    /// is fallible-typed at its outermost level, emit an
+    /// `error not addressed` diagnostic and return the
+    /// (would-be) success type so downstream typechecks can
+    /// continue without cascading errors.
+    fn check_expr_addressed(&mut self, expr: &Expr) -> Ty {
+        let ty = self.check_expr(expr);
+        match ty {
+            Ty::Fallible { success, .. } => {
+                self.diags.push(Diag::ty(
+                    expr.span(),
+                    "error not addressed: this expression's fallible result \
+                     must be handled with an `or` clause (`or raise`, \
+                     `or <fallback>`, `or handler(err)`) or a `match`"
+                        .to_string(),
+                ));
+                *success
+            }
+            other => other,
+        }
+    }
+
+    /// v1.x-FORM-1: if `callee` is a name reference resolving to
+    /// a known fallible fn (or method on a locus / perspective),
+    /// return the fn's payload type. Returns None for non-fn
+    /// callees or non-fallible callees — caller uses the result
+    /// to decide whether to wrap the call's return in
+    /// `Ty::Fallible`.
+    fn callee_fallible_payload(&mut self, callee: &Expr) -> Option<Ty> {
+        match callee {
+            Expr::Ident(id) => match self.top.lookup(&id.name)? {
+                TopSymbol::Fn(sig) => sig.fallible.clone(),
+                _ => None,
+            },
+            Expr::Path(qn) if qn.segments.len() == 1 => {
+                match self.top.lookup(&qn.segments[0].name)? {
+                    TopSymbol::Fn(sig) => sig.fallible.clone(),
+                    _ => None,
+                }
+            }
+            // v1.x-FORM-1 PR3b: method calls like `l.get(i)`. The
+            // callee is a Field expression whose receiver resolves
+            // to a locus/perspective; we look up the method by
+            // name on that type and inspect its fallibility.
+            Expr::Field { receiver, name, .. } => {
+                let rt = self.check_expr_local(receiver);
+                let type_name = match rt {
+                    Ty::Named(n) => n,
+                    _ => return None,
+                };
+                match self.top.lookup(&type_name)? {
+                    TopSymbol::Locus(info) => info
+                        .methods
+                        .iter()
+                        .find(|m| m.name == name.name)
+                        .and_then(|m| m.fallible.clone()),
+                    TopSymbol::Perspective(info) => info
+                        .methods
+                        .iter()
+                        .find(|m| m.name == name.name)
+                        .and_then(|m| m.fallible.clone()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     /// Whether a value of type `t` can be auto-coerced to String

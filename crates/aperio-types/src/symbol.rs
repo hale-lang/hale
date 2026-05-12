@@ -99,6 +99,12 @@ pub struct MethodInfo {
     pub name: String,
     pub params: Vec<Ty>,
     pub ret: Ty,
+    /// v1.x-FORM-1: payload type when the method was declared
+    /// (or synthesized) `fallible(E)`. Mirrors `FnSig.fallible`
+    /// for top-level fns; lets method-call sites produce
+    /// `Ty::Fallible` so the caller is forced to address the
+    /// error with `or` / `match`.
+    pub fallible: Option<Ty>,
 }
 
 #[derive(Debug, Clone)]
@@ -188,5 +194,10 @@ pub struct FnSig {
     pub name: String,
     pub params: Vec<(String, Ty)>,
     pub ret: Ty,
+    /// v1.x-FORM-1: payload type when the fn was declared
+    /// `-> T fallible(E)`. Calls to fallible fns produce a
+    /// [`Ty::Fallible { success: ret, payload: this }`] result
+    /// that the caller must address via `or` or `match`.
+    pub fallible: Option<Ty>,
     pub span: Span,
 }

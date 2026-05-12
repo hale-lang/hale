@@ -193,6 +193,54 @@ codegen. Listed under cooperative-scheduler keywords.
 yield
 ```
 
+### Fallible / error-addressing keywords (v1.x-FORM-1)
+
+```
+fallible        fail            or              raise
+```
+
+All four are **contextual keywords**, recognized only in the
+positions described below. Outside those positions they lex as
+ordinary `Ident` tokens, so existing code that uses
+`let fail = ...`, `fn or_else(...)`, or `let raise = ...` stays
+admissible.
+
+- **`fallible`** — recognized only immediately after a function
+  declaration's return type and before its body, in the
+  `fallible_marker = "fallible" "(" type_expr ")"` production.
+  Marks the function as one whose call sites MUST address the
+  error.
+- **`fail`** — recognized only as the leading token of a
+  statement inside a fallible-fn body. Exits via the error
+  path, attaching the expression as the typed payload.
+  Symmetric to `return`.
+- **`or`** — recognized as a postfix on any expression of
+  fallible type (the `or_clause` production). Three RHS forms:
+  `or raise` (convert to closure violation), `or <expression>`
+  (substitute), `or <handler-call>` (hand off).
+- **`raise`** — recognized only as the immediate RHS of `or`.
+  Diverges the expression by raising a closure violation
+  carrying the fallible's payload. The closure violation is
+  uniform-opaque to `on_failure` handlers; the typed payload
+  is consumed at the `or` site (or attached as diagnostic data
+  on the violation).
+
+The implicit binding `err` is in scope on the RHS of an `or`
+clause and resolves to the fallible call's payload value
+(typed as the fn's `fallible(T)` marker). This is a typecheck
+rule, not a lexer rule — `err` lexes as an ordinary identifier
+everywhere; the typechecker just introduces it as a binding in
+the `or` RHS scope.
+
+Rule of thumb for use:
+- A stdlib fn whose failure carries useful diagnostic context
+  returns `fallible(T)` with a named payload type T.
+- A stdlib fn whose "failure" is a benign not-found case (and
+  whose successful value has a natural default like 0 or "")
+  uses the sentinel-with-discriminator idiom instead
+  (`parse_int` / `can_parse_int`). Not every stdlib fn is
+  fallible — the marker is reserved for true error paths.
+
 ## Operators
 
 ### Arithmetic
@@ -264,10 +312,29 @@ arguments. The parser disambiguates contextually.)
 ;   ,   {   }
 ```
 
+### Annotation prefix (v1.x-FORM-1)
+
+```
+@
+```
+
+`@` introduces a decorator-shaped annotation that decorates the
+declaration immediately following it. v1 recognizes one such
+annotation: `@form(<name>, <args>...)`, which sits above a
+`locus` declaration and picks an efficient lowering (see
+`spec/forms.md`).
+
+Lexically, `@` is a single-character punctuation token. The
+parser routes the following `form` ident as a contextual
+keyword in this position only.
+
+Reserved for future annotation surfaces; user-defined
+annotations are not in v1.
+
 ### Reserved (no v0 meaning)
 
 ```
-@   #   $   ?   ??  ?:
+#   $   ?   ??  ?:
 ```
 
 ## Literals

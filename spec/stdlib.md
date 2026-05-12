@@ -574,6 +574,25 @@ package ecosystem (TBD: how packages work, where they live).
    independently? Probably with the language for v0; consider
    independent versioning when stable.
 
+## Form-synthesized types (v1.x-FORM-1)
+
+Beyond the explicit `std::*` namespace, the resolver injects
+form-specific error/payload types into the top scope when any
+locus in the bundle uses the corresponding form. These behave
+like ordinary user types after injection — they can be the
+target of `fallible(...)`, declared as fn parameters / fields,
+or pattern-matched in `match`. They are NOT importable via
+`std::*` (they are not in a namespace); their names live at
+the top level.
+
+| Form         | Synthesized type | Fields |
+|--------------|------------------|--------|
+| `@form(vec)` | `IndexError`     | `kind: String`, `index: Int`, `len: Int` |
+
+Idempotency: if a user / library declares a type with the same
+name, the user declaration wins. The injection only runs if the
+target name is not already in scope.
+
 ## Why batteries-included
 
 The user's note: "I like the batteries included approach of Go."

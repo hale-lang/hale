@@ -70,6 +70,18 @@ pub enum Value {
     Fn(FnRef),
     /// Builtin function (println, print, etc.).
     Builtin(BuiltinRef),
+    /// v1.x-FORM-1 PR7: an error has occurred. Produced when a
+    /// fallible fn body executes `fail <expr>;`; consumed by
+    /// the immediate caller's `or` disposition (raise →
+    /// closure violation, substitute → fallback value).
+    ///
+    /// This value SHOULD never escape the immediate caller — if
+    /// it does, it indicates a typecheck escape (the
+    /// `error not addressed` check missed something) or a
+    /// programming bug; the interpreter surfaces it as a clear
+    /// error so the issue gets reported rather than silently
+    /// papered over.
+    FallibleErr(Box<Value>),
 }
 
 /// F.22 capacity-slot runtime state (interpreter side). Lives
@@ -98,6 +110,15 @@ pub enum SlotState {
         /// All currently-allocated cells. alloc pushes; free
         /// removes by Rc::ptr_eq.
         live: Vec<Rc<RefCell<Value>>>,
+    },
+    /// v1.x-FORM-1 PR7: `@form(vec)` storage. The locus's
+    /// single heap slot is replaced with a contiguous Vec of
+    /// values. The synthesized methods (push / get / pop / len
+    /// / is_empty) operate on this slot directly via the
+    /// form-method dispatch path in eval.rs; codegen lowers
+    /// the same shape to `lotus_vec_*` primitives.
+    Vec {
+        items: Rc<RefCell<Vec<Value>>>,
     },
 }
 
@@ -219,6 +240,7 @@ impl Value {
             Value::Cell { .. } => "Cell",
             Value::Fn(_) => "Fn",
             Value::Builtin(_) => "Builtin",
+            Value::FallibleErr(_) => "FallibleErr",
         }
     }
 
@@ -265,6 +287,9 @@ impl Value {
             }
             Value::Fn(_) => "<fn>".to_string(),
             Value::Builtin(b) => format!("<builtin {}>", b.name),
+            Value::FallibleErr(payload) => {
+                format!("<error: {}>", payload.display())
+            }
         }
     }
 

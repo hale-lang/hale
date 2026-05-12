@@ -365,6 +365,87 @@ declaration types as:
 A closure failure at evaluation produces a typed
 `ClosureViolation` event (per F.9), not a generic error.
 
+## Fallible typing (v1.x-FORM-1)
+
+A function declared `-> T fallible(E)` produces a value of
+type `T fallible(E)` at every call site. This type cannot be
+used where a plain `T` is expected — the caller MUST address
+the error before the value is consumable. See
+`notes/agent-onboarding/aperio-design-philosophy.md` § 2 for
+the design rationale.
+
+### `Ty::Fallible { success, payload }`
+
+The checker represents fallible returns as a wrapper around
+the underlying success type:
+
+| Source                       | Inferred type                       |
+|------------------------------|-------------------------------------|
+| `fn f() -> T fallible(E)`    | `f()` has type `Ty::Fallible { success: T, payload: E }` |
+| `match` / `or` on fallible   | unwraps to `T`                      |
+
+A `Ty::Fallible` is **not assignable** to its success type. It
+must be unwrapped at the immediate call site. The checker
+emits `error: error not addressed` at:
+
+- `let v = f();` with `f` fallible
+- `let v: T = f();` with `f` fallible (typed binding)
+- `f();` as an expression statement
+- `g(f())` — fallible passed as a non-fallible-typed arg
+- assignment, return, condition positions
+
+### Disposition operators (`or`)
+
+`<expr> or raise`
+: Convert the error to a closure violation (the runtime
+  mechanism). Evaluates the inner; on `FallibleErr` payload,
+  raises `Signal::Bubble(payload)` which routes through
+  `bubble` / `on_failure`. On success, passes the inner value
+  through. The resulting expression's type is the success
+  type T.
+
+`<expr> or <fallback>`
+: Substitute a fallback value of type T. On failure, evaluates
+  the fallback expression with `err` implicitly bound to the
+  payload (typed as E). On success, passes through. Fallback
+  type must be assignable to T.
+
+The `or` operator is right-associative: `a() or b() or raise`
+parses as `a() or (b() or raise)`, so each level disposes one
+fallible in turn until a non-fallible value remains.
+
+### `fail` statement
+
+`fail <expr>;` is only valid inside a fallible fn body. It
+evaluates `<expr>`, requires the result type to match the fn's
+declared payload type E, and exits via the error path (the
+caller sees a `FallibleErr` value).
+
+### Custom payload types
+
+The payload E is an ordinary type expression — usually a small
+user-defined record (`type ParseError { ... }`) or a stdlib-
+synthesized type. The runtime / typechecker does NOT impose a
+common base — there is no `Error` trait, no `impl Error for
+ParseError`. Failure is a single anonymous fact; the payload is
+just a value tagged onto the failure for diagnostic purposes.
+
+### Synthesized `IndexError` (form-vec)
+
+When any locus in the bundle uses `@form(vec)`, the resolver
+injects an `IndexError` type into the top scope:
+
+```aperio
+type IndexError {
+    kind: String;   // "out_of_bounds" or "empty"
+    index: Int;     // requested index (0 for empty-pop)
+    len: Int;       // vec len at fail time
+}
+```
+
+User-declared `IndexError` wins (the injection is idempotent
+and first-come).
+
 ## Recovery-primitive typing
 
 Recovery primitives (`restart`, `restart_in_place`,

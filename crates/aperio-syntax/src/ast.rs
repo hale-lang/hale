@@ -82,7 +82,35 @@ pub struct LocusDecl {
     /// emit no LLVM IR directly.
     pub generics: Vec<GenericParam>,
     pub annotations: Vec<LocusAnnotation>,
+    /// v1.x-FORM-1: optional `@form(<name>, <args>...)` annotation
+    /// that sits above the `locus` keyword. Picks an efficient
+    /// lowering and synthesizes a standard method set. One form
+    /// per locus in v1.
+    pub form: Option<FormAnnotation>,
     pub members: Vec<LocusMember>,
+    pub span: Span,
+}
+
+/// v1.x-FORM-1: `@form(<name>, <args>...)` annotation.
+///
+/// Decorates a locus declaration above the `locus` keyword. The
+/// `name` identifies one of the compiler-recognized forms
+/// (`vec`, `hashmap`, `ring_buffer` in v1). The optional `args`
+/// are keyword-style configuration the form's runtime consults
+/// (e.g. `cap = 64` for `@form(ring_buffer)`); storage-discipline
+/// configuration goes on capacity slot clauses instead (e.g.
+/// `indexed_by name` for `@form(hashmap)`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormAnnotation {
+    pub name: Ident,
+    pub args: Vec<FormArg>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormArg {
+    pub name: Ident,
+    pub value: Expr,
     pub span: Span,
 }
 
@@ -398,6 +426,13 @@ pub struct FnDecl {
     pub generics: Vec<GenericParam>,
     pub params: Vec<Param>,
     pub ret: Option<TypeExpr>,
+    /// v1.x-FORM-1: optional `fallible(T)` marker. When present,
+    /// the fn can fail with a payload of type T; call sites
+    /// MUST address the error via an `or` clause (see
+    /// [`Expr::Or`]) or a `match`. Inside the body, `fail <expr>`
+    /// (see [`Stmt::Fail`]) exits via the error path with the
+    /// expression as the typed payload.
+    pub fallible: Option<TypeExpr>,
     pub body: Block,
     pub span: Span,
 }
@@ -543,6 +578,15 @@ pub enum Stmt {
     Return(Option<Expr>, Span),
     Break(Span),
     Continue(Span),
+    /// v1.x-FORM-1: `fail <expr>;` — symmetric to `return` but
+    /// exits via the error path of a fallible fn. The expression
+    /// is the typed payload; the fn must be declared
+    /// `fallible(T)` and the payload type must match T at
+    /// typecheck.
+    Fail {
+        value: Expr,
+        span: Span,
+    },
     /// Explicit cooperative yield point (m26b). `yield;` drains the
     /// program-wide bus queue at this point, processing any
     /// pending substrate cells. Per spec/runtime.md cooperative
@@ -751,6 +795,36 @@ pub enum Expr {
         count: u64,
         span: Span,
     },
+    /// v1.x-FORM-1: `<inner> or <disposition>` — addresses the
+    /// error of a fallible call. `inner` must be of fallible
+    /// type at typecheck; `disposition` is either `raise`
+    /// (convert to closure violation) or a substitute
+    /// expression (use as fallback value). Right-associative:
+    /// `a() or b() or raise` parses as
+    /// `a() or (b() or raise)`.
+    ///
+    /// On the substitute RHS, the identifier `err` is in scope
+    /// (implicit binding) and resolves to the typed payload —
+    /// this is a typecheck rule, not a syntactic one. From the
+    /// AST's view, the substitute body is just an ordinary
+    /// expression.
+    Or {
+        inner: Box<Expr>,
+        disposition: OrDisposition,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OrDisposition {
+    /// `or raise` — diverge by raising a closure violation
+    /// carrying the fallible's payload. The expression's value
+    /// type collapses to the underlying success type since this
+    /// branch doesn't return.
+    Raise(Span),
+    /// `or <expr>` — substitute the fallback value. The
+    /// expression must be of the success type at typecheck.
+    Substitute(Box<Expr>),
 }
 
 impl Expr {
@@ -777,6 +851,7 @@ impl Expr {
             Expr::Approx { span, .. } => *span,
             Expr::Range { span, .. } => *span,
             Expr::ArrayRepeat { span, .. } => *span,
+            Expr::Or { span, .. } => *span,
         }
     }
 }

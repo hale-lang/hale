@@ -373,30 +373,102 @@ is the locus; the form annotation picks the lowering.
 |---|---|
 | `Map<String, Int>` | `@form(hashmap) locus L { capacity { pool entries of Entry indexed_by key; } }` |
 | `Vec<T>` | `@form(vec) locus L<T> { capacity { heap items of T; } }` |
-| `Option<T>` | sentinel value + companion predicate (`parse_int` / `can_parse_int`) |
-| `Result<T, E>` | sentinel + predicate, OR locus-level `bubble` / `on_failure` |
+| `Option<T>` | sentinel value + companion predicate (`parse_int` / `can_parse_int`) for "couldn't compute"; `fallible(T)` for "an error with diagnostic context" |
+| `Result<T, E>` | `fn f() -> T fallible(E)` — value-level addressing, then `or raise` to bridge into the runtime's closure-violation mechanism |
 
-### 2. No value-level failure types
+### 2. One runtime failure mechanism, with a value-level addressing protocol
 
-Failure is structural. The locus tower's `bubble` / `on_failure`
-mechanism (F.9) handles every legitimate failure path. Value-
-level error types (Result, Either) are not a thing in Aperio
-because they would duplicate the structural failure mechanism
-at the parametric level — exactly the shape The Design counsels
-against.
+**The runtime observes exactly one form of failure: closure
+violation, routed via `bubble` / `on_failure`.** Process
+termination is the special case where a closure violation
+bubbles past root with no `on_failure` catching it. That is the
+*only* way the runtime ends a program against its will.
 
-The complete failure surface:
+What the runtime *does not* observe as a separate category:
+raw panics, uncaught traps, value-level error returns. Stdlib
+never emits raw panics; hardware traps (div-by-zero, OOM, null
+deref, segfault) are caught at the substrate layer and re-raised
+as closure violations.
 
-1. **Closure violation** at audit time → `ClosureViolation`
-   routed to parent's `on_failure(child, err)`.
-2. **Sentinel-with-discriminator** for "couldn't compute" cases
-   (`parse_int` returns 0 on failure; `can_parse_int` is the
-   explicit predicate).
-3. **Hard substrate failure** (OOM, divide-by-zero, null deref)
-   terminates the process directly.
+But the runtime is not the only layer. Above it, Aperio has a
+**value-level addressing protocol** for "an error occurred":
 
-No `?` operator. No `panic(msg)`. No `assert(cond)`. No
-`unwrap()`. The substrate covers it.
+> **An error has occurred.** Singular, anonymous. A function
+> declares the *fact* of fallibility in its signature with a
+> `fallible(T)` marker — where T is the payload type the
+> function attaches for diagnostics. The type system tracks
+> "this expression can error" as a property; payloads are not
+> parametric polymorphism over E.
+
+A caller of a fallible fn picks exactly one **motion**:
+
+1. **Raise** — `or raise` — convert to a closure violation.
+   The only bridge from value-level error → runtime mechanism.
+2. **Substitute** — `or <expr>` — provide a fallback value,
+   continue.
+3. **Hand off** — `or handler(err)` — pass typed payload to a
+   handler fn, use its return as the value.
+
+Log isn't a separate motion — it's a substitute whose handler
+logs as a side effect.
+
+**The compiler rejects** any expression of fallible type that
+isn't addressed by an `or` clause or a `match`. Bare
+`let v = parse(s);` when `parse` is fallible is a compile
+error: "error not addressed."
+
+**The terminal binary.** Every error-handling path ends in
+exactly one of two runtime states: **raised** or **not raised**.
+Substitute and hand-off both collapse to "not raised." The
+runtime never observes a third state.
+
+**The corollary.** Errors do not propagate as values up the
+call stack. If a caller wants its caller to know, it raises a
+closure violation, which propagates structurally. Value-level
+error handling is a local contract between immediate caller
+and callee; structural propagation is the runtime's domain.
+
+**The bridge sheds the type.** `or raise` produces a closure
+violation that is uniform-opaque to `on_failure` handlers. The
+payload attaches as diagnostic data, but `on_failure` doesn't
+pattern-match on payload type — surgical recovery belongs at
+the `or` site while the typed payload is in scope; closure-
+violation handling is a structural-decision activity
+(log / bubble / terminate).
+
+What is still cut: **`?` operator, `panic(msg)`, `assert(cond)`,
+`unwrap()`, and `Result<T, E>` / `Option<T>` as parametric
+tagged-enum types**. The fallible-marker model covers the
+same use case without re-introducing a parallel upward-
+propagation mechanism at the value level.
+
+Example:
+
+```aperio
+type ParseError { message: String; line: Int; col: Int; }
+
+fn parse(s: String) -> Int fallible(ParseError) {
+    if bad_shape(s) {
+        fail ParseError { message: "expected digit", line: 0, col: 0 };
+    }
+    return computed;
+}
+
+// Caller MUST address it.
+let n = parse(s) or raise;                       // → closure violation
+let n = parse(s) or 0;                           // → substitute
+let n = parse(s) or handle_parse_err(err);       // → hand off, err typed ParseError
+```
+
+The `fail <expr>` form is the emit surface inside a fallible
+body — symmetric to `return` but exits via the error path.
+
+The sentinel-with-discriminator pair (`parse_int` /
+`can_parse_int`) remains as a separate, *infallible* idiom for
+"couldn't compute" cases where 0-on-failure is the natural
+default and a paired predicate suffices. Use sentinel-pair when
+the error has no useful payload; use `fallible(T)` when callers
+benefit from inspecting the failure.
 
 ### 3. Generics stay, scoped
 
@@ -569,7 +641,10 @@ mechanics, not an independent invention:
   child memory sourcing.
 - **Failure-propagation-upward (F.9)** — closure violations
   bubble through `on_failure` handlers. No parallel value-level
-  mechanism.
+  *upward-propagation* mechanism. `fallible(T)` is the value-
+  level addressing protocol for the immediate caller, but
+  upward propagation crosses into the runtime via `or raise`
+  and rides the same closure-violation track from there.
 - **Root-as-boundary** — the top-level locus is the process
   boundary. Loci that bubble past root terminate the process.
 - **Vertical-only flow (F.8)** — no sibling-to-sibling fn calls;
@@ -606,10 +681,12 @@ let r = MyRegistryL { };
 r.set(Entry { key: "a", value: 1 });
 ```
 
-### Anti-pattern: value-level error types
+### Anti-pattern: parametric tagged-enum error types
 
 ```aperio
-// WRONG — no Result<T, E> in Aperio.
+// WRONG — no Result<T, E> as a parametric tagged enum.
+// This reintroduces upward-propagation-as-value, duplicating the
+// closure-violation mechanism at the value level.
 fn parse(s: String) -> Result<Int, String> {
     if !std::str::can_parse_int(s) {
         return Err(f"bad input: {s}");
@@ -619,21 +696,46 @@ fn parse(s: String) -> Result<Int, String> {
 ```
 
 ```aperio
-// RIGHT — sentinel + predicate.
-fn parse(s: String) -> Int {
-    return std::str::parse_int(s);  // 0 on failure
+// RIGHT — `fallible(T)` with a named payload type. The fact-of-
+// fallibility is a marker on the signature; the payload is an
+// ordinary user-defined type. Callers MUST address the error
+// via `or raise | or <expr> | or handler(err)` or a `match`.
+type ParseError { message: String; input: String; }
+
+fn parse(s: String) -> Int fallible(ParseError) {
+    if !std::str::can_parse_int(s) {
+        fail ParseError { message: "bad input", input: s };
+    }
+    return std::str::parse_int(s);
 }
 
 fn main() {
     let s = std::env::arg(1);
+    let n = parse(s) or raise;  // closure violation on failure
+    println(n);
+}
+```
+
+The sentinel-with-discriminator idiom is still valid for the
+*simpler* case where no payload is useful:
+
+```aperio
+// RIGHT — sentinel + predicate when "0 on failure" is the
+// natural default and no diagnostic context is needed.
+fn main() {
+    let s = std::env::arg(1);
     if std::str::can_parse_int(s) {
-        let n = parse(s);
-        // ...
+        let n = std::str::parse_int(s);
+        println(n);
     } else {
         println("not a number");
     }
 }
 ```
+
+Rule of thumb: `fallible(T)` when callers benefit from inspecting
+the failure; sentinel-pair when 0/empty/"" is a useful default
+and the predicate question is all callers ask.
 
 ### Anti-pattern: value-level panic
 
@@ -762,13 +864,18 @@ For ready reference, the v1 commitments:
 9. **Perspectives reflect on structure, not lowering.** Work
    uniformly across formed and unformed loci.
 10. **No `Map<K, V>` / `Vec<T>` / `Option<T>` / `Result<T, E>`
-    as parametric types.** Collections are loci with forms;
-    failure is structural.
+    as parametric tagged types.** Collections are loci with
+    forms; failure has a value-level addressing protocol
+    (`fallible(T)`) that bridges to one structural mechanism
+    (closure violation).
 11. **Generics (m63) stay** as the orthogonal parametric
     mechanism on the locus declaration itself.
-12. **No `panic()` / `assert()` / `?` / `unwrap()`.** The
-    closure-violation routing covers every legitimate failure
-    surface.
+12. **`fallible(T)` is the value-level error protocol.**
+    Stdlib fns that can fail return `fallible(T)` with a named
+    payload type. Callers MUST address with `or raise` /
+    `or <expr>` / `or handler(err)` / `match`. The runtime
+    still observes exactly one failure mechanism: closure
+    violation. No `panic()` / `assert()` / `?` / `unwrap()`.
 
 ## Cross-references
 

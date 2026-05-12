@@ -424,6 +424,7 @@ mod tests {
             },
             generics: Vec::new(),
             annotations: Vec::new(),
+            form: None,
             members: Vec::new(),
             span: aperio_syntax::Span {
                 start: aperio_syntax::Pos(0),

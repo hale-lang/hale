@@ -485,6 +485,77 @@ and modes; specific transports come from stdlib (`std::bus::*`).
 These are bundled with the toolchain (no separate install) but
 require explicit `import std::...`.
 
+## Form-vec runtime (v1.x-FORM-1)
+
+The `@form(vec)` form lowers to a contiguous growable buffer
+implemented in C. See `spec/forms.md` for the form contract and
+synthesized method set; this section documents the runtime
+shape.
+
+### C struct layout
+
+Each `@form(vec)` locus's heap slot lowers to an inline
+struct:
+
+```c
+typedef struct {
+    size_t cap;   // allocated capacity (elements)
+    size_t len;   // number of valid elements
+    char  *buf;   // contiguous element array
+} lotus_vec_<T>_t;
+```
+
+The `<T>` suffix is conceptual — codegen monomorphizes per
+cell type T, but the runtime primitives operate on the
+common prefix layout via `void *` casts. All `lotus_vec_*_t`
+typedefs share the `{cap, len, buf}` prefix.
+
+### Primitive functions
+
+Defined in `crates/aperio-codegen/runtime/lotus_arena.c`
+(v1.x-FORM-1 PR4):
+
+| Function                                              | Behavior |
+|-------------------------------------------------------|----------|
+| `void lotus_vec_init(void *v)`                        | Zero-init: cap=0, len=0, buf=NULL |
+| `void lotus_vec_push(void *v, size_t es, const void *x)` | Append; doubles cap on overflow |
+| `int  lotus_vec_get(void *v, size_t es, int64_t i, void *out)` | Bounds-checked read; returns 1=OK, 0=out-of-bounds |
+| `int  lotus_vec_pop(void *v, size_t es, void *out)` | Returns 1=OK, 0=empty |
+| `int64_t lotus_vec_len(void *v)`                      | Element count |
+| `int  lotus_vec_is_empty(void *v)`                    | 1=empty, 0=non-empty |
+| `void lotus_vec_destroy(void *v)`                     | `free(buf)`; called at locus dissolve |
+
+`es` (elem_size) is the cell type's size in bytes — codegen
+passes `sizeof(T)` at each call site.
+
+### Growth policy
+
+- Initial: cap=0, no allocation at locus birth.
+- First push: allocates a 4-element buffer.
+- Each overflow: doubles cap; `realloc`s. Old contents copied
+  by realloc; previous buf freed.
+- Shrink: not implemented in v1. Buf released at dissolve.
+
+### Failure shapes
+
+- `lotus_vec_get` / `lotus_vec_pop` return 0 on contract
+  break (out-of-bounds / empty). Codegen (PR5/6 pending)
+  wraps this into the `Ty::Fallible { success: T, payload:
+  IndexError }` surface via a small adapter that synthesizes
+  the `IndexError` struct from the bool + the call args.
+- `lotus_vec_push` OOM is currently a best-effort no-op; the
+  proper substrate trap → closure violation routing lands
+  with PR5/6.
+
+### Interpreter parity
+
+The interpreter (`crates/aperio-runtime/src/eval.rs`)
+implements the same surface via the `SlotState::Vec` variant
+backed by `Rc<RefCell<Vec<Value>>>` and the
+`try_eval_form_vec_call` dispatcher (v1.x-FORM-1 PR7).
+Synthesized methods route directly to this dispatcher before
+normal locus-method lookup.
+
 ## Runtime size budget
 
 The runtime should be small enough that a hello-world program
