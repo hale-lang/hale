@@ -14,12 +14,18 @@ file is canonical — flag the drift.
 
 ## How to read this section
 
-- **[Types vs loci](./axiom.md)** — the source axiom: types
-  are for shapes, loci are for flow. Read first; everything
-  else assumes it.
+- **[Types vs loci](./axiom.md)** — the source axiom: every
+  named structural thing is a locus; types are loci-in-waiting
+  on the locus gradient. Read first; everything else assumes
+  it.
+- **[Design philosophy](./design-philosophy.md)** — the full
+  "everything is a locus" framing, the three axes (capacity /
+  projection / form), the form-annotation surface, and the
+  locked-in v1 form behavior. Read after the axiom for the
+  why behind the patterns.
 - **[Pattern catalog](./patterns.md)** — the six shapes every
-  piece of Aperio code falls into. Read second; everything
-  after it refines a pattern.
+  piece of Aperio code falls into. Read after the philosophy;
+  everything after refines a pattern.
 - **[Naming](./naming.md)**, **[Composition](./composition.md)**,
   **[Rolling the design](./rolling.md)** — surface rules that
   apply across the catalog.

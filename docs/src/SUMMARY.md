@@ -65,6 +65,7 @@
     - [Deployment](./reference/deployment.md)
   - [Conventions](./reference/conventions/index.md)
     - [Types vs loci](./reference/conventions/axiom.md)
+    - [Design philosophy](./reference/conventions/design-philosophy.md)
     - [Pattern catalog](./reference/conventions/patterns.md)
     - [Naming](./reference/conventions/naming.md)
     - [Composition](./reference/conventions/composition.md)
