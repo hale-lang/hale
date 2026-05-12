@@ -218,3 +218,222 @@ fn push_many_survives_realloc() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.trim().ends_with("100"), "expected len=100, got: {:?}", stdout);
 }
+
+// =============================================================
+// v1.x-FORM-2 PR6 / PR5 finale — fallible synthesized methods
+// (get, pop) + Expr::Or three-motion lowering. Mirrors the
+// interpreter parity tests in
+// crates/aperio-runtime/tests/form_vec_interpreter.rs so AOT
+// and interpreter agree on the surface.
+// =============================================================
+
+/// `l.get(i) or raise` succeeds and returns the cell value.
+#[test]
+fn get_round_trip_or_raise_ok_path() {
+    let src = r#"
+        @form(vec)
+        locus ItemListL {
+            capacity { heap items of Int; }
+        }
+        fn main() {
+            let l = ItemListL { };
+            l.push(42);
+            let head = l.get(0) or raise;
+            println(head);
+        }
+    "#;
+    let bin = build("get_or_raise_ok", src);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "non-zero exit: {:?}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.trim() == "42", "expected 42, got: {:?}", stdout);
+}
+
+/// `l.pop() or raise` succeeds LIFO and `len` shrinks.
+#[test]
+fn pop_returns_last_element_lifo_ok_path() {
+    let src = r#"
+        @form(vec)
+        locus L { capacity { heap items of Int; } }
+        fn main() {
+            let l = L { };
+            l.push(10);
+            l.push(20);
+            l.push(30);
+            let a = l.pop() or raise;
+            let b = l.pop() or raise;
+            if a != 30 { println("FAIL: first pop"); }
+            if b != 20 { println("FAIL: second pop"); }
+            if l.len() != 1 { println("FAIL: len after pops"); }
+            println("ok");
+        }
+    "#;
+    let bin = build("pop_lifo_ok", src);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "non-zero exit: {:?}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ok"), "expected ok, got: {:?}", stdout);
+    assert!(!stdout.contains("FAIL"), "unexpected FAIL: {:?}", stdout);
+}
+
+/// `l.get(i) or <fallback>` uses the fallback when out-of-bounds.
+#[test]
+fn get_out_of_bounds_substitute_uses_fallback() {
+    let src = r#"
+        @form(vec)
+        locus L { capacity { heap items of Int; } }
+        fn main() {
+            let l = L { };
+            l.push(7);
+            let v = l.get(99) or -1;
+            if v != -1 { println("FAIL: fallback not used"); }
+            println("ok");
+        }
+    "#;
+    let bin = build("get_substitute_fallback", src);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "non-zero exit: {:?}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ok"), "expected ok, got: {:?}", stdout);
+    assert!(!stdout.contains("FAIL"), "unexpected FAIL: {:?}", stdout);
+}
+
+/// `l.pop() or <fallback>` uses the fallback on empty.
+#[test]
+fn pop_empty_substitute_uses_fallback() {
+    let src = r#"
+        @form(vec)
+        locus L { capacity { heap items of Int; } }
+        fn main() {
+            let l = L { };
+            let v = l.pop() or -42;
+            if v != -42 { println("FAIL: empty-pop fallback not used"); }
+            println("ok");
+        }
+    "#;
+    let bin = build("pop_substitute_fallback", src);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "non-zero exit: {:?}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ok"), "expected ok, got: {:?}", stdout);
+    assert!(!stdout.contains("FAIL"), "unexpected FAIL: {:?}", stdout);
+}
+
+/// `l.get(99) or raise` at the top level of main panics via
+/// `lotus_root_panic`: exit code is non-zero and stderr names
+/// "IndexError escaping main locus".
+#[test]
+fn get_out_of_bounds_or_raise_panics_at_root() {
+    let src = r#"
+        @form(vec)
+        locus L { capacity { heap items of Int; } }
+        fn main() {
+            let l = L { };
+            let v = l.get(99) or raise;
+            println(v);
+        }
+    "#;
+    let bin = build("get_or_raise_panics", src);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit on root-panic, got: {:?}",
+        out.status
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("IndexError") && stderr.contains("main locus"),
+        "expected root-panic message, got stderr: {:?}",
+        stderr
+    );
+}
+
+/// `err` binding implicit on substitute RHS — `err.index` and
+/// `err.len` are accessible inside `or fallback(err)`.
+#[test]
+fn err_binding_available_on_substitute_rhs() {
+    let src = r#"
+        @form(vec)
+        locus L { capacity { heap items of Int; } }
+        fn fallback(e: IndexError) -> Int {
+            return e.index + e.len;
+        }
+        fn main() {
+            let l = L { };
+            l.push(1);
+            l.push(2);
+            let v = l.get(5) or fallback(err);
+            if v != 7 { println("FAIL: err binding payload"); }
+            println("ok");
+        }
+    "#;
+    let bin = build("err_binding_handler", src);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "non-zero exit: {:?}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ok"), "expected ok, got: {:?}", stdout);
+    assert!(!stdout.contains("FAIL"), "unexpected FAIL: {:?}", stdout);
+}
+
+/// `fail E { ... };` inside a fallible(E) free fn exits via the
+/// error path; caller substitutes via `or -99`.
+#[test]
+fn fail_stmt_exits_via_error_path_with_substitute() {
+    let src = r#"
+        type E { code: Int; }
+        fn pick(x: Int) -> Int fallible(E) {
+            if x < 0 {
+                fail E { code: 1 };
+            }
+            return x * 2;
+        }
+        fn main() {
+            let ok_v = pick(5) or -1;
+            let bad_v = pick(-3) or -99;
+            if ok_v != 10 { println("FAIL: success path"); }
+            if bad_v != -99 { println("FAIL: error fallback"); }
+            println("ok");
+        }
+    "#;
+    let bin = build("fail_stmt_substitute", src);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "non-zero exit: {:?}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ok"), "expected ok, got: {:?}", stdout);
+    assert!(!stdout.contains("FAIL"), "unexpected FAIL: {:?}", stdout);
+}
+
+/// `l.get(0) or raise` succeeds with a struct cell type;
+/// confirms struct payloads round-trip through the out_val sret
+/// slot.
+#[test]
+fn vec_of_struct_cells_get_round_trip() {
+    let src = r#"
+        type Pair { x: Int; y: Int; }
+        @form(vec)
+        locus PairsL { capacity { heap items of Pair; } }
+        fn main() {
+            let l = PairsL { };
+            l.push(Pair { x: 1, y: 2 });
+            l.push(Pair { x: 3, y: 4 });
+            let first = l.get(0) or raise;
+            if first.x != 1 { println("FAIL: x"); }
+            if first.y != 2 { println("FAIL: y"); }
+            println("ok");
+        }
+    "#;
+    let bin = build("struct_cells_get", src);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "non-zero exit: {:?}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ok"), "expected ok, got: {:?}", stdout);
+    assert!(!stdout.contains("FAIL"), "unexpected FAIL: {:?}", stdout);
+}

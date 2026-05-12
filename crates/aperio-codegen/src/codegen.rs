@@ -3650,6 +3650,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // would need polymorphic record support. on_failure
         // handlers can therefore read err.locus and err.closure.
         self.declare_builtin_closure_violation_type();
+        // v1.x-FORM-2 PR6: synthesized @form(vec) `get` / `pop`
+        // surface a typed `IndexError` payload. Codegen mirror
+        // of `inject_form_stdlib_types` in
+        // aperio-types/src/resolve.rs.
+        self.declare_builtin_index_error_type();
 
         // F.20: register interface declarations by name. The
         // codegen layer uses this in two places: signature lowering
@@ -4481,6 +4486,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         struct_ty.set_body(&llvm_field_tys, false);
         self.user_types.insert(
             "ClosureViolation".to_string(),
+            TypeInfo {
+                struct_ty,
+                fields,
+                field_order,
+            },
+        );
+    }
+
+    /// v1.x-FORM-2 PR6 (PR5 finale): register the built-in
+    /// `IndexError` record so synthesized @form(vec) `get` /
+    /// `pop` codegen can allocate it (codegen mirror of
+    /// `inject_form_stdlib_types` in aperio-types/src/resolve.rs).
+    /// v1 fields: `kind: String`, `index: Int`, `len: Int`.
+    /// Always declared so the codegen doesn't need to know
+    /// whether any @form(vec) locus is in scope — the LLVM
+    /// struct type is opaque-light and the cost of declaring an
+    /// unused type is negligible.
+    fn declare_builtin_index_error_type(&mut self) {
+        if self.user_types.contains_key("IndexError") {
+            return;
+        }
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        let mut fields: BTreeMap<String, (u32, CodegenTy)> = BTreeMap::new();
+        fields.insert("kind".into(), (0, CodegenTy::String));
+        fields.insert("index".into(), (1, CodegenTy::Int));
+        fields.insert("len".into(), (2, CodegenTy::Int));
+        let field_order = vec![
+            "kind".to_string(),
+            "index".to_string(),
+            "len".to_string(),
+        ];
+        let llvm_field_tys: Vec<inkwell::types::BasicTypeEnum> =
+            vec![ptr_t.into(), i64_t.into(), i64_t.into()];
+        let struct_ty = self
+            .context
+            .opaque_struct_type("type.IndexError");
+        struct_ty.set_body(&llvm_field_tys, false);
+        self.user_types.insert(
+            "IndexError".to_string(),
             TypeInfo {
                 struct_ty,
                 fields,
@@ -9220,12 +9265,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         let id = match callee {
             Expr::Ident(id) => id,
-            Expr::Field { .. } => {
-                return Err(CodegenError::Unsupported(
-                    "`or` over a method call lands in PR5 finale (commit 4 \
-                     wires synthesized @form(vec) get/pop)"
-                        .into(),
-                ));
+            Expr::Field { receiver, name, .. } => {
+                return self.lower_fallible_method_call(
+                    receiver, &name.name, args, scope,
+                );
             }
             _ => {
                 return Err(CodegenError::Unsupported(format!(
@@ -9432,6 +9475,353 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
         Ok(())
+    }
+
+    /// v1.x-FORM-2 PR6 (PR5 finale): lower a fallible method call
+    /// inside `Expr::Or` — `l.get(i) or ...` or `self.pop() or
+    /// ...`. Resolves the receiver to a locus + self_ptr, then
+    /// dispatches to `try_lower_form_vec_fallible_method` for
+    /// the synthesized @form(vec) get/pop. User-declared
+    /// fallible locus methods are not yet wired (see PR6 commit
+    /// 1's note about declare_locus_struct).
+    fn lower_fallible_method_call(
+        &mut self,
+        receiver: &Expr,
+        method_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        let (info, self_ptr, locus_name) =
+            if matches!(receiver, Expr::KwSelf(_)) {
+                let cs = self.current_self.as_ref().cloned().ok_or_else(
+                    || {
+                        CodegenError::Unsupported(
+                            "`self.{method}` fallible call outside a locus \
+                             method"
+                                .into(),
+                        )
+                    },
+                )?;
+                let info = self
+                    .user_loci
+                    .get(&cs.locus_name)
+                    .cloned()
+                    .expect("current_self points to a declared locus");
+                let locus_name = cs.locus_name.clone();
+                (info, cs.self_ptr, locus_name)
+            } else {
+                let (recv_val, recv_ty) =
+                    self.lower_expr(receiver, scope)?;
+                let locus_name = match recv_ty {
+                    CodegenTy::LocusRef(n) => n,
+                    other => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "fallible method call on non-locus value of \
+                             type {:?}",
+                            other
+                        )));
+                    }
+                };
+                let info = self
+                    .user_loci
+                    .get(&locus_name)
+                    .cloned()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "fallible method call: unknown locus `{}`",
+                            locus_name
+                        ))
+                    })?;
+                (info, recv_val.into_pointer_value(), locus_name)
+            };
+
+        if let Some(result) = self
+            .try_lower_form_vec_fallible_method(
+                &info,
+                self_ptr,
+                &locus_name,
+                method_name,
+                args,
+                scope,
+            )?
+        {
+            return Ok(result);
+        }
+        Err(CodegenError::Unsupported(format!(
+            "fallible method `{}.{}` — not a synthesized @form(vec) \
+             get/pop; user-declared fallible methods on loci are not \
+             yet wired",
+            locus_name, method_name
+        )))
+    }
+
+    /// v1.x-FORM-2 PR6 (PR5 finale): inline-lower a synthesized
+    /// @form(vec) fallible method (get, pop) as-if it were a
+    /// fallible-ABI call. The C runtime returns 1=OK / 0=err;
+    /// codegen inverts that to Aperio's i1 path indicator
+    /// (1=err / 0=ok) and writes a typed `IndexError` payload
+    /// into the caller-provided out_err slot. Construction is
+    /// unconditional — the OK path's IndexError is dead but
+    /// harmless, and skipping the conditional branch keeps the
+    /// emitter local and the resulting IR compact. The semantics
+    /// match `index_error_value` in aperio-runtime/src/eval.rs
+    /// (kind = "out_of_bounds" / "empty"; pop's err carries
+    /// index=0, len=0; get's err carries index=i, len=pre_call_len).
+    fn try_lower_form_vec_fallible_method(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        locus_self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        method_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
+        let Some(slot) = info
+            .capacity_slots
+            .iter()
+            .find(|s| s.form == Some(SlotForm::Vec))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        if !matches!(method_name, "get" | "pop") {
+            return Ok(None);
+        }
+        let elem_ty = slot.elem_ty.clone();
+        let payload_ty = CodegenTy::TypeRef("IndexError".to_string());
+
+        let vec_field_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                locus_self_ptr,
+                slot.struct_field_idx,
+                &format!(
+                    "{}.__vec_{}.fallible.ptr",
+                    locus_name, slot.name
+                ),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let out_val_slot = self
+            .alloca_for(&elem_ty, &format!("vec.{}.out_val.slot", method_name))?;
+        let out_err_slot = self.alloca_for(
+            &payload_ty,
+            &format!("vec.{}.out_err.slot", method_name),
+        )?;
+
+        let llvm_elem_ty = self.llvm_basic_type(&elem_ty);
+        let elem_size = llvm_elem_ty.size_of().expect("elem size known");
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let zero_i32 = i32_t.const_int(0, false);
+
+        // Read len BEFORE the operation. For get's err this is the
+        // current len at the point of the bad access; for pop's err
+        // (empty vec) it's 0, which matches the interpreter's
+        // `index_error_value("empty", 0, 0)` shape.
+        let len_fn = self
+            .module
+            .get_function("lotus_vec_len")
+            .expect("lotus_vec_len declared");
+        let pre_call_len = self
+            .builder
+            .build_call(
+                len_fn,
+                &[vec_field_ptr.into()],
+                &format!("{}.vec.len.pre_call", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_vec_len returns i64")
+            .into_int_value();
+
+        let (c_ret, index_ssa) = match method_name {
+            "get" => {
+                if args.len() != 1 {
+                    return Err(CodegenError::Unsupported(format!(
+                        "@form(vec) `{}`.get: expects 1 arg, got {}",
+                        locus_name,
+                        args.len()
+                    )));
+                }
+                let (idx_val, idx_ty) = self.lower_expr(&args[0], scope)?;
+                if idx_ty != CodegenTy::Int {
+                    return Err(CodegenError::Unsupported(format!(
+                        "@form(vec) `{}`.get: index must be Int, got {:?}",
+                        locus_name, idx_ty
+                    )));
+                }
+                let idx_i64 = idx_val.into_int_value();
+                let get_fn = self
+                    .module
+                    .get_function("lotus_vec_get")
+                    .expect("lotus_vec_get declared");
+                let c_ret = self
+                    .builder
+                    .build_call(
+                        get_fn,
+                        &[
+                            vec_field_ptr.into(),
+                            elem_size.into(),
+                            idx_i64.into(),
+                            out_val_slot.into(),
+                        ],
+                        &format!("{}.get.call", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_vec_get returns i32")
+                    .into_int_value();
+                (c_ret, idx_i64)
+            }
+            "pop" => {
+                if !args.is_empty() {
+                    return Err(CodegenError::Unsupported(format!(
+                        "@form(vec) `{}`.pop: takes no args, got {}",
+                        locus_name,
+                        args.len()
+                    )));
+                }
+                let pop_fn = self
+                    .module
+                    .get_function("lotus_vec_pop")
+                    .expect("lotus_vec_pop declared");
+                let c_ret = self
+                    .builder
+                    .build_call(
+                        pop_fn,
+                        &[
+                            vec_field_ptr.into(),
+                            elem_size.into(),
+                            out_val_slot.into(),
+                        ],
+                        &format!("{}.pop.call", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_vec_pop returns i32")
+                    .into_int_value();
+                let zero_i64 = i64_t.const_int(0, false);
+                (c_ret, zero_i64)
+            }
+            _ => unreachable!("matched above"),
+        };
+
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                c_ret,
+                zero_i32,
+                &format!("{}.{}.is_err", locus_name, method_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let kind_str = match method_name {
+            "get" => "out_of_bounds",
+            "pop" => "empty",
+            _ => unreachable!(),
+        };
+        let ie_ptr = self.emit_index_error_alloc(
+            kind_str,
+            index_ssa,
+            pre_call_len,
+        )?;
+        self.builder
+            .build_store(out_err_slot, ie_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        Ok(Some(FallibleCallResult {
+            i1_path: is_err,
+            out_val_slot,
+            out_err_slot,
+            success_ty: elem_ty,
+            payload_ty,
+        }))
+    }
+
+    /// v1.x-FORM-2 PR6 (PR5 finale): allocate an `IndexError`
+    /// struct in the current arena and populate its three fields.
+    /// Matches the shape `inject_form_stdlib_types` synthesizes
+    /// (`kind: String`, `index: Int`, `len: Int`) and the
+    /// interpreter's `index_error_value` helper.
+    fn emit_index_error_alloc(
+        &mut self,
+        kind: &str,
+        index_ssa: IntValue<'ctx>,
+        len_ssa: IntValue<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let info = self
+            .user_types
+            .get("IndexError")
+            .cloned()
+            .expect("IndexError injected by aperio-types resolver");
+        let size = info
+            .struct_ty
+            .size_of()
+            .expect("IndexError has known size");
+        let alloc_ptr = self.arena_alloc(size, "IndexError.alloc")?;
+
+        let kind_str_ptr = self.global_string(kind);
+        let (kind_idx, _) = info
+            .fields
+            .get("kind")
+            .cloned()
+            .expect("IndexError.kind field");
+        let kind_field_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                alloc_ptr,
+                kind_idx,
+                "IndexError.kind.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(kind_field_ptr, kind_str_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let (index_idx, _) = info
+            .fields
+            .get("index")
+            .cloned()
+            .expect("IndexError.index field");
+        let index_field_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                alloc_ptr,
+                index_idx,
+                "IndexError.index.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(index_field_ptr, index_ssa)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let (len_idx, _) = info
+            .fields
+            .get("len")
+            .cloned()
+            .expect("IndexError.len field");
+        let len_field_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                alloc_ptr,
+                len_idx,
+                "IndexError.len.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(len_field_ptr, len_ssa)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        Ok(alloc_ptr)
     }
 
     /// v1.x-FORM-2 PR6: return a `ptr` SSA pointing at a global
@@ -20093,9 +20483,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(Some(Some((result_i1.into(), CodegenTy::Bool))))
             }
             "get" | "pop" => Err(CodegenError::Unsupported(format!(
-                "@form(vec) `{}`.{}: fallible synthesized method \
-                 — codegen lands in v1.x-FORM-2 PR6 (sret + i1 \
-                 ABI). Use the interpreter for now.",
+                "@form(vec) `{}`.{}: fallible method must be addressed via \
+                 `or raise` / `or <expr>` / `or handler(err)`",
                 locus_name, method_name
             ))),
             _ => unreachable!("is_synth guard"),
