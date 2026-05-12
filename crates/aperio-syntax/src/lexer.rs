@@ -833,36 +833,106 @@ impl<'a> Lexer<'a> {
                     } else {
                         // Enter interpolation. Flush any pending literal.
                         parts.push(FStringPart::Lit(std::mem::take(&mut buf)));
-                        let interp_start = self.pos + 1;
+                        let interp_open_pos = self.pos;
                         self.pos += 1;
+                        let mut body = String::new();
+                        // Quote state: every `\"` in the f-string source
+                        // toggles in_str. While in_str, `{` / `}` don't
+                        // affect depth — they're just chars inside an
+                        // interpolated string literal. Limitation: a
+                        // literal `"` cannot appear inside an Aperio string
+                        // inside an f-string interpolation (would require
+                        // triple-escape `\\\"`); this hits the common case
+                        // (call sites with string args) and leaves the
+                        // rare nested-quote case as a v1 limitation.
+                        let mut in_str = false;
                         let mut depth = 1usize;
                         while depth > 0 {
                             match self.peek() {
                                 None => {
                                     return Err(Diag::lex(
-                                        Span::new(interp_start - 1, self.pos),
+                                        Span::new(interp_open_pos, self.pos),
                                         "unterminated interpolation in f-string",
                                     ));
                                 }
-                                Some(b'}') => {
+                                Some(b'\\') => {
+                                    self.pos += 1;
+                                    match self.peek() {
+                                        Some(b'"') => {
+                                            body.push('"');
+                                            self.pos += 1;
+                                            in_str = !in_str;
+                                        }
+                                        Some(b'{') if !in_str => {
+                                            body.push('{');
+                                            self.pos += 1;
+                                        }
+                                        Some(b'}') if !in_str => {
+                                            body.push('}');
+                                            self.pos += 1;
+                                        }
+                                        Some(b'\\') => {
+                                            // Preserve the backslash so the
+                                            // inner sub-parser sees `\\`
+                                            // as an escape inside a string.
+                                            body.push('\\');
+                                            body.push('\\');
+                                            self.pos += 1;
+                                        }
+                                        Some(c) if in_str => {
+                                            // Inside an interpolated string,
+                                            // preserve `\X` raw so the inner
+                                            // sub-parser's lex_string handles
+                                            // it the same way a top-level
+                                            // string literal would.
+                                            body.push('\\');
+                                            let ch = self.source[self.pos..]
+                                                .chars().next().unwrap();
+                                            body.push(ch);
+                                            self.pos += ch.len_utf8();
+                                            let _ = c;
+                                        }
+                                        Some(other) => {
+                                            return Err(Diag::lex(
+                                                Span::new(self.pos - 1, self.pos + 1),
+                                                format!(
+                                                    "unknown escape in f-string \
+                                                     interpolation: \\{}",
+                                                    other as char
+                                                ),
+                                            ));
+                                        }
+                                        None => {
+                                            return Err(Diag::lex(
+                                                Span::new(self.pos - 1, self.pos),
+                                                "f-string ended after backslash",
+                                            ));
+                                        }
+                                    }
+                                }
+                                Some(b'}') if !in_str => {
                                     depth -= 1;
                                     if depth == 0 { break; }
+                                    body.push('}');
                                     self.pos += 1;
                                 }
-                                Some(b'{') => {
+                                Some(b'{') if !in_str => {
                                     depth += 1;
+                                    body.push('{');
                                     self.pos += 1;
                                 }
                                 Some(_) => {
-                                    let ch = self.source[self.pos..].chars().next().unwrap();
+                                    let ch = self.source[self.pos..]
+                                        .chars().next().unwrap();
+                                    body.push(ch);
                                     self.pos += ch.len_utf8();
                                 }
                             }
                         }
-                        let body = self.source[interp_start..self.pos].trim().to_string();
+                        let body = body.trim().to_string();
                         if body.is_empty() {
                             return Err(Diag::lex(
-                                Span::new(interp_start - 1, self.pos + 1),
+                                Span::new(interp_open_pos, self.pos + 1),
                                 "empty interpolation `{}` in f-string",
                             ));
                         }

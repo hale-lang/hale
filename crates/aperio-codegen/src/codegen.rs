@@ -1963,6 +1963,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
+        // v1.x: ASCII case folding primitives.
+        // declare ptr @lotus_str_lower(ptr s)
+        let case_fold_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_str_lower", case_fold_ty, None);
+        // declare ptr @lotus_str_upper(ptr s)
+        self.module
+            .add_function("lotus_str_upper", case_fold_ty, None);
+
         // v1.x-15: string-builder primitive. Doubling realloc-backed
         // buffer that turns O(N²) accumulation into amortized O(N).
         // Handle is a `ptr` (carried as Bytes in the Aperio surface).
@@ -13728,6 +13737,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_str_can_parse_float(args, scope)?;
                 Ok(())
             }
+            ["std", "str", "lower"] => {
+                let _ = self.lower_std_str_case_fold(args, scope, "lower")?;
+                Ok(())
+            }
+            ["std", "str", "upper"] => {
+                let _ = self.lower_std_str_case_fold(args, scope, "upper")?;
+                Ok(())
+            }
             // v1.x-15: string-builder primitive.
             ["std", "str", "builder_new"] => {
                 let _ = self.lower_std_str_builder_new(args)?;
@@ -14051,6 +14068,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "str", "can_parse_float"] => {
                 self.lower_std_str_can_parse_float(args, scope)
+            }
+            ["std", "str", "lower"] => {
+                self.lower_std_str_case_fold(args, scope, "lower")
+            }
+            ["std", "str", "upper"] => {
+                self.lower_std_str_case_fold(args, scope, "upper")
             }
             ["std", "str", "builder_new"] => {
                 self.lower_std_str_builder_new(args)
@@ -14735,6 +14758,49 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .left()
             .expect("returns f64");
         Ok((v, CodegenTy::Float))
+    }
+
+    /// v1.x: `std::str::lower(s)` / `std::str::upper(s)`. ASCII
+    /// case folding only — non-ASCII bytes pass through unchanged.
+    /// Returns a new String anchored in the bus payload arena.
+    fn lower_std_str_case_fold(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        which: &str,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::{} takes 1 arg (s), got {}",
+                which,
+                args.len()
+            )));
+        }
+        let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
+        if s_ty != CodegenTy::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::{}: s must be String, got {:?}",
+                which, s_ty
+            )));
+        }
+        let extern_name = match which {
+            "lower" => "lotus_str_lower",
+            "upper" => "lotus_str_upper",
+            _ => unreachable!(),
+        };
+        let f = self
+            .module
+            .get_function(extern_name)
+            .expect("case-fold extern declared");
+        let call = self
+            .builder
+            .build_call(f, &[s_val.into()], &format!("str.{}.ret", which))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let v = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((v, CodegenTy::String))
     }
 
     /// v1.x-15: `std::str::builder_new() -> Bytes`. Allocates a

@@ -3697,6 +3697,59 @@ void lotus_bus_remote_destroy_all(void) {
 }
 
 /*
+ * v1.x: ASCII case folding. `lower(s)` / `upper(s)` allocate a
+ * new NUL-terminated string in the bus payload arena (same
+ * lifetime class as parse_int etc.) and copy the input byte-by-
+ * byte with the standard ASCII case shift. Non-ASCII bytes pass
+ * through unchanged (utf-8 case folding is intentionally NOT
+ * attempted at v1 — locale-correct folding requires Unicode
+ * tables far heavier than the runtime currently carries).
+ */
+const char *lotus_str_lower(const char *s) {
+    if (!s) return "";
+    size_t n = strlen(s);
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            return "";
+        }
+    }
+    char *out = (char *)lotus_arena_alloc(g_bus_payload_arena, n + 1, 1);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    if (!out) return "";
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        out[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c;
+    }
+    out[n] = '\0';
+    return out;
+}
+
+const char *lotus_str_upper(const char *s) {
+    if (!s) return "";
+    size_t n = strlen(s);
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            return "";
+        }
+    }
+    char *out = (char *)lotus_arena_alloc(g_bus_payload_arena, n + 1, 1);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    if (!out) return "";
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        out[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : (char)c;
+    }
+    out[n] = '\0';
+    return out;
+}
+
+/*
  * v1.x-15: string-builder primitive. Resolves the reader-list_item-
  * quadratic-concat friction: long-running string accumulation can
  * now run in amortized O(N) total cost via doubling realloc, rather

@@ -457,6 +457,15 @@ pub fn resolve_path(segments: &[&str]) -> Option<Value> {
             name: "std::text::base64::decode",
             func: Rc::new(std_text_base64_decode),
         })),
+        // v1.x: ASCII case folding.
+        ["std", "str", "lower"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::str::lower",
+            func: Rc::new(std_str_lower),
+        })),
+        ["std", "str", "upper"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::str::upper",
+            func: Rc::new(std_str_upper),
+        })),
         // v1.x-15: string-builder primitive. The interpreter
         // uses a Bytes-shaped carrier — the first 8 bytes of the
         // backing Vec<u8> are a sentinel `"_sb_v1__"` so attempts
@@ -480,6 +489,51 @@ pub fn resolve_path(segments: &[&str]) -> Option<Value> {
             func: Rc::new(std_str_builder_finish),
         })),
         _ => None,
+    }
+}
+
+/// v1.x: ASCII case folding mirroring the C runtime's
+/// lotus_str_lower / lotus_str_upper. Non-ASCII bytes pass
+/// through unchanged.
+fn std_str_lower(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::str::lower expects 1 arg, got {}",
+            args.len()
+        ));
+    }
+    match &args[0] {
+        Value::String(s) => {
+            let out: String = s.chars().map(|c| {
+                if c.is_ascii_uppercase() { c.to_ascii_lowercase() } else { c }
+            }).collect();
+            Ok(Value::String(out))
+        }
+        other => Err(format!(
+            "std::str::lower expects String, got {}",
+            other.type_name()
+        )),
+    }
+}
+
+fn std_str_upper(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::str::upper expects 1 arg, got {}",
+            args.len()
+        ));
+    }
+    match &args[0] {
+        Value::String(s) => {
+            let out: String = s.chars().map(|c| {
+                if c.is_ascii_lowercase() { c.to_ascii_uppercase() } else { c }
+            }).collect();
+            Ok(Value::String(out))
+        }
+        other => Err(format!(
+            "std::str::upper expects String, got {}",
+            other.type_name()
+        )),
     }
 }
 
