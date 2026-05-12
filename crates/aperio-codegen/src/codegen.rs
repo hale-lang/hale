@@ -9017,6 +9017,79 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         })?;
                     (alloca, ty, target.head.name.clone())
                 } else if target.tail.len() == 1
+                    && matches!(target.tail[0], LValueSeg::Field(_))
+                    && matches!(
+                        scope.locals.get(&target.head.name).map(|(_, t)| t),
+                        Some(CodegenTy::Cell(inner))
+                            if matches!(inner.as_ref(), CodegenTy::TypeRef(_))
+                    )
+                {
+                    // F.22 v1.x-2: `cell.field = v` on a struct-cell
+                    // local. Load the cell pointer, GEP into the
+                    // struct's field, store. Same shape as TypeRef
+                    // field assignment.
+                    let fname = match &target.tail[0] {
+                        LValueSeg::Field(i) => i.name.clone(),
+                        _ => unreachable!(),
+                    };
+                    let (alloca, cell_ty) = scope
+                        .locals
+                        .get(&target.head.name)
+                        .cloned()
+                        .expect("matched above");
+                    let elem_ty_name = match &cell_ty {
+                        CodegenTy::Cell(inner) => match inner.as_ref() {
+                            CodegenTy::TypeRef(n) => n.clone(),
+                            _ => unreachable!("matched above"),
+                        },
+                        _ => unreachable!("matched above"),
+                    };
+                    let info = self
+                        .user_types
+                        .get(&elem_ty_name)
+                        .cloned()
+                        .ok_or_else(|| {
+                            CodegenError::Unsupported(format!(
+                                "cell-field assign: type `{}` not declared",
+                                elem_ty_name
+                            ))
+                        })?;
+                    let (field_idx, field_ty) = info
+                        .fields
+                        .get(&fname)
+                        .cloned()
+                        .ok_or_else(|| {
+                            CodegenError::Unsupported(format!(
+                                "no field `{}` on type `{}`",
+                                fname, elem_ty_name
+                            ))
+                        })?;
+                    let ptr_t = self
+                        .context
+                        .ptr_type(AddressSpace::default());
+                    let cell_ptr = self
+                        .builder
+                        .build_load(ptr_t, alloca, &target.head.name)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_pointer_value();
+                    let field_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            info.struct_ty,
+                            cell_ptr,
+                            field_idx,
+                            &format!(
+                                "{}.{}.ptr",
+                                target.head.name, fname
+                            ),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    (
+                        field_ptr,
+                        field_ty,
+                        format!("{}.{}", target.head.name, fname),
+                    )
+                } else if target.tail.len() == 1
                     && matches!(target.tail[0], LValueSeg::Index(_))
                 {
                     // `arr[i] = v` for a local array. Look up the
@@ -11516,6 +11589,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .expect("TypeRef points to a declared type");
                         (info.struct_ty, info.fields, format!("type `{}`", n))
                     }
+                    // F.22 v1.x-2: `cell.field` reads a struct
+                    // cell's field. Cell<T> is a *T at LLVM
+                    // level, so GEP + load works identically to
+                    // TypeRef(T) field access. Primitive cells
+                    // (Cell<Int> etc.) don't have addressable
+                    // fields — those reject below with a
+                    // focused message.
+                    CodegenTy::Cell(inner) => match inner.as_ref() {
+                        CodegenTy::TypeRef(n) => {
+                            let info = self
+                                .user_types
+                                .get(n)
+                                .cloned()
+                                .expect("Cell<TypeRef> points to declared type");
+                            (
+                                info.struct_ty,
+                                info.fields,
+                                format!("cell of type `{}`", n),
+                            )
+                        }
+                        other => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "field access on Cell<{:?}>: only struct cells \
+                                 expose fields at v1; primitive-cell content \
+                                 access is a v1.x follow-up",
+                                other
+                            )));
+                        }
+                    },
                     other => {
                         return Err(CodegenError::Unsupported(format!(
                             "field access `.{}` on non-record type {:?}",

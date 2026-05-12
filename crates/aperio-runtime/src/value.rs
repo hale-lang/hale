@@ -82,11 +82,19 @@ pub enum Value {
 #[derive(Debug, Clone)]
 pub enum SlotState {
     Pool {
+        /// For struct-cell slots (`pool X of EntryType`), the
+        /// type name — used at acquire-time to default-construct
+        /// a fresh Value::Struct shape when the free-list is
+        /// empty and the user is about to write fields. `None`
+        /// for primitive-cell slots (`pool X of Int`) — those
+        /// don't support field IO at v1.
+        elem_ty_name: Option<String>,
         /// Available cells. acquire pops from the back; release
         /// pushes back. Empty + acquire creates a fresh cell.
         free: Vec<Rc<RefCell<Value>>>,
     },
     Heap {
+        elem_ty_name: Option<String>,
         /// All currently-allocated cells. alloc pushes; free
         /// removes by Rc::ptr_eq.
         live: Vec<Rc<RefCell<Value>>>,

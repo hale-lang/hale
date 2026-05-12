@@ -115,6 +115,54 @@ fn pool_method_on_heap_slot_rejected() {
 }
 
 #[test]
+fn struct_cell_field_io_round_trip() {
+    // v1.x-2 parity: cell.field write + read works in the
+    // interpreter the same way it works in codegen.
+    let src = r#"
+        type Entry { key: Int; value: Int; }
+        locus MapL {
+            capacity {
+                pool entries of Entry;
+            }
+            birth {
+                let cell = self.entries.acquire();
+                cell.key = 42;
+                cell.value = 99;
+                if cell.key != 42 { return 1; }
+                if cell.value != 99 { return 2; }
+                println("ok");
+            }
+        }
+        fn main() {
+            let _ = MapL { };
+        }
+    "#;
+    assert_eq!(run(src), 0);
+}
+
+#[test]
+fn heap_cell_field_io_round_trip() {
+    let src = r#"
+        type Record { tag: Int; }
+        locus HeapL {
+            capacity {
+                heap records of Record;
+            }
+            birth {
+                let r = self.records.alloc();
+                r.tag = 7;
+                if r.tag != 7 { return 1; }
+                println("ok");
+            }
+        }
+        fn main() {
+            let _ = HeapL { };
+        }
+    "#;
+    assert_eq!(run(src), 0);
+}
+
+#[test]
 fn multiple_slots_coexist() {
     // Two pools + one heap on the same locus. All four method
     // dispatches work, instantiation and dissolve clean.

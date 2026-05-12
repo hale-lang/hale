@@ -809,6 +809,42 @@ impl Interpreter {
                 ab[i] = new_val;
                 Ok(())
             }
+            (Value::Cell { cell, .. }, LValueSeg::Field(name)) => {
+                // F.22 v1.x-2: `cell.field = v` on a struct cell.
+                // The cell's inner Value should be a Value::Struct
+                // (default-constructed at acquire/alloc when the
+                // slot's elem_ty is a user struct). Mutate the
+                // struct's fields map directly.
+                let cell_val = cell.borrow().clone();
+                match cell_val {
+                    Value::Struct { fields, .. } => {
+                        let new_val = if op == AssignOp::Eq {
+                            rhs
+                        } else {
+                            let cur = fields
+                                .borrow()
+                                .get(&name.name)
+                                .cloned()
+                                .ok_or_else(|| {
+                                    Signal::Error(format!(
+                                        "cell field `{}` not found",
+                                        name.name
+                                    ))
+                                })?;
+                            self.compound_assign(&cur, op, &rhs)?
+                        };
+                        fields
+                            .borrow_mut()
+                            .insert(name.name.clone(), new_val);
+                        Ok(())
+                    }
+                    _ => Err(Signal::Error(format!(
+                        "cell.{} write: cell does not hold a struct \
+                         (primitive-cell field IO is not supported at v1)",
+                        name.name
+                    ))),
+                }
+            }
             (other, _) => Err(Signal::Error(format!(
                 "cannot assign through {}",
                 other.type_name()
@@ -823,6 +859,28 @@ impl Interpreter {
                 .get(&name.name)
                 .cloned()
                 .ok_or_else(|| Signal::Error(format!("field `{}` not found", name.name))),
+            (Value::Cell { cell, .. }, LValueSeg::Field(name)) => {
+                // F.22 v1.x-2: descend into a struct cell for nested
+                // assignment paths (`outer_cell.field.subfield = v`).
+                // The cell's inner Value must be a Value::Struct.
+                let inner = cell.borrow().clone();
+                match inner {
+                    Value::Struct { fields, .. } => fields
+                        .borrow()
+                        .get(&name.name)
+                        .cloned()
+                        .ok_or_else(|| {
+                            Signal::Error(format!(
+                                "cell field `{}` not found",
+                                name.name
+                            ))
+                        }),
+                    _ => Err(Signal::Error(format!(
+                        "cell.{} descent: cell does not hold a struct",
+                        name.name
+                    ))),
+                }
+            }
             (Value::Locus(handle), LValueSeg::Field(name)) => handle
                 .state
                 .borrow()
@@ -1242,6 +1300,27 @@ impl Interpreter {
                 .get(name)
                 .cloned()
                 .ok_or_else(|| Signal::Error(format!("no field `{}`", name))),
+            Value::Cell { cell, .. } => {
+                // F.22 v1.x-2: `cell.field` reads through to the
+                // cell's inner Value::Struct. Primitive cells
+                // (inner == Nil at v1) error with a clear message.
+                let inner = cell.borrow().clone();
+                match inner {
+                    Value::Struct { fields, .. } => fields
+                        .borrow()
+                        .get(name)
+                        .cloned()
+                        .ok_or_else(|| Signal::Error(format!(
+                            "no field `{}` on cell",
+                            name
+                        ))),
+                    _ => Err(Signal::Error(format!(
+                        "cell.{} read: cell does not hold a struct \
+                         (primitive-cell field IO is not supported at v1)",
+                        name
+                    ))),
+                }
+            }
             Value::Locus(handle) => {
                 if name == "children" {
                     let arr: Vec<Value> = handle
@@ -1364,13 +1443,51 @@ impl Interpreter {
             Some(h) => h,
             None => return Ok(None),
         };
-        let slot_kind = {
+        let (slot_kind, elem_ty_name) = {
             let slots = handle.slots.borrow();
             match slots.get(&slot_name) {
-                Some(SlotState::Pool { .. }) => CapacitySlotKind::Pool,
-                Some(SlotState::Heap { .. }) => CapacitySlotKind::Heap,
+                Some(SlotState::Pool { elem_ty_name, .. }) => {
+                    (CapacitySlotKind::Pool, elem_ty_name.clone())
+                }
+                Some(SlotState::Heap { elem_ty_name, .. }) => {
+                    (CapacitySlotKind::Heap, elem_ty_name.clone())
+                }
                 None => return Ok(None),
             }
+        };
+        // For struct-cell slots, a freshly-created cell gets a
+        // default-instantiated Value::Struct so subsequent
+        // `cell.field` reads/writes work. Primitive cells (Int /
+        // Float / ...) start as Value::Nil — field access on
+        // them errors at use-site.
+        let fresh_cell = || -> Result<Rc<RefCell<Value>>, Signal> {
+            let v = match &elem_ty_name {
+                Some(tn) => {
+                    let t = self.types.get(tn).cloned().ok_or_else(|| {
+                        Signal::Error(format!(
+                            "F.22 cell elem type `{}` not declared",
+                            tn
+                        ))
+                    })?;
+                    match &t.body {
+                        TypeDeclBody::Struct(fields) => {
+                            let mut field_vals: BTreeMap<String, Value> =
+                                BTreeMap::new();
+                            for f in fields {
+                                field_vals
+                                    .insert(f.name.name.clone(), Value::Nil);
+                            }
+                            Value::Struct {
+                                name: tn.clone(),
+                                fields: Rc::new(RefCell::new(field_vals)),
+                            }
+                        }
+                        _ => Value::Nil,
+                    }
+                }
+                None => Value::Nil,
+            };
+            Ok(Rc::new(RefCell::new(v)))
         };
         // Slot exists; from here, mismatches are hard errors.
         match (slot_kind, method_name.as_str()) {
@@ -1381,19 +1498,22 @@ impl Interpreter {
                         slot_name, args.len()
                     )));
                 }
-                let mut slots = handle.slots.borrow_mut();
-                let cell = match slots.get_mut(&slot_name) {
-                    Some(SlotState::Pool { free }) => match free.pop() {
-                        Some(c) => c,
-                        None => Rc::new(RefCell::new(Value::Nil)),
-                    },
-                    _ => unreachable!("checked above"),
+                let popped = {
+                    let mut slots = handle.slots.borrow_mut();
+                    match slots.get_mut(&slot_name) {
+                        Some(SlotState::Pool { free, .. }) => free.pop(),
+                        _ => unreachable!("checked above"),
+                    }
                 };
-                Ok(Some(Value::Cell {
+                let cell = match popped {
+                    Some(c) => c,
+                    None => fresh_cell()?,
+                };
+                return Ok(Some(Value::Cell {
                     slot_locus: handle.name.clone(),
                     slot_name,
                     cell,
-                }))
+                }));
             }
             (CapacitySlotKind::Pool, "release") => {
                 if args.len() != 1 {
@@ -1415,7 +1535,9 @@ impl Interpreter {
                 };
                 let mut slots = handle.slots.borrow_mut();
                 match slots.get_mut(&slot_name) {
-                    Some(SlotState::Pool { free }) => free.push(cell_rc),
+                    Some(SlotState::Pool { free, .. }) => {
+                        free.push(cell_rc)
+                    }
                     _ => unreachable!("checked above"),
                 }
                 Ok(Some(Value::Unit))
@@ -1427,10 +1549,10 @@ impl Interpreter {
                         slot_name, args.len()
                     )));
                 }
-                let cell = Rc::new(RefCell::new(Value::Nil));
+                let cell = fresh_cell()?;
                 let mut slots = handle.slots.borrow_mut();
                 match slots.get_mut(&slot_name) {
-                    Some(SlotState::Heap { live }) => {
+                    Some(SlotState::Heap { live, .. }) => {
                         live.push(cell.clone());
                     }
                     _ => unreachable!("checked above"),
@@ -1461,7 +1583,7 @@ impl Interpreter {
                 };
                 let mut slots = handle.slots.borrow_mut();
                 match slots.get_mut(&slot_name) {
-                    Some(SlotState::Heap { live }) => {
+                    Some(SlotState::Heap { live, .. }) => {
                         live.retain(|c| !Rc::ptr_eq(c, &cell_rc));
                     }
                     _ => unreachable!("checked above"),
@@ -1604,13 +1726,33 @@ impl Interpreter {
         for member in &decl.members {
             if let LocusMember::Capacity(cb) = member {
                 for slot in &cb.slots {
+                    // Identify the elem_ty name for struct-cell
+                    // slots so acquire/alloc can default-construct
+                    // a Value::Struct for field IO. Primitives
+                    // (Int / Float / ...) carry None and don't
+                    // support field access at v1.
+                    let elem_ty_name = match &slot.elem_ty {
+                        TypeExpr::Named { path, .. }
+                            if path.segments.len() == 1 =>
+                        {
+                            let name = &path.segments[0].name;
+                            if self.types.contains_key(name) {
+                                Some(name.clone())
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
                     let st = match slot.kind {
-                        CapacitySlotKind::Pool => {
-                            SlotState::Pool { free: Vec::new() }
-                        }
-                        CapacitySlotKind::Heap => {
-                            SlotState::Heap { live: Vec::new() }
-                        }
+                        CapacitySlotKind::Pool => SlotState::Pool {
+                            elem_ty_name,
+                            free: Vec::new(),
+                        },
+                        CapacitySlotKind::Heap => SlotState::Heap {
+                            elem_ty_name,
+                            live: Vec::new(),
+                        },
                     };
                     slots.insert(slot.name.name.clone(), st);
                 }
