@@ -137,6 +137,44 @@ header documents its constraint.
 - **`aperio test` CLI runner.** Phase 2 v1.0 — currently the
   Rust integration harness fills the role.
 
+## v1.x followups — language + stdlib (2026-05-11)
+
+Driven by the v1.x followup list — items shipped in this session
+as form-extending, parameter-populating, or substrate-tied
+additions on top of F.22 v1. Each entry maps a v1.x item to its
+surface.
+
+| Add | v1.x item | Surface |
+|---|---|---|
+| F.22 interpreter parity | v1.x-1 | `pool X of T;` / `heap Y of T;` slots work under `aperio run` with the same `self.X.acquire/release/alloc/free` shape as codegen. |
+| Cell content I/O (struct cells) | v1.x-2 | `cell.field = v` writes; `cell.field` reads. Primitive cells (`Cell<Int>` etc.) reject field access with focused diagnostic — primitive-cell content access is a later v1.x follow-up. |
+| `as_parent_for ChildL` slot clause | v1.x-4 (surface) | Parser + typecheck accept `pool X of T as_parent_for ChildL;`. Runtime mechanic (borrow-mask + skip-destroy-on-borrowed) is v1.x-4b. |
+| Slot-of-origin tracking on `Cell<T>` | v1.x-5 | Releasing a cell into the wrong slot is a hard error at codegen + runtime. |
+| Type records hold `fn(...)` fields | v1.x-8 | `type Cmd { name: String; run: fn(); }` parses + dispatches. `c.run()` GEPs the field, loads the fn pointer, indirect-calls. |
+| F-string interpolation | v1.x-10 | `f"hello {name}"` lowers to `Lit + to_string(expr) + Lit + ...`. Plain `"..."` strings keep `{` and `}` as ordinary characters (back-compat). |
+| Explicit Float → Int narrowing | v1.x-11 | `Int(f)` truncates toward zero (fptosi); `Int(n)` is the identity; other types rejected. No implicit narrowing. |
+| String-builder primitive | v1.x-15 | `std::str::builder_new() -> Bytes`, `builder_append(b, s)`, `builder_len(b) -> Int`, `builder_finish(b) -> String`. Doubling-realloc malloc buffer; N appends amortized O(N). Resolves reader-list_item-quadratic-concat. |
+| `parse_float` + `can_parse_float` | v1.x-16 | `std::str::parse_float(s) -> Float` strict trailing-NUL, 0.0 on failure. Paired bool predicate `can_parse_float(s)`. Mirrors parse_int's contract. |
+| `base64::decode` | v1.x-16 | `std::text::base64::decode(s) -> Bytes`. Standard alphabet, whitespace tolerated, non-alphabet / wrong padding → empty Bytes. Inverse of `base64::encode`. |
+
+Deferred (gated on design):
+
+- v1.x-3 (recognition projection class proper backing) — design
+  resolved (four named sub-modes); implementation deferred.
+- v1.x-6 (Result + `?` operator) — depends on generic enums
+  story or a v1-only concrete-Result shape; no friction driver
+  yet writes `Result<T,E>`-shaped fns.
+- v1.x-9 (closures with capture) — MS2 invariant says every
+  quantity assignable to one locus tower; naive lexical capture
+  lets values float. Wait for closure-design pass.
+- v1.x-12 (Map) / v1.x-13 (Vec) — substrate ready (F.22 cells +
+  string-builder for the value side), need generics or
+  fixed-instance design call.
+- v1.x-14 (Rope / chunk-list) — alt path to v1.x-15; lower
+  priority now that the string-builder ships.
+- v1.x-17 (machine-sized defaults) — runtime-queried page-size /
+  cache-line constants for F.22 chunk sizing.
+
 ## Ergonomics arc — small wins (2026-05-11)
 
 Driven by friction-log triage; bundled because each is one

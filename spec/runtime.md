@@ -417,6 +417,20 @@ and modes; specific transports come from stdlib (`std::bus::*`).
 - **stdout / stderr** for `print` / `println`. That's it for
   runtime-level I/O. Files, networking, etc. live in stdlib.
 
+### Text + string primitives (v1.x adds)
+
+- `lotus_str_parse_float(s) -> double` / `lotus_str_can_parse_float(s) -> int`
+  — v1.x-16. Strict trailing-NUL parse; 0.0 on failure paired
+  with a bool predicate. Mirrors the parse_int contract.
+- `lotus_text_base64_decode(s) -> Bytes*` — v1.x-16. Standard
+  alphabet, whitespace tolerated, non-alphabet / wrong padding
+  returns empty Bytes. Inverse of `lotus_text_base64_encode`.
+- `lotus_str_builder_new()` / `_append(b, s)` / `_len(b) -> i64` /
+  `_finish(b) -> char*` — v1.x-15. Doubling-realloc malloc
+  buffer. N appends are amortized O(N). `finish()` copies into
+  the bus payload arena (program-lifetime) and frees the
+  builder.
+
 ### Process control
 
 - **Exit codes.** `main()` returning `()` exits 0; returning

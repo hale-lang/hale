@@ -336,7 +336,16 @@ k_max           span_max
 sum             prod            min             max
 length          empty
 print           println
+to_string       len             abs
+Int             Float
 ```
+
+`Int(x)` (v1.x-11) is a built-in cast — explicit Float → Int
+narrowing via `fptosi` (truncate toward zero). Int arg is the
+identity; other types reject. There is no implicit Float → Int
+conversion; the user must commit via this constructor-shaped
+call. `to_string(x)`, `len(x)`, `abs(x)`, `min(a, b)`, `max(a, b)`
+are similarly bare-name builtins.
 
 `print` and `println` are built-in functions, always in scope
 without an `import`. They write to stdout. `print` does not
