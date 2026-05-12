@@ -435,6 +435,12 @@ and modes; specific transports come from stdlib (`std::bus::*`).
   bytes pass through unchanged. Allocates in the bus payload
   arena. Used by `__http_request_header` for RFC 7230
   case-insensitive lookup.
+- `lotus_str_trim(s) -> char*` — strip ASCII whitespace
+  (space / tab / CR / LF) from both ends. Arena-anchored.
+- `lotus_str_replace(s, needle, rep) -> char*` — greedy
+  non-overlapping substring replace. Two-pass (count, then
+  fill) so the output is right-sized in one arena alloc.
+  Empty needle is a no-op.
 
 ### Process control
 
