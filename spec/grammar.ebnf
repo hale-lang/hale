@@ -329,7 +329,20 @@ function_decl     = "fn" , IDENTIFIER , [ generic_params ] ,
 
    `fallible` is a *contextual* keyword — recognized only
    immediately after a function's return type and before its
-   body. Outside that position it's an ordinary identifier. *)
+   body. Outside that position it's an ordinary identifier.
+
+   v1.x-FORM-2 design rule (two-channel separation): although
+   `function_decl` syntactically permits `fallible_marker` in
+   every position, semantic enforcement at typecheck rejects
+   `fallible(E)` on **user-declared locus methods** — methods
+   on user-declared loci participate in the substrate's
+   lifecycle and communicate failure structurally via the
+   closure-violation channel (closure assertions + on_failure).
+   Value-level `fallible(E)` lives on free fns and stdlib-
+   synthesized methods over `@form(...)` containers, which
+   are application-layer storage substrate. See
+   `spec/semantics.md` § "Fallible call semantics"
+   § "Where each channel lives" for the canonical statement. *)
 fallible_marker   = "fallible" , "(" , type_expr , ")" ;
 
 param_list        = parameter , { "," , parameter } ;

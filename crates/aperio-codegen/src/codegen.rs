@@ -6644,6 +6644,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             l.name.name, fd.name.name
                         )));
                     }
+                    // v1.x-FORM-2 design rule (two-channel
+                    // separation): user-declared locus methods
+                    // can't be `fallible(E)`. Substrate-facing
+                    // methods communicate failure structurally
+                    // via closure assertions + on_failure
+                    // routing; value-level `fallible(E)` is an
+                    // application-layer protocol that lives on
+                    // free fns and stdlib-synthesized methods
+                    // over `@form(...)` containers (which are
+                    // application-layer storage substrate). The
+                    // channels meet only at the implicit main
+                    // locus root via `lotus_root_panic`. See
+                    // `spec/semantics.md` § "Fallible call
+                    // semantics" for the canonical statement.
+                    if fd.fallible.is_some() {
+                        return Err(CodegenError::Unsupported(format!(
+                            "locus `{}` method `{}`: locus methods can't \
+                             declare `fallible(E)`. Substrate-facing \
+                             methods communicate failure structurally via \
+                             closure assertions + `on_failure` routing; \
+                             value-level `fallible(E)` lives on free fns \
+                             and stdlib-synthesized methods over \
+                             `@form(...)` containers. Wrap a fallible free \
+                             fn if you need value-level error semantics: \
+                             write `fn op() -> T fallible(E)` outside the \
+                             locus and call it from the method with \
+                             `or <fallback>`. See spec/semantics.md \
+                             § \"Fallible call semantics\".",
+                            l.name.name, fd.name.name
+                        )));
+                    }
                     let mut llvm_param_tys: Vec<inkwell::types::BasicMetadataTypeEnum> =
                         Vec::with_capacity(fd.params.len() + 1);
                     llvm_param_tys.push(ptr_t.into());

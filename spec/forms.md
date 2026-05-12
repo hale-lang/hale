@@ -141,6 +141,38 @@ beyond the normal capacity-slot machinery.
 The form annotation is the user's opt-in to a specific efficient
 lowering. Without it, you get the predictable F.22 default.
 
+## Form-annotated loci as application-layer storage substrate
+
+A `@form(...)` locus occupies a different position in The
+Design's taxonomy than a user-declared locus, and the
+distinction is load-bearing for the two-channel failure rule
+(`spec/semantics.md` § "Fallible call semantics" § "Where
+each channel lives"):
+
+- **User-declared loci** are substrate-facing — they
+  participate in the locus tower's lifecycle (bus
+  subscriptions, modes, contract reads, lifecycle methods).
+  Their methods communicate failure structurally via
+  closure assertions + `on_failure` routing.
+- **`@form(...)` loci** are application-layer storage
+  substrate — they realize a substrate-honest *container*
+  shape that application code uses to hold data. Their
+  synthesized methods (`@form(vec).get`, `@form(vec).pop`,
+  future `@form(...)` accessors) operate per-access and
+  may be declared `fallible(E)`, addressing failure at the
+  immediate caller's `or` clause.
+
+This is why the synthesized `@form(vec)` `get` / `pop`
+methods carry `fallible(IndexError)` while user-declared
+locus methods cannot. The `@form(...)` annotation is the
+declaration-site marker that "this locus is application-
+layer storage substrate, not a substrate-structural
+participant." The synthesized method surface gets the
+application-layer failure channel; the underlying form-vec
+locus still respects every other substrate invariant
+(arena ownership, dissolve cascade, capacity slot
+discipline).
+
 ## Perspectives and forms
 
 > **Perspectives reflect on structure, not on lowering.**

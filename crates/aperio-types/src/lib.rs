@@ -1173,4 +1173,78 @@ mod tests {
             diags
         );
     }
+
+    // === v1.x-FORM-2 two-channel separation =============
+    // Locus methods can't declare `fallible(E)`. The
+    // substrate-facing channel is closures + on_failure;
+    // value-level `fallible(E)` lives on free fns and stdlib-
+    // synthesized methods over `@form(...)` containers.
+    // Spec: `spec/semantics.md` § "Fallible call semantics".
+
+    #[test]
+    fn err_locus_method_declared_fallible() {
+        let src = r#"
+            type E { code: Int; }
+            locus L {
+                fn check() -> Int fallible(E) {
+                    return 1;
+                }
+            }
+            fn main() { L { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("can't declare `fallible(E)`")),
+            "expected locus-method-fallible diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_locus_method_calls_fallible_free_fn() {
+        // The escape hatch: a locus method can call a fallible
+        // free fn and address the error at the call site.
+        let src = r#"
+            type E { msg: String; }
+            fn parse_int(s: String) -> Int fallible(E) { return 0; }
+            locus L {
+                fn handle() -> Int {
+                    let v = parse_int("42") or 0;
+                    return v;
+                }
+            }
+            fn main() { L { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "locus method calling fallible free fn with `or` should typecheck, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_form_vec_method_fallible_unaffected() {
+        // Stdlib-synthesized `@form(vec)` methods (get / pop)
+        // are application-layer storage substrate, not locus-
+        // structural surface. They remain fallible.
+        let src = r#"
+            @form(vec)
+            locus L { capacity { heap items of Int; } }
+            fn main() {
+                let l = L { };
+                l.push(1);
+                let v = l.get(0) or -1;
+                let _ = v;
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "@form(vec) synthesized get should still be fallible, got: {:?}",
+            diags
+        );
+    }
 }

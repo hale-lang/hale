@@ -209,7 +209,11 @@ admissible.
   declaration's return type and before its body, in the
   `fallible_marker = "fallible" "(" type_expr ")"` production.
   Marks the function as one whose call sites MUST address the
-  error.
+  error. *Permitted at declaration sites: free fns + stdlib-
+  synthesized methods over `@form(...)` containers; rejected at
+  typecheck on user-declared locus methods per the two-channel
+  rule (see `spec/semantics.md` § "Fallible call semantics"
+  § "Where each channel lives").*
 - **`fail`** — recognized only as the leading token of a
   statement inside a fallible-fn body. Exits via the error
   path, attaching the expression as the typed payload.

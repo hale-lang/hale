@@ -600,6 +600,36 @@ impl<'a> Checker<'a> {
                 self.in_closure = false;
             }
             LocusMember::Fn(f) => {
+                // v1.x-FORM-2 design rule (two-channel
+                // separation): locus methods can't declare
+                // `fallible(E)`. Substrate-facing methods
+                // communicate failure structurally via closure
+                // assertions + `on_failure` routing; value-level
+                // `fallible(E)` lives on free fns and stdlib-
+                // synthesized methods over `@form(...)`
+                // containers (application-layer storage
+                // substrate). The channels meet only at the
+                // implicit main locus root via
+                // `lotus_root_panic`. See `spec/semantics.md`
+                // § "Fallible call semantics".
+                if let Some(payload_te) = &f.fallible {
+                    self.diags.push(Diag::ty(
+                        payload_te.span(),
+                        format!(
+                            "locus method `{}`: locus methods can't declare \
+                             `fallible(E)`. Substrate-facing methods \
+                             communicate failure structurally via closure \
+                             assertions + `on_failure` routing; value-level \
+                             `fallible(E)` lives on free fns and stdlib-\
+                             synthesized methods over `@form(...)` \
+                             containers. Wrap a fallible free fn if you \
+                             need value-level error semantics: write `fn \
+                             op() -> T fallible(E)` outside the locus and \
+                             call it from the method with `or <fallback>`",
+                            f.name.name
+                        ),
+                    ));
+                }
                 self.in_lifecycle = true;
                 self.check_fn(f, self.current_locus);
                 self.in_lifecycle = false;

@@ -577,17 +577,70 @@ Aperio carries two **orthogonal** failure channels:
   locus's closure (its assertion / invariant) fires
   `Signal::Bubble(ClosureViolation)` and routes through the
   existing `bubble` / `on_failure` machinery. See **F.9**.
+  This is the *substrate-facing* channel: it expresses
+  "a locus's promised invariant broke" and propagates
+  vertically through the locus tower per the failure-
+  propagation-upward mechanic.
 - **Value-error channel** — value-level `fallible(T)` returns
   are an *addressing protocol* between immediate caller and
   fallible callee. They don't constitute a separate runtime
   mechanism at intermediate frames; they propagate by sret
   + path-indicator through the static call stack, addressed
-  at each level by a required `or` clause.
+  at each level by a required `or` clause. This is the
+  *application-facing* channel: it expresses "this
+  call-by-call computation might fail; address it inline."
 
 The two channels meet at exactly one place: the implicit main
 locus's root boundary (see "Process exit" below). Everywhere
 else, the channels are independent. See
 `notes/agent-onboarding/aperio-design-philosophy.md` § 2.
+
+### Where each channel lives (declaration sites)
+
+The two channels are realized through different declaration
+sites. The mapping is canonical, not advisory:
+
+- **`fallible(E)` may be declared on:**
+  - **Free fns** — pure application-layer computations whose
+    failure shape matters call-by-call.
+  - **Stdlib-synthesized methods on `@form(...)` containers**
+    (`@form(vec).get`, `@form(vec).pop`, future `@form(...)`
+    methods). Application-layer storage substrate: the
+    container's role is application-layer data, not locus-
+    structural participation in the substrate's lifecycle.
+- **`fallible(E)` may NOT be declared on:**
+  - **User-declared locus methods.** Substrate-facing surface
+    — methods on user-declared loci participate in the
+    substrate's lifecycle (bus subscriptions, modes,
+    contract reads). Their failures are *structural events*
+    that belong on the closure-violation channel. A locus
+    method that needs to expose application-layer failure
+    semantics wraps a fallible free fn:
+
+    ```aperio
+    fn parse_message(b: Bytes) -> Message fallible(ParseError) { ... }
+
+    locus ReaderL {
+        fn handle_input(b: Bytes) -> () {
+            let m = parse_message(b) or default_message();
+            // ...
+        }
+    }
+    ```
+
+    The typechecker rejects `fn ... fallible(E)` on a locus
+    member with a diagnostic naming this rule. The forcing
+    function is productive: it surfaces *which channel* the
+    failure lives in at the declaration site, where the
+    design intent is set, rather than at the use site where
+    the channel choice is ambiguous.
+
+The rule is **two-channel separation as a design enforcement**,
+not a temporary limitation. Adding fallible to user-declared
+locus methods would create a third pathway with overlapping
+semantics — the same shape The Design counsels against
+(`spec/forms.md` discussion of parametric vs form-shaped
+collections is the parallel argument at the type layer).
 
 ### `fail` statement
 

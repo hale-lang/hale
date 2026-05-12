@@ -374,6 +374,15 @@ the error before the value is consumable. See
 `notes/agent-onboarding/aperio-design-philosophy.md` § 2 for
 the design rationale.
 
+**Declaration sites are restricted by the two-channel rule
+(see `spec/semantics.md` § "Fallible call semantics"
+§ "Where each channel lives").** `fallible(E)` may be
+declared on free fns and on stdlib-synthesized methods over
+`@form(...)` containers; it is **rejected** on user-declared
+locus methods, which communicate failure structurally via the
+closure-violation channel. The typechecker emits the
+diagnostic at the locus method's declaration site.
+
 ### `Ty::Fallible { success, payload }`
 
 The checker represents fallible returns as a wrapper around
