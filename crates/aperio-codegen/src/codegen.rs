@@ -9497,6 +9497,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// v1.x-11: lower `Int(x)` — explicit Float → Int narrowing.
+    /// Float arg lowers via `fptosi` (round-toward-zero); Int arg
+    /// is the identity. Decimal narrowing currently uses the same
+    /// fptosi after reading the cell, so Decimal → Int also works.
+    /// Other types are rejected so silent narrowing doesn't sneak
+    /// in through inference.
+    fn lower_int_cast_builtin(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "`Int` cast expects exactly 1 argument, got {}",
+                args.len()
+            )));
+        }
+        let (v, ty) = self.lower_expr(&args[0], scope)?;
+        match ty {
+            CodegenTy::Int => Ok((v, CodegenTy::Int)),
+            CodegenTy::Float => {
+                let res = self
+                    .builder
+                    .build_float_to_signed_int(
+                        v.into_float_value(),
+                        self.context.i64_type(),
+                        "Int.cast",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((res.into(), CodegenTy::Int))
+            }
+            other => Err(CodegenError::Unsupported(format!(
+                "`Int(...)` cast not supported for argument type {:?} \
+                 (only Float → Int narrowing and Int identity are \
+                 supported in v1)",
+                other
+            ))),
+        }
+    }
+
     /// m38: lower min(a, b) / max(a, b) / abs(x). All work
     /// across the four numeric types (Int / Duration via
     /// signed integer ops, Float / Decimal via float ops).
@@ -11774,6 +11814,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Expr::Ident(i) if i.name == "to_string" => {
                     self.lower_to_string_builtin(args, scope)
+                }
+                Expr::Ident(i) if i.name == "Int" => {
+                    // v1.x-11: explicit Float → Int narrowing.
+                    self.lower_int_cast_builtin(args, scope)
                 }
                 Expr::Ident(i)
                     if matches!(

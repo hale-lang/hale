@@ -81,6 +81,18 @@ pub fn install_builtins(env: &crate::env::Env) {
             func: Rc::new(builtin_contains),
         }),
     );
+    // v1.x-11: explicit Float → Int narrowing. Surface is
+    // `Int(x)` — a constructor-shaped call. Float arg truncates
+    // toward zero (matches LLVM fptosi semantics); Int arg is
+    // the identity. Other types are rejected so silent narrowing
+    // doesn't sneak in.
+    env.define(
+        "Int",
+        Value::Builtin(BuiltinRef {
+            name: "Int",
+            func: Rc::new(builtin_int_cast),
+        }),
+    );
 }
 
 fn builtin_min(args: &[Value]) -> Result<Value, String> {
@@ -188,6 +200,35 @@ fn builtin_contains(args: &[Value]) -> Result<Value, String> {
             "`contains` expects two String args; got {} and {}",
             l.type_name(),
             r.type_name()
+        )),
+    }
+}
+
+fn builtin_int_cast(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "`Int` cast expects exactly 1 argument, got {}",
+            args.len()
+        ));
+    }
+    match &args[0] {
+        Value::Int(n) => Ok(Value::Int(*n)),
+        // Match LLVM fptosi semantics — truncate toward zero.
+        // NaN / out-of-range f64 produces unspecified bits in
+        // LLVM; we mirror by clamping to i64 via the `as` cast
+        // saturation Rust applies for finite values and
+        // returning 0 for NaN.
+        Value::Float(f) => {
+            if f.is_nan() {
+                Ok(Value::Int(0))
+            } else {
+                Ok(Value::Int(*f as i64))
+            }
+        }
+        other => Err(format!(
+            "`Int(...)` cast not supported for {} (only Float → Int \
+             narrowing and Int identity are supported in v1)",
+            other.type_name()
         )),
     }
 }
