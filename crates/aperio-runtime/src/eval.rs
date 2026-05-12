@@ -15,7 +15,7 @@ use aperio_syntax::ast::*;
 use crate::builtins;
 use crate::bus::BusRouter;
 use crate::env::Env;
-use crate::value::{DecimalVal, FnRef, LocusHandle, Value};
+use crate::value::{DecimalVal, FnRef, LocusHandle, SlotState, Value};
 
 /// A non-local control-flow signal raised by `return`,
 /// `break`, `continue`, `bubble(err)`, or a runtime error.
@@ -1056,6 +1056,19 @@ impl Interpreter {
                         return Ok(Value::Unit);
                     }
                 }
+                // F.22: `self.<slot>.<method>(args)` routes to
+                // the slot's acquire / release / alloc / free
+                // rather than ordinary locus-method dispatch.
+                // Detected before the receiver is evaluated
+                // because slots have no value-level
+                // representation outside the method-call path
+                // — eval_expr on `self.<slot>` would error
+                // through read_field's "no field" branch.
+                if let Some(result) =
+                    self.try_eval_capacity_slot_call(callee, args)?
+                {
+                    return Ok(result);
+                }
                 let callee_v = self.eval_expr(callee)?;
                 let mut arg_vs = Vec::with_capacity(args.len());
                 for a in args {
@@ -1316,6 +1329,158 @@ impl Interpreter {
         }
     }
 
+    /// F.22 slot dispatch. Matches the AST shape
+    /// `Field { receiver: Field { receiver: KwSelf, name: slot_name },
+    /// name: method_name }` and, if `slot_name` is a declared slot
+    /// on the current self's locus, routes the call directly to
+    /// the slot's acquire / release / alloc / free.
+    ///
+    /// Returns Ok(None) when the callee shape doesn't match a
+    /// slot call — caller falls through to ordinary dispatch.
+    /// Returns Ok(Some(value)) on success (Value::Cell from
+    /// acquire/alloc; Value::Unit from release/free).
+    fn try_eval_capacity_slot_call(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Result<Option<Value>, Signal> {
+        let (slot_name, method_name) = match callee {
+            Expr::Field { receiver, name: method, .. } => {
+                match receiver.as_ref() {
+                    Expr::Field { receiver: inner, name: slot, .. }
+                        if matches!(
+                            inner.as_ref(),
+                            Expr::KwSelf(_)
+                        ) =>
+                    {
+                        (slot.name.clone(), method.name.clone())
+                    }
+                    _ => return Ok(None),
+                }
+            }
+            _ => return Ok(None),
+        };
+        let handle = match self.self_stack.last().cloned() {
+            Some(h) => h,
+            None => return Ok(None),
+        };
+        let slot_kind = {
+            let slots = handle.slots.borrow();
+            match slots.get(&slot_name) {
+                Some(SlotState::Pool { .. }) => CapacitySlotKind::Pool,
+                Some(SlotState::Heap { .. }) => CapacitySlotKind::Heap,
+                None => return Ok(None),
+            }
+        };
+        // Slot exists; from here, mismatches are hard errors.
+        match (slot_kind, method_name.as_str()) {
+            (CapacitySlotKind::Pool, "acquire") => {
+                if !args.is_empty() {
+                    return Err(Signal::Error(format!(
+                        "pool slot `{}`.acquire takes no args, got {}",
+                        slot_name, args.len()
+                    )));
+                }
+                let mut slots = handle.slots.borrow_mut();
+                let cell = match slots.get_mut(&slot_name) {
+                    Some(SlotState::Pool { free }) => match free.pop() {
+                        Some(c) => c,
+                        None => Rc::new(RefCell::new(Value::Nil)),
+                    },
+                    _ => unreachable!("checked above"),
+                };
+                Ok(Some(Value::Cell {
+                    slot_locus: handle.name.clone(),
+                    slot_name,
+                    cell,
+                }))
+            }
+            (CapacitySlotKind::Pool, "release") => {
+                if args.len() != 1 {
+                    return Err(Signal::Error(format!(
+                        "pool slot `{}`.release takes 1 cell arg, got {}",
+                        slot_name, args.len()
+                    )));
+                }
+                let cell_val = self.eval_expr(&args[0])?;
+                let cell_rc = match cell_val {
+                    Value::Cell { cell, .. } => cell,
+                    other => {
+                        return Err(Signal::Error(format!(
+                            "pool slot `{}`.release expects a cell, got {}",
+                            slot_name,
+                            other.type_name()
+                        )));
+                    }
+                };
+                let mut slots = handle.slots.borrow_mut();
+                match slots.get_mut(&slot_name) {
+                    Some(SlotState::Pool { free }) => free.push(cell_rc),
+                    _ => unreachable!("checked above"),
+                }
+                Ok(Some(Value::Unit))
+            }
+            (CapacitySlotKind::Heap, "alloc") => {
+                if !args.is_empty() {
+                    return Err(Signal::Error(format!(
+                        "heap slot `{}`.alloc takes no args, got {}",
+                        slot_name, args.len()
+                    )));
+                }
+                let cell = Rc::new(RefCell::new(Value::Nil));
+                let mut slots = handle.slots.borrow_mut();
+                match slots.get_mut(&slot_name) {
+                    Some(SlotState::Heap { live }) => {
+                        live.push(cell.clone());
+                    }
+                    _ => unreachable!("checked above"),
+                }
+                Ok(Some(Value::Cell {
+                    slot_locus: handle.name.clone(),
+                    slot_name,
+                    cell,
+                }))
+            }
+            (CapacitySlotKind::Heap, "free") => {
+                if args.len() != 1 {
+                    return Err(Signal::Error(format!(
+                        "heap slot `{}`.free takes 1 cell arg, got {}",
+                        slot_name, args.len()
+                    )));
+                }
+                let cell_val = self.eval_expr(&args[0])?;
+                let cell_rc = match cell_val {
+                    Value::Cell { cell, .. } => cell,
+                    other => {
+                        return Err(Signal::Error(format!(
+                            "heap slot `{}`.free expects a cell, got {}",
+                            slot_name,
+                            other.type_name()
+                        )));
+                    }
+                };
+                let mut slots = handle.slots.borrow_mut();
+                match slots.get_mut(&slot_name) {
+                    Some(SlotState::Heap { live }) => {
+                        live.retain(|c| !Rc::ptr_eq(c, &cell_rc));
+                    }
+                    _ => unreachable!("checked above"),
+                }
+                Ok(Some(Value::Unit))
+            }
+            (CapacitySlotKind::Pool, other) => Err(Signal::Error(format!(
+                "pool slot `{}`: method `{}` not available — use \
+                 `acquire()` / `release(c)`",
+                slot_name, other
+            ))),
+            (CapacitySlotKind::Heap, other) => Err(Signal::Error(format!(
+                "heap slot `{}`: method `{}` not available — use \
+                 `alloc()` / `free(c)`",
+                slot_name, other
+            ))),
+        }
+    }
+
     /// Struct or locus instantiation. Disambiguated by name:
     /// if the name is in `self.loci`, it's a locus instantiation
     /// (allocate state, run birth(), then if the locus has a
@@ -1427,6 +1592,31 @@ impl Interpreter {
         // locus's body where parent_stack is overlaid with
         // self — can route violations to the right handler.
         let parent_at_birth = self.parent_stack.last().cloned();
+
+        // F.22: initialize capacity slots in declaration order.
+        // Each slot starts empty (Pool: empty free-list; Heap:
+        // empty live set). Cells are created on demand at
+        // acquire / alloc time. The interpreter doesn't match the
+        // C-side chunked-grow ramp — it just allocates one Rc per
+        // cell and lets Rust drop them when the slot map is
+        // dropped at dissolve.
+        let mut slots: BTreeMap<String, SlotState> = BTreeMap::new();
+        for member in &decl.members {
+            if let LocusMember::Capacity(cb) = member {
+                for slot in &cb.slots {
+                    let st = match slot.kind {
+                        CapacitySlotKind::Pool => {
+                            SlotState::Pool { free: Vec::new() }
+                        }
+                        CapacitySlotKind::Heap => {
+                            SlotState::Heap { live: Vec::new() }
+                        }
+                    };
+                    slots.insert(slot.name.name.clone(), st);
+                }
+            }
+        }
+
         let handle = LocusHandle {
             name: decl.name.name.clone(),
             state: Rc::new(RefCell::new(state)),
@@ -1445,6 +1635,7 @@ impl Interpreter {
             // separate type-from-AST inference pass for the
             // interpreter (codegen's pass already validates types).
             accumulators: Rc::new(RefCell::new(BTreeMap::new())),
+            slots: Rc::new(RefCell::new(slots)),
         };
 
         // Register every bus subscription on the router. m42:

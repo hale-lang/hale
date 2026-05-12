@@ -53,10 +53,44 @@ pub enum Value {
     /// reference to its declaration so methods can be invoked
     /// off the handle.
     Locus(LocusHandle),
+    /// F.22 capacity-slot cell handle. `acquire()` / `alloc()`
+    /// return one of these; `release(c)` / `free(c)` accept
+    /// one. The cell field carries a shared mutable slot of
+    /// Value (Value::Nil at v1 — content I/O is v1.x-2). The
+    /// slot_locus / slot_name fields name the slot the cell
+    /// came from, so v1.x-5 can tighten "cell from slot X
+    /// can only be released into slot X". v1 doesn't enforce
+    /// (cross-slot release is UB at the runtime).
+    Cell {
+        slot_locus: String,
+        slot_name: String,
+        cell: Rc<RefCell<Value>>,
+    },
     /// A user-defined free `fn`.
     Fn(FnRef),
     /// Builtin function (println, print, etc.).
     Builtin(BuiltinRef),
+}
+
+/// F.22 capacity-slot runtime state (interpreter side). Lives
+/// inside the LocusHandle.slots map keyed by slot name. Pool
+/// keeps a free-list of recyclable cells; Heap keeps the live
+/// set so dissolve can wholesale-drop them. Both use
+/// `Rc<RefCell<Value>>` for cell identity; release/free push or
+/// remove the Rc itself (not the cell's value), so a cell's
+/// identity round-trips through acquire/release.
+#[derive(Debug, Clone)]
+pub enum SlotState {
+    Pool {
+        /// Available cells. acquire pops from the back; release
+        /// pushes back. Empty + acquire creates a fresh cell.
+        free: Vec<Rc<RefCell<Value>>>,
+    },
+    Heap {
+        /// All currently-allocated cells. alloc pushes; free
+        /// removes by Rc::ptr_eq.
+        live: Vec<Rc<RefCell<Value>>>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +160,11 @@ pub struct LocusHandle {
     /// quarantine) unless the closure's `persists_through(...)`
     /// clause names the event.
     pub accumulators: Rc<RefCell<BTreeMap<String, Vec<Value>>>>,
+    /// F.22 capacity slots declared on this locus. Keyed by slot
+    /// name; each entry's `SlotState` carries the slot kind +
+    /// pool/heap-specific state. Empty for loci without a
+    /// `capacity { ... }` block.
+    pub slots: Rc<RefCell<BTreeMap<String, SlotState>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -169,6 +208,7 @@ impl Value {
             Value::Struct { .. } => "Struct",
             Value::EnumVariant { .. } => "EnumVariant",
             Value::Locus(_) => "Locus",
+            Value::Cell { .. } => "Cell",
             Value::Fn(_) => "Fn",
             Value::Builtin(_) => "Builtin",
         }
@@ -212,6 +252,9 @@ impl Value {
                 }
             }
             Value::Locus(h) => format!("<locus {}>", h.name),
+            Value::Cell { slot_locus, slot_name, .. } => {
+                format!("<cell {}.{}>", slot_locus, slot_name)
+            }
             Value::Fn(_) => "<fn>".to_string(),
             Value::Builtin(b) => format!("<builtin {}>", b.name),
         }

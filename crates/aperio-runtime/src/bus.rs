@@ -443,6 +443,7 @@ mod tests {
                 parent: Rc::new(RefCell::new(None)),
                 restart_in_place_pending: Rc::new(std::cell::Cell::new(false)),
                 accumulators: Rc::new(RefCell::new(BTreeMap::new())),
+                slots: Rc::new(RefCell::new(BTreeMap::new())),
             },
             handler: handler.to_string(),
             parent: None,
