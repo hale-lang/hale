@@ -17945,6 +17945,63 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 scope,
             );
         }
+        // v1.x-8: `record.field(args)` where `field` is a
+        // fn-pointer field on a user struct lowers as a struct
+        // GEP-load of the fn pointer followed by an indirect
+        // call. Mirrors lower_self_method_call's m83 path for
+        // self-fields of FnPtr type. Closes the friction-log
+        // entry `type-records-cannot-hold-fn-pointer-fields`.
+        if let CodegenTy::TypeRef(type_name) = &recv_ty {
+            if let Some(info) = self.user_types.get(type_name).cloned() {
+                if let Some((idx, field_ty)) =
+                    info.fields.get(method_name).cloned()
+                {
+                    if let CodegenTy::FnPtr {
+                        args: fn_args,
+                        ret: fn_ret,
+                    } = field_ty.clone()
+                    {
+                        let recv_ptr = recv_val.into_pointer_value();
+                        let field_ptr = self
+                            .builder
+                            .build_struct_gep(
+                                info.struct_ty,
+                                recv_ptr,
+                                idx,
+                                &format!(
+                                    "{}.{}.ptr",
+                                    type_name, method_name
+                                ),
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?;
+                        let ptr_t = self
+                            .context
+                            .ptr_type(AddressSpace::default());
+                        let fn_value_ptr = self
+                            .builder
+                            .build_load(
+                                ptr_t,
+                                field_ptr,
+                                &format!("{}.{}", type_name, method_name),
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?
+                            .into_pointer_value();
+                        return self.emit_fnptr_indirect_call(
+                            fn_value_ptr,
+                            &fn_args,
+                            fn_ret.as_deref(),
+                            args,
+                            scope,
+                            &format!("{}.{}", type_name, method_name),
+                        );
+                    }
+                }
+            }
+        }
         let locus_name = match recv_ty {
             CodegenTy::LocusRef(n) => n,
             other => {

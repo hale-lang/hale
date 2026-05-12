@@ -1152,7 +1152,13 @@ impl Parser {
     }
 
     fn parse_struct_field(&mut self) -> Result<StructField, Diag> {
-        let name = self.expect_ident("field name")?;
+        // v1.x-8: admit framework keywords as field names —
+        // `type Cmd { run: fn(); birth: fn(); }` should parse.
+        // Mirrors expect_member_name's post-dot admittance —
+        // inside a struct-decl body the parsing position is
+        // unambiguous, so reserving these words at field-name
+        // position would just block useful patterns.
+        let name = self.expect_member_name()?;
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
         let default = if self.eat(&TokenKind::Eq) {
@@ -2219,7 +2225,10 @@ impl Parser {
     }
 
     fn parse_struct_init(&mut self) -> Result<StructInit, Diag> {
-        let name = self.expect_ident("field name")?;
+        // v1.x-8: parity with parse_struct_field — admit
+        // framework keywords as field names in struct literals
+        // so `Cmd { run: my_fn }` parses.
+        let name = self.expect_member_name()?;
         self.expect(TokenKind::Colon, ":")?;
         let value = self.parse_expr()?;
         let span = name.span.merge(value.span());
@@ -2374,11 +2383,21 @@ fn try_member_keyword_as_name(k: &TokenKind) -> Option<&'static str> {
         TokenKind::Params => "params",
         TokenKind::Contract => "contract",
         TokenKind::Bus => "bus",
+        TokenKind::Capacity => "capacity",
         TokenKind::Mode => "mode",
         TokenKind::Tier => "tier",
         TokenKind::Projection => "projection",
         TokenKind::Perspective => "perspective",
         TokenKind::Type => "type",
+        // v1.x-8: lifecycle keywords admissible as field names
+        // inside type decls + struct literals. Friction:
+        // `type Cmd { run: fn(CliCtxL); }` couldn't parse
+        // because `run` lexed as TokenKind::Run.
+        TokenKind::Birth => "birth",
+        TokenKind::Accept => "accept",
+        TokenKind::Run => "run",
+        TokenKind::Drain => "drain",
+        TokenKind::Dissolve => "dissolve",
         _ => return None,
     })
 }
