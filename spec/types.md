@@ -397,18 +397,30 @@ emits `error: error not addressed` at:
 ### Disposition operators (`or`)
 
 `<expr> or raise`
-: Convert the error to a closure violation (the runtime
-  mechanism). Evaluates the inner; on `FallibleErr` payload,
-  raises `Signal::Bubble(payload)` which routes through
-  `bubble` / `on_failure`. On success, passes the inner value
-  through. The resulting expression's type is the success
-  type T.
+: Propagate the error one frame up the static call stack.
+  Evaluates the inner; on `FallibleErr` payload, re-enters
+  the fallible-return shape of the enclosing `fallible(E)`
+  fn (the error climbs the call stack until a frame
+  addresses it). The value-error channel is value-level
+  and **orthogonal** to the closure-violation channel; the
+  `bubble` / `on_failure` machinery is not entered by
+  default. (An application may later promote a value error
+  to a closure violation explicitly; no such syntax exists
+  in v1.) On success, passes the inner value through. The
+  resulting expression's type is the success type T.
+
+  Past every enclosing `fallible(E)` frame — at the implicit
+  main locus's root boundary — the runtime panics via
+  `lotus_root_panic`. See `spec/semantics.md` § "Process
+  exit" for the boundary semantics.
 
 `<expr> or <fallback>`
 : Substitute a fallback value of type T. On failure, evaluates
   the fallback expression with `err` implicitly bound to the
   payload (typed as E). On success, passes through. Fallback
-  type must be assignable to T.
+  type must be assignable to T. The fallback may itself be
+  a call (`or handler(err)`), making `err` a regular
+  expression-position binding inside the fallback.
 
 The `or` operator is right-associative: `a() or b() or raise`
 parses as `a() or (b() or raise)`, so each level disposes one

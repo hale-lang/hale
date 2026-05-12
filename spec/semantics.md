@@ -569,12 +569,24 @@ Failures flow upward:
 Failures never flow laterally (sibling-to-sibling) — the
 framework's vertical-only-flow expressed at the runtime layer.
 
-## Fallible call semantics (v1.x-FORM-1)
+## Fallible call semantics (v1.x-FORM-1; PR6 reframe)
 
-The runtime observes exactly one form of failure: closure
-violation. Value-level `fallible(T)` returns are an
-*addressing protocol* between immediate caller and callee —
-they don't constitute a separate runtime mechanism. See
+Aperio carries two **orthogonal** failure channels:
+
+- **Closure-violation channel** — structural failure of a
+  locus's closure (its assertion / invariant) fires
+  `Signal::Bubble(ClosureViolation)` and routes through the
+  existing `bubble` / `on_failure` machinery. See **F.9**.
+- **Value-error channel** — value-level `fallible(T)` returns
+  are an *addressing protocol* between immediate caller and
+  fallible callee. They don't constitute a separate runtime
+  mechanism at intermediate frames; they propagate by sret
+  + path-indicator through the static call stack, addressed
+  at each level by a required `or` clause.
+
+The two channels meet at exactly one place: the implicit main
+locus's root boundary (see "Process exit" below). Everywhere
+else, the channels are independent. See
 `notes/agent-onboarding/aperio-design-philosophy.md` § 2.
 
 ### `fail` statement
@@ -599,24 +611,49 @@ stays admissible).
 non-error value, that value is the expression's value
 (disposition is a no-op). If the result is `FallibleErr(p)`:
 
-- **`or raise`**: raises a closure violation carrying `p`
-  through the existing `bubble` / `on_failure` machinery.
-  The closure violation is uniform-opaque to handlers — they
-  may inspect `p` as diagnostic data but the payload is
-  consumed at the `or` site if surgical recovery is needed.
-- **`or <fallback>`**: binds `err` to `p` in scope and
+- **`or raise`** — propagate the error one frame up the
+  static call stack. Inside a fallible(E) fn, this writes `p`
+  into the enclosing fn's error sret slot and exits via the
+  enclosing fn's error path; the enclosing caller's `or`
+  clause then addresses the error in turn. The closure-
+  violation channel is **not** entered. (An application may
+  later promote a value error to a closure violation
+  explicitly, but no such syntax exists in v1.)
+- **`or <fallback>`** — binds `err` to `p` in scope and
   evaluates `<fallback>`. Its result is the expression's
-  value. Type must match the success type.
+  value. Type must match the success type. `<fallback>` may
+  itself be a call (`or handler(err)`); the identifier `err`
+  in the fallback expression resolves to the typed payload.
 
 Chains are right-associative: `a() or b() or raise` reduces
 the value to the success type level by level.
 
 ### Process exit
 
-If a closure violation bubbles past root with no `on_failure`
-catching it, the process exits with the violation's payload as
-the structured error report (same path as F.9). This is the
-*only* way the runtime ends a program against its will.
+The runtime ends a program against its will via one of two
+boundary events at the implicit main locus's root:
+
+1. **Closure-violation escape (F.9).** If a closure violation
+   bubbles past every `on_failure` handler back to the
+   runtime root, the process exits with the violation's
+   payload as the structured error report.
+2. **Value-error escape (PR6).** If an `or raise` reaches
+   the implicit main locus's body with no enclosing
+   `fallible(E)` frame to absorb it, the value error escapes
+   the locus's body. The runtime panics via
+   `lotus_root_panic(payload, size, typename)` — today
+   dprintf to stderr (`"Aperio panic: unhandled <T>
+   escaping main locus"`) + `exit(1)`. Architecturally this
+   is the seat for a future routing-through-main-locus-
+   `on_failure` extension: when (if) the main locus declares
+   `on_failure`, the runtime will route the synthesized
+   ClosureViolation through that handler before falling out
+   to the dprintf+exit fallback. Until then the boundary
+   collapses both channels to the same exit shape.
+
+Both paths preserve the framework's vertical-only-flow: every
+failure exits through the top of the recursion, never
+laterally.
 
 ## Region lifetime guarantees
 

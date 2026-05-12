@@ -216,14 +216,20 @@ admissible.
   Symmetric to `return`.
 - **`or`** — recognized as a postfix on any expression of
   fallible type (the `or_clause` production). Three RHS forms:
-  `or raise` (convert to closure violation), `or <expression>`
-  (substitute), `or <handler-call>` (hand off).
+  `or raise` (propagate one frame up the call stack),
+  `or <expression>` (substitute), `or <handler-call>` (hand
+  off).
 - **`raise`** — recognized only as the immediate RHS of `or`.
-  Diverges the expression by raising a closure violation
-  carrying the fallible's payload. The closure violation is
-  uniform-opaque to `on_failure` handlers; the typed payload
-  is consumed at the `or` site (or attached as diagnostic data
-  on the violation).
+  Diverges the expression by re-entering the fallible-return
+  shape of the enclosing `fallible(E)` fn, with the payload
+  carried into the enclosing fn's error sret slot. Past every
+  enclosing fallible frame — at the implicit main locus's
+  root boundary — the runtime panics via `lotus_root_panic`.
+  The value-error channel is orthogonal to the closure-
+  violation channel; `or raise` does **not** enter the
+  `bubble` / `on_failure` machinery by default. See
+  `spec/semantics.md` § "Fallible call semantics" for the
+  full two-channel semantics.
 
 The implicit binding `err` is in scope on the RHS of an `or`
 clause and resolves to the fallible call's payload value

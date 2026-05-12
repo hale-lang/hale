@@ -387,12 +387,19 @@ and modes; specific transports come from stdlib (`std::bus::*`).
   `reorganize` / `bubble`, or absorbs (returns without calling
   any). A violation that bubbles past the root exits the
   process non-zero with the violation report on stderr.
-- **No value-level panic / exceptions.** Aperio does not have
-  `panic(msg)`, `assert(cond)`, or value-level error types.
-  Failure is structural — locus state is wrong, the violation
-  cascades. Functions return values; recovery is parent-policy.
-  Mirrors Erlang's let-it-crash + supervisor, but the
-  supervisor is the parent locus itself, not a separate role.
+- **No source-level panic / exceptions.** Aperio has no
+  `panic(msg)`, `assert(cond)`, `throw` / `catch`, or
+  implicitly-propagating exception machinery. Failure is
+  either structural (closure violation; parent-policy
+  recovery, Erlang let-it-crash with the parent locus as the
+  supervisor) or value-level via `fallible(E)` (v1.x-FORM-1
+  addressing protocol; every fallible call MUST be addressed
+  by an `or` clause at the immediate caller). The two
+  channels are orthogonal at every frame except the implicit
+  main locus's root, where a value error escaping past every
+  enclosing `fallible` frame triggers `lotus_root_panic` —
+  the runtime's only value-error escape valve. See
+  `spec/semantics.md` § "Process exit".
 
 ### Time
 
