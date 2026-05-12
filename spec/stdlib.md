@@ -165,9 +165,6 @@ Deferred (gated on design):
 
 - v1.x-3 (recognition projection class proper backing) — design
   resolved (four named sub-modes); implementation deferred.
-- v1.x-6 (Result + `?` operator) — depends on generic enums
-  story or a v1-only concrete-Result shape; no friction driver
-  yet writes `Result<T,E>`-shaped fns.
 - v1.x-9 (closures with capture) — MS2 invariant says every
   quantity assignable to one locus tower; naive lexical capture
   lets values float. Wait for closure-design pass.
@@ -176,6 +173,24 @@ Deferred (gated on design):
   fixed-instance design call.
 - v1.x-14 (Rope / chunk-list) — alt path to v1.x-15; lower
   priority now that the string-builder ships.
+
+Cut from roadmap (2026-05-12 design pass):
+
+- v1.x-6 (Result + `?` operator). `?` is pure desugaring for
+  `if r.is_err { return r.err; }`; the load-bearing part is
+  `Result<T, E>` as a discipline. Aperio already has
+  failure-propagation-upward at the **locus** level via
+  `bubble` / `on_failure` — that's the Design's
+  failure-propagation-upward mechanic expressed structurally.
+  Adding value-level `Result` would create a second, parallel
+  mechanism for the same thing (parametric option for what is
+  already covered structurally — exactly what The Design
+  counsels against). The Aperio idiom is sentinel-with-
+  discriminator: `parse_int(s)` returns `0` on failure;
+  `can_parse_int(s)` is the explicit predicate. Callers pick
+  the appropriate pair — no type-system tax on the common
+  case where 0-on-failure is fine. Revisit only if a future
+  workload genuinely demands value-level error types.
 - v1.x-17 (machine-sized defaults) — runtime-queried page-size /
   cache-line constants for F.22 chunk sizing.
 
@@ -448,7 +463,10 @@ Serialization:
 Infrastructure beyond what the runtime provides:
 - `Versioned<T>` — wrap a perspective with version metadata
 - `serialize<T: Perspective>(p)` — wire format
-- `deserialize<T: Perspective>(bytes) -> Result<T>`
+- `deserialize<T: Perspective>(bytes) -> T` (returns zero-value
+  on failure; pair with `can_deserialize<T>(bytes) -> Bool`
+  for the explicit predicate — sentinel-with-discriminator
+  idiom, matching `parse_int` / `can_parse_int`).
 - `commit_when(condition)` — declarative commit policy
 
 ### `std::observability`
@@ -498,10 +516,13 @@ Synchronization primitives at the locus boundary:
 
 ### `std::panic`
 
-Panic introspection (rare; usually you use `on_failure`
-instead):
-- `catch_panic(f) -> Result<T, Panic>`
-- `panic(msg)` — explicit panic
+Panic introspection (rare; usually you use the locus tower's
+`on_failure` instead — that's the Design-aligned shape, and
+panic catching at the value level is anti-pattern). If a
+need surfaces, the surface would be a locus that wraps the
+operation and exposes `failed: Bool` / `error_msg: String`
+fields after run completes — not a Result-typed return.
+- `panic(msg)` — explicit panic (always available).
 
 ## What's not in stdlib (third-party territory)
 
