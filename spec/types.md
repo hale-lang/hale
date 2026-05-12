@@ -68,6 +68,9 @@ Locus types have:
   `: inferred`); these are also the locus's mutable state (per
   F.3 / §3 in design-rationale).
 - Optional **contract** (expose / consume entries).
+- Optional **capacity slots** (F.22 — `pool X of T;` / `heap Y
+  of T;` declarations naming slots 1..N beyond the implicit
+  slot 0 / Arena).
 - Optional **lifecycle methods** (`birth`, `accept`, `run`,
   `drain`, `dissolve`, `on_failure`).
 - Optional **mode declarations** (`bulk`, `harmonic`,
@@ -79,6 +82,23 @@ Locus types have:
 Instantiating a locus type produces a **locus handle** of that
 type, allocated as a region within the enclosing scope (per
 `memory.md`).
+
+## Capacity-slot cell handles (F.22)
+
+`Cell<T>` is the value type returned by `acquire()` (Pool slots)
+and `alloc()` (Heap slots), and accepted by `release(c)` /
+`free(c)`. It is **not** user-spellable in source — there is no
+`let x: Cell<Int> = ...;` syntax. The type appears only at
+typecheck and codegen.
+
+| Aspect | v1 behavior |
+|---|---|
+| LLVM repr | `ptr` — a typed pointer to T's struct layout |
+| Element type | The boxed inner type carries T from the slot's `of T` declaration; `Cell<Int>` and `Cell<Float>` typecheck distinctly. |
+| Validity surface | Round-trip only: a value can flow through `let`-bindings, get re-supplied to `release` / `free`, and live inside the locus body. |
+| Forbidden v1 ops | println, arithmetic, comparison, fn-return-boundary crossing. Each rejects with a focused build-time diagnostic. |
+| v1.x follow-up | Direct load / store through a Cell handle (`*cell` for primitive cells, `cell.field` for struct cells). Lands when Map / Vec stdlib drive the surface. |
+| Slot-of-origin tracking | Not in v1 — a `Cell<T>` carries T but not the slot it came from, so releasing into a different slot of the same T is undefined behavior. v1.x type refinement closes this. |
 
 ## Perspective types
 

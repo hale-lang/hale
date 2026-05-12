@@ -162,6 +162,128 @@ dissolves until fn exit. Per-iteration cleanup uses a helper
 free fn whose return is the per-iteration boundary (see
 `__handle_one_connection` in `stdlib/io_tcp.ap`).
 
+### Method-returning-locus heap allocation (m90)
+
+When a method declares `-> SomeL` and instantiates a `SomeL`
+in its body, the instance is allocated via the lazy global
+payload arena (program-lifetime), **not** the caller's stack
+or the callee's arena. Both the eager dissolve and the
+deferred-frame push are suppressed at the instantiation site;
+the locus semantically "moves" to the caller and lives for
+the program.
+
+This is the codegen-side fix for "second method call on a
+returned locus reads stale state" — the first read sees
+still-valid memory, the second sees overwritten state. Heap
+allocation gives the returned handle program-lifetime safety
+at the cost of leaking the locus instance + its arena until
+process exit. Acceptable trade-off for v1 (matches `Bytes`
+lifetime semantics).
+
+A return-slot ABI (caller passes a struct out-pointer +
+adopts the locus into its own deferred-dissolves frame) would
+tighten this without leaking — deferred to v1.x. Covers
+both `return SomeL { ... };` and `let s = SomeL { }; ...;
+return s;` because `current_user_fn_ret` is set during either
+literal's lowering.
+
+## Capacity slot lifecycle and dispatch (F.22)
+
+A locus's `capacity { pool X of T; heap Y of T; ... }` block
+declares **slots 1..N** — additional storage disciplines
+beyond slot 0 (the locus's own Arena, implicit). Slot order in
+the declaration is significant.
+
+### Slot lifetime ordering
+
+Slot init runs at instantiation, in declaration order, **after
+slot 0 (arena) is set and before the locus's own field
+initializers run**:
+
+1. Slot 0 (arena) — fresh `lotus_arena_create()`, or a
+   sub-region of the parent's arena if the parent's projection
+   class is Chunked / Recognition and accepts this locus.
+2. For each declared slot in declaration order: call
+   `lotus_pool_create(size_of(T), 8)` or `lotus_heap_create(
+   size_of(T), 8)`. Store the returned allocator pointer in
+   the slot's `__slot_<name>: ptr` field.
+3. Locus's user fields (params + their defaults / overrides).
+4. Synthetic flags (`__restart_count`, `__quarantined`, etc.).
+
+Slot destroy runs at dissolve, in **reverse declaration order**,
+**before slot 0**:
+
+1. Drain + dissolve closures + user `drain()` / `dissolve()`.
+2. For each slot in reverse declaration order: call
+   `lotus_pool_destroy(allocator)` or `lotus_heap_destroy(
+   allocator)`.
+3. Slot 0 arena destroyed via `lotus_arena_destroy(arena)`.
+
+Reverse-order destroy matches F.4's reverse-instantiation
+cascade rule for let-bound loci; the same principle applies
+to slots within a locus.
+
+### Slot restrictions (v1)
+
+1. **Slot element type must be a value-shape, not a LocusRef.**
+   Loci have lifecycle; cell recycling (Pool.release) or
+   individual free (Heap.free) would orphan the locus. Use
+   `accept(c: ChildL)` for locus membership; slots are for
+   value-shaped types. Enforced at typecheck (with a
+   span-targeted diagnostic) and again at codegen as defense
+   in depth.
+2. **Slot pointers don't cross the bus.** Structurally
+   enforced: slot names aren't typeable identifiers, so they
+   cannot appear as bus payload struct fields. No runtime
+   check is needed; the type system makes the case unreachable.
+3. **Duplicate slot names rejected.** Two slots sharing a
+   name (even across separate `capacity { ... }` blocks on
+   the same locus, though v1 grammar admits only one block
+   per locus in practice) fail at both typecheck and codegen.
+
+### Method-shaped slot dispatch
+
+The user-facing surface is `self.<slot>.<method>(args)`. The
+parser and typechecker both recognize `self.<slot>` as a
+slot reference rather than a missing field; the codegen
+intercepts the method-call shape and routes directly to the
+matching C primitive:
+
+| Slot kind | acquire / borrow | release / return |
+|---|---|---|
+| `pool X of T` | `self.X.acquire() -> Cell<T>` (no args) | `self.X.release(c)` (one Cell<T> arg) |
+| `heap Y of T` | `self.Y.alloc() -> Cell<T>` (no args) | `self.Y.free(c)` (one Cell<T> arg) |
+
+Calling a pool method on a heap slot (or vice versa) is a
+build-time diagnostic that names the right method for the
+slot kind. The `Cell<T>` cell type is documented in
+`types.md`; at v1 it is opaque round-trip only (no read /
+write through the cell — pending Map / Vec stdlib in v1.x).
+
+Slot access outside a method-call receiver position (e.g.,
+`let x = self.entries;` to hold a slot handle as a value) is
+not supported at v1 — slots have no value-level CodegenTy
+that survives outside the dispatch path. Codegen errors with
+"no field on locus self" if the standalone access slips past
+typecheck. v1.x can lift this if a workload demands first-
+class slot-handle values.
+
+### Slot 0 parent-override
+
+When a locus is accepted by a parent whose projection class is
+**Chunked** or **Recognition**, the child's slot 0 (arena) is
+allocated as a sub-region of the parent's arena via
+`lotus_arena_create_subregion`. The child is freed wholesale
+when the parent's arena dissolves. **Rich**-class parents do
+not sub-region-allocate; accepted children get their own
+top-level arenas. See `memory.md` Per-projection-class
+allocation table.
+
+This is existing v0 behavior; F.22 names it as "projection
+class governs parent-override of slot 0" so future slot-1..N
+parent-override (deferred to v1.x as `as_parent_for`) sits
+on consistent vocabulary.
+
 ## Lifecycle method invocation
 
 ### `birth()`
@@ -284,6 +406,18 @@ If HANDLER panics:
   invoked on the parent if any.
 - The subscription itself is *not* removed; future messages
   continue to dispatch.
+
+### Payload type — primitives + nested structs + String
+
+The wire format supports primitives (`Int`, `Float`, `Bool`,
+`Decimal`, `Duration`, `Time`, `String`), `Bytes`, and
+**nested user struct types** (`type T { ... }`) recursively
+composed. A bus payload may carry a struct whose fields are
+primitives, Strings, Bytes, or other nested structs, at any
+depth. Serialize walks the field tree in declaration order;
+deserialize allocates each nested struct in the lazy global
+payload arena and recurses. Arrays, tuples, and enums as bus
+payload fields are post-v1 polish.
 
 ## Closure-test evaluation
 

@@ -60,8 +60,17 @@ interface values across arena boundaries is a Phase B follow-up.
 ### Locus member keywords
 
 ```
-params          contract        bus
+params          contract        bus             capacity
 ```
+
+`capacity` introduces an F.22 `capacity { ... }` block carrying
+zero or more `pool X of T;` / `heap Y of T;` slot declarations.
+The slot-kind words `pool` and `heap` are **contextual idents** —
+they lex as ordinary Idents and the parser recognizes them only
+in slot-decl head position inside a capacity block. So
+`fn pool_alloc(...)`, `let heap = ...`, and `type Heap { ... }`
+all stay admissible outside capacity blocks. Same F.10-style
+narrowing the closure-keyword family uses for `approx` / `within`.
 
 ### Lifecycle keywords
 

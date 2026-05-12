@@ -61,6 +61,7 @@ schedule_class    = "cooperative"
 locus_member      = params_block
                   | contract_block
                   | bus_block
+                  | capacity_block
                   | lifecycle_decl
                   | mode_decl
                   | failure_decl
@@ -118,6 +119,23 @@ bus_subscribe     = "subscribe" , STRING_LIT , "as" , IDENTIFIER ,
                     [ "of" , "type" , type_expr ] , ";" ;
 bus_publish       = "publish" , STRING_LIT , "of" , "type" , type_expr ,
                     [ "as" , IDENTIFIER ] , ";" ;
+
+
+(* === 5b. Capacity block (F.22) ================================= *)
+
+(* Declares the locus's slots 1..N — additional storage
+   disciplines beyond slot 0 (the locus's own Arena, implicit).
+   `pool X of T;` is fixed-size cell recycling; `heap Y of T;`
+   is individually-freed cells with locus-bounded lifetime.
+   The slot kind word (`pool` / `heap`) is a CONTEXTUAL ident,
+   recognized by the parser inside the capacity block. Outside
+   a capacity block, `pool` / `heap` are unreserved (matches
+   F.10's approx/within precedent — keeps the math-shaped
+   identifier pool free elsewhere). *)
+
+capacity_block    = "capacity" , "{" , { capacity_slot } , "}" ;
+capacity_slot     = slot_kind , IDENTIFIER , "of" , type_expr , ";" ;
+slot_kind         = "pool" | "heap" ;
 
 
 (* === 6. Lifecycle blocks ======================================= *)
@@ -440,6 +458,7 @@ member_name       = IDENTIFIER
                   | "params"
                   | "contract"
                   | "bus"
+                  | "capacity"
                   | "mode"
                   | "tier"
                   | "projection"

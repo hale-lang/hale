@@ -34,6 +34,24 @@ the model: runtime is automatic; stdlib is explicit.
   **per-arena**, **bounded**, **deterministic** — never stop-
   the-world. Coordinatee sub-regions remain pristine arenas
   freed wholesale on dissolution.
+- **F.22 capacity-slot allocators.** Each `pool X of T;` /
+  `heap Y of T;` declaration on a locus adds a per-instance
+  allocator. The C runtime ships two symbol families:
+
+  | Family | Surface | Backing |
+  |---|---|---|
+  | `lotus_pool_*` | `create(cell_size, cell_align) -> pool*`, `acquire(pool) -> cell*`, `release(pool, cell)`, `destroy(pool)` | Linked list of chunks; each chunk is one malloc holding N contiguous cells. Free-list threads through the cells themselves (each free cell stores the next-free pointer at its base). Chunks grow geometrically (initial 16 cells, doubling, capped at 4096). Cell stride = max(cell_size, sizeof(void*)) aligned to cell_align. |
+  | `lotus_heap_*` | `create(cell_size, cell_align) -> heap*`, `alloc(heap) -> cell*`, `free(heap, cell)`, `destroy(heap)` | Doubly-linked live list with intrusive header (prev/next pointers) sitting just before each cell. `free()` unlinks in O(1); `destroy()` walks the list and frees every still-live cell wholesale. |
+
+  Both allocator families are type-erased at the C ABI (sizes
+  + aligns are i64 args). Cell alignment is 8 bytes uniformly
+  in v0; loci with cells requiring >8-byte alignment (e.g.
+  AVX-aligned types) are not supported. Per F.22 §"Slot
+  lifetime", slot init runs after slot 0 / arena and destroy
+  runs in reverse before slot 0 / arena. See
+  `spec/semantics.md` "Capacity slot lifecycle and dispatch
+  (F.22)" for the language-level surface and `spec/memory.md`
+  "Capacity slots (F.22)" for the lotus-substrate framing.
 
 ### Lifecycle
 

@@ -62,6 +62,57 @@ The compiler picks based on the locus's declared projection
 class. A locus with no explicit `projection` annotation defaults
 to `chunked` if it accepts coordinatees, `rich` if it doesn't.
 
+## Capacity slots (F.22)
+
+A locus's storage discipline is an **N-tuple of capacity slots**.
+Slot 0 is the locus's own Arena (everything above this section).
+Slots 1..N are user-declared in a `capacity { ... }` block:
+
+```
+locus FooL {
+    capacity {
+        pool entries of Int;        // slot 1: cell-recycling of Int-sized
+        heap registry of Command;   // slot 2: growable, individual free
+    }
+}
+```
+
+Each non-Arena slot kind is a commitment the locus makes about
+its own state, not a hidden implementation detail:
+
+| Slot kind | Commitment | Backing | Lifetime |
+|---|---|---|---|
+| **Arena** (slot 0, implicit) | "I'm scratch — everything I touch dies with me." | Single bump arena per locus. | Wholesale-free at locus dissolve. |
+| **Pool of T** (slots 1..N) | "I hold a bounded shape of recyclable state." | Chunked free-list (`lotus_pool_*`). Cells acquired / released; chunks grow geometrically (16 → 32 → 64, capped at 4096) when the free-list empties. | Wholesale-free at locus dissolve. |
+| **Heap of T** (slots 1..N) | "I hold growable state bounded by my own lifetime." | Doubly-linked live list with intrusive header (`lotus_heap_*`). Cells alloc / free individually. | Wholesale-free at locus dissolve (live list walked, every still-live cell freed). |
+
+Slot init runs in declaration order after slot 0; slot destroy
+runs in reverse declaration order before slot 0. Cell alignment
+is 8 bytes (the v0 substrate's universal scalar alignment); cell
+size comes from T's LLVM struct layout. Restriction: a cell
+type cannot be a `LocusRef` — locus membership goes through
+`accept(c: ChildL)`, not slots. See `spec/semantics.md`
+"Capacity slot lifecycle and dispatch (F.22)" for the user-
+facing method-shaped surface and full restriction list.
+
+**Slot 0 parent-override** is governed by projection class
+(table above): Chunked / Recognition parents sub-region-allocate
+their accepted children's slot 0; Rich parents do not. F.22
+names this existing v0 behavior so future **slot 1..N parent-
+override** (`pool entries of Int as_parent_for ChildL;`) sits
+on consistent vocabulary. Slot 1..N parent-override is deferred
+to v1.x — the first workload that demands a parent-owned Pool
+shared across accepted children will unlock the syntax.
+
+**Naming note.** The Recognition projection class's
+pre-allocated bitmap pool (`RecognitionPool`, documented later
+in this file) is the *slot 0 storage strategy for recognition-
+classed loci*. F.22's `pool` slot is a user-declared slot at
+1..N with chunked-+-free-list backing and no projection-class
+entanglement. The two systems may unify in v1.x once F.22
+slots 1..N stabilize; until then they are structurally
+distinct mechanisms that happen to share the word "pool."
+
 ## Lifetime rules
 
 ### Bound handles
