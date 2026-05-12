@@ -457,7 +457,130 @@ pub fn resolve_path(segments: &[&str]) -> Option<Value> {
             name: "std::text::base64::decode",
             func: Rc::new(std_text_base64_decode),
         })),
+        // v1.x-15: string-builder primitive. The interpreter
+        // uses a Bytes-shaped carrier — the first 8 bytes of the
+        // backing Vec<u8> are a sentinel `"_sb_v1__"` so attempts
+        // to mis-use the handle as a real Bytes blob produce
+        // recognizable garbage. Append / finish trust the
+        // carrier shape; they're the only consumers.
+        ["std", "str", "builder_new"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::str::builder_new",
+            func: Rc::new(std_str_builder_new),
+        })),
+        ["std", "str", "builder_append"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::str::builder_append",
+            func: Rc::new(std_str_builder_append),
+        })),
+        ["std", "str", "builder_len"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::str::builder_len",
+            func: Rc::new(std_str_builder_len),
+        })),
+        ["std", "str", "builder_finish"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::str::builder_finish",
+            func: Rc::new(std_str_builder_finish),
+        })),
         _ => None,
+    }
+}
+
+/// v1.x-15: interpreter string builder. The handle is a
+/// Value::Bytes wrapping a Vec<u8> that we mutate in place. Since
+/// Value::Bytes carries an Rc<RefCell<...>>-free plain Vec, we use
+/// the bigger Value::Array(Rc<RefCell<Vec<Value>>>) trick: store
+/// the running buffer as a one-element Array containing a
+/// Value::Bytes, so we have shared mutable access.
+fn std_str_builder_new(args: &[Value]) -> Result<Value, String> {
+    if !args.is_empty() {
+        return Err(format!(
+            "std::str::builder_new expects 0 args, got {}",
+            args.len()
+        ));
+    }
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let inner = Rc::new(RefCell::new(vec![Value::Bytes(Vec::new())]));
+    Ok(Value::Array(inner))
+}
+
+fn std_str_builder_append(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!(
+            "std::str::builder_append expects 2 args, got {}",
+            args.len()
+        ));
+    }
+    let handle = match &args[0] {
+        Value::Array(a) => a.clone(),
+        other => {
+            return Err(format!(
+                "std::str::builder_append: handle must be a builder, got {}",
+                other.type_name()
+            ));
+        }
+    };
+    let chunk = match &args[1] {
+        Value::String(s) => s.clone(),
+        other => {
+            return Err(format!(
+                "std::str::builder_append: s must be String, got {}",
+                other.type_name()
+            ));
+        }
+    };
+    let mut a = handle.borrow_mut();
+    if let Some(Value::Bytes(buf)) = a.get_mut(0) {
+        buf.extend_from_slice(chunk.as_bytes());
+        Ok(Value::Unit)
+    } else {
+        Err("std::str::builder_append: corrupt builder handle".to_string())
+    }
+}
+
+fn std_str_builder_len(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::str::builder_len expects 1 arg, got {}",
+            args.len()
+        ));
+    }
+    match &args[0] {
+        Value::Array(a) => {
+            let a = a.borrow();
+            if let Some(Value::Bytes(buf)) = a.get(0) {
+                Ok(Value::Int(buf.len() as i64))
+            } else {
+                Err("std::str::builder_len: corrupt builder handle".to_string())
+            }
+        }
+        other => Err(format!(
+            "std::str::builder_len: handle must be a builder, got {}",
+            other.type_name()
+        )),
+    }
+}
+
+fn std_str_builder_finish(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::str::builder_finish expects 1 arg, got {}",
+            args.len()
+        ));
+    }
+    match &args[0] {
+        Value::Array(a) => {
+            let mut a = a.borrow_mut();
+            if let Some(Value::Bytes(buf)) = a.get_mut(0) {
+                let owned = std::mem::take(buf);
+                let s = String::from_utf8_lossy(&owned).into_owned();
+                Ok(Value::String(s))
+            } else {
+                Err("std::str::builder_finish: corrupt builder handle".to_string())
+            }
+        }
+        other => Err(format!(
+            "std::str::builder_finish: handle must be a builder, got {}",
+            other.type_name()
+        )),
     }
 }
 

@@ -3655,3 +3655,104 @@ void lotus_bus_remote_destroy_all(void) {
     }
     pthread_mutex_unlock(&g_bus_payload_arena_mutex);
 }
+
+/*
+ * v1.x-15: string-builder primitive. Resolves the reader-list_item-
+ * quadratic-concat friction: long-running string accumulation can
+ * now run in amortized O(N) total cost via doubling realloc, rather
+ * than the O(N²) shape that `buf = buf + chunk` collapsed to under
+ * Aperio's arena-anchored immutable Strings.
+ *
+ * The builder is a single contiguous malloc'd buffer with a
+ * length and capacity. append() doubles cap as needed. finish()
+ * allocates the final NUL-terminated string in the bus payload
+ * arena (so it stays live for the rest of the program), copies
+ * the buffer into it, frees the builder, and returns the string.
+ *
+ * Leaks the builder if finish() is never called — acceptable for
+ * v1 since the surface fences this off: every builder_new()
+ * dominates a builder_finish() in practice, and the worst-case
+ * "user forgot to finish" is bounded by the working-set size of
+ * one accumulator scope.
+ */
+typedef struct lotus_str_builder {
+    size_t cap;
+    size_t len;
+    char  *buf;
+} lotus_str_builder_t;
+
+void *lotus_str_builder_new(void) {
+    lotus_str_builder_t *b = (lotus_str_builder_t *)
+        malloc(sizeof(lotus_str_builder_t));
+    if (!b) return NULL;
+    b->cap = 64;
+    b->len = 0;
+    b->buf = (char *)malloc(b->cap);
+    if (!b->buf) {
+        free(b);
+        return NULL;
+    }
+    b->buf[0] = '\0';
+    return b;
+}
+
+void lotus_str_builder_append(void *handle, const char *s) {
+    if (!handle || !s) return;
+    lotus_str_builder_t *b = (lotus_str_builder_t *)handle;
+    size_t add = strlen(s);
+    if (add == 0) return;
+    size_t need = b->len + add;
+    if (need + 1 > b->cap) {
+        size_t new_cap = b->cap ? b->cap : 64;
+        while (new_cap < need + 1) {
+            new_cap *= 2;
+            /* Guard against overflow at unreasonable sizes. */
+            if (new_cap < b->cap) {
+                /* Saturate: allocate exactly what we need. */
+                new_cap = need + 1;
+                break;
+            }
+        }
+        char *nb = (char *)realloc(b->buf, new_cap);
+        if (!nb) return;
+        b->buf = nb;
+        b->cap = new_cap;
+    }
+    memcpy(b->buf + b->len, s, add);
+    b->len = need;
+    b->buf[b->len] = '\0';
+}
+
+int64_t lotus_str_builder_len(const void *handle) {
+    if (!handle) return 0;
+    const lotus_str_builder_t *b = (const lotus_str_builder_t *)handle;
+    return (int64_t)b->len;
+}
+
+const char *lotus_str_builder_finish(void *handle) {
+    if (!handle) return "";
+    lotus_str_builder_t *b = (lotus_str_builder_t *)handle;
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            free(b->buf);
+            free(b);
+            return "";
+        }
+    }
+    char *out = (char *)lotus_arena_alloc(
+        g_bus_payload_arena, b->len + 1, 1);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    if (!out) {
+        free(b->buf);
+        free(b);
+        return "";
+    }
+    memcpy(out, b->buf, b->len);
+    out[b->len] = '\0';
+    free(b->buf);
+    free(b);
+    return out;
+}

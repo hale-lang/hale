@@ -1963,6 +1963,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
+        // v1.x-15: string-builder primitive. Doubling realloc-backed
+        // buffer that turns O(N²) accumulation into amortized O(N).
+        // Handle is a `ptr` (carried as Bytes in the Aperio surface).
+        // declare ptr @lotus_str_builder_new(void)
+        let sb_new_ty = ptr_t.fn_type(&[], false);
+        self.module
+            .add_function("lotus_str_builder_new", sb_new_ty, None);
+        // declare void @lotus_str_builder_append(ptr handle, ptr s)
+        let sb_append_ty = self
+            .context
+            .void_type()
+            .fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_str_builder_append",
+            sb_append_ty,
+            None,
+        );
+        // declare i64 @lotus_str_builder_len(ptr handle)
+        let sb_len_ty = i64_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_str_builder_len", sb_len_ty, None);
+        // declare ptr @lotus_str_builder_finish(ptr handle)
+        let sb_finish_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_str_builder_finish",
+            sb_finish_ty,
+            None,
+        );
+
         // m96: tree-sitter substrate. extern "C" symbols defined
         // in `runtime/lotus_treesitter.rs` (compiled into the
         // sibling `aperio-ts-shim` staticlib). The link step
@@ -13699,6 +13728,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_str_can_parse_float(args, scope)?;
                 Ok(())
             }
+            // v1.x-15: string-builder primitive.
+            ["std", "str", "builder_new"] => {
+                let _ = self.lower_std_str_builder_new(args)?;
+                Ok(())
+            }
+            ["std", "str", "builder_append"] => {
+                self.lower_std_str_builder_append(args, scope)
+            }
+            ["std", "str", "builder_len"] => {
+                let _ = self.lower_std_str_builder_len(args, scope)?;
+                Ok(())
+            }
+            ["std", "str", "builder_finish"] => {
+                let _ = self.lower_std_str_builder_finish(args, scope)?;
+                Ok(())
+            }
             // m84: parse_request also reachable in statement
             // position (rare — usually you keep the result), but
             // wire it for completeness so `std::http::parse_request(raw);`
@@ -14006,6 +14051,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "str", "can_parse_float"] => {
                 self.lower_std_str_can_parse_float(args, scope)
+            }
+            ["std", "str", "builder_new"] => {
+                self.lower_std_str_builder_new(args)
+            }
+            ["std", "str", "builder_len"] => {
+                self.lower_std_str_builder_len(args, scope)
+            }
+            ["std", "str", "builder_finish"] => {
+                self.lower_std_str_builder_finish(args, scope)
             }
             // m84: std::http::parse_request(raw: String) -> Request.
             // Implementation lives in stdlib.ap as the bare-name
@@ -14681,6 +14735,147 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .left()
             .expect("returns f64");
         Ok((v, CodegenTy::Float))
+    }
+
+    /// v1.x-15: `std::str::builder_new() -> Bytes`. Allocates a
+    /// doubling-realloc-backed buffer; Bytes is the carrier type
+    /// (opaque — users shouldn't index into it, only pass through
+    /// to the other builder_* fns). Resolves the
+    /// reader-list_item-quadratic-concat friction by turning N
+    /// append calls into amortized O(N) total cost.
+    fn lower_std_str_builder_new(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if !args.is_empty() {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::builder_new takes 0 args, got {}",
+                args.len()
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_str_builder_new")
+            .expect("lotus_str_builder_new declared");
+        let call = self
+            .builder
+            .build_call(f, &[], "sb.new.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::Bytes))
+    }
+
+    /// v1.x-15: `std::str::builder_append(b: Bytes, s: String)`.
+    /// Void-returning; statement-position only.
+    fn lower_std_str_builder_append(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::builder_append takes 2 args (b, s), got {}",
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::builder_append: builder must be Bytes \
+                 (from builder_new), got {:?}",
+                b_ty
+            )));
+        }
+        let (s_val, s_ty) = self.lower_expr(&args[1], scope)?;
+        if s_ty != CodegenTy::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::builder_append: s must be String, got {:?}",
+                s_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_str_builder_append")
+            .expect("lotus_str_builder_append declared");
+        self.builder
+            .build_call(f, &[b_val.into(), s_val.into()], "sb.append")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// v1.x-15: `std::str::builder_len(b: Bytes) -> Int`. Inspect
+    /// the running length without materializing the final String.
+    fn lower_std_str_builder_len(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::builder_len takes 1 arg (b), got {}",
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::builder_len: builder must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_str_builder_len")
+            .expect("lotus_str_builder_len declared");
+        let call = self
+            .builder
+            .build_call(f, &[b_val.into()], "sb.len.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let v = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((v, CodegenTy::Int))
+    }
+
+    /// v1.x-15: `std::str::builder_finish(b: Bytes) -> String`.
+    /// Materializes the accumulated string in the bus payload
+    /// arena (lives for the rest of the program) and frees the
+    /// builder. The Bytes handle must NOT be reused after finish.
+    fn lower_std_str_builder_finish(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::builder_finish takes 1 arg (b), got {}",
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::builder_finish: builder must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_str_builder_finish")
+            .expect("lotus_str_builder_finish declared");
+        let call = self
+            .builder
+            .build_call(f, &[b_val.into()], "sb.finish.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::String))
     }
 
     /// v1.x-16: `std::str::can_parse_float(s: String) -> Bool`.
