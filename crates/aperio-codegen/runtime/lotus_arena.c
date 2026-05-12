@@ -3727,6 +3727,122 @@ const char *lotus_str_lower(const char *s) {
     return out;
 }
 
+const char *lotus_str_trim(const char *s) {
+    if (!s) return "";
+    /* Whitespace per RFC 7230 / common usage: space, tab, \r, \n. */
+    size_t n = strlen(s);
+    size_t lo = 0;
+    while (lo < n) {
+        unsigned char c = (unsigned char)s[lo];
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+            lo++;
+        } else {
+            break;
+        }
+    }
+    size_t hi = n;
+    while (hi > lo) {
+        unsigned char c = (unsigned char)s[hi - 1];
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+            hi--;
+        } else {
+            break;
+        }
+    }
+    size_t out_len = hi - lo;
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            return "";
+        }
+    }
+    char *out = (char *)lotus_arena_alloc(g_bus_payload_arena, out_len + 1, 1);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    if (!out) return "";
+    if (out_len > 0) {
+        memcpy(out, s + lo, out_len);
+    }
+    out[out_len] = '\0';
+    return out;
+}
+
+/*
+ * Replace every occurrence of `needle` with `replacement` in `s`.
+ * Naive O(n*m) scan. Empty needle returns `s` unchanged (replacing
+ * "" infinitely is undefined). Overlap is greedy-forward — each
+ * match advances by `needle_len`, not 1.
+ */
+const char *lotus_str_replace(const char *s, const char *needle,
+                              const char *replacement) {
+    if (!s) return "";
+    if (!needle || !*needle) {
+        /* No-op for empty needle. */
+        size_t n = strlen(s);
+        pthread_mutex_lock(&g_bus_payload_arena_mutex);
+        if (!g_bus_payload_arena) {
+            g_bus_payload_arena = lotus_arena_create();
+            if (!g_bus_payload_arena) {
+                pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+                return "";
+            }
+        }
+        char *out = (char *)lotus_arena_alloc(g_bus_payload_arena, n + 1, 1);
+        pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+        if (!out) return "";
+        memcpy(out, s, n);
+        out[n] = '\0';
+        return out;
+    }
+    if (!replacement) replacement = "";
+    size_t s_len   = strlen(s);
+    size_t need    = strlen(needle);
+    size_t rep_len = strlen(replacement);
+
+    /* Count occurrences first to right-size the output. */
+    size_t count = 0;
+    for (size_t i = 0; i + need <= s_len; ) {
+        if (memcmp(s + i, needle, need) == 0) {
+            count++;
+            i += need;
+        } else {
+            i++;
+        }
+    }
+    size_t out_len;
+    if (rep_len >= need) {
+        out_len = s_len + count * (rep_len - need);
+    } else {
+        out_len = s_len - count * (need - rep_len);
+    }
+
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            return "";
+        }
+    }
+    char *out = (char *)lotus_arena_alloc(g_bus_payload_arena, out_len + 1, 1);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    if (!out) return "";
+
+    size_t j = 0;
+    for (size_t i = 0; i < s_len; ) {
+        if (i + need <= s_len && memcmp(s + i, needle, need) == 0) {
+            memcpy(out + j, replacement, rep_len);
+            j += rep_len;
+            i += need;
+        } else {
+            out[j++] = s[i++];
+        }
+    }
+    out[out_len] = '\0';
+    return out;
+}
+
 const char *lotus_str_upper(const char *s) {
     if (!s) return "";
     size_t n = strlen(s);

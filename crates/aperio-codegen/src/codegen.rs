@@ -1971,6 +1971,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // declare ptr @lotus_str_upper(ptr s)
         self.module
             .add_function("lotus_str_upper", case_fold_ty, None);
+        // declare ptr @lotus_str_trim(ptr s)
+        self.module
+            .add_function("lotus_str_trim", case_fold_ty, None);
+        // declare ptr @lotus_str_replace(ptr s, ptr needle, ptr rep)
+        let replace_ty = ptr_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_str_replace", replace_ty, None);
 
         // v1.x-15: string-builder primitive. Doubling realloc-backed
         // buffer that turns O(N²) accumulation into amortized O(N).
@@ -13745,6 +13755,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_str_case_fold(args, scope, "upper")?;
                 Ok(())
             }
+            ["std", "str", "trim"] => {
+                let _ = self.lower_std_str_case_fold(args, scope, "trim")?;
+                Ok(())
+            }
+            ["std", "str", "replace"] => {
+                let _ = self.lower_std_str_replace(args, scope)?;
+                Ok(())
+            }
             // v1.x-15: string-builder primitive.
             ["std", "str", "builder_new"] => {
                 let _ = self.lower_std_str_builder_new(args)?;
@@ -14074,6 +14092,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "str", "upper"] => {
                 self.lower_std_str_case_fold(args, scope, "upper")
+            }
+            ["std", "str", "trim"] => {
+                self.lower_std_str_case_fold(args, scope, "trim")
+            }
+            ["std", "str", "replace"] => {
+                self.lower_std_str_replace(args, scope)
             }
             ["std", "str", "builder_new"] => {
                 self.lower_std_str_builder_new(args)
@@ -14760,9 +14784,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok((v, CodegenTy::Float))
     }
 
-    /// v1.x: `std::str::lower(s)` / `std::str::upper(s)`. ASCII
-    /// case folding only — non-ASCII bytes pass through unchanged.
-    /// Returns a new String anchored in the bus payload arena.
+    /// v1.x: `std::str::lower(s)` / `std::str::upper(s)` (ASCII
+    /// case folding) and `std::str::trim(s)` (whitespace strip).
+    /// All take one String, return a new String in the bus
+    /// payload arena.
     fn lower_std_str_case_fold(
         &mut self,
         args: &[Expr],
@@ -14786,15 +14811,65 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let extern_name = match which {
             "lower" => "lotus_str_lower",
             "upper" => "lotus_str_upper",
+            "trim"  => "lotus_str_trim",
             _ => unreachable!(),
         };
         let f = self
             .module
             .get_function(extern_name)
-            .expect("case-fold extern declared");
+            .expect("string fold/strip extern declared");
         let call = self
             .builder
             .build_call(f, &[s_val.into()], &format!("str.{}.ret", which))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let v = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((v, CodegenTy::String))
+    }
+
+    /// v1.x: `std::str::replace(s, needle, replacement) -> String`.
+    /// Naive O(n*m) scan; greedy-forward (each match advances by
+    /// needle_len, not 1). Empty needle is a no-op (avoids the
+    /// infinite-replace footgun).
+    fn lower_std_str_replace(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 3 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::replace takes 3 args (s, needle, replacement), got {}",
+                args.len()
+            )));
+        }
+        let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
+        let (n_val, n_ty) = self.lower_expr(&args[1], scope)?;
+        let (r_val, r_ty) = self.lower_expr(&args[2], scope)?;
+        for (label, ty) in &[
+            ("s", &s_ty),
+            ("needle", &n_ty),
+            ("replacement", &r_ty),
+        ] {
+            if **ty != CodegenTy::String {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::str::replace: {} must be String, got {:?}",
+                    label, ty
+                )));
+            }
+        }
+        let f = self
+            .module
+            .get_function("lotus_str_replace")
+            .expect("lotus_str_replace declared");
+        let call = self
+            .builder
+            .build_call(
+                f,
+                &[s_val.into(), n_val.into(), r_val.into()],
+                "str.replace.ret",
+            )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let v = call
             .try_as_basic_value()

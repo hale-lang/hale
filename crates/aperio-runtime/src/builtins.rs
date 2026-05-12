@@ -466,6 +466,14 @@ pub fn resolve_path(segments: &[&str]) -> Option<Value> {
             name: "std::str::upper",
             func: Rc::new(std_str_upper),
         })),
+        ["std", "str", "trim"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::str::trim",
+            func: Rc::new(std_str_trim),
+        })),
+        ["std", "str", "replace"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::str::replace",
+            func: Rc::new(std_str_replace),
+        })),
         // v1.x-15: string-builder primitive. The interpreter
         // uses a Bytes-shaped carrier — the first 8 bytes of the
         // backing Vec<u8> are a sentinel `"_sb_v1__"` so attempts
@@ -535,6 +543,49 @@ fn std_str_upper(args: &[Value]) -> Result<Value, String> {
             other.type_name()
         )),
     }
+}
+
+fn std_str_trim(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::str::trim expects 1 arg, got {}",
+            args.len()
+        ));
+    }
+    match &args[0] {
+        Value::String(s) => Ok(Value::String(
+            s.trim_matches(|c: char| {
+                c == ' ' || c == '\t' || c == '\r' || c == '\n'
+            }).to_string(),
+        )),
+        other => Err(format!(
+            "std::str::trim expects String, got {}",
+            other.type_name()
+        )),
+    }
+}
+
+fn std_str_replace(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 3 {
+        return Err(format!(
+            "std::str::replace expects 3 args, got {}",
+            args.len()
+        ));
+    }
+    let (s, needle, rep) = match (&args[0], &args[1], &args[2]) {
+        (Value::String(s), Value::String(n), Value::String(r)) => (s, n, r),
+        (a, b, c) => {
+            return Err(format!(
+                "std::str::replace expects (String, String, String); got ({}, {}, {})",
+                a.type_name(), b.type_name(), c.type_name()
+            ));
+        }
+    };
+    if needle.is_empty() {
+        // No-op for empty needle (avoids infinite replace).
+        return Ok(Value::String(s.clone()));
+    }
+    Ok(Value::String(s.replace(needle.as_str(), rep.as_str())))
 }
 
 /// v1.x-15: interpreter string builder. The handle is a
