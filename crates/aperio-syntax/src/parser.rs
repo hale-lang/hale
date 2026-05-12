@@ -453,8 +453,30 @@ impl Parser {
                         ProjectionClass::Chunked
                     }
                     TokenKind::Recognition => {
-                        self.bump();
-                        ProjectionClass::Recognition
+                        let kw_span = self.bump().span;
+                        // v1.x-3: recognition REQUIRES
+                        // `(cap=N, <sub_mode>)`. No default sub-mode;
+                        // bare `: projection recognition` is rejected.
+                        // Same forcing-function discipline as the
+                        // 2026-05-12 two-channel rule — the user
+                        // names the storage commitment at the
+                        // declaration site.
+                        if !matches!(self.peek(), TokenKind::LParen) {
+                            return Err(Diag::parse(
+                                kw_span,
+                                "`: projection recognition` requires a sub-mode \
+                                 commitment. Spell one of \
+                                 `recognition(cap=N, fixed_cell(bytes=K))`, \
+                                 `recognition(cap=N, shared_slab(bytes=K))`, \
+                                 `recognition(cap=N, spillover(bytes=K))`, \
+                                 `recognition(cap=N, summary_only)`. \
+                                 v1.x-3 locks this in as a forcing function — \
+                                 the substrate doesn't pick a default for you."
+                                    .to_string(),
+                            ));
+                        }
+                        let params = self.parse_recognition_params()?;
+                        ProjectionClass::Recognition(Some(params))
                     }
                     other => {
                         return Err(Diag::parse(
@@ -547,6 +569,166 @@ impl Parser {
                 format!(
                     "expected tier / projection / schedule annotation, got {:?}",
                     other
+                ),
+            )),
+        }
+    }
+
+    /// v1.x-3: parse the `(cap=N, <sub_mode>)` arg block of a
+    /// `: projection recognition(...)` locus annotation. Caller has
+    /// confirmed the next token is `LParen`.
+    ///
+    /// Grammar:
+    ///   `(` `cap` `=` IntLit `,` recognition_sub_mode `)`
+    ///   recognition_sub_mode :=
+    ///       `fixed_cell` `(` `bytes` `=` IntLit `)`
+    ///     | `shared_slab` `(` `bytes` `=` IntLit `)`
+    ///     | `spillover`  `(` `bytes` `=` IntLit `)`
+    ///     | `summary_only`
+    ///
+    /// `cap`, `bytes`, and the four sub-mode names lex as Ident —
+    /// they're contextual keywords only valid inside this block,
+    /// keeping the math-shaped identifier pool free outside it
+    /// (same F.10-style discipline as `approx` / `within`).
+    fn parse_recognition_params(&mut self) -> Result<RecognitionParams, Diag> {
+        self.expect(TokenKind::LParen, "`(` after `recognition`")?;
+
+        // cap = <IntLit>
+        let cap_tok = self.peek_token().clone();
+        let cap_name = match self.peek() {
+            TokenKind::Ident(s) => s.clone(),
+            other => {
+                return Err(Diag::parse(
+                    cap_tok.span,
+                    format!(
+                        "expected `cap` inside `recognition(...)`, got {:?}",
+                        other
+                    ),
+                ));
+            }
+        };
+        if cap_name != "cap" {
+            return Err(Diag::parse(
+                cap_tok.span,
+                format!(
+                    "expected `cap` inside `recognition(...)`, got `{}`",
+                    cap_name
+                ),
+            ));
+        }
+        self.bump();
+        self.expect(TokenKind::Eq, "`=` after `cap`")?;
+        let cap_val = self.expect_positive_int_lit("cap")?;
+
+        self.expect(TokenKind::Comma, "`,` between `cap` and sub-mode")?;
+
+        // <sub_mode>
+        let sub_tok = self.peek_token().clone();
+        let sub_name = match self.peek() {
+            TokenKind::Ident(s) => s.clone(),
+            other => {
+                return Err(Diag::parse(
+                    sub_tok.span,
+                    format!(
+                        "expected recognition sub-mode (one of `fixed_cell`, \
+                         `shared_slab`, `spillover`, `summary_only`), got {:?}",
+                        other
+                    ),
+                ));
+            }
+        };
+        self.bump();
+        let sub_mode = match sub_name.as_str() {
+            "fixed_cell" => {
+                let bytes = self.parse_bytes_arg("fixed_cell")?;
+                RecognitionSubMode::FixedCell { bytes }
+            }
+            "shared_slab" => {
+                let bytes = self.parse_bytes_arg("shared_slab")?;
+                RecognitionSubMode::SharedSlab { bytes }
+            }
+            "spillover" => {
+                let bytes = self.parse_bytes_arg("spillover")?;
+                RecognitionSubMode::Spillover { bytes }
+            }
+            "summary_only" => RecognitionSubMode::SummaryOnly,
+            other => {
+                return Err(Diag::parse(
+                    sub_tok.span,
+                    format!(
+                        "unknown recognition sub-mode `{}`; expected one of \
+                         `fixed_cell`, `shared_slab`, `spillover`, `summary_only`",
+                        other
+                    ),
+                ));
+            }
+        };
+
+        self.expect(TokenKind::RParen, "`)` closing `recognition(...)`")?;
+        Ok(RecognitionParams {
+            cap: cap_val,
+            sub_mode,
+        })
+    }
+
+    /// Parse `( bytes = <IntLit> )` after a sub-mode keyword that
+    /// takes a bytes argument (fixed_cell / shared_slab / spillover).
+    fn parse_bytes_arg(&mut self, sub_mode_name: &str) -> Result<u64, Diag> {
+        self.expect(
+            TokenKind::LParen,
+            "`(` after recognition sub-mode keyword",
+        )?;
+        let bytes_tok = self.peek_token().clone();
+        let bytes_name = match self.peek() {
+            TokenKind::Ident(s) => s.clone(),
+            other => {
+                return Err(Diag::parse(
+                    bytes_tok.span,
+                    format!(
+                        "expected `bytes` inside `{}(...)`, got {:?}",
+                        sub_mode_name, other
+                    ),
+                ));
+            }
+        };
+        if bytes_name != "bytes" {
+            return Err(Diag::parse(
+                bytes_tok.span,
+                format!(
+                    "expected `bytes` inside `{}(...)`, got `{}`",
+                    sub_mode_name, bytes_name
+                ),
+            ));
+        }
+        self.bump();
+        self.expect(TokenKind::Eq, "`=` after `bytes`")?;
+        let val = self.expect_positive_int_lit("bytes")?;
+        self.expect(
+            TokenKind::RParen,
+            "`)` closing recognition sub-mode args",
+        )?;
+        Ok(val)
+    }
+
+    fn expect_positive_int_lit(&mut self, field: &str) -> Result<u64, Diag> {
+        let tok = self.peek_token().clone();
+        match self.peek() {
+            TokenKind::IntLit(n) => {
+                let n = *n;
+                self.bump();
+                if n <= 0 {
+                    return Err(Diag::parse(
+                        tok.span,
+                        format!("`{}` must be a positive integer literal", field),
+                    ));
+                }
+                Ok(n as u64)
+            }
+            other => Err(Diag::parse(
+                tok.span,
+                format!(
+                    "expected positive integer literal for `{}`, got {:?}",
+                    field, other
                 ),
             )),
         }
@@ -1392,7 +1574,12 @@ impl Parser {
                 let class = match class_tok.kind {
                     TokenKind::Rich => ProjectionClass::Rich,
                     TokenKind::Chunked => ProjectionClass::Chunked,
-                    TokenKind::Recognition => ProjectionClass::Recognition,
+                    // v1.x-3: `Recognition<T>` as a *type expression*
+                    // (in a signature, not a locus annotation) carries
+                    // no sub-mode commitment — the allocator choice
+                    // lives at the locus declaration site, not the
+                    // type use site. Use None here.
+                    TokenKind::Recognition => ProjectionClass::Recognition(None),
                     _ => unreachable!(),
                 };
                 self.expect(TokenKind::Lt, "<")?;
@@ -3019,5 +3206,214 @@ fn main() {
 }
 "#;
         parse_str(src).expect("parse failed");
+    }
+
+    // === v1.x-3 recognition sub-mode parser tests ==========
+
+    fn parse_locus_recognition(src: &str) -> ProjectionClass {
+        let prog = parse_str(src).expect("parse failed");
+        let l = match &prog.items[0] {
+            TopDecl::Locus(l) => l,
+            other => panic!("expected locus, got {:?}", other),
+        };
+        for ann in &l.annotations {
+            if let LocusAnnotation::Projection(pc) = ann {
+                return *pc;
+            }
+        }
+        panic!("no projection annotation found");
+    }
+
+    #[test]
+    fn parse_recognition_fixed_cell() {
+        let pc = parse_locus_recognition(
+            r#"
+locus L : projection recognition(cap=4, fixed_cell(bytes=64)) {
+    accept(c: ChildL) { }
+}
+locus ChildL { }
+"#,
+        );
+        match pc {
+            ProjectionClass::Recognition(Some(p)) => {
+                assert_eq!(p.cap, 4);
+                assert_eq!(
+                    p.sub_mode,
+                    RecognitionSubMode::FixedCell { bytes: 64 }
+                );
+            }
+            other => panic!("expected Recognition(Some), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_recognition_shared_slab() {
+        let pc = parse_locus_recognition(
+            r#"
+locus L : projection recognition(cap=8, shared_slab(bytes=1024)) {
+    accept(c: ChildL) { }
+}
+locus ChildL { }
+"#,
+        );
+        match pc {
+            ProjectionClass::Recognition(Some(p)) => {
+                assert_eq!(p.cap, 8);
+                assert_eq!(
+                    p.sub_mode,
+                    RecognitionSubMode::SharedSlab { bytes: 1024 }
+                );
+            }
+            other => panic!("expected Recognition(Some), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_recognition_spillover() {
+        let pc = parse_locus_recognition(
+            r#"
+locus L : projection recognition(cap=2, spillover(bytes=128)) {
+    accept(c: ChildL) { }
+}
+locus ChildL { }
+"#,
+        );
+        match pc {
+            ProjectionClass::Recognition(Some(p)) => {
+                assert_eq!(p.cap, 2);
+                assert_eq!(
+                    p.sub_mode,
+                    RecognitionSubMode::Spillover { bytes: 128 }
+                );
+            }
+            other => panic!("expected Recognition(Some), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_recognition_summary_only() {
+        let pc = parse_locus_recognition(
+            r#"
+locus L : projection recognition(cap=16, summary_only) {
+    accept(c: ChildL) { }
+}
+locus ChildL { }
+"#,
+        );
+        match pc {
+            ProjectionClass::Recognition(Some(p)) => {
+                assert_eq!(p.cap, 16);
+                assert_eq!(p.sub_mode, RecognitionSubMode::SummaryOnly);
+            }
+            other => panic!("expected Recognition(Some), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_recognition_bare_rejected() {
+        // v1.x-3 forcing function: bare `: projection recognition`
+        // is a parse error, not a class with a default sub-mode.
+        let src = r#"
+locus L : projection recognition {
+    accept(c: ChildL) { }
+}
+locus ChildL { }
+"#;
+        let diags = parse_str(src).expect_err("bare recognition must reject");
+        let msg = diags
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            msg.contains("requires a sub-mode commitment"),
+            "diag should explain the forcing function, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_recognition_missing_sub_mode_rejected() {
+        // `cap=N` alone (no sub-mode argument) is also rejected.
+        let src = r#"
+locus L : projection recognition(cap=4) {
+    accept(c: ChildL) { }
+}
+locus ChildL { }
+"#;
+        let diags = parse_str(src).expect_err("missing sub-mode must reject");
+        let msg = diags
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Either the `,` between cap and sub-mode or the closing
+        // paren without sub-mode is reported — accept either as
+        // long as we got a parse error rooted in the missing arg.
+        assert!(
+            !msg.is_empty(),
+            "expected non-empty parse diag for missing sub-mode"
+        );
+    }
+
+    #[test]
+    fn parse_recognition_unknown_sub_mode_rejected() {
+        let src = r#"
+locus L : projection recognition(cap=4, fancy_mode(bytes=64)) {
+    accept(c: ChildL) { }
+}
+locus ChildL { }
+"#;
+        let diags = parse_str(src).expect_err("unknown sub-mode must reject");
+        let msg = diags
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            msg.contains("unknown recognition sub-mode"),
+            "diag should name the unknown sub-mode, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_recognition_missing_bytes_arg_rejected() {
+        let src = r#"
+locus L : projection recognition(cap=4, fixed_cell) {
+    accept(c: ChildL) { }
+}
+locus ChildL { }
+"#;
+        let diags = parse_str(src)
+            .expect_err("fixed_cell without (bytes=K) must reject");
+        let msg = diags
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !msg.is_empty(),
+            "expected non-empty parse diag for missing bytes arg"
+        );
+    }
+
+    #[test]
+    fn parse_recognition_zero_cap_rejected() {
+        let src = r#"
+locus L : projection recognition(cap=0, fixed_cell(bytes=64)) {
+    accept(c: ChildL) { }
+}
+locus ChildL { }
+"#;
+        let diags =
+            parse_str(src).expect_err("cap=0 must reject (positive int literal)");
+        let msg = diags
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            msg.contains("`cap` must be a positive integer"),
+            "diag should report cap must be positive, got: {msg}"
+        );
     }
 }

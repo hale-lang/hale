@@ -57,7 +57,7 @@ impl Ty {
                 let cn = match c {
                     ProjectionClass::Rich => "Rich",
                     ProjectionClass::Chunked => "Chunked",
-                    ProjectionClass::Recognition => "Recognition",
+                    ProjectionClass::Recognition(_) => "Recognition",
                 };
                 format!("{}<{}>", cn, inner.display())
             }

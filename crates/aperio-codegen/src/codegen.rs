@@ -18467,7 +18467,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if parent_accepts_us
                 && matches!(
                     parent_info.projection_class,
-                    ProjectionClass::Chunked | ProjectionClass::Recognition
+                    ProjectionClass::Chunked | ProjectionClass::Recognition(_)
                 )
             {
                 Some(cs.self_ptr)

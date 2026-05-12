@@ -125,7 +125,41 @@ pub enum LocusAnnotation {
 pub enum ProjectionClass {
     Rich,
     Chunked,
-    Recognition,
+    /// Recognition class. As a locus *annotation* the user MUST
+    /// commit to a sub-mode at the declaration site
+    /// (`: projection recognition(cap=N, fixed_cell(bytes=K))`
+    /// and friends), so the variant carries Some(params). As a
+    /// *type expression* (`Recognition<T>` in a signature) no
+    /// allocator commitment exists at the use site, so the
+    /// variant carries None. Locked 2026-05-12 per v1.x-3 handoff:
+    /// no default sub-mode at locus declarations; bare
+    /// `: projection recognition` is a parse error.
+    Recognition(Option<RecognitionParams>),
+}
+
+/// v1.x-3: parameters attached to a `: projection recognition(...)`
+/// locus annotation. `cap` is the child-count cap; `sub_mode` picks
+/// the allocator strategy. Both are commitments the user writes
+/// down at the declaration site — same forcing-function shape as
+/// the 2026-05-12 two-channel rule (name the channel at the
+/// declaration site).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RecognitionParams {
+    pub cap: u64,
+    pub sub_mode: RecognitionSubMode,
+}
+
+/// v1.x-3: storage discipline picked by the user inside
+/// `recognition(cap=N, <sub_mode>)`. v1 ships `FixedCell` and
+/// `SharedSlab`; `Spillover` and `SummaryOnly` parse + typecheck
+/// but reject at codegen with a "v1.x pending" diagnostic
+/// (mirrors the v1.x-4 / v1.x-4b surface-then-runtime split).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RecognitionSubMode {
+    FixedCell { bytes: u64 },
+    Spillover { bytes: u64 },
+    SummaryOnly,
+    SharedSlab { bytes: u64 },
 }
 
 /// Per-locus execution strategy. Same source, two runtime

@@ -56,7 +56,11 @@ locus ChunkedCoord : projection chunked {
     }
 }
 
-locus RecognitionCoord : projection recognition {
+// v1.x-3: recognition now requires a sub-mode commitment at the
+// declaration site. fixed_cell(bytes=64) gives each Leaf child a
+// 64-byte cell with bitmap-tracked acquire/release; cap=4 covers
+// 3 leaves plus one slot of headroom.
+locus RecognitionCoord : projection recognition(cap=4, fixed_cell(bytes=64)) {
     contract {
         consume value: Int;
     }
