@@ -163,6 +163,36 @@ fn heap_cell_field_io_round_trip() {
 }
 
 #[test]
+fn cross_slot_release_rejected_at_runtime() {
+    // v1.x-5 parity: interpreter enforces slot-of-origin at
+    // release time, same as the codegen typecheck.
+    let src = r#"
+        locus CrossL {
+            capacity {
+                pool a of Int;
+                pool b of Int;
+            }
+            birth {
+                let cell = self.a.acquire();
+                self.b.release(cell);
+            }
+        }
+        fn main() {
+            let _ = CrossL { };
+        }
+    "#;
+    let program = aperio_syntax::parse_source(src).expect("parse");
+    let res = run_program(&program);
+    assert!(res.is_err(), "expected cross-slot release error");
+    let msg = format!("{:?}", res);
+    assert!(
+        msg.contains("originated") || msg.contains("CrossL.a"),
+        "expected slot-of-origin diagnostic, got: {}",
+        msg
+    );
+}
+
+#[test]
 fn multiple_slots_coexist() {
     // Two pools + one heap on the same locus. All four method
     // dispatches work, instantiation and dissolve clean.

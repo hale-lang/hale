@@ -124,12 +124,15 @@ enum CodegenTy {
     /// return one of these; `release(cell)` / `free(cell)`
     /// accept one. The boxed `CodegenTy` is the cell's element
     /// type (T from `pool X of T` / `heap Y of T`). At LLVM
-    /// level, a `ptr` to T's struct layout — opaque to direct
-    /// read/write at v1, valid only as a round-trip arg back
-    /// into the same slot. Map/Vec stdlib in v1.x will surface
-    /// cell-content access (load/store through the pointer)
-    /// once a workload exercises it.
-    Cell(Box<CodegenTy>),
+    /// level, a `ptr` to T's struct layout.
+    ///
+    /// v1.x-2: struct cells expose `cell.field` read/write.
+    /// v1.x-5: the second field carries slot origin
+    /// `(locus_name, slot_name)` so release/free can reject
+    /// cells released into a different slot of the same shape.
+    /// `None` reserved for future generic-Cell<T> positions
+    /// (e.g. fn args that take any cell); v1 always sets it.
+    Cell(Box<CodegenTy>, Option<(String, String)>),
 }
 
 /// Did the last lowered statement leave the current basic block
@@ -6400,7 +6403,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 | CodegenTy::Tuple(_)
                                 | CodegenTy::FnPtr { .. }
                                 | CodegenTy::Interface(_)
-                                | CodegenTy::Cell(_) => self
+                                | CodegenTy::Cell(_, _) => self
                                     .context
                                     .ptr_type(AddressSpace::default())
                                     .fn_type(&llvm_param_tys, false),
@@ -6567,7 +6570,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 | CodegenTy::Tuple(_)
                                 | CodegenTy::FnPtr { .. }
                                 | CodegenTy::Interface(_)
-                                | CodegenTy::Cell(_) => self
+                                | CodegenTy::Cell(_, _) => self
                                     .context
                                     .ptr_type(AddressSpace::default())
                                     .fn_type(&llvm_param_tys, false),
@@ -7617,7 +7620,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Some(CodegenTy::Tuple(_))
             | Some(CodegenTy::FnPtr { .. })
             | Some(CodegenTy::Interface(_))
-            | Some(CodegenTy::Cell(_)) => self
+            | Some(CodegenTy::Cell(_, _)) => self
                 .context
                 .ptr_type(AddressSpace::default())
                 .fn_type(&llvm_param_tys, false),
@@ -8247,7 +8250,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                  interface arg and dispatch from the caller's frame.",
                 ty
             ))),
-            CodegenTy::Cell(_) => Err(CodegenError::Unsupported(format!(
+            CodegenTy::Cell(_, _) => Err(CodegenError::Unsupported(format!(
                 "free-fn return of {:?}: F.22 capacity-slot cells \
                  can't cross fn boundaries — the cell's lifetime is \
                  the locus's slot, and the caller's frame doesn't \
@@ -9079,7 +9082,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     && matches!(target.tail[0], LValueSeg::Field(_))
                     && matches!(
                         scope.locals.get(&target.head.name).map(|(_, t)| t),
-                        Some(CodegenTy::Cell(inner))
+                        Some(CodegenTy::Cell(inner, _))
                             if matches!(inner.as_ref(), CodegenTy::TypeRef(_))
                     )
                 {
@@ -9097,7 +9100,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .cloned()
                         .expect("matched above");
                     let elem_ty_name = match &cell_ty {
-                        CodegenTy::Cell(inner) => match inner.as_ref() {
+                        CodegenTy::Cell(inner, _) => match inner.as_ref() {
                             CodegenTy::TypeRef(n) => n.clone(),
                             _ => unreachable!("matched above"),
                         },
@@ -11290,7 +11293,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Array(_, _)
             | CodegenTy::Tuple(_)
             | CodegenTy::Interface(_)
-            | CodegenTy::Cell(_) => self
+            | CodegenTy::Cell(_, _) => self
                 .builder
                 .build_alloca(self.context.ptr_type(AddressSpace::default()), name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
@@ -11655,7 +11658,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // (Cell<Int> etc.) don't have addressable
                     // fields — those reject below with a
                     // focused message.
-                    CodegenTy::Cell(inner) => match inner.as_ref() {
+                    CodegenTy::Cell(inner, _) => match inner.as_ref() {
                         CodegenTy::TypeRef(n) => {
                             let info = self
                                 .user_types
@@ -12424,7 +12427,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Array(_, _)
             | CodegenTy::Tuple(_)
             | CodegenTy::Interface(_)
-            | CodegenTy::Cell(_) => {
+            | CodegenTy::Cell(_, _) => {
                 self.context.ptr_type(AddressSpace::default()).into()
             }
         }
@@ -13054,7 +13057,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         name
                     )));
                 }
-                CodegenTy::Cell(inner) => {
+                CodegenTy::Cell(inner, _) => {
                     return Err(CodegenError::Unsupported(format!(
                         "println of an F.22 capacity-slot cell \
                          (Cell<{:?}>) — cells are opaque round-trip \
@@ -18190,9 +18193,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("allocator acquire/alloc returns ptr");
+                let origin = Some((cs.locus_name.clone(), slot_name.clone()));
                 Ok(Some(Some((
                     cell_ptr,
-                    CodegenTy::Cell(Box::new(slot.elem_ty.clone())),
+                    CodegenTy::Cell(Box::new(slot.elem_ty.clone()), origin),
                 ))))
             }
             Op::Release | Op::Free => {
@@ -18206,14 +18210,49 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 let (cell_val, cell_ty) =
                     self.lower_expr(&args[0], scope)?;
-                let expected = CodegenTy::Cell(Box::new(slot.elem_ty.clone()));
-                if cell_ty != expected {
-                    return Err(CodegenError::Unsupported(format!(
-                        "slot `{}`.{}: expected {:?}, got {:?} — \
-                         cells can only be returned to the slot they \
-                         came from",
-                        slot_name, method_name, expected, cell_ty
-                    )));
+                // v1.x-5: enforce slot-of-origin. The cell's type
+                // carries (origin_locus, origin_slot); we reject
+                // any cell whose origin doesn't match the slot
+                // we're releasing into. Catches the v1 UB shape
+                // where a Cell<Int> from slot `a` was silently
+                // releasable into slot `b`.
+                let expected_elem = slot.elem_ty.clone();
+                let expected_origin =
+                    (cs.locus_name.clone(), slot_name.clone());
+                match &cell_ty {
+                    CodegenTy::Cell(actual_elem, actual_origin)
+                        if **actual_elem == expected_elem =>
+                    {
+                        match actual_origin {
+                            Some(o) if o == &expected_origin => {}
+                            Some((origin_locus, origin_slot)) => {
+                                return Err(CodegenError::Unsupported(format!(
+                                    "slot `{}`.{}: cell originated from \
+                                     `{}.{}` — cells can only be released \
+                                     into the slot they came from (v1.x-5 \
+                                     slot-of-origin tracking)",
+                                    slot_name,
+                                    method_name,
+                                    origin_locus,
+                                    origin_slot
+                                )));
+                            }
+                            None => {
+                                return Err(CodegenError::Unsupported(format!(
+                                    "slot `{}`.{}: cell has no slot origin \
+                                     — v1 cells must be acquired from a \
+                                     specific slot",
+                                    slot_name, method_name
+                                )));
+                            }
+                        }
+                    }
+                    other => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "slot `{}`.{}: expected Cell<{:?}>, got {:?}",
+                            slot_name, method_name, expected_elem, other
+                        )));
+                    }
                 }
                 let fn_name = match op {
                     Op::Release => "lotus_pool_release",

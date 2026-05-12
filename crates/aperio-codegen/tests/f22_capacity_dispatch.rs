@@ -170,10 +170,9 @@ fn heap_rejects_pool_methods() {
 
 #[test]
 fn cross_slot_cell_release_rejected() {
-    // A cell acquired from one Pool can't be released into a
-    // different Pool, even with the same element type — the
-    // cell carries which slot it came from in its type, and the
-    // dispatch typecheck refuses the mismatch.
+    // v1.x-5: cells now carry slot origin. Releasing into a
+    // different slot of the same element type is a hard
+    // build-time error.
     let src = r#"
         locus CrossL {
             capacity {
@@ -187,17 +186,15 @@ fn cross_slot_cell_release_rejected() {
         }
         fn main() { }
     "#;
-    // v1 cut: Cell<Int> is the same type whether it came from `a`
-    // or `b`, so this DOES typecheck in v1. The honest assertion
-    // is that the build succeeds (mis-release is undefined at v1;
-    // tightening this is a future Cell<slot-tagged> refinement).
-    // Document the behavior in the test so a future refinement
-    // makes this test fail loudly and prompts a tightening of
-    // the type.
-    let bin = build("cross_slot_release", src);
-    let out = Command::new(&bin).output().expect("run");
-    let _ = std::fs::remove_file(&bin);
-    // The behavior may segfault or succeed quietly — we don't
-    // assert on exit code, just that we got here.
-    let _ = out;
+    let program = aperio_syntax::parse_source(src).expect("parse");
+    let mut bin = std::env::temp_dir();
+    bin.push("aperio_test_f22_dispatch_cross_slot");
+    let err = build_executable(&program, &bin)
+        .expect_err("v1.x-5 should reject cross-slot release");
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("originated from") || msg.contains("CrossL.a"),
+        "expected slot-of-origin diagnostic, got: {}",
+        msg
+    );
 }

@@ -1524,7 +1524,23 @@ impl Interpreter {
                 }
                 let cell_val = self.eval_expr(&args[0])?;
                 let cell_rc = match cell_val {
-                    Value::Cell { cell, .. } => cell,
+                    Value::Cell { cell, slot_locus, slot_name: origin_slot } => {
+                        // v1.x-5: enforce slot-of-origin at runtime.
+                        if slot_locus != handle.name
+                            || origin_slot != slot_name
+                        {
+                            return Err(Signal::Error(format!(
+                                "pool slot `{}.{}`.release: cell originated \
+                                 from `{}.{}` — cells can only be released \
+                                 into the slot they came from",
+                                handle.name,
+                                slot_name,
+                                slot_locus,
+                                origin_slot
+                            )));
+                        }
+                        cell
+                    }
                     other => {
                         return Err(Signal::Error(format!(
                             "pool slot `{}`.release expects a cell, got {}",
@@ -1572,7 +1588,23 @@ impl Interpreter {
                 }
                 let cell_val = self.eval_expr(&args[0])?;
                 let cell_rc = match cell_val {
-                    Value::Cell { cell, .. } => cell,
+                    Value::Cell { cell, slot_locus, slot_name: origin_slot } => {
+                        // v1.x-5: enforce slot-of-origin at runtime.
+                        if slot_locus != handle.name
+                            || origin_slot != slot_name
+                        {
+                            return Err(Signal::Error(format!(
+                                "heap slot `{}.{}`.free: cell originated \
+                                 from `{}.{}` — cells can only be released \
+                                 into the slot they came from",
+                                handle.name,
+                                slot_name,
+                                slot_locus,
+                                origin_slot
+                            )));
+                        }
+                        cell
+                    }
                     other => {
                         return Err(Signal::Error(format!(
                             "heap slot `{}`.free expects a cell, got {}",
