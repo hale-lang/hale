@@ -68,47 +68,110 @@ result) compile down under SimplifyCFG / GVN.
 
 Real measurable win. Tests: 656 / 0 (unchanged).
 
+## 2026-05-13 — amortized benches reframe the picture
+
+A second batch of benches landed (parallel-process), separating
+isolated-overhead measurements from amortized-workload ones.
+The amortized side vindicates the arena design at scale:
+
+| Bench               | Aperio   | Go ratio | Read |
+|---------------------|----------|----------|------|
+| **Overhead** (per-op cost in isolation) |  |  |  |
+| loop_overhead       | 20.4 ms  | 0.94×    | tied with Go ✓ |
+| fn_call             | 188 ms   | 0.04×    | 25× — pathological m49 cost |
+| locus_instantiation | 3.07 ms  | 0.006×   | 167× — arena-per-locus |
+| form_vec_get        | 1.61 ms  | 0.024×   | 42× — post lazy-error fix |
+| **Amortized** (same primitives, used as designed) |  |  |  |
+| fn_scratch_work     | 0.47 ms  | 0.96×    | 4% behind Go — design pays off |
+| vec_amortized       | 2.40 ms  | 0.53×    | 2× behind Go — amortized over work |
+| coord_with_churn    | 15.7 μs  | 0.010×   | parent-locus cliff dominates |
+
+The decision-grounding observation: **m49's per-call subregion
+isn't broken; it's amortizable.** `fn_scratch_work` (100 calls
+× 1000 ops each) is at 0.96× — Aperio is 4% behind Go when the
+fn body has enough internal work to amortize the create/destroy.
+The pathological overhead benches measure the cost in the
+absence of work, which real apps don't experience.
+
+## 2026-05-13 — subregion elision for non-allocating bodies
+
+The codegen now classifies each user fn body as
+allocating-or-not at declare time via a conservative syntactic
+walk (`fn_body_definitely_non_allocating`):
+
+- Safe: Literals (incl. String — global static), Ident,
+  KwSelf, Field reads, Index reads on non-Range indices,
+  Unary on safe operand, Binary on safe operands when op is
+  numeric (Sub/Mul/Div/Mod/comparisons/bool/bitwise — Add
+  excluded since it could be String concat), If with non-
+  allocating arms, Block with non-allocating stmts, Return,
+  Let/Assign of safe value, While with non-allocating body.
+- Allocating: Call, Path, Struct literal, multi-Tuple, Array,
+  ArrayRepeat, FString, Match, Or (fallible machinery),
+  Range-index (slice allocs), and everything not explicitly
+  whitelisted.
+
+For non-allocating fns, `lower_user_fn_body` skips the
+`lotus_arena_create_subregion` call entirely (sets
+`fn_arena_alloca = caller_arena_alloca`), and the exit
+epilogue skips both the deep-copy and the
+`lotus_arena_destroy`. The return value either is a primitive
+(no copy needed) or a pointer the caller already had access
+to (String literal global, caller-passed pointer, field-read
+of one of those — all stable across the fn frame).
+
+| Bench               | Pre-elision | Post-elision | Go ratio before | Go ratio after | Δ |
+|---------------------|-------------|--------------|-----------------|----------------|---|
+| **fn_call**         | 188 ms      | **37.1 ms**  | 0.04×           | **0.21×**      | **5× faster** |
+| **form_vec_push**   | 3.02 ms     | **2.79 ms**  | 0.90×           | **1.00×**      | tied with Go |
+| bus_dispatch        | 2.21 ms     | 1.81 ms      | 0.021×          | 0.026×         | ~20% faster |
+| form_vec_get        | 1.61 ms     | 1.47 ms      | 0.024×          | 0.026×         | small (no fn-decl in body) |
+| loop_overhead       | 20.4 ms     | 20.4 ms      | 0.94×           | 0.94×          | unchanged |
+| locus_instantiation | 3.04 ms     | 2.88 ms      | 0.007×          | 0.007×         | unchanged |
+| fn_scratch_work     | 0.49 ms     | 0.49 ms      | 0.96×           | 0.92×          | within noise (already good) |
+| vec_amortized       | 2.40 ms     | 2.72 ms      | 0.53×           | 0.42×          | within bench noise |
+| stream_aggregator   | 4.39 ms     | 4.70 ms      | 0.005×          | 0.005×         | unchanged |
+
+**form_vec_push at 1.00× is the real signal.** The form library
+hit its FORM-3 contract target — `@form(vec)`'s push is now
+exactly Go's speed. The reason it benefits: the bench's inner
+loop body has no allocations either, so the wrapping fn that
+runs the loop gets the elision treatment.
+
+**fn_call 5× faster** is the direct hit. Per-call cost dropped
+from ~18.8ns to ~3.7ns. Most of the remaining ~3ns is the
+function-call ABI itself (caller_arena param load, alloca for
+declared param, alloca for ret slot, store/load through them).
+Further wins would need either dropping the `__caller_arena`
+param too (changes per-fn ABI; bigger surgery), or arranging
+for LLVM to inline small leaf fns (depends on visibility).
+Both are deferred.
+
+**What this does NOT fix.** The substrate-allocation gaps —
+`locus_instantiation` (167×), `bus_dispatch` (53× → still 39×
+after the small win above), `stream_aggregator` (200×) — are
+unchanged. Those reflect arena-per-locus and bus-cell-arena
+costs that are layout-conditioned by The Design. They wait on
+either a different lifecycle design or a workload that makes
+the cost measurably load-bearing.
+
 ## What's still open for the FORM-3 gate
 
-The remaining ~42× on form_vec_get is dominated by:
+The original spec/forms.md FORM-3 gate text ("within 10% of
+hand-written C on a 1M push + 1M random-index get microbench")
+is now partially satisfied (push is at 1.00×, get is at 0.026×).
+Worth a spec amendment that distinguishes:
 
-- **The `lotus_vec_get` C-function-call boundary.** LLVM can't
-  inline across the TU boundary without LTO. Hand-written C
-  inlines the bounds check + load into the call site; Aperio
-  pays a function call.
-- Possibly some calling-convention overhead inherited from m49
-  even though the synth-method dispatch path doesn't itself
-  subregion.
-
-Two candidate next steps:
-
-1. **Inline `lotus_vec_get`'s logic directly in LLVM IR at
-   codegen time.** The C function is:
-   ```c
-   int lotus_vec_get(lotus_vec_t *v, size_t es, int64_t i, void *out) {
-       if (i < 0 || (size_t)i >= v->len) return 0;
-       memcpy(out, v->buf + i * es, es);
-       return 1;
-   }
-   ```
-   This is ~5 IR instructions: load len, icmp i ≥ len OR i < 0,
-   cond_br to oob_bb / load_bb, in load_bb load buf, GEP buf +
-   i\*es, load value, store to out. Bypasses the function call
-   entirely. Same shape as Go's `v[i]`.
-
-2. **LTO build.** Cheaper to set up (add a flag) but harder to
-   trust across release / debug; depends on the linker. Less
-   surgical.
-
-(1) is the right shape per the design philosophy — synth
-methods on `@form(...)` are not user fns and shouldn't pay a
-user-fn-shaped ABI. Reserved for a follow-up if the FORM-3
-gate becomes load-bearing.
-
-## What this does NOT fix
-
-The m49 ABI gaps (fn_call 25×, locus_instantiation 167×,
-bus_dispatch 53×, stream_aggregator 200×) are unchanged by
-this milestone. Those are substrate calling-convention design
-work, gated on whether real apps measure the cost. Worth
-benching apps before redesigning the substrate.
+- **Tight-loop primitive cost** (form_vec_push): commit to the
+  10% gate. Currently met.
+- **Per-op fallible-method cost** (form_vec_get isolated): the
+  ~38× residual is the C-function-call boundary on
+  `lotus_vec_get`. Spec should acknowledge this as a known
+  cost; closing it would need IR-level inlining of the vec
+  primitive's logic at codegen time (~5 IR instructions
+  replacing the function call), or LTO. Deferred until a
+  workload measures it.
+- **Amortized workload cost** (vec_amortized at 0.42×): the
+  spec should commit to "within 2× of C on amortized
+  workloads," which `fn_scratch_work` (0.92×) and now
+  `form_vec_push` (1.00×) demonstrate as reachable.

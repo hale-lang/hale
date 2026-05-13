@@ -881,6 +881,164 @@ struct FnSig<'ctx> {
     /// false = ok). `fallible` carries the payload type for body
     /// lowering (`Stmt::Fail` writes here) and call-site plumbing.
     fallible: Option<CodegenTy>,
+    /// FORM-3 (2026-05-13): the fn body provably does not allocate
+    /// from any arena. Determined by a conservative syntactic
+    /// classifier (`fn_body_definitely_non_allocating`) at
+    /// declare time. When `true`, `lower_user_fn_body` skips the
+    /// m49 subregion create/destroy and the deep-copy return
+    /// epilogue — the body emits straight into the entry block
+    /// and returns directly. Closes the bench's fn_call gap for
+    /// leaf fns that just compute and return.
+    ///
+    /// Conservative shape: any Call / Path / Path2 / Struct / Tuple
+    /// (non-empty) / Array / FString / Match / Or / Sum / Prod /
+    /// ArrayRepeat / Approx / Range / Recovery / Send / Fail /
+    /// Yield / Block-with-allocating-stmts / Binary on Strings
+    /// → allocating (since we can't distinguish String concat from
+    /// numeric add without typecheck info threaded into codegen).
+    /// Literals (incl. String — global static, no alloc) / Ident /
+    /// KwSelf / Field read / Index read / numeric Binary / Unary /
+    /// If with non-allocating arms → non-allocating.
+    non_allocating: bool,
+}
+
+/// FORM-3 (2026-05-13): syntactic classifier for fn bodies that
+/// provably don't allocate. Conservative — false negatives are
+/// fine (just leaves the existing subregion wrapping in place);
+/// false positives would skip the subregion when an allocation
+/// actually happens and the resulting allocation would land in
+/// the *caller's* arena rather than a per-call subregion. That's
+/// a correctness break, not just a perf bug — so the predicate
+/// errs strongly on the side of `false`.
+///
+/// Safe (returns true): literal values (incl. String — those are
+/// global statics, no per-use alloc), identifier reads, KwSelf,
+/// field reads, indexed reads on non-range indices, Unary on a
+/// safe operand, Binary on two safe operands when the op is
+/// numeric (Sub/Mul/Div/Mod/comparisons/bool/bitwise). If with
+/// non-allocating arms.
+///
+/// Unsafe (returns false): Add (could be String concat — no type
+/// info at AST walk), function/path/method calls (callee may
+/// allocate), struct/tuple/array/array-repeat/f-string literals
+/// (arena_alloc'd), match (codegen detail), `or` (the fallible
+/// machinery allocs), and anything not explicitly enumerated.
+fn fn_body_definitely_non_allocating(stmts: &[Stmt]) -> bool {
+    stmts.iter().all(stmt_definitely_non_allocating)
+}
+
+fn stmt_definitely_non_allocating(s: &Stmt) -> bool {
+    match s {
+        Stmt::Let { value, .. } => expr_definitely_non_allocating(value),
+        Stmt::Return(Some(e), _) => expr_definitely_non_allocating(e),
+        Stmt::Return(None, _) => true,
+        Stmt::Assign { value, .. } => expr_definitely_non_allocating(value),
+        Stmt::Expr(e) => expr_definitely_non_allocating(e),
+        Stmt::If(IfStmt {
+            cond,
+            then_block,
+            else_block,
+            ..
+        }) => {
+            expr_definitely_non_allocating(cond)
+                && fn_body_definitely_non_allocating(&then_block.stmts)
+                && match else_block.as_deref() {
+                    None => true,
+                    Some(ElseBranch::Else(b)) => {
+                        fn_body_definitely_non_allocating(&b.stmts)
+                    }
+                    Some(ElseBranch::ElseIf(if_stmt)) => {
+                        stmt_definitely_non_allocating(&Stmt::If(if_stmt.clone()))
+                    }
+                }
+        }
+        Stmt::While { cond, body, .. } => {
+            expr_definitely_non_allocating(cond)
+                && fn_body_definitely_non_allocating(&body.stmts)
+        }
+        Stmt::Block(b) => fn_body_definitely_non_allocating(&b.stmts),
+        Stmt::Break(_) | Stmt::Continue(_) => true,
+        // Conservative: for-loops, match, recovery, send, fail,
+        // yield, let-tuple all touch machinery that may alloc.
+        _ => false,
+    }
+}
+
+fn expr_definitely_non_allocating(e: &Expr) -> bool {
+    match e {
+        Expr::Literal(_, _) => true,
+        Expr::Ident(_) => true,
+        Expr::KwSelf(_) => true,
+        Expr::Field { receiver, .. } => expr_definitely_non_allocating(receiver),
+        Expr::Index { receiver, index, .. } => {
+            // Index on a String with a Range is a slice (allocates).
+            // The cheap conservative cut: reject any Range-typed
+            // index, accept simple integer indices.
+            if matches!(index.as_ref(), Expr::Range { .. }) {
+                false
+            } else {
+                expr_definitely_non_allocating(receiver)
+                    && expr_definitely_non_allocating(index)
+            }
+        }
+        Expr::Unary { operand, .. } => expr_definitely_non_allocating(operand),
+        Expr::Binary { op, left, right, .. } => {
+            // `+` on Strings allocates; `+` on numerics doesn't.
+            // Without typecheck info threaded into codegen-side
+            // classifier, conservatively reject Add. All other
+            // BinOps are numeric/bool/bitwise and don't alloc.
+            let op_safe = match op {
+                BinOp::Add => false,
+                BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Div
+                | BinOp::Mod
+                | BinOp::Eq
+                | BinOp::NotEq
+                | BinOp::Lt
+                | BinOp::Gt
+                | BinOp::LtEq
+                | BinOp::GtEq
+                | BinOp::And
+                | BinOp::Or
+                | BinOp::BitAnd
+                | BinOp::BitOr
+                | BinOp::BitXor
+                | BinOp::Shl
+                | BinOp::Shr => true,
+            };
+            op_safe
+                && expr_definitely_non_allocating(left)
+                && expr_definitely_non_allocating(right)
+        }
+        Expr::If(if_stmt) => {
+            expr_definitely_non_allocating(&if_stmt.cond)
+                && fn_body_definitely_non_allocating(&if_stmt.then_block.stmts)
+                && match if_stmt.else_block.as_deref() {
+                    None => true,
+                    Some(ElseBranch::Else(b)) => {
+                        fn_body_definitely_non_allocating(&b.stmts)
+                    }
+                    Some(ElseBranch::ElseIf(inner)) => {
+                        expr_definitely_non_allocating(&Expr::If(Box::new(
+                            inner.clone(),
+                        )))
+                    }
+                }
+        }
+        Expr::Block(b) => fn_body_definitely_non_allocating(&b.stmts),
+        // Empty tuple = Unit value, no alloc. Single-elem tuple
+        // is parenthesized expression; non-empty multi-elem
+        // tuples allocate a tuple struct.
+        Expr::Tuple(parts, _) if parts.is_empty() => true,
+        Expr::Tuple(parts, _) if parts.len() == 1 => {
+            expr_definitely_non_allocating(&parts[0])
+        }
+        // Conservative for everything else: Call, Path, Path2,
+        // Struct, multi-Tuple, Array, ArrayRepeat, Match, Or,
+        // Sum, Prod, Approx, Range, FString (Literal::FString).
+        _ => false,
+    }
 }
 
 /// v1.x-FORM-2 PR6: result of lowering a fallible call inside
@@ -8299,6 +8457,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         };
         let func = self.module.add_function(&f.name.name, fn_ty, None);
+        // FORM-3: classify the body. Conservative — only catches
+        // bodies that provably don't touch the arena allocator.
+        // Fallible fns inherit `false` because the `fail E { ... }`
+        // path always constructs a payload struct that arena-allocs
+        // (the `or` codegen now constructs payloads lazily, but
+        // the fallible-fn's *own* `fail` path still allocs eagerly
+        // in the called body's frame).
+        let non_allocating =
+            fallible_payload_ty.is_none() && fn_body_definitely_non_allocating(&f.body.stmts);
         self.user_fns.insert(
             f.name.name.clone(),
             FnSig {
@@ -8307,6 +8474,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 defaults,
                 ret: ret_ty,
                 fallible: fallible_payload_ty,
+                non_allocating,
             },
         );
         Ok(())
@@ -8366,32 +8534,47 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_store(caller_arena_alloca, caller_arena_param)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // m49: open a subregion of caller_arena. The body's
-        // allocations route through this. Stored in an alloca so
-        // `current_arena_ptr` can re-load it when subregion-only
-        // routing is required (the alloca survives across blocks).
-        let subregion_create = self
-            .module
-            .get_function("lotus_arena_create_subregion")
-            .expect("lotus_arena_create_subregion declared");
-        let fn_arena_ptr = self
-            .builder
-            .build_call(
-                subregion_create,
-                &[caller_arena_param.into()],
-                "fn.arena.create",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("subregion_create returns ptr");
-        let fn_arena_alloca = self
-            .builder
-            .build_alloca(ptr_t, "fn.arena.slot")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(fn_arena_alloca, fn_arena_ptr)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // FORM-3 (2026-05-13): subregion elision for non-allocating
+        // bodies. When the classifier proved the body doesn't touch
+        // the arena allocator, the subregion is dead weight — we
+        // never alloc into it and never need to deep-copy a return
+        // value out of it. Wire fn_arena_alloca = caller_arena_alloca
+        // so any incidental `current_arena_ptr` reads route to the
+        // caller's arena (a no-op in practice since the classifier
+        // guarantees there are no such reads), and skip the
+        // create/destroy lifecycle.
+        //
+        // m49 default (when allocating): open a subregion of
+        // caller_arena. The body's allocations route through this.
+        // The fn_arena_alloca survives across blocks via the
+        // alloca + load pattern.
+        let fn_arena_alloca = if sig.non_allocating {
+            caller_arena_alloca
+        } else {
+            let subregion_create = self
+                .module
+                .get_function("lotus_arena_create_subregion")
+                .expect("lotus_arena_create_subregion declared");
+            let fn_arena_ptr = self
+                .builder
+                .build_call(
+                    subregion_create,
+                    &[caller_arena_param.into()],
+                    "fn.arena.create",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("subregion_create returns ptr");
+            let alloca = self
+                .builder
+                .build_alloca(ptr_t, "fn.arena.slot")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(alloca, fn_arena_ptr)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            alloca
+        };
 
         // m49: ret-value alloca (only for typed returns) + unified
         // fn.exit block. Every `return e;` stores into ret_alloca
@@ -8570,6 +8753,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // by the time we reach it, the caller-visible value is
         // already safe in caller_arena, so dissolves can free
         // sub-locus arenas without touching what we just copied.
+        //
+        // FORM-3: for non-allocating bodies, the return value
+        // is either a primitive (no copy needed) or a pointer to
+        // a location stable across this fn's frame (either a
+        // String-literal global, a caller-passed pointer, or a
+        // field read of one of those). Skip the deep-copy and
+        // just load the ret_alloca directly — same as the
+        // non-heap-typed return path takes for primitives.
         let copied_ret: Option<BasicValueEnum<'ctx>> = match &sig.ret {
             None => None,
             Some(ret_ty) => {
@@ -8581,15 +8772,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_load(llvm_ret_ty, ret_alloca, "fn.ret.load")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let dest_arena = self
-                    .builder
-                    .build_load(ptr_t, caller_arena_alloca, "caller_arena.load")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .into_pointer_value();
-                let copied = self.emit_return_value_deep_copy(
-                    raw_ret, ret_ty, dest_arena,
-                )?;
-                Some(copied)
+                if sig.non_allocating {
+                    Some(raw_ret)
+                } else {
+                    let dest_arena = self
+                        .builder
+                        .build_load(ptr_t, caller_arena_alloca, "caller_arena.load")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_pointer_value();
+                    let copied = self.emit_return_value_deep_copy(
+                        raw_ret, ret_ty, dest_arena,
+                    )?;
+                    Some(copied)
+                }
             }
         };
 
@@ -8616,21 +8811,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Destroy the per-call subregion AFTER the deep-copy so the
         // copy reads from valid memory. The subregion's chunk list
         // gets wholesale-freed; nothing in caller_arena is touched.
-        let arena_destroy = self
-            .module
-            .get_function("lotus_arena_destroy")
-            .expect("lotus_arena_destroy declared");
-        let fn_arena_loaded = self
-            .builder
-            .build_load(ptr_t, fn_arena_alloca, "fn.arena.load")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_call(
-                arena_destroy,
-                &[fn_arena_loaded.into()],
-                "fn.arena.destroy",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        //
+        // FORM-3: skip the destroy for non-allocating bodies —
+        // there's no subregion to destroy (fn_arena_alloca aliases
+        // caller_arena_alloca for that path).
+        if !sig.non_allocating {
+            let arena_destroy = self
+                .module
+                .get_function("lotus_arena_destroy")
+                .expect("lotus_arena_destroy declared");
+            let fn_arena_loaded = self
+                .builder
+                .build_load(ptr_t, fn_arena_alloca, "fn.arena.load")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_call(
+                    arena_destroy,
+                    &[fn_arena_loaded.into()],
+                    "fn.arena.destroy",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
 
         match copied_ret {
             None => {
