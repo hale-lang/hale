@@ -9974,13 +9974,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// fallible-ABI call. The C runtime returns 1=OK / 0=err;
     /// codegen inverts that to Aperio's i1 path indicator
     /// (1=err / 0=ok) and writes a typed `IndexError` payload
-    /// into the caller-provided out_err slot. Construction is
-    /// unconditional — the OK path's IndexError is dead but
-    /// harmless, and skipping the conditional branch keeps the
-    /// emitter local and the resulting IR compact. The semantics
-    /// match `index_error_value` in aperio-runtime/src/eval.rs
+    /// into the caller-provided out_err slot.
+    ///
+    /// **Performance shape (FORM-3, 2026-05-13):** the
+    /// IndexError is constructed LAZILY in a dedicated err
+    /// basic block — only when the operation fails — so the
+    /// happy path pays no `arena_alloc` + payload-field stores.
+    /// Earlier eager construction made `form_vec_get` 62× slower
+    /// than hand-written C on the bench; lazy construction
+    /// removes that overhead. The semantics still match
+    /// `index_error_value` in aperio-runtime/src/eval.rs
     /// (kind = "out_of_bounds" / "empty"; pop's err carries
-    /// index=0, len=0; get's err carries index=i, len=pre_call_len).
+    /// index=0, len=0; get's err carries index=i, len=current
+    /// len at the bad access). `len` for get is read directly
+    /// from the inline vec struct's `len` field via GEP — no
+    /// function-call ABI on the hot path.
     fn try_lower_form_vec_fallible_method(
         &mut self,
         info: &LocusInfo<'ctx>,
@@ -10028,28 +10036,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let elem_size = llvm_elem_ty.size_of().expect("elem size known");
         let i32_t = self.context.i32_type();
         let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
         let zero_i32 = i32_t.const_int(0, false);
-
-        // Read len BEFORE the operation. For get's err this is the
-        // current len at the point of the bad access; for pop's err
-        // (empty vec) it's 0, which matches the interpreter's
-        // `index_error_value("empty", 0, 0)` shape.
-        let len_fn = self
-            .module
-            .get_function("lotus_vec_len")
-            .expect("lotus_vec_len declared");
-        let pre_call_len = self
-            .builder
-            .build_call(
-                len_fn,
-                &[vec_field_ptr.into()],
-                &format!("{}.vec.len.pre_call", locus_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("lotus_vec_len returns i64")
-            .into_int_value();
 
         let (c_ret, index_ssa) = match method_name {
             "get" => {
@@ -10140,14 +10128,71 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             "pop" => "empty",
             _ => unreachable!(),
         };
+
+        // FORM-3 (2026-05-13): lazy IndexError construction. The
+        // happy path branches over the alloc + stores entirely.
+        // Two consecutive cond_brs on `is_err` (here + the
+        // enclosing `or` in `lower_or_expr`) collapse to one
+        // under SimplifyCFG.
+        let func = self
+            .current_fn
+            .expect("fallible-method call inside fn body");
+        let lazy_err_bb = self.context.append_basic_block(
+            func,
+            &format!("vec.{}.lazy_err", method_name),
+        );
+        let join_bb = self.context.append_basic_block(
+            func,
+            &format!("vec.{}.lazy_join", method_name),
+        );
+        self.builder
+            .build_conditional_branch(is_err, lazy_err_bb, join_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(lazy_err_bb);
+        let len_ssa: IntValue<'ctx> = match method_name {
+            "get" => {
+                // GEP into the inline vec struct's `len` field
+                // (index 1 of `{ i64 cap, i64 len, ptr buf }`)
+                // and load it directly — no function-call ABI.
+                let vec_struct_ty = self.context.struct_type(
+                    &[i64_t.into(), i64_t.into(), ptr_t.into()],
+                    false,
+                );
+                let len_field_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        vec_struct_ty,
+                        vec_field_ptr,
+                        1,
+                        &format!("{}.vec.len.field.ptr", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_load(
+                        i64_t,
+                        len_field_ptr,
+                        &format!("{}.vec.len.lazy", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_int_value()
+            }
+            "pop" => i64_t.const_int(0, false),
+            _ => unreachable!(),
+        };
         let ie_ptr = self.emit_index_error_alloc(
             kind_str,
             index_ssa,
-            pre_call_len,
+            len_ssa,
         )?;
         self.builder
             .build_store(out_err_slot, ie_ptr)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(join_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(join_bb);
 
         Ok(Some(FallibleCallResult {
             i1_path: is_err,
@@ -10359,13 +10404,44 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // Unconditionally construct the KeyError. The OK path's
-        // KeyError is dead but harmless — keeps the emitter local
-        // and the IR compact.
+        // FORM-3 (2026-05-13): lazy KeyError construction. The
+        // happy path branches over the arena_alloc + store
+        // entirely — same pattern as the vec.get/pop fallible
+        // shape above. Two consecutive cond_brs on `is_err`
+        // (here + the enclosing `or` in `lower_or_expr`) collapse
+        // to one under SimplifyCFG.
+        //
+        // Note: `hm.get`'s value-buffer arena_alloc (above) is
+        // still eager because the C ABI takes the buffer pointer
+        // at call time and the buffer must outlive the call so
+        // the caller can read fields off it. That's a separate
+        // optimization (e.g. caller-frame alloca + memcpy-on-bind)
+        // beyond this fix.
+        let func = self
+            .current_fn
+            .expect("fallible-method call inside fn body");
+        let lazy_err_bb = self.context.append_basic_block(
+            func,
+            &format!("hm.{}.lazy_err", method_name),
+        );
+        let join_bb = self.context.append_basic_block(
+            func,
+            &format!("hm.{}.lazy_join", method_name),
+        );
+        self.builder
+            .build_conditional_branch(is_err, lazy_err_bb, join_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(lazy_err_bb);
         let ke_ptr = self.emit_key_error_alloc("missing_key")?;
         self.builder
             .build_store(out_err_slot, ke_ptr)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(join_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(join_bb);
 
         Ok(Some(FallibleCallResult {
             i1_path: is_err,
