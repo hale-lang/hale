@@ -30,5 +30,6 @@
 //! lowered.
 
 pub mod codegen;
+pub mod mangle;
 
 pub use codegen::{build_executable, CodegenError};
