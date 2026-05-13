@@ -196,14 +196,28 @@ methods (m34) accept defaults as normal.
     Filesystem? Package registry? Both? Probably both,
     filesystem-first like Go's vendor + go.mod.
 
-    **Partially resolved (F.19, 2026-05-11):** within one
-    seed (one directory), every `.ap` file shares a top-level
-    scope — same shape Go gets from per-package visibility.
-    `aperio build <dir>` bundles the directory; no `import`
-    needed for in-seed cross-file refs. **Cross-seed imports
-    (one app reaching into another, or a package registry)
-    remain deferred** — the `module` keyword is reserved with
-    no semantics yet.
+    **Resolved at the source-vendoring layer (F.19, F.25):**
+
+    - **F.19, 2026-05-11.** Within one seed (one directory),
+      every `.ap` file shares a top-level scope — same shape Go
+      gets from per-package visibility. `aperio build <dir>`
+      bundles the directory; no `import` needed for in-seed
+      cross-file refs.
+    - **F.25, 2026-05-13 (v1.x-IMPORT).** Cross-seed imports
+      ship: `import "<path>" as <alias>;` with required alias.
+      Resolution order: entry-relative single file →
+      entry-relative dir → workspace-root dir. No implicit
+      `lib/` prefix. Library decls are auto-mangled with
+      `__lib_<alias>_<stem>_<name>` and resolved through a
+      per-build path-rename table parallel to the static stdlib
+      / moa tables. See `spec/imports.md` and `spec/design-
+      rationale.md` F.25.
+
+    **Still open:** package registry, fetch, versioning,
+    lockfile. v1 is vendor-the-source only — the source IS the
+    dependency. A real package manager waits on concrete
+    friction (version skew across projects, duplicate sources
+    on disk, manual update toil); not before.
 
 19. **Is there a standard library?**
     Yes (eventually). Reductions other than sum/prod, time

@@ -1841,6 +1841,107 @@ the friction-log entry asked for.
   Requiring `else` at the value-form makes the writer's
   intent (this is a value, not a side-effect) explicit.
 
+### F.25 Cross-seed imports — vendored source, alias-required (v1.x-IMPORT, 2026-05-13)
+
+An importer references a vendored library by literal path with
+a required alias:
+
+```aperio
+import "lib/moa" as moa;
+import "../shared" as shared;
+```
+
+Cross-seed references read as `alias::Name`. The library is a
+directory of `.ap` files (per-dir seed per F.19) copied into
+the importer's source tree; v1 has no package manager, no
+registry, no fetch, no versioning, no lockfile. The source IS
+the dependency.
+
+Resolution order is three-step (first hit wins):
+
+1. `<importer-dir>/<path>.ap` — single-file lib.
+2. `<importer-dir>/<path>/` — directory bundle.
+3. `<workspace-root>/<path>/` — workspace fallback (workspace
+   root = upward `Cargo.toml` search).
+
+Library decls are auto-mangled at parse-time with prefix
+`__lib_<alias>_<file_stem>_<name>` and registered into a
+per-build path-rename table parallel to the static
+`STDLIB_PATH_RENAMES` and `MOA_PATH_RENAMES` tables. The user
+never writes the mangled form; `alias::Name` resolves through
+the table at codegen.
+
+**Why.** F.19 (per-directory seed model) shipped 2026-05-11 and
+fixed the single-file-app-monolith friction at the intra-seed
+layer. Cross-seed sharing remained deferred — the `module`
+keyword was reserved with no semantics. Friction accumulated
+in two shapes:
+
+- MOA was bundled unconditionally into every binary (via
+  `MOA_AP_SOURCE` in codegen) whether or not the app
+  referenced any `moa::*` type. Apps that didn't need MOA
+  still paid for it.
+- Cross-app helper patterns (tagged-accumulator, directory
+  walks, JSON glue) lived in the std seed because there was
+  no library home. The std seed grew to absorb friction that
+  should live in user libraries.
+
+v1.x-IMPORT (this milestone) opens user libraries as a
+first-class shape and unblocks both: MOA can stop being
+unconditionally bundled (a follow-up cleanup); user helpers
+can graduate from copy-paste / std-seed-bloat to a vendored
+shared lib.
+
+**Vendor-the-source as the v1 commitment.** A real package
+manager (registry + fetch + semver + lockfile) is several
+months of work. The friction this milestone unblocks is "can
+libraries exist at all" — not "can we deduplicate dependencies
+across projects." Vendoring is how C, early Go, and many other
+languages bootstrapped library ecosystems before package
+managers existed. Aperio's file-based dir-seed model is
+well-suited to it. When a real workload surfaces friction that
+vendoring causes (version skew, duplicate sources on disk,
+manual update toil), that's the signal to design the package
+manager — not before.
+
+**Forcing-function alias.** Bare `import "<path>";` is a parse
+error. The user names the namespace at the import site so a
+downstream reader doesn't reconstruct it from the path. Mirrors
+v1.x-3's no-default-sub-mode rule and v1.x-FORM-2's two-channel
+rule — same discipline applied at a different layer.
+
+**Considered and rejected.**
+
+- *Implicit `lib/` search-prefix.* Reject; the resolver should
+  not invent paths the user didn't write. `import "moa"`
+  resolves `moa/`; `import "lib/moa"` resolves `lib/moa/`. No
+  magic prefix.
+- *`pub` / `export` keywords for fine-grained visibility.*
+  Reject for v1; everything top-level in an imported seed is
+  exported, matching the intra-seed visibility model. Adding
+  fine-grained visibility doubles the design surface (every
+  decl picks a modifier; users author it; typechecker enforces
+  it). Add it when a workload demonstrates a real need.
+- *Re-exports.* Reject; strict barrier. If lib A imports lib B,
+  B is NOT visible to A's importers. Each importer declares
+  its own dependencies. Re-exports require per-library scoped
+  path-rename tables — significant additional machinery for a
+  feature no current friction demands.
+- *Transitive resolution of imports inside imported libs.*
+  Reject for v1 alongside re-exports. The resolver follows
+  imports only from the entry seed; imported libs may have
+  `import` lines (they parse fine) but the build does not
+  follow them. Future work may add per-library scoped resolution.
+- *Package registry / lockfile / `$APERIO_PATH`.* Reject for v1
+  (see "Vendor-the-source" above). All deferred.
+- *Hand-mangled `pub`-style prefixes on every library decl.*
+  Reject; the auto-mangler does it at parse-time. Users would
+  have to author `__MyLib*` prefixes by hand otherwise — exactly
+  the shape std and moa carry today, but now done automatically.
+
+**Implementation entry points.** See `spec/imports.md` § "Implementation
+entry points" for the file paths and primary functions.
+
 ## 16. What's deferred
 
 The grammar in v0 does **not** specify:

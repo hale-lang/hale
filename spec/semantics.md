@@ -718,6 +718,53 @@ Both paths preserve the framework's vertical-only-flow: every
 failure exits through the top of the recursion, never
 laterally.
 
+## Cross-seed namespace resolution (v1.x-IMPORT)
+
+A file may declare `import "<path>" as <alias>;` at the top.
+References to library decls go through the alias as
+`alias::Name`. Resolution is two-step:
+
+1. **Parse / merge.** The CLI resolves each import's path (per
+   `spec/imports.md` "Resolution order"), parses every `.ap`
+   file in the resolved target, applies the auto-mangler with
+   the user's alias + each file's stem, and merges the mangled
+   items into the importing program's item list. A per-build
+   path-rename table is built mapping `["<alias>", "<Name>"]`
+   to `__lib_<alias>_<stem>_<Name>`.
+
+2. **Codegen lookup.** Codegen's qualified-name resolution
+   consults three tables in order — static `STDLIB_PATH_RENAMES`,
+   static `MOA_PATH_RENAMES`, and the per-build import table —
+   when lowering any path-qualified type expression, struct
+   literal, or method receiver. The first matching table wins.
+
+Cross-seed references in user code (`foo::Bar`) and intra-seed
+references inside the imported library (bare `Bar` from a file
+that uses a type declared in a sibling file) BOTH resolve to
+the same mangled symbol. The mangler builds a unified rename
+map across every file in the imported library before
+rewriting, so `greet.ap`'s reference to a `Formatted` type
+declared in `format.ap` rewrites to the same
+`__lib_<alias>_format_Formatted` symbol that `format.ap`'s
+decl ends up at.
+
+Local bindings (`let`, `let mut`, fn params, lifecycle params,
+for-loop vars, pattern bindings, generic params) shadow
+top-level names per ordinary lexical scope; the mangler's
+scope-aware walker leaves shadowed references unrewritten.
+
+**Strict barrier.** Imports declared inside imported library
+files are not followed by the resolver. Library A importing
+library B does NOT make B visible to A's importers; each
+importer declares its own dependencies. See `spec/imports.md`
+for the rationale.
+
+**`aperio run` interaction.** The interpreter path consumes the
+merged program but ignores the per-build path-rename table —
+mirroring the existing `std::http::Request { ... }` literal
+limitation. Programs that use cross-seed imports should be
+built and executed via `aperio build`.
+
 ## Region lifetime guarantees
 
 Per `memory.md`:

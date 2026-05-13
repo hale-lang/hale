@@ -296,6 +296,29 @@ lifecycle; a type literal `Point { x: 1, y: 2 }` constructs a
 record value). The `locus` vs `type` keyword at the declaration
 site is the canonical disambiguator.
 
+### Library exports
+
+A library (any directory of `.ap` files referenced via `import
+"<path>" as <alias>;`) follows the same naming conventions as
+any other seed — there is no separate "export-only" decoration.
+Two additional rules apply:
+
+- **Pick the import alias short and lowercase.** It appears in
+  every reference (`alias::Name`); long aliases compound. The
+  consumer chooses the alias, not the lib — but a lib's README
+  (or doc comment at the top of `main.ap` / canonical entry
+  file) should suggest one (`moa`, `helpers`, `toy`, etc.).
+- **Name top-level decls so they read naturally under the
+  alias.** `toy::Greeter` and `moa::LocusId` are clear;
+  `toy::ToyGreeter` and `moa::MoaLocusId` double the namespace.
+  Avoid embedding the library name in decl names.
+
+The full mangled symbol the compiler emits
+(`__lib_<alias>_<file_stem>_<name>`) is never user-visible
+unless you read disassembly; library authors don't need to
+think about it. See `spec/imports.md` for the mangling
+scheme.
+
 ## Composition patterns
 
 - **Self-method calls** (`self.method(arg)`) compose within a
@@ -435,14 +458,15 @@ underlying surface lands.
 - **Lifecycle bodies (`birth` / `run` / `dissolve`) reject
   `return`.** Factor short-circuit logic into a free helper fn
   called from the lifecycle method body.
-- **No user-defined seeds yet** (only `std::*` and per-app dir
-  seeds). Shared code across apps must live in the bundled
-  stdlib seed or be duplicated. See `notes/aperio-seed.md` for
-  the v1+ plan.
-- **No cross-seed imports.** Within one seed (one directory),
-  all `.ap` files share a top-level scope; multi-file
-  decomposition works (`aperio build apps/<name>/`). Cross-seed
-  sharing routes through the stdlib seed or duplicates.
+- **Cross-seed imports use vendored libraries.** Within one seed
+  (one directory), all `.ap` files share a top-level scope
+  (F.19). Across seeds, vendor a library into your tree and
+  write `import "lib/<name>" as <alias>;` at the top of the
+  importing file; references read as `<alias>::Name`. v1 has
+  no package manager, no fetch, no versioning — the source IS
+  the dependency. See `spec/imports.md` for resolution order
+  and the mangling scheme; the `crates/aperio-codegen/tests/fixtures/lib-toy/`
+  fixture is the worked example.
 - **No parametric collection types** (no `List<T>`, no
   `Map<K, V>`). Use `@form(vec)` on a locus for contiguous
   growable buffers; future `@form(hashmap)` will cover keyed

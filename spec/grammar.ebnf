@@ -21,7 +21,13 @@
 
 program           = { import_decl } , { top_decl } ;
 
-import_decl       = "import" , STRING_LIT , [ "as" , IDENTIFIER ] , ";" ;
+(* v1.x-IMPORT: the `as IDENTIFIER` alias clause is REQUIRED.
+   Bare `import "path";` is a parse error. The alias names the
+   namespace at the import site so cross-seed references read as
+   `alias::Name` — same forcing-function discipline as v1.x-3's
+   no-default-sub-mode rule and v1.x-FORM-2's two-channel rule.
+   See spec/imports.md for resolution order + mangling scheme. *)
+import_decl       = "import" , STRING_LIT , "as" , IDENTIFIER , ";" ;
 
 top_decl          = locus_decl
                   | perspective_decl
