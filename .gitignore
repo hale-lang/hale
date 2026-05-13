@@ -22,8 +22,9 @@ Thumbs.db
 /target/
 # Cargo.lock IS committed (binary workspace, reproducible builds).
 
-# mdbook build output. Source lives in docs/src/.
-docs/book/
+# mdbook build output. Each doorway (and the archived book)
+# builds under its own dir.
+docs/**/book/
 
 # Aperio app build artifacts (binaries + generated content)
 apps/*/main

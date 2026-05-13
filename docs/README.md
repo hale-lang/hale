@@ -1,77 +1,55 @@
-# Aperio docs
+# docs/
 
-The Aperio language docs are a single mdbook served from
-`docs/`. Sources live under `docs/src/`; build output lands at
-`docs/book/` (gitignored).
+Three doorways into Aperio. Each one serves a different
+reader; each grows at its own pace. The braid that used to
+live here (five mdbook subtrees under one `SUMMARY.md`) sits
+in `archive/docs/`.
 
-Five sections, four onboarding paths plus the formal reference,
-all in one TOC:
+## The three doorways
 
-| Section | Role |
-|---|---|
-| **Quickstart** | Five-minute install + hello-world tour. |
-| **The Grimoire** | Magical onboarding — spell-cast register, four-moment arc (arrival → reveal → vocabulary → emergence). |
-| **The Aperio Programming Language** | Technical onboarding — substrate-up, Rust-Book-shaped layered tutorial. |
-| **Reference** | Formal grammar + semantics + conventions + glossary. |
-| **Standard Library** | Stdlib roadmap + per-module docs (Phases 1–5). |
+### [`language/`](./language/) — Aperio as a programming language
 
-The grimoire and the technical book teach the same material in
-different registers. Readers pick a doorway; the reference and
-std sections are the destination either way.
+The technical track. What Aperio is, how to write it, how the
+substrate works. Substrate-up tutorial, reference grammar +
+semantics, stdlib catalog.
 
-Authoring conventions live in [`STYLE.md`](./STYLE.md).
+For someone who wants to *write Aperio*. Came in cold; knows
+Rust or Go or Zig; wants the language proper. Source of
+truth: `../spec/`.
 
-## Status
+### [`bridge/`](./bridge/) — the ferryman flow
 
-**Local-only.** These docs are in active development and not yet
-public. The CI workflow validates that `mdbook build docs`
-succeeds; nothing is published.
+The migration track. Point ferryman at your existing codebase;
+it emits yaml perspectives (operational / harmonic / domain);
+an agent (or you) discusses the code in lotus terms; the
+eventual mechanical rewrite produces Aperio source.
 
-When the language is ready for a public release, the deploy step
-lands in `.github/workflows/docs.yml`. Until then, read locally
-with `mdbook serve` (below).
+For a dev with an existing system they want to *see as lotus*
+and migrate from. Go is the v0 target. Source of truth:
+`../apps/ferryman/`.
 
-## Building locally
+### [`office/`](./office/) — spells × technology × multiverse
 
-Install mdbook and the preprocessors used by the docs:
+The philosophical track. The big idea, written in the register
+of the Quiet Office — reconstructed annexes, concordance notes,
+gnomic marginalia. Fiction-fused-with-essay rather than docs.
 
-```bash
-cargo install mdbook mdbook-toc
-```
+For the curious, the depth-seeker, anyone pulled in by the
+larger frame. Seed: `archive/fiction/annex-l-7704.md`.
 
-(`mdbook-admonish` and `mdbook-linkcheck` are on the roadmap —
-both currently have compat issues with mdbook 0.5.x. Add them
-back when upstream catches up.)
+## archive/
 
-Serve the book at `http://localhost:3000`:
+Everything from before the reorganization.
 
-```bash
-mdbook serve docs
-```
+- `archive/docs/` — the previous five-tree mdbook
+  (quickstart, grimoire, book, reference, std). Still
+  buildable; no longer canonical.
+- `archive/fiction/` — `annex-l-7704.md`, the original
+  Quiet Office sketch.
+- `archive/future/` — room for later archive sweeps.
 
-Or build static output without serving:
+## Building
 
-```bash
-mdbook build docs
-```
-
-HTML lands in `docs/book/`.
-
-## Code blocks and syntax highlighting
-
-Aperio code in docs is tagged `aperio`. Code blocks are meant to
-compile under `aperio build`; CI doctest enforcement (the
-`mdbook-aperio-test` preprocessor) is a follow-up milestone.
-
-Aperio syntax highlighting is provided by a custom
-`docs/theme/highlight.js` — a bundle based on mdbook's default
-highlight.js with an Aperio language module appended. See
-[`docs/theme/README.md`](./theme/README.md) for how to rebuild
-it when mdbook upgrades or the keyword set changes.
-
-## Linking convention
-
-First use of a glossary term on a page links to its
-[glossary entry](./src/reference/glossary.md); subsequent uses
-are bare. See [`STYLE.md`](./STYLE.md) for the full convention
-list.
+Each doorway will eventually be its own mdbook (separate
+`book.toml`, separate theme, separate voice). All three are
+empty for now; content arrives in purpose-driven sessions.
