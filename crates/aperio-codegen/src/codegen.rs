@@ -1041,6 +1041,34 @@ struct LocusInfo<'ctx> {
     /// the time the parent's slot-destroy runs). Cap of 64 slots
     /// per locus is well above the v1 ceiling.
     slot_borrowed_mask_field_idx: u32,
+    /// v1.x-3: index of the synthetic `__recpool: ptr` field —
+    /// the parent-side handle into a recognition pool. Set at
+    /// instantiation iff this locus's projection class is
+    /// Recognition with a shipped sub-mode (fixed_cell or
+    /// shared_slab); zero otherwise. At child accept, this is
+    /// the pool the child's arena is acquired from; at parent
+    /// dissolve, this is what `lotus_recpool_*_destroy` operates
+    /// on. Uniform layout — every locus carries the slot so the
+    /// dissolve path doesn't need to branch on whether the locus
+    /// opted into the recognition surface.
+    recpool_field_idx: u32,
+    /// v1.x-3: index of the synthetic `__recpool_release_pool:
+    /// ptr` field — the child-side back-reference to the parent's
+    /// recpool. Set at the recognition parent's accept step so
+    /// that at child dissolve we can route through the matching
+    /// `lotus_recpool_*_release` instead of `lotus_arena_destroy`.
+    /// Zero on children of Rich / Chunked parents and on top-
+    /// level loci (where the regular arena-destroy applies).
+    recpool_release_pool_field_idx: u32,
+    /// v1.x-3: index of the synthetic `__recpool_release_kind:
+    /// i64` discriminator — 0 = regular `lotus_arena_destroy`,
+    /// 1 = `lotus_recpool_fixed_release`, 2 =
+    /// `lotus_recpool_slab_release`. Read at the start of
+    /// `emit_locus_arena_destroy` to pick the teardown call.
+    /// i64 (rather than i8) for alignment-friendly load through
+    /// the same i64-strided GEP shape as the other synthetic
+    /// flags (`__restart_count`, `__quarantined`, etc.).
+    recpool_release_kind_field_idx: u32,
     /// m42: index of the synthetic `__parent_self: ptr` field.
     /// Set at instantiation time to the resolved parent
     /// self_ptr (from `resolve_failure_route`), or null if no
@@ -1313,6 +1341,44 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let arena_destroy_ty = void_t.fn_type(&[ptr_t.into()], false);
         self.module
             .add_function("lotus_arena_destroy", arena_destroy_ty, None);
+
+        // v1.x-3: recognition projection class — bitmap-tracked
+        // fixed_cell pool and bump-allocated shared_slab pool.
+        // Each acquire returns a `lotus_arena_t*` so child body
+        // code stays projection-class-agnostic per F.22; release
+        // routes through the matching pool primitive instead of
+        // `lotus_arena_destroy`.
+        //
+        // declare ptr  @lotus_recpool_fixed_create(i64 cap, i64 bytes)
+        // declare ptr  @lotus_recpool_fixed_acquire(ptr pool)
+        // declare void @lotus_recpool_fixed_release(ptr pool, ptr arena)
+        // declare void @lotus_recpool_fixed_destroy(ptr pool)
+        // declare ptr  @lotus_recpool_slab_create(i64 cap, i64 bytes)
+        // declare ptr  @lotus_recpool_slab_acquire(ptr pool)
+        // declare void @lotus_recpool_slab_release(ptr pool, ptr arena)
+        // declare void @lotus_recpool_slab_destroy(ptr pool)
+        let recpool_create_ty =
+            ptr_t.fn_type(&[i64_t.into(), i64_t.into()], false);
+        let recpool_acquire_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        let recpool_release_ty =
+            void_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        let recpool_destroy_ty = void_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_recpool_fixed_create", recpool_create_ty, None);
+        self.module
+            .add_function("lotus_recpool_fixed_acquire", recpool_acquire_ty, None);
+        self.module
+            .add_function("lotus_recpool_fixed_release", recpool_release_ty, None);
+        self.module
+            .add_function("lotus_recpool_fixed_destroy", recpool_destroy_ty, None);
+        self.module
+            .add_function("lotus_recpool_slab_create", recpool_create_ty, None);
+        self.module
+            .add_function("lotus_recpool_slab_acquire", recpool_acquire_ty, None);
+        self.module
+            .add_function("lotus_recpool_slab_release", recpool_release_ty, None);
+        self.module
+            .add_function("lotus_recpool_slab_destroy", recpool_destroy_ty, None);
 
         // v1.x-FORM-2 PR6: root-locus value-error panic. Called
         // when an `or raise` propagates past every enclosing
@@ -6165,6 +6231,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let slot_borrowed_mask_field_idx = idx;
         llvm_field_tys.push(i64_t_struct.into());
         idx += 1;
+        // v1.x-3: synthetic `__recpool: ptr` — parent-side recpool
+        // handle (set only when this locus is Recognition class
+        // with fixed_cell or shared_slab sub-mode; zero otherwise).
+        // Uniform layout so the dissolve path can read it without
+        // branching on the locus's class.
+        let recpool_field_idx = idx;
+        llvm_field_tys.push(self.context.ptr_type(AddressSpace::default()).into());
+        idx += 1;
+        // v1.x-3: synthetic `__recpool_release_pool: ptr` —
+        // child-side back-reference to a recognition parent's
+        // recpool. Set when the parent's projection class is
+        // Recognition with a shipped sub-mode and we're being
+        // accepted by it; zero otherwise.
+        let recpool_release_pool_field_idx = idx;
+        llvm_field_tys.push(self.context.ptr_type(AddressSpace::default()).into());
+        idx += 1;
+        // v1.x-3: synthetic `__recpool_release_kind: i64`
+        // discriminator — 0=regular arena_destroy, 1=fixed_cell
+        // release, 2=shared_slab release. Set at accept-by-recognition
+        // parent; consumed in emit_locus_arena_destroy.
+        let recpool_release_kind_field_idx = idx;
+        llvm_field_tys.push(i64_t_struct.into());
+        idx += 1;
         // m42: synthetic `__parent_self: ptr` and
         // `__parent_on_failure: ptr` fields. Always present
         // (uniform struct shape — the alternative would be
@@ -6439,6 +6528,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 quarantined_field_idx,
                 restart_in_place_pending_field_idx,
                 slot_borrowed_mask_field_idx,
+                recpool_field_idx,
+                recpool_release_pool_field_idx,
+                recpool_release_kind_field_idx,
                 parent_self_field_idx,
                 parent_on_failure_field_idx,
                 mailbox_field_idx,
@@ -18444,87 +18536,203 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // arena rather than a fresh top-level arena. Parent
         // tracks a slot index for us; on dissolve, our slot
         // returns to the parent's free-list for reuse.
-        // m22+m23: chunked AND recognition parents both route
-        // accepted children through `lotus_arena_create_subregion`.
-        // For chunked, that's the spec's per-coordinatee
-        // sub-region with free-list bookkeeping. For recognition,
-        // v0 reuses the chunked path as a deliberate stub —
-        // recognition's pre-allocated bitmap pool is a perf
-        // optimization (avoids malloc per accept) that v0 defers
-        // until a workload exercises it. Functionally equivalent
-        // to chunked at this layer; spec/memory.md flags the gap.
-        let parent_subregion_accept = if let Some(cs) = self.current_self.as_ref() {
-            let parent_info = self
-                .user_loci
-                .get(&cs.locus_name)
-                .cloned()
-                .expect("current_self points to a declared locus");
-            let parent_accepts_us = parent_info
-                .accept_param
-                .as_ref()
-                .map(|(_, child_ty)| child_ty == locus_name)
-                .unwrap_or(false);
-            if parent_accepts_us
-                && matches!(
-                    parent_info.projection_class,
-                    ProjectionClass::Chunked | ProjectionClass::Recognition(_)
-                )
-            {
-                Some(cs.self_ptr)
+        // Pick the arena-acquire strategy based on the parent's
+        // projection class:
+        //
+        // - m22 chunked: parent's accept routes us through
+        //   `lotus_arena_create_subregion(parent_arena)` — child
+        //   gets its own arena, slot-bookkept on the parent's
+        //   free-list.
+        // - v1.x-3 recognition w/ fixed_cell: parent's accept
+        //   routes us through `lotus_recpool_fixed_acquire`;
+        //   the returned arena handle lives inline in the recpool
+        //   cell. Child's release at dissolve clears the bitmap
+        //   bit via `lotus_recpool_fixed_release` instead of
+        //   `lotus_arena_destroy`.
+        // - v1.x-3 recognition w/ shared_slab: parent's accept
+        //   routes us through `lotus_recpool_slab_acquire`,
+        //   which returns the SAME slab arena every sibling
+        //   shares. Per-child release is a no-op; the whole
+        //   slab frees at parent dissolve.
+        // - otherwise (rich, top-level, parent doesn't accept
+        //   us, or recognition w/ unshipped sub-mode after
+        //   typecheck defense): fresh `lotus_arena_create()`.
+        //
+        // The strategy also determines what we stash on the
+        // child's `__recpool_release_pool` / kind fields so
+        // dissolve can route through the matching release fn.
+        #[derive(Clone, Copy)]
+        enum AcquireStrategy {
+            Fresh,
+            Subregion,
+            RecpoolFixed,
+            RecpoolSlab,
+        }
+        let (acquire_strategy, parent_self_ptr_opt) =
+            if let Some(cs) = self.current_self.as_ref() {
+                let parent_info = self
+                    .user_loci
+                    .get(&cs.locus_name)
+                    .cloned()
+                    .expect("current_self points to a declared locus");
+                let parent_accepts_us = parent_info
+                    .accept_param
+                    .as_ref()
+                    .map(|(_, child_ty)| child_ty == locus_name)
+                    .unwrap_or(false);
+                if parent_accepts_us {
+                    match parent_info.projection_class {
+                        ProjectionClass::Recognition(Some(p)) => match p.sub_mode {
+                            RecognitionSubMode::FixedCell { .. } => {
+                                (AcquireStrategy::RecpoolFixed, Some(cs.self_ptr))
+                            }
+                            RecognitionSubMode::SharedSlab { .. } => {
+                                (AcquireStrategy::RecpoolSlab, Some(cs.self_ptr))
+                            }
+                            // Spillover + SummaryOnly are typecheck-
+                            // rejected before codegen; defense: fall
+                            // back to subregion shape rather than
+                            // crash on missing recpool wiring.
+                            _ => (AcquireStrategy::Subregion, Some(cs.self_ptr)),
+                        },
+                        ProjectionClass::Chunked => {
+                            (AcquireStrategy::Subregion, Some(cs.self_ptr))
+                        }
+                        // Recognition(None) shouldn't appear in a
+                        // locus-annotation context (parser produces
+                        // Recognition(Some(_)) there), but defense:
+                        // treat as Subregion.
+                        ProjectionClass::Recognition(None) => {
+                            (AcquireStrategy::Subregion, Some(cs.self_ptr))
+                        }
+                        ProjectionClass::Rich => (AcquireStrategy::Fresh, None),
+                    }
+                } else {
+                    (AcquireStrategy::Fresh, None)
+                }
             } else {
-                None
+                (AcquireStrategy::Fresh, None)
+            };
+
+        // Recpool-strategy bookkeeping that must outlive this
+        // block: we acquire the arena here (so __arena can be set
+        // right after), but the child's __recpool_release_pool /
+        // __recpool_release_kind stores are deferred until after
+        // the unconditional zero-init pass further down (which
+        // would otherwise clobber them).
+        let mut pending_recpool_release: Option<(
+            inkwell::values::BasicValueEnum,
+            u64,
+        )> = None;
+        let new_arena = match acquire_strategy {
+            AcquireStrategy::Fresh => {
+                let arena_create = self
+                    .module
+                    .get_function("lotus_arena_create")
+                    .expect("lotus_arena_create declared");
+                self.builder
+                    .build_call(arena_create, &[], &format!("{}.arena", locus_name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("arena_create returns ptr")
             }
-        } else {
-            None
-        };
-        let new_arena = if let Some(parent_self_ptr) = parent_subregion_accept {
-            let parent_info = self
-                .user_loci
-                .get(&self.current_self.as_ref().unwrap().locus_name)
-                .cloned()
-                .expect("parent declared");
-            let arena_field_ptr = self
-                .builder
-                .build_struct_gep(
-                    parent_info.struct_ty,
-                    parent_self_ptr,
-                    parent_info.arena_field_idx,
-                    "parent.__arena.ptr",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let parent_arena = self
-                .builder
-                .build_load(
-                    self.context.ptr_type(AddressSpace::default()),
-                    arena_field_ptr,
-                    "parent.__arena",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let subregion_fn = self
-                .module
-                .get_function("lotus_arena_create_subregion")
-                .expect("lotus_arena_create_subregion declared");
-            self.builder
-                .build_call(
-                    subregion_fn,
-                    &[parent_arena.into()],
-                    &format!("{}.arena.sub", locus_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .try_as_basic_value()
-                .left()
-                .expect("subregion_create returns ptr")
-        } else {
-            let arena_create = self
-                .module
-                .get_function("lotus_arena_create")
-                .expect("lotus_arena_create declared");
-            self.builder
-                .build_call(arena_create, &[], &format!("{}.arena", locus_name))
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .try_as_basic_value()
-                .left()
-                .expect("arena_create returns ptr")
+            AcquireStrategy::Subregion => {
+                let parent_self_ptr = parent_self_ptr_opt
+                    .expect("subregion strategy requires parent self_ptr");
+                let parent_info = self
+                    .user_loci
+                    .get(&self.current_self.as_ref().unwrap().locus_name)
+                    .cloned()
+                    .expect("parent declared");
+                let arena_field_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        parent_info.struct_ty,
+                        parent_self_ptr,
+                        parent_info.arena_field_idx,
+                        "parent.__arena.ptr",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let parent_arena = self
+                    .builder
+                    .build_load(
+                        self.context.ptr_type(AddressSpace::default()),
+                        arena_field_ptr,
+                        "parent.__arena",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let subregion_fn = self
+                    .module
+                    .get_function("lotus_arena_create_subregion")
+                    .expect("lotus_arena_create_subregion declared");
+                self.builder
+                    .build_call(
+                        subregion_fn,
+                        &[parent_arena.into()],
+                        &format!("{}.arena.sub", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("subregion_create returns ptr")
+            }
+            strategy @ (AcquireStrategy::RecpoolFixed | AcquireStrategy::RecpoolSlab) => {
+                let parent_self_ptr = parent_self_ptr_opt
+                    .expect("recpool strategy requires parent self_ptr");
+                let parent_info = self
+                    .user_loci
+                    .get(&self.current_self.as_ref().unwrap().locus_name)
+                    .cloned()
+                    .expect("parent declared");
+                // Load `parent.__recpool` — the recpool handle
+                // allocated at the parent's own instantiation.
+                let recpool_field_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        parent_info.struct_ty,
+                        parent_self_ptr,
+                        parent_info.recpool_field_idx,
+                        "parent.__recpool.ptr",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let parent_recpool = self
+                    .builder
+                    .build_load(
+                        self.context.ptr_type(AddressSpace::default()),
+                        recpool_field_ptr,
+                        "parent.__recpool",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let (acquire_fn_name, kind_const) = match strategy {
+                    AcquireStrategy::RecpoolFixed => {
+                        ("lotus_recpool_fixed_acquire", 1u64)
+                    }
+                    AcquireStrategy::RecpoolSlab => {
+                        ("lotus_recpool_slab_acquire", 2u64)
+                    }
+                    _ => unreachable!(),
+                };
+                let acquire_fn = self
+                    .module
+                    .get_function(acquire_fn_name)
+                    .expect("recpool acquire extern declared");
+                let cell_arena = self
+                    .builder
+                    .build_call(
+                        acquire_fn,
+                        &[parent_recpool.into()],
+                        &format!("{}.arena.recpool", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("recpool acquire returns ptr");
+                // Defer the child-side stores so the zero-init
+                // pass below doesn't overwrite them.
+                pending_recpool_release = Some((parent_recpool, kind_const));
+                cell_arena
+            }
         };
         let arena_field = self
             .builder
@@ -18946,6 +19154,123 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_store(sbm_ptr, zero)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // v1.x-3: init the three synthetic recpool fields.
+        //
+        // `__recpool` defaults to null and is overwritten below if
+        // this locus is Recognition-class with a shipped sub-mode.
+        // `__recpool_release_pool` + `__recpool_release_kind` stay
+        // zero at instantiation; they're set later by the parent's
+        // accept step when this locus is being acquired from a
+        // recognition pool (so that at dissolve we route through
+        // `lotus_recpool_*_release` instead of arena_destroy).
+        let ptr_t_local = self.context.ptr_type(AddressSpace::default());
+        let null_ptr = ptr_t_local.const_null();
+        let recpool_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                info.recpool_field_idx,
+                &format!("{}.__recpool.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(recpool_ptr, null_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let release_pool_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                info.recpool_release_pool_field_idx,
+                &format!("{}.__recpool_release_pool.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(release_pool_ptr, null_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let release_kind_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                info.recpool_release_kind_field_idx,
+                &format!("{}.__recpool_release_kind.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(release_kind_ptr, zero)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // v1.x-3: if this locus declares Recognition with a shipped
+        // sub-mode, allocate the recpool now. Subsequent child
+        // accepts read this handle through `parent.__recpool` and
+        // route the child's arena through `lotus_recpool_*_acquire`.
+        // The recpool is destroyed inside `emit_locus_arena_destroy`
+        // alongside the arena teardown, after the F.4 cascade has
+        // dissolved every child.
+        if let ProjectionClass::Recognition(Some(params)) = info.projection_class {
+            let (create_fn_name, bytes_val) = match params.sub_mode {
+                RecognitionSubMode::FixedCell { bytes } => {
+                    ("lotus_recpool_fixed_create", bytes)
+                }
+                RecognitionSubMode::SharedSlab { bytes } => {
+                    ("lotus_recpool_slab_create", bytes)
+                }
+                // Spillover + SummaryOnly are typecheck-rejected
+                // before codegen; defense: skip allocation here so
+                // a future code path that gets through doesn't
+                // crash on a missing extern.
+                RecognitionSubMode::Spillover { .. }
+                | RecognitionSubMode::SummaryOnly => ("", 0),
+            };
+            if !create_fn_name.is_empty() {
+                let create_fn = self
+                    .module
+                    .get_function(create_fn_name)
+                    .expect("recpool create extern declared");
+                let cap_const = self
+                    .context
+                    .i64_type()
+                    .const_int(params.cap, false);
+                let bytes_const = self
+                    .context
+                    .i64_type()
+                    .const_int(bytes_val, false);
+                let pool = self
+                    .builder
+                    .build_call(
+                        create_fn,
+                        &[cap_const.into(), bytes_const.into()],
+                        &format!("{}.__recpool.create", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("recpool_create returns ptr");
+                self.builder
+                    .build_store(recpool_ptr, pool)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+        }
+
+        // v1.x-3: if we acquired this locus's arena from a parent's
+        // recpool, restore the child-side release stash that the
+        // zero-init above cleared. Now `emit_locus_arena_destroy`
+        // will route teardown through the matching recpool release
+        // fn (kind=1 fixed, kind=2 slab) instead of arena_destroy.
+        if let Some((parent_recpool, kind_const)) = pending_recpool_release {
+            self.builder
+                .build_store(release_pool_ptr, parent_recpool)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(
+                    release_kind_ptr,
+                    self.context.i64_type().const_int(kind_const, false),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
 
         // m42: init the synthetic __parent_self / __parent_on_failure
         // fields. Resolve the (parent_self, on_failure_fn) pair via
@@ -23448,6 +23773,66 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.builder.position_at_end(cont_bb);
         }
 
+        // v1.x-3: if THIS locus is a recognition parent with a
+        // shipped sub-mode, destroy its recpool now — after slot
+        // teardown (existing pass above) and before arena teardown
+        // (below). The F.4 depth-first cascade has already
+        // dissolved every child by the time we get here; each
+        // child's dissolve called the matching recpool_release
+        // (no-op for slab; bitmap-clear for fixed) so it's safe
+        // to wholesale-free the recpool's storage.
+        if let ProjectionClass::Recognition(Some(params)) = info.projection_class {
+            let destroy_fn_name = match params.sub_mode {
+                RecognitionSubMode::FixedCell { .. } => {
+                    "lotus_recpool_fixed_destroy"
+                }
+                RecognitionSubMode::SharedSlab { .. } => {
+                    "lotus_recpool_slab_destroy"
+                }
+                _ => "", // typecheck-rejected; defense
+            };
+            if !destroy_fn_name.is_empty() {
+                let recpool_field_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        self_ptr,
+                        info.recpool_field_idx,
+                        &format!("{}.__recpool.dissolve.ptr", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let recpool_handle = self
+                    .builder
+                    .build_load(
+                        ptr_t,
+                        recpool_field_ptr,
+                        &format!("{}.__recpool.dissolve", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let destroy_fn = self
+                    .module
+                    .get_function(destroy_fn_name)
+                    .expect("recpool destroy extern declared");
+                self.builder
+                    .build_call(
+                        destroy_fn,
+                        &[recpool_handle.into()],
+                        &format!("{}.__recpool.destroy", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+        }
+
+        // v1.x-3: tear down THIS locus's __arena. The release path
+        // depends on __recpool_release_kind:
+        //   0 → regular `lotus_arena_destroy(arena)` (top-level arena
+        //       or subregion of a Chunked parent — both shapes the
+        //       arena's own destroy handles cleanly).
+        //   1 → `lotus_recpool_fixed_release(parent_pool, arena)`
+        //       (arena lives inline in a fixed_cell; release just
+        //       clears the bitmap bit so the slot is reusable).
+        //   2 → `lotus_recpool_slab_release(parent_pool, arena)`
+        //       (no-op — slab is freed wholesale at parent dissolve).
         let arena_field_ptr = self
             .builder
             .build_struct_gep(
@@ -23461,6 +23846,78 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .builder
             .build_load(ptr_t, arena_field_ptr, &format!("{}.__arena", locus_name))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let release_kind_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                info.recpool_release_kind_field_idx,
+                &format!("{}.__recpool_release_kind.dissolve.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let release_kind = self
+            .builder
+            .build_load(
+                i64_t_local,
+                release_kind_ptr,
+                &format!("{}.__recpool_release_kind.dissolve", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let release_pool_ptr_field = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                info.recpool_release_pool_field_idx,
+                &format!("{}.__recpool_release_pool.dissolve.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let release_pool = self
+            .builder
+            .build_load(
+                ptr_t,
+                release_pool_ptr_field,
+                &format!("{}.__recpool_release_pool.dissolve", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let regular_bb = self.context.append_basic_block(
+            destroy_func,
+            &format!("{}.arena.destroy.regular", locus_name),
+        );
+        let fixed_bb = self.context.append_basic_block(
+            destroy_func,
+            &format!("{}.arena.destroy.fixed", locus_name),
+        );
+        let slab_bb = self.context.append_basic_block(
+            destroy_func,
+            &format!("{}.arena.destroy.slab", locus_name),
+        );
+        let after_bb = self.context.append_basic_block(
+            destroy_func,
+            &format!("{}.arena.destroy.after", locus_name),
+        );
+
+        let is_zero = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                release_kind,
+                i64_t_local.const_int(0, false),
+                &format!("{}.release_kind.is_zero", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let recpool_dispatch_bb = self.context.append_basic_block(
+            destroy_func,
+            &format!("{}.arena.destroy.recpool", locus_name),
+        );
+        self.builder
+            .build_conditional_branch(is_zero, regular_bb, recpool_dispatch_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Regular arena destroy.
+        self.builder.position_at_end(regular_bb);
         let destroy = self
             .module
             .get_function("lotus_arena_destroy")
@@ -23468,6 +23925,58 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_call(destroy, &[arena.into()], &format!("{}.arena.destroy", locus_name))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(after_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Recpool dispatch: kind 1 → fixed, else (kind 2) → slab.
+        self.builder.position_at_end(recpool_dispatch_bb);
+        let is_fixed = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                release_kind,
+                i64_t_local.const_int(1, false),
+                &format!("{}.release_kind.is_fixed", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(is_fixed, fixed_bb, slab_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(fixed_bb);
+        let fixed_release_fn = self
+            .module
+            .get_function("lotus_recpool_fixed_release")
+            .expect("lotus_recpool_fixed_release declared");
+        self.builder
+            .build_call(
+                fixed_release_fn,
+                &[release_pool.into(), arena.into()],
+                &format!("{}.arena.recpool.fixed.release", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(after_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(slab_bb);
+        let slab_release_fn = self
+            .module
+            .get_function("lotus_recpool_slab_release")
+            .expect("lotus_recpool_slab_release declared");
+        self.builder
+            .build_call(
+                slab_release_fn,
+                &[release_pool.into(), arena.into()],
+                &format!("{}.arena.recpool.slab.release", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(after_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(after_bb);
         Ok(())
     }
 }
