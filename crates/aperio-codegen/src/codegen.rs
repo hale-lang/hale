@@ -1041,6 +1041,147 @@ fn expr_definitely_non_allocating(e: &Expr) -> bool {
     }
 }
 
+/// True iff any method body of `l` references `self.children`.
+/// The fixed-cap `__children[]` array on accept-declaring loci
+/// (see CHILDREN_CAP) is only consumed by `for child in
+/// self.children` iteration; when no body reads it, the array
+/// is dead bookkeeping AND a cliff source (writing past
+/// CHILDREN_CAP at accept-time silently corrupts adjacent
+/// memory — the bench harness surfaces this at k≈25).
+///
+/// Conservative on the "yes" side: any `self.children` field
+/// reference anywhere counts. Only loci whose entire method
+/// surface is `self.children`-free elide the array.
+fn locus_reads_self_children(l: &LocusDecl) -> bool {
+    l.members.iter().any(|m| match m {
+        LocusMember::Lifecycle(lc) => block_reads_self_children(&lc.body),
+        LocusMember::Mode(md) => block_reads_self_children(&md.body),
+        LocusMember::Fn(fd) => block_reads_self_children(&fd.body),
+        LocusMember::Failure(fl) => block_reads_self_children(&fl.body),
+        _ => false,
+    })
+}
+
+fn block_reads_self_children(b: &Block) -> bool {
+    b.stmts.iter().any(stmt_reads_self_children)
+}
+
+fn stmt_reads_self_children(s: &Stmt) -> bool {
+    match s {
+        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+            expr_reads_self_children(value)
+        }
+        Stmt::Assign { value, target, .. } => {
+            expr_reads_self_children(value)
+                || target
+                    .tail
+                    .iter()
+                    .any(|seg| match seg {
+                        LValueSeg::Index(e) => expr_reads_self_children(e),
+                        LValueSeg::Field(_) => false,
+                    })
+        }
+        Stmt::If(s) => if_stmt_reads_self_children(s),
+        Stmt::Match(m) => match_stmt_reads_self_children(m),
+        Stmt::For { iter, body, .. } => {
+            expr_reads_self_children(iter) || block_reads_self_children(body)
+        }
+        Stmt::While { cond, body, .. } => {
+            expr_reads_self_children(cond) || block_reads_self_children(body)
+        }
+        Stmt::Return(Some(e), _) => expr_reads_self_children(e),
+        Stmt::Fail { value, .. } => expr_reads_self_children(value),
+        Stmt::Block(b) => block_reads_self_children(b),
+        Stmt::Recovery { args, .. } => args.iter().any(expr_reads_self_children),
+        Stmt::Send { subject, value, .. } => {
+            expr_reads_self_children(subject) || expr_reads_self_children(value)
+        }
+        Stmt::Expr(e) => expr_reads_self_children(e),
+        Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) => {
+            false
+        }
+    }
+}
+
+fn if_stmt_reads_self_children(s: &IfStmt) -> bool {
+    expr_reads_self_children(&s.cond)
+        || block_reads_self_children(&s.then_block)
+        || match s.else_block.as_deref() {
+            None => false,
+            Some(ElseBranch::Else(b)) => block_reads_self_children(b),
+            Some(ElseBranch::ElseIf(inner)) => if_stmt_reads_self_children(inner),
+        }
+}
+
+fn match_stmt_reads_self_children(m: &MatchStmt) -> bool {
+    if expr_reads_self_children(&m.scrutinee) {
+        return true;
+    }
+    m.arms.iter().any(|a| {
+        a.guard.as_ref().is_some_and(expr_reads_self_children)
+            || match &a.body {
+                MatchArmBody::Expr(e) => expr_reads_self_children(e),
+                MatchArmBody::Block(b) => block_reads_self_children(b),
+            }
+    })
+}
+
+fn expr_reads_self_children(e: &Expr) -> bool {
+    match e {
+        Expr::Field { receiver, name, .. } => {
+            if name.name == "children"
+                && matches!(receiver.as_ref(), Expr::KwSelf(_))
+            {
+                return true;
+            }
+            expr_reads_self_children(receiver)
+        }
+        Expr::Literal(_, _) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {
+            false
+        }
+        Expr::Binary { left, right, .. } => {
+            expr_reads_self_children(left) || expr_reads_self_children(right)
+        }
+        Expr::Unary { operand, .. } => expr_reads_self_children(operand),
+        Expr::Call { callee, args, .. } => {
+            expr_reads_self_children(callee)
+                || args.iter().any(expr_reads_self_children)
+        }
+        Expr::Index { receiver, index, .. } => {
+            expr_reads_self_children(receiver) || expr_reads_self_children(index)
+        }
+        Expr::Path2 { receiver, .. } => expr_reads_self_children(receiver),
+        Expr::Tuple(parts, _) | Expr::Array(parts, _) => {
+            parts.iter().any(expr_reads_self_children)
+        }
+        Expr::Struct { inits, .. } => {
+            inits.iter().any(|i| expr_reads_self_children(&i.value))
+        }
+        Expr::Block(b) => block_reads_self_children(b),
+        Expr::If(s) => if_stmt_reads_self_children(s),
+        Expr::Match(m) => match_stmt_reads_self_children(m),
+        Expr::Sum(inner, _) | Expr::Prod(inner, _) => expr_reads_self_children(inner),
+        Expr::Approx { left, right, tolerance, .. } => {
+            expr_reads_self_children(left)
+                || expr_reads_self_children(right)
+                || expr_reads_self_children(tolerance)
+        }
+        Expr::Range { lo, hi, .. } => {
+            expr_reads_self_children(lo) || expr_reads_self_children(hi)
+        }
+        Expr::ArrayRepeat { val, .. } => expr_reads_self_children(val),
+        Expr::Or { inner, disposition, .. } => {
+            if expr_reads_self_children(inner) {
+                return true;
+            }
+            match disposition {
+                OrDisposition::Raise(_) => false,
+                OrDisposition::Substitute(rhs) => expr_reads_self_children(rhs),
+            }
+        }
+    }
+}
+
 /// v1.x-FORM-2 PR6: result of lowering a fallible call inside
 /// `Expr::Or`. Carries the i1 path SSA plus the two sret slot
 /// pointers and the types they point to, so the Or arm can
@@ -6461,11 +6602,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
 
-        // If this locus declares accept, append a synthetic
-        // children array + counter at the end of the struct so
-        // each accept dispatch can record the child's self_ptr
-        // for `for child in self.children { ... }` iteration.
-        let (children_field_idx, child_count_field_idx) = if has_accept {
+        // If this locus declares accept AND any method body
+        // iterates `for child in self.children`, append a
+        // synthetic children array + counter at the end of the
+        // struct so each accept dispatch can record the child's
+        // self_ptr.
+        //
+        // When `accept` is declared but no body reads
+        // `self.children`, we elide the array entirely. The
+        // append at accept-time then becomes a no-op (the
+        // `children_field_idx` Option below gates it), and
+        // accept-loops scale without the fixed-cap CHILDREN_CAP
+        // cliff (writing past it silently corrupts adjacent
+        // struct memory — bench surfaces this at k≈25 with the
+        // 16-slot cap). For loci that DO iterate, the array is
+        // kept; closing the residual 16-child cap is a separate
+        // milestone (growable children buffer) gated on a
+        // workload that needs it.
+        let uses_children = has_accept && locus_reads_self_children(l);
+        let (children_field_idx, child_count_field_idx) = if uses_children {
             let i64_t = self.context.i64_type();
             let arr_ty = ptr_t.array_type(CHILDREN_CAP);
             let arr_idx = idx;
@@ -8225,7 +8380,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                         }
                     }
-                    self.flush_dissolve_frame()?;
+                    // Subscribed bus handlers run synchronously
+                    // inside a substrate cell — the outer
+                    // `lotus_bus_queue_drain` loop in C is what
+                    // popped this cell and called us. Emitting
+                    // another drain at the handler's tail
+                    // recursively re-enters that loop on the
+                    // C stack, one frame per pending cell.
+                    // 50k queued ticks → 50k frames → SIGSEGV
+                    // (bench `bus_dispatch.ap` cliffs between
+                    // 20k and 25k under the default 8 MB stack).
+                    // The outer drain's for-loop already pumps
+                    // the queue to empty; the tail drain is
+                    // redundant for cooperative handlers.
+                    // Same rationale as on_failure bodies
+                    // (which already pass `drain_queue=false`).
+                    if is_subscribed_handler {
+                        self.flush_dissolve_frame_kind(false)?;
+                    } else {
+                        self.flush_dissolve_frame()?;
+                    }
                     match ret_ty {
                         None => {
                             self.builder
@@ -13557,34 +13731,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     fn alloca_for(
-        &self,
+        &mut self,
         ty: &CodegenTy,
         name: &str,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        match ty {
-            CodegenTy::Int | CodegenTy::Duration => self
-                .builder
-                .build_alloca(self.context.i64_type(), name)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
-            CodegenTy::FnPtr { .. } => self
-                .builder
-                .build_alloca(
-                    self.context.ptr_type(AddressSpace::default()),
-                    name,
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
-            CodegenTy::Float => self
-                .builder
-                .build_alloca(self.context.f64_type(), name)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
-            CodegenTy::Decimal => self
-                .builder
-                .build_alloca(self.context.i128_type(), name)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
-            CodegenTy::Bool => self
-                .builder
-                .build_alloca(self.context.bool_type(), name)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
+        // Hoist let-binding allocas to the fn's entry block.
+        // Without this, a `let v = ...;` inside a `while`/`for`
+        // body lowers to a dynamic-stack-alloc that consumes
+        // fresh stack per iteration; LLVM doesn't reclaim until
+        // the fn returns. Tight loops blow the default 8 MB
+        // stack at ~500k–1M iterations (bench
+        // `stream_aggregator.ap`'s `let v = (i * 31 + 7) % 1000`
+        // segfaults around 750k otherwise).
+        //
+        // Same correctness argument as locus-struct alloca
+        // hoisting: the binding's value is overwritten per
+        // iteration anyway, so a single entry-block slot
+        // reused across iterations matches the dynamic-alloca
+        // shape semantically while not growing the frame.
+        let llvm_ty: inkwell::types::BasicTypeEnum = match ty {
+            CodegenTy::Int | CodegenTy::Duration => {
+                self.context.i64_type().into()
+            }
+            CodegenTy::FnPtr { .. } => {
+                self.context.ptr_type(AddressSpace::default()).into()
+            }
+            CodegenTy::Float => self.context.f64_type().into(),
+            CodegenTy::Decimal => self.context.i128_type().into(),
+            CodegenTy::Bool => self.context.bool_type().into(),
             CodegenTy::Enum(en) => {
                 let payload = self
                     .user_enums
@@ -13592,13 +13766,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map(|i| i.has_payload)
                     .unwrap_or(false);
                 if payload {
-                    self.builder
-                        .build_alloca(self.context.ptr_type(AddressSpace::default()), name)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))
+                    self.context.ptr_type(AddressSpace::default()).into()
                 } else {
-                    self.builder
-                        .build_alloca(self.context.i32_type(), name)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))
+                    self.context.i32_type().into()
                 }
             }
             CodegenTy::String
@@ -13609,11 +13779,53 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Array(_, _)
             | CodegenTy::Tuple(_)
             | CodegenTy::Interface(_)
-            | CodegenTy::Cell(_, _) => self
-                .builder
-                .build_alloca(self.context.ptr_type(AddressSpace::default()), name)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string())),
+            | CodegenTy::Cell(_, _) => {
+                self.context.ptr_type(AddressSpace::default()).into()
+            }
+        };
+        self.alloca_in_entry(llvm_ty, name)
+    }
+
+    /// Emit `alloca <ty>, name` at the top of the current fn's
+    /// entry block. Used for any per-binding stack slot whose
+    /// live range is contained within the fn's body — single-
+    /// alloca-per-binding is a frame-size linear in the
+    /// declaration count, vs. the iteration-count blow-up that
+    /// a dynamic-alloca-in-loop produces.
+    fn alloca_in_entry(
+        &mut self,
+        ty: inkwell::types::BasicTypeEnum<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let func = match self.current_fn {
+            Some(f) => f,
+            // Defense — outside any fn, fall through to current
+            // builder position (shouldn't be reached from normal
+            // user-fn lowering paths).
+            None => {
+                return self
+                    .builder
+                    .build_alloca(ty, name)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()));
+            }
+        };
+        let entry_bb = func
+            .get_first_basic_block()
+            .expect("fn has an entry block");
+        let saved = self.builder.get_insert_block();
+        if let Some(first_instr) = entry_bb.get_first_instruction() {
+            self.builder.position_before(&first_instr);
+        } else {
+            self.builder.position_at_end(entry_bb);
         }
+        let slot = self
+            .builder
+            .build_alloca(ty, name)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        if let Some(bb) = saved {
+            self.builder.position_at_end(bb);
+        }
+        Ok(slot)
     }
 
     fn lower_expr(
@@ -19179,25 +19391,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map(|i| (i.name.name.as_str(), &i.value))
             .collect();
 
-        // Deferred-dissolve gating: when this locus's dissolve
-        // is deferred to a fn-exit flush (let-bound `let x = X{};`
-        // or bus-subscribing long-lived locus), the body that
-        // contains this `let` may not execute on every control-
-        // flow path — e.g., an early `return` before the let.
-        // The flush iterates frame entries unconditionally; if
-        // we emit the struct's alloca at the let position, an
-        // early-return path leaves it uninitialized and the
-        // flush dereferences garbage (segv at a low address as
-        // arena field offset is read off a near-null pointer).
-        //
-        // Fix: hoist the alloca to the fn entry block and
-        // zero-init the arena field there. The let position
-        // overwrites the arena field with the real arena when
-        // it runs. The flush null-checks the arena field per
-        // entry (see flush_dissolve_frame_kind) and skips
-        // entries whose let never executed.
-        let early_defer = defer_for_let
-            || !info.subscriptions.is_empty();
         // 3d+3e: if the current self's locus accepts a child of
         // this locus's type, the parent is about to retain a
         // pointer to this instance via its synthetic
@@ -19325,13 +19518,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .left()
                 .expect("lotus_arena_alloc returns ptr")
                 .into_pointer_value()
-        } else if early_defer && self.current_fn.is_some() {
+        } else if self.current_fn.is_some() {
+            // Always hoist the locus-struct alloca to the fn's entry
+            // block when we have one. A `build_alloca` placed at the
+            // current insertion point inside a loop body lowers to a
+            // dynamic-stack-alloc — LLVM consumes stack per iteration
+            // without reclaiming until the fn returns. A statement-
+            // position `Empty { };` in a tight loop blows the default
+            // 8 MB stack at ~500k iterations.
+            //
+            // Entry-block hoist is correctness-preserving because the
+            // struct's lifetime is fully contained within the
+            // expression: arena_create → init → lifecycle → arena_
+            // destroy. Subsequent iterations rewrite the same stack
+            // slot. The arena-field nulling done by the helper is a
+            // no-op for the immediate-dissolve case (the field is
+            // overwritten with arena_create() before any read) but is
+            // required for the deferred-dissolve case (where the
+            // flush at fn-exit reads the field to decide whether to
+            // tear the locus down). One helper covers both shapes.
             self.alloca_in_entry_with_nulled_arena(
                 info.struct_ty,
                 info.arena_field_idx,
                 &format!("{}.self", locus_name),
             )?
         } else {
+            // Defense — no current fn; fall back to current-position
+            // alloca. Shouldn't be reached from normal user-fn codegen.
             self.builder
                 .build_alloca(info.struct_ty, &format!("{}.self", locus_name))
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
@@ -21918,17 +22131,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // Materialize the arg in an alloca so we can hand
                 // its address to lotus_vec_push. The runtime
                 // memcpys elem_size bytes from this address.
+                // Entry-block hoist so a push call in a loop body
+                // doesn't grow the frame per iteration (1M pushes
+                // × 8 bytes = 8 MB → SIGSEGV).
                 let llvm_elem_ty =
                     self.llvm_basic_type(&slot.elem_ty);
-                let arg_alloca = self
-                    .builder
-                    .build_alloca(
-                        llvm_elem_ty,
-                        &format!("{}.push.arg", locus_name),
-                    )
-                    .map_err(|e| {
-                        CodegenError::LlvmEmit(e.to_string())
-                    })?;
+                let arg_alloca = self.alloca_in_entry(
+                    llvm_elem_ty,
+                    &format!("{}.push.arg", locus_name),
+                )?;
                 self.builder
                     .build_store(arg_alloca, arg_val)
                     .map_err(|e| {
