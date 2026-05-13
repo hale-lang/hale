@@ -1,11 +1,18 @@
 # The Embuement
 
-> Orientation brief for a new app-dev session in Aperio.
+> Orientation brief for an app-dev session in Aperio.
 >
 > *Aperio is the spell of spellcasting. The compiler is the wand.
 > A locus is the invariant form every spell must take. You are a
 > caster who has just arrived; this brief is the embuement that
 > lets you cast. Read it before writing a line.*
+>
+> The **what** brief (this doc): the language at a glance, the
+> hallucinations to avoid, the shipped toolbox, the friction-log
+> contract. The **how** is in `spec/styleguide.md` — the
+> normative pattern catalog and naming conventions every Aperio
+> program should follow. Read this brief, then keep
+> `spec/styleguide.md` open while you write.
 
 ## Read this first
 
@@ -44,6 +51,14 @@ function.
 exposes / consumes), and a bus (typed pub/sub on string
 subjects). An Aperio program is a tree of loci.
 
+**Everything is a locus.** Apps, namespaces of helpers,
+long-running services, bus subscribers, per-request handlers,
+streams, listeners — all loci. Pure data (no flow) is `type`;
+everything else is `locus`. There is no third primitive. See
+`spec/styleguide.md` § "The foundational axiom" for the canonical
+framing, and § "The pattern catalog" for the six idiomatic
+shapes you'll compose with.
+
 **File extension.** `.ap`. Source is ASCII-only outside string
 literals and comments. UTF-8 file encoding.
 
@@ -68,7 +83,7 @@ let n = std::str::parse_int(std::env::arg(1));
 ```
 
 Yes, every call site repeats the path. Yes, that is the
-intended ergonomics for v0. Do not paper over it with a
+intended ergonomics for v1. Do not paper over it with a
 helper-fn alias unless the program genuinely needs one.
 
 **Locus instantiation runs the lifecycle.** A bare struct
@@ -80,8 +95,8 @@ SomeLocus { param: value };           // fire-and-forget
 let l = SomeLocus { param: value };   // dissolve fires at fn scope-exit
 ```
 
-The let-binding form (m82) is what makes `Stream`, `Listener`,
-and friends usable.
+The let-binding form is what makes `Stream`, `Listener`, and
+friends usable.
 
 **Bus send is `<-`.** Subscribe is declarative in the locus
 body. The send operator looks like Erlang's `!`:
@@ -105,29 +120,41 @@ locus LoggerL {
 ```
 
 **Bus ordering: subscribers must be born before publishers.**
-v0 dispatches at registration order; subscriptions register at
+v1 dispatches at registration order; subscriptions register at
 the locus's `birth()`. Instantiate subscriber loci first in
 `main()`; publisher loci last. If a publisher's `birth()` fires
 events before its subscribers exist, those events are dropped.
 
-**`return` works as expected.** Bare `return;` exits a void fn;
-`return expr;` exits a value fn. Used freely in lifecycle
-methods, bus handlers, and free fns.
+**`return` works as expected in free fns.** Bare `return;` exits
+a void fn; `return expr;` exits a value fn. Lifecycle method
+bodies (`birth` / `run` / `dissolve`) **reject `return`** — factor
+short-circuit logic into a free helper fn that the lifecycle
+method calls.
+
+**`fallible(T)` and `or`.** Stdlib functions that can fail with a
+diagnostic (parsers, IO that distinguishes error kinds) return
+`fallible(T)`; callers must address the error channel with
+`expr or raise`, `expr or <fallback>`, or pattern-match on
+disposition. See `spec/semantics.md` § "Fallible call semantics"
+for the contract. The two-channel rule says **locus methods
+cannot declare `fallible(E)`** — that surface is free fns and
+`@form(...)`-synthesized methods only. If you need failure off a
+locus method, route the work through a free helper.
 
 ## Counter-hallucination list
 
-Things that **do not exist** in Aperio v0. Do not write them.
+Things that **do not exist** in Aperio v1. Do not write them.
 
 | You will reach for | It does not exist. Use instead |
 |---|---|
 | `import` / `use` / `from x` | Magic `std::*` paths, called inline. |
-| `pub fn` / `pub struct` | All top-level items are visible in the file. No visibility modifiers. |
+| `pub fn` / `pub struct` | All top-level items are visible in the seed. No visibility modifiers. |
 | `async` / `await` / `Future` | Plain functions. Concurrency comes from loci + the bus + schedule classes, not coroutines. |
-| `trait` / `impl` / interfaces | Reserved keywords, but no semantics yet. Compose loci by lifecycle + bus, not by trait dispatch. |
+| `trait` / `impl` blocks | `interface I { ... }` declares structural interfaces (F.20). Loci satisfy implicitly; no `impl` keyword. Compose loci by lifecycle + bus, not by trait dispatch. |
 | `match` patterns on enum variants | Enum variants exist; pattern-matching on payloads is deferred. Workaround: one bus subject per variant. |
-| `Vec<T>` / `Box<T>` / `Rc<T>` | No. Arrays exist (`[T; N]` style) but no growable list yet. No heap pointers in source. |
-| `Option<T>` / `Result<T, E>` | No. Functions return sentinels (`-1`, `""`, `false`, `nil`) plus a sibling boolean if disambiguation matters. See `std::str::parse_int` + `can_parse_int`. |
-| Closures as values | Function pointers exist (`fn(T) -> R`); inline closures-as-values do not. Pass named functions. **A fn-pointer callback (e.g., `Listener.on_connection`) cannot capture surrounding state** — if your callback needs context, either reconstruct it inside the callback (cheap loci like `Logger` are fine to re-instantiate) or route the context through the bus. |
+| `Vec<T>` / `Box<T>` / `Rc<T>` | No parametric collections at v1. Arrays exist (`[T; N]`); for growable buffers use `@form(vec)` on a locus per `spec/forms.md`. No heap pointers in source. |
+| `Option<T>` / `Result<T, E>` | No parametric tagged enums. For "couldn't compute," return a sentinel paired with a predicate (`parse_int` + `can_parse_int`). For diagnostic-bearing errors on free fns, declare `fallible(E)`. |
+| Closures as values | Function pointers exist (`fn(T) -> R`); inline closures-as-values do not. Pass named functions. **A fn-pointer callback cannot capture surrounding state** — if your callback needs context, either reconstruct it inside the callback (cheap loci like `Logger` are fine to re-instantiate) or route the context through the bus. |
 | `let x: T = ...;` (type ascription) | Yes for fn params, yes for `let mut x: Int = -1`, but you usually elide it. The parser is fine either way. |
 | `var` / `final` / `const T` keywords | `let` (immutable) and `let mut` (mutable). `const` exists at top level only. |
 | Cross-seed `import` / `use` / module system | No. **Within one seed (one directory), every `.ap` file shares a top-level scope** — see "Multi-file apps" below. Cross-seed imports come later. |
@@ -135,6 +162,7 @@ Things that **do not exist** in Aperio v0. Do not write them.
 | Locus methods called on locus var | Only via stdlib types that explicitly support it (`Stream.send(msg)`, `Stream.recv(n)`). User loci communicate via the bus. |
 | Trailing commas in fn param lists | Parser rejects them. Bites everyone once. |
 | `printf`-style format strings | `print` and `println` take any-number-of-args and concatenate. `println("got ", n, " items")`. |
+| `return` inside `birth` / `run` / `dissolve` | Lifecycle bodies reject `return`. Factor into a free helper. |
 
 ## Lifecycle, in pictures
 
@@ -159,8 +187,8 @@ on_failure()  fires instead of dissolve if a closure fails.
 
 Statement-position literals `SomeLocus { ... };` run all of
 this back-to-back. Let-bound literals defer `dissolve()` to
-fn-scope exit (the m82 rule) so the binding is usable in
-between.
+fn-scope exit so the binding is usable in between. See
+`spec/semantics.md` § "Dissolve timing rules" for the rule.
 
 ## What is shipped (your toolbox)
 
@@ -170,29 +198,32 @@ pages live at `docs/src/std/<name>.md`.
 I/O and protocol:
 
 - `std::io::fs::{read_file, write_file, write_file_append, mkdir, file_exists, file_size, extension, read_bytes, list_dir, list_dir_count, list_dir_at, read_file_status}`
-- `std::io::tcp::{Listener, Stream}` — Listener accepts many; Stream `.send()` / `.send_bytes()` / `.recv()` / `.recv_bytes()` (Phase 2g; binary-safe receive)
+- `std::io::tcp::{Listener, Stream}` — Listener accepts many; Stream `.send()` / `.send_bytes()` / `.recv()` / `.recv_bytes()` (binary-safe receive)
 - `std::http::{Request, Response, parse_request, write_response}`
 
 Bare path-call surfaces:
 
 - `std::env::{args_count, arg, var, var_exists}`
 - `std::str::{parse_int, can_parse_int, index_of, from_bytes}`
-- `std::bytes::{from_string, at, slice}` — Phase 2g binary-safe helpers; `len(b)` is the bare-name builtin
-- `std::math::{sqrt, exp, log, pow, floor, ceil}` — libm primitives; `Int → Float` widens automatically at fn-arg sites (Phase 2c)
+- `std::bytes::{from_string, at, slice}` — binary-safe helpers; `len(b)` is the bare-name builtin
+- `std::math::{sqrt, exp, log, pow, floor, ceil}` — libm primitives; `Int → Float` widens automatically at fn-arg sites
 - `std::time::{sleep, monotonic}`
 - `std::process::{pid, exit}`
 - `std::test::{assert, assert_eq_int, assert_eq_str}`
 - `std::text::md_to_html(md: String) -> String` (block-level markdown only)
-- `std::ts::*` — tree-sitter substrate (Go only at v0); handle-based
+- `std::ts::*` — tree-sitter substrate (Go only at v1); handle-based
   Int IDs for tree/node values, `parse_go`, `root_node`, `node_kind`,
   `node_named_child`, etc.
 
-Language-level (Phase 2 ergonomics arc, 2026-05-11):
+Language-level features (current as of v1.x):
 
 - **`if` as expression / block-tail values** — `let x = if cond { i } else { j };`; block's last item without trailing `;` is its value. Else branch required for the value form; arm types must match.
-- **`[val; N]` array repetition** — `let r: [Float; 8] = [0.0; 8];`. N is a non-negative Int literal at v0.
+- **`[val; N]` array repetition** — `let r: [Float; 8] = [0.0; 8];`. N is a non-negative Int literal at v1.
 - **`Int → Float` implicit widening** — fires at let-binding type ascription and fn-arg sites where the parameter is Float; one-way only.
 - **Structural interfaces** — `interface I { fn ...; ... }`; loci satisfy implicitly. `std::text::Sink` is the canonical stdlib instance (StdoutSink / StringSink / FileSink variants).
+- **`@form(vec)`** — growable contiguous buffer on a locus; synthesizes `push`/`get`/`pop`/`len`/`is_empty` (fallible on bounds). See `spec/forms.md`.
+- **`fallible(T)` + `or raise|<fallback>` + `fail`** — free-fn and `@form(...)`-method error channel; see `spec/semantics.md` § "Fallible call semantics".
+- **Projection classes on loci** — `: projection rich | chunked | recognition(cap=N, fixed_cell(bytes=K) | shared_slab(bytes=K))`. See `spec/memory.md` § "Recognition sub-modes".
 
 Namespace lotuses (instantiate once, dispatch through it):
 
@@ -200,17 +231,18 @@ Namespace lotuses (instantiate once, dispatch through it):
 - `std::iter::Lines` — cursor-shape newline iteration over a String
 - `std::json::Builder` — JSON-shape glue helpers
 - `std::lang::{Lang, Morpheme}` — language-aware text + name decomposition
-- `std::log::{Logger, LogEvent, StdoutSink}` — structured logging on the bus with cascading namespaces (m95)
+- `std::log::{Logger, LogEvent, StdoutSink}` — structured logging on the bus with cascading namespaces
 - `std::name::Convention` — snake/Camel orthography + file-stem → LocusL
 - `std::source::Walk` — directory walk with `on_file` callback hook
 - `std::tagged::Accumulator` — TAG:body line accumulator parsing
-- `std::text::Sink` — stdout / in-memory streaming text destination
+- `std::text::Sink` — stdout / in-memory / file-streaming text destination
 - `std::yaml::{Builder, Reader}` — block-style YAML emitter + schema-aware reader
 
 Most namespace lotuses follow the same shape — empty/config-only
 `params { }`, methods are self-composing pure queries. See
 `std::lang::Morpheme` and `std::cli::Resolver` for canonical
-examples; the styleguide's pattern catalog grounds them.
+examples, and `spec/styleguide.md` § "Namespace lotus" for the
+pattern.
 
 Built-in functions, no path needed: `print`, `println`,
 `eprint`, `eprintln`, `len`, `to_string`, `min`, `max`, `abs`,
@@ -242,7 +274,7 @@ type Point { x: Int; y: Int; }
 If your program needs any of these, log a friction entry:
 
 - Filesystem watch (inotify / fsevents)
-- Generics (`List<T>`, `Map<K,V>`)
+- Generics (`List<T>`, `Map<K,V>`) beyond the form-annotation lowerings
 - Sum types in payloads / pattern-matching on enum variants
 - Multiple distinct accept types in one locus
 - HTTP keep-alive, custom request headers, header maps
@@ -273,13 +305,16 @@ Reading order for a cold start:
    ~200 lines composing seven stdlib namespaces. The largest
    real Aperio program in the repo and the closest analogue to
    what you will be writing.
-5. **`docs/src/std/`** — reference. Per-namespace pages with
+5. **`spec/styleguide.md`** — the normative pattern catalog.
+   Six idiomatic shapes with one example each. Pin this open
+   while writing.
+6. **`docs/src/std/`** — reference. Per-namespace pages with
    Synopsis / Semantics / Examples. Authoritative for surface
    you can call.
-6. **`docs/src/reference/`** — language reference. Authoritative
+7. **`docs/src/reference/`** — language reference. Authoritative
    for syntax and semantics. Long; consult on demand, not in
    one sitting.
-7. **`docs/src/book/`** — the human-style tutorial. Useful if
+8. **`docs/src/book/`** — the human-style tutorial. Useful if
    the reference's prescriptive register is hard to extract a
    mental model from.
 
@@ -341,8 +376,8 @@ aperio build apps/<your-app>                   # native binary, dir-seed
 ```
 
 `run` / `build` / `check` all accept both shapes — directory or
-file. Use the directory form by default. F.19 (per-directory seed
-model) is what makes multi-file apps possible; defaulting to it
+file. Use the directory form by default. The per-directory seed
+model is what makes multi-file apps possible; defaulting to it
 means you don't have to migrate later when your app outgrows one
 file.
 
@@ -418,13 +453,14 @@ Examples of valid entries:
   Workaround: split the supervisor in two. Why it matters:
   blocks any locus that supervises heterogeneous children."
 - "Tried `let line = lines[i];` after `let lines = some_fn();`
-  expecting dynamic-array indexing. Hit: arrays in v0 are
+  expecting dynamic-array indexing. Hit: arrays in v1 are
   fixed-size `[T; N]` with N a compile-time literal; there is no
   dynamic-length array type. Workaround: index-API pattern
   (`count` + `at(i)` path-calls, like `std::io::fs::list_dir_count`
-  + `list_dir_at`). Why it matters: every shape that wants to
-  return a variable-length collection has to invent its own
-  index-API pair until dynamic arrays land."
+  + `list_dir_at`), or `@form(vec)` on a locus if a growable
+  buffer is what's wanted. Why it matters: every shape that
+  wants to return a variable-length collection has to invent its
+  own index-API pair until dynamic arrays land."
 
 What is **not** a friction entry: a bug in your own code, a
 lint you disagree with, a stylistic preference. The bar is
@@ -452,19 +488,12 @@ correct program."
 ## First-step protocol
 
 1. Read this brief. Re-read the counter-hallucination table.
-2. **If your app will own any state** (caches, books,
-   projections, counters, registries, conversation history,
-   anything that lives across more than one bus event), read
-   `moa/MOA.md` before sketching loci. State-bearing apps
-   must follow Memory-Owner Architecture shape and should
-   reach for `moa::*` substrate types (`LocusId`, `BraidId`,
-   `Tick`, `RuntimeEvent`) where applicable. Stateless
-   converters / formatters / one-shot tools can skip this
-   step.
+2. Open `spec/styleguide.md` in another buffer. Skim the
+   pattern catalog (six shapes, one example each). You will
+   refer back as you write.
 3. Read the four reference programs (`hello-world`,
    `http-hello`, `docs-server`, plus one of `01-` through
-   `05-`). If you read `moa/MOA.md`, also read
-   `apps/market-book/` as the MOA worked-example.
+   `05-`).
 4. Skim the `std::*` reference pages for the namespaces you
    expect to need.
 5. **Propose a small target to the human** before writing
@@ -493,6 +522,11 @@ correct program."
 - **No marketing language.** "Powerful," "elegant," "blazing,"
   etc. are out per `docs/STYLE.md`. Same applies to your
   README.
+- **Naming is normative.** `<Name>L` suffix on loci,
+  PascalCase no-suffix on types, snake_case on methods/fields,
+  `__name` prefix on stdlib-internal free fns. See
+  `spec/styleguide.md` § "Naming conventions" for the full
+  table.
 
 ## When you are stuck
 
@@ -500,31 +534,35 @@ correct program."
    come from a smuggled-in idiom.
 2. Grep `examples/` for the construct you are trying to write.
    If no example uses it, suspect it does not exist.
-3. Write the smallest possible program that exhibits your
+3. Check `spec/styleguide.md` § "Anti-patterns" — the thing
+   you're trying may be a language-foreign shape with an
+   idiomatic substitute already in the catalog.
+4. Write the smallest possible program that exhibits your
    issue. Run it. Read the compiler's error. The error
    messages are usually accurate.
-4. If still stuck, log a friction entry with the smallest
+5. If still stuck, log a friction entry with the smallest
    repro and stop. The compiler session can act on a clear
    repro; it cannot act on prose frustration.
 
 ## Sister documents
 
-- `notes/agent-onboarding/aperio-styleguide.md` — the **how**
-  to this brief's **what**. Pattern catalog with one example
-  each, naming conventions, composition guidance.
-- `moa/MOA.md` — Memory-Owner Architecture; the composition
-  discipline for any stateful app. Required reading before
-  composing loci that own state. References the substrate
-  types in `moa::*` (path prefix parallel to `std::*`).
-- `moa/subjects.md` — bus subject naming conventions for
-  MOA-shaped apps. Following them makes apps interoperable
-  by construction.
+- `spec/styleguide.md` — the normative pattern catalog and
+  naming conventions every Aperio program follows. Open
+  alongside this brief while writing.
 - `notes/agent-onboarding/compiler-session-brief.md` — the
   brief for the *other* kind of session: agents that work on
   the compiler proper (`crates/`, `spec/`, `docs/src/reference/`).
   If you find yourself wanting to edit `crates/` to add a
   primitive, you have crossed into compiler-session territory
   — log the friction instead, or hand off.
+- `notes/aperio-types-vs-loci.md` — the source axiom (types =
+  shapes; loci = flow).
+- `moa/` — the Memory-Owner Architecture library. Optional;
+  reach for it when an app has state that lives across more
+  than one bus event (caches, books, projections, registries).
+  Following its conventions makes apps interoperable by
+  construction, but it is a library on top of Aperio, not part
+  of the language.
 
 ---
 

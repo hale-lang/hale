@@ -176,8 +176,7 @@ codebase explicitly names it." One-tower presence is
   doesn't add a third primitive; it just sharpens the
   contract for the existing two. The same principle in
   miniature governs new entries to the pattern catalog — see
-  "Rolling the design" in
-  `notes/agent-onboarding/aperio-styleguide.md`. New primitives
+  "Rolling the design" in `spec/styleguide.md`. New primitives
   earn their slot by sharpening the existing contract, not by
   inventing a third category.
 

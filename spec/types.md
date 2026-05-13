@@ -148,7 +148,7 @@ data pointer passed as the implicit self arg.
 
 Interface values are usable as fn parameters and as receivers
 for method calls. The `std::text::Sink` stdlib migration (split
-`__StdTextSink` into `StdoutSink` / `StringSink` / `FileSink`
+`Sink` into `StdoutSink` / `StringSink` / `FileSink`
 loci behind one `Sink` interface) shipped 2026-05-11; see
 `spec/stdlib.md` and `crates/aperio-codegen/tests/sink_polymorphism.rs`.
 Returning an interface value from a fn, storing one in a locus

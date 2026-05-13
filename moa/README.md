@@ -96,7 +96,6 @@ the indicated entries and runs the existing
 - `MOA.md` — the foundational statement of the architectural pattern
 - `subjects.md` — bus subject conventions
 - `notes/aperio-types-vs-loci.md` — the axiom MOA builds on
-- `notes/agent-onboarding/aperio-styleguide.md` — pattern catalog and
-  composition rules
+- `spec/styleguide.md` — pattern catalog and composition rules
 - `spec/design-rationale.md` F.22 — capacity slots, which MOA
   depends on for storage discipline

@@ -105,6 +105,6 @@ Walk `audit-checklist.md`. Seven sections; ~30 minutes for a
 
 If your app is genuinely stateless — a pure converter, a
 formatter, a one-shot tool — MOA doesn't apply. Stick with the
-six patterns in `notes/agent-onboarding/aperio-styleguide.md`.
+six patterns in `spec/styleguide.md`.
 MOA enters the picture as soon as the app holds anything across
 events.

@@ -155,10 +155,9 @@ When v1 ships, expected conventions:
   manifest).
 
 How the seed grows once named is governed by the *rolling* rule —
-see "Rolling the design" in
-`notes/agent-onboarding/aperio-styleguide.md`. Naming a seed is the
-boundary act; rolling is what keeps the catalog inside that
-boundary small enough to hold in head.
+see "Rolling the design" in `spec/styleguide.md`. Naming a seed
+is the boundary act; rolling is what keeps the catalog inside
+that boundary small enough to hold in head.
 
 ## Why seed (and not grimoire / arcanum / spell / package)
 
@@ -198,8 +197,8 @@ and the codegen weaves it into the running locus tower.
 
 - `notes/aperio-types-vs-loci.md` — the axiom that constrains
   seed exports to types + loci.
-- `notes/agent-onboarding/aperio-styleguide.md` — applies the
-  axiom and the seed concept to writing idiomatic Aperio.
+- `spec/styleguide.md` — applies the axiom and the seed
+  concept to writing idiomatic Aperio.
 - `notes/aperio-refactor-proposal.md` — proposes specific
   std-seed extractions to address the cross-app duplication
   surfaced above.

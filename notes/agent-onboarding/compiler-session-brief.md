@@ -10,56 +10,62 @@
 
 ## Active arc (read before picking up tools)
 
-The current implementation work is **v1.x-FORM-2** — making
-the `@form(vec)` annotation execute end-to-end. The session
-state lives in `notes/v1.x-checkpoint.md` and is your single
-canonical source for where the work stopped.
+The v1.x stabilization arc shipped end-to-end. **Active work is
+the apps/+examples/ rollup as the ongoing compiler test
+suite** (Phase 4 per `notes/v1.x-checkpoint.md`). Language
+surface is stable enough to drive coverage from real programs;
+new compiler work fires from concrete friction, not speculation.
 
-What's done (commit-pending changes on the working tree):
+Recent significant ships (commit order; see
+`notes/v1.x-checkpoint.md` for the full session log):
 
-- **PR1**: lex + parse + AST for `@form(...)`, `fallible(T)`,
-  `fail <expr>;`, `<expr> or raise|<fallback>`. All four are
-  contextual keywords (lex as Ident).
-- **PR2**: `Ty::Fallible { success, payload }`; "error not
-  addressed" diagnostic; `err` implicit binding on `or`-
-  substitute RHS; `fail` body / payload-type checks.
-- **PR3a**: `@form(vec)` capacity-shape verification.
-- **PR3b**: synthesized `push`/`get`/`pop`/`len`/`is_empty`
-  on `@form(vec)` loci; `IndexError` injected as stdlib type
-  when any form is used.
-- **PR4**: `lotus_vec_*` C primitives in
-  `crates/aperio-codegen/runtime/lotus_arena.c`.
-- **PR7**: interpreter parity. End-to-end programs that use
-  `@form(vec)` + `fallible` + `or` + `fail` execute correctly
-  under `aperio run`.
+- **v1.x-3 recognition projection class** (six PRs, 2026-05-12):
+  bare `: projection recognition` is now a parse error;
+  `fixed_cell(bytes=K)` + `shared_slab(bytes=K)` ship end-to-end
+  (C runtime + parser + typecheck + codegen + interpreter
+  parity); `spillover` + `summary_only` parse + typecheck but
+  reject at codegen with "v1.x pending."
+- **v1.x-FORM-2 two-channel rule** (commit `24ce7b6`,
+  2026-05-12): locus methods cannot declare `fallible(E)`. Locked
+  as permanent design enforcement, not a temporary limit.
+- **v1.x-FORM-2 fallible / fail / or** (PR6, commits
+  `32e764d`..`d77ed29`): value-error channel end-to-end.
+- **v1.x-FORM-2 `@form(vec)`** (PRs 3a/3b/4/5/7): synthesized
+  `push` / `get` / `pop` / `len` / `is_empty`; `lotus_vec_*` C
+  primitives; codegen + interpreter parity.
+- **v1.x-4b `as_parent_for` runtime mechanic** (commit `d50ab79`):
+  `__slot_borrowed_mask` + borrow swap + skip-destroy at
+  dissolve.
 
-What's left:
+Design-gated remaining items:
 
-- **PR5**: codegen lowering for `@form(vec)` — replace the
-  heap-slot default lowering with the inline `{cap, len, buf}`
-  struct; dispatch method calls to `lotus_vec_*`.
-- **PR6**: codegen lowering for `fallible` / `fail` / `or` —
-  pick an ABI for fallible returns (likely flag + sret
-  payload), lower `fail` as return-with-error, lower
-  `or raise` as flag-check → closure-violation routing,
-  lower `or <fallback>` as flag-check → fallback eval with
-  `err` bound.
-- **PR8**: microbench harness for FORM-3 (10% gate vs
-  hand-written C).
+- **v1.x-9**: closures with capture — MS2 invariant constraint
+  (every quantity assigned to one locus tower; naive lexical
+  capture would let values float). Needs a closure-design pass
+  before implementation. Hold for a driver workload.
+- **v1.x-FORM-4**: `@form(hashmap)` + `@form(ring_buffer)`.
+  Successor to the cut `Map<K,V>` / `Vec<T>` parametric items.
+  Surface preview in `spec/forms.md`; implementation when a
+  driver workload surfaces.
 
-PR5 and PR6 are tightly coupled (the synthesized vec
-methods are fallible, so the disposition ABI is required for
-even a minimal end-to-end build). PR7 already validates the
-semantics — codegen is structural plumbing onto that.
+Cut from roadmap (2026-05-12): v1.x-6 (Result + `?`), v1.x-12
+(parametric Map), v1.x-13 (parametric Vec), v1.x-14 (Rope).
+Locus-level `bubble` / `on_failure` covers structural failure
+propagation; `@form(...)` annotations cover the parametric-
+collection successor surface. See `notes/v1.x-checkpoint.md`
+§ "Cut from roadmap" for the reasoning.
 
-Canonical refs for this work:
+Canonical refs:
 
-- `spec/forms.md` — full `@form(vec)` contract.
-- `notes/v1.x-checkpoint.md` — PR-by-PR status + entry points.
+- `spec/forms.md` — `@form(vec)` contract; preview surface for
+  `@form(hashmap)` / `@form(ring_buffer)`.
+- `spec/semantics.md` § "Fallible call semantics" — value-error
+  channel; two-channel rule.
+- `spec/memory.md` § "Recognition sub-modes" — projection-class
+  recognition backing.
+- `notes/v1.x-checkpoint.md` — full status + session log.
 - `~/.claude/projects/-home-riley-code-lotus-lang/memory/project_fallible_error_model.md`
   — the axiom-and-motions model behind `fallible(T)`.
-- `notes/agent-onboarding/aperio-design-philosophy.md` § 2 —
-  the locked-in failure model.
 
 ## Read this first
 
@@ -87,10 +93,10 @@ you can make a load-bearing change:
   no third category. **Required.**
 - **`spec/{semantics,types,memory,runtime,tokens,stdlib,testing,precedence}.md`**
   — the rest of the spec. Read on demand.
-- **`notes/agent-onboarding/aperio-styleguide.md`** — the
-  styleguide app-dev sessions follow. The compiler should
-  emit code (errors, generated stdlib mangled names) that
-  *agrees* with the styleguide.
+- **`spec/styleguide.md`** — the normative pattern catalog
+  and naming conventions. The compiler should emit code
+  (errors, generated stdlib mangled names) that *agrees* with
+  the styleguide.
 
 ## What you are doing here
 
@@ -448,8 +454,8 @@ Things you will reach for that **do not apply** here.
 |---|---|
 | Adding a stdlib helper "for completeness" | The stdlib relieves real friction. Speculative additions create dead surface area. Wait for an entry in the friction log. |
 | Splitting a long file "for cleanliness" | `codegen.rs` is intentionally one file. Other crates are already small. If you genuinely need a new module, justify it in the commit. |
-| A trait system because "Rust does it that way" | Aperio doesn't have traits in v0 (reserved keyword, no semantics). Don't infer the language from compiler-internal Rust patterns. |
-| Adding `Option<T>` / `Result<T, E>` as parametric tagged enums | v1.x-FORM-1 ships `fallible(T)` as the value-level error protocol — the runtime mechanism stays closure violation (one mechanism, not two). `Option<T>` is replaced by the sentinel-with-predicate idiom (`parse_int` / `can_parse_int`) for "couldn't compute" cases. See `notes/agent-onboarding/aperio-design-philosophy.md` § 2. |
+| A trait system because "Rust does it that way" | Aperio has structural interfaces (F.20) — `interface I { ... }`; loci satisfy implicitly. No `trait` / `impl` keywords; the keyword is reserved with no semantics. Don't infer the language from compiler-internal Rust patterns. |
+| Adding `Option<T>` / `Result<T, E>` as parametric tagged enums | `fallible(T)` (shipped via v1.x-FORM-2) is the value-level error protocol — the runtime mechanism stays closure violation (one mechanism, not two). `Option<T>` is replaced by the sentinel-with-predicate idiom (`parse_int` / `can_parse_int`) for "couldn't compute" cases. See `spec/semantics.md` § "Fallible call semantics" and the two-channel rule. |
 | Renaming `lotus_*` symbols to `aperio_*` | The C-runtime symbol prefix is `lotus_*` by design. Don't "fix" it. |
 | Generalizing a feature "for future flexibility" | Don't. Aperio's substrate is small on purpose. New form is rare. |
 | Adding a feature flag for staged rollout | We have one branch and one binary; staged rollouts are deferred. Land the change or don't. |
@@ -463,7 +469,7 @@ After any compiler change:
 
 ```
 cargo build                       # whole workspace
-cargo test                        # all 551+ tests
+cargo test                        # full workspace test suite
 ```
 
 For codegen-level changes, run a representative app to confirm
@@ -534,11 +540,10 @@ new shape, stop and reconsider.
   the *other* kind of session. If a friction log entry
   doesn't make sense, read this brief to understand what the
   app-dev was trying to do.
-- `notes/agent-onboarding/aperio-styleguide.md` — what
-  idiomatic Aperio looks like in user code. The compiler's
-  generated code (default lifecycle bodies, stdlib seed,
-  error messages referencing user constructs) should *agree*
-  with this guide.
+- `spec/styleguide.md` — what idiomatic Aperio looks like in
+  user code. The compiler's generated code (default lifecycle
+  bodies, stdlib seed, error messages referencing user
+  constructs) should *agree* with this guide.
 
 ## When you are stuck
 

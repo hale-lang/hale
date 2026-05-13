@@ -70,5 +70,4 @@ intent, populate when cross-seed imports unblock it.
 - `moa/MOA.md` — the architectural pattern that motivates sharing
 - `notes/aperio-seed.md` — F.19 seed model and the cross-seed-
   imports open question
-- `notes/agent-onboarding/aperio-styleguide.md` — pattern catalog,
-  naming conventions
+- `spec/styleguide.md` — pattern catalog, naming conventions

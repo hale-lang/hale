@@ -198,9 +198,8 @@ For the fresh session — these are the load-bearing files:
 - **`notes/codebase-onboarding-design.md`** — primary plan.
 - **`notes/onboarding-shape-rules.md`** — the agent-driven
   model that motivates everything.
-- **`notes/agent-onboarding/aperio-styleguide.md`** — the
-  styleguide a parallel session is unifying with `docs/STYLE.md`.
-  Today's "rolling the design" draft was handed off there.
+- **`spec/styleguide.md`** — the consolidated normative
+  styleguide. The "rolling the design" discipline lives there.
 
 ## How to run ferryman
 
@@ -252,9 +251,8 @@ These came up during the session and weren't resolved:
 To pick this up cold, in this order:
 
 1. Read this checkpoint (`notes/ferryman-checkpoint.md`).
-2. Skim `notes/agent-onboarding/aperio-styleguide.md` for
-   patterns (especially the new "Rolling the design" section
-   if it's landed).
+2. Skim `spec/styleguide.md` for patterns (the six-pattern
+   catalog + "Rolling the design").
 3. `git log -10` — see the three session commits in context.
 4. `apps/ferryman/main.ap` — the file the next work touches.
 5. `crates/aperio-codegen/runtime/stdlib/lang.ap` — find

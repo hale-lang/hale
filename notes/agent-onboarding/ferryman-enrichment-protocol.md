@@ -173,7 +173,7 @@ roles.
 | `name` | yes | Source-name of the entity | `"Server"`, `"OrderProcessor"`, `"sessionManager"` |
 | `verdict` | yes | One of: `"locus"`, `"type"`, `"unknown"`. `"locus"` means flow; `"type"` means pure data; `"unknown"` means the agent looked but couldn't decide | `"locus"` |
 | `agreement` | optional | How many of the three towers agreed (Int, 1-3). Lets the renderer show confidence | `"3"` |
-| `shape` | optional | Which existing Aperio pattern this maps to (see `notes/agent-onboarding/aperio-styleguide.md`'s six-pattern catalog) | `"service"`, `"namespace"`, `"shape-type"`, `"spawned-child"` |
+| `shape` | optional | Which existing Aperio pattern this maps to (see `spec/styleguide.md`'s six-pattern catalog) | `"service"`, `"namespace"`, `"shape-type"`, `"spawned-child"` |
 | `motion` | optional | Present-participle motion form per the shape rules. Use only for Agent / Entity nouns — leave absent for Shape nouns | `"serving"`, `"remembering"`, `"validating"` |
 | `source_name` | optional | The original name in the source if different from `name` (e.g. when `name` is a renamed Aperio-shaped identifier) | `"HTTPServer"` |
 | `prose` | optional | One-line domain reading of what the locus *means* | `"Holds the long-lived TCP listener and accepts connections"` |
@@ -407,8 +407,8 @@ Three patterns to recognize and back away from:
 
 ## Cross-references
 
-- `notes/agent-onboarding/aperio-styleguide.md` — the six-pattern
-  catalog the `shape` field maps to.
+- `spec/styleguide.md` — the six-pattern catalog the `shape`
+  field maps to.
 - `notes/onboarding-shape-rules.md` — the Agent / Entity / Shape
   noun categories and the `motion:` derivation rules.
 - `notes/aperio-types-vs-loci.md` — the source axiom and the

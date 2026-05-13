@@ -4,8 +4,7 @@
 > extractions execute, this becomes a historical record of why
 > they happened. References `notes/aperio-seed.md` for the
 > exportable-unit concept and
-> `notes/agent-onboarding/aperio-styleguide.md` for the patterns
-> the proposal applies.
+> `spec/styleguide.md` for the patterns the proposal applies.
 
 ## Executive summary
 
@@ -483,9 +482,9 @@ The proposal is approved when:
   export only types and loci."
 - `notes/aperio-seed.md` — the v1+ direction the std seed
   growth feeds.
-- `notes/agent-onboarding/aperio-styleguide.md` — the patterns
-  this proposal applies. Pattern 2 (Namespace lotus) is the
-  shape every recommended extraction takes.
+- `spec/styleguide.md` — the patterns this proposal applies.
+  Pattern 2 (Namespace lotus) is the shape every recommended
+  extraction takes.
 - `apps/onboard/main.ap`, `apps/tower-join/main.ap`,
   `apps/import-graph/main.ap`, `apps/operational-graph/main.ap`,
   `apps/domain-graph/main.ap` — the migration targets.

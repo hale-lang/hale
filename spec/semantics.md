@@ -160,7 +160,7 @@ The deferred-dissolve mechanism is fn-level, not block-level,
 in v0. Loops that bind a locus per iteration accumulate
 dissolves until fn exit. Per-iteration cleanup uses a helper
 free fn whose return is the per-iteration boundary (see
-`__handle_one_connection` in `stdlib/io_tcp.ap`).
+`handle_one_connection` in `stdlib/io_tcp.ap`).
 
 ### Method-returning-locus heap allocation (m90)
 

@@ -7,7 +7,7 @@ question keeps coming up that isn't here, add it.
 
 If the app holds **no state across events** — a converter, a
 formatter, a one-shot tool — MOA doesn't apply. Stick with the
-six patterns in `notes/agent-onboarding/aperio-styleguide.md`.
+six patterns in `spec/styleguide.md`.
 
 If the app holds **any state** across more than one bus event or
 across more than one fn call — even a counter, even a cache —

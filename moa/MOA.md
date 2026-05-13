@@ -292,8 +292,7 @@ Foundational notes and spec:
 - `notes/aperio-types-vs-loci.md` — the axiom MOA builds on
 - `notes/aperio-seed.md` — the seed model; MOA shapes any
   stateful seed
-- `notes/agent-onboarding/aperio-styleguide.md` — the pattern
-  catalog MOA disciplines
+- `spec/styleguide.md` — the pattern catalog MOA disciplines
 - `notes/agent-onboarding/app-dev-brief.md` — read this first
   brief; routes state-bearing apps to MOA
 - `spec/design-rationale.md` §F.22 — capacity slots, which MOA

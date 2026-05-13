@@ -7,10 +7,9 @@ rule that governs how the catalog grows, and the anti-patterns
 that come from reaching for an old habit instead of the
 substrate's primitive.
 
-The content here is derived from
-`notes/agent-onboarding/aperio-styleguide.md`, the
-agent-loaded source of truth. When the two diverge, the notes
-file is canonical — flag the drift.
+The content here is derived from `spec/styleguide.md`, the
+normative source of truth. When the two diverge, `spec/styleguide.md`
+is canonical — flag the drift.
 
 ## How to read this section
 

@@ -150,7 +150,7 @@ constructs `DriveL`; the subcommand forms construct
 
 ## Conventions the code follows
 
-Per `notes/agent-onboarding/aperio-styleguide.md`:
+Per `spec/styleguide.md`:
 
 - **Apps are loci.** Every entrypoint is `<Name>L` (DriveL,
   SkeletonL, RenderL, PromptL, FerrymanL).
@@ -247,8 +247,8 @@ ceiling — see "Known limits" below.
   enrichment.
 - [`notes/codebase-onboarder-progress.md`](../../notes/codebase-onboarder-progress.md) —
   cross-session journal; project state.
-- [`notes/agent-onboarding/aperio-styleguide.md`](../../notes/agent-onboarding/aperio-styleguide.md) —
-  the six-pattern catalog and naming conventions ferryman's
-  code follows.
+- [`spec/styleguide.md`](../../spec/styleguide.md) — the
+  six-pattern catalog and naming conventions ferryman's code
+  follows.
 - `apps/onboard/main.ap` — the predecessor; still alive. Will
   retire once ferryman covers its test surface.

@@ -477,7 +477,7 @@ and modes; specific transports come from stdlib (`std::bus::*`).
 - `lotus_str_lower(s) -> char*` / `lotus_str_upper(s) -> char*`
   — ASCII case folding. One-pass byte-level fold; non-ASCII
   bytes pass through unchanged. Allocates in the bus payload
-  arena. Used by `__http_request_header` for RFC 7230
+  arena. Used by `http_request_header` for RFC 7230
   case-insensitive lookup.
 - `lotus_str_trim(s) -> char*` — strip ASCII whitespace
   (space / tab / CR / LF) from both ends. Arena-anchored.

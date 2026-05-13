@@ -91,9 +91,8 @@ If you are confused by what's actually available vs. pending:
   builds on (types are for shapes, loci are for flow).
 - `notes/aperio-seed.md` — the per-directory seed model that MOA
   apps compose under.
-- `notes/agent-onboarding/aperio-styleguide.md` — the pattern
-  catalog of six shape primitives; MOA disciplines how those
-  compose.
+- `spec/styleguide.md` — the pattern catalog of six shape
+  primitives; MOA disciplines how those compose.
 - `notes/agent-onboarding/app-dev-brief.md` — read-this-first
   brief; routes state-bearing apps here.
 - `spec/design-rationale.md` §F.22 — capacity slots, the storage

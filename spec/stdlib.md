@@ -23,7 +23,7 @@ substrate plus a working capstone example.
 |-----------|-----------------|
 | m71 | Magic `std::*` path resolver in codegen + `std::process::pid()` proof symbol. No general module system; `std::*` is the only recognized prefix. |
 | m72 | `lotus_tcp_*` C substrate. AF_INET sibling adapter to the m57 AF_UNIX SEQPACKET transport. Internal 8-byte LE length-prefix framing preserves the bus's atomic-message contract over `SOCK_STREAM`. |
-| m73 | `std::io::tcp::Listener` stdlib locus. Bundled-source mechanism (`runtime/stdlib/`) + path-rewrite at qualified struct literals. Real birth/run/dissolve lifecycle wired through `__listen_socket` / `__accept_one` / `__close_fd` path-call primitives. Single-accept shape (resolved in m83). |
+| m73 | `std::io::tcp::Listener` stdlib locus. Bundled-source mechanism (`runtime/stdlib/`) + path-rewrite at qualified struct literals. Real birth/run/dissolve lifecycle wired through `listen_socket` / `accept_one` / `close_fd` path-call primitives. Single-accept shape (resolved in m83). |
 | m74 | `lotus_fs_*` C substrate: `read_file`, `write_file`, `file_size`, `file_exists`. POSIX wrappers, no buffering, one-shot synchronous shape. (`read_dir` resolved in m90.) |
 | m75 | `std::io::fs::*` Aperio surface. Functional path-call shape (mirrors `std::process::pid`), not locus-wrapped — one-shot file ops don't need lifetime-of-a-stream. `read_file` allocates from the m70 lazy global payload arena so the returned `String` outlives the call frame. |
 | m76 | `examples/io-demo/` capstone exercising both surfaces. Reads optional config, listens, accepts one connection, writes a log. Integration test in `tests/io_demo.rs` drives it under CI. |
@@ -39,7 +39,7 @@ plumbing and the language additions Phase 3 needed.
 | m78 | `std::str::parse_int` / `can_parse_int`. strtoll-based, base 10, strict trailing-char check. |
 | m79 | `std::time::sleep` / `monotonic` aliases under `std::*` namespace; `std::process::exit(code)`. |
 | m80 | Function-pointer language addition. `CodegenTy::FnPtr`, parser support for `fn(T) -> R` types, codegen lowering of fn names as values + indirect calls through fn-pointer fields. The Phase 3 prerequisite. |
-| m81 | Stream locus + non-self method calls + `__send` / `__recv` / `__connect` primitives. New `lower_external_method_call` for `obj.method(args)`. Bundled `__StdIoTcpStream` declaration. |
+| m81 | Stream locus + non-self method calls + `send` / `recv` / `connect` primitives. New `lower_external_method_call` for `obj.method(args)`. Bundled `Stream` declaration. |
 
 ## Language addition driven by m81 — m82 (locus-all-the-way-down)
 
@@ -60,7 +60,7 @@ end-to-end working server.
 
 | Milestone | What it shipped |
 |-----------|-----------------|
-| m83 | Multi-accept Listener with `on_connection: fn(Stream)` callback. Composes m80 + m81 + m82. Per-connection Stream lifecycles owned by a free-fn helper (`__handle_one_connection`) whose scope-exit flush closes the fd between iterations. |
+| m83 | Multi-accept Listener with `on_connection: fn(Stream)` callback. Composes m80 + m81 + m82. Per-connection Stream lifecycles owned by a free-fn helper (`handle_one_connection`) whose scope-exit flush closes the fd between iterations. |
 | m84 | `std::http::Request` + parser. Request and Response are `type` records (no lifecycle). Adds `std::str::index_of` substring-search primitive. STDLIB_PATH_RENAMES generalized to cover both loci and types. |
 | m85 | `std::http::write_response`. Builds the HTTP/1.1 wire format (status line + Content-Type + Content-Length + Connection: close + body) via String concatenation, ships through `Stream.send`. |
 | m86 | `examples/http-hello/` — Phase 3 capstone, real curl-able HTTP server in ~70 lines of Aperio. |
@@ -86,7 +86,7 @@ Aperio. Plus the Phase 5 prerequisites that landed alongside.
 
 | Milestone | What it shipped |
 |-----------|-----------------|
-| m89 | `Bytes` codegen — the binary-safe sibling of String. Memory layout `[i64 len][u8 data[len]]`; same single-pointer ABI as String. `len(b)`, `std::io::fs::read_bytes`, `std::io::tcp::__send_bytes`, `Stream.send_bytes` method. Embedded NUL bytes preserved across all three. |
+| m89 | `Bytes` codegen — the binary-safe sibling of String. Memory layout `[i64 len][u8 data[len]]`; same single-pointer ABI as String. `len(b)`, `std::io::fs::read_bytes`, `std::io::tcp::send_bytes`, `Stream.send_bytes` method. Embedded NUL bytes preserved across all three. |
 | m90 | `std::io::fs::list_dir(path) -> String`. Newline-separated entry names (skipping `.` / `..`). v0 shape; the index-API sibling `list_dir_count` / `list_dir_at` (Phase 2e) is the structured alternative — no parametric `List<T>` needed. |
 | m91 | `std::text::md_to_html(md) -> String`. ATX headings, multi-line paragraphs, fenced code blocks, HTML escaping. Inline formatting (bold/italic/code/links) deferred. |
 
@@ -104,12 +104,12 @@ through m92. m93 split it into per-domain files under
 
 | File | Contents |
 |------|----------|
-| `core.ap`   | Helpers used across the stdlib (`__replace_all`, `__html_escape`). |
-| `io_tcp.ap` | `Stream` + `Listener` loci + `__handle_one_connection` + `__default_on_connection`. |
-| `http.ap`   | `Request` + `Response` types + `__parse_http_request` + `__write_http_response` + `__status_phrase`. |
-| `text.ap`   | `__md_to_html` + line tokenization helpers. |
-| `test.ap`   | `__test_assert` + `assert_eq_*` variants. |
-| `log.ap`    | (m95) `__StdLogEvent` + `__StdLogLogger` + `__StdLogStdoutSink`. |
+| `core.ap`   | Helpers used across the stdlib (`replace_all`, `html_escape`). |
+| `io_tcp.ap` | `Stream` + `Listener` loci + `handle_one_connection` + `default_on_connection`. |
+| `http.ap`   | `Request` + `Response` types + `parse_http_request` + `write_http_response` + `status_phrase`. |
+| `text.ap`   | `md_to_html` + line tokenization helpers. |
+| `test.ap`   | `test_assert` + `assert_eq_*` variants. |
+| `log.ap`    | (m95) `LogEvent` + `Logger` + `StdoutSink`. |
 
 `STDLIB_AP_SOURCE` in codegen is now
 `concat!(include_str!("core.ap"), "\n", include_str!("io_tcp.ap"), ...)`.
