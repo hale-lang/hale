@@ -824,6 +824,249 @@ void lotus_vec_destroy(void *vec_ptr) {
 }
 
 /*
+ * v1.x-FORM-4 — `@form(hashmap)` storage primitives.
+ *
+ * Intrusive open-addressing hash table with linear probing. The
+ * value type S carries its own key as one of its fields
+ * (`indexed_by <fieldname>`); codegen extracts the key by GEP'ing
+ * the field offset before each call, so the C ABI takes key and
+ * value as separate pointers and never has to know about the
+ * struct's internal layout.
+ *
+ * Slot layout: each slot is `1 + key_size + value_size` bytes:
+ *
+ *   [occupied: 1 byte] [key: key_size bytes] [value: value_size bytes]
+ *
+ * `occupied = 0` means empty; we use backward-shift deletion
+ * (no tombstones) so probes terminate as soon as an empty slot
+ * is seen. Cap is always a power of two so the hash-to-index
+ * fold is a single `& mask`. Initial cap = 8; doubles when load
+ * factor exceeds 0.7.
+ *
+ * Key types at v1: 0 = Int (64-bit, Knuth multiplicative hash),
+ * 1 = String (C-string pointer, FNV-1a over the bytes). The
+ * key_type_tag is set at init and frozen for the hashmap's life.
+ *
+ * Fallible operations (`get`, `remove`) return `int` (1 =
+ * success, 0 = not_found). Codegen in PR5/6 lifts that bool
+ * into the `Ty::Fallible { success: S, payload: KeyError }`
+ * surface the type system sees.
+ */
+
+#define LOTUS_HASHMAP_KEY_INT    0
+#define LOTUS_HASHMAP_KEY_STRING 1
+
+/* Initial slot count. Power of two so `& mask` folds the hash;
+ * 8 covers small-population hashmaps (config tables, small
+ * registries) without an early grow. */
+#define LOTUS_HASHMAP_INITIAL_CAP 8
+
+/* Load-factor threshold = LOAD_NUM / LOAD_DEN = 7/10. Grow
+ * before insertion when `(len + 1) * LOAD_DEN > cap * LOAD_NUM`. */
+#define LOTUS_HASHMAP_LOAD_NUM 7
+#define LOTUS_HASHMAP_LOAD_DEN 10
+
+typedef struct {
+    size_t cap;
+    size_t len;
+    size_t key_size;
+    size_t value_size;
+    int key_type_tag;
+    char *slots;
+} lotus_hashmap_t;
+
+static size_t lotus_hashmap_entry_size(const lotus_hashmap_t *m) {
+    return 1 + m->key_size + m->value_size;
+}
+
+static size_t lotus_hashmap_hash(const lotus_hashmap_t *m, const void *key) {
+    if (m->key_type_tag == LOTUS_HASHMAP_KEY_INT) {
+        /* 64-bit Knuth multiplicative — distributes Int keys
+         * including dense sequences (handles common workloads
+         * like consecutive IDs without all colliding on slot 0). */
+        uint64_t k = *(const uint64_t *)key;
+        return (size_t)(k * 0x9E3779B97F4A7C15ULL);
+    }
+    /* String — the key is a C-string pointer; hash the bytes. */
+    const char *s = *(const char *const *)key;
+    if (!s) return 0;
+    uint64_t h = 0xcbf29ce484222325ULL;
+    for (const char *p = s; *p; ++p) {
+        h ^= (uint8_t)*p;
+        h *= 0x100000001b3ULL;
+    }
+    return (size_t)h;
+}
+
+static int lotus_hashmap_key_eq(const lotus_hashmap_t *m,
+                                 const void *a,
+                                 const void *b) {
+    if (m->key_type_tag == LOTUS_HASHMAP_KEY_INT) {
+        return *(const int64_t *)a == *(const int64_t *)b;
+    }
+    const char *sa = *(const char *const *)a;
+    const char *sb = *(const char *const *)b;
+    if (sa == sb) return 1;
+    if (!sa || !sb) return 0;
+    return strcmp(sa, sb) == 0;
+}
+
+/* Find the slot index for `key`. Returns either:
+ *   - an existing entry with the matching key (slot occupied,
+ *     key equal), or
+ *   - the first empty slot encountered along the probe chain.
+ * Caller inspects the occupied byte to disambiguate. */
+static size_t lotus_hashmap_find_slot(const lotus_hashmap_t *m,
+                                       const void *key) {
+    size_t es = lotus_hashmap_entry_size(m);
+    size_t mask = m->cap - 1;
+    size_t i = lotus_hashmap_hash(m, key) & mask;
+    for (;;) {
+        char *slot = m->slots + i * es;
+        if (!slot[0]) return i;
+        if (lotus_hashmap_key_eq(m, slot + 1, key)) return i;
+        i = (i + 1) & mask;
+    }
+}
+
+void lotus_hashmap_init(void *map_ptr,
+                         size_t key_size,
+                         size_t value_size,
+                         int key_type_tag) {
+    if (!map_ptr) return;
+    lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
+    m->cap = LOTUS_HASHMAP_INITIAL_CAP;
+    m->len = 0;
+    m->key_size = key_size;
+    m->value_size = value_size;
+    m->key_type_tag = key_type_tag;
+    size_t es = 1 + key_size + value_size;
+    m->slots = (char *)calloc(m->cap, es);
+}
+
+/* Forward declaration — set + grow are mutually recursive on
+ * the rehash path. */
+void lotus_hashmap_set(void *map_ptr, const void *key, const void *value);
+
+static void lotus_hashmap_grow(lotus_hashmap_t *m) {
+    size_t old_cap = m->cap;
+    char *old_slots = m->slots;
+    size_t es = lotus_hashmap_entry_size(m);
+    size_t new_cap = old_cap * 2;
+    m->cap = new_cap;
+    m->slots = (char *)calloc(new_cap, es);
+    m->len = 0;
+    /* Reinsert every live entry into the new table. The probe
+     * sequence changes because mask = new_cap - 1 is wider, so
+     * we route through the normal `set` path rather than copying
+     * raw bytes. */
+    for (size_t i = 0; i < old_cap; i++) {
+        char *slot = old_slots + i * es;
+        if (slot[0]) {
+            lotus_hashmap_set(m, slot + 1, slot + 1 + m->key_size);
+        }
+    }
+    free(old_slots);
+}
+
+void lotus_hashmap_set(void *map_ptr,
+                        const void *key,
+                        const void *value) {
+    if (!map_ptr || !key || !value) return;
+    lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
+    /* Grow before insertion when adding one more entry would
+     * cross the load-factor threshold. The check uses unsigned
+     * arithmetic so it stays correct as len/cap grow. */
+    if ((m->len + 1) * LOTUS_HASHMAP_LOAD_DEN >
+        m->cap * LOTUS_HASHMAP_LOAD_NUM) {
+        lotus_hashmap_grow(m);
+    }
+    size_t es = lotus_hashmap_entry_size(m);
+    size_t i = lotus_hashmap_find_slot(m, key);
+    char *slot = m->slots + i * es;
+    int was_empty = !slot[0];
+    slot[0] = 1;
+    memcpy(slot + 1, key, m->key_size);
+    memcpy(slot + 1 + m->key_size, value, m->value_size);
+    if (was_empty) m->len++;
+}
+
+int lotus_hashmap_get(void *map_ptr, const void *key, void *out_value) {
+    if (!map_ptr || !key || !out_value) return 0;
+    lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
+    if (m->len == 0) return 0;
+    size_t es = lotus_hashmap_entry_size(m);
+    size_t i = lotus_hashmap_find_slot(m, key);
+    char *slot = m->slots + i * es;
+    if (!slot[0]) return 0;
+    memcpy(out_value, slot + 1 + m->key_size, m->value_size);
+    return 1;
+}
+
+int lotus_hashmap_has(void *map_ptr, const void *key) {
+    if (!map_ptr || !key) return 0;
+    lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
+    if (m->len == 0) return 0;
+    size_t es = lotus_hashmap_entry_size(m);
+    size_t i = lotus_hashmap_find_slot(m, key);
+    return m->slots[i * es] ? 1 : 0;
+}
+
+/* Backward-shift deletion. After clearing the target slot,
+ * walk forward and shift any entry whose natural position is
+ * "before" the freed slot in the probe sequence — that's what
+ * keeps `find_slot` correct without tombstones. */
+int lotus_hashmap_remove(void *map_ptr, const void *key) {
+    if (!map_ptr || !key) return 0;
+    lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
+    if (m->len == 0) return 0;
+    size_t es = lotus_hashmap_entry_size(m);
+    size_t mask = m->cap - 1;
+    size_t i = lotus_hashmap_find_slot(m, key);
+    if (!m->slots[i * es]) return 0;
+    m->slots[i * es] = 0;
+    m->len--;
+    /* Walk forward through the cluster, shifting entries whose
+     * probe chain runs through `i`. Stops at the first empty
+     * slot — that's the cluster boundary. */
+    size_t j = (i + 1) & mask;
+    while (m->slots[j * es]) {
+        size_t natural =
+            lotus_hashmap_hash(m, m->slots + j * es + 1) & mask;
+        size_t dist_to_j = (j - natural) & mask;
+        size_t dist_to_i = (i - natural) & mask;
+        if (dist_to_i < dist_to_j) {
+            memmove(m->slots + i * es, m->slots + j * es, es);
+            m->slots[j * es] = 0;
+            i = j;
+        }
+        j = (j + 1) & mask;
+    }
+    return 1;
+}
+
+int64_t lotus_hashmap_len(void *map_ptr) {
+    if (!map_ptr) return 0;
+    lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
+    return (int64_t)m->len;
+}
+
+int lotus_hashmap_is_empty(void *map_ptr) {
+    if (!map_ptr) return 1;
+    lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
+    return m->len == 0 ? 1 : 0;
+}
+
+void lotus_hashmap_destroy(void *map_ptr) {
+    if (!map_ptr) return;
+    lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
+    free(m->slots);
+    m->slots = NULL;
+    m->cap = 0;
+    m->len = 0;
+}
+
+/*
  * Cooperative scheduler — bus dispatch queue (m26 + m28b stage 1).
  *
  * Per The Design / lotus, every bus dispatch is a substrate
