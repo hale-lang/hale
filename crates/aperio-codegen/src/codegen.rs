@@ -2184,6 +2184,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
+        // Pure-cooperative fast path: when the program never spawns
+        // a pinned thread, the bus queue's mutex is dead weight
+        // (~20-40ns/event uncontended). The C runtime checks
+        // `g_bus_has_pinned` per enqueue/drain; this entry point
+        // sets the flag. Codegen emits one call at program startup
+        // when any locus in the program is `: schedule pinned`.
+        let bus_mark_pinned_ty = void_t.fn_type(&[], false);
+        self.module
+            .add_function("lotus_bus_mark_pinned", bus_mark_pinned_ty, None);
+
         // m28b stage 2: per-pinned-locus mailbox surface.
         // declare ptr  @lotus_mailbox_create()
         // declare void @lotus_mailbox_post(ptr mb, ptr handler, ptr self,
@@ -4761,6 +4771,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 "lotus.bus_config.load",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Pure-cooperative fast path: when no locus in the program
+        // declares `: schedule pinned`, the bus queue is accessed
+        // by exactly one thread (the cooperative scheduler's main)
+        // and the queue mutex is dead weight (~20-40ns/event).
+        // When any pinned locus exists, mark the bus so its
+        // enqueue/drain take the mutex normally. Set before any
+        // user code runs so pinned threads (spawned later at the
+        // first pinned instantiation) never observe the flag unset
+        // on their publish path.
+        let has_pinned_locus = self
+            .user_loci
+            .values()
+            .any(|info| matches!(info.schedule_class, ScheduleClass::Pinned(_)));
+        if has_pinned_locus {
+            let mark_pinned_fn = self
+                .module
+                .get_function("lotus_bus_mark_pinned")
+                .expect("lotus_bus_mark_pinned declared");
+            self.builder
+                .build_call(mark_pinned_fn, &[], "bus.mark_pinned")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
 
         let mut scope = Scope::default();
         let end = self.lower_block(&main_decl.body, &mut scope)?;

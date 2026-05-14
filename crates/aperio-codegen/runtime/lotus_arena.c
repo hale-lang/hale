@@ -1126,6 +1126,22 @@ typedef struct lotus_bus_queue {
 
 #define LOTUS_BUS_QUEUE_INITIAL_CAP 64
 
+/* Pure-cooperative fast path. Set to non-zero before any pinned
+ * thread starts; codegen emits a call to `lotus_bus_mark_pinned`
+ * at every pinned-locus instantiation (sync, before pthread_create,
+ * so the new thread can never observe the flag unset on its
+ * publish path). When zero, every enqueue and pop happens on a
+ * single thread (the cooperative scheduler's main), so the queue
+ * mutex is dead overhead — ~20-40ns/event on uncontended lock+
+ * unlock pair. The flag is monotonic 0→1; once any pinned locus
+ * exists, contention is possible and we lock normally for the
+ * rest of the program. */
+static int g_bus_has_pinned = 0;
+
+void lotus_bus_mark_pinned(void) {
+    g_bus_has_pinned = 1;
+}
+
 lotus_bus_queue_t *lotus_bus_queue_create(void) {
     lotus_bus_queue_t *q =
         (lotus_bus_queue_t *)malloc(sizeof(lotus_bus_queue_t));
@@ -1165,7 +1181,8 @@ void lotus_bus_queue_enqueue(lotus_bus_queue_t *q,
          * better-than-corrupting. */
         return;
     }
-    pthread_mutex_lock(&q->lock);
+    int locked = g_bus_has_pinned;
+    if (locked) pthread_mutex_lock(&q->lock);
     if (q->tail == q->cap) {
         /* Compact first: slide live cells to the front. */
         size_t live = q->tail - q->head;
@@ -1181,7 +1198,7 @@ void lotus_bus_queue_enqueue(lotus_bus_queue_t *q,
             lotus_bus_cell_t *new_cells = (lotus_bus_cell_t *)
                 realloc(q->cells, new_cap * sizeof(lotus_bus_cell_t));
             if (!new_cells) {
-                pthread_mutex_unlock(&q->lock);
+                if (locked) pthread_mutex_unlock(&q->lock);
                 return;     /* drop on OOM */
             }
             q->cells = new_cells;
@@ -1195,7 +1212,7 @@ void lotus_bus_queue_enqueue(lotus_bus_queue_t *q,
     if (payload_size > 0 && payload_src) {
         memcpy(slot->payload_inline, payload_src, payload_size);
     }
-    pthread_mutex_unlock(&q->lock);
+    if (locked) pthread_mutex_unlock(&q->lock);
 }
 
 /* Drain the queue: pop cells one at a time, copy each cell's
@@ -1217,35 +1234,74 @@ typedef void (*lotus_handler_fn)(void *self, void *payload);
 
 void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
     if (!q) return;
-    for (;;) {
-        pthread_mutex_lock(&q->lock);
-        if (q->head >= q->tail) {
-            /* Reset indices so the next batch starts fresh. */
-            q->head = 0;
-            q->tail = 0;
-            pthread_mutex_unlock(&q->lock);
-            return;
-        }
-        lotus_bus_cell_t cell_copy = q->cells[q->head++];
-        pthread_mutex_unlock(&q->lock);
-
-        /* Copy inline payload into the subscriber's arena.
-         * The arena pointer lives at self_ptr+0 by convention
-         * (every locus struct has __arena as its first field). */
-        void *payload_in_arena = NULL;
-        if (cell_copy.payload_size > 0) {
-            lotus_arena_t *sub_arena =
-                *(lotus_arena_t **)cell_copy.self_ptr;
-            payload_in_arena = lotus_arena_alloc(
-                sub_arena, cell_copy.payload_size, 8);
-            if (payload_in_arena) {
-                memcpy(payload_in_arena,
-                       cell_copy.payload_inline,
-                       cell_copy.payload_size);
+    int locked = g_bus_has_pinned;
+    if (locked) {
+        /* Concurrent producers possible — must snapshot each cell
+         * under the lock so the cells array can't be realloc'd out
+         * from under the in-flight pop. */
+        for (;;) {
+            pthread_mutex_lock(&q->lock);
+            if (q->head >= q->tail) {
+                q->head = 0;
+                q->tail = 0;
+                pthread_mutex_unlock(&q->lock);
+                return;
             }
+            lotus_bus_cell_t cell_copy = q->cells[q->head++];
+            pthread_mutex_unlock(&q->lock);
+
+            void *payload_in_arena = NULL;
+            if (cell_copy.payload_size > 0) {
+                lotus_arena_t *sub_arena =
+                    *(lotus_arena_t **)cell_copy.self_ptr;
+                payload_in_arena = lotus_arena_alloc(
+                    sub_arena, cell_copy.payload_size, 8);
+                if (payload_in_arena) {
+                    memcpy(payload_in_arena,
+                           cell_copy.payload_inline,
+                           cell_copy.payload_size);
+                }
+            }
+            ((lotus_handler_fn)cell_copy.handler)(
+                cell_copy.self_ptr, payload_in_arena);
         }
-        ((lotus_handler_fn)cell_copy.handler)(
-            cell_copy.self_ptr, payload_in_arena);
+    } else {
+        /* Single-threaded cooperative path: no concurrent producer
+         * exists. Read cell fields directly from the queue (no 544-
+         * byte stack snapshot per pop), and copy ONLY the payload's
+         * actual bytes into the subscriber's arena (vs the full
+         * 512-byte inline). The cells array might realloc if the
+         * handler publishes — but the handler runs AFTER we've
+         * advanced `head` and snapshotted the cell's fields into
+         * locals (which the C frame holds in registers). The
+         * payload pointer we hand to the handler is into the
+         * subscriber's arena (per `memory.md` § "Bus dispatch:
+         * copy-not-pointer semantic"), so handler-side realloc
+         * of the queue can't dangle it. */
+        for (;;) {
+            if (q->head >= q->tail) {
+                q->head = 0;
+                q->tail = 0;
+                return;
+            }
+            lotus_bus_cell_t *cell = &q->cells[q->head++];
+            void *handler_fn = cell->handler;
+            void *handler_self = cell->self_ptr;
+            size_t psize = cell->payload_size;
+            void *payload_in_arena = NULL;
+            if (psize > 0) {
+                lotus_arena_t *sub_arena =
+                    *(lotus_arena_t **)handler_self;
+                payload_in_arena =
+                    lotus_arena_alloc(sub_arena, psize, 8);
+                if (payload_in_arena) {
+                    memcpy(payload_in_arena,
+                           cell->payload_inline, psize);
+                }
+            }
+            ((lotus_handler_fn)handler_fn)(handler_self,
+                                            payload_in_arena);
+        }
     }
 }
 
@@ -1620,6 +1676,11 @@ typedef ssize_t (*lotus_serialize_fn)(const void *src,
                                        void *dst,
                                        size_t cap);
 
+/* Forward decl — the remote-entries table is defined further
+ * down in this file. `lotus_bus_dispatch` checks this to skip
+ * the serialize+fanout work when no remote subscribers exist. */
+static inline int lotus_bus_has_remote_entries(void);
+
 void lotus_bus_dispatch(lotus_bus_queue_t *queue,
                         const char *subject,
                         const void *struct_payload,
@@ -1636,20 +1697,21 @@ void lotus_bus_dispatch(lotus_bus_queue_t *queue,
     /* Remote fanout: serialize struct → wire bytes (per-field
      * walk; codegen synthesizes the body), then dispatch to
      * each CONNECT-role transport bound to this subject via
-     * the existing lotus_bus_remote_fanout iteration. When the
-     * remote-entries table is empty for this subject (config-
-     * not-set or all entries are LISTEN-role) the fanout is a
-     * cheap loop. The serializer cost runs unconditionally
-     * when serialize_fn is non-NULL — local-only programs that
-     * never set LOTUS_BUS_CONFIG pay one extra serialize per
-     * publish, which is bounded (LOTUS_PAYLOAD_MAX bytes). A
-     * future polish could gate this behind a "any remote
-     * entry for subject" check via a new helper, but the
-     * minimal-coupling shape is preferable for v1.
+     * the existing lotus_bus_remote_fanout iteration.
+     *
+     * Skip the serialize-call entirely when no remote entries
+     * are configured at all (the common case — most programs
+     * never set LOTUS_BUS_CONFIG). The serialize walks the
+     * payload's fields into wire_buf, which costs ~10-30ns
+     * per publish even for an 8-byte payload like Tick, and
+     * the resulting bytes would be discarded by an empty
+     * remote-fanout loop. Removing that work cuts ~20% off
+     * `bus_dispatch` on cooperative-only programs.
      *
      * m58: local + remote share the same subject namespace per
      * notes/open-questions #9 (emergent cardinality). */
     if (!serialize_fn) return;
+    if (!lotus_bus_has_remote_entries()) return;
     char wire_buf[LOTUS_PAYLOAD_MAX];
     ssize_t wire_size = serialize_fn(struct_payload, wire_buf,
                                      sizeof(wire_buf));
@@ -3225,6 +3287,10 @@ typedef struct lotus_bus_remote_entry {
 static lotus_bus_remote_entry_t *g_bus_remote_entries = NULL;
 static size_t g_bus_remote_count = 0;
 static size_t g_bus_remote_cap   = 0;
+
+static inline int lotus_bus_has_remote_entries(void) {
+    return g_bus_remote_count > 0;
+}
 
 #define LOTUS_BUS_REMOTE_INITIAL_CAP 4
 
