@@ -347,21 +347,14 @@ impl<'a> Checker<'a> {
 
     /// v1.x-FORM-1: verify a `@form(<name>)` annotation's
     /// shape contract against the locus's actual capacity
-    /// declaration. v1 ships `@form(vec)` (v1.x-FORM-2) and
-    /// `@form(hashmap)` (v1.x-FORM-4) shape checks;
-    /// `@form(ring_buffer)` is recognized but pending.
+    /// declaration. v1 ships shape checks for `@form(vec)`
+    /// (FORM-2), `@form(hashmap)` (FORM-4), and
+    /// `@form(ring_buffer)` (FORM-5).
     fn check_form_shape(&mut self, decl: &'a LocusDecl, form: &'a FormAnnotation) {
         match form.name.name.as_str() {
             "vec" => self.check_form_vec_shape(decl, form),
             "hashmap" => self.check_form_hashmap_shape(decl, form),
-            "ring_buffer" => {
-                self.diags.push(Diag::ty(
-                    form.span,
-                    "@form(ring_buffer) recognized but not yet implemented \
-                     (FORM-4 pending; v1 ships @form(vec) and @form(hashmap))"
-                        .to_string(),
-                ));
-            }
+            "ring_buffer" => self.check_form_ring_buffer_shape(decl, form),
             other => {
                 self.diags.push(Diag::ty(
                     form.name.span,
@@ -369,6 +362,140 @@ impl<'a> Checker<'a> {
                         "unknown form `{}`; v1 recognizes: vec, hashmap, \
                          ring_buffer",
                         other
+                    ),
+                ));
+            }
+        }
+    }
+
+    /// v1.x-FORM-5: `@form(ring_buffer, cap = N)` requires
+    /// exactly one capacity slot of kind `pool`, holding any
+    /// cell type T. The `cap` annotation arg is required and
+    /// must be a positive integer literal — the backing buffer
+    /// is pre-allocated at locus birth and never grows.
+    fn check_form_ring_buffer_shape(
+        &mut self,
+        decl: &'a LocusDecl,
+        form: &'a FormAnnotation,
+    ) {
+        // Validate args: exactly one, named `cap`, positive int literal.
+        let mut cap_arg: Option<&FormArg> = None;
+        for arg in &form.args {
+            if arg.name.name == "cap" {
+                if cap_arg.is_some() {
+                    self.diags.push(Diag::ty(
+                        arg.name.span,
+                        "@form(ring_buffer): duplicate `cap` arg".to_string(),
+                    ));
+                } else {
+                    cap_arg = Some(arg);
+                }
+            } else {
+                self.diags.push(Diag::ty(
+                    arg.name.span,
+                    format!(
+                        "@form(ring_buffer): unknown arg `{}`; v1 accepts \
+                         `cap = N` only",
+                        arg.name.name
+                    ),
+                ));
+            }
+        }
+        match cap_arg {
+            None => {
+                self.diags.push(Diag::ty(
+                    form.span,
+                    "@form(ring_buffer) requires a `cap = N` arg (fixed \
+                     capacity; the buffer is pre-allocated at locus birth)"
+                        .to_string(),
+                ));
+            }
+            Some(arg) => match &arg.value {
+                Expr::Literal(Literal::Int(n), _) if *n > 0 => {
+                    // OK.
+                }
+                _ => {
+                    self.diags.push(Diag::ty(
+                        arg.name.span,
+                        "@form(ring_buffer) `cap` must be a positive \
+                         integer literal (v1 doesn't const-evaluate \
+                         expressions for form args)"
+                            .to_string(),
+                    ));
+                }
+            },
+        }
+
+        let capacity = decl.members.iter().find_map(|m| match m {
+            LocusMember::Capacity(cb) => Some(cb),
+            _ => None,
+        });
+        let cb = match capacity {
+            Some(cb) => cb,
+            None => {
+                self.diags.push(Diag::ty(
+                    form.span,
+                    "@form(ring_buffer) requires exactly one `pool` capacity \
+                     slot; found no `capacity { ... }` block on this locus"
+                        .to_string(),
+                ));
+                return;
+            }
+        };
+        match cb.slots.len() {
+            0 => {
+                self.diags.push(Diag::ty(
+                    cb.span,
+                    "@form(ring_buffer) requires exactly one `pool` capacity \
+                     slot; found an empty capacity block"
+                        .to_string(),
+                ));
+            }
+            1 => {
+                let slot = &cb.slots[0];
+                match slot.kind {
+                    CapacitySlotKind::Pool => {
+                        // OK.
+                    }
+                    CapacitySlotKind::Heap => {
+                        self.diags.push(Diag::ty(
+                            slot.span,
+                            format!(
+                                "@form(ring_buffer) requires a `pool` slot; \
+                                 got `heap {} of ...`. Ring buffer recycles \
+                                 fixed-capacity cells (pool discipline); \
+                                 heap is the growable shape covered by \
+                                 @form(vec).",
+                                slot.name.name
+                            ),
+                        ));
+                    }
+                }
+                if slot.as_parent_for.is_some() {
+                    self.diags.push(Diag::ty(
+                        slot.span,
+                        "@form(ring_buffer) slot cannot also be an \
+                         `as_parent_for` override; form-lowered slots own \
+                         their own allocator"
+                            .to_string(),
+                    ));
+                }
+                if slot.indexed_by.is_some() {
+                    self.diags.push(Diag::ty(
+                        slot.span,
+                        "@form(ring_buffer) slot does not take an `indexed_by` \
+                         clause (that clause belongs to @form(hashmap))"
+                            .to_string(),
+                    ));
+                }
+            }
+            n => {
+                self.diags.push(Diag::ty(
+                    cb.span,
+                    format!(
+                        "@form(ring_buffer) requires exactly one `pool` \
+                         capacity slot; found {}",
+                        n
                     ),
                 ));
             }

@@ -894,12 +894,22 @@ the core surface above is independent of them.
    value variant (the cell IS the key). Not part of FORM-4;
    revisit if a workload needs it.
 
-# `@form(ring_buffer)` — pending future milestone
+---
 
-FORM-4 shipped `@form(hashmap)` only; `@form(ring_buffer)` waits
-for a concrete driver workload that the fixed-size pop-front /
-push-back surface is the right shape for. Spec to be written
-when that milestone starts. Surface preview:
+# `@form(ring_buffer)`
+
+A fixed-capacity FIFO with push-back and pop-front semantics.
+The Aperio analogue of a bounded circular buffer — same shape as
+a Go channel of capacity N, or a Java `ArrayBlockingQueue`, but
+without the synchronization machinery (the cooperative scheduler
+already serializes access). Shipped as the third form in v1
+via v1.x-FORM-5.
+
+## Required capacity shape
+
+The locus MUST declare exactly one `pool` slot. The cell type is
+the element type `T`; the capacity comes from the annotation arg
+`cap = N`.
 
 ```aperio
 @form(ring_buffer, cap = 64)
@@ -908,14 +918,213 @@ locus RecentCmds {
 }
 ```
 
-Synthesized methods:
+Rules verified at typecheck:
+
+- Exactly one slot. Zero slots, more than one slot, or a `heap`
+  slot is rejected. (`heap` is the growable-contiguous shape
+  covered by `@form(vec)`; ring buffer recycles fixed-capacity
+  cells, which is the `pool` discipline.)
+- The slot MUST NOT declare `as_parent_for` or `indexed_by` —
+  those clauses belong to other forms.
+- `@form(ring_buffer, cap = N)` requires `cap`, must be a
+  positive integer literal. v1 doesn't const-evaluate
+  expressions for form args.
+- The cell type T may be a primitive, a user-defined `type`, or
+  a generic parameter. It MAY NOT be a locus reference — same
+  restriction as the other forms.
+
+## Synthesized methods
 
 ```
-fn push(x: T) -> Bool          # returns false when full
+fn push(x: T) -> Bool                        # false when full
 fn pop() -> T fallible(EmptyError)
+fn len() -> Int                              # infallible
+fn is_full() -> Bool                         # infallible
+```
+
+The fallible `pop` returns the synthesized `EmptyError` payload:
+
+```aperio
+type EmptyError {
+    kind: String;   # "empty" — only kind at v1
+}
+```
+
+`EmptyError` is injected alongside `IndexError` and `KeyError` by
+the form machinery; user-declared `EmptyError` wins per the
+existing idempotent-injection contract.
+
+### `push`
+
+```
+fn push(x: T) -> Bool
+```
+
+Appends `x` after the last element. Returns `true` on success,
+`false` when the buffer is at capacity. Callers decide
+drop-vs-backpressure semantics by inspecting the result:
+
+```aperio
+let accepted = recent.push(entry);
+if !accepted {
+    // backpressure: surface to caller, or drop, or evict-oldest
+    // via pop()+push() in a separate path.
+}
+```
+
+`push` is intentionally Bool-returning rather than
+`fallible(FullError)`. The full-buffer state is a normal
+operational condition (the caller chose a bounded capacity), not
+a substrate failure — surfacing it as a Bool keeps the call
+shape ergonomic and avoids forcing every caller through `or`.
+This is the one place in the form library where infallible-but-
+returning-a-status is the right idiom; vec's `push` is truly
+infallible (OOM routes through the closure-violation channel),
+and hashmap's `set` is unconditional (replace-on-collision). The
+ring buffer's fixed cap makes "refused" a user-observable state.
+
+### `pop`
+
+```
+fn pop() -> T fallible(EmptyError)
+```
+
+Removes and returns the oldest element (FIFO — the one inserted
+earliest among those still present). Fails with
+`EmptyError { kind: "empty" }` when the buffer is empty.
+
+```aperio
+let cmd = recent.pop() or raise;       # bubble on empty
+let cmd = recent.pop() or default_cmd; # substitute
+let cmd = recent.pop() or fallback(err);
+```
+
+### `len` and `is_full`
+
+```
 fn len() -> Int
 fn is_full() -> Bool
 ```
 
-Lowering: fixed-size array of size `cap` + head/tail indices,
-no malloc after birth.
+`len()` is the current element count, in `0..=cap`. `is_full()`
+is sugar for `len() == cap`. Both infallible, O(1).
+
+There is intentionally no `is_empty()` synthesized method on
+`@form(ring_buffer)` — `pop` is the natural empty-detection
+surface (the fallible return signals empty directly to the
+caller addressing the error). Adding `is_empty()` would create
+two redundant ways to ask the same question; defer until a
+workload demonstrates a real need.
+
+## Lowering strategy
+
+`@form(ring_buffer)` lowers the pool slot to an inline five-field
+C struct holding head/tail and a pre-allocated backing buffer:
+
+```c
+typedef struct {
+    size_t cap;        // fixed at init; never changes
+    size_t head;       // index of oldest element (next pop)
+    size_t len;        // current count, 0..=cap
+    size_t elem_size;  // bytes per element
+    char  *buf;        // cap * elem_size bytes
+} lotus_ring_buffer_t;
+```
+
+- **Birth.** `lotus_ring_buffer_init` mallocs `cap * elem_size`
+  bytes and pins them for the locus's lifetime. The init takes
+  `cap` and `elem_size` as args; `cap` flows in from the form
+  annotation, `elem_size` from the cell type's LLVM `size_of`.
+- **Push.** `lotus_ring_buffer_push` checks `len == cap`; if so
+  returns 0. Otherwise computes the wrap index as
+  `(head + len) % cap`, memcpys `elem_size` bytes from the
+  caller-provided source into the slot, increments `len`,
+  returns 1.
+- **Pop.** `lotus_ring_buffer_pop` checks `len == 0`; if so
+  returns 0. Otherwise memcpys from `buf + head * elem_size`
+  into the out-pointer, advances `head` modulo cap, decrements
+  `len`, returns 1.
+- **No growth.** Once init runs, the backing buffer is fixed
+  size. Push at capacity refuses; the spec contract is "fixed
+  capacity" not "grows on demand."
+- **Dissolution.** `lotus_ring_buffer_destroy` `free`s the
+  backing buffer at locus arena destroy.
+
+## Arena ownership
+
+Same as `@form(vec)` and `@form(hashmap)`: the
+`lotus_ring_buffer_t` struct lives inline in the locus struct
+layout; the backing `buf` is malloc'd from the *system
+allocator*, not from the locus's arena. Dissolution frees
+`buf` via the F.22 dissolve cascade.
+
+For pointer-shaped element types (`String`, `Bytes`), the ring
+buffer stores the pointer by value; the pointed-to bytes live
+in their owning arena per the standard F.22 contract.
+
+## Complexity
+
+| Operation | Cost |
+|---|---|
+| `push` (not full) | O(1) |
+| `push` (full → refuse) | O(1) |
+| `pop` (not empty) | O(1) |
+| `pop` (empty → fail) | O(1) |
+| `len` / `is_full` | O(1) |
+
+All operations are constant-time and allocation-free after
+locus birth. No realloc, no rehash, no compaction.
+
+## Interaction with the locus tower
+
+A `@form(ring_buffer)` locus is a locus in every other respect.
+Same orthogonality as the other forms — `params`, lifecycle
+bodies, closure invariants, `on_failure` routing, bus
+membership, perspective projection all compose unchanged.
+
+## Anti-patterns
+
+### Forgetting to address `pop`'s fallible
+
+```aperio
+// WRONG — pop returns fallible(EmptyError); the bare let drops it.
+let v = recent.pop();  // compile error: error not addressed
+```
+
+```aperio
+// RIGHT — address with one of the three motions.
+let v = recent.pop() or raise;
+```
+
+### Treating `push` as fallible
+
+```aperio
+// WRONG — push returns Bool, not fallible(FullError).
+let v = recent.push(x) or raise;  // type error: push isn't fallible
+```
+
+The full-buffer state surfaces as a Bool return, not a fallible
+payload. Inspect the Bool directly.
+
+### Resizing expectations
+
+The ring buffer's cap is fixed at the annotation site. There is
+no `grow` or `shrink_to_fit`. Apps that need a growable bounded
+buffer should pick a generous cap up front, or use
+`@form(vec)` if growth is the right semantic.
+
+## Open questions deferred to a future milestone
+
+1. **Iteration surface.** `for x in recent { ... }` is natural
+   but iteration over a ring buffer must respect head/tail wrap
+   — needs the `for` lowering to know about ring shapes.
+   Deferred.
+2. **Bulk operations.** `clear()`, `peek() -> T fallible`,
+   evict-oldest-on-full mode (cyclic-overwrite as a tuning
+   knob). Useful but not foundational; add when a workload
+   demonstrates demand.
+3. **Iteration in pop order without removing.** A "drain" or
+   "iter_pop" that visits elements oldest-first as a one-shot.
+4. **Bench protocol.** A `bench/micro/form_ring_buffer_*`
+   family parallel to vec's and hashmap's. Ships as a separate
+   milestone after a consumer workload surfaces.

@@ -132,6 +132,16 @@ pub enum SlotState {
         indexed_by_field: String,
         entries: Rc<RefCell<Vec<(Value, Value)>>>,
     },
+    /// v1.x-FORM-5: `@form(ring_buffer, cap = N)` storage. The
+    /// locus's single pool slot is replaced with a bounded FIFO
+    /// backed by a VecDeque. `cap` is enforced at push time —
+    /// when the deque length equals cap, push returns false
+    /// (matches the codegen's `lotus_ring_buffer_push` returning
+    /// 0). pop drains from the front; len/is_full read state.
+    RingBuffer {
+        cap: usize,
+        items: Rc<RefCell<std::collections::VecDeque<Value>>>,
+    },
 }
 
 #[derive(Debug, Clone)]

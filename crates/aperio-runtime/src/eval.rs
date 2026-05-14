@@ -1154,6 +1154,13 @@ impl Interpreter {
                 {
                     return Ok(result);
                 }
+                // v1.x-FORM-5: parallel dispatch for
+                // `<ring-buffer-locus>.<form-method>(args)`.
+                if let Some(result) =
+                    self.try_eval_form_ring_buffer_call(callee, args)?
+                {
+                    return Ok(result);
+                }
                 let callee_v = self.eval_expr(callee)?;
                 let mut arg_vs = Vec::with_capacity(args.len());
                 for a in args {
@@ -1780,6 +1787,113 @@ impl Interpreter {
         }
     }
 
+    /// v1.x-FORM-5: parallel to `try_eval_form_vec_call` for
+    /// `@form(ring_buffer)` synthesized methods. `push` returns
+    /// Bool (false = full); `pop` is fallible with `EmptyError`.
+    fn try_eval_form_ring_buffer_call(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Result<Option<Value>, Signal> {
+        let (receiver_expr, method_name) = match callee {
+            Expr::Field { receiver, name, .. } => (receiver, name.name.clone()),
+            _ => return Ok(None),
+        };
+        if !matches!(
+            method_name.as_str(),
+            "push" | "pop" | "len" | "is_full"
+        ) {
+            return Ok(None);
+        }
+        let recv_v = self.eval_expr(receiver_expr)?;
+        let handle = match recv_v {
+            Value::Locus(h) => h,
+            _ => return Ok(None),
+        };
+        let is_form_rb = handle
+            .decl
+            .form
+            .as_ref()
+            .map(|f| f.name.name == "ring_buffer")
+            .unwrap_or(false);
+        if !is_form_rb {
+            return Ok(None);
+        }
+        let (cap, items_rc) = {
+            let slots = handle.slots.borrow();
+            slots
+                .iter()
+                .find_map(|(_, st)| match st {
+                    SlotState::RingBuffer { cap, items } => {
+                        Some((*cap, items.clone()))
+                    }
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    Signal::Error(format!(
+                        "@form(ring_buffer) locus `{}` has no ring_buffer-state \
+                         slot (form-shape verification should have caught this)",
+                        handle.name
+                    ))
+                })?
+        };
+        let mut arg_vs = Vec::with_capacity(args.len());
+        for a in args {
+            arg_vs.push(self.eval_expr(a)?);
+        }
+        match method_name.as_str() {
+            "push" => {
+                if arg_vs.len() != 1 {
+                    return Err(Signal::Error(format!(
+                        "@form(ring_buffer).push expects 1 arg, got {}",
+                        arg_vs.len()
+                    )));
+                }
+                let mut items = items_rc.borrow_mut();
+                if items.len() >= cap {
+                    Ok(Some(Value::Bool(false)))
+                } else {
+                    items.push_back(arg_vs.into_iter().next().unwrap());
+                    Ok(Some(Value::Bool(true)))
+                }
+            }
+            "pop" => {
+                if !arg_vs.is_empty() {
+                    return Err(Signal::Error(format!(
+                        "@form(ring_buffer).pop expects 0 args, got {}",
+                        arg_vs.len()
+                    )));
+                }
+                let mut items = items_rc.borrow_mut();
+                match items.pop_front() {
+                    Some(v) => Ok(Some(v)),
+                    None => Ok(Some(Value::FallibleErr(Box::new(
+                        empty_error_value("empty"),
+                    )))),
+                }
+            }
+            "len" => {
+                if !arg_vs.is_empty() {
+                    return Err(Signal::Error(format!(
+                        "@form(ring_buffer).len expects 0 args, got {}",
+                        arg_vs.len()
+                    )));
+                }
+                Ok(Some(Value::Int(items_rc.borrow().len() as i64)))
+            }
+            "is_full" => {
+                if !arg_vs.is_empty() {
+                    return Err(Signal::Error(format!(
+                        "@form(ring_buffer).is_full expects 0 args, got {}",
+                        arg_vs.len()
+                    )));
+                }
+                Ok(Some(Value::Bool(items_rc.borrow().len() >= cap)))
+            }
+            _ => unreachable!("filtered at the top of the fn"),
+        }
+    }
+
     fn try_eval_capacity_slot_call(
         &mut self,
         callee: &Expr,
@@ -1824,6 +1938,9 @@ impl Interpreter {
                 // through their own form-method path
                 // (set/get/has/remove/len/is_empty).
                 Some(SlotState::Hashmap { .. }) => return Ok(None),
+                // v1.x-FORM-5: ring_buffer slots route through
+                // their form-method path (push/pop/len/is_full).
+                Some(SlotState::RingBuffer { .. }) => return Ok(None),
                 None => return Ok(None),
             }
         };
@@ -2169,6 +2286,17 @@ impl Interpreter {
                         .as_ref()
                         .map(|f| f.name.name == "hashmap")
                         .unwrap_or(false);
+                    // v1.x-FORM-5: when the locus carries
+                    // `@form(ring_buffer, cap = N)`, the single
+                    // pool slot becomes a bounded FIFO with the
+                    // user-specified cap. Synthesized methods
+                    // (push/pop/len/is_full) dispatch via
+                    // `try_eval_form_ring_buffer_call`.
+                    let is_form_ring_buffer = decl
+                        .form
+                        .as_ref()
+                        .map(|f| f.name.name == "ring_buffer")
+                        .unwrap_or(false);
                     let st = if is_form_vec
                         && matches!(slot.kind, CapacitySlotKind::Heap)
                     {
@@ -2186,6 +2314,30 @@ impl Interpreter {
                         SlotState::Hashmap {
                             indexed_by_field,
                             entries: Rc::new(RefCell::new(Vec::new())),
+                        }
+                    } else if is_form_ring_buffer
+                        && matches!(slot.kind, CapacitySlotKind::Pool)
+                    {
+                        let cap = decl
+                            .form
+                            .as_ref()
+                            .and_then(|f| {
+                                f.args.iter().find(|a| a.name.name == "cap")
+                            })
+                            .and_then(|a| match &a.value {
+                                Expr::Literal(Literal::Int(n), _)
+                                    if *n > 0 =>
+                                {
+                                    Some(*n as usize)
+                                }
+                                _ => None,
+                            })
+                            .unwrap_or(0);
+                        SlotState::RingBuffer {
+                            cap,
+                            items: Rc::new(RefCell::new(
+                                std::collections::VecDeque::with_capacity(cap),
+                            )),
                         }
                     } else {
                         match slot.kind {
@@ -3752,6 +3904,18 @@ fn key_error_value(kind: &str) -> Value {
     fields.insert("kind".to_string(), Value::String(kind.to_string()));
     Value::Struct {
         name: "KeyError".to_string(),
+        fields: Rc::new(RefCell::new(fields)),
+    }
+}
+
+/// v1.x-FORM-5: construct an `EmptyError` value for
+/// `@form(ring_buffer).pop()` on an empty buffer. Same minimal
+/// `kind: String` shape as KeyError.
+fn empty_error_value(kind: &str) -> Value {
+    let mut fields: BTreeMap<String, Value> = BTreeMap::new();
+    fields.insert("kind".to_string(), Value::String(kind.to_string()));
+    Value::Struct {
+        name: "EmptyError".to_string(),
         fields: Rc::new(RefCell::new(fields)),
     }
 }

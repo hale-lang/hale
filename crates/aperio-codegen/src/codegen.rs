@@ -1626,11 +1626,16 @@ struct CapacitySlotLayout {
     /// offset for key extraction at set call sites. `None` for
     /// all other slot kinds.
     indexed_by: Option<String>,
+    /// v1.x-FORM-5: for `@form(ring_buffer)` slots, the fixed
+    /// capacity from the `cap = N` annotation arg. Init at
+    /// locus birth mallocs `cap * elem_size` bytes and the
+    /// buffer never grows. `None` for all other slot kinds.
+    ring_buffer_cap: Option<u64>,
 }
 
 /// v1.x-FORM-2: which form lowering is in play for a capacity slot.
-/// `Vec` shipped in FORM-2; `Hashmap` shipped in FORM-4.
-/// `RingBuffer` is pending.
+/// `Vec` shipped in FORM-2; `Hashmap` shipped in FORM-4;
+/// `RingBuffer` shipped in v1.x-FORM-5.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SlotForm {
     /// `@form(vec)` — heap slot becomes an inline
@@ -1645,6 +1650,13 @@ enum SlotForm {
     /// 4-byte pad between `i32` and `ptr` for natural
     /// alignment).
     Hashmap,
+    /// `@form(ring_buffer, cap = N)` — pool slot becomes an
+    /// inline `{ i64 cap, i64 head, i64 len, i64 elem_size,
+    /// ptr buf }` struct managed by `lotus_ring_buffer_*`.
+    /// The `cap` annotation arg flows into the init call so
+    /// the backing buffer is pre-allocated at locus birth and
+    /// never grows.
+    RingBuffer,
 }
 
 /// Maximum number of children any locus struct's built-in
@@ -1994,6 +2006,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let hashmap_destroy_ty = void_t.fn_type(&[ptr_t.into()], false);
         self.module
             .add_function("lotus_hashmap_destroy", hashmap_destroy_ty, None);
+
+        // @form(ring_buffer): fixed-capacity FIFO. The `cap` is
+        // baked in at init from the form annotation arg; methods
+        // operate on the same inline struct pattern as vec /
+        // hashmap. push returns i32 (1 = pushed, 0 = full) at the
+        // C boundary; pop returns i32 (1 = popped, 0 = empty) and
+        // writes the popped element bytes through an out-pointer.
+        //
+        // declare void @lotus_ring_buffer_init(ptr rb, i64 cap, i64 elem_size)
+        // declare i32  @lotus_ring_buffer_push(ptr rb, ptr src)
+        // declare i32  @lotus_ring_buffer_pop(ptr rb, ptr out)
+        // declare i64  @lotus_ring_buffer_len(ptr rb)
+        // declare i32  @lotus_ring_buffer_is_full(ptr rb)
+        // declare void @lotus_ring_buffer_destroy(ptr rb)
+        let rb_init_ty =
+            void_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false);
+        self.module
+            .add_function("lotus_ring_buffer_init", rb_init_ty, None);
+        let rb_push_ty = i32_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        self.module
+            .add_function("lotus_ring_buffer_push", rb_push_ty, None);
+        let rb_pop_ty = i32_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        self.module
+            .add_function("lotus_ring_buffer_pop", rb_pop_ty, None);
+        let rb_len_ty = i64_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_ring_buffer_len", rb_len_ty, None);
+        let rb_is_full_ty = i32_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_ring_buffer_is_full", rb_is_full_ty, None);
+        let rb_destroy_ty = void_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_ring_buffer_destroy", rb_destroy_ty, None);
 
         // m36: string runtime helpers. Each takes a `ptr` for the
         // destination arena (where the result lives) plus the
@@ -4272,6 +4317,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // `remove` surface a typed `KeyError` payload. Mirror
         // of the typecheck-side injection alongside IndexError.
         self.declare_builtin_key_error_type();
+        // v1.x-FORM-5: synthesized @form(ring_buffer) `pop`
+        // surfaces a typed `EmptyError` payload.
+        self.declare_builtin_empty_error_type();
 
         // F.20: register interface declarations by name. The
         // codegen layer uses this in two places: signature lowering
@@ -5197,6 +5245,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         struct_ty.set_body(&llvm_field_tys, false);
         self.user_types.insert(
             "KeyError".to_string(),
+            TypeInfo {
+                struct_ty,
+                fields,
+                field_order,
+            },
+        );
+    }
+
+    /// v1.x-FORM-5: register the built-in `EmptyError` record so
+    /// synthesized @form(ring_buffer) `pop` codegen can allocate
+    /// it. Mirror of `inject_form_stdlib_types` for EmptyError in
+    /// aperio-types/src/resolve.rs. v1 fields: `kind: String` only.
+    fn declare_builtin_empty_error_type(&mut self) {
+        if self.user_types.contains_key("EmptyError") {
+            return;
+        }
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let mut fields: BTreeMap<String, (u32, CodegenTy)> = BTreeMap::new();
+        fields.insert("kind".into(), (0, CodegenTy::String));
+        let field_order = vec!["kind".to_string()];
+        let llvm_field_tys: Vec<inkwell::types::BasicTypeEnum> =
+            vec![ptr_t.into()];
+        let struct_ty = self
+            .context
+            .opaque_struct_type("type.EmptyError");
+        struct_ty.set_body(&llvm_field_tys, false);
+        self.user_types.insert(
+            "EmptyError".to_string(),
             TypeInfo {
                 struct_ty,
                 fields,
@@ -7026,6 +7102,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .as_ref()
             .map(|f| f.name.name.as_str() == "hashmap")
             .unwrap_or(false);
+        let is_form_ring_buffer = l
+            .form
+            .as_ref()
+            .map(|f| f.name.name.as_str() == "ring_buffer")
+            .unwrap_or(false);
         let mut capacity_slots: Vec<CapacitySlotLayout> = Vec::new();
         let mut seen_slot_names: BTreeSet<String> = BTreeSet::new();
         for member in &l.members {
@@ -7076,6 +7157,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     );
                     llvm_field_tys.push(vec_struct_ty.into());
                     Some(SlotForm::Vec)
+                } else if is_form_ring_buffer
+                    && matches!(slot.kind, CapacitySlotKind::Pool)
+                {
+                    // @form(ring_buffer): inline { cap, head, len,
+                    // elem_size, buf } struct, init at locus birth
+                    // with the cap from the annotation arg. Layout
+                    // matches the C-side `lotus_ring_buffer_t`
+                    // exactly. Typecheck verifies the pool-slot
+                    // shape and cap presence.
+                    let rb_struct_ty = self.context.struct_type(
+                        &[
+                            i64_t.into(), // cap
+                            i64_t.into(), // head
+                            i64_t.into(), // len
+                            i64_t.into(), // elem_size
+                            ptr_t.into(), // buf
+                        ],
+                        false,
+                    );
+                    llvm_field_tys.push(rb_struct_ty.into());
+                    Some(SlotForm::RingBuffer)
                 } else if is_form_hashmap
                     && matches!(slot.kind, CapacitySlotKind::Pool)
                 {
@@ -7107,6 +7209,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     None
                 };
                 idx += 1;
+                let ring_buffer_cap = if matches!(form, Some(SlotForm::RingBuffer)) {
+                    // Extract `cap = N` from the form annotation
+                    // args. Typecheck guarantees presence + valid
+                    // form on @form(ring_buffer); codegen reads
+                    // the int literal directly.
+                    l.form
+                        .as_ref()
+                        .and_then(|f| {
+                            f.args.iter().find(|a| a.name.name == "cap")
+                        })
+                        .and_then(|a| match &a.value {
+                            Expr::Literal(Literal::Int(n), _) if *n > 0 => {
+                                Some(*n as u64)
+                            }
+                            _ => None,
+                        })
+                } else {
+                    None
+                };
                 capacity_slots.push(CapacitySlotLayout {
                     name: slot.name.name.clone(),
                     kind: slot.kind,
@@ -7121,6 +7242,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .indexed_by
                         .as_ref()
                         .map(|i| i.name.clone()),
+                    ring_buffer_cap,
                 });
             }
         }
@@ -10462,10 +10584,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         {
             return Ok(result);
         }
+        if let Some(result) = self
+            .try_lower_form_ring_buffer_fallible_method(
+                &info,
+                self_ptr,
+                &locus_name,
+                method_name,
+                args,
+                scope,
+            )?
+        {
+            return Ok(result);
+        }
         Err(CodegenError::Unsupported(format!(
             "fallible method `{}.{}` — not a synthesized @form(vec) \
-             get/pop or @form(hashmap) get/remove; user-declared \
-             fallible methods on loci are not yet wired",
+             get/pop, @form(hashmap) get/remove, or @form(ring_buffer) \
+             pop; user-declared fallible methods on loci are not yet \
+             wired",
             locus_name, method_name
         )))
     }
@@ -10688,6 +10823,117 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         )?;
         self.builder
             .build_store(out_err_slot, ie_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(join_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(join_bb);
+
+        Ok(Some(FallibleCallResult {
+            i1_path: is_err,
+            out_val_slot: Some(out_val_slot),
+            out_err_slot,
+            success_ty: Some(elem_ty),
+            payload_ty,
+        }))
+    }
+
+    /// v1.x-FORM-5: inline-lower a synthesized `@form(ring_buffer)`
+    /// fallible method (`pop`). Same shape as
+    /// `try_lower_form_vec_fallible_method` for `pop`: the C
+    /// runtime returns i32 (1=OK / 0=empty), codegen inverts to
+    /// i1 (1=err / 0=ok) and writes an `EmptyError { kind:
+    /// "empty" }` payload lazily in the err basic block.
+    fn try_lower_form_ring_buffer_fallible_method(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        locus_self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        method_name: &str,
+        _args: &[Expr],
+        _scope: &Scope<'ctx>,
+    ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
+        let Some(slot) = info
+            .capacity_slots
+            .iter()
+            .find(|s| s.form == Some(SlotForm::RingBuffer))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        if method_name != "pop" {
+            return Ok(None);
+        }
+        let elem_ty = slot.elem_ty.clone();
+        let payload_ty = CodegenTy::TypeRef("EmptyError".to_string());
+
+        let rb_field_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                locus_self_ptr,
+                slot.struct_field_idx,
+                &format!(
+                    "{}.__rb_{}.fallible.ptr",
+                    locus_name, slot.name
+                ),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let out_val_slot =
+            self.alloca_for(&elem_ty, "rb.pop.out_val.slot")?;
+        let out_err_slot =
+            self.alloca_for(&payload_ty, "rb.pop.out_err.slot")?;
+
+        let i32_t = self.context.i32_type();
+        let zero_i32 = i32_t.const_int(0, false);
+
+        let pop_fn = self
+            .module
+            .get_function("lotus_ring_buffer_pop")
+            .expect("lotus_ring_buffer_pop declared");
+        let c_ret = self
+            .builder
+            .build_call(
+                pop_fn,
+                &[rb_field_ptr.into(), out_val_slot.into()],
+                &format!("{}.pop.call", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_ring_buffer_pop returns i32")
+            .into_int_value();
+
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                c_ret,
+                zero_i32,
+                &format!("{}.pop.is_err", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Lazy EmptyError construction on the err path.
+        let func = self
+            .current_fn
+            .expect("fallible-method call inside fn body");
+        let lazy_err_bb = self
+            .context
+            .append_basic_block(func, "rb.pop.lazy_err");
+        let join_bb = self
+            .context
+            .append_basic_block(func, "rb.pop.lazy_join");
+        self.builder
+            .build_conditional_branch(is_err, lazy_err_bb, join_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(lazy_err_bb);
+        let ee_ptr = self.emit_empty_error_alloc("empty")?;
+        self.builder
+            .build_store(out_err_slot, ee_ptr)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
             .build_unconditional_branch(join_bb)
@@ -11071,6 +11317,44 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_store(kind_field_ptr, kind_str_ptr)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
+        Ok(alloc_ptr)
+    }
+
+    /// v1.x-FORM-5: lazily allocate an `EmptyError { kind: String }`
+    /// in the current arena for the `@form(ring_buffer).pop` err
+    /// path. Same shape as `emit_key_error_alloc`.
+    fn emit_empty_error_alloc(
+        &mut self,
+        kind: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let info = self
+            .user_types
+            .get("EmptyError")
+            .cloned()
+            .expect("EmptyError injected by aperio-types resolver");
+        let size = info
+            .struct_ty
+            .size_of()
+            .expect("EmptyError has known size");
+        let alloc_ptr = self.arena_alloc(size, "EmptyError.alloc")?;
+        let kind_str_ptr = self.global_string(kind);
+        let (kind_idx, _) = info
+            .fields
+            .get("kind")
+            .cloned()
+            .expect("EmptyError.kind field");
+        let kind_field_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                alloc_ptr,
+                kind_idx,
+                "EmptyError.kind.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(kind_field_ptr, kind_str_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(alloc_ptr)
     }
 
@@ -20145,6 +20429,45 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
+                Some(SlotForm::RingBuffer) => {
+                    // v1.x-FORM-5: form-ring-buffer slot. The field
+                    // IS the inline lotus_ring_buffer_t struct;
+                    // lotus_ring_buffer_init mallocs cap×elem_size
+                    // bytes and pins them for the locus's lifetime
+                    // (no growth ever — `push` returns 0/false when
+                    // full per the form contract).
+                    let cap = slot.ring_buffer_cap.ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "@form(ring_buffer) `{}`: slot `{}` missing \
+                             `cap` arg (typecheck should have rejected \
+                             this — contact compiler maintainer)",
+                            locus_name, slot.name
+                        ))
+                    })?;
+                    let elem_size = self
+                        .llvm_basic_type(&slot.elem_ty)
+                        .size_of()
+                        .expect("ring_buffer cell type has known size");
+                    let cap_const = self
+                        .context
+                        .i64_type()
+                        .const_int(cap, false);
+                    let init_fn = self
+                        .module
+                        .get_function("lotus_ring_buffer_init")
+                        .expect("lotus_ring_buffer_init extern declared");
+                    self.builder
+                        .build_call(
+                            init_fn,
+                            &[
+                                slot_field_ptr.into(),
+                                cap_const.into(),
+                                elem_size.into(),
+                            ],
+                            &format!("{}.{}.init", locus_name, slot.name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
                 Some(SlotForm::Hashmap) => {
                     // v1.x-FORM-4: form-hashmap slot. The field IS
                     // the inline lotus_hashmap_t struct;
@@ -21503,6 +21826,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         )? {
             return Ok(form_result);
         }
+        // v1.x-FORM-5: intercept synthesized @form(ring_buffer)
+        // methods on `self`. Parallel to vec / hashmap dispatch.
+        if let Some(form_result) = self.try_lower_form_ring_buffer_method(
+            &info,
+            cs.self_ptr,
+            &cs.locus_name,
+            method_name,
+            args,
+            scope,
+        )? {
+            return Ok(form_result);
+        }
         let func = info
             .user_methods
             .get(method_name)
@@ -21867,6 +22202,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // before the user_methods lookup. Parallel to the vec
         // dispatch above.
         if let Some(form_result) = self.try_lower_form_hashmap_method(
+            &info,
+            recv_val.into_pointer_value(),
+            &locus_name,
+            method_name,
+            args,
+            scope,
+        )? {
+            return Ok(form_result);
+        }
+        // v1.x-FORM-5: intercept synthesized @form(ring_buffer)
+        // methods before the user_methods lookup. Parallel to vec
+        // and hashmap dispatch.
+        if let Some(form_result) = self.try_lower_form_ring_buffer_method(
             &info,
             recv_val.into_pointer_value(),
             &locus_name,
@@ -22669,6 +23017,167 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                  via `or raise` / `or <expr>` / `or handler(err)`",
                 locus_name, method_name
             ))),
+            _ => unreachable!("is_synth guard"),
+        }
+    }
+
+    /// v1.x-FORM-5: dispatch synthesized `@form(ring_buffer)`
+    /// methods. Routes to the `lotus_ring_buffer_*` C runtime on
+    /// the inline `{ cap, head, len, elem_size, buf }` slot.
+    ///
+    /// Three infallible methods (push, len, is_full) handled
+    /// here; `pop` is fallible(EmptyError) and lives in
+    /// `try_lower_form_ring_buffer_fallible_method`.
+    fn try_lower_form_ring_buffer_method(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        locus_self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        method_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<
+        Option<Option<(BasicValueEnum<'ctx>, CodegenTy)>>,
+        CodegenError,
+    > {
+        let Some(slot) = info
+            .capacity_slots
+            .iter()
+            .find(|s| s.form == Some(SlotForm::RingBuffer))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let is_synth = matches!(method_name, "push" | "len" | "is_full");
+        if !is_synth {
+            return Ok(None);
+        }
+
+        let i32_t = self.context.i32_type();
+        let rb_field_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                locus_self_ptr,
+                slot.struct_field_idx,
+                &format!("{}.__rb_{}.ptr", locus_name, slot.name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        match method_name {
+            "push" => {
+                if args.len() != 1 {
+                    return Err(CodegenError::Unsupported(format!(
+                        "@form(ring_buffer) `{}`.push: expects 1 arg, got {}",
+                        locus_name,
+                        args.len()
+                    )));
+                }
+                let (arg_val, arg_ty) = self.lower_expr(&args[0], scope)?;
+                if arg_ty != slot.elem_ty {
+                    return Err(CodegenError::Unsupported(format!(
+                        "@form(ring_buffer) `{}`.push arg type mismatch: \
+                         expected {:?}, got {:?}",
+                        locus_name, slot.elem_ty, arg_ty
+                    )));
+                }
+                let llvm_elem_ty = self.llvm_basic_type(&slot.elem_ty);
+                let arg_alloca = self.alloca_in_entry(
+                    llvm_elem_ty,
+                    &format!("{}.push.arg", locus_name),
+                )?;
+                self.builder
+                    .build_store(arg_alloca, arg_val)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let push_fn = self
+                    .module
+                    .get_function("lotus_ring_buffer_push")
+                    .expect("lotus_ring_buffer_push extern declared");
+                let result_i32 = self
+                    .builder
+                    .build_call(
+                        push_fn,
+                        &[rb_field_ptr.into(), arg_alloca.into()],
+                        &format!("{}.push.call", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_ring_buffer_push returns i32")
+                    .into_int_value();
+                let zero = i32_t.const_int(0, false);
+                let result_i1 = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        result_i32,
+                        zero,
+                        &format!("{}.push.bool", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok(Some(Some((result_i1.into(), CodegenTy::Bool))))
+            }
+            "len" => {
+                if !args.is_empty() {
+                    return Err(CodegenError::Unsupported(format!(
+                        "@form(ring_buffer) `{}`.len: takes no args, got {}",
+                        locus_name,
+                        args.len()
+                    )));
+                }
+                let len_fn = self
+                    .module
+                    .get_function("lotus_ring_buffer_len")
+                    .expect("lotus_ring_buffer_len extern declared");
+                let result = self
+                    .builder
+                    .build_call(
+                        len_fn,
+                        &[rb_field_ptr.into()],
+                        &format!("{}.len.call", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_ring_buffer_len returns i64");
+                Ok(Some(Some((result, CodegenTy::Int))))
+            }
+            "is_full" => {
+                if !args.is_empty() {
+                    return Err(CodegenError::Unsupported(format!(
+                        "@form(ring_buffer) `{}`.is_full: takes no args, got {}",
+                        locus_name,
+                        args.len()
+                    )));
+                }
+                let is_full_fn = self
+                    .module
+                    .get_function("lotus_ring_buffer_is_full")
+                    .expect("lotus_ring_buffer_is_full extern declared");
+                let result_i32 = self
+                    .builder
+                    .build_call(
+                        is_full_fn,
+                        &[rb_field_ptr.into()],
+                        &format!("{}.is_full.call", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_ring_buffer_is_full returns i32")
+                    .into_int_value();
+                let zero = i32_t.const_int(0, false);
+                let result_i1 = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        result_i32,
+                        zero,
+                        &format!("{}.is_full.bool", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok(Some(Some((result_i1.into(), CodegenTy::Bool))))
+            }
             _ => unreachable!("is_synth guard"),
         }
     }
@@ -25344,6 +25853,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .module
                         .get_function("lotus_hashmap_destroy")
                         .expect("lotus_hashmap_destroy extern declared");
+                    self.builder
+                        .build_call(
+                            destroy_fn,
+                            &[slot_field_ptr.into()],
+                            &format!("{}.{}.destroy", locus_name, slot.name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Some(SlotForm::RingBuffer) => {
+                    // v1.x-FORM-5: free the ring buffer's backing
+                    // `buf`. The lotus_ring_buffer_t struct itself
+                    // is inline in the locus and dies with the
+                    // arena.
+                    let destroy_fn = self
+                        .module
+                        .get_function("lotus_ring_buffer_destroy")
+                        .expect("lotus_ring_buffer_destroy extern declared");
                     self.builder
                         .build_call(
                             destroy_fn,

@@ -183,8 +183,9 @@ Deferred (gated on design):
   work (lazy fallible-payload construction + subregion elision
   for non-allocating fn bodies) shipped alongside; the
   `form_vec_push` 10% (band (a)) gate is met. `@form(ring_buffer)`
-  remains a surface preview only, deferred until a driver
-  workload surfaces.
+  followed in v1.x-FORM-5 (fixed-capacity FIFO; push returns Bool,
+  pop is fallible(EmptyError); spec at `spec/forms.md`
+  § `@form(ring_buffer)`).
 
 Cut from roadmap (2026-05-12 design pass):
 
@@ -356,8 +357,9 @@ tree. Quick reference grouped by `std::*` namespace prefix:
 Aperio doesn't use parametric stdlib collection types (`Map<K,
 V>`, `Vec<T>`, `Set<T>`, etc.). Storage is locus-shaped via the
 `@form(...)` annotation machinery — see `spec/forms.md`. v1
-ships `@form(vec)` (the contiguous-buffer container);
-`@form(hashmap)` and `@form(ring_buffer)` arrive in v1.x-FORM-4.
+ships `@form(vec)` (contiguous-buffer; v1.x-FORM-2),
+`@form(hashmap)` (intrusive open-addressing; v1.x-FORM-4), and
+`@form(ring_buffer)` (fixed-capacity FIFO; v1.x-FORM-5).
 
 ### ~~`std::panic`~~ — not a thing
 

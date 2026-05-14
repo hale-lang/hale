@@ -699,6 +699,67 @@ dispatcher before normal locus-method lookup. The interpreter's
 backing structure does not need to match the C runtime's
 data-structure choices — only the observable semantics.
 
+## Form-ring-buffer runtime (v1.x-FORM-5)
+
+`@form(ring_buffer, cap = N)` lowers a pool capacity slot to an
+inline `lotus_ring_buffer_t` and synthesizes a fixed-capacity
+FIFO surface (push / pop / len / is_full). The cap is baked in
+at `lotus_ring_buffer_init` from the form annotation arg; the
+backing buffer is malloc'd once at locus birth and never grows.
+
+### C struct layout
+
+```c
+typedef struct {
+    size_t cap;        // fixed at init; never changes
+    size_t head;       // index of oldest element (next pop)
+    size_t len;        // current element count, 0..=cap
+    size_t elem_size;  // bytes per element
+    char  *buf;        // cap * elem_size bytes
+} lotus_ring_buffer_t;
+```
+
+Codegen emits the matching LLVM inline struct on the locus's
+pool slot; the slot's struct field IS the ring buffer (no
+indirection). Element-size is `sizeof(T)` from the cell type's
+LLVM `size_of`.
+
+### Primitive functions
+
+Defined in `crates/aperio-codegen/runtime/lotus_arena.c`
+(v1.x-FORM-5):
+
+| Function | Behavior |
+|----------|----------|
+| `void lotus_ring_buffer_init(void *rb, size_t cap, size_t elem_size)` | `malloc(cap * elem_size)`; head=len=0 |
+| `int  lotus_ring_buffer_push(void *rb, const void *src)` | 1=pushed, 0=full; wraps modulo cap |
+| `int  lotus_ring_buffer_pop(void *rb, void *out)` | 1=popped, 0=empty; advances head |
+| `int64_t lotus_ring_buffer_len(void *rb)` | Current element count |
+| `int  lotus_ring_buffer_is_full(void *rb)` | 1=full (len==cap), 0=not |
+| `void lotus_ring_buffer_destroy(void *rb)` | `free(buf)` at locus dissolve |
+
+### Failure shapes
+
+- `push` returns 0 when full → codegen converts to Bool false at
+  the language surface (`fn push(x: T) -> Bool`).
+- `pop` returns 0 when empty → codegen lazily allocates an
+  `EmptyError { kind: "empty" }` payload on the err path,
+  surfaced to the caller's `or` clause.
+- OOM during init (cap × elem_size too large to malloc) leaves
+  `buf == NULL`; subsequent push/pop see a 0-cap buffer and
+  refuse / fail. Routing OOM through the closure-violation
+  channel is deferred to a future hardening pass — the v1
+  contract is "fixed cap; if init can't allocate, the buffer
+  is permanently empty."
+
+### Interpreter parity
+
+The interpreter implements the same surface via the
+`SlotState::RingBuffer { cap, items: VecDeque<Value> }` variant
+and the `try_eval_form_ring_buffer_call` dispatcher. The deque
+backing differs from the C struct's circular array, but the
+observable push/pop/len/is_full semantics match.
+
 ## Runtime size budget
 
 The runtime should be small enough that a hello-world program

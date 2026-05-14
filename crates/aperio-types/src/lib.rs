@@ -1119,10 +1119,11 @@ mod tests {
     }
 
     #[test]
-    fn err_form_ring_buffer_still_deferred() {
-        // ring_buffer is the one form name that still rejects
-        // with "not yet implemented" — guards the FORM-4 split
-        // (hashmap shipped, ring_buffer pending).
+    fn err_form_ring_buffer_missing_cap() {
+        // v1.x-FORM-5: ring_buffer shipped but requires `cap = N`.
+        // Bare `@form(ring_buffer)` without the cap arg is a hard
+        // error — the backing buffer is fixed-capacity and the
+        // substrate needs the size at locus-birth time.
         let src = r#"
             @form(ring_buffer)
             locus L {
@@ -1134,8 +1135,44 @@ mod tests {
         assert!(
             diags
                 .iter()
-                .any(|d| d.message.contains("ring_buffer") && d.message.contains("not yet implemented")),
-            "expected ring_buffer-deferred diag, got: {:?}",
+                .any(|d| d.message.contains("ring_buffer") && d.message.contains("cap")),
+            "expected ring_buffer-needs-cap diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_form_ring_buffer_with_cap() {
+        // v1.x-FORM-5: ring_buffer with `cap = N` and one pool
+        // slot is the canonical shape — no diags expected.
+        let src = r#"
+            @form(ring_buffer, cap = 8)
+            locus L {
+                capacity { pool history of Int; }
+            }
+            fn main() { L { }; }
+        "#;
+        let diags = check(src);
+        assert!(diags.is_empty(), "expected no diags, got: {:?}", diags);
+    }
+
+    #[test]
+    fn err_form_ring_buffer_heap_slot() {
+        // ring_buffer recycles fixed-capacity cells (pool); a heap
+        // slot belongs to @form(vec) instead.
+        let src = r#"
+            @form(ring_buffer, cap = 4)
+            locus L {
+                capacity { heap history of Int; }
+            }
+            fn main() { L { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("requires a `pool`")),
+            "expected pool-required diag, got: {:?}",
             diags
         );
     }

@@ -54,6 +54,12 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
         known_names
             .entry("IndexError".to_string())
             .or_insert(zero);
+        known_names
+            .entry("KeyError".to_string())
+            .or_insert(zero);
+        known_names
+            .entry("EmptyError".to_string())
+            .or_insert(zero);
     }
 
     // Second pass: resolve and emit full TopSymbol entries.
@@ -389,6 +395,10 @@ fn register_locus(
             "hashmap" => {
                 let (value_ty, key_ty) = form_hashmap_value_and_key_ty(decl, known, scope);
                 synthesize_form_hashmap_methods(&mut methods, &value_ty, &key_ty);
+            }
+            "ring_buffer" => {
+                let cell_ty = form_ring_buffer_cell_ty(decl, known);
+                synthesize_form_ring_buffer_methods(&mut methods, &cell_ty);
             }
             _ => {}
         }
@@ -814,6 +824,67 @@ fn synthesize_form_hashmap_methods(
     });
 }
 
+/// v1.x-FORM-5: extract cell type T from a `@form(ring_buffer)`
+/// locus. Same shape as `form_vec_cell_ty` — the cell type is
+/// the (single) pool slot's `elem_ty`. Returns `Ty::Unknown` if
+/// the shape is invalid (shape diags already emitted).
+fn form_ring_buffer_cell_ty(
+    decl: &LocusDecl,
+    known: &BTreeMap<String, Span>,
+) -> Ty {
+    for member in &decl.members {
+        if let LocusMember::Capacity(cb) = member {
+            if let Some(slot) = cb.slots.first() {
+                return resolve_type_expr(&slot.elem_ty, known);
+            }
+        }
+    }
+    Ty::Unknown
+}
+
+/// v1.x-FORM-5: synthesize the standard `@form(ring_buffer)`
+/// method set over cell type T. Per `spec/forms.md`:
+///   `push(x: T) -> Bool`                         (infallible; false = full)
+///   `pop() -> T fallible(EmptyError)`
+///   `len() -> Int`                               (infallible)
+///   `is_full() -> Bool`                          (infallible)
+///
+/// `push` returns a Bool indicating success — the buffer is
+/// fixed-capacity and may refuse a push when full. Callers
+/// decide drop vs backpressure based on the result.
+/// `pop` is the fallible counterpart: `EmptyError` payload
+/// when the buffer is empty.
+fn synthesize_form_ring_buffer_methods(
+    methods: &mut Vec<MethodInfo>,
+    cell_ty: &Ty,
+) {
+    let empty_err = Ty::Named("EmptyError".to_string());
+    methods.push(MethodInfo {
+        name: "push".to_string(),
+        params: vec![cell_ty.clone()],
+        ret: Ty::Prim(PrimType::Bool),
+        fallible: None,
+    });
+    methods.push(MethodInfo {
+        name: "pop".to_string(),
+        params: Vec::new(),
+        ret: cell_ty.clone(),
+        fallible: Some(empty_err),
+    });
+    methods.push(MethodInfo {
+        name: "len".to_string(),
+        params: Vec::new(),
+        ret: Ty::Prim(PrimType::Int),
+        fallible: None,
+    });
+    methods.push(MethodInfo {
+        name: "is_full".to_string(),
+        params: Vec::new(),
+        ret: Ty::Prim(PrimType::Bool),
+        fallible: None,
+    });
+}
+
 /// v1.x-FORM-1 PR3b: inject form-specific stdlib types into the
 /// top scope so synthesized method signatures' payload types
 /// resolve. v1 injects `IndexError` (used by `@form(vec)`)
@@ -867,6 +938,25 @@ pub(crate) fn inject_form_stdlib_types(scope: &mut TopScope) {
             "KeyError".to_string(),
             TopSymbol::Type(TypeInfo {
                 name: "KeyError".to_string(),
+                kind: TypeKind::Struct(vec![FieldInfo {
+                    name: "kind".to_string(),
+                    ty: Ty::Prim(PrimType::String),
+                    has_default: false,
+                    span: zero,
+                }]),
+                span: zero,
+            }),
+        );
+    }
+    // v1.x-FORM-5: EmptyError for @form(ring_buffer)'s pop()
+    // fallible. Same minimal-shape rationale as KeyError —
+    // a single `kind` tag is enough at v1; richer context can
+    // be constructed at the `or` substitute site.
+    if !scope.symbols.contains_key("EmptyError") {
+        scope.symbols.insert(
+            "EmptyError".to_string(),
+            TopSymbol::Type(TypeInfo {
+                name: "EmptyError".to_string(),
                 kind: TypeKind::Struct(vec![FieldInfo {
                     name: "kind".to_string(),
                     ty: Ty::Prim(PrimType::String),

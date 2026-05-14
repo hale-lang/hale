@@ -1067,6 +1067,102 @@ void lotus_hashmap_destroy(void *map_ptr) {
 }
 
 /*
+ * @form(ring_buffer) — fixed-capacity FIFO with push-back / pop-front.
+ *
+ * Pre-allocated at locus birth (single malloc of `cap × elem_size`
+ * bytes); never grows. `push` returns 0 when the buffer is full
+ * (caller decides drop vs. backpressure). `pop` returns 0 when
+ * empty. Head/tail indices wrap modulo cap; the "ring" lives in
+ * a flat contiguous buffer, no per-element link overhead.
+ *
+ * Layout matches the inline LLVM struct codegen emits:
+ *
+ *     struct lotus_ring_buffer {
+ *         size_t cap;        // fixed at init; never changes
+ *         size_t head;       // index of oldest element (next pop)
+ *         size_t len;        // current element count (0..cap)
+ *         size_t elem_size;  // bytes per element
+ *         char  *buf;        // cap * elem_size bytes
+ *     }
+ *
+ * The 5-field shape mirrors @form(vec)'s 3-field
+ * { cap, len, buf } and @form(hashmap)'s 6-field
+ * { cap, len, key_size, value_size, key_type_tag, slots } — same
+ * "inline header + heap-malloc'd backing buffer" pattern, same
+ * codegen-emits-inline-struct discipline. Fixed cap means no
+ * doubling realloc; the entire buffer lives until the locus
+ * dissolves.
+ */
+
+typedef struct lotus_ring_buffer {
+    size_t cap;
+    size_t head;
+    size_t len;
+    size_t elem_size;
+    char  *buf;
+} lotus_ring_buffer_t;
+
+void lotus_ring_buffer_init(void *rb_ptr, size_t cap, size_t elem_size) {
+    if (!rb_ptr) return;
+    lotus_ring_buffer_t *rb = (lotus_ring_buffer_t *)rb_ptr;
+    rb->cap = cap;
+    rb->head = 0;
+    rb->len = 0;
+    rb->elem_size = elem_size;
+    /* malloc rather than calloc — push always writes before any
+     * read sees the slot. */
+    rb->buf = (char *)malloc(cap * elem_size);
+}
+
+/* Returns 1 on success, 0 when full. v1 contract: "push returns
+ * false when full"; the spec preview names the synthesized method
+ * `push(x: T) -> Bool` (infallible — full is a Bool result, not
+ * a fallible error). */
+int lotus_ring_buffer_push(void *rb_ptr, const void *src) {
+    if (!rb_ptr || !src) return 0;
+    lotus_ring_buffer_t *rb = (lotus_ring_buffer_t *)rb_ptr;
+    if (rb->len == rb->cap) return 0;
+    size_t tail = (rb->head + rb->len) % rb->cap;
+    memcpy(rb->buf + tail * rb->elem_size, src, rb->elem_size);
+    rb->len++;
+    return 1;
+}
+
+/* Returns 1 on success (and writes `elem_size` bytes into `out`),
+ * 0 when empty. The synthesized `pop()` codegen converts the
+ * Bool into the fallible(EmptyError) shape. */
+int lotus_ring_buffer_pop(void *rb_ptr, void *out) {
+    if (!rb_ptr || !out) return 0;
+    lotus_ring_buffer_t *rb = (lotus_ring_buffer_t *)rb_ptr;
+    if (rb->len == 0) return 0;
+    memcpy(out, rb->buf + rb->head * rb->elem_size, rb->elem_size);
+    rb->head = (rb->head + 1) % rb->cap;
+    rb->len--;
+    return 1;
+}
+
+size_t lotus_ring_buffer_len(void *rb_ptr) {
+    if (!rb_ptr) return 0;
+    return ((lotus_ring_buffer_t *)rb_ptr)->len;
+}
+
+int lotus_ring_buffer_is_full(void *rb_ptr) {
+    if (!rb_ptr) return 0;
+    lotus_ring_buffer_t *rb = (lotus_ring_buffer_t *)rb_ptr;
+    return rb->len == rb->cap ? 1 : 0;
+}
+
+void lotus_ring_buffer_destroy(void *rb_ptr) {
+    if (!rb_ptr) return;
+    lotus_ring_buffer_t *rb = (lotus_ring_buffer_t *)rb_ptr;
+    free(rb->buf);
+    rb->buf = NULL;
+    rb->cap = 0;
+    rb->head = 0;
+    rb->len = 0;
+}
+
+/*
  * Cooperative scheduler — bus dispatch queue (m26 + m28b stage 1).
  *
  * Per The Design / lotus, every bus dispatch is a substrate
