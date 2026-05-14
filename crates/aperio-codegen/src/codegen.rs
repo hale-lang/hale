@@ -1063,6 +1063,64 @@ fn expr_definitely_non_allocating(e: &Expr) -> bool {
     }
 }
 
+/// True iff `l`'s arena can be elided at instantiation —
+/// `__arena` points at the caller's current arena instead of a
+/// fresh `lotus_arena_create()`, and dissolve skips
+/// `lotus_arena_destroy`. Mirror of the FORM-3 fn-elision: when
+/// nothing in the locus's lifecycle or methods allocates, the
+/// per-locus arena is dead substrate, and the
+/// `malloc(arena_struct) + malloc(chunk) + ... + free` pair is
+/// pure overhead.
+///
+/// Conservative — rejects on any structural arena consumer
+/// (capacity slots, bus subscriptions, closures, failure
+/// handlers) or any method body that doesn't pass the FORM-3
+/// non-allocating predicate. The `Empty { }` shape passes;
+/// loci with bodies that do real work generally won't.
+///
+/// Only applies to `AcquireStrategy::Fresh` instantiations.
+/// Subregion/RecpoolFixed/RecpoolSlab children are governed
+/// by their parent's projection-class invariants and stay on
+/// the original path.
+fn locus_arena_elidable(l: &LocusDecl) -> bool {
+    // Structural disqualifiers — these consume arena at
+    // instantiation regardless of method-body content.
+    for m in &l.members {
+        match m {
+            LocusMember::Capacity(c) if !c.slots.is_empty() => return false,
+            LocusMember::Bus(b) if !b.members.is_empty() => return false,
+            LocusMember::Closure(_) => return false,
+            LocusMember::Failure(_) => return false,
+            _ => {}
+        }
+    }
+    // All method-like bodies non-allocating.
+    for m in &l.members {
+        let body = match m {
+            LocusMember::Lifecycle(lc) => &lc.body,
+            LocusMember::Mode(md) => &md.body,
+            LocusMember::Fn(fd) => &fd.body,
+            _ => continue,
+        };
+        if !fn_body_definitely_non_allocating(&body.stmts) {
+            return false;
+        }
+    }
+    // All param-default expressions non-allocating.
+    for m in &l.members {
+        if let LocusMember::Params(p) = m {
+            for param in &p.params {
+                if let ParamInit::Value(expr) = &param.init {
+                    if !expr_definitely_non_allocating(expr) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
 /// True iff any method body of `l` references `self.children`.
 /// The fixed-cap `__children[]` array on accept-declaring loci
 /// (see CHILDREN_CAP) is only consumed by `for child in
@@ -1514,6 +1572,18 @@ struct LocusInfo<'ctx> {
     /// `struct_field_idx` points at the `__slot_<name>: ptr` field
     /// appended to the locus struct layout.
     capacity_slots: Vec<CapacitySlotLayout>,
+    /// True when the locus's per-instantiation arena is dead
+    /// substrate: nothing in any lifecycle/mode/user-fn body
+    /// allocates, no capacity slots, no bus subscriptions, no
+    /// closures/failure handlers. Computed once at locus declare
+    /// time via `locus_arena_elidable`. When set AND the
+    /// instantiation goes through `AcquireStrategy::Fresh`,
+    /// `__arena` is initialized with the caller's current arena
+    /// instead of a fresh `lotus_arena_create()`, and the
+    /// dissolve cascade skips `lotus_arena_destroy` for this
+    /// locus's slot 0. Mirrors the FORM-3 fn-body elision
+    /// (precedent at `fn_body_definitely_non_allocating` users).
+    arena_elidable: bool,
 }
 
 /// F.22 slot record carried on every LocusInfo. v1 surface:
@@ -7066,6 +7136,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 projection_class,
                 schedule_class,
                 capacity_slots,
+                arena_elidable: locus_arena_elidable(l),
             },
         );
         Ok(())
@@ -19677,16 +19748,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         )> = None;
         let new_arena = match acquire_strategy {
             AcquireStrategy::Fresh => {
-                let arena_create = self
-                    .module
-                    .get_function("lotus_arena_create")
-                    .expect("lotus_arena_create declared");
-                self.builder
-                    .build_call(arena_create, &[], &format!("{}.arena", locus_name))
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .try_as_basic_value()
-                    .left()
-                    .expect("arena_create returns ptr")
+                if info.arena_elidable {
+                    // Locus body is provably non-allocating
+                    // (see `locus_arena_elidable`). Point
+                    // `__arena` at the caller's current arena
+                    // instead of a fresh malloc'd one — nothing
+                    // will allocate against it, and the matching
+                    // dissolve skips `lotus_arena_destroy`.
+                    let caller_arena = self.current_arena_ptr()?;
+                    caller_arena.into()
+                } else {
+                    let arena_create = self
+                        .module
+                        .get_function("lotus_arena_create")
+                        .expect("lotus_arena_create declared");
+                    self.builder
+                        .build_call(arena_create, &[], &format!("{}.arena", locus_name))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .try_as_basic_value()
+                        .left()
+                        .expect("arena_create returns ptr")
+                }
             }
             AcquireStrategy::Subregion => {
                 let parent_self_ptr = parent_self_ptr_opt
@@ -25077,6 +25159,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self_ptr: PointerValue<'ctx>,
         locus_name: &str,
     ) -> Result<(), CodegenError> {
+        // Arena-elision counterpart: when `__arena` was pointed
+        // at the caller's arena at instantiation (see
+        // `locus_arena_elidable` + the matching branch in
+        // `lower_locus_instantiation`'s Fresh-strategy path),
+        // there's nothing to tear down — no bus subscriptions
+        // (predicate rejects them), no capacity slots (rejected),
+        // and the arena belongs to someone else. Calling
+        // `lotus_arena_destroy` here would free a live arena
+        // that the surrounding fn still owns. Bail.
+        if info.arena_elidable {
+            return Ok(());
+        }
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         // Deregister from the bus router BEFORE freeing the arena.
         // Without this step, a stale entry in the C-runtime entries
