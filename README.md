@@ -52,6 +52,15 @@ dissolves. The result printed is `sum=10`.
 
 ## Try it
 
+**Prerequisites:** a Rust toolchain (1.95+), **LLVM 18** dev
+libraries with `llvm-config-18` on `PATH` (or
+`LLVM_SYS_180_PREFIX` set), `clang` (used as the linker for
+`aperio build`), and `git`. Platform-specific install commands
+for Debian/Ubuntu, macOS Homebrew, and Fedora are in
+[`docs/src/getting-started/install.md`](./docs/src/getting-started/install.md).
+LLVM 17 / 19 / 20 will not work — the codegen crate pins
+`inkwell` to `llvm18-0`.
+
 ```sh
 git clone https://github.com/aperio-lang/aperio
 cd aperio
