@@ -1,0 +1,49 @@
+// locus_instantiation — full birth+dissolve cycle per iteration.
+//
+// Originally a statement-position `Empty {}` in a loop, but the
+// post-wrap codegen now correctly proves that instantiating a
+// stateless locus with no birth/run/dissolve bodies has no
+// observable side effects, and DCE elides the entire loop (60ns
+// for two clock_gettime calls back-to-back in the disassembly).
+//
+// To keep the bench measuring real arena_create + struct_init +
+// arena_destroy work, the loop now goes through a helper fn that
+// instantiates the locus, reads a field through a method, and
+// returns the value. The let-bound locus dissolves at the helper
+// fn's scope exit, and the returned value is XOR'd into a sink
+// that gets printed — so neither the instantiation nor the field
+// read can be elided.
+//
+// Caveat: this now also measures one m49 free-fn call per iter
+// (~3ns from fn_call bench), so a small slice of the total is
+// fn-call overhead rather than pure locus instantiation. The
+// fn-call cost is the same in the Go/Node/Python siblings.
+
+locus Empty {
+    params { v: Int = 0; }
+    fn read() -> Int { return self.v; }
+}
+
+fn instantiate_one(seed: Int) -> Int {
+    let e = Empty { v: seed };
+    return e.read();
+}
+
+fn main() {
+    let iters = 100000;
+    let pid_seed = std::process::pid();
+    let t0 = std::time::monotonic();
+    let mut i = 0;
+    let mut sink = 0;
+    while i < iters {
+        sink = sink ^ instantiate_one(i + pid_seed);
+        i = i + 1;
+    }
+    let t1 = std::time::monotonic();
+    print("iters=");
+    println(iters);
+    print("sink=");
+    println(sink);
+    print("elapsed_ns=");
+    println(t1 - t0);
+}

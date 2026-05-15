@@ -46,6 +46,24 @@ examples/*/main
 # match per example directory the way apps/ does.
 examples/14-projection-classes/14-projection-classes
 
+# Bench harness output (per-run JSON results). Sources + baselines stay tracked.
+bench/results/
+# Compiled bench binaries land next to their .ap source. Source
+# files for each language stay tracked (.ap, .go, .js, .py); the
+# compiled binary that lands next to them does not.
+bench/micro/*
+!bench/micro/*.ap
+!bench/micro/*.go
+!bench/micro/*.js
+!bench/micro/*.py
+bench/app/*
+!bench/app/*.ap
+!bench/app/*.go
+!bench/app/*.js
+!bench/app/*.py
+bench/c-twins/*
+!bench/c-twins/*.c
+
 # Ferryman recognition output. Lands in <repo>/.ferryman/ wherever
 # ferryman is pointed; the apps/operational-graph/fixture path
 # is the in-repo smoke-test target.

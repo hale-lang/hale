@@ -1,0 +1,74 @@
+// tree_fanout — coordinated workload, depth=2 with K lateral siblings.
+//
+// Tests the canonical "coordinator + K workers" shape. Each
+// Worker carries a batch_size and computes a partial sum; the
+// Coordinator's accept() calls into the worker's compute() and
+// aggregates results into its own state.
+//
+// Per F.7, accept() runs BEFORE child birth and sees the child's
+// declared params. Methods on the child are callable from accept
+// because they read params, not running state. This bench uses
+// that to do synchronous fanout: each worker is statement-pos
+// (fire-and-forget) but its compute() runs to completion inside
+// the parent's accept() before the worker dissolves.
+//
+// What this exercises:
+//   - Hierarchical region memory: parent arena holds K sub-region
+//     workers (chunked sub-region per worker per memory.md).
+//   - Cross-locus method dispatch from parent accept() into
+//     child.compute() — vertical-only flow per F.6/F.11.
+//   - Aggregation into parent state across child lifetimes.
+//
+// Compare to Go: a parent struct that loops K times constructing
+// Worker structs and calling compute() on each. Same coordination
+// shape, no hierarchy machinery — just method calls + GC.
+
+locus Worker {
+    params {
+        id: Int = 0;
+        batch_size: Int = 2000;
+    }
+    fn compute() -> Int {
+        let mut sum = 0;
+        let mut i = 0;
+        while i < self.batch_size {
+            sum = sum + i;
+            i = i + 1;
+        }
+        return sum;
+    }
+}
+
+locus Coordinator : projection chunked {
+    params {
+        num_workers: Int = 20;
+        items_each: Int = 2000;
+        total: Int = 0;
+    }
+    accept(w: Worker) {
+        self.total = self.total + w.compute();
+    }
+    run() {
+        let mut i = 0;
+        while i < self.num_workers {
+            Worker { id: i, batch_size: self.items_each };
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    // K=20 chosen because accept() in a loop hits the v1 codegen
+    // accumulation cliff at k≈25 (see coord_with_churn.ap). M=2000
+    // per worker is the per-child work amortizing the cliff cost.
+    let k = 20;
+    let m = 2000;
+    let t0 = std::time::monotonic();
+    let c = Coordinator { num_workers: k, items_each: m };
+    let t1 = std::time::monotonic();
+    print("k="); println(k);
+    print("m="); println(m);
+    print("total_ops="); println(k * m);
+    print("total="); println(c.total);
+    print("elapsed_ns="); println(t1 - t0);
+}

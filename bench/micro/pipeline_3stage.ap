@@ -1,0 +1,83 @@
+// pipeline_3stage — coordinated workload, depth=3 sequential.
+//
+// Three loci, one bus topology:
+//   Source → "event"    → Filter → "filtered" → Sink
+//
+// Source publishes N events; Filter subscribes, drops odd values,
+// republishes the even ones; Sink subscribes to filtered and sums.
+//
+// What this exercises:
+//   - Multi-stage bus coordination across THREE loci, two subjects.
+//   - Two payload memcpy hops per even event (Source→Filter,
+//     Filter→Sink).
+//   - The cooperative scheduler's drain semantics — events queued
+//     during Source's run() get processed by Filter, whose
+//     publishes get queued and processed by Sink, all before
+//     the timed region closes.
+//
+// The `yield;` after Source forces a bus-queue drain inside the
+// timed region; without it, the queue wouldn't flush until main's
+// scope exit and t1 would only capture the source's enqueue cost.
+//
+// Compare to Go: a Source struct that loops N times calling
+// directly into a Filter struct's onEvent method, which may call
+// Sink's onFiltered. No queue, no memcpy. The shape is "three
+// components, two hops" but Aperio's bus pays for what Go's
+// direct call doesn't.
+
+type Event    { value: Int; }
+type Filtered { value: Int; }
+
+locus Source {
+    params { count: Int = 5000; }
+    bus { publish "event" of type Event; }
+    run() {
+        let mut i = 0;
+        while i < self.count {
+            "event" <- Event { value: i };
+            i = i + 1;
+        }
+    }
+}
+
+locus Filter {
+    params { passed: Int = 0; }
+    bus {
+        subscribe "event" as on_event of type Event;
+        publish "filtered" of type Filtered;
+    }
+    fn on_event(e: Event) {
+        if e.value % 2 == 0 {
+            self.passed = self.passed + 1;
+            "filtered" <- Filtered { value: e.value };
+        }
+    }
+}
+
+locus Sink {
+    params { count: Int = 0; sum: Int = 0; }
+    bus { subscribe "filtered" as on_filtered of type Filtered; }
+    fn on_filtered(f: Filtered) {
+        self.count = self.count + 1;
+        self.sum = self.sum + f.value;
+    }
+}
+
+fn main() {
+    // N=50000: previous 5k accumulation cliff was lifted by the
+    // compiler's bus subsystem work; 50k drops run-to-run spread
+    // from ~10% to ~3% so sub-10% pubsub improvements are visible.
+    // Filter passes even values (half), so Sink sees 25000 events.
+    let n = 50000;
+    let filter = Filter { };
+    let sink = Sink { };
+    let t0 = std::time::monotonic();
+    Source { count: n };
+    yield;  // force bus drain before stopping the clock
+    let t1 = std::time::monotonic();
+    print("n="); println(n);
+    print("filter_passed="); println(filter.passed);
+    print("sink_count="); println(sink.count);
+    print("sink_sum="); println(sink.sum);
+    print("elapsed_ns="); println(t1 - t0);
+}

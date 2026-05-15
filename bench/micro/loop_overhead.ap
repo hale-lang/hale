@@ -1,0 +1,36 @@
+// loop_overhead — tight loop with non-elidable integer work.
+//
+// Originally a pure empty while loop, but the post-wrap codegen
+// is aggressive enough to symbolically prove the loop's final
+// state and constant-fold the entire loop away (the compiler
+// even handles iters = 100M + pid() correctly via cmovg).
+//
+// To keep the bench measuring something, the loop body now XORs
+// the counter into an accumulator seeded with pid. XOR is:
+//   - Bounded (no overflow concerns in any language)
+//   - Apparently not folded by the v1 compiler despite XOR of
+//     consecutive integers having a closed form
+//   - Cheap (one cycle on any modern ISA)
+//
+// Measures: loop-construct + integer-XOR throughput. Still
+// useful as a "what's the cost of a tight idiomatic loop"
+// baseline; not "pure loop overhead" anymore (which appears
+// to be zero in v1+ codegen — a real compiler win).
+
+fn main() {
+    let iters = 100000000 + std::process::pid();
+    let t0 = std::time::monotonic();
+    let mut i = 0;
+    let mut acc = std::process::pid();
+    while i < iters {
+        acc = acc ^ i;
+        i = i + 1;
+    }
+    let t1 = std::time::monotonic();
+    print("iters=");
+    println(iters);
+    print("acc=");
+    println(acc);
+    print("elapsed_ns=");
+    println(t1 - t0);
+}

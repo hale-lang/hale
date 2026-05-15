@@ -1,0 +1,40 @@
+// form_hashmap_set — @form(hashmap) Int-keyed insert path.
+//
+// FORM-4 microbench target. N inserts of unique keys into an
+// open-addressing hashmap. The keys grow monotonically so no
+// duplicates fire the update path; every set hits a fresh slot
+// (modulo collisions resolved via open-addressing probing).
+//
+// What it measures: key hash + slot probe + entry memcpy +
+// (occasional) grow/rehash cost. The `lotus_hashmap_*` runtime's
+// growth policy and load-factor threshold determine how often
+// the rehash fires across N inserts.
+
+type Entry {
+    id: Int;
+    v: Int;
+}
+
+@form(hashmap)
+locus IntMap {
+    capacity { pool entries of Entry indexed_by id; }
+}
+
+fn main() {
+    // 1M chosen as the per-bench workload size: scales linearly
+    // here (no accumulation cliff observed up to 2M during smoke
+    // testing). The set() synthesized method doesn't hit the
+    // per-call subregion path that caps form_vec_push at 500k.
+    let n = 1000000;
+    let m = IntMap { };
+    let t0 = std::time::monotonic();
+    let mut i = 0;
+    while i < n {
+        m.set(Entry { id: i, v: i + 1 });
+        i = i + 1;
+    }
+    let t1 = std::time::monotonic();
+    print("n="); println(n);
+    print("len="); println(m.len());
+    print("elapsed_ns="); println(t1 - t0);
+}

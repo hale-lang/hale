@@ -1,0 +1,27 @@
+// fn_call — free-fn call overhead.
+//
+// Per m49: every non-main free fn opens an arena subregion at
+// entry and tears it down at return. This bench isolates that
+// per-call cost from any user work in the body.
+
+fn noop(x: Int) -> Int {
+    return x;
+}
+
+fn main() {
+    let iters = 10000000;
+    let t0 = std::time::monotonic();
+    let mut i = 0;
+    let mut acc = 0;
+    while i < iters {
+        acc = noop(i);
+        i = i + 1;
+    }
+    let t1 = std::time::monotonic();
+    print("iters=");
+    println(iters);
+    print("acc=");
+    println(acc);
+    print("elapsed_ns=");
+    println(t1 - t0);
+}

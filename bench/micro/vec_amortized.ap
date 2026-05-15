@@ -1,0 +1,43 @@
+// vec_amortized — amortized-shape sibling to form_vec_push/get.
+//
+// Times the whole "build it, consume it, free it" arc as one
+// operation: push N ints, fold them via N indexed reads, dissolve.
+// Where form_vec_push and form_vec_get isolate per-op cost, this
+// bench measures the design's actual sweet spot — the arena (and
+// the vec's malloc'd buf) live for one work cycle and are freed
+// wholesale at the end.
+//
+// Go's equivalent: append + range-fold + GC. Aperio's wholesale
+// free should be cheaper than Go's GC tracking the slice through
+// the function's lifetime, provided the per-op costs don't
+// dominate.
+
+@form(vec)
+locus IntVec {
+    capacity { heap items of Int; }
+}
+
+fn main() {
+    // 200k matches form_vec_get's ceiling — push + get together
+    // saturate the accumulation budget at this count.
+    let n = 200000;
+    let t0 = std::time::monotonic();
+
+    let v = IntVec { };
+    let mut i = 0;
+    while i < n {
+        v.push(i);
+        i = i + 1;
+    }
+    let mut sum = 0;
+    let mut j = 0;
+    while j < n {
+        sum = sum + (v.get(j) or raise);
+        j = j + 1;
+    }
+
+    let t1 = std::time::monotonic();
+    print("n="); println(n);
+    print("sum="); println(sum);
+    print("elapsed_ns="); println(t1 - t0);
+}

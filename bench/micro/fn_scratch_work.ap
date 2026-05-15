@@ -1,0 +1,62 @@
+// fn_scratch_work — m49 subregion paying for real work inside.
+//
+// Where fn_call.ap measures the per-call subregion overhead with
+// a `return x` body, this bench amortizes that overhead against
+// genuine allocation work inside each call.
+//
+// Each do_work() call:
+//   - Opens its m49 implicit-locus subregion at entry.
+//   - Instantiates a local @form(vec) inside the subregion.
+//   - Pushes per_call ints (vec.buf grows from system allocator).
+//   - Folds them.
+//   - Returns the sum.
+//   - Wholesale-frees the subregion + the vec's destroy fires.
+//
+// Total allocation budget = calls × per_call. The subregion
+// lifecycle pays only once per `calls` iteration, not once per
+// allocation.
+//
+// Compare to Go: 100 fn calls, each builds + folds a local
+// []int. Go's escape analysis may stack-allocate; if it heap-
+// allocates, GC tracks each slice through the call.
+
+@form(vec)
+locus IntVec {
+    capacity { heap items of Int; }
+}
+
+fn do_work(n: Int) -> Int {
+    let v = IntVec { };
+    let mut i = 0;
+    while i < n {
+        v.push(i);
+        i = i + 1;
+    }
+    let mut sum = 0;
+    let mut j = 0;
+    while j < n {
+        sum = sum + (v.get(j) or raise);
+        j = j + 1;
+    }
+    return sum;
+}
+
+fn main() {
+    // 100 × 1000 = 100k total ops, well under the @form(vec)
+    // accumulation ceiling. Each call's vec is freed at return,
+    // so peak memory stays bounded to one per_call's worth.
+    let calls = 100;
+    let per_call = 1000;
+    let t0 = std::time::monotonic();
+    let mut total = 0;
+    let mut c = 0;
+    while c < calls {
+        total = total + do_work(per_call);
+        c = c + 1;
+    }
+    let t1 = std::time::monotonic();
+    print("calls="); println(calls);
+    print("per_call="); println(per_call);
+    print("total="); println(total);
+    print("elapsed_ns="); println(t1 - t0);
+}

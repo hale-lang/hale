@@ -1,0 +1,40 @@
+// form_vec_get — @form(vec) indexed read.
+//
+// FORM-3 microbench target. Populate 1M elements once (outside
+// timing), then 1M `get(i) or raise` calls in sequence. Measures
+// the bounds-check + load + fallible-unwrap path.
+
+@form(vec)
+locus IntVec {
+    capacity { heap items of Int; }
+}
+
+fn main() {
+    // 200k chosen empirically: 300k segfaults. The bench does
+    // 2× the work of form_vec_push (populate + read), so it
+    // saturates the accumulation budget earlier.
+    let iters = 200000;
+    let v = IntVec { };
+
+    // Populate (outside timing).
+    let mut i = 0;
+    while i < iters {
+        v.push(i);
+        i = i + 1;
+    }
+
+    let t0 = std::time::monotonic();
+    let mut j = 0;
+    let mut acc = 0;
+    while j < iters {
+        acc = v.get(j) or raise;
+        j = j + 1;
+    }
+    let t1 = std::time::monotonic();
+    print("iters=");
+    println(iters);
+    print("acc=");
+    println(acc);
+    print("elapsed_ns=");
+    println(t1 - t0);
+}

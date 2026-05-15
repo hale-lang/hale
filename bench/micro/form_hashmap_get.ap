@@ -1,0 +1,46 @@
+// form_hashmap_get — @form(hashmap) Int-keyed lookup path.
+//
+// FORM-4 microbench target. Populate N entries once (outside
+// timing), then N `get(key) or raise` calls in sequence. Every
+// lookup is a hit; the bench measures hash + probe + entry-load
+// + fallible-unwrap cost on the success path.
+
+type Entry {
+    id: Int;
+    v: Int;
+}
+
+@form(hashmap)
+locus IntMap {
+    capacity { pool entries of Entry indexed_by id; }
+}
+
+fn main() {
+    // 150k chosen empirically: form_hashmap_set scales clean to
+    // 1M, but set+get together cliffs at 200k under v1 codegen.
+    // The get() success path returns an Entry value that goes
+    // through fallible-unwrap, paying per-call machinery the
+    // pure-write set() path skips.
+    let n = 150000;
+    let m = IntMap { };
+
+    // Populate outside the timed region.
+    let mut i = 0;
+    while i < n {
+        m.set(Entry { id: i, v: i + 1 });
+        i = i + 1;
+    }
+
+    let t0 = std::time::monotonic();
+    let mut j = 0;
+    let mut acc = 0;
+    while j < n {
+        let e = m.get(j) or raise;
+        acc = acc + e.v;
+        j = j + 1;
+    }
+    let t1 = std::time::monotonic();
+    print("n="); println(n);
+    print("acc="); println(acc);
+    print("elapsed_ns="); println(t1 - t0);
+}

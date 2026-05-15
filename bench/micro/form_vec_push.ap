@@ -1,0 +1,31 @@
+// form_vec_push — @form(vec) growable buffer, append-only.
+//
+// FORM-3 microbench target. 1M push(Int) into a single vec;
+// growth policy doubles cap on overflow (4 → 8 → ... → 1M+1).
+// Measures the lowered `lotus_vec_push` path including realloc
+// cost across ~18 growth events.
+
+@form(vec)
+locus IntVec {
+    capacity { heap items of Int; }
+}
+
+fn main() {
+    // 500k chosen empirically: 1M segfaults under v1 codegen.
+    // Signal at 500k is ~3ms across ~17 doubling-grows.
+    let iters = 500000;
+    let v = IntVec { };
+    let t0 = std::time::monotonic();
+    let mut i = 0;
+    while i < iters {
+        v.push(i);
+        i = i + 1;
+    }
+    let t1 = std::time::monotonic();
+    print("iters=");
+    println(iters);
+    print("len=");
+    println(v.len());
+    print("elapsed_ns=");
+    println(t1 - t0);
+}

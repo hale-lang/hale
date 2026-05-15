@@ -1,0 +1,54 @@
+// bus_dispatch — publish/subscribe round-trip.
+//
+// Each iteration: publisher emits a typed message; subscriber's
+// handler enqueues via the global cooperative queue; drain at
+// scope-exit fires the handler. Measures memcpy-into-arena +
+// queue enqueue + subject match + handler dispatch.
+
+type Tick {
+    n: Int;
+}
+
+locus Counter {
+    params {
+        count: Int = 0;
+    }
+    bus {
+        subscribe "bench.tick" as on_tick of type Tick;
+    }
+    fn on_tick(t: Tick) {
+        self.count = self.count + 1;
+    }
+}
+
+locus Pub {
+    params { iters: Int = 10000; }
+    bus {
+        publish "bench.tick" of type Tick;
+    }
+    run() {
+        let mut i = 0;
+        while i < self.iters {
+            "bench.tick" <- Tick { n: i };
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    // 100k: cliff at 10k was lifted by compiler. Bumped up
+    // from 10k because at 10k single-run variance was ±25%,
+    // swamping ~10% improvements. 100k drops relative noise
+    // to ~5% (variance scales as sqrt(N)).
+    let iters = 100000;
+    let c = Counter { };
+    let t0 = std::time::monotonic();
+    Pub { iters: iters };
+    let t1 = std::time::monotonic();
+    print("iters=");
+    println(iters);
+    print("count=");
+    println(c.count);
+    print("elapsed_ns=");
+    println(t1 - t0);
+}

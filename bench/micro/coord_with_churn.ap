@@ -1,0 +1,53 @@
+// coord_with_churn — chunked-class parent accepting + dissolving K children.
+//
+// Tests F.3 (per-arena defrag via free-list) and the chunked
+// projection class's per-coordinatee sub-region allocator. Each
+// child gets a sub-region of the parent's arena via
+// `lotus_arena_create_subregion`; when the child dissolves, its
+// slot returns to the parent's free-list so peak slot space
+// stays O(concurrent children alive) ≈ 1, not O(K).
+//
+// Per F.7: parent's accept() runs before child birth. With an
+// empty accept body the per-child overhead is dominated by:
+// sub-region acquire + child struct init + child dissolve +
+// sub-region release.
+//
+// Compare to Go: a parent struct with a loop that constructs +
+// discards Worker values. Escape analysis likely stack-allocates
+// the Workers; if it heap-allocates, GC accumulates until the
+// next sweep.
+//
+// CILIFF: k=20 chosen because parent.accept(child) in a loop
+// triggers a segfault at k≈25 under v1 codegen, regardless of
+// projection-class annotation (tested both `: projection chunked`
+// and `: projection rich` — both fail). Statement-position
+// children WITHOUT accept() lift the ceiling to 50k+, but that
+// also drops the parent to rich-class default and skips the
+// chunked sub-region machinery this bench wants to exercise.
+// When the accumulation fix lands, raise k by 3-4 orders of
+// magnitude.
+
+locus Worker {
+    params { n: Int = 0; }
+}
+
+locus Coord : projection chunked {
+    params { batch: Int = 20; }
+    accept(w: Worker) { }
+    run() {
+        let mut i = 0;
+        while i < self.batch {
+            Worker { n: i };
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    let k = 20;
+    let t0 = std::time::monotonic();
+    Coord { batch: k };
+    let t1 = std::time::monotonic();
+    print("k="); println(k);
+    print("elapsed_ns="); println(t1 - t0);
+}

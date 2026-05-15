@@ -1,0 +1,92 @@
+{
+  "updated_at": "2026-05-14T18:15:00Z",
+  "benches": {
+    "bus_dispatch": {
+      "kind": "micro",
+      "elapsed_ns": 8497834,
+      "maxrss_kb": 55400,
+      "tolerance": 0.30,
+      "note": "iters=100k (was 10k); mean-of-medians across 3 runs"
+    },
+    "coord_with_churn": {
+      "kind": "micro",
+      "elapsed_ns": 16361,
+      "maxrss_kb": 3088,
+      "tolerance": 0.30
+    },
+    "fn_call": {
+      "kind": "micro",
+      "elapsed_ns": 37376152,
+      "maxrss_kb": 3024,
+      "tolerance": 0.30
+    },
+    "fn_scratch_work": {
+      "kind": "micro",
+      "elapsed_ns": 489695,
+      "maxrss_kb": 3088,
+      "tolerance": 0.30
+    },
+    "form_hashmap_get": {
+      "kind": "micro",
+      "elapsed_ns": 2899410,
+      "maxrss_kb": 23312,
+      "tolerance": 0.30
+    },
+    "form_hashmap_set": {
+      "kind": "micro",
+      "elapsed_ns": 52080161,
+      "maxrss_kb": 90752,
+      "tolerance": 0.30
+    },
+    "form_vec_get": {
+      "kind": "micro",
+      "elapsed_ns": 1552492,
+      "maxrss_kb": 13916,
+      "tolerance": 0.30
+    },
+    "form_vec_push": {
+      "kind": "micro",
+      "elapsed_ns": 2796918,
+      "maxrss_kb": 14720,
+      "tolerance": 0.30
+    },
+    "locus_instantiation": {
+      "kind": "micro",
+      "elapsed_ns": 2750121,
+      "maxrss_kb": 10848,
+      "tolerance": 0.30
+    },
+    "loop_overhead": {
+      "kind": "micro",
+      "elapsed_ns": 20445642,
+      "maxrss_kb": 3028,
+      "tolerance": 0.30
+    },
+    "pipeline_3stage": {
+      "kind": "micro",
+      "elapsed_ns": 6260649,
+      "maxrss_kb": 37340,
+      "tolerance": 0.30,
+      "note": "n=50k events (was 5k); mean-of-medians across 3 runs; ~10-16% spread"
+    },
+    "tree_fanout": {
+      "kind": "micro",
+      "elapsed_ns": 27913,
+      "maxrss_kb": 3096,
+      "tolerance": 0.30
+    },
+    "vec_amortized": {
+      "kind": "micro",
+      "elapsed_ns": 2683727,
+      "maxrss_kb": 13944,
+      "tolerance": 0.30
+    },
+    "stream_aggregator": {
+      "kind": "app",
+      "elapsed_ns": 16770299,
+      "maxrss_kb": 107640,
+      "tolerance": 0.30,
+      "note": "iters=200k (was 20k); mean-of-medians across 3 runs"
+    }
+  }
+}

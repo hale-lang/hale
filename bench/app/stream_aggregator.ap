@@ -1,0 +1,64 @@
+// stream_aggregator — small "real workload" shape.
+//
+// One publisher fires N typed events; a long-lived aggregator
+// subscribes, maintains running sum/min/max in locus state.
+// Mirrors examples/30-stats but timed end-to-end.
+//
+// What it exercises in one run:
+//   - locus instantiation (Aggregator + Publisher)
+//   - bus subscribe + publish + cross-locus dispatch
+//   - typed payload memcpy into subscriber arena
+//   - integer arithmetic + branches in handler
+//   - deferred-dissolve flush at main exit
+//
+// Reports elapsed_ns (self-timed) on stdout; the harness
+// additionally captures maxrss via /usr/bin/time -v.
+//
+// 200k: previous 20k accumulation cliff was lifted by the
+// compiler's bus subsystem work; 10× drops run-to-run spread
+// from ~27% to ~9% so pubsub-improvement signal becomes legible.
+
+type Sample { value: Int; }
+
+locus Aggregator {
+    params {
+        count: Int = 0;
+        sum: Int = 0;
+        min_v: Int = 999999999;
+        max_v: Int = 0;
+    }
+    bus {
+        subscribe "bench.sample" as on_sample of type Sample;
+    }
+    fn on_sample(s: Sample) {
+        self.count = self.count + 1;
+        self.sum = self.sum + s.value;
+        if s.value < self.min_v { self.min_v = s.value; }
+        if s.value > self.max_v { self.max_v = s.value; }
+    }
+}
+
+locus Publisher {
+    params { iters: Int = 200000; }
+    bus { publish "bench.sample" of type Sample; }
+    run() {
+        let mut i = 0;
+        while i < self.iters {
+            let v = (i * 31 + 7) % 1000;
+            "bench.sample" <- Sample { value: v };
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    let iters = 200000;
+    let agg = Aggregator { };
+    let t0 = std::time::monotonic();
+    Publisher { iters: iters };
+    let t1 = std::time::monotonic();
+    print("iters="); println(iters);
+    print("count="); println(agg.count);
+    print("sum="); println(agg.sum);
+    print("elapsed_ns="); println(t1 - t0);
+}
