@@ -18,8 +18,8 @@ use aperio_codegen::build_executable;
 
 fn examples_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.pop();
-    p.pop();
+    p.push("tests");
+    p.push("fixtures");
     p.push("examples");
     p
 }

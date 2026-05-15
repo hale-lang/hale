@@ -10,9 +10,13 @@ use std::time::Instant;
 use aperio_codegen::build_executable;
 
 fn examples_dir() -> PathBuf {
+    // CARGO_MANIFEST_DIR is `crates/aperio-codegen`; the example
+    // fixtures live under `tests/fixtures/examples/` inside that
+    // crate (moved out of the repo-root `examples/` during the
+    // public-release cleanup).
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.pop();
-    p.pop();
+    p.push("tests");
+    p.push("fixtures");
     p.push("examples");
     p
 }

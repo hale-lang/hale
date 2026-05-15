@@ -166,12 +166,11 @@ seed's directory + workspace root.
 ### Examples
 
 ```aperio
-import "lib/moa" as moa;
+import "lib/finance" as fin;
 import "../shared-helpers" as helpers;
-import "lib/grease-finance" as grease;
 
 fn main() {
-    let id = moa::LocusId { name: "BookL", path: "apps/x.ap" };
+    let q = fin::Quote { symbol: "ABC", price: 10 };
     let h = helpers::Formatter { };
 }
 ```

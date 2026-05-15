@@ -3,10 +3,9 @@
 // A tagged accumulator is a multi-line String where each line
 // is `TAG:body`. The tag (everything before the first colon)
 // classifies the line; the body (everything after the colon
-// to end-of-line) is the payload. Extractors in the
-// codebase-onboarder family produce this shape pervasively,
-// and several apps were hand-rolling identical scan loops
-// before this extraction.
+// to end-of-line) is the payload. Pipeline-style extractors
+// (lex, scan, classify) tend to emit this shape; the helpers
+// here factor the otherwise-repeated scan loops.
 //
 // Surface mirrors the four operations the corpus already
 // expressed:

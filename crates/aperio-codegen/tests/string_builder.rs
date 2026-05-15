@@ -65,7 +65,7 @@ fn builder_handles_many_small_appends_no_blow_up() {
     // test asserts correctness, not perf (the binary returns fast),
     // but a quadratic implementation would still finish on this size
     // — the perf win is for the friction-source case (thousands of
-    // continuation lines per ferryman node). Here we're verifying
+    // continuation lines per accumulator node). Here we're verifying
     // the doubling-realloc actually concatenates the right bytes.
     let src = r#"
         fn main() {

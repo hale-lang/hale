@@ -190,7 +190,7 @@ pub fn build_executable(
 /// into `program`, and passes the per-build table here. Each
 /// entry maps a segment vector (`["foo", "Bar"]`) to the mangled
 /// symbol name (`"__lib_foo_<stem>_Bar"`). The codegen consults
-/// this table after the static stdlib + moa tables when resolving
+/// this table after the static stdlib table when resolving
 /// qualified-name paths.
 pub fn build_executable_with_imports(
     program: &Program,
@@ -230,22 +230,8 @@ pub fn build_executable_with_imports(
                 .join("; ");
             CodegenError::Unsupported(format!("stdlib parse: {}", summary))
         })?;
-    // MOA substrate (moa::* path prefix) — same parse-and-merge as
-    // stdlib, with its own source constant and path-rename table.
-    // Bundled into every binary alongside stdlib. See `moa/MOA.md`
-    // for the architectural pattern these types support.
-    let moa_program = aperio_syntax::parse_source(MOA_AP_SOURCE)
-        .map_err(|diags| {
-            let summary = diags
-                .iter()
-                .map(|d| format!("{:?}", d))
-                .collect::<Vec<_>>()
-                .join("; ");
-            CodegenError::Unsupported(format!("moa parse: {}", summary))
-        })?;
     let mut merged = program.clone();
     merged.items.extend(stdlib_program.items);
-    merged.items.extend(moa_program.items);
 
     let context = Context::create();
     let module = context.create_module("lotus_main");
@@ -506,8 +492,7 @@ const STDLIB_AP_SOURCE: &str = concat!(
     "\n",
     // yaml.ap depends on iter.ap for Reader's line walks.
     // Mirrors json.ap's shape (Builder is a namespace lotus
-    // returning Strings). Used by the codebase-onboarder's
-    // skeleton + render stages.
+    // returning Strings).
     include_str!("../runtime/stdlib/yaml.ap"),
     "\n",
     // cli.ap is independent — only uses std::str::index_of,
@@ -557,40 +542,14 @@ const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "yaml", "Reader"], "__StdYamlReader"),
 ];
 
-/// MOA substrate source — bundled into every binary, parses + merges
-/// alongside `STDLIB_AP_SOURCE`. Resolves under the `moa::*` path
-/// prefix via `MOA_PATH_RENAMES`. Lives in `/moa/` at the repo root,
-/// not in `crates/aperio-codegen/runtime/stdlib/`, because it is
-/// conceptually one layer below the language and above stdlib — the
-/// architectural substrate apps build on. See `moa/README.md`.
-const MOA_AP_SOURCE: &str = concat!(
-    include_str!("../../../moa/types.ap"),
-);
-
-/// Maps each user-facing `moa::*` path to the mangled name declared
-/// in `MOA_AP_SOURCE`. Same shape as `STDLIB_PATH_RENAMES` — flat
-/// after the namespace prefix (`moa::RuntimeEvent`, not
-/// `moa::types::RuntimeEvent`) per the stdlib precedent. Keep sorted
-/// by path for review.
-const MOA_PATH_RENAMES: &[(&[&str], &str)] = &[
-    (&["moa", "BraidId"], "__MoaBraidId"),
-    (&["moa", "LocusId"], "__MoaLocusId"),
-    (&["moa", "RuntimeEvent"], "__MoaRuntimeEvent"),
-    (&["moa", "Tick"], "__MoaTick"),
-];
-
-/// Look up the mangled name for a bundled-substrate path (`std::*`
-/// stdlib or `moa::*` substrate). Returns `None` when the path isn't
-/// recognized; callers then surface the path-as-typed in their error
-/// message. Dispatches by first segment so the two path-rename tables
-/// stay independent; behavior for `std::*` is unchanged from the
-/// pre-moa world.
+/// Look up the mangled name for a bundled-stdlib path (`std::*`).
+/// Returns `None` when the path isn't recognized; callers then
+/// surface the path-as-typed in their error message.
 fn stdlib_mangled_for_path(segs: &[&str]) -> Option<&'static str> {
-    let table: &[(&[&str], &str)] = match segs.first() {
-        Some(&"std") => STDLIB_PATH_RENAMES,
-        Some(&"moa") => MOA_PATH_RENAMES,
-        _ => return None,
-    };
+    if !matches!(segs.first(), Some(&"std")) {
+        return None;
+    }
+    let table: &[(&[&str], &str)] = STDLIB_PATH_RENAMES;
     table
         .iter()
         .find(|(p, _)| *p == segs)
@@ -646,13 +605,12 @@ struct Cx<'ctx, 'p> {
     /// codegen just needs the layout, not a re-verified table).
     user_interfaces: BTreeSet<String>,
     /// v1.x-IMPORT: per-build path-rename table for cross-seed
-    /// imports. Same shape as `STDLIB_PATH_RENAMES` /
-    /// `MOA_PATH_RENAMES` but populated per build from the user's
-    /// `import "lib/X" as foo;` declarations. Maps a qualified
-    /// segment vector (e.g. `["foo", "Bar"]`) to the mangler-
-    /// generated symbol name (e.g. `"__lib_foo_Y_Bar"`). Consulted
-    /// by `Cx::mangled_for_path` after the static stdlib + moa
-    /// tables.
+    /// imports. Same shape as `STDLIB_PATH_RENAMES` but populated
+    /// per build from the user's `import "lib/X" as foo;`
+    /// declarations. Maps a qualified segment vector (e.g.
+    /// `["foo", "Bar"]`) to the mangler-generated symbol name
+    /// (e.g. `"__lib_foo_Y_Bar"`). Consulted by
+    /// `Cx::mangled_for_path` after the static stdlib table.
     import_renames: BTreeMap<Vec<String>, String>,
     /// Bus state generated when any locus declares a subscribe.
     /// `Some` iff the program contains at least one `bus subscribe`
@@ -1746,10 +1704,10 @@ struct SelfCx<'ctx> {
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// v1.x-IMPORT: resolve a qualified-name path to its mangled
-    /// symbol name. Consults the static `STDLIB_PATH_RENAMES` and
-    /// `MOA_PATH_RENAMES` tables (via `stdlib_mangled_for_path`)
-    /// first, then the per-build `import_renames` table populated
-    /// from the user's `import "..." as alias;` declarations.
+    /// symbol name. Consults the static `STDLIB_PATH_RENAMES`
+    /// table (via `stdlib_mangled_for_path`) first, then the
+    /// per-build `import_renames` table populated from the user's
+    /// `import "..." as alias;` declarations.
     /// Returns the mangled name as an owned String — the static
     /// tables produce `&'static str` and the per-build table
     /// produces an owned String, so the method's return is

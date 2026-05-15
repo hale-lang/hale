@@ -1,10 +1,9 @@
 // Aperio stdlib — std::yaml.
 //
 // Block-style YAML emitter (`Builder`) + schema-aware reader
-// (`Reader`). Designed for the codebase-onboarder's lotus.yaml
-// handoff: ferryman's skeleton stage emits via `Builder`, an
-// agent enriches the file by hand or via a Claude Code session,
-// ferryman's render stage reads back via `Reader`.
+// (`Reader`). Round-trip pattern: an emitter stage writes via
+// `Builder`, a possibly-hand-editing pass touches the file, a
+// later stage reads it back via `Reader`.
 //
 // Honest about scope. NOT a general YAML parser. v0:
 //   - block style only (no flow `[a, b, c]`, no `{k: v}`)

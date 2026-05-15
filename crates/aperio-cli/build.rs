@@ -73,28 +73,6 @@ fn main() {
         paths.extend(stdlib_files);
     }
 
-    // MOA substrate (parallel to stdlib, path prefix `moa::*`).
-    // Bundled into every compiled program same as stdlib, so its
-    // .ap files must participate in the staleness hash. Lives at
-    // the workspace root under /moa/, not under crates/.
-    if let Some(root) = workspace_root.as_ref() {
-        let moa_dir = root.join("moa");
-        if let Ok(entries) = fs::read_dir(&moa_dir) {
-            let mut moa_files: Vec<PathBuf> = entries
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path()
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        == Some("ap")
-                })
-                .map(|e| e.path())
-                .collect();
-            moa_files.sort();
-            paths.extend(moa_files);
-        }
-    }
-
     let mut hasher = DefaultHasher::new();
     for path in &paths {
         // rerun-if-changed makes Cargo invalidate this build

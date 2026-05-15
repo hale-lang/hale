@@ -1,16 +1,22 @@
-//! Integration test: every example program in `examples/` parses
+//! Integration test: every example program in
+//! `crates/aperio-codegen/tests/fixtures/examples/` parses
 //! cleanly. This is the corpus the parser is empirically anchored
-//! against. Per the delivery plan, examples are the spec's test
-//! suite; the compiler must keep up with them.
+//! against — examples double as the language's acceptance test
+//! suite, so the compiler must keep up with them.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 fn examples_dir() -> PathBuf {
-    // Cargo runs tests with `crates/lotus-syntax` as cwd; walk up.
+    // Cargo runs tests with `crates/aperio-syntax` as cwd; walk up
+    // to the repo root, then into the codegen crate's fixtures.
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.pop(); // crates/
     p.pop(); // root
+    p.push("crates");
+    p.push("aperio-codegen");
+    p.push("tests");
+    p.push("fixtures");
     p.push("examples");
     p
 }

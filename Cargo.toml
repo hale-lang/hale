@@ -12,7 +12,7 @@ members = [
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
-authors = ["Riley Rook <riley@srcry.xyz>"]
+authors = ["the Aperio authors"]
 license = "MIT OR Apache-2.0"
 repository = "local"
 

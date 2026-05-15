@@ -2,13 +2,9 @@
 //
 // Language-agnostic AST query interface. Encapsulates per-
 // language tree-sitter node-kind strings + extraction
-// heuristics so the codebase-onboarding extractors (import-
-// graph, operational, domain) can be written agnostically over
-// languages. Per
-// notes/codebase-onboarding-design.md, the eventual product
-// targets multiple source languages; isolating Go-specific
-// knowledge behind one type lets the extractors compose
-// against a stable API.
+// heuristics so source-walking tools can be written agnostically
+// over languages. Isolating per-language knowledge behind one
+// type lets consumers compose against a stable API.
 //
 // **v0 scope.** Only Go is wired. New languages slot in by:
 //   1. Adding a `parse_<lang>` to `std::ts` (m96-followup).
@@ -314,11 +310,11 @@ locus __StdLangLang {
     // `pkg.Sub.Bar(args)` → "pkg.Sub").
     //
     // Paired with `extract_call_name`: the receiver carries the
-    // semantic context the bare name has lost. The codebase-
-    // onboarder uses this to distinguish package calls (lower-
-    // case receiver matching the file's imports → stdlib /
-    // external), method calls on local vars, and direct user-fn
-    // calls — without inventing heuristics on the bare name.
+    // semantic context the bare name has lost. Useful for
+    // distinguishing package calls (lower-case receiver matching
+    // the file's imports → stdlib / external), method calls on
+    // local vars, and direct user-fn calls — without inventing
+    // heuristics on the bare name.
     fn extract_call_receiver(call_node: Int) -> String {
         if self.flavor == "go" {
             let n = std::ts::node_named_child_count(call_node);
@@ -337,11 +333,9 @@ locus __StdLangLang {
     }
 
     // Recognize per-flavor language builtins — `len`, `make`,
-    // `panic`, etc. for Go. Used by the codebase-onboarder's
-    // call classifier to short-circuit further resolution:
-    // builtin calls aren't user-defined fns, package calls, or
-    // method calls — they're language primitives. Render as
-    // `{builtin}` leaves, no further recursion.
+    // `panic`, etc. for Go. Useful for call-classification
+    // pipelines that need to distinguish builtin calls from
+    // user-defined fns, package calls, or method calls.
     //
     // Maintained as a flat per-flavor table. Per-language facts
     // (which names are builtins) belong on Lang; domain
@@ -482,19 +476,15 @@ locus __StdLangLang {
     }
 }
 
-// std::lang::Morpheme — noun→motion rewriter for the
-// codebase-onboarder's bulk (domain) tower.
+// std::lang::Morpheme — noun→motion rewriter.
 //
 // **Seed-only.** The lookup table holds 15 universally-clear
 // entity-noun mappings (Cache → remembering, Repository →
 // carrying, ...). We deliberately do NOT exhaustively curate
-// per-language vocabulary. Per
-// notes/onboarding-shape-rules.md, the codebase-onboarder is
-// agent-first: an LLM agent reads source to resolve
-// `<unknown:X>` markers per-codebase, with the seed as a
-// fallback for the universally-clear cases. Hand-curating
-// vocabulary tables ahead of time is speculative work that
-// doesn't generalize across codebases.
+// per-language vocabulary. The intended use is as a fallback
+// for the universally-clear cases; consumers that need richer
+// vocabulary supply their own lookups (typically per-codebase,
+// possibly via an LLM that reads source).
 //
 // **Three categorical shapes** (per the design note):
 //   - Agent noun  (-er/-or/-ar suffix on a verb stem) → motion
@@ -628,11 +618,10 @@ locus __StdLangMorpheme {
         return "";
     }
 
-    // Transitional shim — `is_builtin` is a language fact, not
-    // domain vocabulary, and now lives on `Lang`. This shim
-    // keeps existing callers (ferryman) building while the
-    // codebase-onboarder migrates to call `lang.is_builtin`
-    // directly. Remove once no Morpheme callers reference it.
+    // Convenience forwarder — `is_builtin` is a language fact,
+    // not domain vocabulary, and lives on `Lang`. This shim
+    // saves callers a separate Lang construction when they
+    // already hold a Morpheme.
     fn is_builtin(name: String) -> Bool {
         let l = std::lang::Lang { flavor: self.flavor };
         return l.is_builtin(name);

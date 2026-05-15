@@ -11,9 +11,17 @@ use std::path::PathBuf;
 use aperio_runtime::{run_bundle_with_bus, run_program, TransportKind};
 
 fn examples_dir() -> PathBuf {
+    // CARGO_MANIFEST_DIR is `crates/aperio-runtime`; the example
+    // fixtures now live under `crates/aperio-codegen/tests/
+    // fixtures/examples/`. Walk up to the workspace root, then
+    // back down into the codegen crate's fixtures.
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.pop();
-    p.pop();
+    p.pop(); // crates/
+    p.pop(); // root
+    p.push("crates");
+    p.push("aperio-codegen");
+    p.push("tests");
+    p.push("fixtures");
     p.push("examples");
     p
 }

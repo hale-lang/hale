@@ -117,9 +117,8 @@ benchmarked end-to-end:
 
 - **Microbenchmark:** 1M append + 1M iterate, compared against
   `crates/aperio-codegen/runtime/lotus_arena.c`-style C code.
-- **App benchmark:** a representative app (ferryman is the
-  natural candidate given its size and parsing-heavy workload)
-  is rewritten to use form-lowered Vecs in place of F.22 pool
+- **App benchmark:** a representative parsing-heavy workload is
+  rewritten to use form-lowered Vecs in place of F.22 pool
   walks. Wall-clock + RSS compared before / after.
 
 If the hypothesis fails, redesign the lowering before adding

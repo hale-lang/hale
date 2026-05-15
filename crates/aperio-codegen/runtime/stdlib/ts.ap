@@ -16,9 +16,9 @@
 //
 // Lifetime: the underlying tree-sitter Tree and the source bytes
 // it was parsed from live for the program's duration. m96 v0
-// doesn't expose a free path. For codebase-onboarding's
-// "parse-N-files-then-render-then-exit" workload that's fine;
-// long-running uses will want a `tree_destroy` follow-up.
+// doesn't expose a free path. Fine for the
+// "parse-N-files-then-render-then-exit" pattern; long-running
+// uses will want a `tree_destroy` follow-up.
 //
 // At v0 only Go is wired (`parse_go`). Other languages slot in as
 // per-language milestones once the Go pipeline is validated.

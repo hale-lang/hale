@@ -10,11 +10,10 @@
 // namespace rather than inside std::lang.
 //
 // The dot-prefixed extension (".go", ".rs") is a param so the
-// same locus serves every flavor the codebase-onboarder grows
-// to handle. The extension is supplied (rather than detected)
-// because callers usually know which flavor they're targeting
-// — and v0 doesn't have option types to express "detect from
-// the path."
+// same locus serves every flavor a caller might handle. The
+// extension is supplied (rather than detected) because callers
+// usually know which flavor they're targeting — and v0 doesn't
+// have option types to express "detect from the path."
 locus __StdNameConvention {
     params {
         // Source-extension stripped by propose_locus_name.

@@ -12,9 +12,9 @@
 //! .ap file in the directory contributes to one bundle (one binary
 //! when built); top-level decls in any file are visible to every
 //! file in the same directory. File order: alphabetical by name.
-//! Output binary defaults to the directory name (apps/ferryman/ →
-//! apps/ferryman/ferryman) for dir targets, or the basename minus
-//! .ap for file targets (hello-world.ap → hello-world).
+//! Output binary defaults to the directory name (myapp/ →
+//! myapp/myapp) for dir targets, or the basename minus .ap for
+//! file targets (hello-world.ap → hello-world).
 
 use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
@@ -594,10 +594,10 @@ fn run_build(target: &Path) -> ExitCode {
     // File targets follow `import "..."` directives starting from
     // the entry's directory; directory targets bundle every .ap
     // file in the directory as one seed (the per-dir package
-    // model — apps/ferryman/{main,render,topology}.ap → one
-    // binary). The directory shape is the user-facing answer to
-    // the single-file-app-monolith friction; the file shape stays
-    // for backwards compatibility and for one-off scripts.
+    // model — myapp/{main,render,topology}.ap → one binary). The
+    // directory shape is the user-facing answer to the
+    // single-file-app-monolith friction; the file shape stays for
+    // backwards compatibility and for one-off scripts.
     let (program, renames, sources, output) = if target.is_file() {
         let (program, renames, sources) = match parse_with_imports(target) {
             Ok(x) => x,
@@ -689,7 +689,7 @@ fn run_build(target: &Path) -> ExitCode {
             items: merged_items,
             span: merged.span,
         };
-        // apps/ferryman/ → ferryman; output lands next to target.
+        // myapp/ → myapp; output lands next to target.
         let bin_name = target
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
@@ -827,27 +827,6 @@ fn compute_codegen_src_hash(codegen_dir: &Path) -> String {
             .collect();
         stdlib_files.sort();
         paths.extend(stdlib_files);
-    }
-    // MOA substrate at workspace root (parallel to stdlib). Mirrors
-    // the build.rs hash inputs so build-time and runtime hashes
-    // stay in sync. codegen_dir is <root>/crates/aperio-codegen, so
-    // workspace_root is its grandparent.
-    if let Some(workspace_root) = codegen_dir.parent().and_then(|p| p.parent()) {
-        let moa_dir = workspace_root.join("moa");
-        if let Ok(entries) = fs::read_dir(&moa_dir) {
-            let mut moa_files: Vec<PathBuf> = entries
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path()
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        == Some("ap")
-                })
-                .map(|e| e.path())
-                .collect();
-            moa_files.sort();
-            paths.extend(moa_files);
-        }
     }
     let mut hasher = DefaultHasher::new();
     for path in &paths {

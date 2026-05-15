@@ -16,8 +16,8 @@
 //! Zero is the universal sentinel ("absent / parse failed /
 //! out-of-bounds child"). Memory grows for the program's
 //! lifetime; m96 v0 doesn't expose a free path. Acceptable for
-//! the codebase-onboarding workload (parse N source files, walk
-//! once, render tower; process exits afterward).
+//! short-lived parse-once workloads (parse N source files, walk
+//! once, emit output; process exits afterward).
 //!
 //! Strings returned across the FFI boundary are allocated in the
 //! lazy global payload arena (`lotus_bus_payload_arena_alloc`,

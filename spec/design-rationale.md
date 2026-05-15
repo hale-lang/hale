@@ -53,17 +53,6 @@ attach to. Type declarations need none of that — they are
 pure shape — so they have a separate, much simpler surface
 (see also `spec/types.md`).
 
-The axiom also explains a load-bearing decision in the
-codebase-onboarder (`notes/codebase-onboarding-design.md`):
-when extracting Aperio source from a foreign codebase,
-**cross-tower agreement = locus identity**. A node-name that
-appears in ≥ 2 of {operational, harmonic, domain} towers is
-emitted as a locus in the absorbed source; a node-name that
-appears in only one tower is a type, a free fn, or a comment.
-Cross-tower coincidence does the inventing — the absorber
-never synthesizes loci that aren't already implied by the
-foreign code's own emergent structure.
-
 Full design note: `notes/aperio-types-vs-loci.md`.
 
 ---
@@ -75,7 +64,7 @@ semicolons as statement terminators; `let` for binding; `fn` for
 functions.
 
 **Why.** The first authors of programs in this language are
-agents and humans on Riley's team, both already fluent in Go.
+agents and humans collaborating, often already fluent in Go.
 Surface familiarity reduces cognitive cost and lets the
 genuinely-novel parts (lifecycle, contract, projection class,
 mode, closure) carry the unfamiliarity.
@@ -1536,10 +1525,10 @@ imports — one `apps/myapp` reaching into another `apps/lib` —
 remain deferred (the `module` keyword is reserved with no
 semantics; see `notes/open-questions.md` Q18).
 
-**Why.** Single-file apps grew unwieldy quickly (ferryman hit
-~2,300 lines before this milestone landed). The friction log
-entry `notes/aperio-friction.md` 2026-05-10 single-file-app-
-monolith captured the canonical case. The implementation cost
+**Why.** Single-file apps grew unwieldy quickly (one app hit
+~2,300 lines before this milestone landed). The
+single-file-app-monolith pattern was the canonical friction
+case. The implementation cost
 was small — the typechecker's `Bundle` already accepted multiple
 programs, and `aperio run` / `aperio check` already handled
 directory targets; only `aperio build` had a hard "single .ap
@@ -1867,30 +1856,20 @@ Resolution order is three-step (first hit wins):
 Library decls are auto-mangled at parse-time with prefix
 `__lib_<alias>_<file_stem>_<name>` and registered into a
 per-build path-rename table parallel to the static
-`STDLIB_PATH_RENAMES` and `MOA_PATH_RENAMES` tables. The user
-never writes the mangled form; `alias::Name` resolves through
-the table at codegen.
+`STDLIB_PATH_RENAMES` table. The user never writes the mangled
+form; `alias::Name` resolves through the table at codegen.
 
 **Why.** F.19 (per-directory seed model) shipped 2026-05-11 and
 fixed the single-file-app-monolith friction at the intra-seed
 layer. Cross-seed sharing remained deferred — the `module`
-keyword was reserved with no semantics. Friction accumulated
-in two shapes:
-
-- MOA was bundled unconditionally into every binary (via
-  `MOA_AP_SOURCE` in codegen) whether or not the app
-  referenced any `moa::*` type. Apps that didn't need MOA
-  still paid for it.
-- Cross-app helper patterns (tagged-accumulator, directory
-  walks, JSON glue) lived in the std seed because there was
-  no library home. The std seed grew to absorb friction that
-  should live in user libraries.
+keyword was reserved with no semantics. Cross-app helper
+patterns (tagged-accumulator, directory walks, JSON glue) lived
+in the std seed because there was no library home; the std seed
+grew to absorb friction that should live in user libraries.
 
 v1.x-IMPORT (this milestone) opens user libraries as a
-first-class shape and unblocks both: MOA can stop being
-unconditionally bundled (a follow-up cleanup); user helpers
-can graduate from copy-paste / std-seed-bloat to a vendored
-shared lib.
+first-class shape: user helpers can graduate from copy-paste /
+std-seed-bloat to a vendored shared lib.
 
 **Vendor-the-source as the v1 commitment.** A real package
 manager (registry + fetch + semver + lockfile) is several

@@ -115,26 +115,16 @@ Aperio modules milestone:
 
 ## Friction surfaced in v0 by *not* having user seeds
 
-Several apps in the codebase-onboarder arc duplicate identical
-helper code: newline-string iteration appears ~15 times across
-7 apps; tagged-accumulator parsing is code-identical between
-`apps/onboard/main.ap` and `apps/tower-join/main.ap`;
-file-stem-to-CamelCase conversion is duplicated between the
-same two apps.
+Sibling apps in early experiments duplicated identical helper
+code: newline-string iteration, tagged-accumulator parsing,
+file-stem-to-CamelCase conversion — all repeated across apps
+because there's no way to share helper code short of bundling
+into the std seed or copying.
 
-Every duplication has the same root cause: there's no way to
-share helper code across `apps/` short of (a) bundling into the
-std seed (acceptable for general-purpose utilities; over-
-broadens the std seed for specific ones) or (b) copying.
-Currently we use (a) for the morpheme rewriter (`std::lang::Morpheme`)
-and the lang interface (`std::lang::Lang`); we use (b) for
-everything else.
-
-The interim path the refactor proposal recommends: bundle the
-shared utilities into the std seed for now. When v1 user seeds
-ship, migrate them out of std into dedicated community seeds
-(`aperio-iter`, `aperio-tagged`, `aperio-name`, `aperio-json`)
-where they belong.
+The interim path: bundle the shared utilities into the std seed
+for now. When v1 user seeds ship, migrate them out of std into
+dedicated community seeds (`aperio-iter`, `aperio-tagged`,
+`aperio-name`, `aperio-json`) where they belong.
 
 ## Naming conventions for seeds
 
@@ -145,7 +135,7 @@ When v1 ships, expected conventions:
   package boundary, matching Cargo and Go-module conventions.)
 - The `aperio-` prefix marks first-party seeds maintained by
   the Aperio language project. Examples: `aperio-iter`,
-  `aperio-codebase-onboarder`, `aperio-fitter-applier`.
+  `aperio-tagged`, `aperio-json`.
 - Community seeds use any prefix or no prefix. Domain-specific
   seeds may include the domain name: `acme-billing`,
   `darkforest-events`.
@@ -199,15 +189,8 @@ and the codegen weaves it into the running locus tower.
   seed exports to types + loci.
 - `spec/styleguide.md` — applies the axiom and the seed
   concept to writing idiomatic Aperio.
-- `notes/aperio-refactor-proposal.md` — proposes specific
-  std-seed extractions to address the cross-app duplication
-  surfaced above.
 - `crates/aperio-codegen/src/codegen.rs` — `STDLIB_AP_SOURCE`
   + `STDLIB_PATH_RENAMES` are the v0 std-seed implementation.
-- `notes/codebase-onboarding-design.md` — the codebase-
-  onboarder is itself an apprentice case for the seed concept;
-  what it absorbs from foreign codebases will eventually emit
-  as Aperio seeds.
 
 ## Open questions for v1 design
 

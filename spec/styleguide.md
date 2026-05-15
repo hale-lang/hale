@@ -307,10 +307,10 @@ Two additional rules apply:
   every reference (`alias::Name`); long aliases compound. The
   consumer chooses the alias, not the lib — but a lib's README
   (or doc comment at the top of `main.ap` / canonical entry
-  file) should suggest one (`moa`, `helpers`, `toy`, etc.).
+  file) should suggest one (`fin`, `helpers`, `toy`, etc.).
 - **Name top-level decls so they read naturally under the
-  alias.** `toy::Greeter` and `moa::LocusId` are clear;
-  `toy::ToyGreeter` and `moa::MoaLocusId` double the namespace.
+  alias.** `toy::Greeter` and `fin::Quote` are clear;
+  `toy::ToyGreeter` and `fin::FinQuote` double the namespace.
   Avoid embedding the library name in decl names.
 
 The full mangled symbol the compiler emits

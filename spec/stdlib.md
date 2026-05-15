@@ -247,12 +247,11 @@ single-file apps.
 
 File order in the merged bundle is alphabetical; resolution is
 order-free (the typechecker flattens before name lookup). Binary
-defaults to the directory's basename
-(`apps/ferryman/` → `apps/ferryman/ferryman`).
+defaults to the directory's basename (`myapp/` → `myapp/myapp`).
 
-Resolves `notes/aperio-friction.md` 2026-05-10
-single-file-app-monolith. Spec entry: F.19 in
-`spec/design-rationale.md`. Example: `examples/multi-file-seed/`.
+Resolves the single-file-app-monolith friction. Spec entry: F.19
+in `spec/design-rationale.md`. Example fixture:
+`crates/aperio-codegen/tests/fixtures/examples/multi-file-seed/`.
 Regression test: `crates/aperio-codegen/tests/multi_file_build.rs`.
 
 ## F.20 — structural interfaces, Phase A + Phase B (2026-05-11)
