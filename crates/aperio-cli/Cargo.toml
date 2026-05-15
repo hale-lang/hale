@@ -15,3 +15,5 @@ aperio-syntax = { path = "../aperio-syntax" }
 aperio-types = { path = "../aperio-types" }
 aperio-runtime = { path = "../aperio-runtime" }
 aperio-codegen = { path = "../aperio-codegen" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

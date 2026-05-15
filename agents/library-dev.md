@@ -140,3 +140,34 @@ A few rules from `spec/styleguide.md`:
 - Don't embed the library name in your decl names. `fin::Quote`
   is clear; `fin::FinQuote` doubles the namespace.
 - Top-level decls should read fluently under `alias::`.
+
+## Shipping a library via git
+
+A consumer who wants your library declares it in their
+`aperio.toml`:
+
+```toml
+[deps]
+mylib = { git = "https://github.com/you/mylib", tag = "v0.1.0" }
+```
+
+Then `aperio fetch` clones your repo into their `lib/mylib/`
+and writes a SHA to `aperio.lock`. The directory itself becomes
+a single Aperio seed (every `.ap` at the repo root is one
+library; nested directories are NOT crawled). What this means
+for your repo layout:
+
+- Source goes at the repo root, not under `src/`. Naming files
+  is your choice — alphabetical merge order is the only
+  ordering the compiler imposes.
+- Tag releases with semver-ish strings if you want consumers to
+  pin via `tag = "v0.1.0"`. The compiler doesn't enforce
+  semver; the tag is just a git ref.
+- Your library has no manifest of its own (no transitive deps
+  in v1). If your code calls into another git library, the
+  consumer of *your* library needs to vendor that other library
+  too. Document that requirement in your README.
+
+This shape favors small libraries with shallow dep trees. It's
+the same trade Go made before modules and still works well at
+single-developer scale.

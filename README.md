@@ -74,6 +74,20 @@ The `aperio` CLI accepts a single `.ap` file or a directory; a
 directory bundles every `.ap` in it as one program (one binary).
 See `aperio --help` for the full surface.
 
+If your project depends on Aperio libraries hosted in git
+repos, declare them in `aperio.toml`:
+
+```toml
+[deps]
+helpers = { git = "https://github.com/me/helpers", rev = "abc123" }
+finance = { git = "https://github.com/me/finance", tag = "v0.1.0" }
+```
+
+Then `aperio fetch` clones each into `lib/<name>/` and pins the
+resolved commits to `aperio.lock`. The existing `import
+"lib/helpers" as h;` directive picks them up — no extra
+configuration needed.
+
 ## Where to go next
 
 - **`spec/`** — the language reference. Start with

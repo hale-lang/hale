@@ -317,25 +317,67 @@ via `aperio run` will fail to resolve the same way
 build` and run the resulting binary directly for programs with
 cross-seed imports.
 
+## Git-based dependency fetching (`aperio fetch`)
+
+A project may declare git dependencies in an `aperio.toml`
+manifest at the repo root:
+
+```toml
+[deps]
+helpers = { git = "https://github.com/me/helpers", rev = "abc123" }
+finance = { git = "https://github.com/me/finance", tag = "v0.1.0" }
+ui      = { git = "https://github.com/me/ui", branch = "main" }
+```
+
+Each entry sets `git` (the URL the compiler clones from) and
+optionally one of:
+
+- `rev` — pin to a specific commit SHA. Triggers a full clone
+  followed by `git checkout <rev>` (`--depth 1` is incompatible
+  with SHA pinning).
+- `tag` — pin to a named tag. Shallow clone.
+- `branch` — track a branch. Shallow clone. Re-running `aperio
+  fetch` after the branch advances does **not** auto-update —
+  the lockfile pins the SHA you last resolved.
+
+If none of `rev` / `tag` / `branch` is set, the default branch
+is used. Setting more than one is a manifest error.
+
+Running `aperio fetch` reads `aperio.toml`, clones each declared
+dep into `lib/<name>/` (creating `lib/` if needed), and writes
+`aperio.lock` pinning the resolved commit SHA per dep. The
+existing `import "lib/<name>" as alias;` directive picks up the
+cloned source via the standard resolution order — no extra
+compiler configuration is needed.
+
+Re-running `aperio fetch` is idempotent. For each dep:
+
+- If `lib/<name>/.git/HEAD` matches the locked SHA, no network
+  call is made.
+- Otherwise the compiler runs `git fetch` and checks out the
+  requested ref, then updates the lockfile.
+
+To upgrade a dep, edit the manifest's pin (or delete
+`aperio.lock`) and re-run `fetch`. To rebuild a clean checkout
+from another machine, the recipient runs `aperio fetch` and the
+lockfile reproduces the same commits.
+
 ## What's NOT shipped (v1 boundaries)
 
 Explicit non-features of the v1 project / import system. A
 future milestone may relax some of them when concrete friction
 demonstrates the need.
 
-- **No package manager / registry.** Libraries are vendored —
-  copied into the project's tree as source. The `lib/`
-  directory is convention, not a search path.
-- **No fetch / download.** The compiler reads only what's on
-  disk.
-- **No versioning / lockfile.** Source-level vendoring means
-  pinning happens at the file system level (committed source).
+- **No registry.** Aperio has no central package index. Deps
+  resolve via git URLs only.
 - **No transitive resolution.** Imports declared in imported
-  libraries are NOT followed (see "Strict barrier" above).
+  libraries are NOT followed (see "Strict barrier" above). If a
+  library has its own deps, the consumer must vendor them too.
+- **No version ranges or semver.** Pins are exact (a rev, tag,
+  or branch name); the user picks. There is no
+  highest-compatible-version solver.
 - **No `pub` / `export` keywords.** Everything top-level in an
   imported seed is exported.
-- **No project metadata file.** No `aperio.toml`, no `package.aperio`,
-  no manifest. The directory is the project.
 - **No `src/` wrapper.** Source files live at the project root.
 - **No build-output directory.** The binary lands next to
   source.

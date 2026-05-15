@@ -26,13 +26,38 @@ use std::process::ExitCode;
 
 use aperio_syntax::ast::Program;
 
+mod pkg;
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 3 {
+    if args.len() < 2 {
         usage();
         return ExitCode::from(2);
     }
     let cmd = &args[1];
+
+    // `fetch` is the one subcommand that doesn't take a target
+    // file/dir — it defaults to the current working directory and
+    // optionally accepts a repo-root override.
+    if cmd == "fetch" {
+        let root = if args.len() >= 3 {
+            PathBuf::from(&args[2])
+        } else {
+            env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        };
+        return match pkg::fetch(&root) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("aperio fetch: {}", e);
+                ExitCode::from(1)
+            }
+        };
+    }
+
+    if args.len() < 3 {
+        usage();
+        return ExitCode::from(2);
+    }
     let target = PathBuf::from(&args[2]);
 
     match cmd.as_str() {
@@ -58,6 +83,7 @@ fn usage() {
     eprintln!("    aperio check <file.ap | dir>    parse + typecheck");
     eprintln!("    aperio run   <file.ap | dir>    parse + typecheck + interpret");
     eprintln!("    aperio build <file.ap | dir>    parse + typecheck + emit native binary");
+    eprintln!("    aperio fetch [repo-root]        fetch git deps from aperio.toml into lib/");
 }
 
 fn run_lex_file(path: &Path) -> ExitCode {
