@@ -64,7 +64,22 @@ fn main() -> ExitCode {
         "lex" => run_lex_file(&target),
         "parse" => run_parse_file(&target),
         "check" => run_check(&target),
-        "run" => run_program(&target),
+        "run" => {
+            // Plumb the script's argv into the interpreter so
+            // `std::env::args_count` / `std::env::arg(i)` work.
+            // Convention mirrors compiled binaries: argv[0] is
+            // the script path; argv[1..] are the trailing CLI
+            // args. `aperio run script.ap foo bar` → script
+            // sees ["script.ap", "foo", "bar"].
+            let mut user_args: Vec<String> =
+                Vec::with_capacity(args.len().saturating_sub(2));
+            user_args.push(args[2].clone());
+            for a in args.iter().skip(3) {
+                user_args.push(a.clone());
+            }
+            aperio_runtime::set_user_args(user_args);
+            run_program(&target)
+        }
         "build" => run_build(&target),
         other => {
             eprintln!("unknown command: {}", other);

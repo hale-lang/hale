@@ -549,8 +549,110 @@ pub fn resolve_path(segments: &[&str]) -> Option<Value> {
             name: "std::io::stdin::read_line_status",
             func: Rc::new(std_io_stdin_read_line_status),
         })),
+        // env — argv + environment variables. Mirrors the
+        // codegen lowering surface; argv comes from the
+        // CLI-set thread-local (see `set_user_args`).
+        ["std", "env", "args_count"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::env::args_count",
+            func: Rc::new(std_env_args_count),
+        })),
+        ["std", "env", "arg"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::env::arg",
+            func: Rc::new(std_env_arg),
+        })),
+        ["std", "env", "var"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::env::var",
+            func: Rc::new(std_env_var),
+        })),
+        ["std", "env", "var_exists"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::env::var_exists",
+            func: Rc::new(std_env_var_exists),
+        })),
+        // process.
+        ["std", "process", "pid"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::process::pid",
+            func: Rc::new(std_process_pid),
+        })),
+        // io::fs — one-shot file ops. POSIX-style: sentinel "" /
+        // -1 / 0 on error; errno-style status via the *_status
+        // siblings for the cases where it matters.
+        ["std", "io", "fs", "read_file"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::io::fs::read_file",
+            func: Rc::new(std_io_fs_read_file),
+        })),
+        ["std", "io", "fs", "write_file"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::io::fs::write_file",
+            func: Rc::new(std_io_fs_write_file),
+        })),
+        ["std", "io", "fs", "write_file_append"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::io::fs::write_file_append",
+            func: Rc::new(std_io_fs_write_file_append),
+        })),
+        ["std", "io", "fs", "file_exists"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::io::fs::file_exists",
+            func: Rc::new(std_io_fs_file_exists),
+        })),
+        ["std", "io", "fs", "file_size"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::io::fs::file_size",
+            func: Rc::new(std_io_fs_file_size),
+        })),
+        ["std", "io", "fs", "mkdir"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::io::fs::mkdir",
+            func: Rc::new(std_io_fs_mkdir),
+        })),
+        // str — the parse_int family (used in CLI argument
+        // parsing).
+        ["std", "str", "parse_int"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::str::parse_int",
+            func: Rc::new(std_str_parse_int),
+        })),
+        ["std", "str", "can_parse_int"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::str::can_parse_int",
+            func: Rc::new(std_str_can_parse_int),
+        })),
+        // math — libm-shaped float primitives.
+        ["std", "math", "sqrt"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::math::sqrt",
+            func: Rc::new(std_math_sqrt),
+        })),
+        ["std", "math", "exp"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::math::exp",
+            func: Rc::new(std_math_exp),
+        })),
+        ["std", "math", "log"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::math::log",
+            func: Rc::new(std_math_log),
+        })),
+        ["std", "math", "floor"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::math::floor",
+            func: Rc::new(std_math_floor),
+        })),
+        ["std", "math", "ceil"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::math::ceil",
+            func: Rc::new(std_math_ceil),
+        })),
+        ["std", "math", "pow"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::math::pow",
+            func: Rc::new(std_math_pow),
+        })),
         _ => None,
     }
+}
+
+// === user-args plumbing =====================================
+
+thread_local! {
+    /// argv visible to the interpreted program. Set by the
+    /// CLI before invoking run_bundle (so `aperio run script.ap
+    /// foo bar` populates this with ["script.ap", "foo",
+    /// "bar"]); empty by default for embedded interpreter use.
+    /// Mirrors the lotus_env_init stash in the C runtime.
+    static USER_ARGS: std::cell::RefCell<Vec<String>> =
+        std::cell::RefCell::new(Vec::new());
+}
+
+pub fn set_user_args(args: Vec<String>) {
+    USER_ARGS.with(|a| *a.borrow_mut() = args);
 }
 
 /// v1.x: ASCII case folding mirroring the C runtime's
@@ -978,4 +1080,340 @@ fn std_io_stdin_read_line_status(args: &[Value]) -> Result<Value, String> {
     }
     let s = LAST_STDIN_STATUS.with(|c| c.get());
     Ok(Value::Int(s))
+}
+
+// === env =====================================================
+
+fn std_env_args_count(args: &[Value]) -> Result<Value, String> {
+    if !args.is_empty() {
+        return Err(format!(
+            "std::env::args_count takes 0 args, got {}",
+            args.len()
+        ));
+    }
+    let n = USER_ARGS.with(|a| a.borrow().len()) as i64;
+    Ok(Value::Int(n))
+}
+
+fn std_env_arg(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::env::arg takes 1 arg (index), got {}",
+            args.len()
+        ));
+    }
+    let i = match &args[0] {
+        Value::Int(n) => *n,
+        other => {
+            return Err(format!(
+                "std::env::arg: index must be Int, got {}",
+                other.type_name()
+            ))
+        }
+    };
+    let v = USER_ARGS.with(|a| {
+        let av = a.borrow();
+        if i < 0 || (i as usize) >= av.len() {
+            String::new()
+        } else {
+            av[i as usize].clone()
+        }
+    });
+    Ok(Value::String(v))
+}
+
+fn std_env_var(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::env::var takes 1 arg (name), got {}",
+            args.len()
+        ));
+    }
+    let name = match &args[0] {
+        Value::String(s) => s,
+        other => {
+            return Err(format!(
+                "std::env::var: name must be String, got {}",
+                other.type_name()
+            ))
+        }
+    };
+    Ok(Value::String(std::env::var(name).unwrap_or_default()))
+}
+
+fn std_env_var_exists(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::env::var_exists takes 1 arg (name), got {}",
+            args.len()
+        ));
+    }
+    let name = match &args[0] {
+        Value::String(s) => s,
+        other => {
+            return Err(format!(
+                "std::env::var_exists: name must be String, got {}",
+                other.type_name()
+            ))
+        }
+    };
+    // Codegen converts the i32 return to Bool at the var_exists
+    // call site; mirror that here for interp/codegen parity.
+    Ok(Value::Bool(std::env::var(name).is_ok()))
+}
+
+// === process =================================================
+
+fn std_process_pid(args: &[Value]) -> Result<Value, String> {
+    if !args.is_empty() {
+        return Err(format!(
+            "std::process::pid takes 0 args, got {}",
+            args.len()
+        ));
+    }
+    // SAFETY: getpid is async-signal-safe + always succeeds.
+    let pid = unsafe { libc::getpid() } as i64;
+    Ok(Value::Int(pid))
+}
+
+// === io::fs ==================================================
+
+fn std_io_fs_read_file(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::io::fs::read_file takes 1 arg (path), got {}",
+            args.len()
+        ));
+    }
+    let path = match &args[0] {
+        Value::String(s) => s,
+        other => {
+            return Err(format!(
+                "std::io::fs::read_file: path must be String, got {}",
+                other.type_name()
+            ))
+        }
+    };
+    Ok(Value::String(
+        std::fs::read_to_string(path).unwrap_or_default(),
+    ))
+}
+
+fn std_io_fs_write_file(args: &[Value]) -> Result<Value, String> {
+    fs_write(args, false, "write_file")
+}
+
+fn std_io_fs_write_file_append(args: &[Value]) -> Result<Value, String> {
+    fs_write(args, true, "write_file_append")
+}
+
+fn fs_write(args: &[Value], append: bool, label: &str) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!(
+            "std::io::fs::{} takes 2 args (path, content), got {}",
+            label,
+            args.len()
+        ));
+    }
+    let path = match &args[0] {
+        Value::String(s) => s.clone(),
+        other => {
+            return Err(format!(
+                "std::io::fs::{}: path must be String, got {}",
+                label,
+                other.type_name()
+            ))
+        }
+    };
+    let content = match &args[1] {
+        Value::String(s) => s.clone(),
+        Value::Bytes(b) => {
+            // Bytes content path: encode as raw bytes.
+            return Ok(Value::Int(write_bytes_to_path(&path, b, append)));
+        }
+        other => {
+            return Err(format!(
+                "std::io::fs::{}: content must be String or Bytes, got {}",
+                label,
+                other.type_name()
+            ))
+        }
+    };
+    Ok(Value::Int(write_bytes_to_path(
+        &path,
+        content.as_bytes(),
+        append,
+    )))
+}
+
+fn write_bytes_to_path(path: &str, bytes: &[u8], append: bool) -> i64 {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true);
+    if append {
+        opts.append(true);
+    } else {
+        opts.truncate(true);
+    }
+    match opts.open(path) {
+        Ok(mut f) => match f.write_all(bytes) {
+            Ok(_) => 0,
+            Err(_) => -1,
+        },
+        Err(_) => -1,
+    }
+}
+
+fn std_io_fs_file_exists(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::io::fs::file_exists takes 1 arg (path), got {}",
+            args.len()
+        ));
+    }
+    let path = match &args[0] {
+        Value::String(s) => s,
+        other => {
+            return Err(format!(
+                "std::io::fs::file_exists: path must be String, got {}",
+                other.type_name()
+            ))
+        }
+    };
+    Ok(Value::Bool(std::path::Path::new(path).exists()))
+}
+
+fn std_io_fs_file_size(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::io::fs::file_size takes 1 arg (path), got {}",
+            args.len()
+        ));
+    }
+    let path = match &args[0] {
+        Value::String(s) => s,
+        other => {
+            return Err(format!(
+                "std::io::fs::file_size: path must be String, got {}",
+                other.type_name()
+            ))
+        }
+    };
+    let size = std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(-1);
+    Ok(Value::Int(size))
+}
+
+fn std_io_fs_mkdir(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::io::fs::mkdir takes 1 arg (path), got {}",
+            args.len()
+        ));
+    }
+    let path = match &args[0] {
+        Value::String(s) => s,
+        other => {
+            return Err(format!(
+                "std::io::fs::mkdir: path must be String, got {}",
+                other.type_name()
+            ))
+        }
+    };
+    let r = std::fs::create_dir(path).map(|_| 0i64).unwrap_or(-1);
+    Ok(Value::Int(r))
+}
+
+// === str parsing =============================================
+
+fn std_str_parse_int(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::str::parse_int takes 1 arg, got {}",
+            args.len()
+        ));
+    }
+    let s = match &args[0] {
+        Value::String(s) => s,
+        other => {
+            return Err(format!(
+                "std::str::parse_int expects String, got {}",
+                other.type_name()
+            ))
+        }
+    };
+    // Permissive: strtoll-style. Leading whitespace + optional
+    // sign accepted; trailing garbage rejects to 0.
+    Ok(Value::Int(s.trim().parse::<i64>().unwrap_or(0)))
+}
+
+fn std_str_can_parse_int(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::str::can_parse_int takes 1 arg, got {}",
+            args.len()
+        ));
+    }
+    let s = match &args[0] {
+        Value::String(s) => s,
+        other => {
+            return Err(format!(
+                "std::str::can_parse_int expects String, got {}",
+                other.type_name()
+            ))
+        }
+    };
+    Ok(Value::Bool(s.trim().parse::<i64>().is_ok()))
+}
+
+// === math ====================================================
+
+fn float_arg(v: &Value, fn_name: &str) -> Result<f64, String> {
+    match v {
+        Value::Float(f) => Ok(*f),
+        Value::Int(n) => Ok(*n as f64),
+        other => Err(format!(
+            "std::math::{} expects Float, got {}",
+            fn_name,
+            other.type_name()
+        )),
+    }
+}
+
+fn unary_math(args: &[Value], name: &str, f: fn(f64) -> f64) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::math::{} takes 1 arg, got {}",
+            name,
+            args.len()
+        ));
+    }
+    Ok(Value::Float(f(float_arg(&args[0], name)?)))
+}
+
+fn std_math_sqrt(args: &[Value]) -> Result<Value, String> {
+    unary_math(args, "sqrt", f64::sqrt)
+}
+fn std_math_exp(args: &[Value]) -> Result<Value, String> {
+    unary_math(args, "exp", f64::exp)
+}
+fn std_math_log(args: &[Value]) -> Result<Value, String> {
+    unary_math(args, "log", f64::ln)
+}
+fn std_math_floor(args: &[Value]) -> Result<Value, String> {
+    unary_math(args, "floor", f64::floor)
+}
+fn std_math_ceil(args: &[Value]) -> Result<Value, String> {
+    unary_math(args, "ceil", f64::ceil)
+}
+
+fn std_math_pow(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!(
+            "std::math::pow takes 2 args, got {}",
+            args.len()
+        ));
+    }
+    let b = float_arg(&args[0], "pow")?;
+    let e = float_arg(&args[1], "pow")?;
+    Ok(Value::Float(b.powf(e)))
 }
