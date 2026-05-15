@@ -13,7 +13,7 @@ members = [
 version = "0.0.1"
 edition = "2021"
 authors = ["the Aperio authors"]
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 repository = "local"
 
 [workspace.dependencies]

@@ -158,5 +158,10 @@ Breaking changes are expected; pin to a commit if you build on it.
 
 ## License
 
-TBD. The project is in design exploration; licensing decisions
-follow first public release.
+Licensed under the [Apache License, Version 2.0](./LICENSE).
+Attribution and any third-party notices are tracked in
+[`NOTICE`](./NOTICE).
+
+Unless you explicitly state otherwise, any contribution
+intentionally submitted for inclusion in Aperio shall be
+licensed as above, without additional terms or conditions.
