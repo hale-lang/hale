@@ -213,8 +213,11 @@ surprises:
    above are condensed from it).
 2. Pick the smallest target. State it out loud: app name,
    stdlib paths you'll need, what you're not sure about.
-3. Read 2-3 examples in `aperio-lang/examples` close to your
-   target shape.
+3. Read 2-3 programs close to your target shape. The richest
+   in-tree sources are `apps/` (real working programs:
+   `cli-demo`, `log-router`, `ssg`, `tcp-echo`, `ws-echo`, ...)
+   and `crates/aperio-codegen/tests/fixtures/examples/` (small
+   per-feature anchors, numbered).
 4. Write the smallest program that gets one thing working.
    `aperio run <file-or-dir>` for fast feedback; `aperio build`
    for the native binary.
@@ -230,8 +233,16 @@ surprises:
   `@form(ring_buffer)`): `spec/forms.md`.
 - Memory / capacity slots / projection classes:
   `spec/memory.md`.
-- Examples: <https://github.com/aperio-lang/examples>.
-- Benchmarks: <https://github.com/aperio-lang/bench>.
+- Working programs (in-tree): `apps/`.
+- Per-feature anchor programs (in-tree):
+  `crates/aperio-codegen/tests/fixtures/examples/`.
+- Contrib libraries — protocols / parsers / shapes that don't
+  belong in stdlib but are too useful to rewrite per-project:
+  <https://github.com/aperio-lang/pond>. Vendor via
+  `aperio.toml` → `aperio fetch`; import as
+  `import "vendor/pond/<lib>" as <alias>;`.
+- Sibling repos: <https://github.com/aperio-lang/examples>,
+  <https://github.com/aperio-lang/bench>.
 
 ---
 

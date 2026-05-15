@@ -100,17 +100,25 @@ configuration needed. (Hand-vendored libraries stay under
 - **[`AGENTS.md`](./AGENTS.md)** — load-bearing prompt for AI
   agents writing `.ap` programs. Compiler / stdlib / spec work
   has separate briefs under [`agents/`](./agents/).
-- **Examples** — <https://github.com/aperio-lang/examples>.
-- **Benchmarks** — <https://github.com/aperio-lang/bench>.
-- **In-tree feature fixtures** —
-  `crates/aperio-codegen/tests/fixtures/examples/` (the parser
-  is anchored against these).
+- **[`apps/`](./apps)** — working programs built in Aperio
+  (`cli-demo`, `log-router`, `ssg`, `tcp-echo`, `ws-echo`,
+  ...). Read these to see real shape.
+- **`crates/aperio-codegen/tests/fixtures/examples/`** — small
+  per-feature anchor programs the parser is checked against.
+- **[`aperio-lang/pond`](https://github.com/aperio-lang/pond)** —
+  community-contrib libraries (protocols, parsers, common shapes
+  too specific for stdlib). Many lotus grow in a pond. Vendor
+  via `aperio.toml` → `aperio fetch`.
+- **Sibling repos** — <https://github.com/aperio-lang/examples>
+  and <https://github.com/aperio-lang/bench>.
 
 ## Layout
 
 ```
 spec/                       grammar + semantics + design rationale
-agents/                     role-organized briefs for AI-assisted dev
+AGENTS.md                   load-bearing prompt for .ap-authoring agents
+agents/                     role briefs for compiler / stdlib work
+apps/                       working programs built in Aperio
 docs/                       narrative documentation (in progress)
 notes/                      surviving design notes
 crates/
@@ -133,8 +141,9 @@ interfaces (F.20), `@form(...)` lowerings (vec, hashmap,
 ring_buffer), `fallible(T)` error model, capacity-tuple memory
 discipline, cooperative + pinned schedulers, and AF_UNIX / TCP
 cross-process bus transports. The reference test suite is the
-~70-program `examples/` fixture set plus per-feature tests under
-`crates/aperio-codegen/tests/`.
+~70 in-tree fixture programs under
+`crates/aperio-codegen/tests/fixtures/examples/` plus per-feature
+tests under `crates/aperio-codegen/tests/`.
 
 Breaking changes are expected; pin to a commit if you build on it.
 
