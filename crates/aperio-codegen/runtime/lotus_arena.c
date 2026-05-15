@@ -1311,21 +1311,42 @@ void lotus_bus_queue_enqueue(lotus_bus_queue_t *q,
     if (locked) pthread_mutex_unlock(&q->lock);
 }
 
-/* Drain the queue: pop cells one at a time, copy each cell's
- * inline payload into the subscriber's arena (located at
- * self_ptr+0 by the universal __arena offset), and invoke
- * handler(self, arena_copy). Handlers may enqueue more cells
+/* Drain the queue: pop cells one at a time and invoke
+ * handler(self, payload). Handlers may enqueue more cells
  * (cooperative-cooperative bus dispatch is the natural
  * interleaving — see The Design / lotus, substrate cells).
  * Loops until the queue is empty AT POP TIME, including any
  * cells enqueued during the drain itself.
  *
- * Lock discipline: take the mutex to pop one cell + read its
- * fields into a local; release before allocating in the
- * subscriber's arena and invoking the handler. Holding the
- * lock across handler invocation would (a) block pinned
- * producers for the entire handler runtime and (b) deadlock
- * if the handler re-enqueues. */
+ * Payload-pointer lifetime: the pointer handed to the handler
+ * is valid for the duration of that handler invocation only.
+ * The handler reads field values out of it (typical pattern:
+ * `self.total = self.total + payload.value`); field copies
+ * land in self, the pointer itself does not escape. Aperio
+ * doesn't allow taking explicit addresses in user code, so
+ * this invariant is structurally enforced. Per spec/memory.md
+ * § "Bus dispatch: copy-not-pointer semantic", the *value*
+ * crosses the locus boundary (via the cell's inline buffer);
+ * what changes here is that the value no longer bounces
+ * through the subscriber's arena before the handler reads it
+ * — a per-event `lotus_arena_alloc` + second `memcpy` that
+ * dominated the cost for the small-payload event-flood case
+ * (`bus_dispatch`/`stream_aggregator`/`pipeline_3stage`-style).
+ *
+ * Lock discipline (locked path): take the mutex to pop one cell
+ * INTO a stack-local snapshot; release before invoking the
+ * handler. The snapshot's `payload_inline` field IS the
+ * canonical copy for this dispatch — handler reads through
+ * `&snapshot.payload_inline`. Holding the lock across handler
+ * invocation would (a) block pinned producers for the entire
+ * handler runtime and (b) deadlock if the handler re-enqueues.
+ *
+ * Single-threaded path: a single stack buffer outside the loop
+ * receives the cell's payload before each handler invocation.
+ * Required because the handler may publish, which may realloc
+ * `q->cells`, which would dangle a direct pointer into the
+ * cell. Recursive drain calls (via the handler's trailing
+ * bus_drain) get their own stack frame and their own buffer. */
 typedef void (*lotus_handler_fn)(void *self, void *payload);
 
 void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
@@ -1334,7 +1355,8 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
     if (locked) {
         /* Concurrent producers possible — must snapshot each cell
          * under the lock so the cells array can't be realloc'd out
-         * from under the in-flight pop. */
+         * from under the in-flight pop. The snapshot's inline
+         * buffer is what the handler reads. */
         for (;;) {
             pthread_mutex_lock(&q->lock);
             if (q->head >= q->tail) {
@@ -1346,34 +1368,19 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             lotus_bus_cell_t cell_copy = q->cells[q->head++];
             pthread_mutex_unlock(&q->lock);
 
-            void *payload_in_arena = NULL;
-            if (cell_copy.payload_size > 0) {
-                lotus_arena_t *sub_arena =
-                    *(lotus_arena_t **)cell_copy.self_ptr;
-                payload_in_arena = lotus_arena_alloc(
-                    sub_arena, cell_copy.payload_size, 8);
-                if (payload_in_arena) {
-                    memcpy(payload_in_arena,
-                           cell_copy.payload_inline,
-                           cell_copy.payload_size);
-                }
-            }
+            void *payload_ptr = (cell_copy.payload_size > 0)
+                ? (void *)cell_copy.payload_inline
+                : NULL;
             ((lotus_handler_fn)cell_copy.handler)(
-                cell_copy.self_ptr, payload_in_arena);
+                cell_copy.self_ptr, payload_ptr);
         }
     } else {
         /* Single-threaded cooperative path: no concurrent producer
-         * exists. Read cell fields directly from the queue (no 544-
-         * byte stack snapshot per pop), and copy ONLY the payload's
-         * actual bytes into the subscriber's arena (vs the full
-         * 512-byte inline). The cells array might realloc if the
-         * handler publishes — but the handler runs AFTER we've
-         * advanced `head` and snapshotted the cell's fields into
-         * locals (which the C frame holds in registers). The
-         * payload pointer we hand to the handler is into the
-         * subscriber's arena (per `memory.md` § "Bus dispatch:
-         * copy-not-pointer semantic"), so handler-side realloc
-         * of the queue can't dangle it. */
+         * exists. One stack-allocated payload buffer, reused
+         * across iterations and stable across recursive drain
+         * calls (the recursive call has its own frame). */
+        unsigned char stack_payload[LOTUS_PAYLOAD_MAX]
+            __attribute__((aligned(16)));
         for (;;) {
             if (q->head >= q->tail) {
                 q->head = 0;
@@ -1384,19 +1391,16 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             void *handler_fn = cell->handler;
             void *handler_self = cell->self_ptr;
             size_t psize = cell->payload_size;
-            void *payload_in_arena = NULL;
+            void *payload_ptr = NULL;
             if (psize > 0) {
-                lotus_arena_t *sub_arena =
-                    *(lotus_arena_t **)handler_self;
-                payload_in_arena =
-                    lotus_arena_alloc(sub_arena, psize, 8);
-                if (payload_in_arena) {
-                    memcpy(payload_in_arena,
-                           cell->payload_inline, psize);
-                }
+                /* Last cell-dereference before invoking the
+                 * handler. After this memcpy, any handler-side
+                 * realloc of q->cells is harmless — we're done
+                 * reading from `cell`. */
+                memcpy(stack_payload, cell->payload_inline, psize);
+                payload_ptr = stack_payload;
             }
-            ((lotus_handler_fn)handler_fn)(handler_self,
-                                            payload_in_arena);
+            ((lotus_handler_fn)handler_fn)(handler_self, payload_ptr);
         }
     }
 }
@@ -1531,20 +1535,18 @@ int lotus_mailbox_drain_one(lotus_mailbox_t *mb) {
     }
     pthread_mutex_unlock(&mb->lock);
 
-    void *payload_in_arena = NULL;
-    if (cell_copy.payload_size > 0) {
-        lotus_arena_t *sub_arena =
-            *(lotus_arena_t **)cell_copy.self_ptr;
-        payload_in_arena = lotus_arena_alloc(
-            sub_arena, cell_copy.payload_size, 8);
-        if (payload_in_arena) {
-            memcpy(payload_in_arena,
-                   cell_copy.payload_inline,
-                   cell_copy.payload_size);
-        }
-    }
+    /* Hand `cell_copy.payload_inline` directly to the handler.
+     * `cell_copy` is a stack-local snapshot of the dequeued cell;
+     * its inline buffer is the canonical payload copy for this
+     * dispatch. Skipping the prior `lotus_arena_alloc` + extra
+     * memcpy into the locus's arena drops the per-event overhead
+     * on the pinned-subscriber path. See the matching note in
+     * lotus_bus_queue_drain — same lifetime invariant. */
+    void *payload_ptr = (cell_copy.payload_size > 0)
+        ? (void *)cell_copy.payload_inline
+        : NULL;
     ((lotus_handler_fn)cell_copy.handler)(
-        cell_copy.self_ptr, payload_in_arena);
+        cell_copy.self_ptr, payload_ptr);
     return 1;
 }
 
@@ -1635,6 +1637,14 @@ static size_t             g_bus_cap     = 0;
  */
 int lotus_subject_match(const char *pattern, const char *subject) {
     if (!pattern || !subject) return 0;
+    /* Pointer-equal fast path: both sides typically reference the
+     * same merged `unnamed_addr` global. LLVM coalesces identical
+     * string constants, so `subscribe "S"` + `<- "S"` use the
+     * same address. Skips strlen + strstr + strcmp for the
+     * common literal-subject case (`bus_dispatch` / `stream_*`
+     * patterns) — ~5-10 ns/publish-per-subscriber on a no-
+     * wildcard subject. */
+    if (pattern == subject) return 1;
     size_t plen = strlen(pattern);
     if (plen < 2) {
         /* Too short to contain "**". */
