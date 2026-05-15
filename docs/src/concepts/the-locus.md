@@ -128,6 +128,17 @@ duration window). The `~~` operator means "approximately
 equal within tolerance." A closure that fails routes through
 `on_failure` like any other structural failure.
 
+Closures also serve as *named structural-failure types* that
+member functions can fire inline. The `epoch inline` variant
+declares a closure whose only firing mode is explicit
+`violate NAME` from a method body; an optional `captures: f1, f2`
+clause names locus state to snapshot into the violation payload.
+This shape is the bridge between the value channel and the
+structural channel — covered in detail in
+[The two failure channels](./failure.md). *(`epoch inline`,
+`violate`, and the `captures:` clause are shipping in v1.x; the
+spec change is `F.27` in `spec/design-rationale.md`.)*
+
 ## `locus` vs `type`
 
 If you've gotten this far you may be wondering when to use a

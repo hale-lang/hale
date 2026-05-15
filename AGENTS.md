@@ -223,6 +223,40 @@ surprises:
    for the native binary.
 5. Iterate. If you hit a wall, log friction.
 
+## Forthcoming (v1.x in progress — do not emit yet)
+
+The compiler is implementing a small set of additions for
+"inline structural failure." These are NOT in the language
+today; do not generate code that uses them until the spec
+change at `spec/design-rationale.md` § F.27 ships:
+
+- **`closure NAME { captures: f1, f2; epoch inline; }`** —
+  assertion-less closure shape that fires only via explicit
+  `violate`. Snapshot the listed fields into the violation
+  payload.
+- **`violate NAME;` / `violate NAME with expr;`** —
+  statement-level, divergent (`Never` type, same shape as
+  `fail` in fallible fns and `bubble` in `on_failure`).
+  Valid only inside a locus member fn; resolves NAME against
+  the current locus's `epoch inline` closures.
+- **Error-check fn pattern** — a locus member fn with
+  signature `fn(ErrType) -> SuccessType`, used as
+  `or self.handler(err)` at fallible call sites. Body either
+  returns the substitute value or `violate`s. The bridge
+  between the value channel and the structural channel.
+- **`self.draining`** — synthetic Bool field on every locus,
+  readable inside method bodies. True from the moment
+  `violate` (or any drain trigger) fires until dissolve
+  completes. Useful for "don't publish further after we
+  decided to wind down."
+
+When these ship, the canonical pattern for "catch error and
+shut this locus down" becomes a closure declaration + a
+member fn + one `violate` statement, replacing the current
+workaround (a `should_exit: Bool` flag plus a
+`while !should_exit { yield; }` loop in `run()`). Until then,
+use the workaround.
+
 ## Pointers
 
 - Spec (canonical contract): `spec/`. Start with

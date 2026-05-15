@@ -37,13 +37,13 @@ concrete patterns and helpers for declaring ownership and
 verifying the assignment. This chapter will link to it when
 it ships.)
 
-## The six idiomatic patterns
+## The seven idiomatic patterns
 
-Every well-shaped Aperio program is composed of six recurring
+Every well-shaped Aperio program is composed of seven recurring
 patterns. If your code doesn't fit one of these, reconsider
 before inventing — the catalog is small on purpose, and most
-"I need a seventh pattern" instincts turn out to be one of
-the six in a foreign shape.
+"I need an eighth pattern" instincts turn out to be one of
+the seven in a foreign shape.
 
 ### 1. App locus — outer encapsulation
 
@@ -226,6 +226,60 @@ Common shapes:
 
 When a coherent vocabulary of three or more free fns forms,
 the namespace-lotus form (pattern 2) often reads better.
+
+### 7. Error-check function — bridging the channels
+
+> *Shipping in v1.x; specified at `spec/design-rationale.md` § F.27.*
+
+A locus member fn whose signature is `fn(ErrType) -> SuccessType`,
+used as the fallback in an `or self.handler(err)` clause at a
+fallible call site. Internally, it examines the error and
+chooses: return a value (substitute, continue) or
+`violate NAME` (escalate to the structural channel).
+
+```aperio
+locus DbConnection {
+    params { conn_fd: Int = -1; last_error: String = ""; /* ... */ }
+    bus { subscribe ExecuteQuery as on_query; publish QueryResult; }
+
+    closure fatal_io { captures: last_error; epoch inline; }
+
+    fn handle_io(e: DbError) -> Row {
+        self.last_error = e.detail;
+        if e.kind == "send_failed" || e.kind == "recv_empty" {
+            violate fatal_io;
+        }
+        return Row { data: "" };
+    }
+
+    fn on_query(q: Query) {
+        let r = send_query(self.conn_fd, q) or self.handle_io(err);
+        if !self.draining { QueryResult <- r; }
+    }
+}
+```
+
+This is the canonical bridge between the value channel and
+the structural channel — see
+[The two failure channels](./failure.md) §"Bridging the
+channels" for the full treatment.
+
+Conventions:
+
+- **Naming.** snake_case. Name for *what is being handled*,
+  not what's being done: `handle_io`, `handle_parse`,
+  `handle_timeout` — not `recover_or_die`.
+- **Signature.** The return type is the success type of the
+  call sites that use this handler. One handler per
+  `(ErrType, SuccessType)` pair on a given locus.
+- **Body shape.** `if`-chain or `match` on the error kind;
+  each arm either `violate`s a named closure or `return`s a
+  substitute value. The two motions are exhaustive — the
+  typechecker ensures every path either returns the success
+  type or diverges via `violate`.
+- **Closure references.** `violate NAME` is locus-scoped —
+  the named closure must be declared on the same locus. This
+  is why the handler is a *member fn*, not a free fn.
 
 ## Anti-patterns
 

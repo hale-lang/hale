@@ -203,6 +203,154 @@ synthesized form methods (`@form(vec).get`, `@form(vec).pop`,
 application-layer storage substrate, not lifecycle-bearing
 loci, so the value channel fits.
 
+## Bridging the channels: structural failure from value-error context
+
+> *Shipping in v1.x; specified at `spec/design-rationale.md` § F.27.
+> Compiler implementation in progress.*
+
+The two-channel rule keeps locus methods off the value channel —
+but real systems regularly need to *cross from one to the other*.
+A locus method catches a value error in an `or` clause, decides
+the error is unrecoverable, and wants to immediately escalate
+into the structural channel so the parent's `on_failure` policy
+takes over.
+
+Aperio's primitive for this is **inline closure violation**: a
+locus declares a *named structural-failure type* as an
+assertion-less closure with `epoch inline`, then any member
+function can fire it with the `violate` statement.
+
+```aperio
+type Query    { sql: String; }
+type Row      { data: String; }
+type DbError  { kind: String; detail: String; }
+topic ExecuteQuery { payload: Query; }
+topic QueryResult  { payload: Row; }
+
+fn send_query(fd: Int, q: Query) -> Row fallible(DbError) {
+    let sent = std::io::tcp::send_bytes(fd, std::bytes::from_string(q.sql));
+    if sent < 0 { fail DbError { kind: "send_failed", detail: "connection lost" }; }
+    let resp = std::io::tcp::recv_bytes(fd, 4096);
+    if len(resp) == 0 { fail DbError { kind: "recv_empty", detail: "peer closed" }; }
+    return Row { data: std::str::from_bytes(resp) };
+}
+
+locus DbConnection {
+    params {
+        host:       String = "127.0.0.1";
+        port:       Int    = 5432;
+        conn_fd:    Int    = -1;
+        last_error: String = "";
+    }
+
+    bus { subscribe ExecuteQuery as on_query; publish QueryResult; }
+
+    // Named structural-failure type. No assertion body; the fire
+    // IS the violation. The captures clause snapshots state into
+    // the ClosureViolation payload at the violate site.
+    closure fatal_io {
+        captures: last_error;
+        epoch inline;
+    }
+
+    birth()    { self.conn_fd = std::io::tcp::connect(self.host, self.port); }
+    dissolve() { if self.conn_fd >= 0 { std::io::tcp::close_fd(self.conn_fd); } }
+
+    // The "error-check function": takes the error type, returns
+    // the success type expected at the call site, and chooses
+    // recovery (return a value) or escalation (violate).
+    fn handle_io(e: DbError) -> Row {
+        self.last_error = e.detail;
+        if e.kind == "send_failed" || e.kind == "recv_empty" {
+            violate fatal_io;        // diverges — no return needed
+        }
+        return Row { data: "" };     // transient; substitute
+    }
+
+    fn on_query(q: Query) {
+        let r = send_query(self.conn_fd, q) or self.handle_io(err);
+        if !self.draining { QueryResult <- r; }
+    }
+}
+```
+
+Three primitives are doing the work:
+
+- **`closure fatal_io { ... epoch inline; }`** — the *vocabulary*.
+  A named structural-failure type local to this locus. The
+  `captures:` clause names locus state to snapshot when fired.
+- **`fn handle_io(e: DbError) -> Row`** — the *policy*. A member
+  fn shaped exactly for the `or` clause: takes the error type,
+  returns the success type. Inside, the body decides between
+  recovery (return a value) and escalation (`violate`). One
+  function can be reused across every fallible call site on
+  this locus that produces `Row` from `DbError`.
+- **`violate fatal_io`** — the *trigger*. Statement-level,
+  divergent (typechecker treats as `Never`, same as `fail` in
+  fallible fns and `bubble` in `on_failure`). At the next
+  cooperative yield, the runtime transitions this locus to
+  drain. At dissolve, the parent receives the typed
+  `ClosureViolation` with the captured `last_error`.
+
+The flow when a value error propagates up:
+
+1. `send_query(self.conn_fd, q)` fails — returns
+   `FallibleErr(DbError {...})`.
+2. The `or self.handle_io(err)` clause fires — `err` binds to
+   the `DbError`; `handle_io` runs.
+3. `handle_io` writes `e.detail` to `self.last_error`, sees the
+   fatal kind, and executes `violate fatal_io`.
+4. The runtime constructs `ClosureViolation { locus: "DbConnection",
+   closure: "fatal_io", captures: { last_error: "connection lost" } }`
+   and sets the locus's internal `__drain_requested` flag.
+   Control diverges — `handle_io` never returns to its caller.
+5. At the next cooperative yield, the runtime begins drain.
+   `dissolve()` runs, closing the fd.
+6. The parent's `on_failure(c, ClosureViolation { ... })` fires
+   with the snapshot, decides policy (`restart` / `quarantine` /
+   `bubble` / absorb).
+
+## Why this composes well
+
+Three roles, three slots, no double duty:
+
+| Slot | Role | Reusable across |
+|---|---|---|
+| Closure declaration | Vocabulary — named failure type with optional payload schema | The locus type |
+| Member fn (error-check) | Policy — decide recovery vs escalation per error kind | Every call site on the locus with same `(ErrType, SuccessType)` |
+| `or self.handler(err)` at call site | Binding — typechecker-enforced disposition | Every fallible call returning the matching success type |
+
+Compare to the older workaround pattern (a `should_exit: Bool`
+flag, a `fatal_error: Bool` flag, a `while !should_exit { yield; }`
+loop in `run()`, a separate diagnostic field, plus a closure to
+audit at dissolve): five pieces of state doing what one
+`closure` + one `violate` + one member fn now do.
+
+## A note on Never
+
+`violate NAME;` is *divergent*. The typechecker treats it
+as the `Never` type: code after a `violate` is unreachable
+within the current function. This is the same shape `fail E;`
+takes inside a fallible function and `bubble(err);` takes
+inside an `on_failure` handler — three statement forms whose
+"return type" is "control doesn't return through here."
+
+That's what makes the error-check function work cleanly:
+
+```aperio
+fn handle_io(e: DbError) -> Row {
+    if e.kind == "fatal" {
+        violate fatal_io;          // Never; no return required
+    }
+    return Row { data: "" };       // Row; required on the other branch
+}
+```
+
+The branches that violate don't need a `return`; the branches
+that return must provide a value of the declared type. The
+typechecker enforces total coverage exactly as it would for a
+function that mixes `fail` and `return`.
+
 ## Why two channels and not one?
 
 Languages that have only structural failure (Erlang) make
