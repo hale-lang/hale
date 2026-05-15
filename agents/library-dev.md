@@ -151,8 +151,9 @@ A consumer who wants your library declares it in their
 mylib = { git = "https://github.com/you/mylib", tag = "v0.1.0" }
 ```
 
-Then `aperio fetch` clones your repo into their `lib/mylib/`
-and writes a SHA to `aperio.lock`. The directory itself becomes
+Then `aperio fetch` clones your repo into their `vendor/mylib/`
+and writes a SHA to `aperio.lock`. They reference it as
+`import "vendor/mylib" as ml;`. The directory itself becomes
 a single Aperio seed (every `.ap` at the repo root is one
 library; nested directories are NOT crawled). What this means
 for your repo layout:

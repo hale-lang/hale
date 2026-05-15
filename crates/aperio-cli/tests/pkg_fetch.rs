@@ -1,7 +1,7 @@
 //! Integration test for `aperio fetch`. Sets up a throwaway
 //! "remote" git repo as a `file://` URL, points a manifest at
 //! it, runs the `aperio` binary's fetch subcommand, and verifies
-//! that the source landed under `lib/<name>/` and that
+//! that the source landed under `vendor/<name>/` and that
 //! `aperio.lock` pinned the resolved SHA.
 //!
 //! Requires `git` on PATH. Skips silently if git is missing
@@ -117,8 +117,8 @@ fn fetch_clones_dep_and_writes_lockfile() {
         stderr
     );
 
-    // 4. Verify source landed under lib/helpers/.
-    let cloned = consumer.join("lib").join("helpers");
+    // 4. Verify source landed under vendor/helpers/.
+    let cloned = consumer.join("vendor").join("helpers");
     assert!(
         cloned.join("greet.ap").exists(),
         "expected {} to exist",
@@ -174,7 +174,7 @@ fn refetch_is_idempotent() {
 
     // Mark the .git dir's mtime so we can tell whether it was
     // touched on the second fetch.
-    let git_dir = consumer.join("lib").join("library").join(".git");
+    let git_dir = consumer.join("vendor").join("library").join(".git");
     assert!(git_dir.exists(), "first fetch should have created .git");
 
     // Second fetch — should be a no-op given the lockfile pin.
@@ -188,6 +188,54 @@ fn refetch_is_idempotent() {
         stdout.contains("up to date"),
         "expected 'up to date' on idempotent re-fetch; got:\n{}",
         stdout
+    );
+
+    let _ = fs::remove_dir_all(&remote);
+    let _ = fs::remove_dir_all(&consumer);
+}
+
+#[test]
+fn refuses_to_clobber_hand_maintained_vendor_dir() {
+    if !git_available() {
+        eprintln!("git not available; skipping");
+        return;
+    }
+
+    let remote = unique_dir("remote_clobber");
+    let _sha = make_repo(&remote, &[("x.ap", "fn x() { }\n")]);
+
+    let consumer = unique_dir("consumer_clobber");
+    let manifest = format!(
+        "[deps]\ntoy = {{ git = \"file://{}\" }}\n",
+        remote.display()
+    );
+    fs::write(consumer.join("aperio.toml"), manifest).expect("write manifest");
+
+    // Plant a hand-maintained vendor/toy/ directory (no .git
+    // inside) and verify aperio fetch refuses to clobber it.
+    let hand = consumer.join("vendor").join("toy");
+    fs::create_dir_all(&hand).expect("mkdir hand-maintained");
+    fs::write(hand.join("local.ap"), "fn local() { }\n")
+        .expect("write hand file");
+
+    let out = Command::new(aperio_bin())
+        .args(["fetch", consumer.to_str().unwrap()])
+        .output()
+        .expect("spawn aperio fetch");
+    assert!(
+        !out.status.success(),
+        "fetch should have failed to clobber hand-maintained dir"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("refusing to overwrite"),
+        "expected clobber-refusal diagnostic; got:\n{}",
+        stderr
+    );
+    // Hand-maintained file should still be intact.
+    assert!(
+        hand.join("local.ap").exists(),
+        "fetch should not have touched the hand-maintained dir"
     );
 
     let _ = fs::remove_dir_all(&remote);

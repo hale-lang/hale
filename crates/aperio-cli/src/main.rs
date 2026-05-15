@@ -83,7 +83,7 @@ fn usage() {
     eprintln!("    aperio check <file.ap | dir>    parse + typecheck");
     eprintln!("    aperio run   <file.ap | dir>    parse + typecheck + interpret");
     eprintln!("    aperio build <file.ap | dir>    parse + typecheck + emit native binary");
-    eprintln!("    aperio fetch [repo-root]        fetch git deps from aperio.toml into lib/");
+    eprintln!("    aperio fetch [repo-root]        fetch git deps from aperio.toml into vendor/");
 }
 
 fn run_lex_file(path: &Path) -> ExitCode {

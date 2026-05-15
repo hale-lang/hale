@@ -83,10 +83,11 @@ helpers = { git = "https://github.com/me/helpers", rev = "abc123" }
 finance = { git = "https://github.com/me/finance", tag = "v0.1.0" }
 ```
 
-Then `aperio fetch` clones each into `lib/<name>/` and pins the
-resolved commits to `aperio.lock`. The existing `import
-"lib/helpers" as h;` directive picks them up — no extra
-configuration needed.
+Then `aperio fetch` clones each into `vendor/<name>/` and pins
+the resolved commits to `aperio.lock`. The existing `import
+"vendor/helpers" as h;` directive picks them up — no extra
+configuration needed. (Hand-vendored libraries stay under
+`lib/<name>/`; the toolchain only writes to `vendor/`.)
 
 ## Where to go next
 

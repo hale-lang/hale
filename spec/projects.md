@@ -321,11 +321,17 @@ cross-seed imports.
 
 A project may declare git dependencies in an `aperio.toml`
 manifest at the repo root; `aperio fetch` clones each into
-`lib/<name>/` and pins resolved commit SHAs in `aperio.lock`.
-The cloned source is then picked up automatically by the
-import-resolution order above (path 1 of the resolver looks
-at `<importer-dir>/<path>/`, which is exactly where the
-fetcher places `lib/<name>/`).
+`vendor/<name>/` and pins resolved commit SHAs in
+`aperio.lock`. The cloned source is then picked up
+automatically by the import-resolution order above (path 1 of
+the resolver looks at `<importer-dir>/<path>/`, which is
+exactly where the fetcher places `vendor/<name>/`).
+
+`vendor/` is toolchain-managed and distinct from `lib/`
+(hand-maintained, never touched by the fetcher). Both paths
+work identically through the import resolver but keeping them
+physically separate prevents `aperio fetch` from clobbering
+hand-vendored source on a name collision.
 
 See `spec/packages.md` for the full surface — manifest
 format, lockfile shape, pin semantics, fetch command behavior,

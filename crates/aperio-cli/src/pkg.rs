@@ -3,18 +3,29 @@
 //! v1: single developer, no transitive deps, no registry. The
 //! user writes `aperio.toml` at the repo root listing direct git
 //! dependencies; `aperio fetch` shells out to `git clone` for
-//! each one into `lib/<name>/` and pins the resolved commit SHA
-//! in `aperio.lock`.
+//! each one into `vendor/<name>/` and pins the resolved commit
+//! SHA in `aperio.lock`.
 //!
-//! Re-fetching is idempotent: if `lib/<name>/.git/HEAD` already
-//! matches the locked SHA for that dep, we skip the network. To
-//! upgrade, edit the manifest's `rev`/`tag`/`branch`, delete
-//! `aperio.lock` (or just `lib/<name>/`), and re-run `fetch`.
+//! The fetched tree lives at `vendor/` (toolchain-managed), kept
+//! separate from `lib/` (hand-maintained by the user). This
+//! avoids clobbering hand-vendored source if the user adds a
+//! manifest dep that happens to share a name with an existing
+//! `lib/<name>/` directory. Consumers reference fetched deps via
+//! `import "vendor/<name>" as alias;` (the path is part of the
+//! import string, so swapping a hand-vendored lib for a fetched
+//! one is an explicit edit, not a silent rebind).
+//!
+//! Re-fetching is idempotent: if `vendor/<name>/.git/HEAD`
+//! already matches the locked SHA for that dep, we skip the
+//! network. To upgrade, edit the manifest's `rev`/`tag`/`branch`,
+//! delete `aperio.lock` (or just `vendor/<name>/`), and re-run
+//! `fetch`.
 //!
 //! Path resolution downstream is already in place — the parser's
-//! `import "lib/x" as alias;` directive resolves relative to the
-//! importer's directory then the workspace root, finding the
-//! cloned source automatically. See `spec/projects.md`.
+//! `import "vendor/x" as alias;` directive resolves relative to
+//! the importer's directory then the workspace root, finding the
+//! cloned source automatically. See `spec/packages.md` for the
+//! full surface and `spec/projects.md` for the resolver.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -109,13 +120,25 @@ pub fn fetch(repo_root: &Path) -> Result<(), String> {
         .map(|d| (d.name, d.sha))
         .collect();
 
-    let lib_dir = repo_root.join("lib");
-    fs::create_dir_all(&lib_dir)
-        .map_err(|e| format!("create lib/: {}", e))?;
+    let vendor_dir = repo_root.join("vendor");
+    fs::create_dir_all(&vendor_dir)
+        .map_err(|e| format!("create vendor/: {}", e))?;
 
     let mut new_lock = Lockfile { deps: Vec::new() };
     for (name, spec) in &manifest.deps {
-        let target = lib_dir.join(name);
+        let target = vendor_dir.join(name);
+        // Refuse to clone over a directory the user planted by
+        // hand: a vendor/<name>/ that exists but isn't a git
+        // checkout is hand-maintained source, and silently
+        // overwriting it would lose work.
+        if target.exists() && !target.join(".git").exists() {
+            return Err(format!(
+                "vendor/{}/ exists but isn't a git checkout; refusing \
+                 to overwrite hand-maintained source. Move or delete \
+                 the directory and re-run `aperio fetch`.",
+                name
+            ));
+        }
         let sha = fetch_one(name, spec, &target, prev_locked.get(name))?;
         new_lock.deps.push(LockedDep {
             name: name.clone(),

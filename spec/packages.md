@@ -3,10 +3,18 @@
 Aperio's v1 package-management surface is small and explicitly
 git-based. A project declares its direct dependencies in
 `aperio.toml`; running `aperio fetch` clones each one into
-`lib/<name>/` and records resolved commit SHAs in `aperio.lock`.
-Existing `import "lib/<name>" as alias;` directives pick the
-cloned source up via the standard import resolution order (see
-`spec/projects.md`).
+`vendor/<name>/` and records resolved commit SHAs in
+`aperio.lock`. `import "vendor/<name>" as alias;` directives pick
+the cloned source up via the standard import resolution order
+(see `spec/projects.md`).
+
+The fetched tree lives at `vendor/` — toolchain-managed,
+distinct from `lib/` which stays for hand-maintained sources
+the user vendors directly. Both paths work identically through
+the import resolver (each is just an `<importer-dir>/<path>/`
+hit on path 1), but keeping them physically separate prevents
+`aperio fetch` from clobbering hand-maintained source on a name
+collision.
 
 The single design commitment driving the shape:
 
@@ -21,7 +29,7 @@ See `spec/design-rationale.md` F.26 for the rationale.
 
 The manifest lives at the project root — the same directory
 that hosts the top-level `.ap` sources and (after `aperio
-fetch`) the `lib/` directory. It is a TOML file with one
+fetch`) the `vendor/` directory. It is a TOML file with one
 required section, `[deps]`:
 
 ```toml
@@ -85,8 +93,8 @@ sha = "deadbeefcafef00d..."
 
 The lockfile is intended to be committed alongside the
 manifest. A consumer running `aperio fetch` on a fresh checkout
-re-clones every dep at the locked SHA, producing the same `lib/`
-contents the author worked with.
+re-clones every dep at the locked SHA, producing the same
+`vendor/` contents the author worked with.
 
 If a dep listed in the manifest has no entry in the lockfile
 (new dep), `aperio fetch` resolves it freshly and appends to
@@ -108,8 +116,8 @@ aperio fetch [repo-root]
 `repo-root` defaults to the current working directory. The
 behavior, per dep:
 
-1. **First fetch (no `lib/<name>/`).** Clone the URL into
-   `lib/<name>/`, checking out the requested ref (`--depth 1`
+1. **First fetch (no `vendor/<name>/`).** Clone the URL into
+   `vendor/<name>/`, checking out the requested ref (`--depth 1`
    for tag / branch / default-branch; full clone + `git
    checkout` for `rev`).
 2. **Re-fetch, lockfile SHA matches current HEAD.** No-op —
@@ -120,7 +128,13 @@ behavior, per dep:
    SHA.
 4. **Re-fetch, no lockfile entry for the dep.** Same as case 1
    from the consumer's perspective — the dep is new to this
-   project even if `lib/<name>/` was somehow already present.
+   project even if `vendor/<name>/` was somehow already present.
+5. **Collision with a hand-maintained directory.** If
+   `vendor/<name>/` exists but has no `.git/`, `aperio fetch`
+   errors and refuses to overwrite it. Move or delete the
+   directory and re-run. This guards against silently
+   clobbering sources the user vendored by hand (e.g. before
+   adding the dep to `aperio.toml`).
 
 After processing every dep, `aperio fetch` writes a fresh
 `aperio.lock`. The write is whole-file (no in-place editing)
@@ -136,24 +150,28 @@ Exit codes:
 
 The compiler's import resolver doesn't know about
 `aperio.toml` or `aperio.lock`. It only knows that an `import
-"lib/<name>" as alias;` directive looks for source on disk at
-the paths described in `spec/projects.md` § Resolution order.
-`aperio fetch` puts the source at `<repo-root>/lib/<name>/`,
-which is exactly where path-1 of the resolver looks first.
+"vendor/<name>" as alias;` (or `import "lib/<name>" as alias;`,
+or any other path) directive looks for source on disk at the
+paths described in `spec/projects.md` § Resolution order.
+`aperio fetch` puts the source at `<repo-root>/vendor/<name>/`,
+which is exactly where path-1 of the resolver looks first when
+the import string is `"vendor/<name>"`.
 
 This separation is deliberate: the fetcher is a small,
 optional tool that produces an on-disk tree. The compiler
-treats that tree the same way it treats hand-vendored source.
-A project that already vendors its libraries (committed into
-`lib/`) can ignore the package manager entirely; a project
-that uses `aperio fetch` exclusively gets the same compile
-behavior with less manual maintenance.
+treats that tree the same way it treats hand-vendored source
+under `lib/`. A project that already vendors its libraries
+(committed into `lib/`) can ignore the package manager
+entirely; a project that uses `aperio fetch` exclusively gets
+the same compile behavior with less manual maintenance; and a
+project that does both keeps the trees physically separate so
+the toolchain never overwrites work it didn't put there.
 
 ## Library author conventions
 
 A library is just a git repository whose root directory holds
 one or more `.ap` files. From the consumer's perspective the
-clone lands at `lib/<name>/`, which becomes one Aperio seed
+clone lands at `vendor/<name>/`, which becomes one Aperio seed
 (per F.19). What this implies for library authors:
 
 - **Source goes at the repo root**, not under `src/`. Nested
