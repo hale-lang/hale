@@ -508,6 +508,18 @@ pub fn resolve_path(segments: &[&str]) -> Option<Value> {
             name: "std::str::builder_finish",
             func: Rc::new(std_str_builder_finish),
         })),
+        // v1.x: stdin line reader. Trailing newline stripped;
+        // empty string returned on EOF / error. Programs that
+        // need to distinguish EOF from an empty input line drive
+        // the read through the sibling status getter.
+        ["std", "io", "stdin", "read_line"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::io::stdin::read_line",
+            func: Rc::new(std_io_stdin_read_line),
+        })),
+        ["std", "io", "stdin", "read_line_status"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::io::stdin::read_line_status",
+            func: Rc::new(std_io_stdin_read_line_status),
+        })),
         _ => None,
     }
 }
@@ -884,4 +896,57 @@ fn base64_decode(s: &str) -> Vec<u8> {
         }
     }
     out
+}
+
+// v1.x: stdin line reader. Mirrors lotus_stdin_read_line in
+// the C runtime. Last-call status is stashed in a thread-local
+// so the sibling getter can distinguish EOF from an empty
+// input line.
+
+thread_local! {
+    static LAST_STDIN_STATUS: std::cell::Cell<i64> =
+        std::cell::Cell::new(0);
+}
+
+fn std_io_stdin_read_line(args: &[Value]) -> Result<Value, String> {
+    if !args.is_empty() {
+        return Err(format!(
+            "std::io::stdin::read_line takes 0 args, got {}",
+            args.len()
+        ));
+    }
+    let mut line = String::new();
+    match std::io::stdin().read_line(&mut line) {
+        Ok(0) => {
+            // EOF.
+            LAST_STDIN_STATUS.with(|c| c.set(-1));
+            Ok(Value::String(String::new()))
+        }
+        Ok(_) => {
+            // Strip trailing \n (and optional \r before it).
+            if line.ends_with('\n') {
+                line.pop();
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+            }
+            LAST_STDIN_STATUS.with(|c| c.set(0));
+            Ok(Value::String(line))
+        }
+        Err(_) => {
+            LAST_STDIN_STATUS.with(|c| c.set(-2));
+            Ok(Value::String(String::new()))
+        }
+    }
+}
+
+fn std_io_stdin_read_line_status(args: &[Value]) -> Result<Value, String> {
+    if !args.is_empty() {
+        return Err(format!(
+            "std::io::stdin::read_line_status takes 0 args, got {}",
+            args.len()
+        ));
+    }
+    let s = LAST_STDIN_STATUS.with(|c| c.get());
+    Ok(Value::Int(s))
 }

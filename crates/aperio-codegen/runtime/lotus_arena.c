@@ -3274,6 +3274,75 @@ int lotus_env_var_exists(const char *name) {
 }
 
 /*
+ * Standard input — `std::io::stdin::read_line` substrate.
+ *
+ * Reads one line from stdin via POSIX getline(3) and copies the
+ * content (with trailing newline stripped) into the lazy global
+ * payload arena so the returned String is pointer-stable for
+ * the program's lifetime. The libc getline buffer is freed
+ * after the copy.
+ *
+ * Returns "" (the static empty-string sentinel) on EOF or
+ * read error. Empty input lines (`\n` with no other content)
+ * also return "" — the EOF-vs-empty-line collision is
+ * documented in spec/stdlib.md; programs that need to
+ * distinguish drive the read through a sibling status getter
+ * (see lotus_stdin_read_line_status below).
+ */
+static int g_stdin_last_status = 0;
+/*  0 = success (line was read; possibly empty)
+ * -1 = EOF (no bytes read before EOF)
+ * -2 = IO error (errno set; getline returned -1 with non-EOF)
+ * -3 = OOM in payload arena (alloc returned NULL after a read)
+ */
+
+const char *lotus_stdin_read_line(void) {
+    char *line = NULL;
+    size_t cap = 0;
+    errno = 0;
+    ssize_t n = getline(&line, &cap, stdin);
+    if (n < 0) {
+        free(line);
+        if (feof(stdin)) {
+            g_stdin_last_status = -1;
+        } else {
+            g_stdin_last_status = -2;
+        }
+        return g_empty_str;
+    }
+    /* Strip the trailing '\n' (and optional '\r' before it) so
+     * callers don't have to. getline preserves the newline; we
+     * normalize here once. */
+    if (n > 0 && line[n - 1] == '\n') {
+        n--;
+        if (n > 0 && line[n - 1] == '\r') {
+            n--;
+        }
+    }
+    char *out = (char *)lotus_bus_payload_arena_alloc((size_t)n + 1, 1);
+    if (!out) {
+        free(line);
+        g_stdin_last_status = -3;
+        return g_empty_str;
+    }
+    if (n > 0) {
+        memcpy(out, line, (size_t)n);
+    }
+    out[n] = '\0';
+    free(line);
+    g_stdin_last_status = 0;
+    return out;
+}
+
+/* Returns the status of the most recent lotus_stdin_read_line
+ * call: 0 success, -1 EOF, -2 IO error, -3 OOM. Lets callers
+ * distinguish "empty input line" (status 0, len 0) from "EOF"
+ * (status -1, len 0). */
+int lotus_stdin_read_line_status(void) {
+    return g_stdin_last_status;
+}
+
+/*
  * m78: minimal string parsing primitives.
  *
  * Atoi-style: returns 0 when the input doesn't look like an

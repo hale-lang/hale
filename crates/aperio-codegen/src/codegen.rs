@@ -2690,6 +2690,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_fs_extension_global", fs_extension_ty, None);
 
+        // declare ptr @lotus_stdin_read_line()
+        // Reads a single line from stdin; trailing newline (and
+        // optional CR) stripped. Returns the empty-string sentinel
+        // on EOF / IO error. Result lives in the lazy global
+        // payload arena (pointer-stable for the program's life).
+        // Paired with lotus_stdin_read_line_status for callers
+        // that need to distinguish empty-line from EOF.
+        let stdin_read_line_ty = ptr_t.fn_type(&[], false);
+        self.module
+            .add_function("lotus_stdin_read_line", stdin_read_line_ty, None);
+
+        // declare i32 @lotus_stdin_read_line_status()
+        // Returns status of the most recent lotus_stdin_read_line:
+        //   0 = success, -1 = EOF, -2 = IO error, -3 = OOM.
+        let stdin_status_ty = i32_t.fn_type(&[], false);
+        self.module
+            .add_function("lotus_stdin_read_line_status", stdin_status_ty, None);
+
         // declare ptr @lotus_bus_payload_arena_alloc(i64 size, i64 align)
         // m70 lazy global arena for cross-call buffer ownership.
         // read_file uses this to allocate the returned String
@@ -17181,6 +17199,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_io_fs_extension(args, scope)?;
                 Ok(())
             }
+            ["std", "io", "stdin", "read_line"] => {
+                let _ = self.lower_std_io_stdin_read_line(args, scope)?;
+                Ok(())
+            }
+            ["std", "io", "stdin", "read_line_status"] => {
+                let _ = self.lower_std_io_stdin_read_line_status(args, scope)?;
+                Ok(())
+            }
             ["std", "env", "args_count"] => {
                 let _ = self.lower_std_env_args_count(args)?;
                 Ok(())
@@ -17546,6 +17572,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "io", "fs", "extension"] => {
                 self.lower_std_io_fs_extension(args, scope)
+            }
+            ["std", "io", "stdin", "read_line"] => {
+                self.lower_std_io_stdin_read_line(args, scope)
+            }
+            ["std", "io", "stdin", "read_line_status"] => {
+                self.lower_std_io_stdin_read_line_status(args, scope)
             }
             ["std", "env", "args_count"] => self.lower_std_env_args_count(args),
             ["std", "env", "arg"] => self.lower_std_env_arg(args, scope),
@@ -19555,6 +19587,73 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .left()
             .expect("lotus_fs_extension_global returns ptr");
         Ok((v, CodegenTy::String))
+    }
+
+    /// Lower `std::io::stdin::read_line() -> String`. Reads one
+    /// line from stdin via the C-runtime shim (POSIX getline +
+    /// payload-arena copy + newline stripping). Returns the empty
+    /// string on EOF / IO error; pair with `read_line_status()` to
+    /// distinguish an empty line from EOF.
+    fn lower_std_io_stdin_read_line(
+        &mut self,
+        args: &[Expr],
+        _scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if !args.is_empty() {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::stdin::read_line takes 0 args, got {}",
+                args.len()
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_stdin_read_line")
+            .expect("lotus_stdin_read_line declared");
+        let call = self
+            .builder
+            .build_call(f, &[], "stdin.read_line.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let v = call
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_stdin_read_line returns ptr");
+        Ok((v, CodegenTy::String))
+    }
+
+    /// Lower `std::io::stdin::read_line_status() -> Int`. Returns
+    /// the status of the most recent `read_line` call: 0 success,
+    /// -1 EOF, -2 IO error, -3 OOM. The C shim returns i32; we
+    /// sign-extend to i64 to match Aperio's Int ABI.
+    fn lower_std_io_stdin_read_line_status(
+        &mut self,
+        args: &[Expr],
+        _scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if !args.is_empty() {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::stdin::read_line_status takes 0 args, got {}",
+                args.len()
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_stdin_read_line_status")
+            .expect("lotus_stdin_read_line_status declared");
+        let call = self
+            .builder
+            .build_call(f, &[], "stdin.read_line_status.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let i32_v = call
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_stdin_read_line_status returns i32")
+            .into_int_value();
+        let i64_t = self.context.i64_type();
+        let widened = self
+            .builder
+            .build_int_s_extend(i32_v, i64_t, "stdin.status.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((widened.into(), CodegenTy::Int))
     }
 
     /// Lower `std::io::tcp::__send(fd: Int, msg: String) -> Int`.

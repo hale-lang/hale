@@ -214,6 +214,15 @@ Cut from roadmap (2026-05-12 design pass):
   driver workload (`reader-list_item-quadratic-concat`).
 - v1.x-17 (machine-sized defaults) — runtime-queried page-size /
   cache-line constants for F.22 chunk sizing.
+- `std::io::stdin::read_line` (2026-05-15) — closes the
+  interactive-input gap. POSIX `getline` under the hood with a
+  payload-arena copy; trailing newline (+ optional CR) stripped.
+  Returns the empty-string sentinel on EOF / IO error. Paired
+  with `std::io::stdin::read_line_status() -> Int` so callers
+  can distinguish "empty input line" (status 0, len 0) from
+  "EOF" (status -1, len 0). Both runtimes implement the surface
+  (`builtins::resolve_path` in `aperio-runtime`; `lower_std_io_
+  stdin_*` in `aperio-codegen`).
 
 ## Ergonomics arc — small wins (2026-05-11)
 
@@ -347,6 +356,7 @@ tree. Quick reference grouped by `std::*` namespace prefix:
 | `std::bytes` | `at(b, i) -> Int`, `slice(b, lo, hi) -> Bytes`, `from_string(s) -> Bytes` | `lotus_bytes_*` C runtime primitives |
 | `std::text` | `md_to_html(md) -> String`, `base64::encode` / `base64::decode`, `Sink` interface + `StdoutSink` / `StringSink` / `FileSink` loci | `runtime/stdlib/text.ap` + C runtime |
 | `std::io::fs` | `read_file`, `write_file`, `write_file_append`, `read_bytes`, `file_size`, `file_exists`, `mkdir`, `list_dir`, `list_dir_count`, `list_dir_at` | `lotus_fs_*` C runtime primitives |
+| `std::io::stdin` | `read_line() -> String`, `read_line_status() -> Int` | `lotus_stdin_*` C runtime primitives (POSIX `getline` + payload-arena copy) |
 | `std::io::tcp` | `Listener` locus, `Stream` locus, `send`, `send_bytes`, `recv_bytes` | `lotus_tcp_*` C runtime primitives |
 | `std::http` | `Request` + `Response` types, `parse_request`, `write_response`, case-insensitive `header` lookup | `runtime/stdlib/http.ap` |
 | `std::test` | `assert(cond, msg)`, `assert_eq_int`, `assert_eq_str` | `runtime/stdlib/test.ap` |
