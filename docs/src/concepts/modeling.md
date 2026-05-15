@@ -12,7 +12,12 @@ Covers:
   must be assignable to exactly one locus in one locus tower.
   Floating quantities — state that "lives between" loci — are a
   signal of modeling error, not a framework gap. Where to put
-  the quantity instead.
+  the quantity instead. (A forthcoming
+  [`pond`](https://github.com/aperio-lang/pond) library,
+  *memory-owner-architecture*, develops the one-tower rule into
+  concrete patterns + helpers for declaring ownership and
+  verifying the assignment; this chapter will link to it when
+  it ships.)
 - **The six idiomatic patterns**: app locus, namespace lotus,
   service locus, spawned child, shape type, free fn. Every
   well-shaped Aperio program is composed of these.

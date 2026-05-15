@@ -1,9 +1,5 @@
 # Introduction
 
-Programming was a translation problem before LLMs joined the
-loop. It still is. The difference is that one of the translators
-now sits between you and the machine, and it's expensive.
-
 Every language designed before 2023 was optimized for a single
 tradeoff: minimize friction between human cognitive capacity
 and machine execution. Assembly to C to managed runtimes to
@@ -87,6 +83,30 @@ same shape with a hard capacity ceiling and explicit
 drop-on-full semantics; `@form(hashmap)` keyed by player id
 gets you natural ID-based cancellation. Forms are how Aperio
 exposes those choices — we cover them in **Concepts**.
+
+## See it on your own code
+
+The matchmaker above is a constructed example. The claim is
+testable on code you already have. In whatever LLM-coding tool
+you use ([Claude Code](https://claude.ai/code), Cursor,
+whatever), drop this project's
+[`AGENTS.md`](https://github.com/aperio-lang/aperio/blob/main/AGENTS.md)
+into the agent's context, then ask it to re-read a module or
+service from your existing codebase **in terms of loci,
+contracts, and bus topics**.
+
+What usually comes back is a structural decomposition that
+matches your mental model of the system with surprising
+accuracy — because the agent is using the same recursive locus
+vocabulary you already use when reasoning about the code. The
+friction you normally feel between *how you think about this
+system* and *what's literally on the page* largely disappears.
+
+If the decomposition looks wrong or unhelpful, the thesis fails
+for your codebase and that's useful feedback — open an issue.
+If it looks right, you've felt the structural correspondence
+from the other direction: not by writing new Aperio code, but
+by reading your existing code through the same lens.
 
 ## More than a programming language
 

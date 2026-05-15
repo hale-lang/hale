@@ -15,6 +15,10 @@ no-section-label = false
 site-url = "/aperio/"
 git-repository-url = "https://github.com/aperio-lang/aperio"
 edit-url-template = "https://github.com/aperio-lang/aperio/edit/main/docs/{path}"
+# Custom highlight.js mode for ```aperio code blocks. Registered
+# before book.js calls hljs.highlightAll(), so all aperio fences
+# pick it up. See docs/theme/aperio.js.
+additional-js = ["theme/aperio.js"]
 
 [output.html.fold]
 enable = true
