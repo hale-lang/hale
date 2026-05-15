@@ -84,8 +84,8 @@ the `print`.
 - Read the example fixtures under
   `crates/aperio-codegen/tests/fixtures/examples/` for a tour of
   language features.
-- Read [`spec/styleguide.md`](https://github.com/local/lotus-lang/blob/main/spec/styleguide.md)
+- Read [`spec/styleguide.md`](https://github.com/aperio-lang/aperio/blob/main/spec/styleguide.md)
   for idiomatic patterns.
 - For deeper questions, the canonical references are
-  [`spec/semantics.md`](https://github.com/local/lotus-lang/blob/main/spec/semantics.md)
-  and [`spec/grammar.ebnf`](https://github.com/local/lotus-lang/blob/main/spec/grammar.ebnf).
+  [`spec/semantics.md`](https://github.com/aperio-lang/aperio/blob/main/spec/semantics.md)
+  and [`spec/grammar.ebnf`](https://github.com/aperio-lang/aperio/blob/main/spec/grammar.ebnf).

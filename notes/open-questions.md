@@ -1,4 +1,4 @@
-# Open questions — lotus-lang v0
+# Open questions — Aperio v0
 
 Decisions deferred during the v0 grammar draft. Each is a real
 question that will surface when the first program is written or

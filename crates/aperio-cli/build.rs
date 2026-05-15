@@ -29,7 +29,7 @@ use std::path::PathBuf;
 fn main() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR")
         .expect("CARGO_MANIFEST_DIR set by cargo");
-    // crates/aperio-cli/ -> crates/ -> lotus-lang/
+    // crates/aperio-cli/ -> crates/ -> <repo-root>/
     let workspace_root = PathBuf::from(&manifest_dir)
         .parent()
         .and_then(|p| p.parent())
