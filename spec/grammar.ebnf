@@ -598,7 +598,12 @@ assignment_expr   = or_disposition_expr , [ assign_op , assignment_expr ] ;
    type, identical at each level. *)
 or_disposition_expr
                   = logical_or_expr , [ or_clause ] ;
-or_clause         = "or" , ( "raise" | or_disposition_expr ) ;
+or_clause         = "or" , ( "raise" | "discard" | or_disposition_expr ) ;
+(* `or discard` (added 2026-05-16) swallows the error and
+   substitutes Unit. Typechecker rejects it on calls whose
+   success type is non-Unit and points the user at
+   `or <default>` / `or raise`. Sugar for the previously-
+   idiomatic `or noop(err)` pattern with a no-op handler fn. *)
 
 logical_or_expr   = logical_and_expr , { "||" , logical_and_expr } ;
 

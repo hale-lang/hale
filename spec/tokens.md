@@ -399,8 +399,14 @@ annotations are not in v1.
 
 ### String literals
 
-- Double-quoted: `"hello"`. Standard escape sequences (`\n`,
-  `\t`, `\\`, `\"`, `\u{NNNN}`).
+- Double-quoted: `"hello"`. Standard escape sequences:
+  `\n`, `\t`, `\r`, `\\`, `\"`, `\'`, `\0`, and `\xNN` for
+  ASCII bytes 0x00..=0x7f (added 2026-05-16; useful for
+  separators like `"a\x01b"`). High bytes (`\x80`+) are
+  rejected with a message pointing at `std::bytes::*` — the
+  Rust String invariant would UTF-8-encode them as two bytes
+  and surprise the caller. No `\u{NNNN}` Unicode escape at
+  v1; agents needing non-ASCII drop to byte literals.
 - Raw strings: `r"..."` — no escape processing.
 - Multi-line strings: `"""..."""`.
 - F-strings (v1.x-10): `f"hello {name}"` — interpolates Aperio
