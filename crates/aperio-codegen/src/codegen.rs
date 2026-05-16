@@ -10347,6 +10347,70 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// Produce a human-readable diagnostic for a call-expression
+    /// whose callee shape isn't recognized by any of the dispatch
+    /// arms in lower_expr's Expr::Call lowering. The agent
+    /// experience for the old "Discriminant(N)" rendering was a
+    /// dead end — it didn't say what was wrong, just leaked an
+    /// internal Rust enum tag. Name what we can about the callee
+    /// and, for the common typo case (Ident that's close to an
+    /// existing user fn), suggest a correction.
+    fn diagnose_unresolved_callee(
+        &self,
+        callee: &Expr,
+        scope: &Scope<'ctx>,
+    ) -> String {
+        match callee {
+            Expr::Ident(i) => {
+                let name = &i.name;
+                let mut msg = format!(
+                    "call to `{}`: no free fn / generic fn / fn-pointer \
+                     binding with that name is in scope",
+                    name
+                );
+                let candidates: Vec<&String> = self
+                    .user_fns
+                    .keys()
+                    .chain(self.generic_fn_templates.keys())
+                    .chain(scope.locals.keys())
+                    .collect();
+                if let Some(hit) = closest_name(name, &candidates) {
+                    msg.push_str(&format!(" — did you mean `{}`?", hit));
+                }
+                msg
+            }
+            Expr::Path(qn) => {
+                let p = qn
+                    .segments
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                format!(
+                    "call to `{}`: path callee not recognized as a stdlib \
+                     path or user-fn reference",
+                    p
+                )
+            }
+            Expr::Call { .. } => {
+                "callee is itself a call expression (calling the result of \
+                 another call is not yet supported in codegen v0 — bind the \
+                 inner call's result to a `let` and call the binding)".to_string()
+            }
+            Expr::Field { name, .. } => format!(
+                "call to method `.{}`: receiver shape not supported in \
+                 expression position",
+                name.name
+            ),
+            other => format!(
+                "callee shape `{}` not supported (the callee must be a free \
+                 fn name, a method-call expression, a stdlib path, or a \
+                 fn-pointer binding)",
+                expr_kind_label(other)
+            ),
+        }
+    }
+
     fn lower_user_fn_call(
         &mut self,
         name: &str,
@@ -16839,10 +16903,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         ))
                     })
                 }
-                _ => Err(CodegenError::Unsupported(format!(
-                    "non-user-fn call in expression position: {:?}",
-                    std::mem::discriminant(callee.as_ref())
-                ))),
+                _ => Err(CodegenError::Unsupported(
+                    self.diagnose_unresolved_callee(callee, scope),
+                )),
             },
             Expr::Struct { path, inits, .. }
                 if path.segments.len() == 1
@@ -28877,6 +28940,110 @@ fn parse_decimal_to_i128_scale9(s: &str) -> Option<i128> {
         frac_digits += 1;
     }
     Some(sign * mantissa)
+}
+
+/// Cheap edit-distance close-match for a "did you mean" hint on
+/// an unresolved identifier. Returns the best candidate iff the
+/// distance is within a small budget (so a totally wrong name
+/// doesn't produce noise). Uses a classic Wagner-Fischer
+/// implementation — N is in the dozens at most (user-fn / local
+/// counts), so the O(n*m) per comparison is fine.
+fn closest_name<'a>(
+    needle: &str,
+    candidates: &'a [&'a String],
+) -> Option<&'a String> {
+    // First pass: substring match. Agents commonly rename a fn by
+    // prefixing/suffixing (foo → key_foo, parse → parse_int), so
+    // "needle is a substring of cand" is a strong signal even
+    // when Levenshtein distance is large. Pick the shortest
+    // candidate containing the needle to bias toward minimal
+    // additions.
+    if needle.len() >= 3 {
+        let mut best_sub: Option<&String> = None;
+        for cand in candidates.iter().copied() {
+            if cand == needle { continue; }
+            if cand.contains(needle) || needle.contains(cand.as_str()) {
+                match best_sub {
+                    Some(b) if b.len() <= cand.len() => {}
+                    _ => best_sub = Some(cand),
+                }
+            }
+        }
+        if best_sub.is_some() {
+            return best_sub;
+        }
+    }
+    // Second pass: small Levenshtein distance (typo). Budget is
+    // 1/3 of the needle length (rounded up), capped at 3 —
+    // catches single-char typos in short names without producing
+    // wild guesses for totally wrong names.
+    let mut best: Option<(&String, usize)> = None;
+    for cand in candidates.iter().copied() {
+        let d = levenshtein(needle, cand);
+        if d == 0 {
+            continue;
+        }
+        match best {
+            Some((_, bd)) if d >= bd => {}
+            _ => best = Some((cand, d)),
+        }
+    }
+    let (name, d) = best?;
+    let budget = std::cmp::min(3, (needle.len() + 2) / 3);
+    if d <= budget { Some(name) } else { None }
+}
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let av: Vec<char> = a.chars().collect();
+    let bv: Vec<char> = b.chars().collect();
+    let (n, m) = (av.len(), bv.len());
+    if n == 0 { return m; }
+    if m == 0 { return n; }
+    let mut prev: Vec<usize> = (0..=m).collect();
+    let mut cur = vec![0usize; m + 1];
+    for i in 1..=n {
+        cur[0] = i;
+        for j in 1..=m {
+            let cost = if av[i - 1] == bv[j - 1] { 0 } else { 1 };
+            cur[j] = std::cmp::min(
+                std::cmp::min(cur[j - 1] + 1, prev[j] + 1),
+                prev[j - 1] + cost,
+            );
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[m]
+}
+
+/// Short label for an Expr variant used in unresolved-callee
+/// diagnostics. Replaces the Rust-internal Discriminant(N)
+/// rendering with something an agent reading the error can act
+/// on.
+fn expr_kind_label(e: &Expr) -> &'static str {
+    match e {
+        Expr::Literal(..) => "literal",
+        Expr::Ident(_) => "identifier",
+        Expr::Path(_) => "path",
+        Expr::KwSelf(_) => "self",
+        Expr::Binary { .. } => "binary expression",
+        Expr::Unary { .. } => "unary expression",
+        Expr::Call { .. } => "call expression",
+        Expr::Field { .. } => "field access",
+        Expr::Index { .. } => "index expression",
+        Expr::Path2 { .. } => "path expression",
+        Expr::Tuple(..) => "tuple literal",
+        Expr::Array(..) => "array literal",
+        Expr::Struct { .. } => "struct literal",
+        Expr::Block(_) => "block expression",
+        Expr::If(_) => "if expression",
+        Expr::Match(_) => "match expression",
+        Expr::Sum(..) => "sum expression",
+        Expr::Prod(..) => "product expression",
+        Expr::Approx { .. } => "approx-equality assertion",
+        Expr::Range { .. } => "range expression",
+        Expr::ArrayRepeat { .. } => "array-repeat literal",
+        Expr::Or { .. } => "or-expression",
+    }
 }
 
 /// Build an i128 LLVM constant from a Rust i128. inkwell's

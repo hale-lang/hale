@@ -779,6 +779,45 @@ impl<'a> Lexer<'a> {
                             s.push('\0');
                             self.pos += 1;
                         }
+                        Some(b'x') => {
+                            // \xNN — two hex digits, emits the
+                            // byte directly. Common across C / Rust /
+                            // Go / JS; agents reach for it reflexively
+                            // for non-printables (NUL, separators, etc.).
+                            self.pos += 1;
+                            let h1 = self.peek().and_then(hex_digit);
+                            let h2 = self.peek_at(1).and_then(hex_digit);
+                            match (h1, h2) {
+                                (Some(a), Some(b)) => {
+                                    let byte = (a << 4) | b;
+                                    if byte >= 0x80 {
+                                        // High-byte \x would UTF-8-
+                                        // encode as 2 bytes (Rust
+                                        // String invariant) and
+                                        // surprise the caller. For
+                                        // raw bytes use
+                                        // std::bytes::from_string on
+                                        // an ASCII literal, or build
+                                        // a Bytes value through the
+                                        // stdlib byte API.
+                                        return Err(Diag::lex(
+                                            Span::new(self.pos - 2, self.pos + 2),
+                                            "\\x escape only accepts ASCII bytes \
+                                             (\\x00..\\x7f); for high bytes use the \
+                                             std::bytes::* API",
+                                        ));
+                                    }
+                                    self.pos += 2;
+                                    s.push(byte as char);
+                                }
+                                _ => {
+                                    return Err(Diag::lex(
+                                        Span::new(self.pos - 1, self.pos + 1),
+                                        "\\x escape needs two hex digits (e.g. \\x01, \\x7f)",
+                                    ));
+                                }
+                            }
+                        }
                         Some(other) => {
                             return Err(Diag::lex(
                                 Span::new(self.pos - 1, self.pos + 1),
@@ -842,6 +881,32 @@ impl<'a> Lexer<'a> {
                         Some(b'0') => { buf.push('\0'); self.pos += 1; }
                         Some(b'{') => { buf.push('{'); self.pos += 1; }
                         Some(b'}') => { buf.push('}'); self.pos += 1; }
+                        Some(b'x') => {
+                            self.pos += 1;
+                            let h1 = self.peek().and_then(hex_digit);
+                            let h2 = self.peek_at(1).and_then(hex_digit);
+                            match (h1, h2) {
+                                (Some(a), Some(b)) => {
+                                    let byte = (a << 4) | b;
+                                    if byte >= 0x80 {
+                                        return Err(Diag::lex(
+                                            Span::new(self.pos - 2, self.pos + 2),
+                                            "\\x escape only accepts ASCII bytes \
+                                             (\\x00..\\x7f); for high bytes use the \
+                                             std::bytes::* API",
+                                        ));
+                                    }
+                                    self.pos += 2;
+                                    buf.push(byte as char);
+                                }
+                                _ => {
+                                    return Err(Diag::lex(
+                                        Span::new(self.pos - 1, self.pos + 1),
+                                        "\\x escape needs two hex digits (e.g. \\x01, \\x7f)",
+                                    ));
+                                }
+                            }
+                        }
                         Some(other) => {
                             return Err(Diag::lex(
                                 Span::new(self.pos - 1, self.pos + 1),
@@ -1099,6 +1164,17 @@ impl<'a> Lexer<'a> {
                 ))
             }
         }
+    }
+}
+
+/// Parse a single ASCII hex digit (0-9 / a-f / A-F) into its
+/// 0..=15 value. Used by the `\xNN` string escape recognizer.
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
     }
 }
 
