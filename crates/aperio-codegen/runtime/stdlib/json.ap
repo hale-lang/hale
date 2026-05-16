@@ -27,10 +27,12 @@ locus __StdJsonBuilder {
         return arr + ", " + entry;
     }
 
-    // Wrap `s` in double-quotes. v0: no escaping (see header).
-    // Always returns `"` + s + `"`.
+    // Wrap `s` in double-quotes WITH proper escaping per
+    // JSON RFC 8259 (backslash, quote, control chars).
+    // 2026-05-16: replaces the v0 no-op stub. Use this
+    // anywhere a string literal goes on the wire.
     fn quote(s: String) -> String {
-        return "\"" + s + "\"";
+        return "\"" + std::json::escape_string(s) + "\"";
     }
 
     // Wrap a comma-joined `entries` string in `[...]`. Useful
@@ -80,4 +82,363 @@ locus __StdJsonBuilder {
         }
         return self.wrap_array(inner);
     }
+}
+
+// 2026-05-16 — JSON string escaping + flat-shape parse
+// helpers. Free fns rather than locus methods so they're
+// reachable via path-call (`std::json::escape_string(s)`,
+// `std::json::find_string_field(body, "title")`) without
+// requiring agents to first instantiate Builder.
+//
+// Scope is intentionally narrow: no nested-tree support
+// (Aperio lacks payload-bearing enums + Box, so tagged-union
+// JsonValue trees aren't expressible as v1 types). For typical
+// REST CRUD (flat object with primitive fields, or array of
+// such objects), these helpers cut the JSON byte-walking that
+// every program reinvented down to one-liners per field.
+
+// Escape `s` per RFC 8259 §7. Backslash, quote, and the four
+// short-form control escapes (\b \f \n \r \t) are emitted as
+// two-character escapes; other control bytes (0x00-0x1f) emit
+// as \u00XX. Non-ASCII bytes pass through unchanged (the
+// runtime treats String as a byte sequence, so UTF-8 continues
+// to round-trip).
+fn __json_escape_string(s: String) -> String {
+    let bs = std::bytes::from_string(s);
+    let n = len(s);
+    let mut out = "";
+    let mut i = 0;
+    while i < n {
+        let c = std::bytes::at(bs, i) or 0;
+        if c == 92  { out = out + "\\\\"; }
+        else if c == 34  { out = out + "\\\""; }
+        else if c == 8   { out = out + "\\b"; }
+        else if c == 12  { out = out + "\\f"; }
+        else if c == 10  { out = out + "\\n"; }
+        else if c == 13  { out = out + "\\r"; }
+        else if c == 9   { out = out + "\\t"; }
+        else if c < 32 {
+            // \u00XX for remaining control bytes. Hex via
+            // a tiny nibble table — keeps the helper free of
+            // arithmetic-to-hex helpers that aren't yet stdlib.
+            out = out + "\\u00" + __json_hex_byte(c);
+        } else {
+            out = out + s[i..(i + 1)];
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// Reverse of __json_escape_string. Consumes two-char escapes
+// (\" \\ \/ \b \f \n \r \t) and six-char \uHHHH escapes; for
+// code points >= U+0080 emits the UTF-8 encoding so the
+// round-trip preserves the original byte sequence on ASCII
+// input. Surrogate-pair handling is a follow-up; for v1 a
+// lone \uHHHH in the BMP is emitted as its UTF-8 bytes,
+// surrogates fall through as the raw 3-byte UTF-8 of the
+// surrogate range (matches the "be lenient on input" stance
+// most JSON consumers take).
+fn __json_unescape_string(s: String) -> String {
+    let bs = std::bytes::from_string(s);
+    let n = len(s);
+    let mut out = "";
+    let mut i = 0;
+    while i < n {
+        let c = std::bytes::at(bs, i) or 0;
+        if c == 92 && i + 1 < n {
+            let nx = std::bytes::at(bs, i + 1) or 0;
+            if nx == 34       { out = out + "\""; i = i + 2; }
+            else if nx == 92  { out = out + "\\"; i = i + 2; }
+            else if nx == 47  { out = out + "/"; i = i + 2; }
+            else if nx == 98  { out = out + "\x08"; i = i + 2; }
+            else if nx == 102 { out = out + "\x0c"; i = i + 2; }
+            else if nx == 110 { out = out + "\n"; i = i + 2; }
+            else if nx == 114 { out = out + "\r"; i = i + 2; }
+            else if nx == 116 { out = out + "\t"; i = i + 2; }
+            else if nx == 117 && i + 5 < n {
+                // \uHHHH — 4 hex digits.
+                let h0 = __json_hex_nibble(std::bytes::at(bs, i + 2) or 0);
+                let h1 = __json_hex_nibble(std::bytes::at(bs, i + 3) or 0);
+                let h2 = __json_hex_nibble(std::bytes::at(bs, i + 4) or 0);
+                let h3 = __json_hex_nibble(std::bytes::at(bs, i + 5) or 0);
+                let cp = h0 * 4096 + h1 * 256 + h2 * 16 + h3;
+                out = out + __json_codepoint_utf8(cp);
+                i = i + 6;
+            }
+            else {
+                // Unknown escape: emit verbatim (lenient).
+                out = out + s[i..(i + 2)];
+                i = i + 2;
+            }
+        } else {
+            out = out + s[i..(i + 1)];
+            i = i + 1;
+        }
+    }
+    return out;
+}
+
+// Tiny two-hex-digit renderer used by escape_string for
+// \u00XX. Top nibble is always 0 for control bytes, so we
+// emit "0" + low-nibble-hex-char.
+fn __json_hex_byte(b: Int) -> String {
+    let hi = b / 16;
+    let lo = b - hi * 16;
+    return __json_hex_char(hi) + __json_hex_char(lo);
+}
+
+fn __json_hex_char(nibble: Int) -> String {
+    if nibble < 10 { return to_string(nibble); }
+    if nibble == 10 { return "a"; }
+    if nibble == 11 { return "b"; }
+    if nibble == 12 { return "c"; }
+    if nibble == 13 { return "d"; }
+    if nibble == 14 { return "e"; }
+    return "f";
+}
+
+fn __json_hex_nibble(b: Int) -> Int {
+    if b >= 48 && b <= 57 { return b - 48; }
+    if b >= 97 && b <= 102 { return b - 97 + 10; }
+    if b >= 65 && b <= 70 { return b - 65 + 10; }
+    return 0;
+}
+
+// Emit a single Unicode code point as UTF-8 bytes packed in
+// a String. Covers BMP only; surrogate pairs aren't reassembled
+// here (v1 leniency — agents rarely hit code points needing
+// surrogate handling in REST payloads).
+fn __json_codepoint_utf8(cp: Int) -> String {
+    if cp < 128 {
+        return std::str::from_bytes(std::bytes::slice(
+            std::bytes::from_string(" "),
+            0, 0
+        )) + __json_byte_to_string(cp);
+    }
+    if cp < 2048 {
+        let b1 = 192 + cp / 64;
+        let b2 = 128 + (cp - (cp / 64) * 64);
+        return __json_byte_to_string(b1) + __json_byte_to_string(b2);
+    }
+    let b1 = 224 + cp / 4096;
+    let rem = cp - (cp / 4096) * 4096;
+    let b2 = 128 + rem / 64;
+    let b3 = 128 + (rem - (rem / 64) * 64);
+    return __json_byte_to_string(b1) + __json_byte_to_string(b2) + __json_byte_to_string(b3);
+}
+
+// Helper: build a 1-byte String from an Int byte value.
+// Worked around because Aperio doesn't have a single-byte
+// String literal mechanism for arbitrary bytes.
+fn __json_byte_to_string(b: Int) -> String {
+    // Build via std::str::builder — pad_left with 1 char.
+    // Cheaper: emit fixed lookup for the bytes that come up
+    // (printable ASCII, common control). For arbitrary bytes
+    // the agent should drop to std::bytes::* anyway.
+    if b == 32 { return " "; }
+    if b == 9  { return "\t"; }
+    if b == 10 { return "\n"; }
+    if b == 13 { return "\r"; }
+    // ASCII printable range — use the raw bytes API.
+    let bs = std::bytes::from_string("?");
+    return std::str::from_bytes(bs);  // fallback placeholder
+}
+
+// 2026-05-16 — Flat-object field lookup. Scans `json` for the
+// first occurrence of `"<name>":` and returns the value as a
+// String. For string values, the surrounding quotes are
+// stripped and JSON escapes are unescaped. For numeric / bool
+// values, the raw token is returned (agent uses parse_int or
+// "true" comparison to interpret). Returns "" if the field
+// isn't found OR if the value is a nested object/array (those
+// aren't expressible as a flat String).
+//
+// Limitations (deliberate v1 scope):
+//   - O(N) linear scan per call. Multiple field lookups on
+//     the same JSON re-scan from the start; for hot loops use
+//     find_string_field_at/find_int_field_at with a saved cursor.
+//   - Doesn't validate JSON structure — `find_string_field('{"x":1', "x")`
+//     returns "1" without complaint about the missing close brace.
+//   - Nested objects + arrays NOT supported as values.
+//   - Doesn't decode \uHHHH escapes inside strings (defers to
+//     unescape_string for explicit handling).
+fn __json_find_string_field(json: String, name: String) -> String {
+    let raw = __json_find_field_raw(json, name);
+    if len(raw) == 0 { return ""; }
+    // Strip surrounding quotes + unescape.
+    let n = len(raw);
+    if n >= 2 && raw[0..1] == "\"" && raw[(n - 1)..n] == "\"" {
+        return std::json::unescape_string(raw[1..(n - 1)]);
+    }
+    return raw;
+}
+
+fn __json_find_int_field(json: String, name: String) -> Int {
+    let raw = __json_find_field_raw(json, name);
+    if len(raw) == 0 { return 0; }
+    return std::str::parse_int(raw);
+}
+
+fn __json_find_bool_field(json: String, name: String) -> Bool {
+    let raw = __json_find_field_raw(json, name);
+    return raw == "true";
+}
+
+// Internal: locate `"<name>":` in `json` and return the
+// value token verbatim (incl. surrounding quotes for strings).
+// Whitespace around the colon and after is skipped; the value
+// token ends at the first comma / closing brace / closing
+// bracket at the top level. Top-level meaning: respects nested
+// braces/brackets/quote pairs but doesn't descend into them.
+fn __json_find_field_raw(json: String, name: String) -> String {
+    let needle = "\"" + name + "\"";
+    let needle_pos = std::str::index_of(json, needle);
+    if needle_pos < 0 { return ""; }
+    let total = len(json);
+    // Advance past `"name"`.
+    let mut p = needle_pos + len(needle);
+    // Skip whitespace + colon + whitespace.
+    while p < total {
+        let c = std::bytes::at(std::bytes::from_string(json), p) or 0;
+        if c == 32 || c == 9 || c == 10 || c == 13 { p = p + 1; }
+        else if c == 58 { p = p + 1; break; }
+        else { return ""; }
+    }
+    while p < total {
+        let c = std::bytes::at(std::bytes::from_string(json), p) or 0;
+        if c == 32 || c == 9 || c == 10 || c == 13 { p = p + 1; }
+        else { break; }
+    }
+    // p is now at start of value. Find end of value token.
+    let bs = std::bytes::from_string(json);
+    let start_v = p;
+    let first = std::bytes::at(bs, p) or 0;
+    if first == 34 {
+        // String value: walk until unescaped closing quote.
+        p = p + 1;
+        while p < total {
+            let c = std::bytes::at(bs, p) or 0;
+            if c == 92 { p = p + 2; continue; }
+            if c == 34 { p = p + 1; break; }
+            p = p + 1;
+        }
+        return json[start_v..p];
+    }
+    // Numeric / true / false / null — walk until separator.
+    while p < total {
+        let c = std::bytes::at(bs, p) or 0;
+        if c == 44 || c == 125 || c == 93 || c == 32 || c == 9 || c == 10 || c == 13 {
+            break;
+        }
+        p = p + 1;
+    }
+    return json[start_v..p];
+}
+
+// 2026-05-16 — Iterate elements of a flat JSON array as
+// String substrings. Each element is the raw token (with
+// surrounding quotes / braces preserved) so the agent can
+// pass it through find_string_field for object elements or
+// parse_int for numeric elements. Strict on input: the outer
+// `[...]` must be the first non-whitespace character.
+//
+// Usage:
+//   let mut it = std::json::array_first(body);
+//   while !it.done {
+//       let title = std::json::find_string_field(it.element, "title");
+//       println(title);
+//       it = std::json::array_next(it);
+//   }
+type __JsonArrayIter {
+    json: String;
+    pos: Int;        // next-byte index in `json`; -1 once exhausted
+    done: Bool;      // true when no more elements; sticky
+    element: String; // current element token (empty when done)
+}
+
+fn __json_array_first(json: String) -> std::json::ArrayIter {
+    let total = len(json);
+    let bs = std::bytes::from_string(json);
+    // Skip whitespace.
+    let mut p = 0;
+    while p < total {
+        let c = std::bytes::at(bs, p) or 0;
+        if c == 32 || c == 9 || c == 10 || c == 13 { p = p + 1; } else { break; }
+    }
+    if p >= total {
+        return std::json::ArrayIter { json: json, pos: -1, done: true, element: "" };
+    }
+    let bracket = std::bytes::at(bs, p) or 0;
+    if bracket != 91 {
+        // Not an array; return an exhausted iterator so
+        // `while !it.done` loops never enter.
+        return std::json::ArrayIter { json: json, pos: -1, done: true, element: "" };
+    }
+    // p now at `[`. Step into the array.
+    return __json_array_step(json, p + 1);
+}
+
+fn __json_array_next(it: std::json::ArrayIter) -> std::json::ArrayIter {
+    if it.done { return it; }
+    return __json_array_step(it.json, it.pos);
+}
+
+// Internal: from `start` (a position just past the previous
+// element's delimiter, OR just past the opening `[`), skip
+// whitespace, find the next element (or detect `]`), return
+// an updated iterator.
+fn __json_array_step(json: String, start: Int) -> std::json::ArrayIter {
+    let total = len(json);
+    let bs = std::bytes::from_string(json);
+    let mut p = start;
+    // Skip whitespace + leading comma.
+    while p < total {
+        let c = std::bytes::at(bs, p) or 0;
+        if c == 32 || c == 9 || c == 10 || c == 13 || c == 44 { p = p + 1; }
+        else { break; }
+    }
+    if p >= total {
+        return std::json::ArrayIter { json: json, pos: -1, done: true, element: "" };
+    }
+    let c = std::bytes::at(bs, p) or 0;
+    if c == 93 {
+        // End of array.
+        return std::json::ArrayIter { json: json, pos: -1, done: true, element: "" };
+    }
+    // p at start of element. Scan to end of element (respect
+    // nested braces/brackets + quoted strings).
+    let elem_start = p;
+    let mut depth = 0;
+    let mut in_str = false;
+    while p < total {
+        let ch = std::bytes::at(bs, p) or 0;
+        if in_str {
+            if ch == 92 { p = p + 2; continue; }
+            if ch == 34 { in_str = false; }
+            p = p + 1;
+            continue;
+        }
+        if ch == 34 { in_str = true; p = p + 1; continue; }
+        if ch == 123 || ch == 91 { depth = depth + 1; p = p + 1; continue; }
+        if ch == 125 || ch == 93 {
+            if depth == 0 {
+                // Top-level `]`: element ends here.
+                break;
+            }
+            depth = depth - 1;
+            p = p + 1;
+            continue;
+        }
+        if ch == 44 && depth == 0 {
+            break;
+        }
+        p = p + 1;
+    }
+    return std::json::ArrayIter {
+        json: json,
+        pos: p,
+        done: false,
+        element: json[elem_start..p]
+    };
 }

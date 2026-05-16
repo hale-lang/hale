@@ -522,9 +522,11 @@ const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "cli", "Resolver"], "__StdCliResolver"),
     (&["std", "http", "Request"], "__StdHttpRequest"),
     (&["std", "http", "Response"], "__StdHttpResponse"),
+    (&["std", "http", "Server"], "__StdHttpServer"),
     (&["std", "io", "tcp", "Listener"], "__StdIoTcpListener"),
     (&["std", "io", "tcp", "Stream"], "__StdIoTcpStream"),
     (&["std", "iter", "Lines"], "__StdIterLines"),
+    (&["std", "json", "ArrayIter"], "__JsonArrayIter"),
     (&["std", "json", "Builder"], "__StdJsonBuilder"),
     (&["std", "lang", "Lang"], "__StdLangLang"),
     (&["std", "lang", "Morpheme"], "__StdLangMorpheme"),
@@ -11812,8 +11814,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let listen_fn = self
             .module
-            .get_function("lotus_tcp_listen")
-            .expect("lotus_tcp_listen declared");
+            .get_function("lotus_tcp_listen_socket")
+            .expect("lotus_tcp_listen_socket declared");
         let port_i32 = self
             .builder
             .build_int_truncate(
@@ -11957,8 +11959,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let accept_fn = self
             .module
-            .get_function("lotus_tcp_accept")
-            .expect("lotus_tcp_accept declared");
+            .get_function("lotus_tcp_accept_one")
+            .expect("lotus_tcp_accept_one declared");
         let fd_i32 = self
             .builder
             .build_int_truncate(
@@ -18854,7 +18856,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_io_tcp_connect(args, scope)?;
                 Ok(())
             }
-            ["std", "io", "tcp", "__close_fd"] => {
+            ["std", "io", "tcp", "__close_fd"]
+            | ["std", "io", "tcp", "close_fd"] => {
                 let _ = self.lower_std_io_tcp_close_fd(args, scope)?;
                 Ok(())
             }
@@ -19372,7 +19375,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "io", "tcp", "__connect"] => {
                 self.lower_std_io_tcp_connect(args, scope)
             }
-            ["std", "io", "tcp", "__close_fd"] => {
+            ["std", "io", "tcp", "__close_fd"]
+            | ["std", "io", "tcp", "close_fd"] => {
                 self.lower_std_io_tcp_close_fd(args, scope)
             }
             ["std", "io", "tcp", "__send"] => {
@@ -19532,6 +19536,45 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .to_string(),
                     )
                 })
+            }
+            // 2026-05-16: std::json helpers — escape/unescape +
+            // flat-shape parse. All implementations live in
+            // runtime/stdlib/json.ap under __json_* bare names;
+            // these path-call arms surface them under std::json::*.
+            ["std", "json", "escape_string"] => {
+                let result = self.lower_user_fn_call("__json_escape_string", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::escape_string returns String but called in a position that expects no value".to_string()))
+            }
+            ["std", "json", "unescape_string"] => {
+                let result = self.lower_user_fn_call("__json_unescape_string", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::unescape_string returns String but called in a position that expects no value".to_string()))
+            }
+            ["std", "json", "find_string_field"] => {
+                let result = self.lower_user_fn_call("__json_find_string_field", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::find_string_field returns String but called in a position that expects no value".to_string()))
+            }
+            ["std", "json", "find_int_field"] => {
+                let result = self.lower_user_fn_call("__json_find_int_field", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::find_int_field returns Int but called in a position that expects no value".to_string()))
+            }
+            ["std", "json", "find_bool_field"] => {
+                let result = self.lower_user_fn_call("__json_find_bool_field", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::find_bool_field returns Bool but called in a position that expects no value".to_string()))
+            }
+            ["std", "json", "array_first"] => {
+                let result = self.lower_user_fn_call("__json_array_first", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::array_first returns ArrayIter but called in a position that expects no value".to_string()))
+            }
+            ["std", "json", "array_next"] => {
+                let result = self.lower_user_fn_call("__json_array_next", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::array_next returns ArrayIter but called in a position that expects no value".to_string()))
             }
             // ws-echo: per-request header lookup. Delegates to
             // the stdlib-internal `__http_request_header` fn.

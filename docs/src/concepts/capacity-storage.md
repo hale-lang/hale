@@ -93,7 +93,8 @@ Three forms ship in v1:
 @form(vec)
 locus PlayerQueue {
     capacity { heap items of Player; }
-    // synthesized: push, get, pop, len, is_empty
+    // synthesized: push, get, set, pop, len, is_empty,
+    //              sort, sort_by, sort_desc_by
 }
 
 fn main() {
@@ -120,7 +121,8 @@ type CmdEntry { name: String; handler: Int; }
 @form(hashmap)
 locus CmdRegistry {
     capacity { pool entries of CmdEntry indexed_by name; }
-    // synthesized: set, get, has, remove, len, is_empty
+    // synthesized: set, get, has, remove, len, is_empty,
+    //              key_at, entry_at, bump
 }
 
 fn main() {

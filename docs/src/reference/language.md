@@ -83,7 +83,7 @@ with the spec, the spec wins.
 
 - [`spec/design-rationale.md`](https://github.com/aperio-lang/aperio/blob/main/spec/design-rationale.md) —
   *why* the language is shaped the way it is. Numbered
-  commitments F.0 through F.26 cover every design decision
+  commitments F.0 through F.27 cover every design decision
   the compiler currently makes — from projection-class
   semantics to capacity slots to structural interfaces to
   the package model — with a "considered and rejected"

@@ -239,3 +239,83 @@ fn __write_http_response(s: std::io::tcp::Stream, resp: std::http::Response) {
     s.send(header);
     s.send(resp.body);
 }
+
+// 2026-05-16 — std::http::Server. Bundles the recv +
+// parse_request + dispatch + write_response loop every HTTP
+// program had to hand-roll on top of Listener. The agent
+// supplies a single `handler: fn(Request) -> Response`
+// callback; the locus owns the accept loop and the
+// per-connection scope.
+//
+// Usage:
+//   fn dispatch(req: std::http::Request) -> std::http::Response {
+//       if req.method == "GET" && req.path == "/health" {
+//           return std::http::Response { status: 200, content_type: "text/plain", body: "ok" };
+//       }
+//       return std::http::Response { status: 404, content_type: "text/plain", body: "not found" };
+//   }
+//   fn main() {
+//       std::http::Server { port: 8080, handler: dispatch };
+//   }
+//
+// Routes live inside the user-supplied handler — Aperio
+// doesn't have closures + fn-pointer collections that would
+// support a separate routes table cleanly, and a string-keyed
+// switch ladder inside one handler fn is sized for the small
+// route counts most apps actually have. The Server locus
+// covers the lifecycle (bind, accept loop, per-connection
+// Stream dissolution) and the wire protocol; the user owns
+// the routing logic.
+fn __default_http_handler(req: std::http::Request) -> std::http::Response {
+    let _ = req;
+    return std::http::Response {
+        status: 404,
+        content_type: "text/plain",
+        body: "no handler configured"
+    };
+}
+
+// Per-connection helper. Recv up to 8KB (matches the Listener
+// default; spec/runtime.md notes the streaming-reassembly
+// follow-up for oversized requests), parse it, call the
+// user's dispatcher, ship the response. The Stream locus
+// dissolves at fn-exit per the m82 scope-flush mechanism,
+// which closes the conn fd.
+fn __http_handle_one_conn(conn_fd: Int, dispatch_fn: fn(std::http::Request) -> std::http::Response) {
+    let s = std::io::tcp::Stream { conn_fd: conn_fd };
+    let raw = s.recv(8192);
+    let req = std::http::parse_request(raw);
+    let resp = dispatch_fn(req);
+    std::http::write_response(s, resp);
+}
+
+locus __StdHttpServer {
+    params {
+        host: String = "127.0.0.1";
+        port: Int = 8080;
+        // -1 = run forever (canonical server shape); >= 0 caps
+        // the loop for tests + bounded workloads.
+        max_accepts: Int = -1;
+        // The user-supplied dispatcher. Default returns 404
+        // so a Server with no handler still responds rather
+        // than hanging.
+        handler: fn(std::http::Request) -> std::http::Response = __default_http_handler;
+        // not-yet-bound sentinel so dissolve() on a
+        // partially-constructed Server skips the close.
+        listen_fd: Int = -1;
+    }
+    birth() {
+        self.listen_fd = std::io::tcp::__listen_socket(self.host, self.port);
+    }
+    run() {
+        let mut accepted = 0;
+        while self.max_accepts < 0 || accepted < self.max_accepts {
+            let conn = std::io::tcp::__accept_one(self.listen_fd);
+            __http_handle_one_conn(conn, self.handler);
+            accepted = accepted + 1;
+        }
+    }
+    dissolve() {
+        std::io::tcp::__close_fd(self.listen_fd);
+    }
+}

@@ -127,6 +127,7 @@ You address it with an **`or` clause**, in one of three motions:
 let id = parse_player_id(input) or raise;          // propagate up
 let id = parse_player_id(input) or default_id();   // substitute
 let id = parse_player_id(input) or handle(err);    // hand off
+mkdir(path) or discard;                            // swallow (Unit only)
 ```
 
 - **`or raise`** — propagate the error one frame up the
@@ -139,6 +140,12 @@ let id = parse_player_id(input) or handle(err);    // hand off
   inside the fallback expression. The fallback can be a
   literal (`or 0`), an expression (`or default_id()`), or a
   call (`or handle(err)`).
+- **`or discard`** — swallow the error. Only valid when the
+  underlying call's success type is Unit (e.g.
+  `std::io::fs::mkdir`, `@form(vec).set`). Sugar for "I know
+  this might fail and I don't care." The typechecker rejects
+  `or discard` on value-bearing calls and points at
+  `or <default>` / `or raise`.
 - **The error's payload type is fully typed.** You don't need
   to downcast or pattern-match a generic Error; the
   `fallible(E)` declaration says exactly what shape the

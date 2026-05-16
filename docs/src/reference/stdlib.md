@@ -28,11 +28,14 @@ Namespaces with path-call shape:
 | Namespace | Surface |
 |---|---|
 | `std::process` | `pid()`, `exit(code)` |
-| `std::env` | `args_count()`, `arg(i)`, `var(name)`, `var_exists(name)` |
+| `std::env` | `args_count()`, `arg(i)`, `arg_or(i, default)`, `var(name)`, `var_exists(name)` |
 | `std::time` | `monotonic()` → Duration, `sleep(d)` |
 | `std::str` | `parse_int` / `can_parse_int` / `parse_float` / `can_parse_float`, `index_of`, `lower` / `upper`, `trim`, `replace`, `repeat`, `pad_left` / `pad_right`, `from_bytes`, `builder_new` / `builder_append` / `builder_len` / `builder_finish` |
-| `std::bytes` | `at(b, i)`, `slice(b, lo, hi)`, `from_string(s)` |
-| `std::io::fs` | `read_file`, `write_file`, `write_file_append`, `read_bytes`, `file_size`, `file_exists`, `mkdir`, `list_dir`, `list_dir_count`, `list_dir_at`, `read_file_status` |
+| `std::bytes` | `at(b, i) -> Int fallible(IndexError)`, `slice(b, lo, hi)`, `from_string(s)` |
+| `std::text` | byte-class predicates `is_alpha`, `is_digit`, `is_alnum`, `is_whitespace`, `is_word_char` (`fn(Int) -> Bool`); `tokenize_words_into(s, target_vec)` populates a `@form(vec) of String` with lowercased word tokens |
+| `std::io::fs` | `read_file`, `write_file`, `write_file_append`, `read_bytes`, `file_size`, `mkdir`, `list_dir`, `list_dir_count`, `list_dir_at` — all return `fallible(IoError)` (`kind: String`, `errno: Int`, `path: String`). `file_exists(path) -> Bool` is the only non-fallible predicate |
+| `std::io::stdin` | `read_line() -> String`, `read_line_status() -> Int` |
+| `std::io::tcp` | path-call entry points `listen_socket(host, port) -> Int fallible(IoError)`, `connect(host, port) -> Int fallible(IoError)`, `accept_one(listen_fd) -> Int fallible(IoError)`, `close_fd(fd)` (infallible) |
 | `std::math` | `sqrt`, `exp`, `log`, `floor`, `ceil`, `pow` |
 | `std::ts` | tree-sitter bindings (Go grammar shipped) |
 
@@ -61,12 +64,12 @@ Namespaces with namespace-lotus shape:
 
 | Namespace | Loci / interfaces shipped |
 |---|---|
-| `std::io::tcp` | `Listener`, `Stream`, plus `send` / `send_bytes` / `recv_bytes` methods |
-| `std::http` | `Request` and `Response` types, `parse_request`, `write_response`, case-insensitive `header` lookup |
-| `std::text` | `md_to_html`, `base64::encode` / `decode`, `Sink` interface with `StdoutSink` / `StringSink` / `FileSink` implementations |
+| `std::io::tcp` | `Listener` (multi-accept loop, dispatch via `on_connection: fn(Stream)`), `Stream` (per-connection handle with `send` / `send_bytes` / `recv` / `recv_bytes` methods) |
+| `std::http` | `Request` and `Response` types, `parse_request`, `write_response`, case-insensitive `header` lookup, `Server` locus (wraps accept-recv-parse-dispatch-write; supplies single `handler: fn(Request) -> Response` callback) |
+| `std::text` | `md_to_html`, `base64::encode` / `decode`, `Sink` interface with `StdoutSink` / `StringSink` / `FileSink` implementations (note: the byte-class predicates + `tokenize_words_into` are path-call surface, listed in the previous table) |
 | `std::cli` | `Resolver` for argv parsing |
 | `std::iter` | `Lines` iterator over text |
-| `std::json` | `Builder` for JSON output |
+| `std::json` | `Builder` for JSON output; free-fn helpers `escape_string` / `unescape_string` (RFC 8259), `find_string_field` / `find_int_field` / `find_bool_field` (flat-object field lookup), `ArrayIter` + `array_first` / `array_next` (flat-array iteration). No nested-tree shape at v1 |
 | `std::lang` | `Morpheme`, `Vocabulary`, etc. for language utilities |
 | `std::log` | `Logger`, `LogEvent`, `StdoutSink` (subscribes to `log.**`) |
 | `std::yaml` | YAML parsing surface |
@@ -104,8 +107,19 @@ resolver injects companion error types into the top scope:
 | Form | Synthesized type | Fields |
 |---|---|---|
 | `@form(vec)` | `IndexError` | `kind: String`, `index: Int`, `len: Int` |
-| `@form(hashmap)` | `KeyError` | `kind: String` |
+| `@form(hashmap)` | `KeyError` | `kind: String` (also surfaces `IndexError` for `key_at` / `entry_at`) |
 | `@form(ring_buffer)` | `EmptyError` | `kind: String` |
+| `std::io::*` | `IoError` | `kind: String`, `errno: Int`, `path: String` |
+
+The form-method surface synthesizes more than fallibility — see
+[`spec/forms.md`](https://github.com/aperio-lang/aperio/blob/main/spec/forms.md)
+for the full per-form table. Quick reference for what's on each:
+
+| Form | Synthesized methods |
+|---|---|
+| `@form(vec)` | `push`, `get`, `set`, `pop`, `len`, `is_empty`, `sort`, `sort_by`, `sort_desc_by` |
+| `@form(hashmap)` | `set`, `get`, `has`, `remove`, `len`, `is_empty`, `key_at`, `entry_at`, `bump` |
+| `@form(ring_buffer)` | `push -> Bool`, `pop`, `len`, `is_full` |
 
 You can reference these as ordinary types — pattern-match
 them in `match`, declare fn parameters typed by them,

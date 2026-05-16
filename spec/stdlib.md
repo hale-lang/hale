@@ -363,7 +363,8 @@ tree. Quick reference grouped by `std::*` namespace prefix:
 | `std::io::fs` | `read_file`, `write_file`, `write_file_append`, `read_bytes`, `file_size`, `mkdir`, `list_dir`, `list_dir_count`, `list_dir_at` — all `fallible(IoError)`. `file_exists(path) -> Bool` (predicate, not failable). | `lotus_fs_*` C runtime primitives |
 | `std::io::stdin` | `read_line() -> String`, `read_line_status() -> Int` | `lotus_stdin_*` C runtime primitives (POSIX `getline` + payload-arena copy) |
 | `std::io::tcp` | `Listener` locus, `Stream` locus, `send`, `send_bytes`, `recv_bytes`. Path-calls `listen_socket`, `connect`, `accept_one` are `fallible(IoError)`. | `lotus_tcp_*` C runtime primitives |
-| `std::http` | `Request` + `Response` types, `parse_request`, `write_response`, case-insensitive `header` lookup | `runtime/stdlib/http.ap` |
+| `std::http` | `Request` + `Response` types, `parse_request`, `write_response`, case-insensitive `header` lookup, `Server` locus (accept loop + handler dispatch) | `runtime/stdlib/http.ap` |
+| `std::json` | `Builder` locus (output assembly), `escape_string` / `unescape_string` (RFC 8259 string escaping), `find_string_field` / `find_int_field` / `find_bool_field` (flat-object field lookup), `ArrayIter` + `array_first` / `array_next` (flat-array iteration). No nested-tree shape at v1. | `runtime/stdlib/json.ap` |
 | `std::test` | `assert(cond, msg)`, `assert_eq_int`, `assert_eq_str` | `runtime/stdlib/test.ap` |
 | `std::log` | `Logger`, `LogEvent`, `StdoutSink` (subscribes `log.**`) | `runtime/stdlib/log.ap` |
 | `std::math` | `sqrt`, `exp`, `log`, `floor`, `ceil`, `pow` | path-call dispatch into libm |

@@ -953,6 +953,12 @@ non-error value, that value is the expression's value
   value. Type must match the success type. `<fallback>` may
   itself be a call (`or handler(err)`); the identifier `err`
   in the fallback expression resolves to the typed payload.
+- **`or discard`** (added 2026-05-16) — swallows the error
+  and produces Unit. The underlying call's success type MUST
+  be Unit; the typechecker rejects `or discard` on
+  value-bearing calls with a message pointing at
+  `or <default>` or `or raise`. Sugar for the previously-
+  idiomatic `or noop(err)` pattern with a no-op handler fn.
 
 Chains are right-associative: `a() or b() or raise` reduces
 the value to the success type level by level.
