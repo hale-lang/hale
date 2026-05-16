@@ -1502,6 +1502,16 @@ impl Interpreter {
                             // bubble / on_failure machinery.
                             Err(Signal::Bubble(*payload))
                         }
+                        OrDisposition::Discard(_) => {
+                            // `or discard` — swallow the err,
+                            // produce Unit. Typecheck has already
+                            // ensured the call's success type is
+                            // Unit so the Unit substitute is the
+                            // right shape for the surrounding
+                            // context.
+                            let _ = payload;
+                            Ok(Value::Unit)
+                        }
                         OrDisposition::Substitute(rhs) => {
                             // Bind `err` to the payload in scope
                             // and evaluate the substitute body.
@@ -1957,6 +1967,7 @@ impl Interpreter {
         if !matches!(
             method_name.as_str(),
             "set" | "get" | "has" | "remove" | "len" | "is_empty"
+            | "key_at" | "entry_at" | "bump"
         ) {
             return Ok(None);
         }
@@ -2094,6 +2105,119 @@ impl Interpreter {
                     )));
                 }
                 Ok(Some(Value::Bool(entries_rc.borrow().is_empty())))
+            }
+            "key_at" => {
+                if arg_vs.len() != 1 {
+                    return Err(Signal::Error(format!(
+                        "@form(hashmap).key_at expects 1 arg (index), got {}",
+                        arg_vs.len()
+                    )));
+                }
+                let i = match &arg_vs[0] {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(Signal::Error(format!(
+                            "@form(hashmap).key_at index must be Int; got {}",
+                            other.type_name()
+                        )));
+                    }
+                };
+                let entries = entries_rc.borrow();
+                if i < 0 || (i as usize) >= entries.len() {
+                    let len = entries.len() as i64;
+                    drop(entries);
+                    Ok(Some(Value::FallibleErr(Box::new(
+                        index_error_value("out_of_bounds", i, len),
+                    ))))
+                } else {
+                    Ok(Some(entries[i as usize].0.clone()))
+                }
+            }
+            "entry_at" => {
+                if arg_vs.len() != 1 {
+                    return Err(Signal::Error(format!(
+                        "@form(hashmap).entry_at expects 1 arg (index), got {}",
+                        arg_vs.len()
+                    )));
+                }
+                let i = match &arg_vs[0] {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(Signal::Error(format!(
+                            "@form(hashmap).entry_at index must be Int; got {}",
+                            other.type_name()
+                        )));
+                    }
+                };
+                let entries = entries_rc.borrow();
+                if i < 0 || (i as usize) >= entries.len() {
+                    let len = entries.len() as i64;
+                    drop(entries);
+                    Ok(Some(Value::FallibleErr(Box::new(
+                        index_error_value("out_of_bounds", i, len),
+                    ))))
+                } else {
+                    Ok(Some(entries[i as usize].1.clone()))
+                }
+            }
+            "bump" => {
+                if arg_vs.len() != 1 {
+                    return Err(Signal::Error(format!(
+                        "@form(hashmap).bump expects 1 arg (key), got {}",
+                        arg_vs.len()
+                    )));
+                }
+                let key = arg_vs.into_iter().next().unwrap();
+                // Convention: cell must have exactly two fields —
+                // the indexed-by key + one Int counter. Find the
+                // counter field by scanning the existing entries'
+                // value shape, OR by walking the locus decl's
+                // capacity slot. We use the value shape because
+                // entries_rc may already contain a sample.
+                let mut entries = entries_rc.borrow_mut();
+                // Find counter field by examining the cell type
+                // structure. Pull from the receiver's decl.
+                let counter_name = self.find_hashmap_counter_field(
+                    &handle,
+                    &indexed_by_field,
+                ).map_err(Signal::Error)?;
+
+                if let Some(slot) = entries
+                    .iter_mut()
+                    .find(|(k, _)| values_equal(k, &key))
+                {
+                    // Increment existing.
+                    if let Value::Struct { fields, .. } = &slot.1 {
+                        let mut f = fields.borrow_mut();
+                        let cur = f.get(&counter_name).cloned()
+                            .unwrap_or(Value::Int(0));
+                        let next = match cur {
+                            Value::Int(n) => Value::Int(n + 1),
+                            _ => return Err(Signal::Error(format!(
+                                "@form(hashmap).bump: counter field `{}` \
+                                 is not Int",
+                                counter_name
+                            ))),
+                        };
+                        f.insert(counter_name.clone(), next);
+                    } else {
+                        return Err(Signal::Error(
+                            "@form(hashmap).bump: stored value is not a \
+                             struct".to_string(),
+                        ));
+                    }
+                } else {
+                    // Init at count = 1. Build a fresh struct
+                    // with key and counter populated.
+                    let new_value = self.build_bump_initial_struct(
+                        &handle,
+                        &indexed_by_field,
+                        &counter_name,
+                        key.clone(),
+                    ).map_err(Signal::Error)?;
+                    entries.push((key, new_value));
+                }
+                Ok(Some(Value::Unit))
             }
             _ => unreachable!("filtered at the top of the fn"),
         }
@@ -3566,6 +3690,114 @@ impl Interpreter {
         }
         Ok(())
     }
+
+    /// 2026-05-16: find the counter field name for
+    /// `@form(hashmap).bump`. Convention: cell type has exactly
+    /// two fields — the indexed-by key + one Int field. Returns
+    /// the Int field's name. Walks the locus's capacity slot to
+    /// find the cell type, then `self.types` for the field list.
+    fn find_hashmap_counter_field(
+        &self,
+        handle: &crate::value::LocusHandle,
+        indexed_by: &str,
+    ) -> Result<String, String> {
+        use aperio_syntax::ast::{LocusMember, PrimType, TypeExpr};
+        let cell_type_name = handle
+            .decl
+            .members
+            .iter()
+            .find_map(|m| match m {
+                LocusMember::Capacity(cb) => cb.slots.first().and_then(|s| {
+                    if let TypeExpr::Named { path, .. } = &s.elem_ty {
+                        path.segments.last().map(|seg| seg.name.clone())
+                    } else {
+                        None
+                    }
+                }),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                "@form(hashmap).bump: locus has no capacity-slot cell type"
+                    .to_string()
+            })?;
+        let cell_decl = self.types.get(&cell_type_name).ok_or_else(|| {
+            format!(
+                "@form(hashmap).bump: cell type `{}` not registered",
+                cell_type_name
+            )
+        })?;
+        use aperio_syntax::ast::TypeDeclBody;
+        let struct_fields = match &cell_decl.body {
+            TypeDeclBody::Struct(fs) => fs,
+            _ => {
+                return Err(format!(
+                    "@form(hashmap).bump: cell `{}` is not a struct",
+                    cell_type_name
+                ))
+            }
+        };
+        let mut int_fields: Vec<String> = Vec::new();
+        let mut extras: Vec<String> = Vec::new();
+        for f in struct_fields {
+            if f.name.name == indexed_by {
+                continue;
+            }
+            match &f.ty {
+                TypeExpr::Primitive(PrimType::Int, _) => {
+                    int_fields.push(f.name.name.clone());
+                }
+                _ => extras.push(f.name.name.clone()),
+            }
+        }
+        if int_fields.len() == 1 && extras.is_empty() {
+            Ok(int_fields.into_iter().next().unwrap())
+        } else {
+            Err(format!(
+                "@form(hashmap).bump: cell `{}` must have exactly two \
+                 fields — the indexed-by key (`{}`) and one Int counter. \
+                 Use the explicit has/get/set pattern for richer cells.",
+                cell_type_name, indexed_by
+            ))
+        }
+    }
+
+    /// 2026-05-16: synthesize the initial entry value for the
+    /// init branch of `@form(hashmap).bump(k)`. Sets the key
+    /// field to `k` and the counter field to 1.
+    fn build_bump_initial_struct(
+        &self,
+        handle: &crate::value::LocusHandle,
+        indexed_by: &str,
+        counter_name: &str,
+        key: Value,
+    ) -> Result<Value, String> {
+        use aperio_syntax::ast::{LocusMember, TypeExpr};
+        let cell_type_name = handle
+            .decl
+            .members
+            .iter()
+            .find_map(|m| match m {
+                LocusMember::Capacity(cb) => cb.slots.first().and_then(|s| {
+                    if let TypeExpr::Named { path, .. } = &s.elem_ty {
+                        path.segments.last().map(|seg| seg.name.clone())
+                    } else {
+                        None
+                    }
+                }),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                "@form(hashmap).bump: locus has no capacity-slot cell type"
+                    .to_string()
+            })?;
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(indexed_by.to_string(), key);
+        fields.insert(counter_name.to_string(), Value::Int(1));
+        Ok(Value::Struct {
+            name: cell_type_name,
+            fields: std::rc::Rc::new(std::cell::RefCell::new(fields)),
+        })
+    }
 }
 
 /// Outcome of evaluating one closure assertion at its epoch.
@@ -4285,4 +4517,5 @@ fn extract_indexed_field(value: &Value, field_name: &str) -> Option<Value> {
         _ => None,
     }
 }
+
 

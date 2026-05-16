@@ -1169,6 +1169,32 @@ fn synthesize_form_hashmap_methods(
         ret: Ty::Prim(PrimType::Bool),
         fallible: None,
     });
+    // 2026-05-16 iteration + counter sugar. key_at / entry_at
+    // unlock the "iterate the hashmap" pattern without a
+    // parallel keys vec; bump collapses the has/get/set
+    // increment-or-init dance into one method call. See
+    // experiments/token-efficiency/handoffs/library-dev-2026-05-16.md
+    // for the wordfreq-corpus reinvention frequency that
+    // motivated each.
+    let idx_err = Ty::Named("IndexError".to_string());
+    methods.push(MethodInfo {
+        name: "key_at".to_string(),
+        params: vec![Ty::Prim(PrimType::Int)],
+        ret: key_ty.clone(),
+        fallible: Some(idx_err.clone()),
+    });
+    methods.push(MethodInfo {
+        name: "entry_at".to_string(),
+        params: vec![Ty::Prim(PrimType::Int)],
+        ret: value_ty.clone(),
+        fallible: Some(idx_err),
+    });
+    methods.push(MethodInfo {
+        name: "bump".to_string(),
+        params: vec![key_ty.clone()],
+        ret: Ty::Unit,
+        fallible: None,
+    });
 }
 
 /// v1.x-FORM-5: extract cell type T from a `@form(ring_buffer)`

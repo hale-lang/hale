@@ -2248,6 +2248,27 @@ impl<'a> Checker<'a> {
                         // the success type.
                         success
                     }
+                    OrDisposition::Discard(span) => {
+                        // `or discard` — swallow error, produce
+                        // Unit. Requires the underlying call's
+                        // success type to be Unit (since discard
+                        // doesn't carry a value).
+                        if !matches!(success, Ty::Unit | Ty::Unknown) {
+                            self.diags.push(Diag::ty(
+                                *span,
+                                format!(
+                                    "`or discard` requires the underlying \
+                                     call's success type to be Unit (so the \
+                                     discard branch produces no value to \
+                                     bind); got `{}`. Use `or <default>` or \
+                                     `or raise` for value-bearing fallibles.",
+                                    success.display()
+                                ),
+                            ));
+                        }
+                        let _ = payload;
+                        Ty::Unit
+                    }
                     OrDisposition::Substitute(rhs) => {
                         // The implicit `err` binding is in scope
                         // on the RHS, typed as the payload type.

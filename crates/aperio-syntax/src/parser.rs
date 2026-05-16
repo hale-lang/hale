@@ -2615,9 +2615,13 @@ impl Parser {
         }
         self.bump(); // consume `or`
         let is_raise = matches!(self.peek(), TokenKind::Ident(s) if s == "raise");
+        let is_discard = matches!(self.peek(), TokenKind::Ident(s) if s == "discard");
         let (disposition, end_span) = if is_raise {
             let raise_tok = self.bump();
             (OrDisposition::Raise(raise_tok.span), raise_tok.span)
+        } else if is_discard {
+            let discard_tok = self.bump();
+            (OrDisposition::Discard(discard_tok.span), discard_tok.span)
         } else {
             // Substitute: RHS is itself a full expression (which
             // may chain another `or` — that's how we get

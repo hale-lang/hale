@@ -584,6 +584,12 @@ pub fn resolve_path(segments: &[&str]) -> Option<Value> {
             name: "std::env::arg",
             func: Rc::new(std_env_arg),
         })),
+        // 2026-05-16: collapse the 3-line "arg-or-default"
+        // pattern every CLI-style program reinvents.
+        ["std", "env", "arg_or"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::env::arg_or",
+            func: Rc::new(std_env_arg_or),
+        })),
         ["std", "env", "var"] => Some(Value::Builtin(BuiltinRef {
             name: "std::env::var",
             func: Rc::new(std_env_var),
@@ -659,8 +665,162 @@ pub fn resolve_path(segments: &[&str]) -> Option<Value> {
             name: "std::math::pow",
             func: Rc::new(std_math_pow),
         })),
+        // 2026-05-16: std::text byte-class predicates. Each
+        // takes a single byte (Int) and returns Bool. Parity
+        // with the inline LLVM lowering in codegen.
+        ["std", "text", "is_alpha"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::text::is_alpha",
+            func: Rc::new(|args| std_text_byte_pred(args, "is_alpha")),
+        })),
+        ["std", "text", "is_digit"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::text::is_digit",
+            func: Rc::new(|args| std_text_byte_pred(args, "is_digit")),
+        })),
+        ["std", "text", "is_alnum"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::text::is_alnum",
+            func: Rc::new(|args| std_text_byte_pred(args, "is_alnum")),
+        })),
+        ["std", "text", "is_whitespace"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::text::is_whitespace",
+            func: Rc::new(|args| std_text_byte_pred(args, "is_whitespace")),
+        })),
+        ["std", "text", "is_word_char"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::text::is_word_char",
+            func: Rc::new(|args| std_text_byte_pred(args, "is_word_char")),
+        })),
+        // 2026-05-16: word-tokenize String into a @form(vec) of
+        // String. Parity with the C primitive
+        // lotus_text_tokenize_words_into. Tokens are lowercased
+        // (matches the wordfreq idiom every agent reaches for).
+        ["std", "text", "tokenize_words_into"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::text::tokenize_words_into",
+            func: Rc::new(std_text_tokenize_words_into),
+        })),
         _ => None,
     }
+}
+
+/// 2026-05-16: interpreter parity for the word-tokenize
+/// primitive. Argument shape: (String source, @form(vec) of
+/// String target). Walks the source, pushes each lowercased
+/// token into the target's items vec.
+fn std_text_tokenize_words_into(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!(
+            "std::text::tokenize_words_into expects 2 args (source, \
+             target vec), got {}",
+            args.len()
+        ));
+    }
+    let src = match &args[0] {
+        Value::String(s) => s.clone(),
+        other => return Err(format!(
+            "std::text::tokenize_words_into: source arg must be String, \
+             got {}",
+            other.type_name()
+        )),
+    };
+    let handle = match &args[1] {
+        Value::Locus(h) => h.clone(),
+        other => return Err(format!(
+            "std::text::tokenize_words_into: target arg must be a \
+             @form(vec) of String locus, got {}",
+            other.type_name()
+        )),
+    };
+    let is_form_vec = handle
+        .decl
+        .form
+        .as_ref()
+        .map(|f| f.name.name == "vec")
+        .unwrap_or(false);
+    if !is_form_vec {
+        return Err(format!(
+            "std::text::tokenize_words_into: target locus `{}` is not a \
+             @form(vec)",
+            handle.name
+        ));
+    }
+    let items_rc = {
+        let slots = handle.slots.borrow();
+        slots
+            .iter()
+            .find_map(|(_, st)| match st {
+                crate::value::SlotState::Vec { items } => Some(items.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| format!(
+                "std::text::tokenize_words_into: target locus `{}` has no \
+                 vec-state slot",
+                handle.name
+            ))?
+    };
+    let is_word = |c: u8| {
+        (b'a'..=b'z').contains(&c)
+            || (b'A'..=b'Z').contains(&c)
+            || (b'0'..=b'9').contains(&c)
+            || c == b'_'
+            || c == b'\''
+    };
+    let bytes = src.as_bytes();
+    let mut i = 0;
+    let n = bytes.len();
+    let mut items = items_rc.borrow_mut();
+    while i < n {
+        while i < n && !is_word(bytes[i]) {
+            i += 1;
+        }
+        if i >= n { break; }
+        let start = i;
+        while i < n && is_word(bytes[i]) {
+            i += 1;
+        }
+        let mut tok: Vec<u8> = bytes[start..i].to_vec();
+        for c in tok.iter_mut() {
+            if (b'A'..=b'Z').contains(c) {
+                *c += 32;
+            }
+        }
+        items.push(Value::String(String::from_utf8_lossy(&tok).to_string()));
+    }
+    Ok(Value::Unit)
+}
+
+/// 2026-05-16: shared body for std::text::is_X predicates.
+/// Match the codegen-side inline IR exactly so `aperio run` and
+/// `aperio build` agree on the boundary character set.
+fn std_text_byte_pred(args: &[Value], which: &str) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::text::{} expects 1 arg, got {}",
+            which,
+            args.len()
+        ));
+    }
+    let b = match &args[0] {
+        Value::Int(n) => *n as i64,
+        other => return Err(format!(
+            "std::text::{}: arg must be Int (byte value), got {}",
+            which,
+            other.type_name()
+        )),
+    };
+    let result = match which {
+        "is_alpha" => (b'a' as i64..=b'z' as i64).contains(&b)
+            || (b'A' as i64..=b'Z' as i64).contains(&b),
+        "is_digit" => (b'0' as i64..=b'9' as i64).contains(&b),
+        "is_alnum" => (b'a' as i64..=b'z' as i64).contains(&b)
+            || (b'A' as i64..=b'Z' as i64).contains(&b)
+            || (b'0' as i64..=b'9' as i64).contains(&b),
+        "is_whitespace" => matches!(b as u8, b' ' | b'\t' | b'\n' | b'\r'),
+        "is_word_char" => (b'a' as i64..=b'z' as i64).contains(&b)
+            || (b'A' as i64..=b'Z' as i64).contains(&b)
+            || (b'0' as i64..=b'9' as i64).contains(&b)
+            || b == b'_' as i64
+            || b == b'\'' as i64,
+        _ => unreachable!(),
+    };
+    Ok(Value::Bool(result))
 }
 
 // === user-args plumbing =====================================
@@ -1144,6 +1304,42 @@ fn std_env_arg(args: &[Value]) -> Result<Value, String> {
         let av = a.borrow();
         if i < 0 || (i as usize) >= av.len() {
             String::new()
+        } else {
+            av[i as usize].clone()
+        }
+    });
+    Ok(Value::String(v))
+}
+
+/// 2026-05-16: `std::env::arg_or(idx, default)` — interp parity
+/// for the codegen-side helper. Returns argv[idx] when present,
+/// otherwise the default. Matches the (idx, default) shape
+/// agents reach for.
+fn std_env_arg_or(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!(
+            "std::env::arg_or takes 2 args (index, default), got {}",
+            args.len()
+        ));
+    }
+    let i = match &args[0] {
+        Value::Int(n) => *n,
+        other => return Err(format!(
+            "std::env::arg_or: index must be Int, got {}",
+            other.type_name()
+        )),
+    };
+    let default = match &args[1] {
+        Value::String(s) => s.clone(),
+        other => return Err(format!(
+            "std::env::arg_or: default must be String, got {}",
+            other.type_name()
+        )),
+    };
+    let v = USER_ARGS.with(|a| {
+        let av = a.borrow();
+        if i < 0 || (i as usize) >= av.len() {
+            default
         } else {
             av[i as usize].clone()
         }

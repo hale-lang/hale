@@ -1049,6 +1049,13 @@ pub enum OrDisposition {
     /// `or <expr>` — substitute the fallback value. The
     /// expression must be of the success type at typecheck.
     Substitute(Box<Expr>),
+    /// `or discard` — swallow the error and substitute Unit.
+    /// Sugar for `or noop(err)` with a no-op handler — the agent
+    /// pattern the wordfreq-corpus library-shape handoff
+    /// surfaced. The underlying call's success type MUST be
+    /// Unit; otherwise the typechecker rejects with a hint to
+    /// use an explicit substitute value.
+    Discard(Span),
 }
 
 impl Expr {

@@ -1235,7 +1235,7 @@ fn expr_reads_self_children(e: &Expr) -> bool {
                 return true;
             }
             match disposition {
-                OrDisposition::Raise(_) => false,
+                OrDisposition::Raise(_) | OrDisposition::Discard(_) => false,
                 OrDisposition::Substitute(rhs) => expr_reads_self_children(rhs),
             }
         }
@@ -2043,6 +2043,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let hashmap_destroy_ty = void_t.fn_type(&[ptr_t.into()], false);
         self.module
             .add_function("lotus_hashmap_destroy", hashmap_destroy_ty, None);
+        // declare i32 @lotus_hashmap_key_at(ptr m, i64 i, ptr out_key)
+        // declare i32 @lotus_hashmap_value_at(ptr m, i64 i, ptr out_value)
+        // Hash-table-order iteration (added 2026-05-16). Same i32
+        // return shape as get/remove — 1=OK, 0=out-of-range — so
+        // codegen wraps in the standard fallible(IndexError) shape.
+        let hashmap_key_at_ty =
+            i32_t.fn_type(&[ptr_t.into(), i64_t.into(), ptr_t.into()], false);
+        self.module
+            .add_function("lotus_hashmap_key_at", hashmap_key_at_ty, None);
+        let hashmap_value_at_ty =
+            i32_t.fn_type(&[ptr_t.into(), i64_t.into(), ptr_t.into()], false);
+        self.module
+            .add_function("lotus_hashmap_value_at", hashmap_value_at_ty, None);
+        // declare void @lotus_text_tokenize_words_into(ptr target_vec, ptr src, ptr arena, i32 lowercase)
+        let tokenize_words_ty = void_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), ptr_t.into(), i32_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_text_tokenize_words_into", tokenize_words_ty, None);
 
         // @form(ring_buffer): fixed-capacity FIFO. The `cap` is
         // baked in at init from the form annotation arg; methods
@@ -10586,6 +10606,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.lower_or_raise(&call)?;
                     None
                 }
+                OrDisposition::Discard(_) => {
+                    // `or discard`: success type must be Unit;
+                    // err branch is a no-op (no fallback expr
+                    // evaluated, err value swallowed).
+                    if call.success_ty.is_some() {
+                        return Err(CodegenError::Unsupported(format!(
+                            "`or discard` requires the underlying call's \
+                             success type to be Unit (since discard \
+                             produces no value to bind); got {:?}. Use \
+                             `or <default-value>` or `or raise` for \
+                             value-bearing fallible calls.",
+                            call.success_ty
+                        )));
+                    }
+                    let sub_end_bb = self
+                        .builder
+                        .get_insert_block()
+                        .expect("discard branch open");
+                    Some((None, sub_end_bb))
+                }
                 OrDisposition::Substitute(rhs) => {
                     // `err` binding implicit on substitute RHS, per
                     // AST docstring (`Expr::Or`). The binding's
@@ -10985,11 +11025,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | ["std", "io", "stdin", "read_line_status"]
             | ["std", "env", "args_count"]
             | ["std", "env", "arg"]
+            | ["std", "env", "arg_or"]
             | ["std", "env", "var"]
             | ["std", "env", "var_exists"]
             | ["std", "process", "pid"]
             | ["std", "time", "monotonic"]
-            | ["std", "time", "sleep"] => Err(CodegenError::Unsupported(format!(
+            | ["std", "time", "sleep"]
+            | ["std", "text", "is_alpha"]
+            | ["std", "text", "is_digit"]
+            | ["std", "text", "is_alnum"]
+            | ["std", "text", "is_whitespace"]
+            | ["std", "text", "is_word_char"]
+            | ["std", "text", "tokenize_words_into"] => Err(CodegenError::Unsupported(format!(
                 "`{}` is not a fallible call — remove the `or` clause. \
                  Returns its value directly; failures (if any) use the \
                  sentinel-with-discriminator idiom or are infallible.",
@@ -12585,7 +12632,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         else {
             return Ok(None);
         };
-        if !matches!(method_name, "get" | "remove") {
+        if !matches!(method_name, "get" | "remove" | "key_at" | "entry_at") {
             return Ok(None);
         }
 
@@ -12635,7 +12682,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let value_codegen_ty = CodegenTy::TypeRef(cell_name.clone());
-        let payload_ty = CodegenTy::TypeRef("KeyError".to_string());
 
         let hashmap_field_ptr = self
             .builder
@@ -12649,6 +12695,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // 2026-05-16: key_at(i) / entry_at(i) — index-based
+        // iteration. Takes Int, fails with IndexError. Walks the
+        // hashmap slots in hash-table order (O(cap) per call;
+        // O(len * cap) for a full sweep — fine at small/medium
+        // scale, agents iterating 100k+ entries should populate a
+        // parallel @form(vec) instead).
+        if matches!(method_name, "key_at" | "entry_at") {
+            return self
+                .lower_form_hashmap_index_method(
+                    info,
+                    &slot,
+                    &cell_info,
+                    cell_name.clone(),
+                    key_codegen_ty.clone(),
+                    value_codegen_ty.clone(),
+                    locus_name,
+                    method_name,
+                    args,
+                    scope,
+                    hashmap_field_ptr,
+                )
+                .map(Some);
+        }
+
+        let payload_ty = CodegenTy::TypeRef("KeyError".to_string());
 
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
@@ -12803,6 +12875,190 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             success_ty: success_ty_opt,
             payload_ty,
         }))
+    }
+
+    /// 2026-05-16: lower `@form(hashmap).key_at(i)` /
+    /// `entry_at(i)`. Each takes an `Int` and returns
+    /// `fallible(IndexError)`. The C primitive (lotus_hashmap_
+    /// key_at / value_at) walks the slots array counting occupied
+    /// entries; the wrapper inverts the bool into an i1 error
+    /// path and lazy-emits the IndexError on the miss side.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_form_hashmap_index_method(
+        &mut self,
+        _info: &LocusInfo<'ctx>,
+        _slot: &CapacitySlotLayout,
+        cell_info: &TypeInfo<'ctx>,
+        _cell_name: String,
+        key_codegen_ty: CodegenTy,
+        value_codegen_ty: CodegenTy,
+        locus_name: &str,
+        method_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        hashmap_field_ptr: PointerValue<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "@form(hashmap) `{}`.{}: expects 1 arg (index), got {}",
+                locus_name,
+                method_name,
+                args.len()
+            )));
+        }
+        let (idx_val, idx_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(idx_ty, CodegenTy::Int) {
+            return Err(CodegenError::Unsupported(format!(
+                "@form(hashmap) `{}`.{}: index arg must be Int, got {:?}",
+                locus_name, method_name, idx_ty
+            )));
+        }
+        let idx_int = idx_val.into_int_value();
+        let payload_ty = CodegenTy::TypeRef("IndexError".to_string());
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+
+        // Output slot type + buffer: key_at writes the raw key
+        // (Int = 8 bytes, String = ptr-to-cstr = 8 bytes); entry_at
+        // writes the full cell struct.
+        let (success_ty, out_val_slot, out_buf_ptr, c_fn_name) = match method_name {
+            "key_at" => {
+                let buf_size = self
+                    .llvm_basic_type(&key_codegen_ty)
+                    .size_of()
+                    .expect("key type has known size");
+                let buf_ptr = self.arena_alloc(buf_size, "hm.key_at.buf")?;
+                let slot = self.alloca_for(&key_codegen_ty, "hm.key_at.out")?;
+                // For pointer-shaped keys (String), the C primitive
+                // memcpys the 8-byte pointer into buf_ptr; the
+                // surface value is whatever's loaded from buf_ptr.
+                // For Int, same — buf holds the i64 directly.
+                (key_codegen_ty.clone(), slot, buf_ptr, "lotus_hashmap_key_at")
+            }
+            "entry_at" => {
+                let cell_size = cell_info
+                    .struct_ty
+                    .size_of()
+                    .expect("cell struct has known size");
+                let buf_ptr = self.arena_alloc(cell_size, "hm.entry_at.buf")?;
+                let slot = self.alloca_for(&value_codegen_ty, "hm.entry_at.out")?;
+                // TypeRef cells are pointer-shaped at the surface;
+                // store buf_ptr in the alloca so the load path sees
+                // a pointer to the struct.
+                self.builder
+                    .build_store(slot, buf_ptr)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                (value_codegen_ty.clone(), slot, buf_ptr, "lotus_hashmap_value_at")
+            }
+            _ => unreachable!("matched by caller"),
+        };
+
+        let c_fn = self
+            .module
+            .get_function(c_fn_name)
+            .expect("hashmap index primitive declared");
+        let c_ret = self
+            .builder
+            .build_call(
+                c_fn,
+                &[
+                    hashmap_field_ptr.into(),
+                    idx_int.into(),
+                    out_buf_ptr.into(),
+                ],
+                &format!("{}.{}.call", locus_name, method_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("hashmap index primitive returns i32")
+            .into_int_value();
+
+        // For key_at, we need to materialize the surface value
+        // from the buffer (the C primitive memcpyd into it but
+        // the alloca'd surface slot is still uninitialized).
+        if method_name == "key_at" {
+            let loaded = self
+                .builder
+                .build_load(self.llvm_basic_type(&key_codegen_ty), out_buf_ptr, "key_at.val")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(out_val_slot, loaded)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                c_ret,
+                i32_t.const_int(0, false),
+                &format!("{}.{}.is_err", locus_name, method_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Lazy IndexError emission on the miss side. The C primitive
+        // already knows the table's len (we don't pass it back), so
+        // populate IndexError.len with a lotus_hashmap_len call only
+        // on the err path. Use the supplied index as IndexError.index.
+        let func = self
+            .current_fn
+            .expect("hashmap index method inside fn body");
+        let lazy_err_bb = self.context.append_basic_block(
+            func,
+            &format!("hm.{}.lazy_err", method_name),
+        );
+        let join_bb = self.context.append_basic_block(
+            func,
+            &format!("hm.{}.lazy_join", method_name),
+        );
+        let out_err_slot = self.alloca_for(
+            &payload_ty,
+            &format!("hm.{}.out_err.slot", method_name),
+        )?;
+        self.builder
+            .build_conditional_branch(is_err, lazy_err_bb, join_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(lazy_err_bb);
+        let len_fn = self
+            .module
+            .get_function("lotus_hashmap_len")
+            .expect("lotus_hashmap_len declared");
+        let len_val = self
+            .builder
+            .build_call(
+                len_fn,
+                &[hashmap_field_ptr.into()],
+                &format!("{}.{}.err.len", locus_name, method_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_hashmap_len returns i64")
+            .into_int_value();
+        let ie_ptr = self.emit_index_error_alloc(
+            "out_of_bounds",
+            idx_int,
+            len_val,
+        )?;
+        self.builder
+            .build_store(out_err_slot, ie_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(join_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(join_bb);
+
+        let _ = i64_t;
+        Ok(FallibleCallResult {
+            i1_path: is_err,
+            out_val_slot: Some(out_val_slot),
+            out_err_slot,
+            success_ty: Some(success_ty),
+            payload_ty,
+        })
     }
 
     /// v1.x-FORM-2 PR6 (PR5 finale): allocate an `IndexError`
@@ -18982,11 +19238,120 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "process", "exit"] => {
                 self.lower_std_process_exit(args, scope)
             }
+            // 2026-05-16: word-tokenize into a caller-supplied
+            // @form(vec) of String. Replaces the ~30-line byte-
+            // walk loop every wordfreq agent reinvented. Returns
+            // Unit; the target vec is the output channel.
+            ["std", "text", "tokenize_words_into"] => {
+                self.lower_std_text_tokenize_words_into(args, scope)
+            }
             _ => Err(CodegenError::Unsupported(format!(
                 "stdlib path `{}` — not implemented",
                 segs.join("::")
             ))),
         }
+    }
+
+    /// 2026-05-16: `std::text::tokenize_words_into(s: String,
+    /// target: @form(vec))` — lowers to a call into the C
+    /// `lotus_text_tokenize_words_into` primitive. The primitive
+    /// walks `s` (NUL-terminated), arena-allocates each token as
+    /// a lowercased NUL-terminated string, and pushes the pointer
+    /// into the target vec via lotus_vec_push. Target vec must be
+    /// a @form(vec) with cell type String.
+    fn lower_std_text_tokenize_words_into(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::text::tokenize_words_into expects 2 args (source \
+                 String, target @form(vec) of String); got {}",
+                args.len()
+            )));
+        }
+        let (src_val, src_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(src_ty, CodegenTy::String) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::text::tokenize_words_into: source arg must be \
+                 String, got {:?}",
+                src_ty
+            )));
+        }
+        let (target_val, target_ty) = self.lower_expr(&args[1], scope)?;
+        let target_locus_name = match &target_ty {
+            CodegenTy::LocusRef(n) => n.clone(),
+            other => {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::text::tokenize_words_into: target arg must be a \
+                     @form(vec) of String locus, got {:?}",
+                    other
+                )));
+            }
+        };
+        let locus_info = self
+            .user_loci
+            .get(&target_locus_name)
+            .cloned()
+            .ok_or_else(|| CodegenError::Unsupported(format!(
+                "std::text::tokenize_words_into: target locus `{}` not \
+                 registered",
+                target_locus_name
+            )))?;
+        // Verify it's a @form(vec) with String cells.
+        let vec_slot = locus_info
+            .capacity_slots
+            .iter()
+            .find(|s| s.form == Some(SlotForm::Vec))
+            .cloned()
+            .ok_or_else(|| CodegenError::Unsupported(format!(
+                "std::text::tokenize_words_into: target locus `{}` is not \
+                 a @form(vec) — must be `@form(vec) locus X {{ capacity \
+                 {{ heap items of String; }} }}`",
+                target_locus_name
+            )))?;
+        if !matches!(vec_slot.elem_ty, CodegenTy::String) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::text::tokenize_words_into: target vec `{}` cell type \
+                 must be String, got {:?}",
+                target_locus_name, vec_slot.elem_ty
+            )));
+        }
+        let target_self_ptr = target_val.into_pointer_value();
+        let vec_field_ptr = self
+            .builder
+            .build_struct_gep(
+                locus_info.struct_ty,
+                target_self_ptr,
+                vec_slot.struct_field_idx,
+                &format!("{}.__vec_{}.tokenize.ptr", target_locus_name, vec_slot.name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let arena_ptr = self.current_arena_ptr()?;
+        // lowercase = 1 by default (matches the wordfreq idiom
+        // every agent reaches for). A future overload could take
+        // an Int / Bool flag if case-preserving tokenization
+        // turns out to be a common need.
+        let i32_t = self.context.i32_type();
+        let one = i32_t.const_int(1, false);
+        let fn_ = self
+            .module
+            .get_function("lotus_text_tokenize_words_into")
+            .expect("lotus_text_tokenize_words_into declared");
+        self.builder
+            .build_call(
+                fn_,
+                &[
+                    vec_field_ptr.into(),
+                    src_val.into(),
+                    arena_ptr.into(),
+                    one.into(),
+                ],
+                "text.tokenize_words.call",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
     }
 
     /// Expression-position dispatcher for `std::*` paths.
@@ -19099,6 +19464,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "env", "args_count"] => self.lower_std_env_args_count(args),
             ["std", "env", "arg"] => self.lower_std_env_arg(args, scope),
+            ["std", "env", "arg_or"] => self.lower_std_env_arg_or(args, scope),
             ["std", "env", "var"] => self.lower_std_env_var(args, scope),
             ["std", "env", "var_exists"] => {
                 self.lower_std_env_var_exists(args, scope)
@@ -19294,11 +19660,165 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "math", "pow"] => {
                 self.lower_std_math_binary("pow", args, scope)
             }
+            // 2026-05-16: std::text byte-class predicates. Each
+            // takes a byte value (Int) and returns Bool. Inline
+            // range checks — no libc dependency, no C primitive,
+            // pure LLVM IR. Address the friction the wordfreq
+            // corpus surfaced: every program reinvents the same
+            // 4-line is_word_char fn.
+            ["std", "text", "is_alpha"] => {
+                self.lower_std_text_byte_pred("is_alpha", args, scope)
+            }
+            ["std", "text", "is_digit"] => {
+                self.lower_std_text_byte_pred("is_digit", args, scope)
+            }
+            ["std", "text", "is_alnum"] => {
+                self.lower_std_text_byte_pred("is_alnum", args, scope)
+            }
+            ["std", "text", "is_whitespace"] => {
+                self.lower_std_text_byte_pred("is_whitespace", args, scope)
+            }
+            ["std", "text", "is_word_char"] => {
+                self.lower_std_text_byte_pred("is_word_char", args, scope)
+            }
             _ => Err(CodegenError::Unsupported(format!(
                 "stdlib path `{}` in expression position — not implemented",
                 segs.join("::")
             ))),
         }
+    }
+
+    /// 2026-05-16: std::text byte-class predicates. Each takes a
+    /// single Int (byte value) and returns Bool. Lowering is
+    /// inline IR — no libc, no extern call — so the predicate is
+    /// effectively a few `icmp` + `and` / `or` instructions, and
+    /// LLVM can fold it across loop bodies.
+    ///
+    /// Naming: byte-level (not char-level) because Aperio Strings
+    /// are UTF-8 byte sequences at the runtime. ASCII range only
+    /// at v1; agents needing Unicode classification fall back to
+    /// std::str::* or open-coded checks.
+    fn lower_std_text_byte_pred(
+        &mut self,
+        which: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::text::{} takes 1 arg (byte value as Int), got {}",
+                which,
+                args.len()
+            )));
+        }
+        let (v, ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(ty, CodegenTy::Int) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::text::{}: arg must be Int (byte value), got {:?}",
+                which, ty
+            )));
+        }
+        let b = v.into_int_value();
+        let i64_t = self.context.i64_type();
+        let bool_t = self.context.bool_type();
+
+        // Helper: emit `lo <= b && b <= hi` as i1.
+        let in_range = |me: &Self, lo: i64, hi: i64, label: &str|
+            -> Result<inkwell::values::IntValue<'ctx>, CodegenError>
+        {
+            let lo_c = i64_t.const_int(lo as u64, true);
+            let hi_c = i64_t.const_int(hi as u64, true);
+            let ge = me
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SGE, b, lo_c, &format!("{}.ge", label))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let le = me
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLE, b, hi_c, &format!("{}.le", label))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            me.builder
+                .build_and(ge, le, &format!("{}.and", label))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))
+        };
+        let eq_const = |me: &Self, n: i64, label: &str|
+            -> Result<inkwell::values::IntValue<'ctx>, CodegenError>
+        {
+            let c = i64_t.const_int(n as u64, true);
+            me.builder
+                .build_int_compare(inkwell::IntPredicate::EQ, b, c, label)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))
+        };
+
+        let result = match which {
+            "is_alpha" => {
+                let lower = in_range(self, b'a' as i64, b'z' as i64, "alpha.lo")?;
+                let upper = in_range(self, b'A' as i64, b'Z' as i64, "alpha.up")?;
+                self.builder
+                    .build_or(lower, upper, "alpha.or")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            }
+            "is_digit" => in_range(self, b'0' as i64, b'9' as i64, "digit")?,
+            "is_alnum" => {
+                let lower = in_range(self, b'a' as i64, b'z' as i64, "alnum.lo")?;
+                let upper = in_range(self, b'A' as i64, b'Z' as i64, "alnum.up")?;
+                let digit = in_range(self, b'0' as i64, b'9' as i64, "alnum.dig")?;
+                let lu = self
+                    .builder
+                    .build_or(lower, upper, "alnum.lu")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_or(lu, digit, "alnum.or")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            }
+            "is_whitespace" => {
+                // space, tab, newline, carriage return — matches
+                // the C isspace minus \v and \f (rare in practice).
+                let sp = eq_const(self, b' ' as i64, "ws.sp")?;
+                let tab = eq_const(self, b'\t' as i64, "ws.tab")?;
+                let nl = eq_const(self, b'\n' as i64, "ws.nl")?;
+                let cr = eq_const(self, b'\r' as i64, "ws.cr")?;
+                let a = self
+                    .builder
+                    .build_or(sp, tab, "ws.a")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let b_ = self
+                    .builder
+                    .build_or(nl, cr, "ws.b")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_or(a, b_, "ws.or")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            }
+            "is_word_char" => {
+                // Letter, digit, underscore, apostrophe. The
+                // apostrophe matches the convention every
+                // wordfreq agent reaches for (so "don't" stays
+                // one token).
+                let lower = in_range(self, b'a' as i64, b'z' as i64, "wc.lo")?;
+                let upper = in_range(self, b'A' as i64, b'Z' as i64, "wc.up")?;
+                let digit = in_range(self, b'0' as i64, b'9' as i64, "wc.dig")?;
+                let underscore = eq_const(self, b'_' as i64, "wc.us")?;
+                let apos = eq_const(self, b'\'' as i64, "wc.ap")?;
+                let lu = self
+                    .builder
+                    .build_or(lower, upper, "wc.lu")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let lud = self
+                    .builder
+                    .build_or(lu, digit, "wc.lud")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let luda = self
+                    .builder
+                    .build_or(lud, apos, "wc.luda")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_or(luda, underscore, "wc.or")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            }
+            _ => unreachable!("filtered by dispatcher"),
+        };
+        let _ = bool_t;
+        Ok((result.into(), CodegenTy::Bool))
     }
 
     /// std::math::<sqrt|exp|log|floor|ceil> — single Float arg →
@@ -20452,6 +20972,87 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .left()
             .expect("returns ptr");
         Ok((ptr, CodegenTy::String))
+    }
+
+    /// 2026-05-16: `std::env::arg_or(idx: Int, default: String)
+    /// -> String` — return argv[idx] if present, otherwise the
+    /// default. Collapses the 3-line pattern every CLI-style
+    /// program reinvents:
+    ///   let mut x = "";
+    ///   if std::env::args_count() > idx { x = std::env::arg(idx); }
+    ///   into:
+    ///   let x = std::env::arg_or(idx, "");
+    fn lower_std_env_arg_or(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::env::arg_or takes 2 args (index, default), got {}",
+                args.len()
+            )));
+        }
+        let (i_val, i_ty) = self.lower_expr(&args[0], scope)?;
+        if i_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::env::arg_or: index must be Int, got {:?}",
+                i_ty
+            )));
+        }
+        let (d_val, d_ty) = self.lower_expr(&args[1], scope)?;
+        if !matches!(d_ty, CodegenTy::String) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::env::arg_or: default must be String, got {:?}",
+                d_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let i_i32 = self
+            .builder
+            .build_int_truncate(i_val.into_int_value(), i32_t, "arg_or.i.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let count_fn = self
+            .module
+            .get_function("lotus_env_args_count")
+            .expect("lotus_env_args_count declared");
+        let count = self
+            .builder
+            .build_call(count_fn, &[], "arg_or.count")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let present = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SGT,
+                count,
+                i_i32,
+                "arg_or.present",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let arg_fn = self
+            .module
+            .get_function("lotus_env_arg")
+            .expect("lotus_env_arg declared");
+        let arg_val = self
+            .builder
+            .build_call(arg_fn, &[i_i32.into()], "arg_or.arg")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        // lotus_env_arg returns a usable pointer for any idx
+        // (out-of-range yields a NUL-terminated empty string per
+        // the runtime contract), so it's always safe to call and
+        // select between it and the default.
+        let chosen = self
+            .builder
+            .build_select(present, arg_val, d_val, "arg_or.chosen")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((chosen, CodegenTy::String))
     }
 
     /// Lower `std::env::var(name: String) -> String`. Returns the
@@ -25418,6 +26019,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let is_synth = matches!(
             method_name,
             "set" | "has" | "len" | "is_empty" | "get" | "remove"
+            | "key_at" | "entry_at" | "bump"
         );
         if !is_synth {
             return Ok(None);
@@ -25665,13 +26267,282 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok(Some(Some((result_i1.into(), CodegenTy::Bool))))
             }
-            "get" | "remove" => Err(CodegenError::Unsupported(format!(
+            "get" | "remove" | "key_at" | "entry_at" => Err(CodegenError::Unsupported(format!(
                 "@form(hashmap) `{}`.{}: fallible method must be addressed \
                  via `or raise` / `or <expr>` / `or handler(err)`",
                 locus_name, method_name
             ))),
+            "bump" => self.lower_form_hashmap_bump(
+                info,
+                &slot,
+                locus_self_ptr,
+                hashmap_field_ptr,
+                locus_name,
+                args,
+                scope,
+            ),
             _ => unreachable!("is_synth guard"),
         }
+    }
+
+    /// 2026-05-16: `@form(hashmap).bump(k)` — increment-or-init
+    /// the Int counter field of the entry keyed by `k`. The
+    /// reinvented pattern (per the wordfreq-corpus library-shape
+    /// handoff) was always:
+    ///
+    ///   if m.has(k) {
+    ///       let prev = m.get(k) or default(k);
+    ///       m.set(Entry { key: k, count: prev.count + 1 });
+    ///   } else {
+    ///       m.set(Entry { key: k, count: 1 });
+    ///   }
+    ///
+    /// — 6 lines, twice per program. `bump` collapses it to one
+    /// call. Convention: the cell type must have the indexed-by
+    /// key field plus exactly one `Int` field (the counter); other
+    /// field shapes are a clear error pointing at the manual
+    /// pattern so the user can keep going. Generalizing to
+    /// arbitrary update fns (`update_with(k, init, fn)`) is
+    /// the natural follow-up.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_form_hashmap_bump(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        slot: &CapacitySlotLayout,
+        locus_self_ptr: PointerValue<'ctx>,
+        hashmap_field_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<Option<(BasicValueEnum<'ctx>, CodegenTy)>>, CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "@form(hashmap) `{}`.bump: expects 1 arg (key), got {}",
+                locus_name,
+                args.len()
+            )));
+        }
+        let cell_name = match &slot.elem_ty {
+            CodegenTy::TypeRef(n) => n.clone(),
+            other => {
+                return Err(CodegenError::Unsupported(format!(
+                    "@form(hashmap) `{}`.bump: cell type must be a user \
+                     struct; got {:?}",
+                    locus_name, other
+                )));
+            }
+        };
+        let cell_info = self
+            .user_types
+            .get(&cell_name)
+            .cloned()
+            .expect("cell type registered");
+        let indexed_by_name = slot
+            .indexed_by
+            .as_ref()
+            .expect("indexed_by set on hashmap slot")
+            .clone();
+
+        // Find the (unique) Int field that isn't the indexed-by
+        // field — that's the counter. Multiple Int fields, zero
+        // Int fields, or extra non-Int fields → reject with a
+        // pointer at the manual pattern.
+        let mut counter_field: Option<(String, u32)> = None;
+        let mut extras: Vec<String> = Vec::new();
+        for (fname, (fidx, fty)) in &cell_info.fields {
+            if *fname == indexed_by_name {
+                continue;
+            }
+            if matches!(fty, CodegenTy::Int) {
+                if counter_field.is_some() {
+                    extras.push(fname.clone());
+                } else {
+                    counter_field = Some((fname.clone(), *fidx));
+                }
+            } else {
+                extras.push(fname.clone());
+            }
+        }
+        let (counter_name, counter_idx) = match (counter_field, extras.as_slice()) {
+            (Some(c), []) => c,
+            _ => {
+                return Err(CodegenError::Unsupported(format!(
+                    "@form(hashmap) `{}`.bump: cell `{}` must have exactly \
+                     two fields — the indexed-by key (`{}`) and one Int \
+                     counter. Use the explicit has/get/set pattern for \
+                     richer cells.",
+                    locus_name, cell_name, indexed_by_name
+                )));
+            }
+        };
+
+        // Lower the key.
+        let (key_val, key_ty) = self.lower_expr(&args[0], scope)?;
+        let (key_field_idx, key_codegen_ty) = cell_info
+            .fields
+            .get(&indexed_by_name)
+            .cloned()
+            .expect("indexed_by field on cell");
+        if key_ty != key_codegen_ty {
+            return Err(CodegenError::Unsupported(format!(
+                "@form(hashmap) `{}`.bump: key arg type mismatch — \
+                 expected {:?}, got {:?}",
+                locus_name, key_codegen_ty, key_ty
+            )));
+        }
+
+        // Alloca the key on the caller frame for the C ABI calls
+        // (has + get + set all take a key pointer).
+        let key_alloca = self.alloca_for(&key_codegen_ty, "bump.key.slot")?;
+        self.builder
+            .build_store(key_alloca, key_val)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Build a fresh entry buffer in the arena, populated on
+        // both branches with the right (key, count) pair.
+        let cell_size = cell_info
+            .struct_ty
+            .size_of()
+            .expect("cell struct has known size");
+        let new_entry_ptr = self.arena_alloc(cell_size, "bump.new_entry")?;
+        let new_key_field_ptr = self
+            .builder
+            .build_struct_gep(
+                cell_info.struct_ty,
+                new_entry_ptr,
+                key_field_idx,
+                "bump.new.key.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(new_key_field_ptr, key_val)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let new_counter_field_ptr = self
+            .builder
+            .build_struct_gep(
+                cell_info.struct_ty,
+                new_entry_ptr,
+                counter_idx,
+                "bump.new.counter.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Call has(k) to decide init-vs-increment.
+        let has_fn = self
+            .module
+            .get_function("lotus_hashmap_has")
+            .expect("lotus_hashmap_has declared");
+        let has_i32 = self
+            .builder
+            .build_call(
+                has_fn,
+                &[hashmap_field_ptr.into(), key_alloca.into()],
+                "bump.has.call",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_hashmap_has returns i32")
+            .into_int_value();
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let has_i1 = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                has_i32,
+                i32_t.const_int(0, false),
+                "bump.has.bool",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let func = self
+            .current_fn
+            .expect("bump inside fn body");
+        let inc_bb = self.context.append_basic_block(func, "bump.inc");
+        let init_bb = self.context.append_basic_block(func, "bump.init");
+        let store_bb = self.context.append_basic_block(func, "bump.store");
+        self.builder
+            .build_conditional_branch(has_i1, inc_bb, init_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Increment branch: read prev counter via get; +1.
+        self.builder.position_at_end(inc_bb);
+        let prev_buf_ptr = self.arena_alloc(cell_size, "bump.prev_buf")?;
+        let get_fn = self
+            .module
+            .get_function("lotus_hashmap_get")
+            .expect("lotus_hashmap_get declared");
+        // Ignore the bool — has() said true on the same key, so
+        // get() can't miss (no concurrent mutation in v1).
+        self.builder
+            .build_call(
+                get_fn,
+                &[
+                    hashmap_field_ptr.into(),
+                    key_alloca.into(),
+                    prev_buf_ptr.into(),
+                ],
+                "bump.get.call",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let prev_counter_ptr = self
+            .builder
+            .build_struct_gep(
+                cell_info.struct_ty,
+                prev_buf_ptr,
+                counter_idx,
+                "bump.prev.counter.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let prev_count = self
+            .builder
+            .build_load(i64_t, prev_counter_ptr, "bump.prev.count")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let next_count = self
+            .builder
+            .build_int_add(prev_count, i64_t.const_int(1, true), "bump.next.count")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(new_counter_field_ptr, next_count)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(store_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Init branch: count = 1.
+        self.builder.position_at_end(init_bb);
+        self.builder
+            .build_store(new_counter_field_ptr, i64_t.const_int(1, true))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(store_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Store branch: route the populated entry through
+        // lotus_hashmap_set.
+        self.builder.position_at_end(store_bb);
+        let set_fn = self
+            .module
+            .get_function("lotus_hashmap_set")
+            .expect("lotus_hashmap_set declared");
+        self.builder
+            .build_call(
+                set_fn,
+                &[
+                    hashmap_field_ptr.into(),
+                    new_key_field_ptr.into(),
+                    new_entry_ptr.into(),
+                ],
+                "bump.set.call",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let _ = locus_self_ptr;
+        let _ = info;
+        let _ = counter_name;
+        Ok(Some(None))
     }
 
     /// v1.x-FORM-5: dispatch synthesized `@form(ring_buffer)`

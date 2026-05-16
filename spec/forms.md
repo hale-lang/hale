@@ -686,6 +686,9 @@ fn has(key: K) -> Bool                       # infallible
 fn remove(key: K) -> () fallible(KeyError)
 fn len() -> Int                              # infallible
 fn is_empty() -> Bool                        # infallible
+fn key_at(i: Int) -> K fallible(IndexError)
+fn entry_at(i: Int) -> S fallible(IndexError)
+fn bump(key: K) -> ()                        # infallible; S must be {key + Int counter}
 ```
 
 The fallible methods return the synthesized `KeyError` payload:
@@ -783,6 +786,70 @@ fn is_empty() -> Bool
 
 `len()` returns the entry count; `is_empty()` is sugar for
 `len() == 0`. Both infallible, O(1).
+
+### `key_at` and `entry_at`
+
+```
+fn key_at(i: Int) -> K fallible(IndexError)
+fn entry_at(i: Int) -> S fallible(IndexError)
+```
+
+Hash-table-order iteration (added 2026-05-16). `key_at(i)`
+returns the i-th present key; `entry_at(i)` returns the i-th
+present full entry value. Order is hash-table order (deterministic
+for a given table state, but insertion-sensitive — adding entries
+between iterations may rearrange the sequence as the table
+rehashes). For a populate-then-iterate pattern the snapshot
+order is reproducible.
+
+`IndexError` payload matches the `@form(vec).get` shape (`kind:
+String`, `index: Int`, `len: Int`). `out_of_bounds` is the only
+`kind` produced; `index < 0` or `index >= len()` triggers it.
+
+Per-call cost is O(cap) — the substrate walks the slots array
+counting occupied entries until reaching the i-th. A full sweep
+is O(cap²). Fine at small/medium scale; agents iterating
+100k+-entry tables should populate a parallel `@form(vec)`
+during inserts instead.
+
+Closes the wordfreq-corpus reinvention pattern where every
+program maintained a parallel keys vec to dodge the lack of
+iteration.
+
+### `bump`
+
+```
+fn bump(key: K) -> ()
+```
+
+Increment-or-init the Int counter field of the entry keyed by
+`key`. Collapses the canonical 6-line pattern:
+
+```aperio
+if m.has(k) {
+    let prev = m.get(k) or raise;
+    m.set(Entry { key: k, count: prev.count + 1 });
+} else {
+    m.set(Entry { key: k, count: 1 });
+}
+```
+
+into:
+
+```aperio
+m.bump(k);
+```
+
+**Cell-shape requirement.** The entry type `S` MUST have exactly
+two fields: the `indexed_by` key field plus one `Int` field
+(the counter). Any other shape (zero Int fields, two Int fields,
+or extra non-Int fields) is a codegen error pointing at the
+manual pattern. The Int field's name is detected at codegen —
+"count", "n", "freq", "hits", etc. all work.
+
+`bump` is infallible. Generalizing to arbitrary update fns
+(`update_with(k, init, fn(S) -> S)`) is the natural follow-up
+once a use case surfaces.
 
 ## Lowering strategy
 

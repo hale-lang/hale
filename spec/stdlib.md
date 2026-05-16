@@ -355,11 +355,11 @@ tree. Quick reference grouped by `std::*` namespace prefix:
 | Namespace | Surface (shipped) | Source |
 |---|---|---|
 | `std::process` | `pid() -> Int`, `exit(code: Int)` | path-call dispatch in `aperio-codegen` |
-| `std::env` | `args_count()`, `arg(i)`, `var(name)`, `var_exists(name)` | path-call dispatch + main-prelude argv stash |
+| `std::env` | `args_count()`, `arg(i)`, `arg_or(i, default)`, `var(name)`, `var_exists(name)` | path-call dispatch + main-prelude argv stash |
 | `std::time` | `monotonic() -> Duration`, `sleep(d: Duration)` | `clock_gettime(CLOCK_MONOTONIC)` + EINTR-retrying `clock_nanosleep` |
 | `std::str` | `parse_int` / `can_parse_int` / `parse_float` / `can_parse_float`, `index_of`, `lower` / `upper`, `trim`, `replace`, `repeat`, `pad_left` / `pad_right`, `from_bytes`, `builder_new` / `builder_append` / `builder_len` / `builder_finish` | `lotus_str_*` C runtime primitives |
 | `std::bytes` | `at(b, i) -> Int fallible(IndexError)`, `slice(b, lo, hi) -> Bytes`, `from_string(s) -> Bytes` | `lotus_bytes_*` C runtime primitives |
-| `std::text` | `md_to_html(md) -> String`, `base64::encode` / `base64::decode`, `Sink` interface + `StdoutSink` / `StringSink` / `FileSink` loci | `runtime/stdlib/text.ap` + C runtime |
+| `std::text` | `md_to_html(md) -> String`, `base64::encode` / `base64::decode`, `Sink` interface + `StdoutSink` / `StringSink` / `FileSink` loci, byte-class predicates `is_alpha` / `is_digit` / `is_alnum` / `is_whitespace` / `is_word_char`, `tokenize_words_into(s, target_vec)` | `runtime/stdlib/text.ap` + C runtime |
 | `std::io::fs` | `read_file`, `write_file`, `write_file_append`, `read_bytes`, `file_size`, `mkdir`, `list_dir`, `list_dir_count`, `list_dir_at` — all `fallible(IoError)`. `file_exists(path) -> Bool` (predicate, not failable). | `lotus_fs_*` C runtime primitives |
 | `std::io::stdin` | `read_line() -> String`, `read_line_status() -> Int` | `lotus_stdin_*` C runtime primitives (POSIX `getline` + payload-arena copy) |
 | `std::io::tcp` | `Listener` locus, `Stream` locus, `send`, `send_bytes`, `recv_bytes`. Path-calls `listen_socket`, `connect`, `accept_one` are `fallible(IoError)`. | `lotus_tcp_*` C runtime primitives |

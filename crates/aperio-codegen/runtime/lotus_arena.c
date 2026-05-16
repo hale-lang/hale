@@ -1131,6 +1131,112 @@ int lotus_hashmap_is_empty(void *map_ptr) {
     return m->len == 0 ? 1 : 0;
 }
 
+/* Hash-table-order iteration. Walk the slots array counting
+ * occupied entries; on the i-th occupied slot copy out the key
+ * (or value/entry) and return 1. Returns 0 if i is out of range
+ * (i < 0 || i >= len).
+ *
+ * Order is hash-table order (insertion-affected but stable for
+ * a given table state). For "populate then iterate" patterns
+ * the snapshot order is reproducible; mixing iteration with
+ * mutation will see shifting order after a rehash. Per-call
+ * cost is O(cap), so a full sweep is O(cap²) — fine at small/
+ * medium scale, watch out at 100k+ entries.
+ */
+/* 2026-05-16: word-tokenize a C-string into a @form(vec) of
+ * String. A "word" is a maximal run of bytes for which
+ * is_word_char (alpha + digit + underscore + apostrophe) is
+ * true; whitespace and punctuation are delimiters. Each token is
+ * lower-cased (canonical agent intent for wordfreq-style work)
+ * and arena-allocated as a NUL-terminated C string; the pointer
+ * is pushed into the target vec via lotus_vec_push.
+ *
+ * Caller is responsible for passing an empty (or otherwise
+ * reusable) target vec; the primitive does NOT clear it.
+ */
+static int lotus_text_is_word_byte(unsigned char c) {
+    return (c >= 'a' && c <= 'z')
+        || (c >= 'A' && c <= 'Z')
+        || (c >= '0' && c <= '9')
+        || c == '_'
+        || c == '\'';
+}
+
+void lotus_text_tokenize_words_into(
+    void *target_vec,
+    const char *src,
+    void *arena_ptr,
+    int lowercase
+) {
+    if (!target_vec || !src) return;
+    lotus_arena_t *arena = (lotus_arena_t *)arena_ptr;
+    size_t i = 0;
+    while (src[i]) {
+        /* Skip non-word bytes. */
+        while (src[i] && !lotus_text_is_word_byte((unsigned char)src[i])) {
+            i++;
+        }
+        if (!src[i]) break;
+        size_t start = i;
+        while (src[i] && lotus_text_is_word_byte((unsigned char)src[i])) {
+            i++;
+        }
+        size_t tok_len = i - start;
+        /* Arena-allocate tok_len + 1 bytes for NUL termination. */
+        char *tok = (char *)lotus_arena_alloc(arena, tok_len + 1, 1);
+        if (!tok) return;
+        memcpy(tok, src + start, tok_len);
+        if (lowercase) {
+            for (size_t j = 0; j < tok_len; j++) {
+                if (tok[j] >= 'A' && tok[j] <= 'Z') tok[j] += 32;
+            }
+        }
+        tok[tok_len] = '\0';
+        /* Push the pointer (sizeof(char*) = sizeof(void*) = 8 on
+         * 64-bit). lotus_vec_push memcpys `es` bytes from the
+         * source; we point at &tok which is a stack temporary
+         * whose address is fine across the call. */
+        char *tok_ptr_for_push = tok;
+        lotus_vec_push(target_vec, sizeof(char *), &tok_ptr_for_push);
+    }
+}
+
+int lotus_hashmap_key_at(void *map_ptr, int64_t i, void *out_key) {
+    if (!map_ptr || !out_key || i < 0) return 0;
+    lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
+    if ((size_t)i >= m->len) return 0;
+    size_t es = lotus_hashmap_entry_size(m);
+    size_t seen = 0;
+    for (size_t s = 0; s < m->cap; s++) {
+        char *slot = m->slots + s * es;
+        if (!slot[0]) continue;
+        if (seen == (size_t)i) {
+            memcpy(out_key, slot + 1, m->key_size);
+            return 1;
+        }
+        seen++;
+    }
+    return 0;
+}
+
+int lotus_hashmap_value_at(void *map_ptr, int64_t i, void *out_value) {
+    if (!map_ptr || !out_value || i < 0) return 0;
+    lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
+    if ((size_t)i >= m->len) return 0;
+    size_t es = lotus_hashmap_entry_size(m);
+    size_t seen = 0;
+    for (size_t s = 0; s < m->cap; s++) {
+        char *slot = m->slots + s * es;
+        if (!slot[0]) continue;
+        if (seen == (size_t)i) {
+            memcpy(out_value, slot + 1 + m->key_size, m->value_size);
+            return 1;
+        }
+        seen++;
+    }
+    return 0;
+}
+
 void lotus_hashmap_destroy(void *map_ptr) {
     if (!map_ptr) return;
     lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
