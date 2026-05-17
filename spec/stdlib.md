@@ -376,8 +376,8 @@ tree. Quick reference grouped by `std::*` namespace prefix:
 | `std::io::fs` | `read_file`, `write_file`, `write_file_append`, `read_bytes`, `file_size`, `mkdir`, `list_dir`, `list_dir_count`, `list_dir_at` — all `fallible(IoError)`. `file_exists(path) -> Bool` (predicate, not failable). | `lotus_fs_*` C runtime primitives |
 | `std::io::stdin` | `read_line() -> String`, `read_line_status() -> Int` | `lotus_stdin_*` C runtime primitives (POSIX `getline` + payload-arena copy) |
 | `std::io::tcp` | `Listener` locus, `Stream` locus, `send`, `send_bytes`, `recv_bytes`. Path-calls `listen_socket`, `connect`, `accept_one` are `fallible(IoError)`. | `lotus_tcp_*` C runtime primitives |
-| `std::http` | `Request` + `Response` types (`Response.content_type` defaults to `"text/plain"`), `parse_request`, `write_response`, case-insensitive `header` lookup, `Handler` interface (`fn handle(req: Request) -> Response`), `Server` locus (accept loop dispatches each request to a `Handler`-typed locus's `handle` method — state lives on the handler's params; `handler:` is a required field on `Server`, no default) | `runtime/stdlib/http.ap` |
-| `std::json` | `Builder` locus (output assembly), `escape_string` / `unescape_string` (RFC 8259 string escaping), `find_string_field` / `find_int_field` / `find_bool_field` (flat-object field lookup), `ArrayIter` + `array_first` / `array_next` (flat-array iteration). No nested-tree shape at v1. | `runtime/stdlib/json.ap` |
+| `std::http` | `Request` + `Response` types (`Response.content_type` defaults to `"text/plain"`), `parse_request`, `write_response`, case-insensitive `header` lookup, `Handler` interface (`fn handle(req: Request) -> Response`), `Server` locus (accept loop dispatches each request to a `Handler`-typed locus's `handle` method — state lives on the handler's params; `handler:` is a required field on `Server`, no default; optional `ready_signal: String = ""` prints a sync line to stdout after `listen()` succeeds) | `runtime/stdlib/http.ap` |
+| `std::json` | `Builder` locus (streaming output assembly: `begin_object` / `end_object` / `begin_array` / `end_array`, `field` / `string_field` / `int_field` / `bool_field` / `null_field`, `value` / `string_value` / `int_value` / `bool_value` / `null_value`, `begin_object_field` / `begin_array_field`, `result() -> String`), `escape_string` / `unescape_string` (RFC 8259 string escaping), `find_string_field` / `find_int_field` / `find_bool_field` (flat-object field lookup), `ArrayIter` + `array_first` / `array_next` (flat-array iteration). No nested-tree shape at v1. | `runtime/stdlib/json.ap` |
 | `std::test` | `assert(cond, msg)`, `assert_eq_int`, `assert_eq_str` | `runtime/stdlib/test.ap` |
 | `std::log` | `Logger`, `LogEvent`, `StdoutSink` (subscribes `log.**`) | `runtime/stdlib/log.ap` |
 | `std::math` | `sqrt`, `exp`, `log`, `floor`, `ceil`, `pow` | path-call dispatch into libm |
@@ -466,6 +466,7 @@ the top level.
 | `@form(hashmap)`      | `KeyError`       | `kind: String` |
 | `@form(ring_buffer)`  | `EmptyError`     | `kind: String` |
 | `std::io::fs` / `std::io::tcp` | `IoError` | `kind: String`, `errno: Int`, `path: String` |
+| `std::str::parse_int` / `parse_float` | `ParseError` | `kind: String`, `input: String` |
 
 Idempotency: if a user / library declares a type with the same
 name, the user declaration wins. The injection only runs if the
@@ -511,6 +512,97 @@ were blocked twice: (a) `IoError` didn't exist, (b) `or` over a
 Path callee didn't codegen. Both gaps closed together — `or` now
 accepts Path callees and the IoError synth wraps every flipped
 path-call's sentinel return into a typed payload.
+
+### `ParseError` — string→number failure payload (2026-05-17)
+
+`std::str::parse_int(s)` and `std::str::parse_float(s)` return
+`fallible(ParseError)`. The non-fallible siblings were removed —
+every call site must address the failure with `or`. `ParseError`
+carries:
+
+- `kind: String` — `"empty"` (s was `""`), `"trailing_chars"` (s
+  parsed a prefix and had junk after), `"invalid"` (no leading
+  numeric prefix), `"overflow"` (parse_int only — magnitude exceeds
+  Int range).
+- `input: String` — the original `s` (truncated to a reasonable
+  preview if very long), for diagnostic surfaces.
+
+```aperio
+let n = std::str::parse_int(s) or 0;
+let n = std::str::parse_int(s) or raise;
+let n = std::str::parse_int(s) or self.report(err);
+```
+
+Reach for the predicate sibling `can_parse_int(s) -> Bool` only
+when you genuinely want to branch *before* parsing rather than
+parse-and-substitute. In most cases `or` is shorter.
+
+### `Server.ready_signal` — synchronization for piped oracles (2026-05-17)
+
+`std::http::Server` accepts an optional `ready_signal: String = ""`
+param. When non-empty, the server emits it via `println` from
+`birth()` immediately after `listen_socket` succeeds and before
+the accept loop begins. Test harnesses, oracles, and shell
+scripts that pipe the server's stdout (`./bin | grep -m1 READY`)
+key off this line:
+
+```aperio
+std::http::Server {
+    port: 8080,
+    handler: Routes { },
+    ready_signal: "READY"
+};
+```
+
+Pair with the line-buffered stdout setup (`spec/runtime.md` §
+"stdout buffering") — the prelude installs `setvbuf(stdout, NULL,
+_IOLBF, 0)` so a single `println` is flushed even under pipes.
+Without that, the READY line would sit in libc's full-buffer
+queue while `accept()` blocked, and the oracle would hang.
+
+### `std::json::Builder` — streaming output API (2026-05-17)
+
+`Builder` is a `@form(...)`-less locus that accumulates a JSON
+document into an internal `buf: String` via append. It tracks
+scope state in a single `ctx: String` stack (one char per open
+scope: `O`/`A` for object/array with at least one value already
+emitted, `o`/`a` for empty). The Builder inserts separators
+(`,` between siblings, `:` between key and value) automatically
+based on context.
+
+Methods, grouped:
+
+- **Scopes:** `begin_object()`, `end_object()`, `begin_array()`,
+  `end_array()`.
+- **Object entries (key + value in one call):** `field(name, value)`
+  for the common string case; `string_field`, `int_field`,
+  `bool_field`, `null_field` for explicit typing.
+- **Array entries / bare values:** `value(v)` (string), plus
+  `string_value`, `int_value`, `bool_value`, `null_value`.
+- **Nested scopes inside an object:** `begin_object_field(name)`
+  / `begin_array_field(name)` — emit `"name":` then open the
+  sub-scope, so the caller can recurse without juggling
+  separators.
+- **Finish:** `result() -> String` returns the assembled buffer.
+
+```aperio
+let b = std::json::Builder { };
+b.begin_object();
+b.field("name", "alice");
+b.int_field("age", 30);
+b.begin_array_field("tags");
+b.value("admin"); b.value("ops");
+b.end_array();
+b.end_object();
+let out = b.result();   // {"name":"alice","age":30,"tags":["admin","ops"]}
+```
+
+The Builder pairs with `escape_string` for raw-untyped writes
+(`b.buf = b.buf + std::json::escape_string(s)` is permitted but
+defeats the separator tracking — prefer the typed setters). The
+flat-object readers (`find_*_field`, `array_first/next`) are
+the input side of the same v1 commitment: JSON is a wire format,
+not a tree value type, and the API surface reflects that.
 
 ## Why batteries-included
 
