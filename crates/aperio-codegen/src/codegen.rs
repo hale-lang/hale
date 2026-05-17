@@ -3195,6 +3195,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function("floor", math_unary_ty, None);
         self.module.add_function("ceil", math_unary_ty, None);
         self.module.add_function("pow", math_binary_ty, None);
+
+        // C8 (pond follow-up): IEEE 754 surface — tanh + NaN /
+        // inf sentinels + `is_nan` predicate. `tanh` resolves
+        // through a direct LLVM extern (mirroring sqrt / exp /
+        // log / floor / ceil / pow above) rather than a C-runtime
+        // wrapper — that keeps libm an *on-demand* dependency
+        // (any binary that doesn't actually call tanh from
+        // user code stays free of the unresolved libm reference,
+        // which matters for the test helper binaries that link
+        // lotus_arena.c without `-lm`). `nan` / `inf` / `is_nan`
+        // are wrapped as `lotus_math_*` C primitives because they
+        // don't reference libm at all — they use `<math.h>`
+        // compile-time macros + the `f != f` test. `nan` / `inf`
+        // are nullary; `is_nan` returns i32 (0/1), truncated to
+        // i1 at the call site mirroring the file_exists pattern.
+        // Resolves the pond/ml/neural hand-rolled tanh + pond/
+        // math/matrix synthesised NaN sentinels.
+        // declare double @tanh(double)
+        self.module.add_function("tanh", math_unary_ty, None);
+        // declare double @lotus_math_nan()
+        // declare double @lotus_math_inf()
+        let math_nullary_f64_ty = f64_t.fn_type(&[], false);
+        self.module
+            .add_function("lotus_math_nan", math_nullary_f64_ty, None);
+        self.module
+            .add_function("lotus_math_inf", math_nullary_f64_ty, None);
+        // declare i32 @lotus_math_is_nan(double)
+        let i32_t = self.context.i32_type();
+        let math_is_nan_ty = i32_t.fn_type(&[f64_t.into()], false);
+        self.module
+            .add_function("lotus_math_is_nan", math_is_nan_ty, None);
     }
 
     /// Mark the program as containing at least one `bus subscribe`
@@ -11656,6 +11687,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | ["std", "math", "floor"]
             | ["std", "math", "ceil"]
             | ["std", "math", "pow"]
+            | ["std", "math", "tanh"]
+            | ["std", "math", "nan"]
+            | ["std", "math", "inf"]
+            | ["std", "math", "is_nan"]
             | ["std", "io", "fs", "file_exists"]
             | ["std", "io", "tcp", "close_fd"]
             | ["std", "io", "stdin", "read_line"]
@@ -21007,6 +21042,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "math", "pow"] => {
                 self.lower_std_math_binary("pow", args, scope)
             }
+            // C8 (pond follow-up): IEEE 754 surface.
+            // tanh is a direct libm extern (same shape as sqrt /
+            // exp / log / floor / ceil / pow). nan / inf are
+            // nullary sentinels via lotus_math_* C wrappers (no
+            // libm dependency at link time). is_nan returns Bool
+            // through lotus_math_is_nan (canonical f != f test).
+            ["std", "math", "tanh"] => {
+                self.lower_std_math_unary("tanh", args, scope)
+            }
+            ["std", "math", "nan"] => self.lower_std_math_nullary_float(
+                "lotus_math_nan",
+                "nan",
+                args,
+            ),
+            ["std", "math", "inf"] => self.lower_std_math_nullary_float(
+                "lotus_math_inf",
+                "inf",
+                args,
+            ),
+            ["std", "math", "is_nan"] => {
+                self.lower_std_math_is_nan(args, scope)
+            }
             // 2026-05-16: std::text byte-class predicates. Each
             // takes a byte value (Int) and returns Bool. Inline
             // range checks — no libc dependency, no C primitive,
@@ -21230,6 +21287,85 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .left()
             .expect("libm unary returns f64");
         Ok((result, CodegenTy::Float))
+    }
+
+    /// C8 (pond follow-up): nullary Float-returning math
+    /// primitive. Used for `std::math::nan()` and
+    /// `std::math::inf()`. Routes to a `lotus_math_*` C-runtime
+    /// wrapper rather than emitting an LLVM `fdiv 0.0/0.0` (for
+    /// nan) or the largest f64 constant (for inf) so the surface
+    /// is one consistent symbol family with `tanh` / `is_nan`,
+    /// and so behavior matches C's NAN / INFINITY macros across
+    /// host platforms. IEEE 754 quiet-NaN semantics in both cases.
+    fn lower_std_math_nullary_float(
+        &mut self,
+        sym: &str,
+        surface_name: &str,
+        args: &[Expr],
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if !args.is_empty() {
+            return Err(CodegenError::Unsupported(format!(
+                "std::math::{} takes 0 arguments, got {}",
+                surface_name,
+                args.len()
+            )));
+        }
+        let func = self
+            .module
+            .get_function(sym)
+            .expect("lotus_math_nan / lotus_math_inf declared in declare_builtins");
+        let call = self
+            .builder
+            .build_call(func, &[], &format!("std::math::{}.call", surface_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let result = call
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_math_nan / lotus_math_inf returns f64");
+        Ok((result, CodegenTy::Float))
+    }
+
+    /// C8 (pond follow-up): `std::math::is_nan(f: Float) -> Bool`.
+    /// Canonical IEEE 754 NaN test (`f != f`). C primitive returns
+    /// i32 (0/1); truncated to i1 here via the same compare-to-
+    /// zero pattern `lotus_fs_file_exists` uses.
+    fn lower_std_math_is_nan(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::math::is_nan takes 1 argument, got {}",
+                args.len()
+            )));
+        }
+        let (v, ty) = self.lower_expr(&args[0], scope)?;
+        let f = self.coerce_to_float(v, &ty, "std::math::is_nan")?;
+        let func = self
+            .module
+            .get_function("lotus_math_is_nan")
+            .expect("lotus_math_is_nan declared in declare_builtins");
+        let call = self
+            .builder
+            .build_call(func, &[f.into()], "std::math::is_nan.call")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ret_i32 = call
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_math_is_nan returns i32")
+            .into_int_value();
+        let i32_t = self.context.i32_type();
+        let ret_bool = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                ret_i32,
+                i32_t.const_zero(),
+                "is_nan.bool",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((ret_bool.into(), CodegenTy::Bool))
     }
 
     /// std::math::pow — two Float args → Float result. Same

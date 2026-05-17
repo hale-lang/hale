@@ -47,6 +47,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <math.h>
 
 /* Default chunk size: 64KB. Big enough that most loci fit in
  * one chunk, small enough that a leaf locus that allocates a
@@ -5298,4 +5299,42 @@ void lotus_root_panic(
     const char *tn = payload_typename ? payload_typename : "<unknown>";
     dprintf(2, "Aperio panic: unhandled %s escaping main locus\n", tn);
     exit(1);
+}
+
+/*
+ * C8 (pond follow-up): IEEE 754 sentinel / classification helpers.
+ * Back `std::math::{nan, is_nan, inf}`. `std::math::tanh` does NOT
+ * have a wrapper here — it resolves through a direct LLVM extern
+ * (mirroring `sqrt` / `exp` / `log` / `floor` / `ceil` / `pow`) so
+ * binaries that don't actually call `tanh` aren't burdened with
+ * an unresolved libm reference (test helper binaries — bus_config,
+ * transport, etc. — link `lotus_arena.c` without `-lm`, so any
+ * libm symbol referenced from this file at compile time becomes
+ * an unconditional load-bearing dependency).
+ *
+ * `nan` / `inf` / `is_nan` are SAFE here: they reference only the
+ * `<math.h>` macros `NAN` / `INFINITY` (compile-time constants)
+ * and the canonical `f != f` test, none of which touch libm at
+ * link time.
+ *
+ * NaN-printing is platform-dependent (`nan` / `NaN` / `-nan` via
+ * printf %g); agents test for NaN via `is_nan(x)`, not by
+ * comparing the printed value. Driven by pond/ml/neural
+ * (hand-rolled tanh from exp) and pond/math/matrix (synthesizes
+ * `nan_sentinel()` as `0.0/0.0` and `is_nan(f)` as `f != f`).
+ */
+double lotus_math_nan(void) {
+    return (double)NAN;
+}
+
+double lotus_math_inf(void) {
+    return (double)INFINITY;
+}
+
+/* Canonical IEEE 754 NaN test: a quiet NaN is the only value
+ * that is not equal to itself. Returns 1 if `f` is NaN, 0
+ * otherwise. Lowers as i1 on the LLVM side via the truncation
+ * pattern lotus_fs_file_exists uses for its 0/1 -> Bool. */
+int lotus_math_is_nan(double f) {
+    return f != f ? 1 : 0;
 }

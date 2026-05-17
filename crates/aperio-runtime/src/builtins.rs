@@ -725,6 +725,27 @@ pub fn resolve_path(segments: &[&str]) -> Option<Value> {
             name: "std::math::pow",
             func: Rc::new(std_math_pow),
         })),
+        // C8 (pond follow-up): IEEE 754 surface — `tanh`,
+        // `nan()`, `inf()`, `is_nan(f)`. Parity with codegen
+        // dispatch in `lower_stdlib_path_call_expr`. NaN /
+        // inf return f64::NAN / f64::INFINITY; is_nan delegates
+        // to f64::is_nan (which is the IEEE 754 `f != f` test).
+        ["std", "math", "tanh"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::math::tanh",
+            func: Rc::new(std_math_tanh),
+        })),
+        ["std", "math", "nan"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::math::nan",
+            func: Rc::new(std_math_nan),
+        })),
+        ["std", "math", "inf"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::math::inf",
+            func: Rc::new(std_math_inf),
+        })),
+        ["std", "math", "is_nan"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::math::is_nan",
+            func: Rc::new(std_math_is_nan),
+        })),
         // 2026-05-16: std::text byte-class predicates. Each
         // takes a single byte (Int) and returns Bool. Parity
         // with the inline LLVM lowering in codegen.
@@ -1858,4 +1879,43 @@ fn std_math_pow(args: &[Value]) -> Result<Value, String> {
     let b = float_arg(&args[0], "pow")?;
     let e = float_arg(&args[1], "pow")?;
     Ok(Value::Float(b.powf(e)))
+}
+
+// C8 (pond follow-up): IEEE 754 surface — interpreter parity for
+// `std::math::{tanh, nan, is_nan, inf}`. Routes through Rust's
+// f64 methods (tanh / NAN / INFINITY / is_nan) which match libm
+// + the C runtime wrappers in lotus_arena.c.
+fn std_math_tanh(args: &[Value]) -> Result<Value, String> {
+    unary_math(args, "tanh", f64::tanh)
+}
+
+fn std_math_nan(args: &[Value]) -> Result<Value, String> {
+    if !args.is_empty() {
+        return Err(format!(
+            "std::math::nan takes 0 args, got {}",
+            args.len()
+        ));
+    }
+    Ok(Value::Float(f64::NAN))
+}
+
+fn std_math_inf(args: &[Value]) -> Result<Value, String> {
+    if !args.is_empty() {
+        return Err(format!(
+            "std::math::inf takes 0 args, got {}",
+            args.len()
+        ));
+    }
+    Ok(Value::Float(f64::INFINITY))
+}
+
+fn std_math_is_nan(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::math::is_nan takes 1 arg, got {}",
+            args.len()
+        ));
+    }
+    let f = float_arg(&args[0], "is_nan")?;
+    Ok(Value::Bool(f.is_nan()))
 }
