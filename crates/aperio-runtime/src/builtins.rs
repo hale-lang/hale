@@ -620,6 +620,25 @@ pub fn resolve_path(segments: &[&str]) -> Option<Value> {
             name: "std::str::builder_finish",
             func: Rc::new(std_str_builder_finish),
         })),
+        // C10 (pond follow-up): binary-safe builder. Same shape as
+        // the str-builder but the chunk arg is Bytes and finish
+        // returns Bytes — embedded NULs survive end-to-end.
+        ["std", "bytes", "builder_new"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::bytes::builder_new",
+            func: Rc::new(std_bytes_builder_new),
+        })),
+        ["std", "bytes", "builder_append"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::bytes::builder_append",
+            func: Rc::new(std_bytes_builder_append),
+        })),
+        ["std", "bytes", "builder_len"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::bytes::builder_len",
+            func: Rc::new(std_bytes_builder_len),
+        })),
+        ["std", "bytes", "builder_finish"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::bytes::builder_finish",
+            func: Rc::new(std_bytes_builder_finish),
+        })),
         // v1.x: stdin line reader. Trailing newline stripped;
         // empty string returned on EOF / error. Programs that
         // need to distinguish EOF from an empty input line drive
@@ -1226,6 +1245,117 @@ fn std_str_builder_finish(args: &[Value]) -> Result<Value, String> {
         }
         other => Err(format!(
             "std::str::builder_finish: handle must be a builder, got {}",
+            other.type_name()
+        )),
+    }
+}
+
+/// C10 (pond follow-up): interpreter parity for the binary-safe
+/// builder. Same shape as std::str::builder_* but the chunk is
+/// Bytes (binary-safe Vec<u8>) and finish returns Bytes, so
+/// embedded NULs survive end-to-end. Handle representation
+/// (one-element Array wrapping the accumulating Bytes buffer)
+/// is shared with the str-builder — the only difference is
+/// what append/finish do.
+fn std_bytes_builder_new(args: &[Value]) -> Result<Value, String> {
+    if !args.is_empty() {
+        return Err(format!(
+            "std::bytes::builder_new expects 0 args, got {}",
+            args.len()
+        ));
+    }
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let inner = Rc::new(RefCell::new(vec![Value::Bytes(Vec::new())]));
+    Ok(Value::Array(inner))
+}
+
+fn std_bytes_builder_append(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!(
+            "std::bytes::builder_append expects 2 args, got {}",
+            args.len()
+        ));
+    }
+    let handle = match &args[0] {
+        Value::Array(a) => a.clone(),
+        other => {
+            return Err(format!(
+                "std::bytes::builder_append: handle must be a builder, got {}",
+                other.type_name()
+            ));
+        }
+    };
+    let chunk = match &args[1] {
+        Value::Bytes(b) => b.clone(),
+        other => {
+            return Err(format!(
+                "std::bytes::builder_append: chunk must be Bytes, got {}",
+                other.type_name()
+            ));
+        }
+    };
+    {
+        let mut a = handle.borrow_mut();
+        let buf = match a.get_mut(0) {
+            Some(Value::Bytes(buf)) => buf,
+            _ => {
+                return Err(
+                    "std::bytes::builder_append: corrupt builder handle"
+                        .to_string(),
+                )
+            }
+        };
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(Value::Array(handle))
+}
+
+fn std_bytes_builder_len(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::bytes::builder_len expects 1 arg, got {}",
+            args.len()
+        ));
+    }
+    match &args[0] {
+        Value::Array(a) => {
+            let a = a.borrow();
+            if let Some(Value::Bytes(buf)) = a.get(0) {
+                Ok(Value::Int(buf.len() as i64))
+            } else {
+                Err("std::bytes::builder_len: corrupt builder handle".to_string())
+            }
+        }
+        other => Err(format!(
+            "std::bytes::builder_len: handle must be a builder, got {}",
+            other.type_name()
+        )),
+    }
+}
+
+fn std_bytes_builder_finish(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::bytes::builder_finish expects 1 arg, got {}",
+            args.len()
+        ));
+    }
+    match &args[0] {
+        Value::Array(a) => {
+            let mut a = a.borrow_mut();
+            if let Some(Value::Bytes(buf)) = a.get_mut(0) {
+                // No NUL trailer — Bytes is length-prefixed,
+                // embedded NULs survive verbatim.
+                let owned = std::mem::take(buf);
+                Ok(Value::Bytes(owned))
+            } else {
+                Err("std::bytes::builder_finish: corrupt builder handle"
+                    .to_string())
+            }
+        }
+        other => Err(format!(
+            "std::bytes::builder_finish: handle must be a builder, got {}",
             other.type_name()
         )),
     }

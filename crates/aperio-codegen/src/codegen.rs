@@ -3150,6 +3150,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
+        // C10 (pond follow-up): binary-safe builder. Same shape as
+        // the str-builder above but the chunk arg is a Bytes blob
+        // (read via the `[i64 len]` prefix so embedded NULs survive)
+        // and finish() returns a Bytes blob (no trailing NUL).
+        // Handle stays a `ptr` carried as Bytes in the Aperio
+        // surface, matching the str-builder ergonomic.
+        // declare ptr @lotus_bytes_builder_new(void)
+        let bb_new_ty = ptr_t.fn_type(&[], false);
+        self.module
+            .add_function("lotus_bytes_builder_new", bb_new_ty, None);
+        // declare void @lotus_bytes_builder_append(ptr handle, ptr chunk)
+        let bb_append_ty = self
+            .context
+            .void_type()
+            .fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_bytes_builder_append",
+            bb_append_ty,
+            None,
+        );
+        // declare i64 @lotus_bytes_builder_len(ptr handle)
+        let bb_len_ty = i64_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_bytes_builder_len", bb_len_ty, None);
+        // declare ptr @lotus_bytes_builder_finish(ptr handle)
+        let bb_finish_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_bytes_builder_finish",
+            bb_finish_ty,
+            None,
+        );
+
         // m96: tree-sitter substrate. extern "C" symbols defined
         // in `runtime/lotus_treesitter.rs` (compiled into the
         // sibling `aperio-ts-shim` staticlib). The link step
@@ -11704,6 +11736,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | ["std", "str", "builder_append"]
             | ["std", "str", "builder_len"]
             | ["std", "str", "builder_finish"]
+            | ["std", "bytes", "builder_new"]
+            | ["std", "bytes", "builder_append"]
+            | ["std", "bytes", "builder_len"]
+            | ["std", "bytes", "builder_finish"]
             | ["std", "math", "sqrt"]
             | ["std", "math", "exp"]
             | ["std", "math", "log"]
@@ -20490,6 +20526,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_str_builder_finish(args, scope)?;
                 Ok(())
             }
+            // C10 (pond follow-up): binary-safe builder.
+            ["std", "bytes", "builder_new"] => {
+                let _ = self.lower_std_bytes_builder_new(args)?;
+                Ok(())
+            }
+            ["std", "bytes", "builder_append"] => {
+                let _ = self.lower_std_bytes_builder_append(args, scope)?;
+                Ok(())
+            }
+            ["std", "bytes", "builder_len"] => {
+                let _ = self.lower_std_bytes_builder_len(args, scope)?;
+                Ok(())
+            }
+            ["std", "bytes", "builder_finish"] => {
+                let _ = self.lower_std_bytes_builder_finish(args, scope)?;
+                Ok(())
+            }
             // m84: parse_request also reachable in statement
             // position (rare — usually you keep the result), but
             // wire it for completeness so `std::http::parse_request(raw);`
@@ -20962,6 +21015,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "str", "builder_finish"] => {
                 self.lower_std_str_builder_finish(args, scope)
+            }
+            // C10 (pond follow-up): binary-safe builder.
+            ["std", "bytes", "builder_new"] => {
+                self.lower_std_bytes_builder_new(args)
+            }
+            ["std", "bytes", "builder_append"] => {
+                self.lower_std_bytes_builder_append(args, scope)
+            }
+            ["std", "bytes", "builder_len"] => {
+                self.lower_std_bytes_builder_len(args, scope)
+            }
+            ["std", "bytes", "builder_finish"] => {
+                self.lower_std_bytes_builder_finish(args, scope)
             }
             // m84: std::http::parse_request(raw: String) -> Request.
             // Implementation lives in stdlib.ap as the bare-name
@@ -22312,6 +22378,160 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .left()
             .expect("returns ptr");
         Ok((ptr, CodegenTy::String))
+    }
+
+    /// C10 (pond follow-up): `std::bytes::builder_new() -> Bytes`.
+    /// Allocates a doubling-realloc-backed buffer; Bytes is the
+    /// carrier type for the opaque handle, matching the str-builder
+    /// ergonomic. The append chunk and the finish result are both
+    /// Bytes-shaped (length-prefixed) so embedded NULs survive the
+    /// round-trip — pond/http/client + pond/agent/llm wanted this
+    /// shape for chunked message-body accumulation.
+    fn lower_std_bytes_builder_new(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if !args.is_empty() {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder_new takes 0 args, got {}",
+                args.len()
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bytes_builder_new")
+            .expect("lotus_bytes_builder_new declared");
+        let call = self
+            .builder
+            .build_call(f, &[], "bb.new.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::Bytes))
+    }
+
+    /// C10 (pond follow-up): `std::bytes::builder_append(b: Bytes,
+    /// chunk: Bytes) -> Bytes`. Mutates the builder in place,
+    /// returns the same handle so fluent chaining works
+    /// (`let b2 = builder_append(b, chunk);`). The C side reads
+    /// `chunk`'s `[i64 len]` prefix — no strlen, so embedded NULs
+    /// are appended verbatim.
+    fn lower_std_bytes_builder_append(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder_append takes 2 args (b, chunk), got {}",
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder_append: builder must be Bytes \
+                 (from builder_new), got {:?}",
+                b_ty
+            )));
+        }
+        let (chunk_val, chunk_ty) = self.lower_expr(&args[1], scope)?;
+        if chunk_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder_append: chunk must be Bytes, got \
+                 {:?} (use `std::bytes::from_string(s)` to convert)",
+                chunk_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bytes_builder_append")
+            .expect("lotus_bytes_builder_append declared");
+        self.builder
+            .build_call(
+                f,
+                &[b_val.into(), chunk_val.into()],
+                "bb.append",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((b_val, CodegenTy::Bytes))
+    }
+
+    /// C10 (pond follow-up): `std::bytes::builder_len(b: Bytes) ->
+    /// Int`. Inspect the running byte count without materializing
+    /// the final Bytes blob.
+    fn lower_std_bytes_builder_len(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder_len takes 1 arg (b), got {}",
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder_len: builder must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bytes_builder_len")
+            .expect("lotus_bytes_builder_len declared");
+        let call = self
+            .builder
+            .build_call(f, &[b_val.into()], "bb.len.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let v = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((v, CodegenTy::Int))
+    }
+
+    /// C10 (pond follow-up): `std::bytes::builder_finish(b: Bytes)
+    /// -> Bytes`. Materializes the accumulated body as a
+    /// `[i64 len][u8 data[len]]` blob in the bus payload arena
+    /// (lives for the rest of the program) and frees the builder.
+    /// The handle must NOT be reused after finish. No trailing NUL
+    /// — Bytes is length-prefixed, so embedded NULs survive.
+    fn lower_std_bytes_builder_finish(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder_finish takes 1 arg (b), got {}",
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder_finish: builder must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bytes_builder_finish")
+            .expect("lotus_bytes_builder_finish declared");
+        let call = self
+            .builder
+            .build_call(f, &[b_val.into()], "bb.finish.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::Bytes))
     }
 
     /// v1.x-16: `std::str::can_parse_float(s: String) -> Bool`.

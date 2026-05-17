@@ -5597,6 +5597,112 @@ const char *lotus_str_builder_finish(void *handle) {
 }
 
 /*
+ * C10 (pond follow-up): binary-safe builder mirroring
+ * lotus_str_builder_* but using the Bytes ABI on both sides.
+ *
+ * The underlying buffer struct is identical to lotus_str_builder_t
+ * (cap / len / buf) — append is just memcpy with no NUL discipline,
+ * so the struct definition is shared. The split is in *what is
+ * being appended* and *what finish returns*:
+ *
+ *   str_builder:   appends a C string (strlen the chunk),
+ *                  finish returns a NUL-terminated String pointer.
+ *   bytes_builder: appends a Bytes blob (reads `[i64 len]` prefix
+ *                  so embedded NULs survive), finish returns a
+ *                  freshly allocated `[i64 len][u8 data[len]]`
+ *                  Bytes blob anchored in the bus payload arena.
+ *
+ * Pond consumers: pond/http/client + pond/agent/llm were
+ * accumulating message bodies through std::str::builder_* +
+ * std::bytes::from_string — lossy on chunks containing NUL.
+ * std::bytes::builder_* is the single-step binary-safe path.
+ */
+typedef struct lotus_str_builder lotus_bytes_builder_t;
+
+void *lotus_bytes_builder_new(void) {
+    lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)
+        malloc(sizeof(lotus_bytes_builder_t));
+    if (!b) return NULL;
+    b->cap = 64;
+    b->len = 0;
+    b->buf = (char *)malloc(b->cap);
+    if (!b->buf) {
+        free(b);
+        return NULL;
+    }
+    /* No NUL seed — Bytes is length-prefixed, body is opaque
+     * until callers fill it via append. */
+    return b;
+}
+
+void lotus_bytes_builder_append(void *handle, const void *chunk_blob) {
+    if (!handle || !chunk_blob) return;
+    lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
+    /* Bytes ABI: `[i64 len][u8 data[len]]`. Read the explicit
+     * length prefix — strlen would truncate at the first NUL. */
+    int64_t add_signed = lotus_bytes_len(chunk_blob);
+    if (add_signed <= 0) return;
+    size_t add = (size_t)add_signed;
+    size_t need = b->len + add;
+    if (need > b->cap) {
+        size_t new_cap = b->cap ? b->cap : 64;
+        while (new_cap < need) {
+            new_cap *= 2;
+            if (new_cap < b->cap) {
+                /* Overflow guard — saturate at the exact need. */
+                new_cap = need;
+                break;
+            }
+        }
+        char *nb = (char *)realloc(b->buf, new_cap);
+        if (!nb) return;
+        b->buf = nb;
+        b->cap = new_cap;
+    }
+    /* Pull the body bytes out of the Bytes blob (past the
+     * length prefix) and append verbatim — NULs included. */
+    const char *src = (const char *)chunk_blob + sizeof(int64_t);
+    memcpy(b->buf + b->len, src, add);
+    b->len = need;
+}
+
+int64_t lotus_bytes_builder_len(const void *handle) {
+    if (!handle) return 0;
+    const lotus_bytes_builder_t *b = (const lotus_bytes_builder_t *)handle;
+    return (int64_t)b->len;
+}
+
+void *lotus_bytes_builder_finish(void *handle) {
+    if (!handle) return lotus_bytes_empty_global();
+    lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            free(b->buf);
+            free(b);
+            return NULL;
+        }
+    }
+    /* Emit a `[i64 len][u8 data[len]]` blob in the bus payload
+     * arena. No trailing NUL — Bytes is length-prefixed. */
+    void *blob = lotus_bytes_create(g_bus_payload_arena, (int64_t)b->len);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    if (!blob) {
+        free(b->buf);
+        free(b);
+        return lotus_bytes_empty_global();
+    }
+    if (b->len > 0) {
+        memcpy(lotus_bytes_data(blob), b->buf, b->len);
+    }
+    free(b->buf);
+    free(b);
+    return blob;
+}
+
+/*
  * v1.x-FORM-2 PR6: root-locus value-error panic.
  *
  * Called by codegen when an `or raise` is reached past every
