@@ -113,7 +113,7 @@ region, etc.).
 child fails. The handler chooses among `restart`, `quarantine`,
 `bubble`, `dissolve`, or absorbs by returning normally. (Failure
 itself is covered in detail in
-[The two failure channels](./failure.md).)
+[Error handling](./error-handling.md).)
 
 **`mode bulk` / `mode harmonic` / `mode resolution`** are three
 named projections of the same kernel computation — vectorized
@@ -135,7 +135,7 @@ declares a closure whose only firing mode is explicit
 clause names locus state to snapshot into the violation payload.
 This shape is the bridge between the value channel and the
 structural channel — covered in detail in
-[The two failure channels](./failure.md). (Spec reference:
+[Error handling](./error-handling.md). (Spec reference:
 `F.27` in `spec/design-rationale.md`.)
 
 ## `locus` vs `type`

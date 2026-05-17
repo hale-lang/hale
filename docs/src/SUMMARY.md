@@ -14,7 +14,7 @@
 - [Recursive composition](./concepts/recursive-composition.md)
 - [The bus](./concepts/the-bus.md)
 - [Capacity & storage](./concepts/capacity-storage.md)
-- [The two failure channels](./concepts/failure.md)
+- [Error handling](./concepts/error-handling.md)
 - [Lifecycle & time](./concepts/lifecycle-time.md)
 - [Perspective & observation](./concepts/perspective.md)
 - [Modeling — how to think in Aperio](./concepts/modeling.md)

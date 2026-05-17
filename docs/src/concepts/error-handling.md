@@ -1,10 +1,10 @@
-# The two failure channels
+# Error handling
 
 > **α** — Why does Aperio have two separate failure
 > mechanisms, and how do you choose between them?
 
-Failure-handling is where most languages quietly accumulate
-the largest amount of accidental complexity. Exceptions vs.
+Error-handling is where most languages quietly accumulate the
+largest amount of accidental complexity. Exceptions vs.
 sentinels vs. error returns vs. `Result<T, E>` vs. panics —
 many languages have several of these layered, with different
 disciplines for when to use which, often in the same codebase.
@@ -121,8 +121,8 @@ call result:
 let id = parse_player_id(input);     // ERROR: "error not addressed"
 ```
 
-You address it with an **`or` clause**, in one of the motions
-below:
+You address it with an **`or` clause**, in one of five motions.
+At a glance:
 
 ```aperio
 let id = parse_player_id(input) or raise;          // propagate up
@@ -133,32 +133,107 @@ let id = parse_player_id(input)
 mkdir(path) or discard;                            // swallow (Unit only)
 ```
 
-- **`or raise`** — propagate the error one frame up the
-  *static call stack*. The enclosing function must itself be
-  `fallible(E)` (with the same payload type or a compatible
-  one) so the error has somewhere to go. This is the value
-  channel's version of "let it propagate."
-- **`or <expression>`** — substitute a fallback value of the
-  success type. `err` is implicitly bound to the payload
-  inside the fallback expression. The fallback can be a
-  literal (`or 0`), an expression (`or default_id()`), or a
-  call (`or handle(err)`).
-- **`or fail <payload>`** — symmetric to `or raise`, but you
-  build a fresh payload of the *enclosing* fn's declared error
-  type instead of forwarding the inner call's verbatim. Use
-  when your library has its own error vocabulary and you don't
-  want to leak the inner one through it. Enclosing fn must be
-  `fallible(T)`; same divergence rule as `or raise`.
-- **`or discard`** — swallow the error. Only valid when the
-  underlying call's success type is Unit (e.g.
-  `std::io::fs::mkdir`, `@form(vec).set`). Sugar for "I know
-  this might fail and I don't care." The typechecker rejects
-  `or discard` on value-bearing calls and points at
-  `or <default>` / `or raise`.
-- **The error's payload type is fully typed.** You don't need
-  to downcast or pattern-match a generic Error; the
-  `fallible(E)` declaration says exactly what shape the
-  payload has.
+The error's payload type is fully typed — you don't downcast or
+pattern-match a generic Error. The `fallible(E)` declaration
+says exactly what shape the payload has, and the implicit `err`
+binding inside a fallback / handler has type `E`.
+
+### `or raise` — propagate
+
+The enclosing function must itself be `fallible(E)` (with the
+same payload type or a compatible one), so the error has
+somewhere to go.
+
+```aperio
+fn load_config() -> String fallible(IoError) {
+    return std::io::fs::read_file("config.toml") or raise;
+}
+```
+
+This is the value channel's version of "let it propagate."
+
+### `or <expression>` — substitute
+
+Provide a fallback value of the success type. `err` is in scope
+inside the fallback expression.
+
+```aperio
+let body = std::io::fs::read_file("welcome.txt") or "(no welcome message)";
+let size = std::io::fs::file_size(path)         or 0;
+```
+
+The fallback's type must match the success type. Substituting
+`""` for `read_file` works because `read_file` returns `String`;
+substituting `0` for `mkdir` is a type error (`mkdir` returns
+`()`) — use `or discard` instead.
+
+### `or self.handler(err)` — hand off
+
+Call a member function on the current locus that takes the
+error and returns the success type. Useful when several call
+sites share a recovery policy.
+
+```aperio
+locus Importer {
+    params { failed: Int = 0; }
+
+    fn handle_io(e: IoError) -> String {
+        self.failed = self.failed + 1;
+        eprintln("skipped ", e.path, ": ", e.kind);
+        return "";
+    }
+
+    fn process(p: String) {
+        let body = std::io::fs::read_file(p) or self.handle_io(err);
+        if len(body) > 0 { /* ... */ }
+    }
+}
+```
+
+The member fn IS a real function — pick a descriptive name
+(`handle_io`, `recover_index`), not a placeholder. See
+["Bridging the channels"](#bridging-the-channels-structural-failure-from-value-error-context)
+below for the pattern that lets the handler escalate via
+`violate NAME` instead of substituting.
+
+### `or fail <payload>` — translate to your error type
+
+Symmetric to `or raise`, but you supply a fresh payload of the
+enclosing fallible fn's declared error type instead of
+forwarding the inner call's payload verbatim. Use when your
+library has its own error vocabulary and you don't want to leak
+a stdlib type (`IoError`, `ParseError`, etc.) through it.
+
+```aperio
+type ConfigErr { reason: String; path: String; }
+
+fn load_config(p: String) -> Config fallible(ConfigErr) {
+    let body = std::io::fs::read_file(p)
+        or fail ConfigErr { reason: "read failed", path: p };
+    return parse(body)
+        or fail ConfigErr { reason: "parse", path: p };
+}
+```
+
+The enclosing fn must itself be `fallible(T)`; outside one, the
+typechecker rejects with a hint to use `or raise` or
+`or <fallback>`. Diverges like `or raise` — the chain value
+collapses to the inner call's success type.
+
+### `or discard` — swallow (Unit-only)
+
+For calls whose success type is `()`, when you genuinely don't
+care:
+
+```aperio
+std::io::fs::mkdir("/tmp/cache") or discard;     // ok if it already exists
+```
+
+`or discard` is rejected on value-bearing calls — the
+typechecker tells you "this returns `String`, can't discard"
+and suggests `or ""` or `or raise`.
+
+### Chains
 
 Chains work right-associatively:
 
@@ -172,9 +247,9 @@ in turn, reducing the chain toward a non-fallible value.
 
 The value channel is value-level. It propagates through the
 *static call stack*, not the locus tower. Two functions that
-both `fallible(ParseError)` and call each other share the
-same payload type and pass it up the stack until something
-addresses it.
+both `fallible(ParseError)` and call each other share the same
+payload type and pass it up the stack until something addresses
+it.
 
 ## Where each channel lives
 

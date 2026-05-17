@@ -268,7 +268,7 @@ slots of different shape and don't interfere.
 
 ## Next
 
-The next chapter, [The two failure channels](./failure.md),
+The next chapter, [Error handling](./error-handling.md),
 covers the two orthogonal failure mechanisms — closures /
 `on_failure` for structural failure, and `fallible(E)` /
 `or`-disposition for value-level errors — and the rule for

@@ -259,7 +259,7 @@ locus DbConnection {
 
 This is the canonical bridge between the value channel and
 the structural channel — see
-[The two failure channels](./failure.md) §"Bridging the
+[Error handling](./error-handling.md) §"Bridging the
 channels" for the full treatment.
 
 Conventions:
