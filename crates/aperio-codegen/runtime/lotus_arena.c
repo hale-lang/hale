@@ -4669,6 +4669,20 @@ int64_t lotus_rand_next_int(int64_t max) {
 }
 
 /*
+ * C7 (pond follow-up): wall-clock seconds since the Unix epoch.
+ * Backs `std::time::now() -> Int`. CLOCK_REALTIME is reserved for
+ * observation only (NTP slewing / leap seconds can warp the
+ * value); CLOCK_MONOTONIC stays the basis for scheduling. Returns
+ * tv_sec verbatim — sub-second precision lives in the future
+ * `std::time::now_ns` if a consumer surfaces it.
+ */
+int64_t lotus_time_now_seconds(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (int64_t)ts.tv_sec;
+}
+
+/*
  * Phase 2e: index-API surface over the existing
  * lotus_fs_list_dir_global() cache. Returning a real `[String]`
  * waits on dynamic-array codegen support; meanwhile the
