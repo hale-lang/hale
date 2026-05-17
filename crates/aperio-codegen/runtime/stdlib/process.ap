@@ -1,0 +1,210 @@
+// Aperio stdlib — std::process.
+//
+// Two surfaces:
+//
+// 1. `std::process::run(argv) -> ProcessOutput fallible(IoError)` —
+//    synchronous fork+exec+wait. Captures stdout/stderr/exit-code
+//    in one call. Covers ~80% of shell-out use cases (`git`,
+//    `which`, `openssl rand`, etc.). Lowered directly by codegen
+//    (no .ap wrapper) — see `lower_std_process_run_fallible`.
+//
+// 2. `std::process::spawn(argv) -> Child fallible(IoError)` plus
+//    free fns `wait` / `kill` / `write_stdin` / `read_stdout` /
+//    `read_stderr` — async lifecycle for long-running children
+//    (a build job, a TUI process, etc.). Each of these is the
+//    user-facing path-call surface; codegen routes it to the
+//    bare `__std_process_*` fn declared below (same pattern as
+//    `std::http::parse_request` → `__parse_http_request`).
+//
+// The `Child` locus's dissolve() reaps any unwaited child
+// (TERM → wait 100ms → KILL → waitpid) so the parent doesn't
+// leak zombies on scope exit.
+//
+// **Argv shape.** Newline-separated String. argv[0] is the
+// executable, argv[1..] are args. Aperio's array surface is
+// statically-sized, so the newline blob is the v1 ergonomic
+// compromise. Trailing newline allowed but optional.
+//
+//   std::process::run("git\nstatus\n") or raise
+//   std::process::run("echo\nhello world")     // also fine
+//
+// **Process group + signals.** Each spawned child gets its own
+// process group (`setpgid(0, 0)` in the child) so a hard parent
+// crash doesn't strand orphans on shared session resources, and
+// so `kill` can target the whole group if we grow that surface
+// later. `setpgid` is portable POSIX; we deliberately did NOT pick
+// `prctl(PR_SET_PDEATHSIG)` (Linux-only and overzealous — a
+// controlled `dissolve()` already covers the orderly-shutdown
+// path).
+//
+// **SIGPIPE.** Globally ignored at lotus_io_init startup. Writes
+// to a closed pipe surface EPIPE via the IoError channel instead
+// of killing the parent.
+//
+// **fd cleanup.** Child.dissolve() closes all three pipe fds and
+// reaps the process. dissolve() runs at scope exit (m82) so a
+// `let c = std::process::spawn(...) or raise;` cleans up
+// automatically when the surrounding fn returns.
+
+// User-facing capture-output struct. Returned by `std::process::run`.
+type __StdProcessOutput {
+    // Exit code (0..255) for a process that exited normally.
+    // -1 if the process was killed by a signal — check `signal`
+    // for the SIGTERM/SIGKILL/etc. number.
+    code: Int;
+    // Signal number that killed the process (0 if exited normally).
+    signal: Int;
+    // Captured stdout as a String. Read to EOF.
+    stdout: String;
+    // Captured stderr as a String. Read to EOF.
+    stderr: String;
+}
+
+// Internal struct: opaque handle returned by the spawn path-call.
+// User code never sees this directly — `__std_process_spawn`
+// unpacks it into a Child locus literal.
+type __StdProcessSpawnHandle {
+    pid: Int;
+    stdin_fd: Int;
+    stdout_fd: Int;
+    stderr_fd: Int;
+}
+
+// Internal: outcome of a blocking wait.
+type __StdProcessWaitOutcome {
+    code: Int;
+    signal: Int;
+}
+
+// Lifecycle-bound subprocess handle. Construct via
+// `std::process::spawn(argv)`; let-bind so dissolve() runs at
+// scope exit.
+//
+// Methods are absent on purpose — the two-channel rule blocks
+// locus methods from declaring `fallible(E)`, and every
+// useful subprocess operation can fail (write to a broken pipe,
+// wait on a vanished child, etc.). The free-fn surface
+// (`std::process::wait` / `kill` / `write_stdin` /
+// `read_stdout` / `read_stderr`) carries the value channel.
+//
+// dissolve() is the only "method" the locus ships: it kills (TERM
+// → 100ms grace → KILL) and reaps any unwaited child so the
+// parent doesn't leak zombies on early scope exit.
+locus __StdProcessChild {
+    params {
+        // Original argv-blob passed to spawn. Held for diagnostics
+        // — e.g., to surface in error messages when wait() fails.
+        argv: String = "";
+        // OS pid. -1 sentinel for a partially-constructed handle
+        // so dissolve() can detect "never spawned" and skip the
+        // kill+reap dance.
+        pid: Int = -1;
+        // Parent-side pipe fds. -1 sentinel means "not spawned"
+        // (or "already closed" — dissolve() closes idempotently).
+        stdin_fd: Int = -1;
+        stdout_fd: Int = -1;
+        stderr_fd: Int = -1;
+    }
+    dissolve() {
+        // Close pipe fds first so any blocked child read/write
+        // unsticks. close(-1) is fine — lotus_tcp_close_fd guards.
+        std::io::tcp::__close_fd(self.stdin_fd);
+        std::io::tcp::__close_fd(self.stdout_fd);
+        std::io::tcp::__close_fd(self.stderr_fd);
+        // Kill + reap any unwaited child. lotus_process_kill_escalate
+        // is idempotent — if the child was already reaped (by an
+        // explicit wait()), it returns 0 cleanly because the
+        // underlying ESRCH/ECHILD codes are mapped to success.
+        // For -1 (never spawned), we skip the call entirely so
+        // we don't synthesize a phantom IoError on a benign path.
+        // `or discard` because dissolve can't propagate via the
+        // value channel (two-channel rule) and dissolve is
+        // already a best-effort cleanup path — surfacing the
+        // error to the bus or panicking would mask the original
+        // teardown intent.
+        if self.pid > 0 {
+            std::process::__kill_escalate(self.pid) or discard;
+        }
+    }
+}
+
+// Spawn a subprocess. Returns a fully-populated Child whose
+// dissolve() owns cleanup. Surfaced as `std::process::spawn` via
+// path-call dispatch in codegen.
+//
+// Errors:
+//   - kind="not_found" if argv[0] isn't on $PATH (or fails ENOENT
+//     for any other reason during exec).
+//   - kind="permission_denied" if argv[0] exists but isn't
+//     executable.
+//   - kind="invalid" for malformed argv (empty, oversized).
+fn __std_process_spawn(argv: String) -> std::process::Child fallible(IoError) {
+    let h = std::process::__spawn(argv) or raise;
+    return std::process::Child {
+        argv: argv,
+        pid: h.pid,
+        stdin_fd: h.stdin_fd,
+        stdout_fd: h.stdout_fd,
+        stderr_fd: h.stderr_fd,
+    };
+}
+
+// Block until the child exits. Returns the exit code (0..255 for
+// a normal exit, -1 if killed by a signal). Surfaced as
+// `std::process::wait`.
+//
+// Errors:
+//   - kind="not_found" if the pid is already gone (ECHILD) — e.g.,
+//     `wait` was called twice, or the dissolve() race reaped first.
+//
+// `wait` against an unspawned Child (pid == -1) is treated as
+// "already exited with code 0" rather than raising — users who
+// construct a Child literal manually for testing get the
+// expected shape without a panic-via-or-raise.
+fn __std_process_wait(c: std::process::Child) -> Int fallible(IoError) {
+    if c.pid <= 0 {
+        return 0;
+    }
+    let o = std::process::__wait_pid(c.pid) or raise;
+    return o.code;
+}
+
+// SIGTERM → 100ms grace → SIGKILL → reap. Surfaced as
+// `std::process::kill`. After this returns, the child is
+// definitively gone and waitpid has been called.
+// Errors:
+//   - kind="not_found" if the pid is already gone (ESRCH/ECHILD).
+//     This is usually benign — the goal of kill() is "this child
+//     is no longer running", which is true if it was already
+//     reaped. Callers wrap with `or discard` if they don't care.
+fn __std_process_kill(c: std::process::Child) -> () fallible(IoError) {
+    if c.pid > 0 {
+        std::process::__kill_escalate(c.pid) or raise;
+    }
+}
+
+// Write a String to the child's stdin. Surfaced as
+// `std::process::write_stdin`. Returns bytes written.
+// The pipe is blocking (an SO_RCVBUF-sized backlog will pause
+// the write); SIGPIPE is ignored process-wide so a write after
+// the child closed its read end returns EPIPE via the IoError
+// channel instead of killing the parent.
+fn __std_process_write_stdin(c: std::process::Child, s: String) -> Int fallible(IoError) {
+    return std::process::__pipe_write(c.stdin_fd, s) or raise;
+}
+
+// Read available bytes from the child's stdout (non-blocking).
+// Surfaced as `std::process::read_stdout`. Returns "" when no
+// bytes are available OR the child has closed its stdout (EOF).
+// Use `wait` to distinguish "process still running, no output
+// yet" from "process exited".
+fn __std_process_read_stdout(c: std::process::Child) -> String fallible(IoError) {
+    return std::process::__pipe_read(c.stdout_fd) or raise;
+}
+
+// Read available bytes from the child's stderr (non-blocking).
+// Surfaced as `std::process::read_stderr`. Same shape as
+// `read_stdout`.
+fn __std_process_read_stderr(c: std::process::Child) -> String fallible(IoError) {
+    return std::process::__pipe_read(c.stderr_fd) or raise;
+}

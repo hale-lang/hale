@@ -56,6 +56,11 @@
 #if defined(__linux__) || defined(__GLIBC__)
 #include <sys/random.h>
 #endif
+/* C2 (pond/subprocess + pond/agent/sandbox): fork/exec/wait,
+ * kill signals, poll for non-blocking pipe reads. */
+#include <signal.h>
+#include <sys/wait.h>
+#include <poll.h>
 
 /* Default chunk size: 64KB. Big enough that most loci fit in
  * one chunk, small enough that a leaf locus that allocates a
@@ -3508,6 +3513,14 @@ const char *lotus_io_error_kind(int32_t errno_val) {
         case EADDRINUSE:  return "address_in_use";
         case EPIPE:       return "broken_pipe";
         case EINTR:       return "interrupted";
+        /* C2 (pond/subprocess): subprocess-specific errnos. ESRCH is
+         * "no such process" (typically from kill() against a pid
+         * that has already been reaped). ECHILD is "no child
+         * processes" (waitpid against a non-child). E2BIG surfaces
+         * when argv is over the kernel limit at exec time. */
+        case ESRCH:       return "not_found";
+        case ECHILD:      return "not_found";
+        case E2BIG:       return "invalid";
         default:          return "io";
     }
 }
@@ -3583,9 +3596,23 @@ void lotus_env_init(int argc, char *const *argv) {
  * default. Called once from main's prelude.
  *
  * stderr is already line-buffered per POSIX; we don't touch it.
+ *
+ * C2 (pond/subprocess) addendum: also ignore SIGPIPE globally so a
+ * write to a closed pipe (the canonical hazard when a subprocess
+ * exits before the parent finishes draining its stdin pipe) returns
+ * EPIPE instead of killing the parent. Affects every Aperio
+ * program — but the contract Aperio offers is "writes to broken
+ * pipes return EPIPE via the IoError channel" not "the OS kills
+ * your program when a stream closes", so the global flip is the
+ * right default. Cost: programs that need SIGPIPE-driven termination
+ * (rare) lose it.
  */
 void lotus_io_init(void) {
     setvbuf(stdout, NULL, _IOLBF, 0);
+    /* SIG_IGN return is "previous action" — discarding it is fine;
+     * the only way this fails is signum out of range, which can't
+     * happen for SIGPIPE. */
+    signal(SIGPIPE, SIG_IGN);
 }
 
 int lotus_env_args_count(void) {
@@ -4245,6 +4272,614 @@ void *lotus_os_getrandom(int64_t n) {
     }
     close(fd);
     return blob;
+}
+
+/*
+ * ====================================================================
+ * C2 — subprocess primitives.
+ *
+ * Two surfaces:
+ *   1. `lotus_process_run` — synchronous fork+exec+wait. The 80%
+ *      shell-out case: capture stdout/stderr/exit-code and hand
+ *      the whole package back as a ProcessOutput struct.
+ *   2. `lotus_process_spawn` + `_wait` + `_kill_escalate` +
+ *      `_pipe_read_nonblocking` + `_pipe_write` — async lifecycle
+ *      for long-running children (`pip install`, a TUI subprocess,
+ *      a build job).
+ *
+ * Argv shape (both surfaces): newline-separated String. argv[0] is
+ * the executable, argv[1..] are args. Trailing newline allowed but
+ * not required. Aperio's array surface is statically-sized, so the
+ * newline-blob is the v1 ergonomic compromise (mirrors cli.ap's
+ * argv_keys: String pattern). Internal split-on-newline produces
+ * the exec(2) argv array; the buffer is malloc'd, freed in the
+ * caller frame after exec returns.
+ *
+ * Design notes:
+ *   - SIGPIPE is ignored globally (see lotus_io_init); writes to a
+ *     closed pipe surface EPIPE through errno instead of killing
+ *     the parent.
+ *   - Child gets its own process group (`setpgid(0, 0)` in child)
+ *     so a parent crash doesn't strand orphans on shared session
+ *     resources, and a `kill_escalate` against the pid can target
+ *     the whole pgid later if we want to. setpgid over prctl(
+ *     PR_SET_PDEATHSIG) because the former is POSIX (macOS / BSD
+ *     work the same way) and the latter is Linux-only — auto-reap-
+ *     on-parent-death is also too aggressive: a controlled Aperio
+ *     dissolve already covers the orderly-shutdown path, and the
+ *     hard-parent-crash case is handled at a higher level (systemd
+ *     reaper, docker cgroup, etc.).
+ *   - All fds are closed on every path. Subprocess code leaks fds
+ *     more easily than anything else; every error-handling branch
+ *     here explicitly drops the pipes.
+ *   - kill_escalate is TERM → wait 100ms (polling via waitpid
+ *     WNOHANG) → KILL → blocking waitpid to reap.
+ * ====================================================================
+ */
+
+/* Per-call cap on argv blob size — defensive against pathological
+ * inputs. Linux's ARG_MAX is typically 2MB; we cap lower so a
+ * runaway concat in user code surfaces here, not after the kernel
+ * rejects with E2BIG on exec. */
+#define LOTUS_PROCESS_ARGV_MAX 65536
+
+/* Internal: split `blob` (newline-separated) into a malloc'd argv
+ * array with a trailing NULL slot. Returns 0 on success; on failure
+ * (oversized, empty, OOM) sets errno and returns -1. On success,
+ * the caller owns *out_argv (a single malloc — the entries point
+ * into a sibling malloc'd buffer that's also returned via *out_buf
+ * so the caller can free both). */
+static int lotus_process_split_argv(
+    const char *blob,
+    char ***out_argv,
+    char **out_buf,
+    int *out_count
+) {
+    if (!blob) {
+        errno = EINVAL;
+        return -1;
+    }
+    size_t blob_len = strlen(blob);
+    if (blob_len == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (blob_len > LOTUS_PROCESS_ARGV_MAX) {
+        errno = E2BIG;
+        return -1;
+    }
+    char *buf = (char *)malloc(blob_len + 1);
+    if (!buf) {
+        errno = ENOMEM;
+        return -1;
+    }
+    memcpy(buf, blob, blob_len + 1);
+    int count = 0;
+    for (size_t i = 0; i < blob_len; i++) {
+        if (buf[i] == '\n') count++;
+    }
+    /* If the last character isn't a newline, the tail is its own
+     * arg. */
+    if (blob_len > 0 && buf[blob_len - 1] != '\n') {
+        count++;
+    }
+    if (count == 0) {
+        free(buf);
+        errno = EINVAL;
+        return -1;
+    }
+    char **argv = (char **)malloc(sizeof(char *) * (size_t)(count + 1));
+    if (!argv) {
+        free(buf);
+        errno = ENOMEM;
+        return -1;
+    }
+    int idx = 0;
+    char *start = buf;
+    for (size_t i = 0; i < blob_len; i++) {
+        if (buf[i] == '\n') {
+            buf[i] = '\0';
+            argv[idx++] = start;
+            start = buf + i + 1;
+        }
+    }
+    if (start < buf + blob_len) {
+        argv[idx++] = start;
+    }
+    argv[idx] = NULL;
+    *out_argv = argv;
+    *out_buf = buf;
+    *out_count = count;
+    return 0;
+}
+
+/* C2 surface 1: synchronous run. fork → setpgid → exec in the
+ * child; parent reads stdout + stderr to EOF (interleaved via
+ * poll() so the child can write either stream in any order
+ * without deadlocking), waits for exit.
+ *
+ * Out-params (all must be non-NULL):
+ *   - *out_code   = exit code (-1 if killed by signal)
+ *   - *out_signal = signal number (0 if normal exit)
+ *   - *out_stdout = captured stdout (NUL-terminated, arena-anchored)
+ *   - *out_stderr = captured stderr (NUL-terminated, arena-anchored)
+ *
+ * Returns 0 on success (fork+exec ok and waited), errno on
+ * failure. ENOENT if the executable isn't found, EACCES if it's
+ * not executable, ENOMEM on allocation failure, etc.
+ */
+int lotus_process_run(
+    const char *argv_blob,
+    int32_t *out_code,
+    int32_t *out_signal,
+    const char **out_stdout_str,
+    const char **out_stderr_str
+) {
+    if (!out_code || !out_signal || !out_stdout_str || !out_stderr_str) {
+        return EINVAL;
+    }
+    *out_code = -1;
+    *out_signal = 0;
+    *out_stdout_str = "";
+    *out_stderr_str = "";
+
+    char **argv = NULL;
+    char *argv_buf = NULL;
+    int argc = 0;
+    if (lotus_process_split_argv(argv_blob, &argv, &argv_buf, &argc) < 0) {
+        return errno ? errno : EINVAL;
+    }
+
+    int out_pipe[2] = { -1, -1 };
+    int err_pipe[2] = { -1, -1 };
+    if (pipe(out_pipe) < 0) {
+        int saved = errno;
+        free(argv); free(argv_buf);
+        return saved;
+    }
+    if (pipe(err_pipe) < 0) {
+        int saved = errno;
+        close(out_pipe[0]); close(out_pipe[1]);
+        free(argv); free(argv_buf);
+        return saved;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        int saved = errno;
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        free(argv); free(argv_buf);
+        return saved;
+    }
+    if (pid == 0) {
+        /* CHILD. setpgid first so a kill against this pid can
+         * target the whole group later. Errors from setpgid are
+         * non-fatal at exec time — proceed regardless. */
+        setpgid(0, 0);
+        if (dup2(out_pipe[1], STDOUT_FILENO) < 0) _exit(127);
+        if (dup2(err_pipe[1], STDERR_FILENO) < 0) _exit(127);
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        close(err_pipe[0]);
+        close(err_pipe[1]);
+        /* stdin from /dev/null so the child doesn't hang on read.
+         * Best-effort — if /dev/null can't be opened, leave stdin
+         * inherited from the parent. */
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            close(devnull);
+        }
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+
+    /* PARENT. Close the write ends; we only read. */
+    close(out_pipe[1]); out_pipe[1] = -1;
+    close(err_pipe[1]); err_pipe[1] = -1;
+
+    /* Drain both pipes via poll() so the child can write to
+     * stdout and stderr in any order without filling either pipe
+     * buffer and blocking. Naive "drain stdout to EOF then
+     * stderr" deadlocks when the child writes >PIPE_BUF (~64KB)
+     * to stderr without the parent reading. Cap each stream at
+     * 16 MiB to bound parent memory against runaway children. */
+    struct pollfd pfds[2];
+    pfds[0].fd = out_pipe[0]; pfds[0].events = POLLIN;
+    pfds[1].fd = err_pipe[0]; pfds[1].events = POLLIN;
+    const size_t cap_bytes = 16 * 1024 * 1024;
+    size_t out_cap = 4096, out_len = 0;
+    size_t err_cap = 4096, err_len = 0;
+    char *out_buf = (char *)malloc(out_cap);
+    char *err_buf = (char *)malloc(err_cap);
+    int drain_err = 0;
+    if (!out_buf || !err_buf) {
+        drain_err = ENOMEM;
+    }
+    int out_open = 1, err_open = 1;
+    while (!drain_err && (out_open || err_open)) {
+        pfds[0].events = out_open ? POLLIN : 0;
+        pfds[1].events = err_open ? POLLIN : 0;
+        int pn = poll(pfds, 2, -1);
+        if (pn < 0) {
+            if (errno == EINTR) continue;
+            drain_err = errno;
+            break;
+        }
+        if (out_open && (pfds[0].revents & (POLLIN | POLLHUP | POLLERR))) {
+            if (out_len + 1 >= out_cap && out_cap < cap_bytes) {
+                size_t nc = out_cap * 2;
+                if (nc > cap_bytes) nc = cap_bytes + 1;
+                char *nb = (char *)realloc(out_buf, nc);
+                if (!nb) { drain_err = ENOMEM; break; }
+                out_buf = nb; out_cap = nc;
+            }
+            ssize_t r = read(out_pipe[0], out_buf + out_len,
+                             out_cap - out_len - 1);
+            if (r > 0) {
+                out_len += (size_t)r;
+                if (out_len >= cap_bytes) out_open = 0;
+            } else if (r == 0) {
+                out_open = 0;
+            } else if (errno != EINTR) {
+                drain_err = errno;
+                break;
+            }
+        }
+        if (err_open && (pfds[1].revents & (POLLIN | POLLHUP | POLLERR))) {
+            if (err_len + 1 >= err_cap && err_cap < cap_bytes) {
+                size_t nc = err_cap * 2;
+                if (nc > cap_bytes) nc = cap_bytes + 1;
+                char *nb = (char *)realloc(err_buf, nc);
+                if (!nb) { drain_err = ENOMEM; break; }
+                err_buf = nb; err_cap = nc;
+            }
+            ssize_t r = read(err_pipe[0], err_buf + err_len,
+                             err_cap - err_len - 1);
+            if (r > 0) {
+                err_len += (size_t)r;
+                if (err_len >= cap_bytes) err_open = 0;
+            } else if (r == 0) {
+                err_open = 0;
+            } else if (errno != EINTR) {
+                drain_err = errno;
+                break;
+            }
+        }
+    }
+    close(out_pipe[0]); out_pipe[0] = -1;
+    close(err_pipe[0]); err_pipe[0] = -1;
+
+    /* Reap. waitpid retries on EINTR. */
+    int status = 0;
+    for (;;) {
+        pid_t w = waitpid(pid, &status, 0);
+        if (w == pid) break;
+        if (w < 0 && errno == EINTR) continue;
+        if (!drain_err) drain_err = errno;
+        break;
+    }
+
+    if (drain_err) {
+        free(out_buf); free(err_buf);
+        free(argv); free(argv_buf);
+        return drain_err;
+    }
+
+    out_buf[out_len] = '\0';
+    err_buf[err_len] = '\0';
+    /* Anchor in the bus payload arena so the pointers outlive
+     * this call frame. */
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            free(out_buf); free(err_buf);
+            free(argv); free(argv_buf);
+            return ENOMEM;
+        }
+    }
+    char *out_anchored = (char *)lotus_arena_alloc(
+        g_bus_payload_arena, out_len + 1, 1);
+    char *err_anchored = (char *)lotus_arena_alloc(
+        g_bus_payload_arena, err_len + 1, 1);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    if (!out_anchored || !err_anchored) {
+        free(out_buf); free(err_buf);
+        free(argv); free(argv_buf);
+        return ENOMEM;
+    }
+    memcpy(out_anchored, out_buf, out_len + 1);
+    memcpy(err_anchored, err_buf, err_len + 1);
+    free(out_buf); free(err_buf);
+    free(argv); free(argv_buf);
+
+    *out_stdout_str = out_anchored;
+    *out_stderr_str = err_anchored;
+
+    /* Decode exit status. */
+    if (WIFEXITED(status)) {
+        *out_code = WEXITSTATUS(status);
+        *out_signal = 0;
+    } else if (WIFSIGNALED(status)) {
+        *out_code = -1;
+        *out_signal = WTERMSIG(status);
+    } else {
+        *out_code = -1;
+        *out_signal = 0;
+    }
+    /* Distinguish exec failure (127) so the agent sees "not_found"
+     * when execvp failed in the child. We do this here because the
+     * child's _exit(127) is the only signal we have — we don't
+     * route the exec errno across the fork boundary in v1. If
+     * stderr is empty, this was almost certainly a child-side
+     * exec failure. If the child wrote to stderr, it ran and
+     * chose 127 — we trust that and don't override. */
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 127 && err_len == 0) {
+        errno = ENOENT;
+        return ENOENT;
+    }
+    return 0;
+}
+
+/* C2 surface 2a: async spawn. fork → setpgid → exec in the child;
+ * parent gets back the pid + three pipe fds (stdin write, stdout
+ * read, stderr read).
+ *
+ * Returns 0 on success, errno on failure. All out-params are
+ * populated only on success.
+ */
+int lotus_process_spawn(
+    const char *argv_blob,
+    int32_t *out_pid,
+    int32_t *out_stdin_fd,
+    int32_t *out_stdout_fd,
+    int32_t *out_stderr_fd
+) {
+    if (!out_pid || !out_stdin_fd || !out_stdout_fd || !out_stderr_fd) {
+        return EINVAL;
+    }
+    char **argv = NULL;
+    char *argv_buf = NULL;
+    int argc = 0;
+    if (lotus_process_split_argv(argv_blob, &argv, &argv_buf, &argc) < 0) {
+        return errno ? errno : EINVAL;
+    }
+
+    int in_pipe[2]  = { -1, -1 };
+    int out_pipe[2] = { -1, -1 };
+    int err_pipe[2] = { -1, -1 };
+    if (pipe(in_pipe) < 0) {
+        int saved = errno;
+        free(argv); free(argv_buf);
+        return saved;
+    }
+    if (pipe(out_pipe) < 0) {
+        int saved = errno;
+        close(in_pipe[0]); close(in_pipe[1]);
+        free(argv); free(argv_buf);
+        return saved;
+    }
+    if (pipe(err_pipe) < 0) {
+        int saved = errno;
+        close(in_pipe[0]); close(in_pipe[1]);
+        close(out_pipe[0]); close(out_pipe[1]);
+        free(argv); free(argv_buf);
+        return saved;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        int saved = errno;
+        close(in_pipe[0]); close(in_pipe[1]);
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        free(argv); free(argv_buf);
+        return saved;
+    }
+    if (pid == 0) {
+        setpgid(0, 0);
+        if (dup2(in_pipe[0], STDIN_FILENO) < 0) _exit(127);
+        if (dup2(out_pipe[1], STDOUT_FILENO) < 0) _exit(127);
+        if (dup2(err_pipe[1], STDERR_FILENO) < 0) _exit(127);
+        close(in_pipe[0]);  close(in_pipe[1]);
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+
+    /* PARENT. Close the child-side ends, keep our own. */
+    close(in_pipe[0]);  in_pipe[0] = -1;
+    close(out_pipe[1]); out_pipe[1] = -1;
+    close(err_pipe[1]); err_pipe[1] = -1;
+
+    /* Mark the parent-side pipe fds non-blocking so reads return
+     * EAGAIN promptly instead of blocking. stdin write stays
+     * blocking — the caller controls when to write, and a write
+     * EAGAIN would confuse the common case. SIGPIPE is ignored
+     * globally so a write after the child exits returns EPIPE
+     * via the IoError channel. */
+    int flags;
+    flags = fcntl(out_pipe[0], F_GETFL, 0);
+    if (flags >= 0) fcntl(out_pipe[0], F_SETFL, flags | O_NONBLOCK);
+    flags = fcntl(err_pipe[0], F_GETFL, 0);
+    if (flags >= 0) fcntl(err_pipe[0], F_SETFL, flags | O_NONBLOCK);
+
+    free(argv); free(argv_buf);
+
+    *out_pid = (int32_t)pid;
+    *out_stdin_fd = (int32_t)in_pipe[1];
+    *out_stdout_fd = (int32_t)out_pipe[0];
+    *out_stderr_fd = (int32_t)err_pipe[0];
+    return 0;
+}
+
+/* C2 surface 2b: blocking wait. Reaps the child, decodes the exit
+ * status. Returns 0 on success, errno on failure. */
+int lotus_process_wait(
+    int32_t pid,
+    int32_t *out_code,
+    int32_t *out_signal
+) {
+    if (!out_code || !out_signal) return EINVAL;
+    *out_code = -1;
+    *out_signal = 0;
+    int status = 0;
+    for (;;) {
+        pid_t w = waitpid((pid_t)pid, &status, 0);
+        if (w == (pid_t)pid) break;
+        if (w < 0 && errno == EINTR) continue;
+        return errno ? errno : ECHILD;
+    }
+    if (WIFEXITED(status)) {
+        *out_code = WEXITSTATUS(status);
+        *out_signal = 0;
+    } else if (WIFSIGNALED(status)) {
+        *out_code = -1;
+        *out_signal = WTERMSIG(status);
+    }
+    return 0;
+}
+
+/* C2 surface 2c: TERM → wait 100ms → KILL → reap. Returns 0 on
+ * success (the process has been reaped or was already gone),
+ * errno on failure. Idempotent against already-reaped children
+ * (ESRCH from kill is treated as success since the goal is "this
+ * pid is no longer running").
+ *
+ * The 100ms window is the SIGTERM grace period. Long enough that
+ * a well-behaved child (one that handles SIGTERM by flushing +
+ * exiting) finishes; short enough that a wedged child gets the
+ * KILL hammer promptly. Polls via waitpid(WNOHANG) at 5ms
+ * intervals so we exit early as soon as the child reaps.
+ */
+int lotus_process_kill_escalate(int32_t pid) {
+    if (pid <= 0) return EINVAL;
+    if (kill((pid_t)pid, SIGTERM) < 0) {
+        if (errno != ESRCH) {
+            return errno;
+        }
+    }
+    const int poll_interval_us = 5000;
+    const int total_us = 100 * 1000;
+    int elapsed = 0;
+    int status = 0;
+    while (elapsed < total_us) {
+        pid_t w = waitpid((pid_t)pid, &status, WNOHANG);
+        if (w == (pid_t)pid) return 0;
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            if (errno == ECHILD) return 0;
+            return errno;
+        }
+        struct timespec ts;
+        ts.tv_sec = 0;
+        ts.tv_nsec = (long)poll_interval_us * 1000L;
+        nanosleep(&ts, NULL);
+        elapsed += poll_interval_us;
+    }
+    if (kill((pid_t)pid, SIGKILL) < 0) {
+        if (errno != ESRCH) return errno;
+    }
+    for (;;) {
+        pid_t w = waitpid((pid_t)pid, &status, 0);
+        if (w == (pid_t)pid) return 0;
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            if (errno == ECHILD) return 0;
+            return errno;
+        }
+    }
+}
+
+/* C2 surface 2d: non-blocking read from a pipe fd opened by
+ * lotus_process_spawn. Returns an arena-anchored NUL-terminated
+ * string containing up to 64 KiB of available bytes.
+ *
+ * Return shapes:
+ *   - non-empty string: bytes were available; copied into the
+ *     bus_payload_arena.
+ *   - empty string (""): EAGAIN / EWOULDBLOCK (no data available)
+ *     OR EOF (child closed its write end). Use lotus_process_wait
+ *     to distinguish.
+ *   - NULL: hard error (EBADF, EIO, etc.) — errno set so the
+ *     codegen-side wrapper synthesizes an IoError.
+ */
+const char *lotus_process_pipe_read_nonblocking(int32_t fd) {
+    static const char empty[1] = { 0 };
+    if (fd < 0) {
+        errno = EBADF;
+        return NULL;
+    }
+    char buf[65536];
+    ssize_t r = read((int)fd, buf, sizeof(buf) - 1);
+    if (r < 0) {
+        if (errno == EAGAIN
+#if defined(EWOULDBLOCK) && (EWOULDBLOCK != EAGAIN)
+            || errno == EWOULDBLOCK
+#endif
+            || errno == EINTR) {
+            return empty;
+        }
+        return NULL;
+    }
+    if (r == 0) {
+        /* EOF — surface as empty. */
+        return empty;
+    }
+    buf[r] = '\0';
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            errno = ENOMEM;
+            return NULL;
+        }
+    }
+    char *out = (char *)lotus_arena_alloc(
+        g_bus_payload_arena, (size_t)r + 1, 1);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    if (!out) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    memcpy(out, buf, (size_t)r + 1);
+    return out;
+}
+
+/* C2 surface 2e: write a string to a pipe fd opened by
+ * lotus_process_spawn. Returns bytes written on success, -1 on
+ * error (errno set). Writes the full strlen of `s` — embedded NULs
+ * truncate. SIGPIPE is ignored globally so a write after the child
+ * closed its read end surfaces as EPIPE through errno, not a
+ * signal. */
+int64_t lotus_process_pipe_write(int32_t fd, const char *s) {
+    if (fd < 0) {
+        errno = EBADF;
+        return -1;
+    }
+    if (!s) {
+        errno = EINVAL;
+        return -1;
+    }
+    size_t total = strlen(s);
+    size_t left = total;
+    const char *p = s;
+    while (left > 0) {
+        ssize_t w = write((int)fd, p, left);
+        if (w > 0) {
+            p += (size_t)w;
+            left -= (size_t)w;
+            continue;
+        }
+        if (w < 0 && errno == EINTR) continue;
+        return -1;
+    }
+    return (int64_t)total;
 }
 
 /*
