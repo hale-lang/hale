@@ -41,6 +41,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <unistd.h>
 #include <errno.h>
 #include <time.h>
@@ -2919,16 +2920,50 @@ int lotus_tcp_connect(const char *host, uint16_t port) {
     /* Mirrors lotus_tcp_create's CONNECT-role logic but returns a
      * raw fd so it can be wrapped by `std::io::tcp::Stream {
      * conn_fd }` from Aperio source. Same retry-on-ECONNREFUSED
-     * shape (~1s window). */
+     * shape (~1s window).
+     *
+     * C6 (pond follow-up): fast path is still numeric-address
+     * via inet_pton; when that returns 0 (host isn't a dotted
+     * quad), fall back to getaddrinfo(host, port_str, AF_INET +
+     * SOCK_STREAM) and use the first returned address. The numeric
+     * path is bit-for-bit identical to the pre-C6 behavior — only
+     * non-numeric hosts take the DNS branch. */
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port   = htons(port);
     const char *h = host ? host : "127.0.0.1";
-    if (inet_pton(AF_INET, h, &addr.sin_addr) != 1) {
-        fprintf(stderr, "lotus_tcp_connect: invalid host %s\n", h);
-        errno = EINVAL;
-        return -1;
+    int pton = inet_pton(AF_INET, h, &addr.sin_addr);
+    if (pton != 1) {
+        /* C6: getaddrinfo fallback for hostname resolution. We map
+         * gai errors onto the existing IoError errno taxonomy so
+         * callers don't need a new error kind: EAI_NONAME (unknown
+         * host) -> ENOENT ("not_found"); everything else (DNS
+         * server failure, transient, no-address-for-family, etc.)
+         * -> EHOSTUNREACH ("host_unreachable"). gai_strerror is
+         * printed to stderr for diagnostic visibility but doesn't
+         * cross the IoError boundary. */
+        struct addrinfo hints;
+        struct addrinfo *res = NULL;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family   = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        char port_str[16];
+        snprintf(port_str, sizeof(port_str), "%u", (unsigned)port);
+        int gai = getaddrinfo(h, port_str, &hints, &res);
+        if (gai != 0 || res == NULL) {
+            fprintf(stderr,
+                    "lotus_tcp_connect: resolve %s: %s\n",
+                    h, gai_strerror(gai));
+            if (res) freeaddrinfo(res);
+            errno = (gai == EAI_NONAME) ? ENOENT : EHOSTUNREACH;
+            return -1;
+        }
+        /* First result wins — round-robin / multi-A handling is
+         * the caller's job (they can pre-resolve if they want it). */
+        struct sockaddr_in *resolved = (struct sockaddr_in *)res->ai_addr;
+        addr.sin_addr = resolved->sin_addr;
+        freeaddrinfo(res);
     }
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
