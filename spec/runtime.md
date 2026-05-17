@@ -445,10 +445,15 @@ is used only inside one locus and has no binding.
   returns a `Duration` (i64 nanoseconds since an unspecified
   reference); only meaningful for elapsed-time differences.
   Backed by `clock_gettime(CLOCK_MONOTONIC)` on both interpreter
-  and codegen paths. `time::now()` (wall-clock) is reserved for
-  observation and waits on richer `Time` typing.
-  Mocking is available for tests via `time::mock_clock(...)`
-  (stdlib).
+  and codegen paths. `time::now()` (C7, pond follow-up) returns
+  wall-clock seconds since the Unix epoch as `Int` via
+  `clock_gettime(CLOCK_REALTIME)`; observation only — NTP
+  slewing and leap seconds can warp the value, so
+  `time::monotonic` stays the basis for scheduling. Richer
+  `Time`-typed wall-clock (with calendar arithmetic) is
+  deferred until a consumer surfaces a concrete date-shape
+  need. Mocking is available for tests via
+  `time::mock_clock(...)` (stdlib).
 - **Monotonic-only scheduling.** Every scheduling primitive in
   Aperio — `time::sleep`, `time::tick`, the cooperative
   scheduler's deadline queue — is grounded on the monotonic
@@ -456,7 +461,7 @@ is used only inside one locus and has no binding.
   warp scheduling decisions. `time::sleep` retries on EINTR
   using the kernel's reported remaining time, so a delivered
   signal does not shorten the total sleep. `CLOCK_REALTIME` is
-  reserved for `time::now()` (wall-clock observation only) and
+  used by `time::now()` for wall-clock observation only and
   has no scheduling role.
 - **Implementation invariant.** Both interpreter and codegen
   paths lower `time::sleep(d)` to

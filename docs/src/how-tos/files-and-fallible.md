@@ -19,6 +19,9 @@ the filesystem surface; for the full `or`-clause vocabulary
 | `write_file_append(p, s)` | `() fallible(IoError)` | appends |
 | `file_size(p)` | `Int fallible(IoError)` | bytes |
 | `mkdir(p)` | `() fallible(IoError)` | parents must exist |
+| `rename(src, dst)` | `() fallible(IoError)` | POSIX `rename(2)`; atomic on same fs, EXDEV across |
+| `unlink(p)` | `() fallible(IoError)` | removes a regular file or symlink |
+| `mktemp(prefix, suffix)` | `String fallible(IoError)` | race-free `mkstemps(3)`; assembles `prefix + "XXXXXX" + suffix`, returns the path; caller owns cleanup |
 | `file_exists(p)` | `Bool` | **NOT fallible** — predicate |
 | `list_dir_count(p)` | `Int fallible(IoError)` | entry count |
 | `list_dir_at(p, i)` | `String fallible(IoError)` | i-th entry name |

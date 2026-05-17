@@ -65,6 +65,15 @@ curl http://127.0.0.1:8080/health
   yourself.
 - **`Response.content_type`** defaults to `"text/plain"`;
   override per response.
+- **`Response.headers`** is an optional CRLF-joined block of
+  user-supplied headers (no trailing CRLF) — write
+  `Response { status: 200, headers: "Set-Cookie: sid=" + sid,
+  body: "..." }` to attach Set-Cookie / CORS / X-Custom-*
+  lines without dropping down to a custom Stream writer.
+  Empty `headers` (the default) reproduces the v0 wire bytes
+  byte-for-byte. The companion `std::http::header(resp, name)`
+  free-fn reads an attached header back off a Response, same
+  case-insensitive shape as the Request-side lookup.
 - **`ready_signal`** prints that exact line to stdout the
   moment `listen_socket` succeeds — before the first `accept()`
   call blocks. Pipe consumers (test oracles, shell scripts,
