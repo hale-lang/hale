@@ -42,17 +42,23 @@ type __StdHttpRequest {
 }
 
 // Response carries the status code (200, 404, etc.) plus a
-// content_type and body. v0 emits a fixed header set
-// (Content-Type, Content-Length, Connection: close); user
-// code can't currently add custom headers without a future
-// header-map milestone. `content_type` defaults to
-// "text/plain" so the common case (`Response { status: 200,
-// body: "ok" }`) writes a valid response without the agent
-// having to populate every field. Set it explicitly for
-// JSON / HTML / etc.
+// content_type, an optional user-supplied `headers` block, and
+// the body. The fixed header set (Content-Type, Content-Length,
+// Connection: close) is still emitted unconditionally by
+// `write_response`; the C11 `headers` field (pond follow-up)
+// lets user code attach additional header lines (Set-Cookie,
+// X-Custom-*, CORS, etc.) without dropping down to a custom
+// Stream-driven writer. Mirrors `Request.headers` semantics:
+// CRLF-joined header lines with no trailing CRLF; lookup is
+// handled by the symmetric `std::http::header(resp, name)`
+// path-call. `content_type` defaults to "text/plain" so the
+// common case (`Response { status: 200, body: "ok" }`) writes
+// a valid response without the agent having to populate every
+// field. Set it explicitly for JSON / HTML / etc.
 type __StdHttpResponse {
     status: Int;
     content_type: String = "text/plain";
+    headers: String = "";
     body: String;
 }
 
@@ -156,17 +162,19 @@ fn __parse_http_request(raw: String) -> std::http::Request {
     };
 }
 
-// Header lookup. Walks the packed `req.headers` block looking
-// for a line whose prefix matches `name:` (case-sensitive at
-// v1). Returns the value with leading whitespace trimmed, or
-// an empty String if the header isn't present. Lookup is now
+// Header lookup over a CRLF-joined `name: value` block.
+// Walks the block looking for a line whose prefix matches
+// `name:` and returns the value with leading whitespace
+// trimmed, or an empty String if no header matches. Lookup is
 // case-insensitive per RFC 7230 §3.2 — both the needle and each
 // scanned header name are lowercased via std::str::lower before
-// comparison, so `req.header("Host")` and `req.header("host")`
-// resolve identically and the WebSocket-upgrade case is no
-// longer the only supported shape.
-fn __http_request_header(req: std::http::Request, name: String) -> String {
-    let headers = req.headers;
+// comparison, so `Host` and `host` resolve identically. The
+// block shape matches the wire-side `\r\n`-joined header lines
+// produced by parse_request (no trailing CRLF) and the same
+// shape consumers attach via `Response.headers`. Factored out
+// of `__http_request_header` so the symmetric Response-side
+// getter (C11) doesn't duplicate the walker logic.
+fn __http_find_header_in_block(headers: String, name: String) -> String {
     let total = len(headers);
     if total <= 0 {
         return "";
@@ -206,6 +214,22 @@ fn __http_request_header(req: std::http::Request, name: String) -> String {
     return "";
 }
 
+// Request-side header lookup. Walks `req.headers` via the shared
+// block walker. Surfaced as `std::http::header(req, name)`.
+fn __http_request_header(req: std::http::Request, name: String) -> String {
+    return __http_find_header_in_block(req.headers, name);
+}
+
+// Response-side header lookup (C11, pond follow-up). Walks the
+// user-attached `resp.headers` block — the same CRLF-joined
+// shape as Request.headers. Surfaced as `std::http::header(resp,
+// name)`; the codegen dispatch forks on the first argument's
+// type so callers can use one path-call name regardless of
+// whether the receiver is a Request or a Response.
+fn __http_response_header(resp: std::http::Response, name: String) -> String {
+    return __http_find_header_in_block(resp.headers, name);
+}
+
 // m85 — write a Response to a Stream as HTTP/1.1 wire bytes.
 //
 // Wire shape:
@@ -236,8 +260,22 @@ fn __write_http_response(s: std::io::tcp::Stream, resp: std::http::Response) {
     let status_line = "HTTP/1.1 " + to_string(resp.status) + " " + phrase + "\r\n";
     let ct_header = "Content-Type: " + resp.content_type + "\r\n";
     let cl_header = "Content-Length: " + to_string(body_len) + "\r\n";
-    let conn_header = "Connection: close\r\n\r\n";
-    let header = status_line + ct_header + cl_header + conn_header;
+    // C11 (pond follow-up): user-supplied headers go after the
+    // fixed Content-Type / Content-Length / Connection lines but
+    // before the blank-line separator. When `resp.headers` is
+    // empty the wire bytes are byte-identical to the v0 shape:
+    // the existing `Connection: close\r\n\r\n` block is split
+    // into `Connection: close\r\n` + (optional user headers +
+    // `\r\n`) + a final `\r\n` blank-line — so the empty-headers
+    // path concatenates to the original four-line block exactly.
+    let conn_line = "Connection: close\r\n";
+    let extra_headers = if len(resp.headers) > 0 {
+        resp.headers + "\r\n"
+    } else {
+        ""
+    };
+    let blank_line = "\r\n";
+    let header = status_line + ct_header + cl_header + conn_line + extra_headers + blank_line;
     s.send(header);
     s.send(resp.body);
 }

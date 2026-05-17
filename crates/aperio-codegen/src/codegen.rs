@@ -20911,14 +20911,45 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 result.ok_or_else(|| CodegenError::Unsupported(
                     "std::json::array_next returns ArrayIter but called in a position that expects no value".to_string()))
             }
-            // ws-echo: per-request header lookup. Delegates to
-            // the stdlib-internal `__http_request_header` fn.
+            // Per-receiver header lookup. ws-echo added the
+            // Request-side surface; C11 (pond follow-up) extended
+            // it to Responses so server code can read back the
+            // headers it attached via `Response.headers` and so
+            // pond/http/client can lift its private `__find_header`
+            // walker into the stdlib. Dispatch forks on the type
+            // of the first argument: a Request receiver routes to
+            // `__http_request_header`; a Response receiver routes
+            // to `__http_response_header`. Both Aperio fns are
+            // thin wrappers over the shared `__http_find_header_in_block`
+            // walker. We peek the type by lowering args[0] once;
+            // `lower_user_fn_call` will lower it again to build
+            // the actual call. For the typical Ident receiver
+            // (`std::http::header(r, name)`), the duplicate
+            // lowering is just an extra load — semantically
+            // equivalent.
             ["std", "http", "header"] => {
-                let result = self.lower_user_fn_call(
-                    "__http_request_header",
-                    args,
-                    scope,
-                )?;
+                if args.is_empty() {
+                    return Err(CodegenError::Unsupported(
+                        "std::http::header expects 2 args (receiver, name); got 0".to_string(),
+                    ));
+                }
+                let (_, recv_ty) = self.lower_expr(&args[0], scope)?;
+                let callee = match &recv_ty {
+                    CodegenTy::TypeRef(n) if n == "__StdHttpRequest" => {
+                        "__http_request_header"
+                    }
+                    CodegenTy::TypeRef(n) if n == "__StdHttpResponse" => {
+                        "__http_response_header"
+                    }
+                    other => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "std::http::header receiver must be Request or \
+                             Response; got {:?}",
+                            other
+                        )));
+                    }
+                };
+                let result = self.lower_user_fn_call(callee, args, scope)?;
                 result.ok_or_else(|| {
                     CodegenError::Unsupported(
                         "std::http::header returns String but called \
