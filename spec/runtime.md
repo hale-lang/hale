@@ -525,6 +525,26 @@ is used only inside one locus and has no binding.
   `dissolve` on the root locus. Stdlib provides finer-grained
   control if needed.
 
+### stdout buffering (2026-05-17)
+
+stdout is **line-buffered** for the lifetime of the program,
+regardless of whether it's attached to a TTY or a pipe. The
+main prelude calls `setvbuf(stdout, NULL, _IOLBF, 0)` once
+before any user code runs.
+
+The default libc behavior (fully-buffered when stdout isn't a
+TTY) silently dropped output for any program that printed then
+blocked on a syscall — `println("READY"); accept_loop();` made
+"READY\n" invisible to a piped consumer until the buffer
+filled or the program exited. Test oracles, supervisors waiting
+for a READY handshake, and log tailers all hung. Line-buffering
+matches Python `python -u` discipline and Go's default; `\n`-
+terminated `println` calls flush immediately under any stdout
+target.
+
+stderr is line-buffered by POSIX already; the runtime doesn't
+touch it.
+
 ## What's NOT in the runtime (lives in stdlib instead)
 
 - Specific bus transports (NATS, UDP, etc.)

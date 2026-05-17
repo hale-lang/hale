@@ -2792,6 +2792,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_env_init", env_init_ty, None);
 
+        // 2026-05-17 — declare void @lotus_io_init(void). Called
+        // from main's prelude to switch stdout to line-buffered
+        // so `println` flushes on `\n` regardless of whether
+        // stdout is a TTY or pipe. Fixes the silent-drop bug
+        // where `println("READY"); accept_block();` hung pipe
+        // consumers because the "READY" sat in libc's buffer.
+        let io_init_ty = self.context.void_type().fn_type(&[], false);
+        self.module
+            .add_function("lotus_io_init", io_init_ty, None);
+
         // declare i32 @lotus_env_args_count(void)
         let env_args_count_ty = i32_t.fn_type(&[], false);
         self.module
@@ -4828,6 +4838,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 &[argc_param.into(), argv_param.into()],
                 "",
             )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // 2026-05-17 — flip stdout to line-buffered so `println`
+        // reaches pipe consumers on `\n` instead of sitting in
+        // libc's fully-buffered output until the program exits
+        // or fills the buffer. Critical for any program that
+        // printlns then blocks (servers waiting for accept(),
+        // any long-running loop with periodic progress).
+        let io_init = self
+            .module
+            .get_function("lotus_io_init")
+            .expect("lotus_io_init declared");
+        self.builder
+            .build_call(io_init, &[], "")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         // Prelude: spin up the program-wide arena. Every

@@ -3476,6 +3476,27 @@ void lotus_env_init(int argc, char *const *argv) {
     g_argv = argv;
 }
 
+/*
+ * 2026-05-17 — stdout buffering discipline.
+ *
+ * libc fully-buffers stdout when it isn't a TTY (pipes, files,
+ * subprocess captures). That's wrong for Aperio's contract:
+ * `println("READY"); accept_blocking_call();` should make
+ * "READY\n" visible immediately, not on accept's return — pipe
+ * consumers (test oracles, supervisors waiting for a READY
+ * handshake, log tailers) hang forever otherwise.
+ *
+ * Switch stdout to line-buffered globally so `\n`-terminated
+ * `println` flushes on the newline regardless of how stdout is
+ * connected. Matches Python's `python -u` discipline + Go's
+ * default. Called once from main's prelude.
+ *
+ * stderr is already line-buffered per POSIX; we don't touch it.
+ */
+void lotus_io_init(void) {
+    setvbuf(stdout, NULL, _IOLBF, 0);
+}
+
 int lotus_env_args_count(void) {
     return g_argc;
 }
