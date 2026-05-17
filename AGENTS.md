@@ -271,3 +271,9 @@ are the supported form.
 
 **Aperio** is the language. **lotus** is the runtime substrate.
 C-runtime symbols stay `lotus_*` by design.
+
+---
+
+All things are systems. All systems exist to serve some purpose
+in their supersystem(s). All systems exist as an orchestration
+of subsystems. A lotus is a system.
