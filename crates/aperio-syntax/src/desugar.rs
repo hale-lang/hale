@@ -36,6 +36,7 @@
 use std::collections::BTreeMap;
 
 use crate::ast::*;
+use crate::Span;
 
 /// Per-topic data the desugar pass needs: payload type (to fill
 /// `ty: None` slots) and wire_subject (the literal subject string
@@ -260,39 +261,64 @@ fn rewrite_expr(e: &mut Expr, topics: &BTreeMap<String, TopicEntry>) {
 }
 
 // ---------------------------------------------------------------
-// Closed-world topology optimization: intra-locus direct call.
+// Closed-world topology optimization: intra-locus + intra-tower
+// direct call.
 // ---------------------------------------------------------------
 //
-// A topic is "intra-locus optimizable" when ALL of:
+// A topic is "closed-world optimizable" when ALL of:
 //   - no `bindings { Topic: ... }` entry references it
-//   - exactly one locus type publishes it
-//   - exactly one locus type subscribes it
-//   - publisher locus == subscriber locus (same type)
+//   - exactly one locus type publishes it (call this P)
+//   - exactly one locus type subscribes it (call this S)
 //
-// Under those conditions every Send for this topic happens
-// inside an instance of the same locus that hosts the handler;
-// the publish→queue→drain→dispatch path is observable as a
-// straight `self.handler(payload)`. We rewrite the Send to that
-// direct call at desugar time so codegen never sees the bus
-// hop. The publish/subscribe entries stay in place — they
-// continue to type-check and the bus runtime simply never sees
-// any traffic on the optimized subject.
+// And EITHER:
+//   (a) P == S — every Send happens inside an instance of the
+//       same locus that hosts the handler. Rewrite to
+//       `self.handler(payload)`.
+//   (b) P contains exactly one direct singleton field of type S
+//       (declared in P's `params` block). Every Send in P's body
+//       statically routes to that one child. Rewrite to
+//       `self.<field>.handler(payload)`.
+//
+// In both cases the publish→queue→drain→dispatch path collapses
+// to a synchronous method call. The publish/subscribe entries
+// stay in place so they keep type-checking; the bus runtime
+// simply never sees traffic on the optimized subject.
+//
+// Multi-hop towers (P → I → S via two field accesses), plural
+// child slots (`@form(vec) of S`), and child-publishes-parent-
+// subscribes are intentionally out of scope for v1 — they each
+// have their own design surface (broadcast semantics, parent
+// reference mechanism). Falling through to the bus is always
+// correct; we only optimize the unambiguous singleton cases.
 //
 // Run BEFORE desugar_topics so the Send still has its
 // `Expr::Ident(Topic)` shape (post-desugar, it'd be a literal
 // string and we'd lose the cheap topic-name lookup).
 
-/// Intra-locus optimization entry point. Mutates `program` in
-/// place. Idempotent: re-running on already-optimized input is a
-/// no-op (rewritten Sends become method-call Stmt::Expr nodes,
-/// which the rewrite step skips).
+/// Description of how to rewrite a Send for an eligible topic.
+/// `access_chain` lists the receivers to apply between `self`
+/// and the final method call: a single-element chain `[H]` is
+/// the same-locus case (`self.H(v)`); a two-element chain
+/// `[f, H]` is the parent-publishes-child-subscribes case
+/// (`self.f.H(v)`).
+#[derive(Debug, Clone)]
+struct EligibleRewrite {
+    publisher_locus: String,
+    access_chain: Vec<String>,
+}
+
+/// Intra-locus / intra-tower closed-world optimization entry
+/// point. Mutates `program` in place. Idempotent: re-running on
+/// already-optimized input is a no-op (rewritten Sends become
+/// method-call Stmt::Expr nodes, which the rewrite step skips).
 pub fn desugar_intra_locus_topics(program: &mut Program) {
     let bindings = collect_bindings(&program.items);
     let (pubs, subs) = collect_pub_sub(&program.items);
+    let locus_types = collect_locus_type_names(&program.items);
+    let locus_fields = collect_locus_typed_fields(&program.items, &locus_types);
 
-    // Identify topic → (locus, handler) pairs eligible for the
-    // direct-call rewrite.
-    let mut eligible: BTreeMap<String, (String, String)> = BTreeMap::new();
+    // Identify topic → rewrite recipe for each eligible topic.
+    let mut eligible: BTreeMap<String, EligibleRewrite> = BTreeMap::new();
     for (topic, pub_loci) in &pubs {
         if bindings.contains(topic) {
             continue;
@@ -309,10 +335,45 @@ pub fn desugar_intra_locus_topics(program: &mut Program) {
             continue;
         }
         let (sub_locus, handler) = &sub_pairs[0];
-        if sub_locus != &pub_locus {
+
+        if sub_locus == &pub_locus {
+            // (a) same-locus case
+            eligible.insert(
+                topic.clone(),
+                EligibleRewrite {
+                    publisher_locus: pub_locus,
+                    access_chain: vec![handler.clone()],
+                },
+            );
             continue;
         }
-        eligible.insert(topic.clone(), (pub_locus, handler.clone()));
+
+        // (b) parent-publishes-child-subscribes case: P (the
+        // publisher) must contain exactly one direct singleton
+        // field whose type names S (the subscriber).
+        let fields_of_s: Vec<&String> = locus_fields
+            .get(&pub_locus)
+            .map(|fields| {
+                fields
+                    .iter()
+                    .filter_map(|(fname, fty)| if fty == sub_locus { Some(fname) } else { None })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if fields_of_s.len() != 1 {
+            // Zero matches → not a tower edge, leave to bus.
+            // Multiple matches → ambiguous which child receives,
+            // leave to bus (which broadcasts to all subscribers).
+            continue;
+        }
+        let field = fields_of_s[0].clone();
+        eligible.insert(
+            topic.clone(),
+            EligibleRewrite {
+                publisher_locus: pub_locus,
+                access_chain: vec![field, handler.clone()],
+            },
+        );
     }
 
     if eligible.is_empty() {
@@ -329,9 +390,94 @@ pub fn desugar_intra_locus_topics(program: &mut Program) {
     }
 }
 
+/// Set of every declared locus type name in the program (across
+/// all module nesting). Used to recognize "this field's type
+/// names another locus" without consulting the typechecker.
+fn collect_locus_type_names(items: &[TopDecl]) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    fn walk(items: &[TopDecl], out: &mut std::collections::BTreeSet<String>) {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => {
+                    out.insert(l.name.name.clone());
+                }
+                TopDecl::Module(m) => walk(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    walk(items, &mut out);
+    out
+}
+
+/// For each locus type, the list of (field_name, locus_type) for
+/// each `params` field whose declared type names another locus.
+/// Used to find tower edges at desugar time. Only direct fields
+/// are tracked — capacity slots (`pool/heap/vec/recpool`) are
+/// deliberately skipped because their semantics (plural, indexed,
+/// recycled) don't match the closed-world singleton rewrite.
+fn collect_locus_typed_fields(
+    items: &[TopDecl],
+    locus_types: &std::collections::BTreeSet<String>,
+) -> BTreeMap<String, Vec<(String, String)>> {
+    let mut out: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    fn walk(
+        items: &[TopDecl],
+        locus_types: &std::collections::BTreeSet<String>,
+        out: &mut BTreeMap<String, Vec<(String, String)>>,
+    ) {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => {
+                    let owner = l.name.name.clone();
+                    for member in &l.members {
+                        if let LocusMember::Params(pb) = member {
+                            for p in &pb.params {
+                                if let Some(ty) = &p.ty {
+                                    if let Some(name) = single_named_locus(ty, locus_types) {
+                                        out.entry(owner.clone())
+                                            .or_default()
+                                            .push((p.name.name.clone(), name));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                TopDecl::Module(m) => walk(&m.items, locus_types, out),
+                _ => {}
+            }
+        }
+    }
+    walk(items, locus_types, &mut out);
+    out
+}
+
+/// If `ty` names a single locus type (an unqualified or
+/// last-segment-matches form like `Foo` or `pond::Foo`) declared
+/// in the program, return its name. Otherwise None. Projection,
+/// array, tuple, and function types are deliberately skipped —
+/// they aren't singleton-locus shapes.
+fn single_named_locus(
+    ty: &TypeExpr,
+    locus_types: &std::collections::BTreeSet<String>,
+) -> Option<String> {
+    match ty {
+        TypeExpr::Named { path, generic_args, .. } if generic_args.is_empty() => {
+            let last = path.segments.last()?.name.clone();
+            if locus_types.contains(&last) {
+                Some(last)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 fn intra_rewrite_module(
     m: &mut ModuleDecl,
-    eligible: &BTreeMap<String, (String, String)>,
+    eligible: &BTreeMap<String, EligibleRewrite>,
 ) {
     for item in &mut m.items {
         match item {
@@ -349,7 +495,7 @@ fn intra_rewrite_module(
 /// (current locus name, topic name) pair.
 fn intra_rewrite_locus(
     l: &mut LocusDecl,
-    eligible: &BTreeMap<String, (String, String)>,
+    eligible: &BTreeMap<String, EligibleRewrite>,
 ) {
     let locus_name = l.name.name.clone();
     for member in &mut l.members {
@@ -374,7 +520,7 @@ fn intra_rewrite_locus(
 fn intra_rewrite_block(
     b: &mut Block,
     locus_name: &str,
-    eligible: &BTreeMap<String, (String, String)>,
+    eligible: &BTreeMap<String, EligibleRewrite>,
 ) {
     for stmt in &mut b.stmts {
         intra_rewrite_stmt(stmt, locus_name, eligible);
@@ -384,34 +530,51 @@ fn intra_rewrite_block(
     }
 }
 
+/// Build the `self.<chain[0]>.<chain[1]>...(value)` expression
+/// from an access chain. The chain's final segment is the method
+/// name; all preceding segments are field accesses through which
+/// the receiver is traversed.
+fn build_chained_call(access_chain: &[String], value: Expr, span: Span) -> Expr {
+    // Start from `self`, walk all but the last segment as field
+    // accesses, then call the last segment as a method on the
+    // accumulated receiver.
+    let (method_name, fields) = access_chain
+        .split_last()
+        .expect("eligible access chain is never empty");
+    let mut receiver = Expr::KwSelf(span);
+    for field in fields {
+        receiver = Expr::Field {
+            receiver: Box::new(receiver),
+            name: Ident { name: field.clone(), span },
+            span,
+        };
+    }
+    Expr::Call {
+        callee: Box::new(Expr::Field {
+            receiver: Box::new(receiver),
+            name: Ident { name: method_name.clone(), span },
+            span,
+        }),
+        args: vec![value],
+        span,
+    }
+}
+
 fn intra_rewrite_stmt(
     s: &mut Stmt,
     locus_name: &str,
-    eligible: &BTreeMap<String, (String, String)>,
+    eligible: &BTreeMap<String, EligibleRewrite>,
 ) {
     if let Stmt::Send { subject, value, span } = s {
         if let Expr::Ident(id) = subject {
-            if let Some((pub_locus, handler)) = eligible.get(&id.name) {
-                if pub_locus == locus_name {
-                    // Build `self.handler(value)` as a Stmt::Expr
-                    // wrapping a Call(Field(KwSelf, handler), [value]).
+            if let Some(rw) = eligible.get(&id.name) {
+                if rw.publisher_locus == locus_name {
                     let span = *span;
                     let value_expr = std::mem::replace(
                         value,
                         Expr::Literal(Literal::Bool(false), span),
                     );
-                    let call_expr = Expr::Call {
-                        callee: Box::new(Expr::Field {
-                            receiver: Box::new(Expr::KwSelf(span)),
-                            name: Ident {
-                                name: handler.clone(),
-                                span,
-                            },
-                            span,
-                        }),
-                        args: vec![value_expr],
-                        span,
-                    };
+                    let call_expr = build_chained_call(&rw.access_chain, value_expr, span);
                     *s = Stmt::Expr(call_expr);
                     return;
                 }
@@ -432,7 +595,7 @@ fn intra_rewrite_stmt(
 fn intra_rewrite_if(
     if_stmt: &mut IfStmt,
     locus_name: &str,
-    eligible: &BTreeMap<String, (String, String)>,
+    eligible: &BTreeMap<String, EligibleRewrite>,
 ) {
     intra_rewrite_block(&mut if_stmt.then_block, locus_name, eligible);
     if let Some(eb) = &mut if_stmt.else_block {
@@ -446,7 +609,7 @@ fn intra_rewrite_if(
 fn intra_rewrite_match(
     m: &mut MatchStmt,
     locus_name: &str,
-    eligible: &BTreeMap<String, (String, String)>,
+    eligible: &BTreeMap<String, EligibleRewrite>,
 ) {
     for arm in &mut m.arms {
         match &mut arm.body {
@@ -459,7 +622,7 @@ fn intra_rewrite_match(
 fn intra_rewrite_expr(
     e: &mut Expr,
     locus_name: &str,
-    eligible: &BTreeMap<String, (String, String)>,
+    eligible: &BTreeMap<String, EligibleRewrite>,
 ) {
     match e {
         Expr::Block(b) => intra_rewrite_block(b, locus_name, eligible),

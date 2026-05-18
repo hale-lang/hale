@@ -379,6 +379,179 @@ fn intra_locus_optimization_skipped_when_topic_is_bound() {
 }
 
 #[test]
+fn tower_parent_publishes_child_subscribes_rewrites_to_chained_call() {
+    // Parent locus owns a child via params; the child is the
+    // sole subscriber; parent publishes. The desugar pass should
+    // rewrite `Beat <- t` in parent.birth() to
+    // `self.child.on_beat(t)`.
+    let mut p = parse(r#"
+        type Tick { n: Int; }
+        topic Beat { payload: Tick; }
+        locus Child {
+            bus { subscribe Beat as on_beat; }
+            fn on_beat(t: Tick) { }
+        }
+        locus Parent {
+            params { child: Child = Child { }; }
+            bus { publish Beat; }
+            birth() { Beat <- Tick { n: 1 }; }
+        }
+        fn main() { Parent { }; }
+    "#);
+    desugar_intra_locus_topics(&mut p);
+    let mut found = false;
+    for it in &p.items {
+        if let TopDecl::Locus(l) = it {
+            if l.name.name != "Parent" {
+                continue;
+            }
+            for m in &l.members {
+                if let LocusMember::Lifecycle(lc) = m {
+                    if !matches!(lc.kind, LifecycleKind::Birth) {
+                        continue;
+                    }
+                    if let Some(Stmt::Expr(Expr::Call { callee, .. })) = lc.body.stmts.first() {
+                        if let Expr::Field { receiver, name, .. } = callee.as_ref() {
+                            if name.name == "on_beat" {
+                                if let Expr::Field { receiver: inner, name: f, .. } = receiver.as_ref() {
+                                    if matches!(inner.as_ref(), Expr::KwSelf(_))
+                                        && f.name == "child"
+                                    {
+                                        found = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(found, "expected birth to be rewritten to self.child.on_beat(...)");
+}
+
+#[test]
+fn tower_optimization_skipped_when_parent_has_two_subscriber_children() {
+    // Ambiguity: parent has TWO fields of the subscriber type.
+    // The bus would broadcast to both; the desugar pass must not
+    // pick one arbitrarily, so the Send stays.
+    let mut p = parse(r#"
+        type Tick { n: Int; }
+        topic Beat { payload: Tick; }
+        locus Child {
+            bus { subscribe Beat as on_beat; }
+            fn on_beat(t: Tick) { }
+        }
+        locus Parent {
+            params {
+                a: Child = Child { };
+                b: Child = Child { };
+            }
+            bus { publish Beat; }
+            birth() { Beat <- Tick { n: 1 }; }
+        }
+        fn main() { Parent { }; }
+    "#);
+    desugar_intra_locus_topics(&mut p);
+    let mut still_send = false;
+    for it in &p.items {
+        if let TopDecl::Locus(l) = it {
+            if l.name.name != "Parent" {
+                continue;
+            }
+            for m in &l.members {
+                if let LocusMember::Lifecycle(lc) = m {
+                    if let Some(Stmt::Send { .. }) = lc.body.stmts.first() {
+                        still_send = true;
+                    }
+                }
+            }
+        }
+    }
+    assert!(still_send, "expected ambiguous-child case to fall through to bus");
+}
+
+#[test]
+fn tower_optimization_skipped_when_subscriber_is_two_hops_away() {
+    // Multi-hop tower: Outer contains Middle, Middle contains
+    // Leaf, Leaf subscribes, Outer publishes. v1 optimization
+    // only handles single-hop towers — fall through to bus.
+    let mut p = parse(r#"
+        type Tick { n: Int; }
+        topic Beat { payload: Tick; }
+        locus Leaf {
+            bus { subscribe Beat as on_beat; }
+            fn on_beat(t: Tick) { }
+        }
+        locus Middle {
+            params { leaf: Leaf = Leaf { }; }
+        }
+        locus Outer {
+            params { mid: Middle = Middle { }; }
+            bus { publish Beat; }
+            birth() { Beat <- Tick { n: 1 }; }
+        }
+        fn main() { Outer { }; }
+    "#);
+    desugar_intra_locus_topics(&mut p);
+    let mut still_send = false;
+    for it in &p.items {
+        if let TopDecl::Locus(l) = it {
+            if l.name.name != "Outer" {
+                continue;
+            }
+            for m in &l.members {
+                if let LocusMember::Lifecycle(lc) = m {
+                    if let Some(Stmt::Send { .. }) = lc.body.stmts.first() {
+                        still_send = true;
+                    }
+                }
+            }
+        }
+    }
+    assert!(still_send, "expected multi-hop tower to fall through to bus");
+}
+
+#[test]
+fn tower_parent_publishes_child_subscribes_round_trip_end_to_end() {
+    // Synchronous-call semantics: the rewrite makes the handler
+    // fire inline at the Send site, so a post-construction read
+    // of the child's state via the parent must see the
+    // accumulated total — without the optimization, the bus
+    // dispatch would defer and the post-construct read would
+    // see the initial value.
+    let src = r#"
+        type Tick { n: Int; }
+        topic Beat { payload: Tick; }
+        locus Counter {
+            params { sum: Int = 0; }
+            bus { subscribe Beat as on_beat; }
+            fn on_beat(t: Tick) { self.sum = self.sum + t.n; }
+        }
+        locus Driver {
+            params { counter: Counter = Counter { }; }
+            bus { publish Beat; }
+            birth() {
+                Beat <- Tick { n: 1 };
+                Beat <- Tick { n: 2 };
+                Beat <- Tick { n: 3 };
+            }
+        }
+        fn main() {
+            let d = Driver { };
+            print("sum=");
+            println(d.counter.sum);
+        }
+    "#;
+    let bin = build("tower_parent_child_round_trip", src);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "non-zero: {:?}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("sum=6"), "got: {:?}", stdout);
+}
+
+#[test]
 fn intra_locus_round_trip_end_to_end() {
     // The optimized direct-call path should be observable as
     // synchronous: birth() runs, the handler increments sum, and

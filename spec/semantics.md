@@ -538,24 +538,43 @@ right after the bus queue is published. Subjects use the
 desugared wire form (so a binding for hierarchical `Login`
 registers as `"events.login"`).
 
-**3. Closed-world intra-locus optimization.** When a topic is
-used only intra-locus and has no binding, the desugar pass
-rewrites the publisher's `Stmt::Send` into a direct
-`self.handler(payload)` method call. Conditions:
+**3. Closed-world topology optimization.** When a topic has no
+binding and the publisher / subscriber relationship is statically
+unambiguous, the desugar pass rewrites the publisher's
+`Stmt::Send` into a direct method call. Two shapes qualify:
+
+- **Intra-locus (same-type):** publisher locus type == subscriber
+  locus type. Every Send happens inside an instance of the same
+  locus that hosts the handler. Rewrite: `Foo <- v` →
+  `self.handler(v)`.
+- **Intra-tower (parent → child):** publisher locus type P has
+  exactly one direct singleton field (declared in `params { }`)
+  whose type names the subscriber locus type S. Every Send in
+  P's body statically routes to that one child. Rewrite:
+  `Foo <- v` → `self.<field>.handler(v)`.
+
+Common preconditions for both shapes:
 
 - No `bindings { Topic: ... }` entry exists for this topic.
 - Exactly one locus type publishes the topic.
 - Exactly one locus type subscribes the topic.
-- Publisher locus type == subscriber locus type.
 
-When all four hold, every Send necessarily happens inside an
-instance of the same locus that hosts the handler, so the
-publish→queue→drain→dispatch path is observable as a synchronous
-self-call. The optimization sidesteps the bus entirely; the
-`subscribe` / `publish` entries stay declared (still type-check)
-but the bus runtime never sees traffic on the optimized subject.
-This is a pure-perf rewrite — observable behavior is identical
-modulo timing (synchronous instead of cooperative-deferred).
+When eligible, the publish→queue→drain→dispatch path collapses
+to a synchronous method call. The `subscribe` / `publish`
+entries stay declared (still type-check) but the bus runtime
+never sees traffic on the optimized subject. This is a pure-perf
+rewrite — observable behavior is identical modulo timing
+(synchronous instead of cooperative-deferred).
+
+Out of scope for v1 (fall through to bus dispatch unchanged):
+
+- Multi-hop towers (`Outer → Middle → Leaf`).
+- Plural / vec / capacity-slot children — broadcast semantics
+  don't match the singleton-rewrite shape.
+- Child-publishes-parent-subscribes — needs a parent-reference
+  mechanism that doesn't exist in v1.
+- A parent with multiple direct fields of the subscriber type
+  (ambiguous receiver).
 
 A bound topic is never optimized: the binding may publish to
 remote subscribers that aren't visible at compile time.
