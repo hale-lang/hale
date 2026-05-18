@@ -32057,16 +32057,40 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             return Ok(arena_ptr.into_pointer_value());
         }
-        // m49: when lowering a non-main free fn body, allocations
-        // route through the per-call subregion (held in
-        // current_user_fn_arena's alloca) instead of the program-
-        // wide arena.global. arena.global remains the fallback for
-        // main only — main's body sets `in_main` and never touches
-        // current_user_fn_arena.
-        if let Some(fn_arena_alloca) = self.current_user_fn_arena {
+        // m49 / cross-seed-locus-arg-segv fix: when lowering a non-
+        // main free fn body, route allocations through the *caller*
+        // arena (held in current_user_fn_caller_arena's alloca), not
+        // the per-call subregion. The original m49 design preferred
+        // a per-call subregion (current_user_fn_arena) on the
+        // assumption that fn-local allocations are short-lived and
+        // can be reclaimed at fn-exit via `lotus_arena_destroy`.
+        // That assumption is unsound for any value that escapes the
+        // fn frame — most notably a `type` literal constructed
+        // inside the callee and pushed onto a foreign locus's
+        // @form(vec) slot. The push stores a pointer into the
+        // vec's buffer; the subregion's destroy at fn exit then
+        // frees the storage that pointer aimed at, leaving the vec
+        // holding a dangling pointer. A subsequent `.get(i)` from
+        // any caller dereferences the dangler and segfaults.
+        //
+        // The codegen has no escape analysis to distinguish
+        // truly-temporary callee allocations from escaping ones, so
+        // the safe choice is the caller arena — which outlives the
+        // callee and is the same arena the caller would have used
+        // for the literal had the user inlined the call. The
+        // subregion itself stays around (it's the cleanup target for
+        // any other state the call-prologue may stash in it later),
+        // but it's no longer the default allocation target.
+        //
+        // Surfaced by pond/agent/tools FRICTION
+        // (`cross-seed-locus-arg-segv`): `tools::register_tool(reg,
+        // ToolSpec { ... }, invoke_fn)` built the Entry inside the
+        // callee's subregion, pushed it onto `reg.entries`, and the
+        // caller's later `.get(0)` returned a stale pointer.
+        if let Some(caller_arena_alloca) = self.current_user_fn_caller_arena {
             let arena_ptr = self
                 .builder
-                .build_load(ptr_t, fn_arena_alloca, "fn.arena.cur")
+                .build_load(ptr_t, caller_arena_alloca, "fn.caller_arena.cur")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             return Ok(arena_ptr.into_pointer_value());
         }
