@@ -1479,17 +1479,36 @@ a concrete arg.
   through the m80 machinery with `data` as the implicit self
   arg. End-to-end coverage in
   `crates/aperio-codegen/tests/interface_dispatch.rs`.
-- **Phase B follow-ups (deferred).** Returning an interface
-  value from a fn, storing one in a locus param/field, putting
-  interfaces in arrays/tuples — all need fat-pointer deep-copy
-  across arena boundaries (the data pointer inside the fat
-  pointer would dangle without it). `emit_return_value_deep_copy`
-  currently rejects Interface returns with a pointer at this
-  follow-up. Heterogeneous storage (`Vec<Sink>` of mixed-impl)
-  needs the same follow-up plus array-of-interface lowering.
-  The `std::text::Sink` stdlib migration is unblocked at the
-  language level and ships in a separate milestone to keep this
-  commit's blast radius bounded.
+- **Phase B follow-ups.** Most of the deferred surface has
+  landed across two follow-up milestones. Storing an interface
+  value in a locus param/field shipped 2026-05-16 alongside the
+  `std::http::Handler` interface; the field-store path coerces
+  locus → interface at the literal site and the stored fat
+  pointer aliases the underlying locus's region. `@form(vec)`
+  cell elements of interface type shipped 2026-05-17 (A10);
+  `push`/`set` coerce and the stored cell mutation writes
+  through. Free-fn return of an interface value shipped
+  2026-05-18: the return site inserts the locus → interface
+  coercion, the m90 locus-instantiation routing is extended to
+  fire when the fn declares `-> Interface(I)` and the
+  instantiated locus satisfies I (so the underlying locus lives
+  in the program-lifetime payload arena rather than the fn
+  subregion), and `emit_return_value_deep_copy` deep-copies the
+  16-byte fat-pointer struct into the caller's arena. Same
+  milestone also fixed a typecheck reject where interface →
+  same-interface pass-through was treated as a structural-impl
+  failure. Coverage:
+  `crates/aperio-codegen/tests/interface_return.rs`,
+  `crates/aperio-codegen/tests/interface_in_form_vec.rs`, and
+  the pre-existing `sink_polymorphism.rs`.
+  Still deferred: interface elements inside tuples and fixed
+  arrays. The gap is the broader composite-construction
+  coercion shape (recursive coercion at the construction site
+  plus locus-routing across nested return positions); the same
+  gap governs tuple-of-`LocusRef` escape today, where the
+  pointers in the returned tuple alias loci in the fn's stack
+  frame and only happen to read correctly because the freed
+  memory hasn't been clobbered yet.
 
 ### F.21 Cascading-dimension interface (sketch)
 

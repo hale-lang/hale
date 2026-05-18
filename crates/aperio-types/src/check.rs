@@ -189,6 +189,80 @@ pub fn check_bundle(bundle: &Bundle<'_>, top: &TopScope) -> Vec<Diag> {
 ///     publish/subscribe declarations on this topic. Pub-only →
 ///     connect, sub-only → listen, both → compile error
 ///     ("specify `role:`").
+/// Wave B: verify an adapter-binding locus satisfies the bus's
+/// `__StdBusAdapter` contract (currently a single `send(subject:
+/// String, bytes: Bytes)` method). Stand-alone shape — same logic
+/// as `Checker::check_structural_impl` but callable from
+/// `check_main_and_bindings` which doesn't construct a `Checker`.
+fn check_satisfies_bus_adapter(
+    top: &TopScope,
+    locus_name: &str,
+) -> Result<(), String> {
+    const IFACE: &str = "__StdBusAdapter";
+    let iface = match top.lookup(IFACE) {
+        Some(TopSymbol::Interface(i)) => i,
+        _ => {
+            // The stdlib seed defines this interface; absence means
+            // the seed wasn't loaded. Treat as OK rather than
+            // failing user code with a stdlib-shape diagnostic.
+            return Ok(());
+        }
+    };
+    let locus = match top.lookup(locus_name) {
+        Some(TopSymbol::Locus(l)) => l,
+        _ => return Err(format!("`{}` is not a locus", locus_name)),
+    };
+    for im in &iface.methods {
+        let lm = match locus.methods.iter().find(|lm| lm.name == im.name) {
+            Some(m) => m,
+            None => {
+                return Err(format!(
+                    "locus `{}` does not satisfy `{}`: missing method `{}`",
+                    locus_name, IFACE, im.name
+                ));
+            }
+        };
+        if lm.params.len() != im.params.len() {
+            return Err(format!(
+                "locus `{}` method `{}` arity does not match `{}`: \
+                 expected {} arg(s), locus has {}",
+                locus_name,
+                im.name,
+                IFACE,
+                im.params.len(),
+                lm.params.len()
+            ));
+        }
+        for (i, (lp, ip)) in lm.params.iter().zip(im.params.iter()).enumerate() {
+            let want = &ip.1;
+            if !want.assignable_from(lp) {
+                return Err(format!(
+                    "locus `{}` method `{}` arg #{} type mismatch: \
+                     `{}` requires `{}`, locus has `{}`",
+                    locus_name,
+                    im.name,
+                    i,
+                    IFACE,
+                    want.display(),
+                    lp.display()
+                ));
+            }
+        }
+        if !im.ret.assignable_from(&lm.ret) {
+            return Err(format!(
+                "locus `{}` method `{}` return type mismatch: \
+                 `{}` requires `{}`, locus returns `{}`",
+                locus_name,
+                im.name,
+                IFACE,
+                im.ret.display(),
+                lm.ret.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn check_main_and_bindings(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -238,41 +312,94 @@ fn check_main_and_bindings(
                                 bound.insert(entry.topic.name.clone(), entry.topic.span);
                             }
 
-                            // Role inference validation. Only one
-                            // TransportSpec variant ships in v1.x;
-                            // future variants (Adapter, etc.) won't
-                            // need this same check.
-                            let TransportSpec::Unix { role, .. } = &entry.transport;
-                            if role.is_none() {
-                                let pubs = topic_publishes
-                                    .contains(&entry.topic.name);
-                                let subs = topic_subscribes
-                                    .contains(&entry.topic.name);
-                                if pubs && subs {
-                                    diags.push(Diag::ty(
-                                        entry.topic.span,
-                                        format!(
-                                            "binding for topic `{}` is ambiguous: \
-                                             some locus publishes it AND some locus \
-                                             subscribes to it; specify `role:` \
-                                             (e.g. `unix(\"/path\", role: listen)`)",
-                                            entry.topic.name
-                                        ),
-                                    ));
-                                } else if !pubs && !subs {
-                                    diags.push(Diag::ty(
-                                        entry.topic.span,
-                                        format!(
-                                            "binding for topic `{}` has no publisher \
-                                             or subscriber in the bundle; nothing to \
-                                             route. Add a `bus {{ publish | subscribe }}` \
-                                             or remove the binding",
-                                            entry.topic.name
-                                        ),
-                                    ));
+                            // Role inference validation. Substrate
+                            // Unix bindings need a role (inferred or
+                            // explicit); Adapter bindings carry
+                            // direction inside the adapter locus's
+                            // own params and are opaque here.
+                            if let TransportSpec::Unix { role, .. } =
+                                &entry.transport
+                            {
+                                if role.is_none() {
+                                    let pubs = topic_publishes
+                                        .contains(&entry.topic.name);
+                                    let subs = topic_subscribes
+                                        .contains(&entry.topic.name);
+                                    if pubs && subs {
+                                        diags.push(Diag::ty(
+                                            entry.topic.span,
+                                            format!(
+                                                "binding for topic `{}` is ambiguous: \
+                                                 some locus publishes it AND some locus \
+                                                 subscribes to it; specify `role:` \
+                                                 (e.g. `unix(\"/path\", role: listen)`)",
+                                                entry.topic.name
+                                            ),
+                                        ));
+                                    } else if !pubs && !subs {
+                                        diags.push(Diag::ty(
+                                            entry.topic.span,
+                                            format!(
+                                                "binding for topic `{}` has no publisher \
+                                                 or subscriber in the bundle; nothing to \
+                                                 route. Add a `bus {{ publish | subscribe }}` \
+                                                 or remove the binding",
+                                                entry.topic.name
+                                            ),
+                                        ));
+                                    }
+                                    // Otherwise (exactly one of pubs/subs):
+                                    // role is inferable; desugar fills it in.
                                 }
-                                // Otherwise (exactly one of pubs/subs):
-                                // role is inferable; desugar fills it in.
+                            }
+
+                            // Wave B: adapter binding checks. Verify
+                            // the named symbol is a locus and that it
+                            // structurally satisfies `__StdBusAdapter`
+                            // (i.e. exposes `fn send(subject: String,
+                            // bytes: Bytes)`). Field-init shape is
+                            // codegen's job once the locus is
+                            // resolved.
+                            if let TransportSpec::Adapter { locus, .. } =
+                                &entry.transport
+                            {
+                                match top.lookup(&locus.name) {
+                                    Some(TopSymbol::Locus(_)) => {
+                                        if let Err(msg) = check_satisfies_bus_adapter(
+                                            top, &locus.name,
+                                        ) {
+                                            diags.push(Diag::ty(
+                                                locus.span,
+                                                format!(
+                                                    "adapter binding for topic `{}`: {}",
+                                                    entry.topic.name, msg
+                                                ),
+                                            ));
+                                        }
+                                    }
+                                    Some(_) => {
+                                        diags.push(Diag::ty(
+                                            locus.span,
+                                            format!(
+                                                "adapter binding for topic `{}`: \
+                                                 `{}` is not a locus — adapter \
+                                                 transport spec must name a locus \
+                                                 that satisfies `__StdBusAdapter`",
+                                                entry.topic.name, locus.name
+                                            ),
+                                        ));
+                                    }
+                                    None => {
+                                        diags.push(Diag::ty(
+                                            locus.span,
+                                            format!(
+                                                "adapter binding for topic `{}`: \
+                                                 unknown locus `{}`",
+                                                entry.topic.name, locus.name
+                                            ),
+                                        ));
+                                    }
+                                }
                             }
                         }
                     }
@@ -2198,7 +2325,13 @@ impl<'a> Checker<'a> {
                                 self.top.lookup(iface_name),
                                 Some(TopSymbol::Interface(_))
                             );
-                            if is_iface {
+                            // G20 follow-up: skip the structural
+                            // check when the arg is itself the same
+                            // interface — interface → same-interface
+                            // is identity, no fat-pointer rebuild.
+                            // (Different-interface → interface
+                            // subtyping is a separate design call.)
+                            if is_iface && arg_name != iface_name {
                                 if let Err(msg) =
                                     self.check_structural_impl(arg_name, iface_name)
                                 {

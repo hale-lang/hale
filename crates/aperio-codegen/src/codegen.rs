@@ -2754,6 +2754,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
+        // Wave B (bus-transport redesign): adapter-binding
+        // registration. The runtime stores the (self, send_fn)
+        // pair in lotus_bus_remote_entry_t's adapter slot and
+        // dispatches outbound payloads through the fn pointer.
+        // declare void @lotus_bus_register_remote_adapter(ptr subject, ptr self, ptr send_fn)
+        let bus_register_adapter_ty = void_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_bus_register_remote_adapter",
+            bus_register_adapter_ty,
+            None,
+        );
+
         // m59: subscriber-side reader threads need access to the
         // cooperative bus queue to dispatch incoming bytes into
         // the local handler set. The codegen-emitted main prelude
@@ -5817,7 +5832,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .cloned()
                     .unwrap_or_else(|| entry.topic.name.clone());
 
-                // Build URL + role from the transport spec.
+                // Build URL + role from the transport spec, or
+                // dispatch to the adapter-binding path.
                 let (url, role) = match &entry.transport {
                     TransportSpec::Unix { path, role, .. } => {
                         // Role inference filled this in during desugar
@@ -5840,6 +5856,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             }
                         };
                         (format!("unix://{}", path), r)
+                    }
+                    TransportSpec::Adapter { locus, inits, .. } => {
+                        self.emit_adapter_binding_register(
+                            &subject,
+                            &entry.topic.name,
+                            locus,
+                            inits,
+                        )?;
+                        continue;
                     }
                 };
 
@@ -5869,6 +5894,102 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
         }
+        Ok(())
+    }
+
+    /// Wave B: emit code that (1) instantiates the user-supplied
+    /// adapter locus with program-lifetime allocation, (2) resolves
+    /// its `send` method's fn pointer, and (3) calls
+    /// `lotus_bus_register_remote_adapter(subject, self_ptr, send_fn)`.
+    /// The runtime stores both pointers in
+    /// `lotus_bus_remote_entry_t`'s adapter slot and dispatches
+    /// outbound payloads through the fn pointer.
+    ///
+    /// Lifetime: the instantiation flows through the m90 routing
+    /// path by temporarily setting `current_user_fn_ret` to
+    /// `LocusRef(locus.name)` — the locus's self_ptr ends up in
+    /// the program-lifetime payload arena, so the runtime entry's
+    /// adapter_self pointer stays valid for the program's life.
+    fn emit_adapter_binding_register(
+        &mut self,
+        subject: &str,
+        topic_name: &str,
+        locus: &Ident,
+        inits: &[StructInit],
+    ) -> Result<(), CodegenError> {
+        // Synthesize a struct literal for the adapter locus,
+        // re-using the existing Expr::Struct lowering. m67-style
+        // generic monomorphization isn't relevant here (adapter
+        // loci are concrete by construction), but a bare-name path
+        // is what the rest of the pipeline expects.
+        let locus_path = QualifiedName {
+            segments: vec![locus.clone()],
+            span: locus.span,
+        };
+        let locus_lit = Expr::Struct {
+            path: locus_path,
+            inits: inits.to_vec(),
+            span: locus.span,
+        };
+
+        // Trigger m90 routing so the locus self_ptr is allocated
+        // in the payload arena (program-lifetime). Restore the
+        // saved value afterwards so we don't bleed this routing
+        // shape into anything that follows.
+        let saved_ret = self.current_user_fn_ret.clone();
+        self.current_user_fn_ret =
+            Some(Some(CodegenTy::LocusRef(locus.name.clone())));
+        let mut scope = Scope::default();
+        let (self_val, _self_ty) = self.lower_expr(&locus_lit, &mut scope)?;
+        self.current_user_fn_ret = saved_ret;
+
+        // Resolve the locus's `send` method. The typechecker has
+        // already confirmed it exists with the right shape via
+        // `check_satisfies_bus_adapter`; we still defensively
+        // emit a clear diagnostic if the lookup fails (e.g. a
+        // future codegen-side rename diverges from typecheck).
+        let info = self.user_loci.get(&locus.name).cloned().ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "adapter binding for `{}`: codegen has no record \
+                 of locus `{}`",
+                topic_name, locus.name
+            ))
+        })?;
+        let send_fn = info.user_methods.get("send").copied().ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "adapter binding for `{}`: locus `{}` has no `send` \
+                 method — every adapter must declare `fn send(subject: \
+                 String, bytes: Bytes)` to satisfy `__StdBusAdapter`",
+                topic_name, locus.name
+            ))
+        })?;
+        let send_fn_ptr = send_fn.as_global_value().as_pointer_value();
+
+        // Subject string global.
+        let subj_ptr = self
+            .builder
+            .build_global_string_ptr(
+                subject,
+                &format!("lotus.adapter.subject.{}", topic_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .as_pointer_value();
+
+        let register_fn = self
+            .module
+            .get_function("lotus_bus_register_remote_adapter")
+            .expect("lotus_bus_register_remote_adapter declared");
+        self.builder
+            .build_call(
+                register_fn,
+                &[
+                    subj_ptr.into(),
+                    self_val.into_pointer_value().into(),
+                    send_fn_ptr.into(),
+                ],
+                &format!("lotus.adapter.register.{}", topic_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
 
@@ -11019,14 +11140,76 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // inside a locus body.
                 Ok(value)
             }
-            CodegenTy::Interface(_) => Err(CodegenError::Unsupported(format!(
-                "free-fn return of {:?}: interface values shouldn't \
-                 cross arena boundaries at v0 — the data pointer \
-                 inside the fat pointer would dangle. Interface return \
-                 deep-copy is a Phase B follow-up; for now, take an \
-                 interface arg and dispatch from the caller's frame.",
-                ty
-            ))),
+            CodegenTy::Interface(_) => {
+                // G20 / F.20 Phase B follow-up: allocate a fresh
+                // 16-byte fat-pointer struct in dest_arena, then
+                // copy the {data, vtable} slots over. The vtable is
+                // a static global so no copy is needed for it. The
+                // data pointer is program-lifetime safe in two
+                // shapes: (a) the underlying locus was freshly
+                // instantiated inside this fn — the m90 routing
+                // extension routed it to the payload arena; (b) the
+                // interface value was passed in / loaded from
+                // storage — the data pointer was already
+                // caller-or-program-lifetime, so it stays valid
+                // past this fn's subregion destroy.
+                let src_ptr = value.into_pointer_value();
+                let fat_struct_ty = self.iface_fat_struct_ty();
+                let ptr_t = self.context.ptr_type(AddressSpace::default());
+                let i64_t = self.context.i64_type();
+                let alloc_fn = self
+                    .module
+                    .get_function("lotus_arena_alloc")
+                    .expect("lotus_arena_alloc declared");
+                let new_fat = self
+                    .builder
+                    .build_call(
+                        alloc_fn,
+                        &[
+                            dest_arena.into(),
+                            i64_t.const_int(16, false).into(),
+                            i64_t.const_int(8, false).into(),
+                        ],
+                        "fn.ret.iface.alloc",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_arena_alloc returns ptr")
+                    .into_pointer_value();
+                for (i, slot) in ["data", "vtable"].iter().enumerate() {
+                    let src_slot = self
+                        .builder
+                        .build_struct_gep(
+                            fat_struct_ty,
+                            src_ptr,
+                            i as u32,
+                            &format!("fn.ret.iface.src.{}", slot),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let val = self
+                        .builder
+                        .build_load(
+                            ptr_t,
+                            src_slot,
+                            &format!("fn.ret.iface.load.{}", slot),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let dst_slot = self
+                        .builder
+                        .build_struct_gep(
+                            fat_struct_ty,
+                            new_fat,
+                            i as u32,
+                            &format!("fn.ret.iface.dst.{}", slot),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_store(dst_slot, val)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Ok(new_fat.into())
+            }
             CodegenTy::Cell(_, _) => Err(CodegenError::Unsupported(format!(
                 "free-fn return of {:?}: F.22 capacity-slot cells \
                  can't cross fn boundaries — the cell's lifetime is \
@@ -18927,6 +19110,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     _ => e,
                 };
                 let (v, got_ty) = self.lower_expr(e_to_lower, scope)?;
+                // G20 / F.20 Phase B follow-up: implicit
+                // locus → interface coercion at return position,
+                // mirroring the call-site shape in lower_user_fn_call.
+                // The fat-pointer alloc lands in the fn subregion
+                // and gets deep-copied into caller_arena by the
+                // epilogue's emit_return_value_deep_copy. m90 routing
+                // for the underlying locus instantiation (extended
+                // for Interface returns) keeps the data pointer
+                // program-lifetime.
+                let (v, got_ty) = if let (
+                    CodegenTy::Interface(iface),
+                    CodegenTy::LocusRef(l),
+                ) = (&declared_ty, &got_ty)
+                {
+                    let fat = self.coerce_to_interface(
+                        v.into_pointer_value(),
+                        l,
+                        iface,
+                    )?;
+                    (fat.into(), declared_ty.clone())
+                } else {
+                    (v, got_ty)
+                };
                 if got_ty != declared_ty {
                     return Err(CodegenError::Unsupported(format!(
                         "return type mismatch: declared {:?}, got {:?}",
@@ -26184,11 +26390,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // covers `let s = X{}; ...; return s;` because the let-bound
         // literal is instantiated with `current_user_fn_ret` still
         // pointing at the matching LocusRef.
+        // G20 follow-up: the same routing fires when the fn returns
+        // `Interface(I)` and this locus satisfies I — the
+        // locus→interface coercion at the return site builds a fat
+        // pointer whose data slot points at this locus, so the locus
+        // must outlive the fn's subregion. The fat-pointer struct
+        // itself is deep-copied into caller_arena by
+        // emit_return_value_deep_copy.
         let returns_this_locus = self
             .current_user_fn_ret
             .as_ref()
             .and_then(|r| r.as_ref())
-            .map(|t| matches!(t, CodegenTy::LocusRef(n) if n == locus_name))
+            .map(|t| match t {
+                CodegenTy::LocusRef(n) => n == locus_name,
+                CodegenTy::Interface(iface) => {
+                    self.locus_satisfies_interface(locus_name, iface)
+                }
+                _ => false,
+            })
             .unwrap_or(false);
         let self_ptr = if returns_this_locus {
             let alloc_fn = self
@@ -32767,6 +32986,40 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         g.set_constant(true);
         self.vtables.insert(key, g);
         Ok(g)
+    }
+
+    /// G20 / F.20 Phase B follow-up: does `locus_name` cover every
+    /// method declared by `iface_name` by name? Method-name-only
+    /// (signature compatibility is the typechecker's job). Used by
+    /// the m90 return-routing extension to decide whether a fresh
+    /// locus instantiation inside an `-> Interface(I)` fn body
+    /// could plausibly be the returned value and therefore needs
+    /// program-lifetime allocation.
+    fn locus_satisfies_interface(
+        &self,
+        locus_name: &str,
+        iface_name: &str,
+    ) -> bool {
+        let iface_methods: Vec<&str> = match self
+            .program
+            .items
+            .iter()
+            .find_map(|item| match item {
+                TopDecl::Interface(i) if i.name.name == iface_name => {
+                    Some(i.methods.iter().map(|m| m.name.name.as_str()).collect())
+                }
+                _ => None,
+            }) {
+            Some(v) => v,
+            None => return false,
+        };
+        let info = match self.user_loci.get(locus_name) {
+            Some(i) => i,
+            None => return false,
+        };
+        iface_methods
+            .iter()
+            .all(|m| info.user_methods.contains_key(*m))
     }
 
     /// F.20 Phase B: build a fat-pointer interface value from a

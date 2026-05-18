@@ -138,14 +138,22 @@ locus_member      = params_block
    `main` locus. The same library can be deployed differently in
    different binaries — `bindings` is the deployment seam.
    Absence-of-entry means "this topic is delivered same-process
-   via the cooperative queue" (the runtime default). v1.x ships a
-   single substrate-provided transport (`unix`); user-supplied
-   protocol-layer adapters land in Wave B. *)
+   via the cooperative queue" (the runtime default). The
+   substrate-provided transport is `unix`; user-supplied
+   protocol-layer transports (NATS, MQTT, raw-TCP-with-framing,
+   ...) ship as adapter loci — any locus that satisfies the
+   `__StdBusAdapter` interface contract (currently just
+   `fn send(subject: String, bytes: Bytes)`) can be named on
+   the right-hand side. The grammar distinguishes the two by
+   the head's case: lowercase keyword `unix` vs capitalized
+   locus name. *)
 bindings_block    = "bindings" , "{" , { binding_entry } , "}" ;
 binding_entry     = IDENTIFIER , ":" , transport_spec , ";" ;
-transport_spec    = "unix" , "(" , STRING_LIT , { "," , unix_kwarg } , ")" ;
+transport_spec    = unix_transport | adapter_transport ;
+unix_transport    = "unix" , "(" , STRING_LIT , { "," , unix_kwarg } , ")" ;
 unix_kwarg        = "role" , ":" , transport_role ;
 transport_role    = "listen" | "connect" ;
+adapter_transport = LOCUS_IDENTIFIER , "{" , [ struct_init , { "," , struct_init } , [ "," ] ] , "}" ;
 
 
 (* === 3. Params block =========================================== *)

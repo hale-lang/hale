@@ -139,17 +139,24 @@ fn fill_roles_in_items(
                 for member in &mut l.members {
                     if let LocusMember::Bindings(bb) = member {
                         for entry in &mut bb.entries {
-                            let TransportSpec::Unix { role, .. } = &mut entry.transport;
-                            if role.is_none() {
-                                let p = pubs.contains(&entry.topic.name);
-                                let s = subs.contains(&entry.topic.name);
-                                // Typecheck emits a diag for (p && s)
-                                // and (!p && !s); here we only fill in
-                                // the unambiguous cases.
-                                if p && !s {
-                                    *role = Some(TransportRole::Connect);
-                                } else if s && !p {
-                                    *role = Some(TransportRole::Listen);
+                            // Role inference only applies to substrate
+                            // Unix bindings. Adapter bindings carry
+                            // direction in the adapter locus's params
+                            // block — opaque to the binding-spec layer.
+                            if let TransportSpec::Unix { role, .. } =
+                                &mut entry.transport
+                            {
+                                if role.is_none() {
+                                    let p = pubs.contains(&entry.topic.name);
+                                    let s = subs.contains(&entry.topic.name);
+                                    // Typecheck emits a diag for (p && s)
+                                    // and (!p && !s); here we only fill in
+                                    // the unambiguous cases.
+                                    if p && !s {
+                                        *role = Some(TransportRole::Connect);
+                                    } else if s && !p {
+                                        *role = Some(TransportRole::Listen);
+                                    }
                                 }
                             }
                         }

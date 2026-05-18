@@ -54,8 +54,10 @@ of method signatures. Any locus whose method set is a superset
 structurally satisfies the interface (no `impl I for L`
 declaration). Phase A (typecheck) and Phase B (codegen vtable
 dispatch) both shipped 2026-05-11; interface values are usable as
-fn params and method-call receivers. Returning / storing
-interface values across arena boundaries is a Phase B follow-up.
+fn params, fn returns, locus param/field values, and
+`@form(vec)` cell elements. Interface elements in tuples / fixed
+arrays remain gated on the broader composite-construction
+coercion design (same gap as tuple-of-`LocusRef` escape).
 
 ### Locus member keywords
 

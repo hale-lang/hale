@@ -307,6 +307,20 @@ pub enum TransportSpec {
         role: Option<TransportRole>,
         span: Span,
     },
+    /// `MyNatsAdapter { url: "nats://...", ... }` — user-supplied
+    /// protocol-layer transport. The named locus must structurally
+    /// satisfy `__StdBusAdapter` (i.e. expose
+    /// `fn send(subject: String, bytes: Bytes)`). At codegen the
+    /// locus is instantiated with program-lifetime allocation, its
+    /// `send` method's fn pointer is resolved, and the pair is
+    /// handed to the bus runtime via
+    /// `lotus_bus_register_remote_adapter`. Wave B of the
+    /// bus-transport redesign; shipped 2026-05-18.
+    Adapter {
+        locus: Ident,
+        inits: Vec<StructInit>,
+        span: Span,
+    },
 }
 
 /// Direction-of-traffic for point-to-point substrate transports.

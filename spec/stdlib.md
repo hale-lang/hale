@@ -304,7 +304,7 @@ value lower as indirect calls through `vtable[i]` with the data
 pointer passed as the implicit self arg. End-to-end coverage
 in `crates/aperio-codegen/tests/interface_dispatch.rs`.
 
-**Phase B follow-ups (partial):**
+**Phase B follow-ups:**
 - Interface values in locus param/field — **shipped 2026-05-16**
   (`Server { handler: MyHandler { } }` where `handler:
   std::http::Handler`). Codegen coerces locus → interface at the
@@ -312,9 +312,26 @@ in `crates/aperio-codegen/tests/interface_dispatch.rs`.
   fat pointer dispatch via vtable. Typechecker resolves
   `self.field.method()` against the interface's method set when
   the field's declared type is an interface.
-- Returning an interface value from a fn / interface in arrays
-  or tuples — still deferred (fat-pointer deep-copy across arena
-  boundaries).
+- Interface values as `@form(vec)` cell elements — **shipped
+  2026-05-17** (A10). Locus → interface coercion fires on
+  `vec.push` / `vec.set`; the stored fat pointer aliases the
+  underlying locus so mutations through the vec write through to
+  the original locus's region.
+- Returning an interface value from a fn — **shipped 2026-05-18**
+  (this milestone). The return site inserts an implicit
+  locus → interface coercion and the m90 locus-instantiation
+  routing is extended to fire when the fn declares
+  `-> Interface(I)` and a satisfying locus is instantiated in
+  the body. The fat-pointer struct is deep-copied into the
+  caller's arena by `emit_return_value_deep_copy`. Also fixes a
+  pre-existing typecheck reject where interface → same-interface
+  pass-through was wrongly flagged as a structural-impl failure.
+  Coverage in `crates/aperio-codegen/tests/interface_return.rs`.
+- Interface elements inside tuples / fixed arrays — still
+  deferred. The gap is the broader composite-construction
+  coercion shape (recursive coercion at composite-construction
+  sites plus locus-routing across nested return positions); the
+  same gap governs tuple-of-`LocusRef` escape today.
 
 The `std::text::Sink` stdlib migration (split into `StdoutSink` /
 `StringSink` / `FileSink` loci behind one `Sink` interface)
@@ -397,7 +414,7 @@ tree. Quick reference grouped by `std::*` namespace prefix:
 | `std::math` | `sqrt`, `exp`, `log`, `floor`, `ceil`, `pow`, `tanh`, `nan`, `is_nan`, `inf` | path-call dispatch into libm (`nan` / `inf` / `is_nan` are IEEE 754 sentinels / classification) |
 | `std::crypto` | `sha1(b) -> Bytes` (20-byte), `sha256(b) -> Bytes` (32-byte), `hmac_sha256(key, msg) -> Bytes` (32-byte). All non-fallible; results anchored in the bus payload arena. | `lotus_crypto_*` C runtime primitives (stand-alone — no libcrypto / OpenSSL link dep) |
 | `std::os` | `getrandom(n: Int) -> Bytes fallible(IoError)` (CSPRNG; `getrandom(2)` with `/dev/urandom` fallback) | `lotus_os_getrandom` C runtime primitive |
-| `std::bus` | `Adapter` interface (contract for user-supplied bus transports). No concrete adapter implementations ship in std — protocol-layer transports (NATS, MQTT, raw-TCP-with-framing) live in user code or downstream packages. The binding-site wiring (`bindings { T: MyAdapter { ... }; }`) lands in Wave B of the bus-transport redesign, gated on F.20 Phase B interface storage. | `runtime/stdlib/bus.ap` |
+| `std::bus` | `__StdBusAdapter` interface (contract for user-supplied bus transports — a single `fn send(subject: String, bytes: Bytes)` method). No concrete adapter implementations ship in std — protocol-layer transports (NATS, MQTT, raw-TCP-with-framing) live in user code or downstream packages. The binding-site wiring (`bindings { T: MyAdapter { ... }; }`) shipped 2026-05-18 as Wave B of the bus-transport redesign; codegen instantiates the adapter into the program-lifetime payload arena, resolves its `send` fn pointer, and the runtime dispatches outbound payloads through the pointer. Inbound (adapter → local subscribers) awaits the `__bus_local_dispatch` opening. | `runtime/stdlib/bus.ap` |
 
 Aperio doesn't use parametric stdlib collection types (`Map<K,
 V>`, `Vec<T>`, `Set<T>`, etc.). Storage is locus-shaped via the

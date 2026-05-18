@@ -369,16 +369,36 @@ and modes; specific transports come from stdlib (`std::bus::*`).
 top-level `topic Foo { payload: T; subject: "..."; }` decls
 (with optional `: Parent` for hierarchical wire subjects);
 deployment-time bindings live in the `main` locus's
-`bindings { Topic: <transport>; }` block. The only transport
-variant in v1.x is substrate-provided `unix("/path", role: ...)`
-— in-memory delivery is absence-of-entry, and protocol-layer
-transports (NATS, MQTT, TCP-with-framing) land in Wave B as
-user-supplied loci satisfying `interface std::bus::Adapter`.
-See `spec/semantics.md` "Topic declarations →
-Phase 2" for the full surface, including the closed-world
-topology optimization that elides bus dispatch for unambiguous
+`bindings { Topic: <transport>; }` block. Two transport shapes
+ship: substrate-provided `unix("/path", role: ...)` and
+user-supplied adapter loci named directly on the right-hand
+side (any locus satisfying `__StdBusAdapter` —
+`fn send(subject: String, bytes: Bytes)` — qualifies).
+In-memory delivery is absence-of-entry. Adapter bindings let
+protocol-layer transports (NATS, MQTT, TCP-with-framing,
+custom JSON-over-WebSocket) live in user code without the
+language having to enumerate protocol variants. See
+`spec/semantics.md` "Topic declarations → Phase 2" for the
+full surface, including the closed-world topology
+optimization that elides bus dispatch for unambiguous
 intra-locus and single-hop parent→child tower patterns when no
 binding is declared.
+
+**Adapter dispatch.** At codegen, an adapter binding
+instantiates the adapter locus into the program-lifetime
+payload arena (same m90 routing the `-> LocusRef(L)` return
+path uses), resolves the locus's `send` method's fn pointer,
+and registers the (self, send_fn) pair with the runtime via
+`lotus_bus_register_remote_adapter`. The runtime stores both
+in `lotus_bus_remote_entry_t`'s adapter slot. Outbound fanout
+packages the wire bytes as an Aperio-level `Bytes` value
+(built via `lotus_bytes_from_buf` against the lazy global
+payload arena) and indirect-calls
+`send_fn(self, subject, bytes)`. No vtable lookup is needed
+at the runtime layer — codegen resolved the method at
+binding-emit time. Inbound dispatch from adapters into local
+handlers awaits the `__bus_local_dispatch` opening; v1
+adapter bindings are outbound-only.
 
 ### Closure-test infrastructure
 

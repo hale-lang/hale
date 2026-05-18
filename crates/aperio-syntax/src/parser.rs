@@ -921,12 +921,18 @@ impl Parser {
     }
 
     /// Transport constructor.
-    /// `unix("/path/to/sock")` or `unix("/path", role: listen)` —
-    /// the only substrate-provided transport in v1.x. The optional
-    /// `role:` kwarg overrides the typechecker's role inference
-    /// from the bus block. No other transport keywords are
-    /// recognized; user-supplied adapters land via Wave B (gated
-    /// on G20).
+    ///
+    /// Two shapes:
+    /// - `unix("/path/to/sock")` or `unix("/path", role: listen)` —
+    ///   the substrate-provided transport. The optional `role:`
+    ///   kwarg overrides the typechecker's role inference from the
+    ///   bus block.
+    /// - `MyNatsAdapter { url: "...", ... }` — user-supplied
+    ///   protocol-layer transport (Wave B of the bus-transport
+    ///   redesign). The named locus must structurally satisfy
+    ///   `__StdBusAdapter`; the field-init block matches the
+    ///   locus's params block. Detected by the head being a
+    ///   capitalized identifier (locus naming convention).
     fn parse_transport_spec(&mut self) -> Result<TransportSpec, Diag> {
         let head_tok = self.peek_token().clone();
         let head_name = match &head_tok.kind {
@@ -935,13 +941,39 @@ impl Parser {
                 return Err(Diag::parse(
                     head_tok.span,
                     format!(
-                        "expected transport constructor `unix`, got {:?}",
+                        "expected transport constructor `unix` or adapter locus name, got {:?}",
                         other
                     ),
                 ));
             }
         };
         self.bump();
+        // Wave B: a capitalized head is an adapter locus literal.
+        // unix is the only lowercase keyword; everything else
+        // capitalized routes to the Adapter branch.
+        if head_name.chars().next().map_or(false, |c| c.is_ascii_uppercase()) {
+            let lb = self.expect(TokenKind::LBrace, "{")?;
+            let mut inits = Vec::new();
+            if !self.at(&TokenKind::RBrace) {
+                inits.push(self.parse_struct_init()?);
+                while self.eat(&TokenKind::Comma) {
+                    if self.at(&TokenKind::RBrace) {
+                        break;
+                    }
+                    inits.push(self.parse_struct_init()?);
+                }
+            }
+            let close = self.expect(TokenKind::RBrace, "}")?;
+            let _ = lb;
+            return Ok(TransportSpec::Adapter {
+                locus: Ident {
+                    name: head_name,
+                    span: head_tok.span,
+                },
+                inits,
+                span: head_tok.span.merge(close.span),
+            });
+        }
         match head_name.as_str() {
             "unix" => {
                 self.expect(TokenKind::LParen, "(")?;
@@ -1003,9 +1035,9 @@ impl Parser {
             other => Err(Diag::parse(
                 head_tok.span,
                 format!(
-                    "unknown transport constructor `{}` (only `unix` is supported \
-                     in v1.x; in-memory delivery is absence-of-entry; user-supplied \
-                     adapters await Wave B)",
+                    "unknown transport constructor `{}` (recognized: `unix(...)`, \
+                     or a capitalized adapter locus name with a `{{ ... }}` block; \
+                     in-memory delivery is absence-of-entry)",
                     other
                 ),
             )),
@@ -4127,5 +4159,50 @@ fn main() {
 }
 "#;
         parse_str(src).expect("parse failed");
+    }
+
+    #[test]
+    fn parse_adapter_binding_transport() {
+        // Wave B: a capitalized head followed by `{ ... }` parses
+        // as TransportSpec::Adapter with the field inits captured.
+        let src = r#"
+type Ping { n: Int; }
+topic Evt { payload: Ping; }
+
+main locus App {
+    bindings {
+        Evt: MyAdapter { url: "nats://localhost", retries: 3 };
+    }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let locus = prog
+            .items
+            .iter()
+            .find_map(|it| match it {
+                TopDecl::Locus(l) if l.is_main => Some(l),
+                _ => None,
+            })
+            .expect("main locus");
+        let bb = locus
+            .members
+            .iter()
+            .find_map(|m| match m {
+                LocusMember::Bindings(b) => Some(b),
+                _ => None,
+            })
+            .expect("bindings block");
+        assert_eq!(bb.entries.len(), 1);
+        let entry = &bb.entries[0];
+        assert_eq!(entry.topic.name, "Evt");
+        match &entry.transport {
+            TransportSpec::Adapter { locus, inits, .. } => {
+                assert_eq!(locus.name, "MyAdapter");
+                assert_eq!(inits.len(), 2);
+                assert_eq!(inits[0].name.name, "url");
+                assert_eq!(inits[1].name.name, "retries");
+            }
+            other => panic!("expected Adapter transport, got {:?}", other),
+        }
     }
 }

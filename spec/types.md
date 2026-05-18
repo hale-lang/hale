@@ -146,15 +146,31 @@ slot coerces at the call site; method calls on an interface
 value lower as indirect calls through `vtable[i]` with the
 data pointer passed as the implicit self arg.
 
-Interface values are usable as fn parameters and as receivers
-for method calls. The `std::text::Sink` stdlib migration (split
+Interface values are usable as fn parameters, fn returns, locus
+param / field values, and `@form(vec)` cell elements. Method-call
+receivers, polymorphic return through control flow, and
+pass-through aliasing (the original instantiator's binding and
+the returned binding refer to the same underlying locus) all
+work end-to-end. The `std::text::Sink` stdlib migration (split
 `Sink` into `StdoutSink` / `StringSink` / `FileSink`
 loci behind one `Sink` interface) shipped 2026-05-11; see
 `spec/stdlib.md` and `crates/aperio-codegen/tests/sink_polymorphism.rs`.
-Returning an interface value from a fn, storing one in a locus
-param/field, or putting interfaces in arrays/tuples is not yet
-supported — deep-copy across arena boundaries for the fat
-pointer is a Phase B follow-up.
+
+The return path uses two cooperating mechanisms: at the return
+site, an implicit locus → interface coercion builds the fat
+pointer, and the locus-instantiation routing extension (the same
+m90 shape that handles `-> LocusRef(L)` returns) routes any
+instantiation of a satisfying locus inside an `-> Interface(I)`
+fn body to the program-lifetime payload arena. The fat-pointer
+struct itself is then deep-copied into the caller's arena by
+`emit_return_value_deep_copy`. Single-element coverage is in
+`crates/aperio-codegen/tests/interface_return.rs`.
+
+Interface elements inside tuples and fixed arrays remain gated
+on the same broader composite-construction coercion design that
+governs tuple-of-`LocusRef` escape — recursive coercion at
+composite-construction sites plus locus-routing across nested
+return positions. Deferred.
 
 Interfaces have no default methods at v0; the body is signature-
 only. No interface inheritance, no multi-interface bounds on

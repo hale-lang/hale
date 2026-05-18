@@ -3262,6 +3262,12 @@ void *lotus_bytes_from_str(const char *s);
 int64_t lotus_bytes_at(const void *b, int64_t i);
 void *lotus_bytes_slice(const void *b, int64_t lo, int64_t hi);
 
+/* Wave B: same-shape forward decl for the bus-payload-arena
+ * accessor used by lotus_bus_remote_fanout's adapter dispatch
+ * path. Body lives with the rest of the payload-arena machinery
+ * once g_bus_payload_arena itself is in scope. */
+lotus_arena_t *lotus_bus_payload_arena_get(void);
+
 /* Phase 2e + 2f + C9: forward decls for fs primitives whose
  * bodies need g_bus_payload_arena (declared further below) so
  * the returned String outlives the call frame. */
@@ -4164,8 +4170,17 @@ int lotus_str_can_parse_float(const char *s) {
  * per peer) is m60.
  */
 
+/* Wave B (bus-transport redesign): an entry is one of two kinds.
+ * UNIX = substrate-provided AF_UNIX transport; ADAPTER = user-
+ * supplied protocol-layer locus (NATS, MQTT, raw-TCP-with-framing,
+ * ...) whose `send` method receives outbound payloads. */
+#define LOTUS_BUS_REMOTE_KIND_UNIX    0
+#define LOTUS_BUS_REMOTE_KIND_ADAPTER 1
+
 typedef struct lotus_bus_remote_entry {
     char              *subject;       /* owned (strdup'd at register) */
+    int                kind;          /* one of LOTUS_BUS_REMOTE_KIND_* */
+    /* --- UNIX fields (valid when kind == UNIX) --- */
     lotus_transport_t *transport;     /* set in main for CONNECT,
                                          in reader-thread for LISTEN */
     int                role;
@@ -4176,6 +4191,17 @@ typedef struct lotus_bus_remote_entry {
      * fields zero (no thread, transport opened on the main path). */
     pthread_t          reader_thread;
     int                has_reader_thread;
+    /* --- ADAPTER fields (valid when kind == ADAPTER) --- */
+    /* `adapter_self` is the adapter locus's self pointer; held
+     * in the program-lifetime payload arena by codegen so it
+     * outlives main. `adapter_send_fn` is the address of the
+     * locus's `send(subject: String, bytes: Bytes)` method,
+     * resolved at codegen time. The runtime invokes it directly
+     * without going through the F.20 vtable. */
+    void              *adapter_self;
+    void             (*adapter_send_fn)(void *self,
+                                        const char *subject,
+                                        void *bytes);
 } lotus_bus_remote_entry_t;
 
 static lotus_bus_remote_entry_t *g_bus_remote_entries = NULL;
@@ -4328,9 +4354,12 @@ void lotus_bus_register_remote(const char *subject,
     lotus_bus_remote_entry_t *e =
         &g_bus_remote_entries[g_bus_remote_count++];
     e->subject           = subject_copy;
+    e->kind              = LOTUS_BUS_REMOTE_KIND_UNIX;
     e->transport         = NULL;
     e->role              = role;
     e->has_reader_thread = 0;
+    e->adapter_self      = NULL;
+    e->adapter_send_fn   = NULL;
 
     if (role == LOTUS_TRANSPORT_LISTEN) {
         /* m59: spawn a reader thread that owns this subject's
@@ -4363,6 +4392,56 @@ void lotus_bus_register_remote(const char *subject,
          * entry stays in the table with transport=NULL so fanout
          * skips it and destroy_all is a no-op for this slot. */
     }
+}
+
+/* Wave B: register an adapter binding. The adapter locus has
+ * already been instantiated by codegen with program-lifetime
+ * allocation, and its `send(subject, bytes)` method's fn pointer
+ * has been resolved. Outbound fanout to this subject invokes
+ * `send_fn(self_data, subject_c_str, bytes_struct)` with a Bytes
+ * value built from the local payload via lotus_bytes_from_buf
+ * against the lazy global payload arena.
+ *
+ * Adapter entries don't open a transport or spawn a reader thread
+ * — the adapter locus itself owns its protocol lifecycle through
+ * its own birth/dissolve methods. destroy_all is a no-op for
+ * adapter slots beyond freeing the subject string.
+ */
+void lotus_bus_register_remote_adapter(
+    const char *subject,
+    void *self_data,
+    void (*send_fn)(void *self,
+                    const char *subject,
+                    void *bytes))
+{
+    if (!subject || !self_data || !send_fn) {
+        fprintf(stderr,
+                "lotus_bus_register_remote_adapter: null subject, "
+                "self_data, or send_fn\n");
+        return;
+    }
+    if (g_bus_remote_count == g_bus_remote_cap) {
+        size_t new_cap = g_bus_remote_cap == 0
+            ? LOTUS_BUS_REMOTE_INITIAL_CAP
+            : g_bus_remote_cap * 2;
+        lotus_bus_remote_entry_t *grown = (lotus_bus_remote_entry_t *)
+            realloc(g_bus_remote_entries,
+                    new_cap * sizeof(lotus_bus_remote_entry_t));
+        if (!grown) return;
+        g_bus_remote_entries = grown;
+        g_bus_remote_cap     = new_cap;
+    }
+    char *subject_copy = strdup(subject);
+    if (!subject_copy) return;
+    lotus_bus_remote_entry_t *e =
+        &g_bus_remote_entries[g_bus_remote_count++];
+    e->subject           = subject_copy;
+    e->kind              = LOTUS_BUS_REMOTE_KIND_ADAPTER;
+    e->transport         = NULL;
+    e->role              = 0;
+    e->has_reader_thread = 0;
+    e->adapter_self      = self_data;
+    e->adapter_send_fn   = send_fn;
 }
 
 /* Trim leading + trailing whitespace in-place. Returns a pointer
@@ -4451,8 +4530,25 @@ void lotus_bus_remote_fanout(const char *subject,
     if (!subject) return;
     for (size_t i = 0; i < g_bus_remote_count; i++) {
         lotus_bus_remote_entry_t *e = &g_bus_remote_entries[i];
-        if (!e->subject || !e->transport) continue;
+        if (!e->subject) continue;
         if (strcmp(e->subject, subject) != 0) continue;
+        if (e->kind == LOTUS_BUS_REMOTE_KIND_ADAPTER) {
+            /* Wave B: package the wire bytes as an Aperio-level
+             * Bytes value (program-lifetime, lives in the payload
+             * arena), then dispatch through the adapter locus's
+             * `send` method. The adapter's body owns framing /
+             * delivery — the bus only guarantees one whole message
+             * per call. */
+            if (!e->adapter_self || !e->adapter_send_fn) continue;
+            lotus_arena_t *parena = lotus_bus_payload_arena_get();
+            if (!parena) continue;
+            void *bytes_val = lotus_bytes_from_buf(
+                parena, payload, (int64_t)payload_size);
+            if (!bytes_val) continue;
+            e->adapter_send_fn(e->adapter_self, e->subject, bytes_val);
+            continue;
+        }
+        if (!e->transport) continue;
         /* CONNECT role only fans out at this milestone. LISTEN
          * role transports exist on the receive side and are
          * driven by the (future) reader thread, not by publish-
@@ -4492,6 +4588,21 @@ void *lotus_bus_payload_arena_alloc(size_t size, size_t align) {
         }
     }
     void *p = lotus_arena_alloc(g_bus_payload_arena, size, align);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    return p;
+}
+
+/* Wave B: handle-only accessor. Lazy-initializes the bus payload
+ * arena on first call (same machinery as lotus_bus_payload_arena_alloc)
+ * and returns the pointer. The bus adapter fanout path uses this
+ * to hand a stable arena to lotus_bytes_from_buf so the Bytes
+ * value lives past the dispatch call frame. */
+lotus_arena_t *lotus_bus_payload_arena_get(void) {
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+    }
+    lotus_arena_t *p = g_bus_payload_arena;
     pthread_mutex_unlock(&g_bus_payload_arena_mutex);
     return p;
 }
@@ -6165,6 +6276,16 @@ const char *lotus_fs_mktemp(const char *prefix, const char *suffix) {
 void lotus_bus_remote_destroy_all(void) {
     for (size_t i = 0; i < g_bus_remote_count; i++) {
         lotus_bus_remote_entry_t *e = &g_bus_remote_entries[i];
+
+        /* Wave B: adapter entries own their protocol lifecycle
+         * through the adapter locus's own dissolve method, which
+         * fires via the regular locus dissolve cascade at program
+         * exit. No transport to destroy or reader thread to join
+         * here — only the strdup'd subject string to free. */
+        if (e->kind == LOTUS_BUS_REMOTE_KIND_ADAPTER) {
+            if (e->subject) free(e->subject);
+            continue;
+        }
 
         /* m59: for LISTEN role, the reader thread owns the
          * transport's lifecycle. Best-effort shutdown(conn_fd)

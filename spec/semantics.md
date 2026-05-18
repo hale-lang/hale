@@ -503,11 +503,12 @@ main locus App {
         // Beat: not bound — same-binary cooperative queue (default).
         Login:  unix("/tmp/login.sock");                  // role inferred
         Events: unix("/tmp/events.sock", role: listen);   // explicit override
+        Remote: MyNatsAdapter { url: "nats://..." };       // adapter locus
     }
 }
 ```
 
-Transport surface (v1.x):
+Transport surface:
 
 - `unix("/path")` or `unix("/path", role: connect|listen)` —
   AF_UNIX framed-byte transport. Substrate-provided: the
@@ -520,12 +521,20 @@ Transport surface (v1.x):
   listen); if both publish and subscribe touch the topic, the
   binding is rejected with a "specify `role:`" diagnostic.
 
-- (User-supplied adapters via the `Adapter(...)` variant land in
-  Wave B, gated on interface-value storage. Once shipped,
-  protocol-layer transports — NATS, MQTT, TCP-with-framing,
-  custom JSON-over-WebSocket — will be ordinary loci that
-  satisfy `interface std::bus::Adapter` and live in user code
-  or downstream packages, not in `std::` itself.)
+- `LocusName { field: value, ... }` — user-supplied
+  protocol-layer adapter. Any locus that declares
+  `fn send(subject: String, bytes: Bytes)` satisfies the
+  `__StdBusAdapter` contract and may appear on the right-hand
+  side of a binding. The bus router dispatches outbound payloads
+  for the bound topic through the adapter's `send` method;
+  framing, retry, ordering, and connection management are the
+  adapter body's concern. The adapter's own `params` block
+  carries protocol configuration (broker URL, credentials,
+  timeouts, point-to-point role for p2p shapes). The grammar
+  distinguishes substrate vs adapter by the head's case
+  (lowercase keyword `unix` vs capitalized locus name).
+  Inbound dispatch from an adapter into the local handler set
+  awaits the `__bus_local_dispatch` opening (deferred).
 
 **In-memory delivery is absence-of-entry.** A topic with no
 binding entry is delivered same-process via the cooperative
@@ -543,12 +552,20 @@ Bundle-wide rules:
 5. Every binding's role must be either explicit (`role:`
    kwarg) or unambiguously inferable from the bus block.
 
-Codegen emits one `lotus_bus_register_remote(subject, url, role)`
-call per binding entry into `fn main`'s prelude, right after the
-bus queue is published. Subjects use the desugared wire form (so
-a binding for hierarchical `Login` registers as `"events.login"`).
-Topics with no binding entry get no register call and stay
-same-process via the cooperative queue.
+Codegen emits one runtime registration call per binding entry
+into `fn main`'s prelude, right after the bus queue is published:
+- Unix bindings call
+  `lotus_bus_register_remote(subject, url, role)`.
+- Adapter bindings first instantiate the adapter locus with
+  program-lifetime allocation (same m90 routing the
+  `-> LocusRef(L)` return path uses), resolve the locus's `send`
+  method's function pointer, then call
+  `lotus_bus_register_remote_adapter(subject, self, send_fn)`.
+
+Subjects use the desugared wire form (so a binding for
+hierarchical `Login` registers as `"events.login"`). Topics with
+no binding entry get no register call and stay same-process via
+the cooperative queue.
 
 **3. Closed-world topology optimization.** When a topic has no
 binding and the publisher / subscriber relationship is statically
