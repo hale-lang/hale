@@ -348,6 +348,14 @@ pub fn build_executable_with_imports(
     let runtime_c_path = obj_path.with_extension("arena.c");
     std::fs::write(&runtime_c_path, RUNTIME_C_SOURCE)
         .map_err(|e| CodegenError::Link(format!("write runtime C: {}", e)))?;
+    // TLS substrate lives in its own translation unit so the
+    // libssl/libcrypto link deps only ride along with main Aperio
+    // builds — helper test binaries that compile `lotus_arena.c`
+    // standalone (transport.rs, fs.rs, recpool.rs, bus_config.rs)
+    // don't pull TLS in.
+    let runtime_tls_c_path = obj_path.with_extension("tls.c");
+    std::fs::write(&runtime_tls_c_path, RUNTIME_TLS_C_SOURCE)
+        .map_err(|e| CodegenError::Link(format!("write runtime TLS C: {}", e)))?;
 
     // m96: locate the tree-sitter shim staticlib produced by the
     // sibling `aperio-ts-shim` workspace crate. We don't try to
@@ -365,6 +373,7 @@ pub fn build_executable_with_imports(
     clang
         .arg(&obj_path)
         .arg(&runtime_c_path)
+        .arg(&runtime_tls_c_path)
         .arg("-O2")
         // m27: pinned-class loci spawn pthreads via the
         // pthread_create / pthread_join externs declared in
@@ -374,7 +383,15 @@ pub fn build_executable_with_imports(
         // loci?" would entangle the codegen pass with the link
         // step. Cost: one extra dynamic dependency in the
         // resulting binary.
-        .arg("-lpthread");
+        .arg("-lpthread")
+        // TLS: system OpenSSL. `lotus_tls.c` references SSL_* and
+        // ERR_* symbols. Link unconditionally; the dep is on every
+        // Linux/macOS install in practice. Programs that never
+        // use std::io::tls still pull the .so via dynamic-link,
+        // but symbol GC at the codegen-level is moot since the
+        // .c file references them at translation-unit scope.
+        .arg("-lssl")
+        .arg("-lcrypto");
     if let Some(p) = ts_shim_path.as_ref() {
         clang.arg(p);
         // Rust staticlibs depend on libdl + libm via libstd.
@@ -389,6 +406,7 @@ pub fn build_executable_with_imports(
         .map_err(|e| CodegenError::Link(format!("clang invocation: {}", e)))?;
     let _ = std::fs::remove_file(&obj_path);
     let _ = std::fs::remove_file(&runtime_c_path);
+    let _ = std::fs::remove_file(&runtime_tls_c_path);
     if !status.success() {
         return Err(CodegenError::Link(format!(
             "clang exited with {}",
@@ -405,6 +423,7 @@ pub fn build_executable_with_imports(
 /// (m19 introduces the substrate; m20+ wires it to locus
 /// lifetimes).
 const RUNTIME_C_SOURCE: &str = include_str!("../runtime/lotus_arena.c");
+const RUNTIME_TLS_C_SOURCE: &str = include_str!("../runtime/lotus_tls.c");
 
 /// m96: find `libaperio_ts_shim.a`, the staticlib produced by the
 /// sibling `aperio-ts-shim` workspace crate. Returns `None` if the
@@ -2769,6 +2788,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
+        // m105: adapter-driven inbound dispatch. Hands wire bytes
+        // through the subject's registered deserialize fn into the
+        // local handler set. Backs the `std::bus::__local_dispatch`
+        // primitive that adapter `run` loops invoke when they
+        // receive a message from their transport.
+        // declare void @lotus_bus_dispatch_wire(ptr subject, ptr wire_bytes, i64 wire_size)
+        let bus_dispatch_wire_ty = void_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), i64_t.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_bus_dispatch_wire",
+            bus_dispatch_wire_ty,
+            None,
+        );
+
         // m59: subscriber-side reader threads need access to the
         // cooperative bus queue to dispatch incoming bytes into
         // the local handler set. The codegen-emitted main prelude
@@ -2921,6 +2956,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let tcp_close_ty = i32_t.fn_type(&[i32_t.into()], false);
         self.module
             .add_function("lotus_tcp_close_fd", tcp_close_ty, None);
+
+        // TLS substrate (std::io::tls::*). Client-only at v1:
+        // a handshaked connection identified by an opaque int
+        // handle. Bodies live in `runtime/lotus_tls.c`; link
+        // adds `-lssl -lcrypto` for system OpenSSL.
+        //
+        // declare i32 @lotus_tls_connect(ptr host, i16 port)
+        let tls_connect_ty =
+            i32_t.fn_type(&[ptr_t.into(), i16_t.into()], false);
+        self.module
+            .add_function("lotus_tls_connect", tls_connect_ty, None);
+        // declare i32 @lotus_tls_send_bytes(i32 handle, ptr bytes)
+        let tls_send_bytes_ty =
+            i32_t.fn_type(&[i32_t.into(), ptr_t.into()], false);
+        self.module
+            .add_function("lotus_tls_send_bytes", tls_send_bytes_ty, None);
+        // declare ptr @lotus_tls_recv_bytes(i32 handle, i32 max_bytes)
+        let tls_recv_bytes_ty =
+            ptr_t.fn_type(&[i32_t.into(), i32_t.into()], false);
+        self.module
+            .add_function("lotus_tls_recv_bytes", tls_recv_bytes_ty, None);
+        // declare i32 @lotus_tls_close(i32 handle)
+        let tls_close_ty = i32_t.fn_type(&[i32_t.into()], false);
+        self.module
+            .add_function("lotus_tls_close", tls_close_ty, None);
 
         // Raw UDP substrate (std::io::udp::*). Datagram socket;
         // preserves per-message boundaries from the kernel, no
@@ -12103,6 +12163,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )),
             ["std", "io", "tcp", "accept_one"] => Ok(Some(
                 self.lower_std_io_tcp_accept_one_fallible(args, scope)?,
+            )),
+            // TLS: connect handshakes + system trust verification,
+            // so the failure surface is rich enough to warrant
+            // `fallible(IoError)`. send_bytes / recv_bytes / close
+            // stay non-fallible (Int 0/-1 returns) to mirror the
+            // tcp shape.
+            ["std", "io", "tls", "connect"] => Ok(Some(
+                self.lower_std_io_tls_connect_fallible(args, scope)?,
             )),
             ["std", "bytes", "at"] => Ok(Some(
                 self.lower_std_bytes_at_fallible(args, scope)?,
@@ -21931,6 +21999,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_io_tcp_recv_bytes(args, scope)?;
                 Ok(())
             }
+            // TLS substrate — same statement-position wiring as tcp.
+            ["std", "io", "tls", "send_bytes"] => {
+                let _ = self.lower_std_io_tls_send_bytes(args, scope)?;
+                Ok(())
+            }
+            ["std", "io", "tls", "recv_bytes"] => {
+                let _ = self.lower_std_io_tls_recv_bytes(args, scope)?;
+                Ok(())
+            }
+            ["std", "io", "tls", "close"] => {
+                let _ = self.lower_std_io_tls_close(args, scope)?;
+                Ok(())
+            }
+            // m105: adapter-driven inbound dispatch. Called by an
+            // adapter locus's `run` method (or any code receiving
+            // wire bytes for a bus-bound subject) to fan the
+            // payload into local subscribers via the registered
+            // deserialize fn.
+            ["std", "bus", "__local_dispatch"] => {
+                let _ = self.lower_std_bus_local_dispatch(args, scope)?;
+                Ok(())
+            }
             ["std", "str", "from_bytes"] => {
                 let _ = self.lower_std_str_from_bytes(args, scope)?;
                 Ok(())
@@ -22502,6 +22592,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Phase 2g: binary-safe TCP recv + Bytes/String surface.
             ["std", "io", "tcp", "__recv_bytes"] => {
                 self.lower_std_io_tcp_recv_bytes(args, scope)
+            }
+            // TLS substrate (system OpenSSL): non-fallible
+            // send_bytes / recv_bytes / close mirror the tcp
+            // shape. connect is in the fallible dispatcher above.
+            ["std", "io", "tls", "send_bytes"] => {
+                self.lower_std_io_tls_send_bytes(args, scope)
+            }
+            ["std", "io", "tls", "recv_bytes"] => {
+                self.lower_std_io_tls_recv_bytes(args, scope)
+            }
+            ["std", "io", "tls", "close"] => {
+                self.lower_std_io_tls_close(args, scope)
+            }
+            ["std", "bus", "__local_dispatch"] => {
+                self.lower_std_bus_local_dispatch(args, scope)
             }
             ["std", "str", "from_bytes"] => {
                 self.lower_std_str_from_bytes(args, scope)
@@ -24730,6 +24835,299 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let ret_i64 = self
             .builder
             .build_int_s_extend(ret_i32, i64_t, "send_bytes.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((ret_i64.into(), CodegenTy::Int))
+    }
+
+    /// `std::io::tls::connect(host, port) -> Int fallible(IoError)`.
+    /// Same fallible shape as `tcp::connect` — the C primitive
+    /// opens a TCP socket, wraps in SSL, performs the TLS
+    /// handshake, returns an opaque handle (>=0) or -1 on error.
+    fn lower_std_io_tls_connect_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tls::connect takes 2 args (host, port), got {}",
+                args.len()
+            )));
+        }
+        let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
+        if host_ty != CodegenTy::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tls::connect: host must be String, got {:?}",
+                host_ty
+            )));
+        }
+        let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
+        if port_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tls::connect: port must be Int, got {:?}",
+                port_ty
+            )));
+        }
+        let i16_t = self.context.i16_type();
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let port_i16 = self
+            .builder
+            .build_int_truncate(port_val.into_int_value(), i16_t, "tls.port.i16")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_tls_connect")
+            .expect("lotus_tls_connect declared");
+        let h_i32 = self
+            .builder
+            .build_call(
+                f,
+                &[host_val.into(), port_i16.into()],
+                "tls.connect.handle",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                h_i32,
+                i32_t.const_zero(),
+                "tls.connect.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let h_i64 = self
+            .builder
+            .build_int_s_extend(h_i32, i64_t, "tls.connect.handle.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.complete_io_fallible_call(
+            is_err,
+            host_val,
+            Some((h_i64.into(), CodegenTy::Int)),
+            "tls.connect",
+        )
+    }
+
+    /// `std::io::tls::send_bytes(handle: Int, bytes: Bytes) -> Int`.
+    /// Non-fallible at the language level: returns 0 on success or
+    /// -1 on error. Mirrors tcp::__send_bytes.
+    fn lower_std_io_tls_send_bytes(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tls::send_bytes takes 2 args (handle, bytes), got {}",
+                args.len()
+            )));
+        }
+        let (h_val, h_ty) = self.lower_expr(&args[0], scope)?;
+        if h_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tls::send_bytes: handle must be Int, got {:?}",
+                h_ty
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[1], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tls::send_bytes: bytes must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let h_i32 = self
+            .builder
+            .build_int_truncate(h_val.into_int_value(), i32_t, "tls.sb.h.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_tls_send_bytes")
+            .expect("lotus_tls_send_bytes declared");
+        let ret_i32 = self
+            .builder
+            .build_call(f, &[h_i32.into(), b_val.into()], "tls.send_bytes.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let ret_i64 = self
+            .builder
+            .build_int_s_extend(ret_i32, i64_t, "tls.send_bytes.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((ret_i64.into(), CodegenTy::Int))
+    }
+
+    /// `std::io::tls::recv_bytes(handle: Int, max: Int) -> Bytes`.
+    /// Non-fallible: returns up to max bytes on success, or an
+    /// empty Bytes on error / peer-closed. Mirrors tcp::__recv_bytes.
+    fn lower_std_io_tls_recv_bytes(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tls::recv_bytes takes 2 args (handle, max), got {}",
+                args.len()
+            )));
+        }
+        let (h_val, h_ty) = self.lower_expr(&args[0], scope)?;
+        if h_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tls::recv_bytes: handle must be Int, got {:?}",
+                h_ty
+            )));
+        }
+        let (max_val, max_ty) = self.lower_expr(&args[1], scope)?;
+        if max_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tls::recv_bytes: max must be Int, got {:?}",
+                max_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let h_i32 = self
+            .builder
+            .build_int_truncate(h_val.into_int_value(), i32_t, "tls.rb.h.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let max_i32 = self
+            .builder
+            .build_int_truncate(max_val.into_int_value(), i32_t, "tls.rb.max.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_tls_recv_bytes")
+            .expect("lotus_tls_recv_bytes declared");
+        let ptr = self
+            .builder
+            .build_call(f, &[h_i32.into(), max_i32.into()], "tls.rb.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::Bytes))
+    }
+
+    /// m105: lower `std::bus::__local_dispatch(subject: String,
+    /// wire_bytes: Bytes) -> ()`. Hands wire bytes (received by an
+    /// adapter from its transport) through the subject's registered
+    /// deserialize fn into the local handler set. The Aperio surface
+    /// is the inbound counterpart to an adapter's outbound `send`.
+    fn lower_std_bus_local_dispatch(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bus::__local_dispatch takes 2 args (subject, bytes), got {}",
+                args.len()
+            )));
+        }
+        let (subj_val, subj_ty) = self.lower_expr(&args[0], scope)?;
+        if subj_ty != CodegenTy::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bus::__local_dispatch: subject must be String, got {:?}",
+                subj_ty
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[1], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bus::__local_dispatch: bytes must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        // The C primitive takes (subject, wire_ptr, wire_size).
+        // Bytes carries an explicit length prefix; load it and
+        // pass the body pointer plus the length explicitly so the
+        // runtime doesn't have to peek at our Bytes layout.
+        let i64_t = self.context.i64_type();
+        let bytes_ptr = b_val.into_pointer_value();
+        let len = self
+            .builder
+            .build_load(i64_t, bytes_ptr, "dispatch.bytes.len")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        // Body starts after the 8-byte length prefix.
+        let body_ptr = unsafe {
+            self.builder
+                .build_gep(
+                    self.context.i8_type(),
+                    bytes_ptr,
+                    &[i64_t.const_int(8, false)],
+                    "dispatch.bytes.body",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+        let f = self
+            .module
+            .get_function("lotus_bus_dispatch_wire")
+            .expect("lotus_bus_dispatch_wire declared");
+        self.builder
+            .build_call(
+                f,
+                &[subj_val.into(), body_ptr.into(), len.into()],
+                "bus.local_dispatch",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // Match the udp surface: return 0 as Int for "success."
+        // Callers normally invoke as a statement and ignore the
+        // return; the value is here so expression-position calls
+        // type-check uniformly.
+        Ok((i64_t.const_zero().into(), CodegenTy::Int))
+    }
+
+    /// `std::io::tls::close(handle: Int) -> Int`. Non-fallible:
+    /// returns 0 on success, -1 on error (bad handle). Mirrors
+    /// tcp::close_fd.
+    fn lower_std_io_tls_close(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tls::close takes 1 arg (handle), got {}",
+                args.len()
+            )));
+        }
+        let (h_val, h_ty) = self.lower_expr(&args[0], scope)?;
+        if h_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tls::close: handle must be Int, got {:?}",
+                h_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let h_i32 = self
+            .builder
+            .build_int_truncate(h_val.into_int_value(), i32_t, "tls.close.h.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_tls_close")
+            .expect("lotus_tls_close declared");
+        let ret_i32 = self
+            .builder
+            .build_call(f, &[h_i32.into()], "tls.close.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let ret_i64 = self
+            .builder
+            .build_int_s_extend(ret_i32, i64_t, "tls.close.i64")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok((ret_i64.into(), CodegenTy::Int))
     }

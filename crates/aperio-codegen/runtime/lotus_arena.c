@@ -1962,6 +1962,34 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
     }
 }
 
+/* m105 (Wave B inbound): adapter-driven inbound dispatch.
+ *
+ * The symmetric inbound counterpart to lotus_bus_remote_fanout's
+ * outbound path. An adapter locus's run-loop (or any user code
+ * driving an adapter) calls this with the wire-format bytes it
+ * just received from the protocol layer; the runtime looks up
+ * the subject's deserialize fn (registered alongside the local
+ * subscribers via codegen) to convert wire bytes back to in-
+ * memory struct bytes, then hands those to lotus_bus_local_dispatch
+ * for fanout into the local handler set.
+ *
+ * Mirrors the unix reader-thread path in
+ * lotus_bus_reader_thread_main but exposed as a callable for
+ * Aperio code via the `std::bus::__local_dispatch` primitive.
+ * Out-of-band (non-bus) recv loops can use this too; the only
+ * contract is "wire_bytes is one whole serialized payload."
+ *
+ * Silent no-op if no subscriber for the subject (matches the
+ * unix path) or if the wire-bytes fail deserialization.
+ *
+ * Forward decl here; body lives further down once
+ * g_bus_queue_for_remote is in scope (parallel to the
+ * lotus_bus_remote_fanout split).
+ */
+void lotus_bus_dispatch_wire(const char *subject,
+                             const void *wire_bytes,
+                             size_t wire_size);
+
 /* m70: lotus_bus_dispatch's signature grew a 5th arg — a per-
  * subject serialize fn pointer (NULL for cooperative-only
  * publishers; codegen always passes the right one for cross-
@@ -4559,6 +4587,34 @@ void lotus_bus_remote_fanout(const char *subject,
          * abort dispatch on transport failure — local subscribers
          * already received their copy. */
     }
+}
+
+/* m105 body — forward-declared near lotus_bus_local_dispatch.
+ * See the doc-comment up there for the design rationale. Lives
+ * here because the function body references g_bus_queue_for_remote
+ * (declared just above) and the per-subject deserialize_fn from
+ * g_bus_entries. */
+void lotus_bus_dispatch_wire(const char *subject,
+                             const void *wire_bytes,
+                             size_t wire_size) {
+    if (!subject || !wire_bytes || wire_size == 0) return;
+    lotus_deserialize_fn deserialize = NULL;
+    for (size_t i = 0; i < g_bus_count; i++) {
+        lotus_bus_entry_t *e = &g_bus_entries[i];
+        if (!e->subject) continue;
+        if (!lotus_subject_match(e->subject, subject)) continue;
+        deserialize = e->deserialize;
+        break;
+    }
+    if (!deserialize) return;
+    char struct_buf[LOTUS_PAYLOAD_MAX];
+    ssize_t struct_size = deserialize(
+        wire_bytes, wire_size, struct_buf, sizeof(struct_buf));
+    if (struct_size <= 0) return;
+    lotus_bus_local_dispatch(g_bus_queue_for_remote,
+                             subject,
+                             struct_buf,
+                             (size_t)struct_size);
 }
 
 /* m70: lazy global "payload arena" for String byte storage in

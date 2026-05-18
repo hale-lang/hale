@@ -396,9 +396,18 @@ packages the wire bytes as an Aperio-level `Bytes` value
 payload arena) and indirect-calls
 `send_fn(self, subject, bytes)`. No vtable lookup is needed
 at the runtime layer — codegen resolved the method at
-binding-emit time. Inbound dispatch from adapters into local
-handlers awaits the `__bus_local_dispatch` opening; v1
-adapter bindings are outbound-only.
+binding-emit time.
+
+**Adapter inbound (m105).** Adapters receiving wire-bytes
+from their protocol layer call `std::bus::__local_dispatch(
+subject, bytes)`; the primitive backs onto
+`lotus_bus_dispatch_wire`, which looks up the subject's
+registered deserialize fn in `g_bus_entries` (same table the
+publish-side fanout consults), reconstructs the struct-layout
+bytes, and fans into local subscribers via
+`lotus_bus_local_dispatch`. Symmetric to the unix reader-
+thread path; out-of-band recv loops (any code holding wire
+bytes for a bound subject) can use this too.
 
 ### Closure-test infrastructure
 
