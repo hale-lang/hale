@@ -354,10 +354,16 @@ and modes; specific transports come from stdlib (`std::bus::*`).
   test channel to in-memory). The router maintains per-channel
   transport bindings established at deployment time from
   config.
-- **Transport adaptation interface.** The runtime defines the
-  `Adapter` interface (built-in; standardized in stdlib); any
-  transport implementation conforming to it can be plugged in.
-  No specific transport ships with the runtime itself.
+- **Transport adaptation interface.** Cross-host transports
+  (NATS, MQTT, TCP-with-framing, custom) plug in via
+  `interface std::bus::Adapter` — a contract for user-supplied
+  loci that ship messages on whatever protocol they choose. The
+  contract definition lives in `runtime/stdlib/bus.ap`; concrete
+  adapter implementations live in user code or downstream
+  packages, NOT in std. The substrate-provided `unix(...)`
+  transport is in the runtime itself (substrate-guaranteed
+  atomic delivery via SOCK_SEQPACKET) and doesn't go through
+  the Adapter interface.
 
 **v1.x source surface.** Subjects are now declared as typed
 top-level `topic Foo { payload: T; subject: "..."; }` decls
@@ -370,8 +376,9 @@ transports (NATS, MQTT, TCP-with-framing) land in Wave B as
 user-supplied loci satisfying `interface std::bus::Adapter`.
 See `spec/semantics.md` "Topic declarations →
 Phase 2" for the full surface, including the closed-world
-intra-locus optimization that elides bus dispatch when a topic
-is used only inside one locus and has no binding.
+topology optimization that elides bus dispatch for unambiguous
+intra-locus and single-hop parent→child tower patterns when no
+binding is declared.
 
 ### Closure-test infrastructure
 

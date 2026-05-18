@@ -665,20 +665,29 @@ the recognition-class fixed pool in m23.
 
 **m49 closes the free-fn gap.** Every non-main free fn takes
 an implicit `__caller_arena: ptr` first param at the LLVM ABI.
-At body entry the **allocating** callee opens a subregion of
-`__caller_arena` via `lotus_arena_create_subregion(__caller_arena)`;
-the body's allocations route through that subregion (a new
-tier between `current_self`'s arena and `arena.global` in the
-codegen-side allocation routing). At return, the body branches
-to a unified `fn.exit` epilogue that deep-copies the return
-value into `__caller_arena` (identity for value types;
-`lotus_str_clone` for String; recursive walk for Tuple),
-destroys the subregion wholesale, and emits `build_return`.
 `main` keeps the program-wide `arena.global` it always had —
 it's the single fn without a caller. Heap-typed returns of
 Array, TypeRef-struct, or has-payload-Enum are rejected at
 v0.1 — none currently appear as free-fn returns; ship as a
 follow-up when a workload demands.
+
+**Allocation routing (post-2026-05-18 cross-seed-segv fix,
+commit 907837a).** Free-fn-body allocations now route to
+`__caller_arena` directly. The earlier m49 design routed them
+through a per-call subregion (`lotus_arena_create_subregion(
+__caller_arena)`); that proved unsound because the codegen has
+no escape analysis, so any value alloc'd in the subregion and
+stored on a longer-lived structure (canonically: pushed onto a
+`@form(vec)` on a foreign locus arg) dangled at fn-exit. The
+fix routes allocations directly to `__caller_arena`. The
+subregion is still created / destroyed at entry / exit so the
+cleanup hooks for `fail E { ... }` payloads still have a
+short-lived arena to anchor in, but the per-call performance
+tier the subregion was meant to provide is deferred — it
+needs escape analysis to ship safely. The fn-exit deep-copy
+into `__caller_arena` is now a same-arena memcpy in the common
+case (correct, marginally wasteful; can be elided in a
+follow-up).
 
 **Subregion elision for non-allocating bodies (FORM-3,
 2026-05-13).** Codegen classifies each user fn at declare time
@@ -691,18 +700,23 @@ range-index slices), numeric/bool/bitwise Binary (Add excluded
 since it could be String concat without type info threaded
 in), Unary, If with non-allocating arms. For fns that pass the
 classifier, the subregion `create` + `destroy` are skipped
-entirely (`fn_arena_alloca` aliases `caller_arena_alloca`),
-and the return-value deep-copy is skipped — the return value
-is either a primitive or a pointer to a region stable across
-the fn frame (String-literal global, caller-passed pointer,
-field read of one of those). Closes the bench's per-call cost
-for leaf fns (`fn_call` went 188 ms → 37.1 ms = 5×, ratio vs
-Go 0.04× → 0.21×; `form_vec_push` reached 1.00× = Go parity).
-The `__caller_arena` LLVM param is still passed even to
-non-allocating fns (kept uniform per-fn ABI); the optimization
-is purely on the body side. Fallible fns always pay the full
-subregion lifecycle because `fail E { ... }` allocates the
-payload struct.
+entirely and the return-value memcpy epilogue is skipped — the
+return value is either a primitive or a pointer to a region
+stable across the fn frame (String-literal global, caller-passed
+pointer, field read of one of those). Closes the bench's
+per-call cost for leaf fns (`fn_call` went 188 ms → 37.1 ms =
+5×, ratio vs Go 0.04× → 0.21×; `form_vec_push` reached 1.00× =
+Go parity). The `__caller_arena` LLVM param is still passed
+even to non-allocating fns (kept uniform per-fn ABI); the
+optimization is purely on the body side. Fallible fns always
+pay the full subregion lifecycle because `fail E { ... }`
+allocates the payload struct into the subregion. Post-907837a
+the elision benefit is narrower than its m49-era framing: with
+allocating-body allocations now routed to caller-arena directly
+(see "Allocation routing" above), the deep-copy epilogue is a
+same-arena memcpy and the subregion lifecycle is mostly
+overhead for cleanup hooks — the optimization still skips
+both, just with a smaller per-call cost being avoided.
 
 This delivers the spec's "every free function has its own
 implicit locus" memory boundary at the codegen substrate.

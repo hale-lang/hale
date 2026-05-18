@@ -102,8 +102,10 @@ Producing a `Bytes`:
 Consuming a `Bytes`:
 
 - `len(b) -> Int` reads the length prefix.
-- `std::bytes::at(b, i) -> Int` — byte-as-Int (0..255) with
-  -1 sentinel for OOB (Phase 2g).
+- `std::bytes::at(b, i) -> Int fallible(IndexError)` — byte-as-Int
+  (0..255). Address out-of-bounds via `or` clause (Phase 2g;
+  IoError flip 2026-05-16 swapped the pre-flip `-1` sentinel for
+  the fallible channel).
 - `Stream.send_bytes(b)` — length-preserving TCP send (m89).
 - `std::str::from_bytes(b) -> String` — copies into a
   NUL-terminated buffer; embedded NULs persist but downstream
@@ -464,7 +466,7 @@ when you need a wildcard subscription or a runtime-computed
 publish subject — those are the cases the topic system doesn't
 cover at v1.
 
-### Phase 2: hierarchy, subjects, bindings, intra-locus optimization
+### Phase 2: hierarchy, subjects, bindings, closed-world optimization
 
 Phase 2 extends topic declarations with three orthogonal pieces:
 
