@@ -8,18 +8,24 @@ actual mechanics — declaring topics in a shared seed, wiring
 transports in `main locus { bindings { ... } }`, and running
 two binaries that exchange messages.
 
-## What ships in v1
+## What ships
 
-- **`in_memory`** — same-binary cooperative queue. The default
-  when a topic has no binding.
-- **`unix("/path") : listen | connect`** — AF_UNIX
-  framed-byte transport. **Working in v1.**
-- **`tcp("host", port) : listen | connect`** — parses but
-  unimplemented at the runtime layer; linking emits an error.
-- **`nats("nats://...")`** — same; parses-but-unimplemented.
+- **Absence of binding** — same-binary cooperative queue. The
+  default when a topic isn't listed in `bindings { }`. There's
+  no `in_memory` keyword; the default *is* the absence.
+- **`unix("/path")` or `unix("/path", role: listen|connect)`** —
+  AF_UNIX framed-byte transport. Substrate-provided. When
+  `role:` is omitted, the typechecker infers it from the bus
+  block (publish-only → connect; subscribe-only → listen).
+- **`MyAdapter { ... }`** — user-supplied protocol-layer
+  adapter (any locus satisfying `__StdBusAdapter`). Covers
+  NATS, MQTT, TCP-with-framing, custom JSON-over-WebSocket —
+  anything the substrate doesn't ship directly.
 
-Unix sockets are the v1 cross-process transport. Two binaries
-on one host coordinate via a `.sock` path.
+Unix sockets are the v1 substrate cross-process transport.
+For protocol-layer transports, see the adapter section at the
+bottom and [the bus concept page](../concepts/the-bus.md) for
+the contract.
 
 ## Layout
 
@@ -71,7 +77,7 @@ locus Producer {
 }
 
 main locus PublisherApp {
-    bindings { Tick: unix("/tmp/beats.sock") : connect; }
+    bindings { Tick: unix("/tmp/beats.sock"); }
     run() {
         Producer { };
     }
@@ -83,8 +89,9 @@ locus** (`main locus PublisherApp`, not bare `locus
 PublisherApp`). A non-main locus carrying `bindings { }` is a
 parse error.
 
-`connect` is the **client side** — it opens a write-side
-transport to the listening peer.
+Role is inferred from the bus block: this binary only
+*publishes* `Tick`, so the role resolves to `connect` (the
+write-side). No `role:` kwarg needed.
 
 ## The subscriber
 
@@ -95,12 +102,12 @@ import "shared" as shared;
 locus Consumer {
     bus { subscribe shared::Tick as on_tick; }
     fn on_tick(t: shared::TickPayload) {
-        println("got tick #", to_string(t.n), " from ", t.label);
+        println("got tick #", t.n, " from ", t.label);
     }
 }
 
 main locus SubscriberApp {
-    bindings { Tick: unix("/tmp/beats.sock") : listen; }
+    bindings { Tick: unix("/tmp/beats.sock"); }
     run() {
         Consumer { };
         std::time::sleep(2000ms);   // keep alive long enough to receive
@@ -108,10 +115,17 @@ main locus SubscriberApp {
 }
 ```
 
-`listen` is the **server side** — at `main`'s prelude, the
-runtime calls `lotus_bus_register_remote(...)`, which binds
-the AF_UNIX socket and spawns a reader thread. Inbound payloads
-flow into the locus's normal handler dispatch.
+This binary only *subscribes* `Tick`, so the role resolves to
+`listen` (the server side). At `main`'s prelude, the runtime
+binds the AF_UNIX socket and spawns a reader thread; inbound
+payloads flow into the locus's normal handler dispatch.
+
+If a binary both publishes AND subscribes the same topic, role
+inference can't pick — specify it explicitly:
+
+```aperio
+bindings { Tick: unix("/tmp/beats.sock", role: listen); }
+```
 
 ## Build and run
 
@@ -153,12 +167,12 @@ The compiler enforces:
 ## What `unix(...)` actually wires
 
 At program startup, `main`'s prelude calls
-`lotus_bus_register_remote(subject, "unix:///tmp/beats.sock", role)`
-where `role` is `listen` or `connect`. The C runtime:
+`lotus_bus_register_remote(subject, "unix:///tmp/beats.sock", role)`.
+The C runtime:
 
 - **`listen` side** — `bind()`s the socket, spawns a pthread
   reader, fans incoming framed payloads into the local
-  subscriber set.
+  subscriber set via `lotus_bus_local_dispatch`.
 - **`connect` side** — opens a write fd lazily on first
   publish, sends length-prefixed frames.
 
@@ -185,7 +199,7 @@ payloads fan out to the same handler set:
 
 ```aperio
 main locus App {
-    bindings { Tick: unix("/tmp/beats.sock") : listen; }
+    bindings { Tick: unix("/tmp/beats.sock"); }
     run() {
         Consumer { };                  // local subscriber
         OtherConsumer { };             // another local subscriber
@@ -194,13 +208,43 @@ main locus App {
 }
 ```
 
-## What about TCP and NATS?
+## What about TCP, NATS, MQTT, etc.?
 
-The parser accepts `tcp("host", port) : listen|connect` and
-`nats("nats://...", ...)` shapes, but the runtime doesn't
-implement them yet — `aperio build` will error at link time.
-When they ship, the `bindings` syntax stays the same; the
-transport choice flips with no application-code change.
+The substrate doesn't ship them directly — that's the
+adapter path. Protocol-layer transports are user loci that
+satisfy `__StdBusAdapter`:
+
+```aperio
+locus MyNatsAdapter : schedule pinned {
+    params { url: String = "nats://localhost:4222"; }
+    birth() { /* open connection */ }
+    fn send(subject: String, bytes: Bytes) {
+        /* publish via your protocol */
+    }
+    run() {
+        /* recv loop on the pinned thread.
+         * For each inbound message, call
+         * std::bus::__local_dispatch(subject, bytes);
+         * the runtime looks up the subject's deserializer and
+         * fans into local subscribers. */
+    }
+    dissolve() { /* close connection */ }
+}
+
+main locus App {
+    bindings { Tick: MyNatsAdapter { url: "nats://prod:4222" }; }
+}
+```
+
+The application-code shape (publishers, subscribers, handlers)
+is identical to the `unix(...)` case. Only the binding line
+changes. Reliability semantics, retry, ordering, and
+backpressure are the adapter's concern — the substrate stays
+neutral on protocol choice because NATS, MQTT, and AMQP
+genuinely disagree on those points.
+
+See [The bus → Writing your own adapter](../concepts/the-bus.md#writing-your-own-adapter)
+for the full contract.
 
 ## See also
 

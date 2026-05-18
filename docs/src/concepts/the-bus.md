@@ -115,15 +115,16 @@ lookup at runtime.
 Here's where the bus pays for itself. The publisher and
 subscriber in the matchmaker example look identical regardless
 of whether the topic is delivered in-process, over a Unix
-socket, over TCP, or over NATS. The choice of transport is a
-**deployment-time** decision made in one place — the program's
-`main` locus:
+socket, or over a protocol-layer broker like NATS. The choice
+of transport is a **deployment-time** decision made in one
+place — the program's `main` locus:
 
 ```aperio
 main locus App {
     bindings {
-        JoinQueue:  in_memory;                           // default
-        MatchReady: unix("/tmp/matches.sock") : listen;  // AF_UNIX
+        // JoinQueue: absent — same-binary cooperative queue (default).
+        MatchReady: unix("/tmp/matches.sock");        // AF_UNIX
+        BrokerEvt:  MyNatsAdapter { url: "nats://..." };  // user adapter
     }
     run() {
         Matchmaker { target_size: 4 };
@@ -132,38 +133,87 @@ main locus App {
 ```
 
 The `bindings` block is only legal in a `main`-modified locus.
-Each entry pairs a topic with a transport spec. Four shapes
-ship in v1:
+Each entry pairs a topic with a transport spec. Two shapes
+ship — substrate and adapter — with absence-of-entry as a third
+implicit option:
 
-- **`in_memory`** — same-binary cooperative queue. The default
-  when a topic has no binding; the publisher's send enqueues
-  on a queue that the subscriber drains at its next yield
-  point.
-- **`unix("/path") : listen | connect`** — AF_UNIX framed-byte
-  transport. `listen` spawns a reader thread; `connect` opens
-  a write side. Same topic name, two binaries, one on each
-  side of the socket.
-- **`tcp("host", port) : listen | connect`** — TCP variant
-  (parses but unimplemented in v1; coming).
-- **`nats("nats://...", ...)`** — NATS subject mapping (also
-  parses-but-unimplemented).
+- **Absence of entry** — same-binary cooperative queue (the
+  runtime default). The publisher's send enqueues on a queue
+  that the subscriber drains at its next yield point. There's
+  no `in_memory` keyword; the default *is* the absence.
+- **`unix("/path")` or `unix("/path", role: listen|connect)`** —
+  AF_UNIX framed-byte transport. Substrate-provided: the
+  runtime's `lotus_transport_*` owns the delivery contract
+  directly. When `role:` is omitted, the typechecker infers it
+  from the bus block (`publish` only → `connect`, `subscribe`
+  only → `listen`); if both publish and subscribe touch the
+  topic in the same bundle, you specify `role:` explicitly.
+- **`MyAdapter { ... }`** — a user-supplied locus that
+  satisfies `__StdBusAdapter` (currently a single method,
+  `fn send(subject: String, bytes: Bytes)`). Protocol-layer
+  transports — NATS, MQTT, raw-TCP-with-framing, custom
+  JSON-over-WebSocket — ship as ordinary loci in user code or
+  downstream packages. The grammar tells the two apart by the
+  head's case: lowercase keyword `unix` vs capitalized locus
+  name.
 
 The point isn't the transport list — it's that the **publisher
 code and subscriber code don't change** when you flip the
 binding. A locus that subscribes to `JoinQueue` doesn't know
 whether the publisher is in the same process or on the other
-side of a Unix socket. The deployment seam is the only place
-that knows.
+side of a Unix socket or arriving via NATS. The deployment
+seam is the only place that knows.
 
-This is what makes the same locus code reusable across
-test (in-memory), single-binary (in-memory), and multi-binary
-(unix / tcp / nats) deployments. The library writer doesn't
+This is what makes the same locus code reusable across test
+(in-memory), single-binary (in-memory), and multi-binary
+(unix / adapter) deployments. The library writer doesn't
 choose; the application writer does.
 
 For the end-to-end mechanics — two binaries, a shared
-topic, what the build invocations look like, what `unix(...)
-: listen` actually wires up — see
+topic, what the build invocations look like, what `unix(...)`
+actually wires up — see
 [Run a topic across binaries](../how-tos/multi-binary-bus.md).
+
+### Writing your own adapter
+
+For protocol-layer transports the substrate doesn't ship in
+itself, you write the adapter as an ordinary locus. The
+contract is a single method:
+
+```aperio
+locus MyAdapter : schedule pinned {
+    params {
+        url: String = "nats://localhost:4222";
+    }
+    birth() {
+        // open the connection in your own state
+    }
+    fn send(subject: String, bytes: Bytes) {
+        // ship one outbound payload via your protocol
+    }
+    run() {
+        // pinned recv loop — for inbound, call
+        // std::bus::__local_dispatch(subject, bytes) once
+        // you've received and identified a payload
+    }
+    dissolve() {
+        // close the connection
+    }
+}
+```
+
+The `: schedule pinned` annotation gives the adapter its own
+pthread so `run()` can block on a recv loop without holding up
+the cooperative scheduler. `send` runs synchronously in the
+publisher's thread; `__local_dispatch` looks up the subject's
+serializer to convert wire-bytes into the in-memory payload
+shape, then fans into local subscribers.
+
+The substrate stays neutral on protocol semantics — reliability
+guarantees, ordering, retries, backpressure, fan-in policy all
+live in the adapter body where they belong. NATS-at-most-once
+and MQTT-QoS-2 and a custom broker with transactional ack all
+satisfy the same `__StdBusAdapter` contract.
 
 ## Hierarchical topics + wildcards
 

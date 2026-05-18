@@ -134,7 +134,12 @@ std::http::Server {
 
 ## What's NOT in `std::http`
 
-- **No HTTPS / TLS.** Front the server with a reverse proxy.
+- **No HTTPS server.** `std::http::Server` accepts plaintext
+  HTTP/1.0 only — front it with a reverse proxy (nginx,
+  Caddy, etc.) for TLS termination. The client side of TLS
+  *is* available — `std::io::tls::*` ships a system-OpenSSL-
+  backed client surface for outbound HTTPS calls (see the
+  [stdlib reference](../reference/stdlib.md)).
 - **No HTTP/2, no chunked transfer, no streaming bodies.**
   One request, one full `body: String`, one response. Set
   `Content-Length` correctly via the response's body length

@@ -15,10 +15,15 @@ Aperio currently builds from source. You'll need:
 
 ## Installing the host dependencies
 
+`aperio build` links every binary against system OpenSSL
+(`libssl` + `libcrypto`) so `std::io::tls::*` works without
+extra wiring — both the runtime libraries and the development
+headers need to be present.
+
 ### Debian / Ubuntu
 
 ```sh
-sudo apt install llvm-18-dev libclang-18-dev clang-18 git
+sudo apt install llvm-18-dev libclang-18-dev clang-18 libssl-dev git
 # Some apt layouts don't add `llvm-config-18` to PATH by default:
 sudo ln -sf /usr/bin/llvm-config-18 /usr/local/bin/llvm-config
 ```
@@ -30,7 +35,7 @@ following the instructions there for your distro.
 ### macOS (Homebrew)
 
 ```sh
-brew install llvm@18 git
+brew install llvm@18 openssl@3 git
 # Tell the build where LLVM 18 lives — Homebrew doesn't link
 # llvm@18 into PATH by default to avoid colliding with system clang.
 export LLVM_SYS_180_PREFIX="$(brew --prefix llvm@18)"
@@ -38,12 +43,13 @@ export PATH="$(brew --prefix llvm@18)/bin:$PATH"
 ```
 
 Add the `export` lines to your shell rc file if you want them
-to persist.
+to persist. The Homebrew `openssl@3` formula installs both the
+runtime library and headers.
 
 ### Fedora / RHEL
 
 ```sh
-sudo dnf install llvm18-devel clang18 git
+sudo dnf install llvm18-devel clang18 openssl-devel git
 ```
 
 ### Verifying
