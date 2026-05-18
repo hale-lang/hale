@@ -5741,13 +5741,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         };
                         (format!("unix://{}", path), r)
                     }
-                    TransportSpec::Tcp { .. } => {
-                        return Err(CodegenError::Unsupported(
-                            "binding transport `tcp(...)` is not yet \
-                             implemented (only `unix(...)` and \
-                             `in_memory` are wired in v1.x Phase 2)"
-                                .to_string(),
-                        ));
+                    TransportSpec::Tcp { host, port, role, .. } => {
+                        let r = match role {
+                            TransportRole::Listen => 0_i64,
+                            TransportRole::Connect => 1_i64,
+                        };
+                        // Runtime parses `tcp://host:port` and routes
+                        // through the lotus_tcp_* substrate. The same
+                        // url-string mechanism the unix path uses keeps
+                        // lotus_bus_register_remote's signature stable.
+                        (format!("tcp://{}:{}", host, port), r)
                     }
                     TransportSpec::Nats { .. } => {
                         return Err(CodegenError::Unsupported(

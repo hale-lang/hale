@@ -513,8 +513,13 @@ Transport surface (Phase 2):
   `listen` spawns a reader thread that fans recv'd payloads into
   the local handler set, `connect` opens a write-side transport
   that publish-site dispatch sends to.
-- `tcp("host", port) : listen|connect` — parsed but unimplemented
-  in Phase 2 (codegen errors out at link time).
+- `tcp("host", port) : listen|connect` — AF_INET stream transport;
+  routed through the `lotus_tcp_*` substrate with an 8-byte LE
+  length-prefix framer that preserves message boundaries across
+  the TCP byte stream. `listen` spawns a reader thread (same
+  cooperative-dispatch shape as the `unix` listener); `connect`
+  opens a write-side transport. The codegen-emitted URL form is
+  `tcp://host:port`.
 - `nats("nats://...", subject = "...", ...)` — parsed but
   unimplemented in Phase 2.
 

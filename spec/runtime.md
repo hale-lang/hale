@@ -364,8 +364,8 @@ top-level `topic Foo { payload: T; subject: "..."; }` decls
 (with optional `: Parent` for hierarchical wire subjects);
 deployment-time bindings live in the `main` locus's
 `bindings { Topic: <transport>; }` block (`in_memory`,
-`unix(...)` wired in v1.x; `tcp(...)` and `nats(...)` parse but
-unimplemented). See `spec/semantics.md` "Topic declarations →
+`unix(...)`, and `tcp(...)` wired in v1.x; `nats(...)` parses
+but unimplemented). See `spec/semantics.md` "Topic declarations →
 Phase 2" for the full surface, including the closed-world
 intra-locus optimization that elides bus dispatch when a topic
 is used only inside one locus and has no binding.
