@@ -77,13 +77,20 @@ References cross the import boundary as `shared::Beat`.
 
 | Command | What it does |
 |---|---|
+| `aperio check <file-or-dir>` | Parse + typecheck. No interpretation, no codegen — fastest path to "does this compile?" |
 | `aperio run <file-or-dir>` | Parse + typecheck + interpret. Fast feedback; no binary produced. |
 | `aperio build <file-or-dir>` | Parse + typecheck + emit a native binary via LLVM. |
 | `aperio fetch [repo-root]` | Clone git dependencies declared in `aperio.toml` into `vendor/`. |
 
-`run` is the interpreter; `build` is the native compiler. For
-single-file scripts and exploration, `run` is faster. For
-anything that ships, `build`.
+`check` is the type-only validator; `run` is the interpreter;
+`build` is the native compiler. For "did I just break this
+file?" use `check`. For single-file scripts and exploration, `run`
+is faster. For anything that ships, `build`.
+
+(The CLI also exposes `aperio lex <file.ap>` and
+`aperio parse <file.ap>` for printing tokens / AST — useful when
+debugging the compiler itself, but not part of the day-to-day
+authoring loop.)
 
 (`run` ignores `import` paths — if your program uses
 cross-seed imports, use `build`.)

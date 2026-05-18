@@ -31,11 +31,13 @@ workaround. It's to ask: **which locus should own this?**
 That question almost always has a structural answer; the
 answer is the productive move.
 
-(A forthcoming [`pond`](https://github.com/aperio-lang/pond)
-library, *memory-owner-architecture*, develops this rule into
-concrete patterns and helpers for declaring ownership and
-verifying the assignment. This chapter will link to it when
-it ships.)
+(The [`pond`](https://github.com/aperio-lang/pond) contrib
+monorepo ships a *memory-owner-architecture* (MOA) library
+under `pond/moa/` that develops this rule into concrete
+patterns and helpers for declaring ownership and verifying
+the assignment. It's likely to spin out into its own repo
+at some point; treat the link as the current pointer rather
+than a permanent address.)
 
 ## The seven idiomatic patterns
 

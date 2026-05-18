@@ -27,8 +27,12 @@ Before opening a PR:
 
 ```sh
 cargo build --release
-cargo test --release --workspace
+cargo test --release --workspace -- --test-threads=1
 ```
+
+The `--test-threads=1` flag is load-bearing — parallel test
+binaries can race each other on the same temp paths and surface
+flaky "text file busy" failures. Run tests serially.
 
 The test suite is the source of truth for what the compiler
 supports. If you're changing a language feature, add a test

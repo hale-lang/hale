@@ -71,8 +71,12 @@ cargo run -p aperio-cli --bin aperio -- run hello.ap
 ## Run the test suite
 
 ```sh
-cargo test --release --workspace
+cargo test --release --workspace -- --test-threads=1
 ```
+
+The `--test-threads=1` flag is load-bearing — parallel test
+binaries can race each other on the same temp paths, surfacing
+flaky "text file busy" failures. Run tests serially.
 
 The test suite is the source of truth for what the compiler
 supports today. If a test fails on a clean checkout, that's a
