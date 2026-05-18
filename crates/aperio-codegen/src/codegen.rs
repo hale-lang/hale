@@ -536,6 +536,13 @@ const STDLIB_AP_SOURCE: &str = concat!(
     // interface-value storage). Standalone — references only
     // Bytes and String, both core types.
     include_str!("../runtime/stdlib/bus.ap"),
+    "\n",
+    // std::io::file::File — held-open file I/O locus that
+    // complements the one-shot std::io::fs::* path-calls.
+    // Lifecycle (birth/dissolve) closes the fd at scope-exit
+    // per the m82 deferred-dissolve mechanism. Returned String
+    // data lives in the bus payload arena (program-lifetime).
+    include_str!("../runtime/stdlib/file.ap"),
 );
 
 /// Maps each user-facing stdlib path (locus OR type) to the
@@ -554,6 +561,13 @@ const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "http", "Request"], "__StdHttpRequest"),
     (&["std", "http", "Response"], "__StdHttpResponse"),
     (&["std", "http", "Server"], "__StdHttpServer"),
+    (&["std", "io", "file", "File"], "__StdIoFileFile"),
+    (&["std", "io", "file", "open"], "__std_io_file_open"),
+    (&["std", "io", "file", "read_line"], "__std_io_file_read_line"),
+    (&["std", "io", "file", "at_eof"], "__std_io_file_at_eof"),
+    (&["std", "io", "file", "write_bytes"], "__std_io_file_write_bytes"),
+    (&["std", "io", "file", "write_line"], "__std_io_file_write_line"),
+    (&["std", "io", "file", "seek"], "__std_io_file_seek"),
     (&["std", "io", "tcp", "Listener"], "__StdIoTcpListener"),
     (&["std", "io", "tcp", "Stream"], "__StdIoTcpStream"),
     (&["std", "iter", "Lines"], "__StdIterLines"),
@@ -2892,6 +2906,73 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let tcp_close_ty = i32_t.fn_type(&[i32_t.into()], false);
         self.module
             .add_function("lotus_tcp_close_fd", tcp_close_ty, None);
+
+        // Raw UDP substrate (std::io::udp::*). Datagram socket;
+        // preserves per-message boundaries from the kernel, no
+        // delivery guarantee. NOT a bus transport (the bus's
+        // atomic-delivery contract isn't satisfied by UDP).
+        //
+        // declare i32 @lotus_udp_bind(ptr host, i16 port)
+        let udp_bind_ty =
+            i32_t.fn_type(&[ptr_t.into(), i16_t.into()], false);
+        self.module
+            .add_function("lotus_udp_bind", udp_bind_ty, None);
+        // declare i32 @lotus_udp_sendto_str(i32 fd, ptr host, i16 port, ptr msg)
+        let udp_sendto_str_ty = i32_t.fn_type(
+            &[i32_t.into(), ptr_t.into(), i16_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_udp_sendto_str", udp_sendto_str_ty, None);
+        // declare ptr @lotus_udp_recv_bytes_global(i32 fd, i32 max_bytes)
+        let udp_recv_bytes_ty =
+            ptr_t.fn_type(&[i32_t.into(), i32_t.into()], false);
+        self.module.add_function(
+            "lotus_udp_recv_bytes_global",
+            udp_recv_bytes_ty,
+            None,
+        );
+        // declare i32 @lotus_udp_close(i32 fd)
+        let udp_close_ty = i32_t.fn_type(&[i32_t.into()], false);
+        self.module
+            .add_function("lotus_udp_close", udp_close_ty, None);
+
+        // Held-open file substrate (std::io::file::File). Mirrors
+        // the lotus_tcp_* split shape — primitives hand a raw fd
+        // back to the Aperio-side locus, which stashes it on
+        // self.fd and runs lotus_file_close in its dissolve().
+        //
+        // declare i32 @lotus_file_open(ptr path, ptr mode_str)
+        let file_open_ty =
+            i32_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        self.module
+            .add_function("lotus_file_open", file_open_ty, None);
+        // declare i32 @lotus_file_close(i32 fd)
+        let file_close_ty = i32_t.fn_type(&[i32_t.into()], false);
+        self.module
+            .add_function("lotus_file_close", file_close_ty, None);
+        // declare ptr @lotus_file_read_line_global(i32 fd)
+        // Returns String alloc'd in the bus payload arena, or
+        // NULL on EOF / error (caller distinguishes via errno).
+        let file_read_line_ty = ptr_t.fn_type(&[i32_t.into()], false);
+        self.module
+            .add_function("lotus_file_read_line_global", file_read_line_ty, None);
+        // declare i32 @lotus_file_at_eof(i32 fd)
+        let file_at_eof_ty = i32_t.fn_type(&[i32_t.into()], false);
+        self.module
+            .add_function("lotus_file_at_eof", file_at_eof_ty, None);
+        // declare i32 @lotus_file_seek(i32 fd, i64 offset)
+        let file_seek_ty =
+            i32_t.fn_type(&[i32_t.into(), i64_t.into()], false);
+        self.module
+            .add_function("lotus_file_seek", file_seek_ty, None);
+        // declare i32 @lotus_file_write_all(i32 fd, ptr buf, i64 len)
+        let file_write_all_ty = i32_t.fn_type(
+            &[i32_t.into(), ptr_t.into(), i64_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_file_write_all", file_write_all_ty, None);
 
         // m81: send / recv on a connected TCP fd, String-shaped.
         // declare i32 @lotus_tcp_send_str(i32 fd, ptr msg)
@@ -11863,6 +11944,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "process", "__spawn"] => Ok(Some(
                 self.lower_std_process_spawn_fallible(args, scope)?,
             )),
+            // UDP primitives: `__bind` returns Int fd, `__send`
+            // returns (), `__recv` returns Bytes.
+            ["std", "io", "udp", "__bind"]
+            | ["std", "io", "udp", "bind"] => Ok(Some(
+                self.lower_std_io_udp_bind_fallible(args, scope)?,
+            )),
+            ["std", "io", "udp", "__send"]
+            | ["std", "io", "udp", "send"] => Ok(Some(
+                self.lower_std_io_udp_send_fallible(args, scope)?,
+            )),
+            ["std", "io", "udp", "__recv"]
+            | ["std", "io", "udp", "recv"] => Ok(Some(
+                self.lower_std_io_udp_recv_fallible(args, scope)?,
+            )),
+            // File primitives: only the `__`-prefixed forms map
+            // here. The user-facing `open` / `write_bytes` / `seek`
+            // resolve via STDLIB_FN_RENAMES to the Aperio-level
+            // wrappers in runtime/stdlib/file.ap that bridge
+            // File ↔ fd (open returns a File, write_bytes/seek
+            // take a File).
+            ["std", "io", "file", "__open"] => Ok(Some(
+                self.lower_std_io_file_open_fallible(args, scope)?,
+            )),
+            ["std", "io", "file", "__write_bytes"] => Ok(Some(
+                self.lower_std_io_file_write_bytes_fallible(args, scope)?,
+            )),
+            ["std", "io", "file", "__seek"] => Ok(Some(
+                self.lower_std_io_file_seek_fallible(args, scope)?,
+            )),
             ["std", "process", "__wait_pid"] => Ok(Some(
                 self.lower_std_process_wait_pid_fallible(args, scope)?,
             )),
@@ -13385,6 +13495,450 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// `std::io::fs::mkdir(path) -> () fallible(IoError)`.
+    /// `std::io::udp::__bind(host: String, port: Int) -> Int
+    /// fallible(IoError)`. Creates a UDP socket bound to
+    /// (host, port). host="0.0.0.0" or "" → INADDR_ANY.
+    fn lower_std_io_udp_bind_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::udp::__bind takes 2 args (host, port), got {}",
+                args.len()
+            )));
+        }
+        let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
+        if host_ty != CodegenTy::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::udp::__bind: host must be String, got {:?}",
+                host_ty
+            )));
+        }
+        let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
+        if port_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::udp::__bind: port must be Int, got {:?}",
+                port_ty
+            )));
+        }
+        let i16_t = self.context.i16_type();
+        let port_i16 = self
+            .builder
+            .build_int_truncate(port_val.into_int_value(), i16_t, "udp.port.i16")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_udp_bind")
+            .expect("lotus_udp_bind declared");
+        let fd_i32 = self
+            .builder
+            .build_call(f, &[host_val.into(), port_i16.into()], "udp.bind.fd")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                fd_i32,
+                self.context.i32_type().const_zero(),
+                "udp.bind.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let fd_i64 = self
+            .builder
+            .build_int_s_extend(
+                fd_i32,
+                self.context.i64_type(),
+                "udp.bind.fd.i64",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.complete_io_fallible_call(
+            is_err,
+            host_val,
+            Some((fd_i64.into(), CodegenTy::Int)),
+            "udp.bind",
+        )
+    }
+
+    /// `std::io::udp::__send(fd: Int, host: String, port: Int,
+    /// msg: String) -> () fallible(IoError)`. Sends one
+    /// datagram. Best-effort delivery per UDP semantics.
+    fn lower_std_io_udp_send_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 4 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::udp::__send takes 4 args (fd, host, port, msg), got {}",
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        if fd_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::udp::__send: fd must be Int, got {:?}", fd_ty
+            )));
+        }
+        let (host_val, host_ty) = self.lower_expr(&args[1], scope)?;
+        if host_ty != CodegenTy::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::udp::__send: host must be String, got {:?}", host_ty
+            )));
+        }
+        let (port_val, port_ty) = self.lower_expr(&args[2], scope)?;
+        if port_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::udp::__send: port must be Int, got {:?}", port_ty
+            )));
+        }
+        let (msg_val, msg_ty) = self.lower_expr(&args[3], scope)?;
+        if msg_ty != CodegenTy::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::udp::__send: msg must be String, got {:?}", msg_ty
+            )));
+        }
+        let i16_t = self.context.i16_type();
+        let i32_t = self.context.i32_type();
+        let fd_i32 = self
+            .builder
+            .build_int_truncate(fd_val.into_int_value(), i32_t, "fd.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let port_i16 = self
+            .builder
+            .build_int_truncate(port_val.into_int_value(), i16_t, "udp.port.i16")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_udp_sendto_str")
+            .expect("lotus_udp_sendto_str declared");
+        let ret = self
+            .builder
+            .build_call(
+                f,
+                &[fd_i32.into(), host_val.into(), port_i16.into(), msg_val.into()],
+                "udp.send.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                ret,
+                i32_t.const_zero(),
+                "udp.send.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.complete_io_fallible_call(is_err, host_val, None, "udp.send")
+    }
+
+    /// `std::io::udp::__recv(fd: Int, max_bytes: Int) -> Bytes
+    /// fallible(IoError)`. Receives one datagram.
+    fn lower_std_io_udp_recv_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::udp::__recv takes 2 args (fd, max_bytes), got {}",
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        if fd_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::udp::__recv: fd must be Int, got {:?}", fd_ty
+            )));
+        }
+        let (cap_val, cap_ty) = self.lower_expr(&args[1], scope)?;
+        if cap_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::udp::__recv: max_bytes must be Int, got {:?}", cap_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let fd_i32 = self
+            .builder
+            .build_int_truncate(fd_val.into_int_value(), i32_t, "fd.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let cap_i32 = self
+            .builder
+            .build_int_truncate(cap_val.into_int_value(), i32_t, "udp.cap.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_udp_recv_bytes_global")
+            .expect("lotus_udp_recv_bytes_global declared");
+        let blob_ptr = self
+            .builder
+            .build_call(f, &[fd_i32.into(), cap_i32.into()], "udp.recv.blob")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr")
+            .into_pointer_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                self.builder
+                    .build_ptr_to_int(
+                        blob_ptr,
+                        self.context.i64_type(),
+                        "udp.recv.as_int",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
+                self.context.i64_type().const_zero(),
+                "udp.recv.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let label_ptr = self
+            .builder
+            .build_global_string_ptr("std::io::udp::recv", "udp.recv.label")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .as_pointer_value();
+        self.complete_io_fallible_call(
+            is_err,
+            label_ptr.into(),
+            Some((blob_ptr.into(), CodegenTy::Bytes)),
+            "udp.recv",
+        )
+    }
+
+    /// `std::io::file::__open(path: String, mode: String) ->
+    /// Int fallible(IoError)`. Returns the held fd as Int.
+    /// IoError.path is anchored to the input `path`.
+    fn lower_std_io_file_open_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::file::__open takes 2 args (path, mode), got {}",
+                args.len()
+            )));
+        }
+        let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
+        if path_ty != CodegenTy::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::file::__open: path must be String, got {:?}",
+                path_ty
+            )));
+        }
+        let (mode_val, mode_ty) = self.lower_expr(&args[1], scope)?;
+        if mode_ty != CodegenTy::String {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::file::__open: mode must be String, got {:?}",
+                mode_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_file_open")
+            .expect("lotus_file_open declared");
+        let fd_i32 = self
+            .builder
+            .build_call(f, &[path_val.into(), mode_val.into()], "file.open.fd")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                fd_i32,
+                self.context.i32_type().const_zero(),
+                "file.open.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let fd_i64 = self
+            .builder
+            .build_int_s_extend(
+                fd_i32,
+                self.context.i64_type(),
+                "file.open.fd.i64",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.complete_io_fallible_call(
+            is_err,
+            path_val,
+            Some((fd_i64.into(), CodegenTy::Int)),
+            "file.open",
+        )
+    }
+
+    /// `std::io::file::__write_bytes(fd: Int, b: Bytes) -> ()
+    /// fallible(IoError)`. Writes the full Bytes payload.
+    fn lower_std_io_file_write_bytes_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::file::__write_bytes takes 2 args (fd, bytes), got {}",
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        if fd_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::file::__write_bytes: fd must be Int, got {:?}",
+                fd_ty
+            )));
+        }
+        let (bytes_val, bytes_ty) = self.lower_expr(&args[1], scope)?;
+        if bytes_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::file::__write_bytes: bytes must be Bytes, got {:?}",
+                bytes_ty
+            )));
+        }
+        // Bytes ABI: ptr → [i64 len][u8 data[len]]. Decode the
+        // length prefix then call lotus_file_write_all on the
+        // body pointer.
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let fd_i32 = self
+            .builder
+            .build_int_truncate(fd_val.into_int_value(), i32_t, "fd.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let bytes_ptr = bytes_val.into_pointer_value();
+        let len = self
+            .builder
+            .build_load(i64_t, bytes_ptr, "bytes.len")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let body_ptr = unsafe {
+            self.builder
+                .build_in_bounds_gep(
+                    self.context.i8_type(),
+                    bytes_ptr,
+                    &[i64_t.const_int(8, false)],
+                    "bytes.body",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+        let _ = ptr_t;
+        let f = self
+            .module
+            .get_function("lotus_file_write_all")
+            .expect("lotus_file_write_all declared");
+        let ret = self
+            .builder
+            .build_call(
+                f,
+                &[fd_i32.into(), body_ptr.into(), len.into()],
+                "file.write.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                ret,
+                i32_t.const_zero(),
+                "file.write.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // Anchor IoError.path to a static "fd" label since the
+        // caller's path string isn't available here.
+        let label_ptr = self
+            .builder
+            .build_global_string_ptr("std::io::file::write_bytes", "file.write.label")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .as_pointer_value();
+        self.complete_io_fallible_call(
+            is_err,
+            label_ptr.into(),
+            None,
+            "file.write_bytes",
+        )
+    }
+
+    /// `std::io::file::__seek(fd: Int, offset: Int) -> ()
+    /// fallible(IoError)`.
+    fn lower_std_io_file_seek_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::file::__seek takes 2 args (fd, offset), got {}",
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        if fd_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::file::__seek: fd must be Int, got {:?}",
+                fd_ty
+            )));
+        }
+        let (off_val, off_ty) = self.lower_expr(&args[1], scope)?;
+        if off_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::file::__seek: offset must be Int, got {:?}",
+                off_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let fd_i32 = self
+            .builder
+            .build_int_truncate(fd_val.into_int_value(), i32_t, "fd.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_file_seek")
+            .expect("lotus_file_seek declared");
+        let ret = self
+            .builder
+            .build_call(
+                f,
+                &[fd_i32.into(), off_val.into()],
+                "file.seek.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                ret,
+                i32_t.const_zero(),
+                "file.seek.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let label_ptr = self
+            .builder
+            .build_global_string_ptr("std::io::file::seek", "file.seek.label")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .as_pointer_value();
+        self.complete_io_fallible_call(is_err, label_ptr.into(), None, "file.seek")
+    }
+
     fn lower_std_io_fs_mkdir_fallible(
         &mut self,
         args: &[Expr],
@@ -21130,6 +21684,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_io_tcp_close_fd(args, scope)?;
                 Ok(())
             }
+            ["std", "io", "udp", "__close"]
+            | ["std", "io", "udp", "close"] => {
+                let _ = self.lower_std_io_udp_close(args, scope)?;
+                Ok(())
+            }
+            ["std", "io", "file", "__close"] => {
+                let _ = self.lower_std_io_file_close(args, scope)?;
+                Ok(())
+            }
+            ["std", "io", "file", "__at_eof"] => {
+                let _ = self.lower_std_io_file_at_eof(args, scope)?;
+                Ok(())
+            }
+            ["std", "io", "file", "__read_line"] => {
+                let _ = self.lower_std_io_file_read_line(args, scope)?;
+                Ok(())
+            }
             ["std", "io", "tcp", "__send"] => {
                 let _ = self.lower_std_io_tcp_send(args, scope)?;
                 Ok(())
@@ -21548,7 +22119,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | ["std", "process", "__wait_pid"]
             | ["std", "process", "__kill_escalate"]
             | ["std", "process", "__pipe_read"]
-            | ["std", "process", "__pipe_write"] => {
+            | ["std", "process", "__pipe_write"]
+            | ["std", "io", "file", "__open"]
+            | ["std", "io", "file", "__write_bytes"]
+            | ["std", "io", "file", "__seek"]
+            | ["std", "io", "udp", "__bind"]
+            | ["std", "io", "udp", "bind"]
+            | ["std", "io", "udp", "__send"]
+            | ["std", "io", "udp", "send"]
+            | ["std", "io", "udp", "__recv"]
+            | ["std", "io", "udp", "recv"] => {
                 Err(CodegenError::Unsupported(format!(
                     "`{}` returns a fallible value — address the error with \
                      `or raise`, `or <substitute>`, or `or self.handle(err)`",
@@ -21685,6 +22265,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "io", "tcp", "__close_fd"]
             | ["std", "io", "tcp", "close_fd"] => {
                 self.lower_std_io_tcp_close_fd(args, scope)
+            }
+            ["std", "io", "udp", "__close"]
+            | ["std", "io", "udp", "close"] => {
+                self.lower_std_io_udp_close(args, scope)
+            }
+            // File primitives — `__`-prefixed only; user-facing
+            // names route via STDLIB_FN_RENAMES to file.ap wrappers.
+            ["std", "io", "file", "__close"] => {
+                self.lower_std_io_file_close(args, scope)
+            }
+            ["std", "io", "file", "__at_eof"] => {
+                self.lower_std_io_file_at_eof(args, scope)
+            }
+            ["std", "io", "file", "__read_line"] => {
+                self.lower_std_io_file_read_line(args, scope)
             }
             ["std", "io", "tcp", "__send"] => {
                 self.lower_std_io_tcp_send(args, scope)
@@ -22116,17 +22711,49 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | ["std", "process", "__wait_pid"]
             | ["std", "process", "__kill_escalate"]
             | ["std", "process", "__pipe_read"]
-            | ["std", "process", "__pipe_write"] => {
+            | ["std", "process", "__pipe_write"]
+            | ["std", "io", "file", "__open"]
+            | ["std", "io", "file", "__write_bytes"]
+            | ["std", "io", "file", "__seek"]
+            | ["std", "io", "udp", "__bind"]
+            | ["std", "io", "udp", "bind"]
+            | ["std", "io", "udp", "__send"]
+            | ["std", "io", "udp", "send"]
+            | ["std", "io", "udp", "__recv"]
+            | ["std", "io", "udp", "recv"] => {
                 Err(CodegenError::Unsupported(format!(
                     "`{}` returns a fallible value — address the error with \
                      `or raise`, `or <substitute>`, or `or self.handle(err)`",
                     segs.join("::")
                 )))
             }
-            _ => Err(CodegenError::Unsupported(format!(
-                "stdlib path `{}` in expression position — not implemented",
-                segs.join("::")
-            ))),
+            _ => {
+                // Fallback: stdlib paths that rename to an Aperio-
+                // side user fn (via STDLIB_PATH_RENAMES) get
+                // dispatched through user_fns. The fallible side
+                // (lower_fallible_call) already has this fallback;
+                // mirror it here for non-fallible callsites. Used
+                // by `std::io::file::at_eof(f)`, `std::io::file::
+                // read_line(f)`, etc. — the user-facing wrappers
+                // in runtime/stdlib/file.ap.
+                if let Some(mangled) = self.mangled_for_path(segs) {
+                    if self.user_fns.contains_key(&mangled) {
+                        let result =
+                            self.lower_user_fn_call(&mangled, args, scope)?;
+                        return result.ok_or_else(|| {
+                            CodegenError::Unsupported(format!(
+                                "stdlib path `{}` returns no value but is \
+                                 used in expression position",
+                                segs.join("::")
+                            ))
+                        });
+                    }
+                }
+                Err(CodegenError::Unsupported(format!(
+                    "stdlib path `{}` in expression position — not implemented",
+                    segs.join("::")
+                )))
+            }
         }
     }
 
@@ -25243,6 +25870,205 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_int_s_extend(ret_i32, i64_t, "close.i64")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok((ret_i64.into(), CodegenTy::Int))
+    }
+
+    /// `std::io::file::__read_line(fd: Int) -> String`. Returns
+    /// the next '\n'-terminated line (newline included if
+    /// present), or "" at EOF / on read error. Caller's at_eof
+    /// loop disambiguates EOF from a real empty line.
+    fn lower_std_io_file_read_line(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::file::__read_line takes 1 arg (fd), got {}",
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        if fd_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::file::__read_line: fd must be Int, got {:?}",
+                fd_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let fd_i32 = self
+            .builder
+            .build_int_truncate(fd_val.into_int_value(), i32_t, "fd.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_file_read_line_global")
+            .expect("lotus_file_read_line_global declared");
+        let s_ptr = self
+            .builder
+            .build_call(f, &[fd_i32.into()], "file.read_line.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr")
+            .into_pointer_value();
+        Ok((s_ptr.into(), CodegenTy::String))
+    }
+
+    /// `std::io::udp::__close(fd: Int) -> Int`. Mirrors
+    /// `std::io::tcp::__close_fd` but routes to lotus_udp_close.
+    fn lower_std_io_udp_close(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::udp::__close takes 1 arg (fd), got {}",
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        if fd_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::udp::__close: fd must be Int, got {:?}",
+                fd_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let fd_i32 = self
+            .builder
+            .build_int_truncate(fd_val.into_int_value(), i32_t, "fd.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_udp_close")
+            .expect("lotus_udp_close declared");
+        let call = self
+            .builder
+            .build_call(f, &[fd_i32.into()], "udp.close.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ret_i32 = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let ret_i64 = self
+            .builder
+            .build_int_s_extend(ret_i32, i64_t, "udp.close.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((ret_i64.into(), CodegenTy::Int))
+    }
+
+    /// `std::io::file::__close(fd: Int) -> Int`. Non-fallible
+    /// — the File locus's dissolve() best-effort-closes; errors
+    /// from close are rare and not actionable for the caller in
+    /// the dissolution path. Returns the close() ret (0 or -1).
+    fn lower_std_io_file_close(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::file::__close takes 1 arg (fd), got {}",
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        if fd_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::file::__close: fd must be Int, got {:?}",
+                fd_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let fd_i32 = self
+            .builder
+            .build_int_truncate(fd_val.into_int_value(), i32_t, "fd.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_file_close")
+            .expect("lotus_file_close declared");
+        let call = self
+            .builder
+            .build_call(f, &[fd_i32.into()], "file.close.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ret_i32 = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let ret_i64 = self
+            .builder
+            .build_int_s_extend(ret_i32, i64_t, "file.close.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((ret_i64.into(), CodegenTy::Int))
+    }
+
+    /// `std::io::file::__at_eof(fd: Int) -> Bool`. Returns true
+    /// (i1=1) when the fd has no more bytes to read. Non-fallible
+    /// at this surface; under-the-hood errors collapse to true
+    /// (treat-as-EOF) so callers driving a read-line loop don't
+    /// hang on a malfunctioning fd.
+    fn lower_std_io_file_at_eof(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::file::__at_eof takes 1 arg (fd), got {}",
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        if fd_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::file::__at_eof: fd must be Int, got {:?}",
+                fd_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let bool_t = self.context.bool_type();
+        let fd_i32 = self
+            .builder
+            .build_int_truncate(fd_val.into_int_value(), i32_t, "fd.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_file_at_eof")
+            .expect("lotus_file_at_eof declared");
+        let call = self
+            .builder
+            .build_call(f, &[fd_i32.into()], "file.eof.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ret_i32 = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        // Map: 1 => true; 0 or -1 => false (-1 path collapses
+        // error to "not at EOF" so the caller keeps reading and
+        // surfaces the error on the next read_line call where
+        // it's actionable).
+        let one = i32_t.const_int(1, false);
+        let is_eof = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                ret_i32,
+                one,
+                "file.eof.is_eof",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let as_bool = self
+            .builder
+            .build_int_z_extend_or_bit_cast(is_eof, bool_t, "file.eof.bool")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((as_bool.into(), CodegenTy::Bool))
     }
 
     /// Statement-level locus instantiation `T { f: v, ... };`.

@@ -1,0 +1,120 @@
+// std::io::file — held-open file I/O via let-bound locus +
+// auto-dissolve.
+//
+// Complements the one-shot std::io::fs::* path-calls. The path-
+// calls are right for read-whole-config / write-whole-artifact
+// shapes (one open+do+close per call); the File locus is right
+// for held-state shapes (line-by-line scan of a large log,
+// append-many writer that flushes 1000 lines without 1000
+// open+close pairs, random-access reads).
+//
+// Pattern:
+//
+//   fn process_log(path: String) -> Int fallible(IoError) {
+//       let f = std::io::file::open(path, "r") or raise;
+//       // f.dissolve() runs at fn-exit; closes the fd.
+//       while !std::io::file::at_eof(f) {
+//           let line = std::io::file::read_line(f);
+//           // process line ...
+//       }
+//       return 0;
+//   }
+//
+// Lifecycle: birth() runs as part of the open() helper; the
+// locus literal stashes `fd` on self. dissolve() closes the
+// held fd via __close. Let-binding the result places the File
+// in the enclosing fn's deferred-dissolve frame (m82 semantics),
+// so the close fires at fn-exit in LIFO order with other
+// let-bound loci.
+//
+// Returned String data (read_line) lives in the bus payload
+// arena — program-lifetime — so Strings extracted from a File
+// can outlive the File itself.
+//
+// Mode strings (passed to open):
+//   "r"  — read-only, must exist
+//   "w"  — write-only, truncate (or create with 0644)
+//   "a"  — write-only, append (or create with 0644)
+//   "r+" — read+write, must exist
+//   "w+" — read+write, truncate (or create with 0644)
+//
+// **Errors are non-fallible on `read_line` and `at_eof`** in
+// v1 — they fold EOF and read errors into the empty-string and
+// not-eof returns respectively. The fallible attach point for
+// streaming reads is post-v1 (needs a sum-type result or an
+// out-of-band error-channel hook on the locus). `open`,
+// `write_bytes`, `write_line`, and `seek` ARE fallible.
+
+locus __StdIoFileFile {
+    params {
+        // Held fd from open(). -1 sentinel means "never opened"
+        // or "already closed" — dissolve() guards against
+        // double-close.
+        fd: Int = -1;
+        // Original path passed to open(). Held for diagnostics
+        // — surfaced in error messages from write/seek calls.
+        path: String = "";
+    }
+    dissolve() {
+        // close(-1) is a no-op in lotus_file_close, so the
+        // "never spawned" default is safe.
+        std::io::file::__close(self.fd);
+    }
+}
+
+// Open `path` with the given mode. Returns a fully-constructed
+// File whose dissolve() owns the close. Surfaced as
+// `std::io::file::open` via path-call dispatch.
+//
+// Errors:
+//   - kind="not_found" if path doesn't exist (mode "r" / "r+")
+//   - kind="permission_denied" if open() returns EACCES / EPERM
+//   - kind="invalid" if mode_str isn't one of the recognized
+//     mode strings
+fn __std_io_file_open(path: String, mode_str: String)
+    -> std::io::file::File fallible(IoError) {
+    let fd = std::io::file::__open(path, mode_str) or raise;
+    return std::io::file::File {
+        fd: fd,
+        path: path,
+    };
+}
+
+// Read one '\n'-terminated line. Returns the line (newline
+// included if present) or "" at EOF / on read error. Pair with
+// at_eof() for an EOF-aware loop.
+fn __std_io_file_read_line(f: std::io::file::File) -> String {
+    return std::io::file::__read_line(f.fd);
+}
+
+// True when the file has no more bytes to read. Drives
+// while-loops over file contents.
+fn __std_io_file_at_eof(f: std::io::file::File) -> Bool {
+    return std::io::file::__at_eof(f.fd);
+}
+
+// Write all bytes to the file. Position advances by len(bytes).
+// In "a" / append mode, writes always go to end-of-file
+// regardless of current position.
+fn __std_io_file_write_bytes(f: std::io::file::File, b: Bytes)
+    -> () fallible(IoError) {
+    std::io::file::__write_bytes(f.fd, b) or raise;
+}
+
+// Write a String followed by a '\n'. Convenience wrapper over
+// write_bytes for the common log-line case.
+fn __std_io_file_write_line(f: std::io::file::File, line: String)
+    -> () fallible(IoError) {
+    let body = std::bytes::concat(
+        std::bytes::from_string(line),
+        std::bytes::from_string("\n"));
+    std::io::file::__write_bytes(f.fd, body) or raise;
+}
+
+// Seek to absolute byte offset. Position negative or beyond
+// end-of-file raises invalid / io. Not valid on pipes /
+// sockets (they have no seekable position).
+fn __std_io_file_seek(f: std::io::file::File, offset: Int)
+    -> () fallible(IoError) {
+    std::io::file::__seek(f.fd, offset) or raise;
+}

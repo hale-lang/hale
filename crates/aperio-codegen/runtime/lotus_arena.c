@@ -3003,6 +3003,148 @@ int lotus_tcp_close_fd(int fd) {
     return close(fd);
 }
 
+/* Forward decl — defined later (next to lotus_bus_payload_arena
+ * proper). Lets the UDP block below build Bytes blobs in the
+ * payload arena. */
+void *lotus_bus_payload_arena_alloc(size_t size, size_t align);
+
+/*
+ * Raw UDP primitives. Datagram socket (SOCK_DGRAM) — preserves
+ * per-message boundaries from the kernel, no framing needed at
+ * this layer, no delivery guarantee (per UDP semantics). The
+ * bus's "deliver one whole message" contract is therefore NOT
+ * satisfied by UDP at the substrate level; cross-host bus over
+ * UDP is the application's problem (retry, reorder, etc.).
+ *
+ * Surface (intentionally minimal for v1):
+ *   - lotus_udp_bind(host, port) — create a socket bound to
+ *     (host, port). host=NULL or "0.0.0.0" → INADDR_ANY.
+ *   - lotus_udp_sendto(fd, host, port, buf, len) — send one
+ *     datagram (best-effort) to the named peer.
+ *   - lotus_udp_recv(fd, buf, cap) — receive one datagram.
+ *     Returns bytes received, or -1 on error.
+ *   - lotus_udp_close(fd) — close the socket.
+ *
+ * For held-open send-only sockets where you want a fixed peer,
+ * pair lotus_udp_bind(NULL, 0) with repeated lotus_udp_sendto.
+ * For receive, bind(host, port) then loop on lotus_udp_recv.
+ *
+ * Errors return -1 with errno set. lotus_udp_recv truncates
+ * messages larger than `cap` (per recvfrom man page).
+ */
+
+int lotus_udp_bind(const char *host, uint16_t port) {
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons(port);
+    if (!host || *host == '\0' || strcmp(host, "0.0.0.0") == 0) {
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    } else if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+        fprintf(stderr, "lotus_udp_bind: invalid host %s\n", host);
+        errno = EINVAL;
+        return -1;
+    }
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        perror("lotus_udp_bind: socket");
+        return -1;
+    }
+    int one = 1;
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) < 0) {
+        perror("lotus_udp_bind: SO_REUSEADDR");
+        close(sock);
+        return -1;
+    }
+    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("lotus_udp_bind: bind");
+        close(sock);
+        return -1;
+    }
+    return sock;
+}
+
+int lotus_udp_sendto(int fd, const char *host, uint16_t port,
+                     const void *buf, size_t len) {
+    if (fd < 0 || !host) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons(port);
+    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+        fprintf(stderr, "lotus_udp_sendto: invalid host %s\n", host);
+        errno = EINVAL;
+        return -1;
+    }
+    ssize_t n = sendto(fd, buf, len, 0,
+                       (struct sockaddr *)&addr, sizeof(addr));
+    if (n < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+ssize_t lotus_udp_recv(int fd, void *buf, size_t cap) {
+    if (fd < 0 || (!buf && cap > 0)) {
+        errno = EINVAL;
+        return -1;
+    }
+    ssize_t n = recvfrom(fd, buf, cap, 0, NULL, NULL);
+    return n;
+}
+
+int lotus_udp_close(int fd) {
+    if (fd < 0) return 0;
+    return close(fd);
+}
+
+/* Aperio-side wrappers that adapt the raw primitives to the
+ * String / Bytes ABI. The String variant of sendto takes a
+ * NUL-terminated string and computes its length internally;
+ * the Bytes variants take the standard [i64 len][u8 body[len]]
+ * blob and walk the prefix. recv_bytes allocates the result
+ * in the bus payload arena like its tcp sibling. */
+
+int lotus_udp_sendto_str(int fd, const char *host, uint16_t port,
+                         const char *msg) {
+    if (!msg) {
+        errno = EINVAL;
+        return -1;
+    }
+    return lotus_udp_sendto(fd, host, port, msg, strlen(msg));
+}
+
+void *lotus_udp_recv_bytes_global(int fd, int max_bytes) {
+    if (fd < 0 || max_bytes <= 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    /* Use a stack buffer for the kernel handoff; the result is
+     * copied into a Bytes blob in the payload arena. UDP max
+     * packet size is ~65507 bytes on IPv4, so a 64KB stack
+     * buffer covers anything. */
+    char stack_buf[65536];
+    size_t cap = (size_t)max_bytes;
+    if (cap > sizeof(stack_buf)) cap = sizeof(stack_buf);
+    ssize_t n = recvfrom(fd, stack_buf, cap, 0, NULL, NULL);
+    if (n < 0) return NULL;
+    /* Hand-build a Bytes blob ([i64 len][body]) in the global
+     * payload arena via the public alloc helper. Mirrors the
+     * lotus_bytes_create shape (without needing a direct
+     * lotus_arena_t handle to the static g_bus_payload_arena). */
+    size_t blob_size = sizeof(int64_t) + (size_t)n;
+    void *blob = lotus_bus_payload_arena_alloc(blob_size, 8);
+    if (!blob) return NULL;
+    *(int64_t *)blob = (int64_t)n;
+    if (n > 0) {
+        memcpy((char *)blob + sizeof(int64_t), stack_buf, (size_t)n);
+    }
+    return blob;
+}
+
 /*
  * m81: send / recv on a connected TCP fd, exposed to Aperio
  * as String-shaped operations. send_str writes the bytes of
@@ -3469,6 +3611,219 @@ int lotus_fs_file_exists(const char *path) {
     }
     struct stat st;
     return stat(path, &st) == 0 ? 1 : 0;
+}
+
+/*
+ * Held-open file substrate (std::io::file::File).
+ *
+ * Complements the one-shot std::io::fs::* path-calls above:
+ * those open+do+close per call; this family hands a raw fd back
+ * to the Aperio-side File locus, which stashes it on self.fd
+ * and runs lotus_file_close in its dissolve(). The locus's
+ * scope-exit dissolve (per let-bound deferred-dissolve rules)
+ * makes "open a file, do held-state I/O, get cleanup for free"
+ * the same shape Stream / Listener already have for sockets.
+ *
+ * Mode string semantics (POSIX flag derivation):
+ *   "r"  → O_RDONLY
+ *   "w"  → O_WRONLY | O_CREAT | O_TRUNC   (mode 0644)
+ *   "a"  → O_WRONLY | O_CREAT | O_APPEND  (mode 0644)
+ *   "r+" → O_RDWR
+ *   "w+" → O_RDWR   | O_CREAT | O_TRUNC   (mode 0644)
+ *
+ * Returned String data (read_line) lives in the global bus
+ * payload arena, matching the lifetime semantics of
+ * std::io::fs::read_file — the buffer survives the call frame
+ * and the eventual File.dissolve(), so a String escaping the
+ * File's scope stays valid.
+ */
+
+/* Open `path` with POSIX mode derived from `mode_str`. Returns
+ * the fd (>= 0) on success, -1 on error (errno set). The mode
+ * string is one of {"r","w","a","r+","w+"} — anything else is
+ * EINVAL. */
+int lotus_file_open(const char *path, const char *mode_str) {
+    if (!path || !mode_str) {
+        errno = EINVAL;
+        return -1;
+    }
+    int flags;
+    int create_perm = 0;
+    if (strcmp(mode_str, "r") == 0) {
+        flags = O_RDONLY;
+    } else if (strcmp(mode_str, "w") == 0) {
+        flags = O_WRONLY | O_CREAT | O_TRUNC;
+        create_perm = 0644;
+    } else if (strcmp(mode_str, "a") == 0) {
+        flags = O_WRONLY | O_CREAT | O_APPEND;
+        create_perm = 0644;
+    } else if (strcmp(mode_str, "r+") == 0) {
+        flags = O_RDWR;
+    } else if (strcmp(mode_str, "w+") == 0) {
+        flags = O_RDWR | O_CREAT | O_TRUNC;
+        create_perm = 0644;
+    } else {
+        errno = EINVAL;
+        return -1;
+    }
+    int fd = (create_perm != 0)
+        ? open(path, flags, create_perm)
+        : open(path, flags);
+    return fd;
+}
+
+/* Close a held-open fd. Returns 0 on success, -1 on error.
+ * Idempotent for fd == -1 (the "never opened" sentinel) — that
+ * lets File.dissolve() blind-close on the params default
+ * without synthesizing a phantom IoError. */
+int lotus_file_close(int fd) {
+    if (fd < 0) return 0;
+    return close(fd);
+}
+
+/* Read one '\n'-terminated line from `fd`, returning a heap-
+ * allocated NUL-terminated string in the global bus payload
+ * arena. The terminating newline is included if present
+ * (matches getline(3) convention); EOF without a trailing
+ * newline returns whatever bytes were read. EOF with no
+ * available bytes returns an empty string (the stable empty
+ * sentinel) — callers paired with lotus_file_at_eof can
+ * distinguish that from a genuine empty line. Read errors
+ * also collapse to the empty-string sentinel; surfacing them
+ * is a v1.x follow-up (the at_eof / read_line loop pattern
+ * doesn't have a clean fallible attach point because of the
+ * empty-line vs EOF ambiguity without a sum-type result).
+ *
+ * Capped at 8 MB per line; longer lines are truncated at the
+ * cap and the caller sees the partial line (no error). The
+ * truncation is deliberate over a stream-extension API for v1
+ * simplicity — typical config / log lines are well under this. */
+#define LOTUS_FILE_LINE_CAP (8u * 1024u * 1024u)
+
+const char *lotus_file_read_line_global(int fd) {
+    static const char empty[1] = { 0 };
+    if (fd < 0) {
+        errno = EINVAL;
+        return empty;
+    }
+    /* Single-byte reads — getline(3) would be slicker but
+     * requires a FILE* and we hold a raw fd. The kernel
+     * read-ahead cache makes this not-terrible for typical
+     * input sizes; if it shows up in a profile, swap to a
+     * readbuf per-fd later. */
+    char  stack_buf[4096];
+    char *heap_buf = NULL;
+    size_t cap = sizeof(stack_buf);
+    size_t len = 0;
+    char *buf = stack_buf;
+    for (;;) {
+        if (len >= LOTUS_FILE_LINE_CAP) {
+            break;     /* truncate at cap */
+        }
+        if (len + 1 >= cap) {
+            size_t new_cap = cap * 2;
+            if (new_cap > LOTUS_FILE_LINE_CAP + 1) {
+                new_cap = LOTUS_FILE_LINE_CAP + 1;
+            }
+            char *grown = (char *)realloc(
+                (buf == stack_buf) ? NULL : heap_buf, new_cap);
+            if (!grown) {
+                if (heap_buf) free(heap_buf);
+                return empty;
+            }
+            if (buf == stack_buf) {
+                memcpy(grown, stack_buf, len);
+            }
+            heap_buf = grown;
+            buf      = grown;
+            cap      = new_cap;
+        }
+        char ch;
+        ssize_t r = read(fd, &ch, 1);
+        if (r > 0) {
+            buf[len++] = ch;
+            if (ch == '\n') break;
+            continue;
+        }
+        if (r == 0) {
+            /* EOF: if we have buffered bytes, return them as
+             * the last (unterminated) line. If we have nothing,
+             * return the stable empty-string sentinel. */
+            if (len == 0) {
+                if (heap_buf) free(heap_buf);
+                return empty;
+            }
+            break;
+        }
+        if (errno == EINTR) continue;
+        /* Read error: collapse to empty-string for the v1
+         * non-fallible surface. Caller's at_eof() loop terminates
+         * naturally because subsequent reads also hit EOF/error. */
+        if (heap_buf) free(heap_buf);
+        return empty;
+    }
+    buf[len] = '\0';
+    /* Anchor result in the global bus payload arena so it
+     * outlives the call frame AND the File locus's dissolve. */
+    char *out = (char *)lotus_bus_payload_arena_alloc(len + 1, 1);
+    if (!out) {
+        if (heap_buf) free(heap_buf);
+        return empty;
+    }
+    memcpy(out, buf, len + 1);
+    if (heap_buf) free(heap_buf);
+    return out;
+}
+
+/* Returns 1 if `fd` has no more bytes to read, 0 otherwise, -1
+ * on error. Implemented via lseek(SEEK_CUR) vs lseek(SEEK_END)
+ * comparison — works for regular files; for pipes / sockets the
+ * function returns -1 with errno=ESPIPE (caller should not use
+ * at_eof on non-seekable fds). */
+int lotus_file_at_eof(int fd) {
+    if (fd < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    off_t cur = lseek(fd, 0, SEEK_CUR);
+    if (cur < 0) return -1;
+    off_t end = lseek(fd, 0, SEEK_END);
+    if (end < 0) return -1;
+    /* Restore position. */
+    if (lseek(fd, cur, SEEK_SET) < 0) return -1;
+    return (cur >= end) ? 1 : 0;
+}
+
+/* Seek `fd` to absolute byte offset `offset`. Returns 0 on
+ * success, -1 on error. */
+int lotus_file_seek(int fd, int64_t offset) {
+    if (fd < 0 || offset < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return (lseek(fd, (off_t)offset, SEEK_SET) >= 0) ? 0 : -1;
+}
+
+/* Write all `len` bytes from `buf` to `fd`, looping over short
+ * writes. Returns 0 on success, -1 on error. */
+int lotus_file_write_all(int fd, const void *buf, size_t len) {
+    if (fd < 0 || (!buf && len > 0)) {
+        errno = EINVAL;
+        return -1;
+    }
+    const char *p = (const char *)buf;
+    size_t left = len;
+    while (left > 0) {
+        ssize_t w = write(fd, p, left);
+        if (w > 0) {
+            p    += (size_t)w;
+            left -= (size_t)w;
+            continue;
+        }
+        if (w < 0 && errno == EINTR) continue;
+        return -1;
+    }
+    return 0;
 }
 
 /* Surface the current platform errno to the LLVM-side fallible-
