@@ -265,6 +265,7 @@ pub fn build_executable_with_imports(
         pending_type_names: BTreeSet::new(),
         user_enums: BTreeMap::new(),
         user_interfaces: BTreeSet::new(),
+        user_consts: BTreeMap::new(),
         import_renames: import_renames
             .iter()
             .map(|(segs, mangled)| (segs.clone(), mangled.clone()))
@@ -793,6 +794,19 @@ struct Cx<'ctx, 'p> {
     /// (the typechecker already enforces structural impl, so
     /// codegen just needs the layout, not a re-verified table).
     user_interfaces: BTreeSet<String>,
+    /// G7: top-level `const NAME: T = LITERAL;` declarations
+    /// indexed by name (post-mangle). Populated in `lower_program`
+    /// after fn / type / locus collection; consulted by the
+    /// `Expr::Ident` lowering branch as a fallback after locals
+    /// and `user_fns`. Cross-seed `lib::FOO` reads work the same
+    /// way intra-seed reads do because the import-rename pass
+    /// rewrites `Expr::Path(["lib","FOO"])` into a bare
+    /// `Expr::Ident("__lib_..._FOO")` before codegen runs, and the
+    /// mangler renames the lib's `TopDecl::Const(c).name` to the
+    /// same mangled string. The value is materialized at each use
+    /// site via `const_param` (so the const acts as a true
+    /// compile-time constant, not a global load).
+    user_consts: BTreeMap<String, ParamValue>,
     /// v1.x-IMPORT: per-build path-rename table for cross-seed
     /// imports. Same shape as `STDLIB_PATH_RENAMES` but populated
     /// per build from the user's `import "lib/X" as foo;`
@@ -5384,6 +5398,36 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.generic_fn_templates
                     .insert(f.name.name.clone(), f.clone());
             }
+        }
+
+        // G7: register every top-level `const NAME: T = LITERAL;`
+        // declaration. The value is evaluated to a ParamValue at
+        // codegen time (literals only — same shape as locus
+        // `params { ... }` defaults) and stashed in `user_consts`.
+        // The `Expr::Ident` lowering checks this map after locals
+        // and before user_fns, so any expression-position reference
+        // to a const reads the literal directly. Cross-seed reads
+        // work because the mangler has already rewritten both the
+        // const's own name and the consumer's `lib::FOO` path to
+        // the same `__lib_..._FOO` symbol before this pass runs.
+        let user_const_decls: Vec<ConstDecl> = self
+            .program
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                TopDecl::Const(c) => Some(c.clone()),
+                _ => None,
+            })
+            .collect();
+        for c in &user_const_decls {
+            let pv = param_value(&c.value).map_err(|e| {
+                CodegenError::Unsupported(format!(
+                    "const `{}`: value must be a literal at v1 codegen \
+                     (matching locus-param default rules); inner error: {}",
+                    c.name.name, e
+                ))
+            })?;
+            self.user_consts.insert(c.name.name.clone(), pv);
         }
 
         // Pass C: lower lifecycle method bodies (birth, run, ...).
@@ -18689,6 +18733,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         return Ok((v.into(), CodegenTy::Enum(enum_name)));
                     }
                 }
+                // G7: cross-seed const reference. `lib::MAX_RETRIES`
+                // reaches here as a 2-segment Expr::Path. The
+                // import-rename pass that handles `Stmt::Send`
+                // subjects doesn't fire for value-position paths, so
+                // we consult `mangled_for_path` directly and look the
+                // mangled name up in `user_consts`. Falls through to
+                // the unresolved-path diagnostic if the lookup misses
+                // (so enum variants and stdlib calls still error
+                // exactly as before).
+                let segs: Vec<&str> =
+                    qn.segments.iter().map(|s| s.name.as_str()).collect();
+                if let Some(mangled) = self.mangled_for_path(&segs) {
+                    if let Some(pv) = self.user_consts.get(&mangled).cloned() {
+                        let (val, ty) = self.const_param(&pv);
+                        return Ok((val, ty));
+                    }
+                }
                 Err(CodegenError::Unsupported(format!(
                     "unresolved path `{}`",
                     qn.segments
@@ -18718,6 +18779,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_load(llvm_ty, alloca, &id.name)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     return Ok((loaded, ty));
+                }
+                // G7: top-level `const NAME: T = LITERAL;` reference.
+                // Materialize the literal at the use site via
+                // `const_param` — same lowering path as a locus
+                // param's default value, so the const is a true
+                // compile-time substitution rather than a load.
+                // Checked between locals (which shadow) and
+                // user_fns (so a const and a fn with the same
+                // name would shadow the fn — but the parser would
+                // already reject the redeclaration at the
+                // top-decl-name uniqueness check).
+                if let Some(pv) = self.user_consts.get(&id.name).cloned() {
+                    let (val, ty) = self.const_param(&pv);
+                    return Ok((val, ty));
                 }
                 // m80: a bare identifier in expression position
                 // can be a user function name used as a value.

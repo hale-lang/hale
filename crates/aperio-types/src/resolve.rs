@@ -981,7 +981,18 @@ pub fn resolve_type_expr(te: &TypeExpr, known: &BTreeMap<String, Span>) -> Ty {
             Ty::Array(Box::new(resolve_type_expr(elem, known)), n)
         }
         TypeExpr::Tuple(parts, _) => {
-            Ty::Tuple(parts.iter().map(|t| resolve_type_expr(t, known)).collect())
+            // G2 follow-up: `()` parses as TypeExpr::Tuple([], _).
+            // Normalize the empty case to Ty::Unit so downstream
+            // checks (e.g. `or discard` requires success type to
+            // be Unit) treat `-> () fallible(E)` and bare
+            // `fallible(E)` interchangeably, matching the codegen
+            // ABI which already does this normalization at
+            // signature-lowering time (codegen.rs ~9948).
+            if parts.is_empty() {
+                Ty::Unit
+            } else {
+                Ty::Tuple(parts.iter().map(|t| resolve_type_expr(t, known)).collect())
+            }
         }
         TypeExpr::Function { params, ret, .. } => {
             let p = params.iter().map(|t| resolve_type_expr(t, known)).collect();

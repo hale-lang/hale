@@ -107,6 +107,33 @@ fn unit_fallible_or_raise_bubbles_to_root() {
 }
 
 #[test]
+fn unit_fallible_or_discard_user_error_type() {
+    // G2 follow-up — the `or discard` typecheck was special-cased
+    // around stdlib `() fallible(IoError)`; user-declared error
+    // types went through `resolve_type_expr` which built
+    // `Ty::Tuple([])` instead of `Ty::Unit` for `-> ()`, and the
+    // check rejected the tuple. Fixed by normalizing the empty
+    // tuple to Unit at the resolver. This test pins the gap shut.
+    let src = r#"
+        type E { kind: String; detail: String; }
+        fn touch() -> () fallible(E) {
+            fail E { kind: "synthetic", detail: "user-type fail" };
+        }
+        fn main() {
+            touch() or discard;
+            println("survived user-type discard");
+        }
+    "#;
+    let (stdout, status) = build_and_run("or_discard_user_e", src);
+    assert!(status.success(), "non-zero: {:?}", status);
+    assert!(
+        stdout.contains("survived user-type discard"),
+        "stdout: {:?}",
+        stdout
+    );
+}
+
+#[test]
 fn unit_fallible_chains_through_fallible_caller() {
     // A unit-fallible fn calling another unit-fallible fn with
     // `or raise` should propagate the err through the static
