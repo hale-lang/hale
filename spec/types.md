@@ -156,6 +156,29 @@ work end-to-end. The `std::text::Sink` stdlib migration (split
 loci behind one `Sink` interface) shipped 2026-05-11; see
 `spec/stdlib.md` and `crates/aperio-codegen/tests/sink_polymorphism.rs`.
 
+The implicit LocusRef → Interface coercion fires at the
+following positions:
+
+- **Free-fn arguments.** `fn render(s: Sink)` accepts any
+  LocusRef of a locus satisfying `Sink`.
+- **Locus-method arguments.** `fn add(t: Tower)` on a `Registry`
+  locus accepts the same coerce (added 2026-05-18).
+- **Returns.** `return r;` from a fn declared
+  `-> Sink` builds the fat pointer at the return site.
+- **`type` field initializers.** `TowerEntry { t: r }` where
+  field `t` is interface-typed coerces the LocusRef `r`
+  (added 2026-05-18).
+- **Locus `params` / field initializers.** Same shape as
+  above for locus param defaults and `locus L { params { t:
+  Tower; } }` slots.
+- **`@form(vec)` cell `push`.** A `Registry @form(vec) of
+  Tower` accepts pushes of any satisfying LocusRef.
+- **`or <substitute>` fallback expressions.** When a fallible
+  has success type `Interface(I)`, an `or fallback`
+  expression of LocusRef type satisfying `I` coerces
+  (added 2026-05-18). E.g. `lookup(...) or Hello { }`
+  where `lookup` returns `Greeter fallible(...)`.
+
 The return path uses two cooperating mechanisms: at the return
 site, an implicit locus → interface coercion builds the fat
 pointer, and the locus-instantiation routing extension (the same
@@ -171,6 +194,14 @@ on the same broader composite-construction coercion design that
 governs tuple-of-`LocusRef` escape — recursive coercion at
 composite-construction sites plus locus-routing across nested
 return positions. Deferred.
+
+F.11 child acceptance (`accept(c: ConcreteLocus) { ... }`) is
+intentionally NOT in the coerce list above. The child-accept
+mechanism keys dispatch by exact concrete locus name across
+substrate sites — accept fn signature, the `self.children`
+storage layout, and the parent's accept-dispatch table — so
+`accept(c: Iface)` is a multi-system change, not a coercion
+wire-up. Single-accept-type per parent is the v1 design.
 
 Interfaces have no default methods at v0; the body is signature-
 only. No interface inheritance, no multi-interface bounds on

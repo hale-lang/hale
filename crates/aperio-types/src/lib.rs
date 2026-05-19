@@ -786,6 +786,61 @@ mod tests {
     }
 
     #[test]
+    fn ok_or_substitute_coerces_locus_to_interface() {
+        // 2026-05-18 — substitute RHS may be a concrete locus
+        // when the fallible's success type is an interface the
+        // locus structurally satisfies. Mirrors the same
+        // coercion the call-site and struct-literal init use.
+        let src = r#"
+            interface Greeter { fn greet() -> String; }
+            locus Hello {
+                fn greet() -> String { return "hi"; }
+            }
+            fn maybe_greeter() -> Greeter fallible(Int) { fail 1; }
+            fn main() {
+                let fallback = Hello { };
+                let g = maybe_greeter() or fallback;
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.is_empty(),
+            "expected clean check on locus→interface `or <substitute>`, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn err_or_substitute_locus_missing_interface_method() {
+        // Negative case: substitute locus that doesn't
+        // structurally satisfy the interface still reports the
+        // missing-method diagnostic.
+        let src = r#"
+            interface Greeter {
+                fn greet() -> String;
+                fn shout() -> String;
+            }
+            locus PartialHello {
+                fn greet() -> String { return "hi"; }
+            }
+            fn maybe_greeter() -> Greeter fallible(Int) { fail 1; }
+            fn main() {
+                let fallback = PartialHello { };
+                let g = maybe_greeter() or fallback;
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| {
+                d.message.contains("does not satisfy interface")
+                    && d.message.contains("missing method `shout`")
+            }),
+            "expected missing-method diag on substitute locus, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
     fn ok_err_binding_in_or_substitute_rhs() {
         let src = r#"
             type E { code: Int; }

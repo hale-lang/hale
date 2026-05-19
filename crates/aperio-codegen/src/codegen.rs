@@ -249,6 +249,34 @@ pub fn build_executable_with_imports(
     let module = context.create_module("lotus_main");
     let builder = context.create_builder();
 
+    // Set the module's data layout from the target machine BEFORE
+    // any lowering runs. Without this, LLVM falls back to a default
+    // layout where i128 has alignment 8 instead of the x86_64 ABI's
+    // alignment 16. The mismatch corrupts struct sizeof() — a
+    // `{ ptr, i128, ptr }` was sized at 32 bytes (no padding) for
+    // arena allocation, while GEP later placed the trailing ptr at
+    // offset 32 (i128 aligned to 16). Writes to the third field
+    // landed past the allocation. Set the layout now so every
+    // sizeof / GEP downstream agrees.
+    let triple = TargetMachine::get_default_triple();
+    let target = Target::from_triple(&triple)
+        .map_err(|e| CodegenError::LlvmInit(e.to_string()))?;
+    let machine = target
+        .create_target_machine(
+            &triple,
+            "generic",
+            "",
+            OptimizationLevel::Default,
+            RelocMode::PIC,
+            CodeModel::Default,
+        )
+        .ok_or_else(|| {
+            CodegenError::LlvmInit("could not create target machine".to_string())
+        })?;
+    let target_data = machine.get_target_data();
+    module.set_data_layout(&target_data.get_data_layout());
+    module.set_triple(&triple);
+
     let mut cx = Cx {
         context: &context,
         module,
@@ -290,22 +318,9 @@ pub fn build_executable_with_imports(
     cx.declare_builtins();
     cx.lower_program()?;
 
-    // Emit object file, then link via clang.
-    let triple = TargetMachine::get_default_triple();
-    let target = Target::from_triple(&triple)
-        .map_err(|e| CodegenError::LlvmInit(e.to_string()))?;
-    let machine = target
-        .create_target_machine(
-            &triple,
-            "generic",
-            "",
-            OptimizationLevel::Default,
-            RelocMode::PIC,
-            CodeModel::Default,
-        )
-        .ok_or_else(|| {
-            CodegenError::LlvmInit("could not create target machine".to_string())
-        })?;
+    // Emit object file, then link via clang. Target machine was
+    // created above (before lowering) so its datalayout was set on
+    // the module.
 
     // Dump pre-optimization IR if requested. The IR shape tests
     // (serializer_shape, etc.) check for codegen-synthesized fn
@@ -28975,6 +28990,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.lower_expr(default_expr, scope)?
             };
             let want = self.type_expr_to_codegen_ty(&sig.params[i].ty)?;
+            // 2026-05-18 — locus → interface coercion at self-method
+            // arg site. Mirrors the same coercion in
+            // `lower_user_fn_call` (free-fn arg). Without this,
+            // `self.foo(some_locus)` where the param is interface-typed
+            // hits a type-mismatch even though the typechecker accepts
+            // it via `check_structural_impl`.
+            let (v, ty) = if let (
+                CodegenTy::Interface(iface),
+                CodegenTy::LocusRef(l),
+            ) = (&want, &ty)
+            {
+                let fat = self.coerce_to_interface(
+                    v.into_pointer_value(),
+                    l,
+                    iface,
+                )?;
+                (fat.into(), want.clone())
+            } else {
+                (v, ty)
+            };
             if ty != want {
                 return Err(CodegenError::Unsupported(format!(
                     "self.{} arg {} type mismatch: expected {:?}, got {:?}",
@@ -29365,6 +29400,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.lower_expr(default_expr, scope)?
             };
             let want = self.type_expr_to_codegen_ty(&sig.params[i].ty)?;
+            // 2026-05-18 — locus → interface coercion at locus-method
+            // arg site. Mirrors the same coercion in
+            // `lower_user_fn_call` (free-fn arg, ~line 11660). The
+            // typechecker accepts the call via
+            // `check_structural_impl` (~check.rs 2336); codegen must
+            // build the fat pointer here so the LLVM call matches
+            // the callee's expected `{data, vtable}` shape.
+            let (v, ty) = if let (
+                CodegenTy::Interface(iface),
+                CodegenTy::LocusRef(l),
+            ) = (&want, &ty)
+            {
+                let fat = self.coerce_to_interface(
+                    v.into_pointer_value(),
+                    l,
+                    iface,
+                )?;
+                (fat.into(), want.clone())
+            } else {
+                (v, ty)
+            };
             if ty != want {
                 return Err(CodegenError::Unsupported(format!(
                     "{}.{} arg {} type mismatch: expected {:?}, got {:?}",
@@ -32942,6 +32998,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 } else {
                     (val, val_ty)
                 };
+            // 2026-05-18 — locus → interface coercion at user-type
+            // field-init. Mirrors the same coercion in
+            // `lower_locus_literal_init` (locus-literal field-init,
+            // ~line 27616) and `lower_user_fn_call` (call-site arg).
+            // Without this, `type T { f: Iface; }` would refuse a
+            // concrete locus literal even though the typechecker
+            // accepts it via `check_structural_impl` (~check.rs 2895).
+            let (val, val_ty) = if let (
+                CodegenTy::Interface(iface),
+                CodegenTy::LocusRef(l),
+            ) = (&declared_ty, &val_ty)
+            {
+                let fat = self.coerce_to_interface(
+                    val.into_pointer_value(),
+                    l,
+                    iface,
+                )?;
+                (fat.into(), declared_ty.clone())
+            } else {
+                (val, val_ty)
+            };
             if val_ty != declared_ty {
                 return Err(CodegenError::Unsupported(format!(
                     "type `{}` field `{}` type mismatch: declared {:?}, \

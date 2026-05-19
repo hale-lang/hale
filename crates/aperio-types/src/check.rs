@@ -2569,6 +2569,37 @@ impl<'a> Checker<'a> {
                         );
                         let rhs_ty = self.check_expr(rhs);
                         self.locals.pop();
+                        // 2026-05-18 — locus → interface coercion at
+                        // `or <substitute>` site. Mirrors the
+                        // call-site and struct-literal coercion: when
+                        // the fallible's success type is an interface
+                        // and the substitute expression is a concrete
+                        // locus that structurally satisfies it, accept
+                        // the substitute. Without this, the substitute
+                        // disposition was the only `or` arm that
+                        // refused locus→interface flow.
+                        let interface_satisfied = if let (
+                            Ty::Named(iface_name),
+                            Ty::Named(rhs_name),
+                        ) = (&success, &rhs_ty)
+                        {
+                            if matches!(
+                                self.top.lookup(iface_name),
+                                Some(TopSymbol::Interface(_))
+                            ) {
+                                match self.check_structural_impl(rhs_name, iface_name) {
+                                    Ok(()) => true,
+                                    Err(msg) => {
+                                        self.diags.push(Diag::ty(rhs.span(), msg));
+                                        true
+                                    }
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
                         // The substitute RHS must produce a
                         // value of the success type (or be a
                         // nested `or` that ultimately produces
@@ -2576,7 +2607,7 @@ impl<'a> Checker<'a> {
                         // don't false-positive when the
                         // typechecker can't see through a
                         // stdlib path.
-                        if !success.assignable_from(&rhs_ty) {
+                        if !interface_satisfied && !success.assignable_from(&rhs_ty) {
                             self.diags.push(Diag::ty(
                                 *span,
                                 format!(

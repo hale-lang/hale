@@ -598,8 +598,19 @@ impl<'a> Mangler<'a> {
             Expr::ArrayRepeat { val, .. } => self.walk_expr(val),
             Expr::Or { inner, disposition, .. } => {
                 self.walk_expr(inner);
-                if let OrDisposition::Substitute(rhs) = disposition {
-                    self.walk_expr(rhs);
+                match disposition {
+                    OrDisposition::Substitute(rhs) => self.walk_expr(rhs),
+                    // B3 / G6 — `or fail <payload>`: the payload is an
+                    // ordinary expression whose type names and bare
+                    // free-fn calls must be cross-seed mangled the same
+                    // way every other expression position is. Without
+                    // this recursion, `... or fail LibError { ... }`
+                    // and `... or fail make_err(...)` left their
+                    // identifiers unrewritten, so the consumer build
+                    // rejected the seed with `unknown type` /
+                    // `unknown identifier` after import.
+                    OrDisposition::Fail(payload, _) => self.walk_expr(payload),
+                    OrDisposition::Raise(_) | OrDisposition::Discard(_) => {}
                 }
             }
         }
@@ -865,6 +876,99 @@ mod tests {
                 assert_eq!(subject, "log.info");
             }
             other => panic!("expected literal publish, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rewrites_struct_type_in_or_fail_payload() {
+        // Cross-seed regression: `... or fail StructName { ... }` —
+        // the payload expression's struct-literal type name must be
+        // rewritten by the mangler. Before the fix, `OrDisposition::
+        // Fail` was a no-op in `walk_expr`, so the consumer build
+        // rejected the seed with `unknown type StructName`.
+        let src = r#"
+            type LibError { kind: String = ""; detail: String = ""; }
+            fn raise_it() -> Int fallible(LibError) {
+                fail LibError { kind: "boom", detail: "" };
+            }
+            fn wrap_it() -> Int fallible(LibError) {
+                let _x = raise_it() or fail LibError { kind: "wrap", detail: "" };
+                return 0;
+            }
+        "#;
+        let mut prog = parse(src);
+        mangle_program(&mut prog, "errlib", "err");
+
+        let wrap = find_fn(&prog, "__lib_errlib_err_wrap_it").expect("wrap_it renamed");
+        // First stmt: `let _x = (raise_it() or fail LibError { ... });`
+        // Pull the Or expr out and inspect the disposition payload.
+        let let_value = match &wrap.body.stmts[0] {
+            Stmt::Let { value, .. } => value,
+            other => panic!("expected Let, got {:?}", other),
+        };
+        let dispo = match let_value {
+            Expr::Or { disposition, .. } => disposition,
+            other => panic!("expected Or expr, got {:?}", other),
+        };
+        match dispo {
+            OrDisposition::Fail(payload, _) => match payload.as_ref() {
+                Expr::Struct { path, .. } => {
+                    assert_eq!(
+                        path.segments[0].name,
+                        "__lib_errlib_err_LibError",
+                        "or-fail struct payload type should be mangled"
+                    );
+                }
+                other => panic!("expected Struct payload, got {:?}", other),
+            },
+            other => panic!("expected OrDisposition::Fail, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rewrites_free_fn_call_in_or_fail_payload() {
+        // Companion to `rewrites_struct_type_in_or_fail_payload`:
+        // a bare free-fn call inside an `or fail` payload (e.g.
+        // `... or fail make_err("x")`) must also have its callee
+        // ident rewritten when the fn lives in the same seed.
+        let src = r#"
+            type LibError { kind: String = ""; detail: String = ""; }
+            fn raise_it() -> Int fallible(LibError) {
+                fail LibError { kind: "boom", detail: "" };
+            }
+            fn make_err(k: String) -> LibError {
+                return LibError { kind: k, detail: "" };
+            }
+            fn wrap_it() -> Int fallible(LibError) {
+                let _x = raise_it() or fail make_err("via_call");
+                return 0;
+            }
+        "#;
+        let mut prog = parse(src);
+        mangle_program(&mut prog, "errlib", "err");
+
+        let wrap = find_fn(&prog, "__lib_errlib_err_wrap_it").expect("wrap_it renamed");
+        let let_value = match &wrap.body.stmts[0] {
+            Stmt::Let { value, .. } => value,
+            other => panic!("expected Let, got {:?}", other),
+        };
+        let dispo = match let_value {
+            Expr::Or { disposition, .. } => disposition,
+            other => panic!("expected Or expr, got {:?}", other),
+        };
+        match dispo {
+            OrDisposition::Fail(payload, _) => match payload.as_ref() {
+                Expr::Call { callee, .. } => match callee.as_ref() {
+                    Expr::Ident(i) => assert_eq!(
+                        i.name,
+                        "__lib_errlib_err_make_err",
+                        "or-fail call callee should be mangled"
+                    ),
+                    other => panic!("expected Ident callee, got {:?}", other),
+                },
+                other => panic!("expected Call payload, got {:?}", other),
+            },
+            other => panic!("expected OrDisposition::Fail, got {:?}", other),
         }
     }
 

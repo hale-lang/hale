@@ -228,3 +228,84 @@ fn locus_state_visible_via_interface_dispatch() {
         stdout
     );
 }
+
+#[test]
+fn locus_method_arg_coerces_locus_ref_to_interface() {
+    // 2026-05-18 — Gap 5: a locus method whose param is interface-
+    // typed must coerce a concrete LocusRef arg at the call site,
+    // same as a free fn does. Pre-fix, codegen emitted
+    // `Registry.add arg 0 type mismatch: expected Interface(...)`.
+    let src = r#"
+        interface Greeter {
+            fn greet();
+        }
+
+        locus Hello {
+            params { }
+            fn greet() {
+                println("hi");
+            }
+        }
+
+        locus Registry {
+            params { }
+            fn add(g: Greeter) {
+                g.greet();
+            }
+        }
+
+        fn main() {
+            let reg = Registry { };
+            let h = Hello { };
+            reg.add(h);
+        }
+    "#;
+    let (stdout, status) = build_and_run("method_arg_coerce", src);
+    assert!(status.success(), "non-zero exit: {:?}", status);
+    assert!(
+        stdout.contains("hi"),
+        "locus-method arg coercion didn't reach body; got: {:?}",
+        stdout
+    );
+}
+
+#[test]
+fn user_type_field_coerces_locus_ref_to_interface() {
+    // 2026-05-18 — Gap 4: a user `type T` with an interface-typed
+    // field must coerce a concrete LocusRef in field-init position,
+    // same as a locus literal does. Pre-fix, codegen emitted
+    // `type TowerEntry field t type mismatch: declared Interface(...)`.
+    let src = r#"
+        interface Greeter {
+            fn greet();
+        }
+
+        locus Hello {
+            params { }
+            fn greet() {
+                println("hi from field");
+            }
+        }
+
+        type Entry {
+            g: Greeter;
+        }
+
+        fn drive(e: Entry) {
+            e.g.greet();
+        }
+
+        fn main() {
+            let h = Hello { };
+            let e = Entry { g: h };
+            drive(e);
+        }
+    "#;
+    let (stdout, status) = build_and_run("type_field_coerce", src);
+    assert!(status.success(), "non-zero exit: {:?}", status);
+    assert!(
+        stdout.contains("hi from field"),
+        "user-type field coercion didn't reach body; got: {:?}",
+        stdout
+    );
+}
