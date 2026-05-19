@@ -2273,6 +2273,49 @@ stderr.
   (currently ignored since the interpreter's `Vec` backing
   auto-grows).
 
+**Phase-2 (1): zero-copy `view()` (2026-05-19).** Added
+`b.view() -> Bytes` returning a non-owning Bytes pointer that
+aliases the builder's buffer. Pond/websocket's recv loop had a
+residual leak after Phase 1 — `rx_buf.snapshot()` per peel
+attempt to materialize a Bytes value for `parse_frame` to read
+via `std::bytes::at` / `len`. `view()` is the same value without
+the allocation.
+
+**Memory layout (changed).** Prior layout was
+`{cap, len, buf*}` with the data area separately malloc'd.
+Reshaped to `{cap, buf}` where `buf` points at the data area
+of a single `[i64 len][u8 data[cap]]` malloc'd region — the
+8-byte length prefix lives inline immediately before the data.
+`view()` returns `buf - 8`, which IS a valid Bytes pointer:
+`lotus_bytes_len` / `lotus_bytes_at` / `lotus_bytes_data` all
+just work. Every mutation (`append`, `shift_front`, `clear`,
+`finish`) updates the inline prefix to match. The cost is one
+extra pointer dereference per len access (negligible at our
+scale); the win is true zero-copy view + zero-allocation peel.
+
+**Lifetime contract.** A `view()` Bytes is valid until the
+next mutation on the source builder. The aliasing property
+means a captured view sees stale len if the builder grew /
+shrank after capture, and a view captured after a mutation
+sees the new state. At v1 (no borrow checker) this is
+documented-and-trusted — same shape as the rest of Aperio's
+lifetime story. The canonical pattern is "view immediately,
+read immediately, don't store across mutations." The
+`snapshot()` path remains for cases that need a stable
+Bytes (consumer holds across producer mutations).
+
+This obviates Phase-2 ask (3a) — proposed `b.at(i)` /
+`b.slice(lo, hi)` methods on BytesBuilder. With `view()`,
+the existing `std::bytes::at(b.view(), i)` /
+`std::bytes::slice(b.view(), lo, hi)` work directly, no new
+method dispatch needed. The BytesBuilder surface stays
+minimal.
+
+Tests: `crates/aperio-codegen/tests/bytes_builder_view.rs` —
+5 cases covering current-contents read, aliasing across
+appends, slice composition, shift_front reflection, and
+clear-then-view.
+
 ## 16. What's deferred
 
 The grammar in v0 does **not** specify:

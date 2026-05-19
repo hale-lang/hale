@@ -3538,6 +3538,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             bb_free_ty,
             None,
         );
+        // declare ptr @lotus_bytes_builder_view(ptr handle)
+        // Phase-2 (1): zero-copy non-owning Bytes view aliasing the
+        // builder's inline `[i64 len][u8 data]` region. Lifetime
+        // tied to "no mutation of the source builder while view is
+        // in use" — documented-and-trusted at v1.
+        let bb_view_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_bytes_builder_view",
+            bb_view_ty,
+            None,
+        );
 
         // m96: tree-sitter substrate. extern "C" symbols defined
         // in `runtime/lotus_treesitter.rs` (compiled into the
@@ -12352,6 +12363,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | ["std", "bytes", "builder", "__clear"]
             | ["std", "bytes", "builder", "__snapshot"]
             | ["std", "bytes", "builder", "__free"]
+            | ["std", "bytes", "builder", "__view"]
             | ["std", "math", "sqrt"]
             | ["std", "math", "exp"]
             | ["std", "math", "log"]
@@ -22334,6 +22346,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_bytes_builder_free(args, scope)?;
                 Ok(())
             }
+            ["std", "bytes", "builder", "__view"] => {
+                let _ = self.lower_std_bytes_builder_view(args, scope)?;
+                Ok(())
+            }
             // m84: parse_request also reachable in statement
             // position (rare — usually you keep the result), but
             // wire it for completeness so `std::http::parse_request(raw);`
@@ -22889,6 +22905,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "bytes", "builder", "__free"] => {
                 self.lower_std_bytes_builder_free(args, scope)
+            }
+            ["std", "bytes", "builder", "__view"] => {
+                self.lower_std_bytes_builder_view(args, scope)
             }
             // m84: std::http::parse_request(raw: String) -> Request.
             // Implementation lives in stdlib.ap as the bare-name
@@ -24612,6 +24631,43 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_call(f, &[handle_ptr.into()], "bb.free")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok((h_int, CodegenTy::Int))
+    }
+
+    /// Phase-2 (1): lower `std::bytes::builder::__view(handle: Int)
+    /// -> Bytes`. Returns a non-owning Bytes pointer aliasing the
+    /// builder's `[i64 len][u8 data]` region — zero allocation,
+    /// zero copy. Lifetime is documented-and-trusted (no borrow
+    /// checker at v1): valid until the next mutation on the source
+    /// builder (append / shift_front / clear / finish).
+    fn lower_std_bytes_builder_view(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder::__view takes 1 arg (handle), got {}",
+                args.len()
+            )));
+        }
+        let (_, handle_ptr) = self.lower_bytes_builder_handle_arg(
+            &args[0],
+            scope,
+            "std::bytes::builder::__view",
+        )?;
+        let f = self
+            .module
+            .get_function("lotus_bytes_builder_view")
+            .expect("lotus_bytes_builder_view declared");
+        let call = self
+            .builder
+            .build_call(f, &[handle_ptr.into()], "bb.view.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::Bytes))
     }
 
     /// v1.x-16: `std::str::can_parse_float(s: String) -> Bool`.

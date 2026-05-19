@@ -549,19 +549,42 @@ bytes for a bound subject) can use this too.
   `_shift_front(ptr handle, i64 n)` /
   `_clear(ptr handle)` /
   `_snapshot(ptr handle) -> Bytes*` /
-  `_free(ptr handle)` — C10 / Phase 0 (2026-05-19,
-  pond/websocket follow-up). Binary-safe sibling of the
-  str-builder family. Shares the underlying
-  `lotus_str_builder_t` struct (`{cap, len, buf*}`); the
-  split is in append/finish semantics (reads the chunk's
+  `_view(ptr handle) -> Bytes*` /
+  `_free(ptr handle)` — C10 / Phase 0 / Phase-2 (1)
+  (2026-05-19, pond/websocket follow-up). Binary-safe sibling
+  of the str-builder family. Append reads the chunk's
   `[i64 len]` prefix instead of `strlen`; finish emits a
-  length-prefixed Bytes blob with no trailing NUL).
+  length-prefixed Bytes blob with no trailing NUL.
   In-place ops: `shift_front` memmoves the tail to the head
   and drops n bytes (capacity preserved). `clear` sets len=0
   (capacity preserved). `snapshot` copies the current
   `[0..len)` into a fresh Bytes blob in the bus payload
-  arena, builder unchanged. `free` disposes the malloc-backed
-  buffer without materializing a final blob.
+  arena, builder unchanged. `view` returns a non-owning Bytes
+  pointer aliasing the builder's inline `[i64 len][u8 data]`
+  region — zero allocation, zero copy; lifetime valid until
+  the next mutation on the source builder. `free` disposes
+  the malloc-backed buffer.
+
+  **Memory layout (Phase-2 (1)).** Diverges from
+  `lotus_str_builder_t` to support zero-copy `view()`. Header
+  is `{cap, buf}`; the data area is preceded inline by an
+  8-byte length prefix matching the Bytes ABI:
+
+  ```
+  malloc'd region: [int64_t len][u8 data[cap]]
+                                ^
+                                buf
+  ```
+
+  `view(b)` returns `b->buf - 8` — a pointer that
+  `lotus_bytes_len` / `lotus_bytes_at` / `lotus_bytes_data`
+  can dereference directly. Append / shift_front / clear /
+  finish all update the inline prefix in sync with the data
+  mutation. Cost: one extra pointer dereference per len
+  access vs the prior `{cap, len, buf*}` shape. Trade-off
+  taken in exchange for the substrate-enabled zero-alloc
+  read path. `lotus_str_builder_t` (for `std::str::*`) keeps
+  the prior layout — no view surface there yet.
 
   These primitives are no longer the user-facing surface;
   they're the C externs called by the

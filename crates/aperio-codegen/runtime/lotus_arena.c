@@ -6802,36 +6802,66 @@ const char *lotus_str_builder_finish(void *handle) {
  * C10 (pond follow-up): binary-safe builder mirroring
  * lotus_str_builder_* but using the Bytes ABI on both sides.
  *
- * The underlying buffer struct is identical to lotus_str_builder_t
- * (cap / len / buf) — append is just memcpy with no NUL discipline,
- * so the struct definition is shared. The split is in *what is
- * being appended* and *what finish returns*:
+ * Append: takes a Bytes blob (reads `[i64 len]` prefix so embedded
+ * NULs survive). Finish: emits a freshly allocated `[i64 len]
+ * [u8 data[len]]` Bytes blob anchored in the bus payload arena.
  *
- *   str_builder:   appends a C string (strlen the chunk),
- *                  finish returns a NUL-terminated String pointer.
- *   bytes_builder: appends a Bytes blob (reads `[i64 len]` prefix
- *                  so embedded NULs survive), finish returns a
- *                  freshly allocated `[i64 len][u8 data[len]]`
- *                  Bytes blob anchored in the bus payload arena.
+ * Memory layout (2026-05-19, Phase-2 (1)). Diverges from
+ * lotus_str_builder_t to support zero-copy `view()`:
+ *
+ *   malloc'd region: [int64_t len][u8 data[cap]]
+ *                                 ^
+ *                                 buf
+ *
+ * The data region is preceded inline by a Bytes-ABI length prefix.
+ * `view()` returns `buf - 8` — a pointer that lotus_bytes_len /
+ * lotus_bytes_at can dereference directly with no copy. Append /
+ * shift_front / clear all update the prefix in sync with the data
+ * mutation. The header `{cap, buf}` is small; the prefix lives
+ * inline with the data so the view points at one contiguous block.
+ *
+ * Trade-off vs the prior `{cap, len, buf*}` shape: `len` now lives
+ * at `*(int64_t*)(buf - 8)` instead of as a header field. Every
+ * mutation reads/writes through one extra pointer indirection.
+ * Negligible overhead at our scale; the structural win is the
+ * zero-allocation `view()` that unblocks ~70 KB/s of the residual
+ * pond/websocket leak.
  *
  * Pond consumers: pond/http/client + pond/agent/llm were
  * accumulating message bodies through std::str::builder_* +
  * std::bytes::from_string — lossy on chunks containing NUL.
  * std::bytes::builder_* is the single-step binary-safe path.
  */
-typedef struct lotus_str_builder lotus_bytes_builder_t;
+typedef struct lotus_bytes_builder {
+    size_t cap;     /* capacity of the data area (excludes the
+                       8-byte length prefix). */
+    char *buf;      /* points at data area; *(int64_t*)(buf - 8)
+                       is the live length (Bytes ABI). The full
+                       malloc'd region is `buf - 8 .. buf + cap`. */
+} lotus_bytes_builder_t;
+
+/* Read the inline length prefix at `buf - 8`. */
+static inline int64_t lotus_bb_len(const lotus_bytes_builder_t *b) {
+    return *(const int64_t *)(b->buf - sizeof(int64_t));
+}
+
+/* Write the inline length prefix at `buf - 8`. */
+static inline void lotus_bb_set_len(lotus_bytes_builder_t *b, int64_t n) {
+    *(int64_t *)(b->buf - sizeof(int64_t)) = n;
+}
 
 void *lotus_bytes_builder_new(int64_t initial_cap) {
     lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)
         malloc(sizeof(lotus_bytes_builder_t));
     if (!b) return NULL;
     b->cap = initial_cap > 0 ? (size_t)initial_cap : 64;
-    b->len = 0;
-    b->buf = (char *)malloc(b->cap);
-    if (!b->buf) {
+    char *region = (char *)malloc(sizeof(int64_t) + b->cap);
+    if (!region) {
         free(b);
         return NULL;
     }
+    b->buf = region + sizeof(int64_t);
+    lotus_bb_set_len(b, 0);
     /* No NUL seed — Bytes is length-prefixed, body is opaque
      * until callers fill it via append. */
     return b;
@@ -6853,7 +6883,8 @@ int64_t lotus_bytes_builder_append(void *handle, const void *chunk_blob) {
     int64_t add_signed = lotus_bytes_len(chunk_blob);
     if (add_signed <= 0) return 1;
     size_t add = (size_t)add_signed;
-    size_t need = b->len + add;
+    int64_t cur_len = lotus_bb_len(b);
+    size_t need = (size_t)cur_len + add;
     if (need > b->cap) {
         size_t new_cap = b->cap ? b->cap : 64;
         while (new_cap < need) {
@@ -6864,51 +6895,76 @@ int64_t lotus_bytes_builder_append(void *handle, const void *chunk_blob) {
                 break;
             }
         }
-        char *nb = (char *)realloc(b->buf, new_cap);
-        if (!nb) return 0;
-        b->buf = nb;
+        /* The malloc'd region is `[i64 len][data]`, so realloc the
+         * full region (buf - 8) — the new region's len-prefix
+         * carries over via realloc's copy of the head bytes. */
+        char *new_region = (char *)realloc(b->buf - sizeof(int64_t),
+                                           sizeof(int64_t) + new_cap);
+        if (!new_region) return 0;
+        b->buf = new_region + sizeof(int64_t);
         b->cap = new_cap;
     }
     /* Pull the body bytes out of the Bytes blob (past the
      * length prefix) and append verbatim — NULs included. */
     const char *src = (const char *)chunk_blob + sizeof(int64_t);
-    memcpy(b->buf + b->len, src, add);
-    b->len = need;
+    memcpy(b->buf + cur_len, src, add);
+    lotus_bb_set_len(b, (int64_t)need);
     return 1;
 }
 
 int64_t lotus_bytes_builder_len(const void *handle) {
     if (!handle) return 0;
     const lotus_bytes_builder_t *b = (const lotus_bytes_builder_t *)handle;
-    return (int64_t)b->len;
+    return lotus_bb_len(b);
+}
+
+/* Phase-2 (1): non-owning Bytes view into the builder's `[i64 len]
+ * [u8 data]` region. Lifetime: valid until the next append /
+ * shift_front / clear / finish on the source builder. The pond
+ * recv loop relies on this for `parse_frame` to read rx_buf via
+ * std::bytes::at / len with zero copy into g_bus_payload_arena —
+ * the dominant residual leak after Phase-1.
+ *
+ * The returned pointer aliases storage owned by the builder; the
+ * caller must not retain it across a mutation. v1 has no borrow
+ * checker, so the rule is documented-and-trusted — same shape as
+ * the rest of the locus's lifetime story. */
+void *lotus_bytes_builder_view(void *handle) {
+    if (!handle) return lotus_bytes_empty_global();
+    lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
+    /* buf - 8 IS a valid Bytes pointer: the i64 len lives at
+     * offset 0, data lives at offset 8. lotus_bytes_len /
+     * lotus_bytes_at / lotus_bytes_data all just work. */
+    return b->buf - sizeof(int64_t);
 }
 
 void *lotus_bytes_builder_finish(void *handle) {
     if (!handle) return lotus_bytes_empty_global();
     lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
+    int64_t cur_len = lotus_bb_len(b);
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
         g_bus_payload_arena = lotus_arena_create();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
-            free(b->buf);
+            free(b->buf - sizeof(int64_t));
             free(b);
             return NULL;
         }
     }
     /* Emit a `[i64 len][u8 data[len]]` blob in the bus payload
      * arena. No trailing NUL — Bytes is length-prefixed. */
-    void *blob = lotus_bytes_create(g_bus_payload_arena, (int64_t)b->len);
+    void *blob = lotus_bytes_create(g_bus_payload_arena, cur_len);
     pthread_mutex_unlock(&g_bus_payload_arena_mutex);
     if (!blob) {
-        free(b->buf);
+        free(b->buf - sizeof(int64_t));
         free(b);
         return lotus_bytes_empty_global();
     }
-    if (b->len > 0) {
-        memcpy(lotus_bytes_data(blob), b->buf, b->len);
+    if (cur_len > 0) {
+        memcpy(lotus_bytes_data(blob), b->buf, (size_t)cur_len);
     }
-    free(b->buf);
+    free(b->buf - sizeof(int64_t));
     free(b);
     return blob;
 }
@@ -6938,25 +6994,27 @@ void lotus_bytes_builder_shift_front(void *handle, int64_t n) {
     if (!handle) return;
     lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
     if (n <= 0) return;
+    int64_t cur_len = lotus_bb_len(b);
     size_t drop = (size_t)n;
-    if (drop >= b->len) {
-        b->len = 0;
+    if (drop >= (size_t)cur_len) {
+        lotus_bb_set_len(b, 0);
         return;
     }
     /* memmove handles overlap; src+drop > dst by construction. */
-    memmove(b->buf, b->buf + drop, b->len - drop);
-    b->len -= drop;
+    memmove(b->buf, b->buf + drop, (size_t)cur_len - drop);
+    lotus_bb_set_len(b, cur_len - (int64_t)drop);
 }
 
 void lotus_bytes_builder_clear(void *handle) {
     if (!handle) return;
     lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
-    b->len = 0;
+    lotus_bb_set_len(b, 0);
 }
 
 void *lotus_bytes_builder_snapshot(void *handle) {
     if (!handle) return lotus_bytes_empty_global();
     lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
+    int64_t cur_len = lotus_bb_len(b);
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
         g_bus_payload_arena = lotus_arena_create();
@@ -6965,13 +7023,13 @@ void *lotus_bytes_builder_snapshot(void *handle) {
             return lotus_bytes_empty_global();
         }
     }
-    void *blob = lotus_bytes_create(g_bus_payload_arena, (int64_t)b->len);
+    void *blob = lotus_bytes_create(g_bus_payload_arena, cur_len);
     pthread_mutex_unlock(&g_bus_payload_arena_mutex);
     if (!blob) {
         return lotus_bytes_empty_global();
     }
-    if (b->len > 0) {
-        memcpy(lotus_bytes_data(blob), b->buf, b->len);
+    if (cur_len > 0) {
+        memcpy(lotus_bytes_data(blob), b->buf, (size_t)cur_len);
     }
     return blob;
 }
@@ -6979,7 +7037,7 @@ void *lotus_bytes_builder_snapshot(void *handle) {
 void lotus_bytes_builder_free(void *handle) {
     if (!handle) return;
     lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
-    free(b->buf);
+    free(b->buf - sizeof(int64_t));
     free(b);
 }
 
@@ -7008,7 +7066,8 @@ void lotus_bytes_builder_free(void *handle) {
 void *lotus_bytes_builder_reserve(void *handle, int64_t n) {
     if (!handle || n <= 0) return NULL;
     lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
-    size_t need = b->len + (size_t)n;
+    int64_t cur_len = lotus_bb_len(b);
+    size_t need = (size_t)cur_len + (size_t)n;
     if (need > b->cap) {
         size_t new_cap = b->cap ? b->cap : 64;
         while (new_cap < need) {
@@ -7018,18 +7077,19 @@ void *lotus_bytes_builder_reserve(void *handle, int64_t n) {
                 break;
             }
         }
-        char *nb = (char *)realloc(b->buf, new_cap);
-        if (!nb) return NULL;
-        b->buf = nb;
+        char *new_region = (char *)realloc(b->buf - sizeof(int64_t),
+                                           sizeof(int64_t) + new_cap);
+        if (!new_region) return NULL;
+        b->buf = new_region + sizeof(int64_t);
         b->cap = new_cap;
     }
-    return b->buf + b->len;
+    return b->buf + cur_len;
 }
 
 void lotus_bytes_builder_advance(void *handle, int64_t n) {
     if (!handle || n <= 0) return;
     lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
-    b->len += (size_t)n;
+    lotus_bb_set_len(b, lotus_bb_len(b) + n);
 }
 
 int64_t lotus_tcp_recv_into(int fd, void *builder, int64_t max_bytes) {

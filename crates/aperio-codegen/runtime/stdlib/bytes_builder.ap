@@ -130,6 +130,18 @@ locus __StdBytesBytesBuilder {
     fn snapshot() -> Bytes {
         return std::bytes::builder::__snapshot(self.handle);
     }
+    // Phase-2 (1): zero-copy view. Returns a non-owning Bytes
+    // pointer aliasing the builder's `[i64 len][u8 data]` region —
+    // no allocation, no copy. Lifetime is valid until the next
+    // mutation on the source builder (append / shift_front /
+    // clear / finish); callers must not retain the view across
+    // those operations. v1 has no borrow checker, so the rule is
+    // documented-and-trusted. Use case: a parser reading via
+    // std::bytes::at / len / slice over an rx_buf accumulator
+    // without allocating a snapshot per peel attempt.
+    fn view() -> Bytes {
+        return std::bytes::builder::__view(self.handle);
+    }
     fn shift_front(n: Int) {
         std::bytes::builder::__shift_front(self.handle, n);
     }
