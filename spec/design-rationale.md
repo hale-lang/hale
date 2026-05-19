@@ -2316,6 +2316,124 @@ Tests: `crates/aperio-codegen/tests/bytes_builder_view.rs` —
 appends, slice composition, shift_front reflection, and
 clear-then-view.
 
+### F.29 Locus-typed param fields with lifecycle cascade (Phase-2 (2), 2026-05-19)
+
+**Commitment.** A locus's `params` block may declare a field
+whose type is another locus (user-defined or stdlib).
+Construction defaults via a locus literal:
+
+```aperio
+locus WsClient {
+    params {
+        sock: Int = -1;
+        rx_buf:   std::bytes::BytesBuilder
+                = std::bytes::BytesBuilder { initial_cap: 4096 };
+        last_msg: std::bytes::BytesBuilder
+                = std::bytes::BytesBuilder { initial_cap: 4096 };
+    }
+    fn run() {
+        // self.rx_buf is the held builder; method dispatch
+        // works through self.<field>.<method>(...) — same
+        // shape as any other locus field.
+    }
+}
+```
+
+The owning locus's lifecycle cascades into the child:
+- **Birth.** Default-init evaluates the child literal,
+  including running the child's `birth()` body. The child's
+  state lives past the construction expression — pre-2026-05-19,
+  the child dissolved eagerly at the end of its literal, leaving
+  the parent's slot dangling. The fix routes child instantiation
+  through a `parent_owns_via_field` path analogous to the
+  existing `parent_accepts_us` path.
+- **Dissolve.** The parent's dissolve dispatch fires the child's
+  full `drain → __dissolve_closures → dissolve → arena_destroy`
+  sequence per `LocusRef`-typed field, in field-declaration order,
+  **after** the parent's user dissolve body and **before** the
+  parent's `arena_destroy`. The "user body first" ordering means
+  the parent's dissolve body can still legitimately touch its
+  child fields. Mirrors the depth-first cascade discipline of
+  F.4 (drain) and F.9 (collapse vs explosion).
+
+**Motivation.** Fathom's Phase-2 ask (2) — "in-place storage for
+locus Bytes/String fields" — is what this commitment closes.
+Producer locus owns the storage (a `BytesBuilder` field, in
+practice); consumer reads zero-copy via the contract using
+`b.view()` (F.28 Phase-2 (1)); each frame the buffer is reused
+in place via `b.clear()` + `b.append(...)`. No per-message
+allocation against `g_bus_payload_arena`. The "vertical
+contract / DMA" idiom Aperio's F.14 design was reaching for.
+
+Equally important: this works for non-stdlib loci too. Any
+user-defined service locus can compose held sub-loci via param
+fields with cascade — `Cache`, `RetryPolicy`, `RateLimiter`,
+whatever the application carves up. The locus axiom (everything
+named and structural is a locus) gets a working composition
+story.
+
+**Discarded alternatives.**
+
+- *Field annotation `@inplace` on Bytes/String fields.*
+  Considered (one of three options in fathom's handoff). Rejected
+  because the underlying need is "a locus owns growing buffer
+  storage with its own lifecycle" — that's a locus, not an
+  annotation on a primitive. Plus annotations don't compose with
+  the rest of the locus story (no `@inplace BytesBuilder`).
+- *Storage-class heuristic.* Considered (option two). Rejected
+  for the same reason — silent magic where explicit composition
+  is available.
+- *Contract-side `expose ... @reuse`.* Considered (option three).
+  Rejected: the field-owner-vs-consumer split is real, but it's
+  cleanly modeled by the producer holding a `BytesBuilder` field
+  and the consumer reading through `b.view()` over F.14 — no new
+  contract annotation needed.
+
+**Caveats at v1.**
+
+- **Cascade only fires when parent dissolves through one of the
+  tracked paths** — the ephemeral dispatch in
+  `lower_locus_instantiation` or the `flush_dissolve_frame`
+  deferred path. Both cover normal control flow (statement
+  literals, let-binding scope exits, fn returns). Pinned and
+  `parent_accepts_us` paths inherit the existing "v1 trade-off:
+  child's dissolve body skipped" behavior; the new cascade
+  doesn't extend to those edges yet (matches the comment on
+  line 29183).
+- **Diamond / cycle composition is undefined.** A locus that
+  appears in two field slots of the same parent dissolves
+  twice. The locus literal model already forbids reuse (each
+  `Locus { }` evaluates to a fresh instance), so diamond shapes
+  are rare in practice; document-and-trust at v1.
+- **No depth-first drain cascade yet.** Drain still runs only
+  on the outer; inner field drains are not invoked separately.
+  Adding them is straightforward (mirror the dissolve cascade
+  in the drain phase) and warranted when a held sub-locus
+  declares its own drain — none of the stdlib loci do today.
+
+**Implementation entry points.**
+
+- `crates/aperio-codegen/src/codegen.rs`:
+  - `Codegen.instantiating_for_parent_field: bool` — flag set
+    by the param-init loop before each `lower_expr` call.
+  - `lower_locus_instantiation` consumes the flag via
+    `mem::take` and adds `parent_owns_via_field` to the
+    `defer` set; the dispatch branch suppresses eager
+    dissolve at the child's instantiation site.
+  - `emit_locus_field_dissolves` — new helper that iterates
+    `LocusRef`-typed param fields in declaration order,
+    loading each child pointer and running its
+    drain/closures/dissolve/arena_destroy sequence.
+  - Called from both the ephemeral dispatch in
+    `lower_locus_instantiation` and the deferred-flush path
+    in `flush_dissolve_frame_kind`.
+
+Tests: `crates/aperio-codegen/tests/locus_field_cascade.rs` —
+3 cases: method dispatch through a field-held `BytesBuilder`,
+ordering of the cascade (outer body → inner cascade → outer
+arena_destroy), and a 100k-iteration construct-destroy loop
+exercising the cascade path under load.
+
 ## 16. What's deferred
 
 The grammar in v0 does **not** specify:
@@ -2339,32 +2457,6 @@ The grammar in v0 does **not** specify:
   more sophisticated pattern logic awaits a future version.
 - **First-class modules.** `module IDENTIFIER { ... }` is in the
   grammar but module loading semantics are not specified.
-- **Locus-typed fields with lifecycle cascade.** Today a locus
-  param can carry `Int`, `String`, `Bytes`, and other types, but
-  not another locus (or stdlib locus). Declaring `rx_buf:
-  std::bytes::BytesBuilder;` as a param on a user locus produces
-  `codegen error: ... declared LocusRef(...), got Bytes`. The
-  canonical workaround is the caller-owns-the-allocation pattern
-  — let-bind the locus in the owning method's body and thread it
-  through call sites — which is the recv-loop pattern documented
-  in `spec/stdlib.md` § _Builders vs Bytes_. The shape that v0
-  doesn't support is "locus B is owned by locus A's params,
-  birth-cascades on A's birth, dissolve-cascades on A's
-  dissolve, lives across method calls without explicit
-  threading." This is Phase-2 (2) of the pond/websocket recv-
-  loop closure — the "vertical contract / DMA" idiom for
-  zero-copy producer/consumer over F.14. Three design
-  candidates are sketched in the fathom Phase-2 handoff: field
-  annotation (`@inplace`), storage-class heuristic, or
-  contract-side `expose ... @reuse`. The implementation crosses
-  multiple codegen subsystems (locus struct layout, birth /
-  dissolve cascade, field-access through the parent's struct
-  GEP path) — substantial enough to warrant its own design
-  pass. Phase-2 (1) `BytesBuilder.view()` covers the largest
-  recv-loop residual without needing this; Phase-2 (2) is the
-  load-bearing zero-copy idiom for the broader vertical-
-  contract surface.
-
 Each of these is a known extension point. Closing them off in v0
 keeps the spec tractable; opening them later is a non-breaking
 addition.

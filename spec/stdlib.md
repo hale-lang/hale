@@ -467,11 +467,14 @@ The discipline that follows:
    std::bytes::BytesBuilder { ... };` followed by
    `b.append(bytes)` (copies). The Builder → Bytes direction
    has a zero-cost path via `view()`; the reverse does not.
-3. **Long-lived accumulators are let-bound loci.** The
-   `BytesBuilder` instance lives in a method-body let-binding
-   (typically the `run()` method); dissolve fires at the
-   binding's scope exit, releasing the malloc. No explicit
-   free needed.
+3. **Long-lived accumulators live as locus state.** Either a
+   method-body `let`-binding (dissolves at scope exit) or a
+   param-typed field on the owning service locus (dissolves
+   via cascade at the parent's dissolve — see F.29). Method-
+   body `let` is simpler when the accumulator's lifetime fits
+   inside one method invocation; field-typed is needed when
+   the buffer must outlive a single method call (e.g., state
+   held across bus subscription callbacks).
 4. **Read syscalls write directly into the builder.** The
    `recv_into` family takes a `BytesBuilder` as `buf` and
    writes into its tail. Codegen extracts the internal handle
@@ -510,6 +513,36 @@ Try writing `std::bytes::at(rx_buf, 0)` inside that loop — it
 fails at typecheck (`at` expects `Bytes`, got
 `__StdBytesBytesBuilder`). The discipline is mechanical, not
 documentary.
+
+The same pattern with the builder held as locus state (per
+F.29), for cases where the accumulator must survive across
+multiple method calls (bus callbacks, message-state held
+between handler firings, etc.):
+
+```aperio
+locus WsClient {
+  params {
+    sock: Int = -1;
+    recv_chunk: Int = 4096;
+    rx_buf:   std::bytes::BytesBuilder
+            = std::bytes::BytesBuilder { initial_cap: 4096 };
+    last_msg: std::bytes::BytesBuilder
+            = std::bytes::BytesBuilder { initial_cap: 4096 };
+  }
+  fn read_one() {
+    let got = std::io::tcp::recv_into(
+      self.sock, self.rx_buf, self.recv_chunk);
+    // ... peel frames, append payload bytes into self.last_msg
+    // via self.last_msg.clear() + .append(...) between
+    // message boundaries — no per-frame allocation.
+  }
+  // No dissolve() needed for rx_buf / last_msg — the cascade
+  // fires their dissolve when WsClient itself dissolves.
+}
+```
+
+Consumer reads `self.last_msg` via a contract that exposes
+`b.view()` — zero-copy across the F.14 interface.
 
 ### ~~`std::panic`~~ — not a thing
 

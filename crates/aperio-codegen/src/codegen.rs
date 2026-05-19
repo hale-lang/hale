@@ -312,6 +312,7 @@ pub fn build_executable_with_imports(
         generic_fn_templates: BTreeMap::new(),
         generic_locus_templates: BTreeMap::new(),
         defer_next_locus_dissolve: false,
+        instantiating_for_parent_field: false,
         vtables: BTreeMap::new(),
     };
 
@@ -1000,6 +1001,19 @@ struct Cx<'ctx, 'p> {
     /// literals (`Stream { ... };`) are unaffected — the flag
     /// only fires from `Stmt::Let`.
     defer_next_locus_dissolve: bool,
+    /// Phase-2 (2): set by `lower_locus_instantiation` around the
+    /// param-init loop when evaluating a child locus literal as a
+    /// field default / override. The child must NOT dissolve
+    /// eagerly — the parent owns it and needs it alive past the
+    /// instantiation expression. The parent's dissolve sequence
+    /// cascades into the child later. Without this flag, the
+    /// child runs its full birth → dissolve cycle inside the
+    /// expression evaluation, freeing its malloc-backed buffer
+    /// before the parent ever stores the dangling pointer. Same
+    /// `mem::take` discipline as `defer_next_locus_dissolve`:
+    /// outermost instantiation owns the flag, nested ones see
+    /// false.
+    instantiating_for_parent_field: bool,
     /// F.20 Phase B: per-(locus, interface) vtable globals.
     /// Synthesized lazily by `ensure_vtable` the first time a
     /// given locus is coerced to a given interface. Layout is
@@ -4029,6 +4043,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                 }
             }
+            // Phase-2 (2): cascade dissolve for parent-owned child
+            // loci. Mirrors the ephemeral path's ordering.
+            self.emit_locus_field_dissolves(&info, self_ptr, &locus_name)?;
             // Arena released at scope exit, after the pinned thread
             // is joined or after the cooperative drain/dissolve has
             // run. Symmetric with the ephemeral path in
@@ -27284,6 +27301,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // eager dissolve. Outermost instantiation owns it; nested
         // ones see false.
         let defer_for_let = std::mem::take(&mut self.defer_next_locus_dissolve);
+        // Phase-2 (2): parent locus is constructing us as a field
+        // default / override. Suppress eager dissolve — the parent
+        // owns us and cascades dissolve from its own dispatch.
+        // See `instantiating_for_parent_field` doc on the Codegen
+        // struct. Same mem::take discipline as defer_for_let: only
+        // the outermost instantiation in the expression takes it.
+        let parent_owns_via_field =
+            std::mem::take(&mut self.instantiating_for_parent_field);
         let info = self
             .user_loci
             .get(locus_name)
@@ -28142,14 +28167,36 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let prev_arena_override = self.current_arena_override;
         self.current_arena_override = Some(new_arena.into_pointer_value());
         for (fname, default) in info.defaults.iter() {
+            // Phase-2 (2): set the parent-field flag so a locus
+            // literal evaluated for this field doesn't run its
+            // eager dissolve. The flag is taken on entry to
+            // lower_locus_instantiation, so nested child literals
+            // beyond this one (e.g. defaults that themselves
+            // construct loci that themselves construct loci) see
+            // false — only the immediate child gets parent-owned
+            // semantics. Other expression shapes ignore the flag.
+            // Cleared after each lower_expr so it doesn't leak
+            // past this field's evaluation.
+            let prev_field_flag = self.instantiating_for_parent_field;
+            self.instantiating_for_parent_field = true;
             let (val, val_ty) = if let Some(expr) = overrides.get(fname.as_str())
             {
-                self.lower_expr(expr, scope)?
+                let r = self.lower_expr(expr, scope)?;
+                self.instantiating_for_parent_field = prev_field_flag;
+                r
             } else {
                 match default {
-                    DefaultInit::Const(pv) => self.const_param(pv),
-                    DefaultInit::Expr(e) => self.lower_expr(e, scope)?,
+                    DefaultInit::Const(pv) => {
+                        self.instantiating_for_parent_field = prev_field_flag;
+                        self.const_param(pv)
+                    }
+                    DefaultInit::Expr(e) => {
+                        let r = self.lower_expr(e, scope)?;
+                        self.instantiating_for_parent_field = prev_field_flag;
+                        r
+                    }
                     DefaultInit::Required => {
+                        self.instantiating_for_parent_field = prev_field_flag;
                         return Err(CodegenError::Unsupported(format!(
                             "locus `{}` instantiation: param `{}` is \
                              required (no default) — supply it as \
@@ -29185,7 +29232,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let defer = is_long_lived
             || defer_for_let
             || returns_this_locus
-            || parent_accepts_us;
+            || parent_accepts_us
+            || parent_owns_via_field;
         if !defer {
             // drain → __dissolve_closures → dissolve. Mirrors the
             // interpreter ordering in eval.rs::dissolve_locus:
@@ -29231,6 +29279,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
             }
+            // Phase-2 (2): cascade dissolve for parent-owned child
+            // loci held as `LocusRef`-typed param fields. Runs
+            // AFTER outer's user dissolve body so the body can
+            // still legitimately read its inner fields.
+            self.emit_locus_field_dissolves(&info, self_ptr, locus_name)?;
             // Wholesale-free the locus's arena. Per spec/memory.md:
             // "When the locus dissolves, the region is freed
             // wholesale." Anything allocated for this locus —
@@ -29246,6 +29299,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // when the parent itself dissolves. Drain/dissolve
             // bodies don't fire on the child — v1 trade-off,
             // matches `returns_this_locus`.
+        } else if parent_owns_via_field {
+            // Phase-2 (2): parent locus is initializing this child
+            // as a field default. The parent's dissolve dispatch
+            // cascades into this child below (cascade-locus-field
+            // path); skip eager dissolve here. Without the cascade
+            // wired up the child's dissolve body never fires —
+            // ok for Phase 1 (no segfault) but leaks the malloc-
+            // backed buffer for shapes like BytesBuilder. Phase 2
+            // wires the cascade through the parent's arena_destroy
+            // ordering.
         } else if let Some(top) = self.deferred_dissolves.last_mut() {
             top.push((self_ptr, locus_name.to_string(), None));
         } else {
@@ -34261,6 +34324,114 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// dissolve flush at body exit. Safe to call after the
     /// dissolve method body has run; the arena is the LAST piece
     /// of the locus's state to go.
+    /// Phase-2 (2): cascade dissolve for parent-owned child loci
+    /// stored in `LocusRef`-typed param fields. Called right before
+    /// the outer locus's own `arena_destroy` (both in the ephemeral
+    /// dispatch and in `flush_dissolve_frame`). For each field whose
+    /// declared type is `LocusRef(<inner>)`, this loads the inner's
+    /// self_ptr from the field slot and emits the same `drain →
+    /// __dissolve_closures → dissolve → arena_destroy` sequence
+    /// the inner would run under ephemeral semantics. Without this
+    /// cascade, locus literals constructed as field defaults
+    /// (Phase-2 (2)'s motivating shape — `rx_buf: BytesBuilder =
+    /// std::bytes::BytesBuilder { ... };`) leak their malloc-backed
+    /// state at the outer's dissolve.
+    ///
+    /// Cascade ordering: outer's `drain → closures → dissolve` runs
+    /// first, then this cascade fires per child, then outer's
+    /// arena_destroy. The choice matches "outer's user dissolve
+    /// body may still legitimately touch its inner field" — the
+    /// inner is alive through outer's dissolve body and only torn
+    /// down after.
+    fn emit_locus_field_dissolves(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+    ) -> Result<(), CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        // Sort field iteration by index so ordering is deterministic
+        // (BTreeMap iter is sorted by key — name; we want index).
+        let mut field_entries: Vec<(String, u32, CodegenTy)> = info
+            .fields
+            .iter()
+            .map(|(n, (idx, ty))| (n.clone(), *idx, ty.clone()))
+            .collect();
+        field_entries.sort_by_key(|(_, idx, _)| *idx);
+        for (fname, field_idx, field_ty) in field_entries {
+            let inner_name = match field_ty {
+                CodegenTy::LocusRef(n) => n,
+                _ => continue,
+            };
+            let inner_info = match self.user_loci.get(&inner_name).cloned() {
+                Some(i) => i,
+                None => continue, // shouldn't happen for a typed field
+            };
+            // GEP the field slot, load the inner self_ptr.
+            let field_slot_ptr = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    self_ptr,
+                    field_idx,
+                    &format!("{}.{}.cascade.gep", locus_name, fname),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let inner_ptr = self
+                .builder
+                .build_load(
+                    ptr_t,
+                    field_slot_ptr,
+                    &format!("{}.{}.cascade.load", locus_name, fname),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value();
+            // drain → __dissolve_closures → dissolve. Skip empties.
+            if let Some(drain_fn) = inner_info.methods.get("drain") {
+                if !inner_info.empty_lifecycle.contains("drain") {
+                    self.builder
+                        .build_call(
+                            *drain_fn,
+                            &[inner_ptr.into()],
+                            &format!("{}.cascade.drain", inner_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+            }
+            if let Some(closures_fn) = inner_info.dissolve_closures_fn {
+                let (parent_self, handler_ptr) =
+                    self.resolve_failure_route(&inner_name);
+                self.builder
+                    .build_call(
+                        closures_fn,
+                        &[
+                            inner_ptr.into(),
+                            parent_self.into(),
+                            handler_ptr.into(),
+                        ],
+                        &format!("{}.cascade.closures", inner_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            if let Some(dissolve_fn) = inner_info.methods.get("dissolve") {
+                if !inner_info.empty_lifecycle.contains("dissolve") {
+                    self.builder
+                        .build_call(
+                            *dissolve_fn,
+                            &[inner_ptr.into()],
+                            &format!("{}.cascade.dissolve", inner_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+            }
+            // Inner's arena_destroy. Even when inner allocates
+            // nothing in its arena, the slot was created at birth
+            // and must be destroyed for symmetry.
+            self.emit_locus_arena_destroy(&inner_info, inner_ptr, &inner_name)?;
+        }
+        Ok(())
+    }
+
     fn emit_locus_arena_destroy(
         &mut self,
         info: &LocusInfo<'ctx>,
