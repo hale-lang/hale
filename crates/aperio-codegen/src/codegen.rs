@@ -577,6 +577,16 @@ const STDLIB_AP_SOURCE: &str = concat!(
     // per the m82 deferred-dissolve mechanism. Returned String
     // data lives in the bus payload arena (program-lifetime).
     include_str!("../runtime/stdlib/file.ap"),
+    "\n",
+    // std::bytes::BytesBuilder — long-lived growing-byte-buffer
+    // locus. Replaces the prior `std::bytes::builder_*` free-fn
+    // surface so the typechecker can distinguish builder handles
+    // from regular Bytes blobs (the two have incompatible runtime
+    // ABIs). Lifecycle (birth/dissolve) wraps malloc /free of the
+    // underlying lotus_str_builder_t header + buffer. References
+    // only path-call primitives (`std::bytes::builder::__*`) that
+    // resolve at codegen time; independent of order.
+    include_str!("../runtime/stdlib/bytes_builder.ap"),
 );
 
 /// Maps each user-facing stdlib path (locus OR type) to the
@@ -590,6 +600,7 @@ const STDLIB_AP_SOURCE: &str = concat!(
 /// review.
 const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "bus", "Adapter"], "__StdBusAdapter"),
+    (&["std", "bytes", "BytesBuilder"], "__StdBytesBytesBuilder"),
     (&["std", "cli", "Resolver"], "__StdCliResolver"),
     (&["std", "http", "Handler"], "__StdHttpHandler"),
     (&["std", "http", "Request"], "__StdHttpRequest"),
@@ -3466,14 +3477,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // and finish() returns a Bytes blob (no trailing NUL).
         // Handle stays a `ptr` carried as Bytes in the Aperio
         // surface, matching the str-builder ergonomic.
-        // declare ptr @lotus_bytes_builder_new(void)
-        let bb_new_ty = ptr_t.fn_type(&[], false);
+        // declare ptr @lotus_bytes_builder_new(i64 initial_cap)
+        let bb_new_ty = ptr_t.fn_type(&[i64_t.into()], false);
         self.module
             .add_function("lotus_bytes_builder_new", bb_new_ty, None);
-        // declare void @lotus_bytes_builder_append(ptr handle, ptr chunk)
-        let bb_append_ty = self
-            .context
-            .void_type()
+        // declare i64 @lotus_bytes_builder_append(ptr handle, ptr chunk)
+        // 2026-05-19: was `void` — now returns 1=ok / 0=fail so the
+        // BytesBuilder locus's `append` method can `violate
+        // alloc_failed` on realloc-NULL (F.27 routing).
+        let bb_append_ty = i64_t
             .fn_type(&[ptr_t.into(), ptr_t.into()], false);
         self.module.add_function(
             "lotus_bytes_builder_append",
@@ -12332,14 +12344,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | ["std", "str", "builder_append"]
             | ["std", "str", "builder_len"]
             | ["std", "str", "builder_finish"]
-            | ["std", "bytes", "builder_new"]
-            | ["std", "bytes", "builder_append"]
-            | ["std", "bytes", "builder_len"]
-            | ["std", "bytes", "builder_finish"]
-            | ["std", "bytes", "builder_shift_front"]
-            | ["std", "bytes", "builder_clear"]
-            | ["std", "bytes", "builder_snapshot"]
-            | ["std", "bytes", "builder_free"]
+            | ["std", "bytes", "builder", "__new"]
+            | ["std", "bytes", "builder", "__append"]
+            | ["std", "bytes", "builder", "__len"]
+            | ["std", "bytes", "builder", "__finish"]
+            | ["std", "bytes", "builder", "__shift_front"]
+            | ["std", "bytes", "builder", "__clear"]
+            | ["std", "bytes", "builder", "__snapshot"]
+            | ["std", "bytes", "builder", "__free"]
             | ["std", "math", "sqrt"]
             | ["std", "math", "exp"]
             | ["std", "math", "log"]
@@ -22284,36 +22296,41 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_str_builder_finish(args, scope)?;
                 Ok(())
             }
-            // C10 (pond follow-up): binary-safe builder.
-            ["std", "bytes", "builder_new"] => {
-                let _ = self.lower_std_bytes_builder_new(args)?;
+            // Internal C-primitive bridges for the BytesBuilder
+            // locus (runtime/stdlib/bytes_builder.ap). The `__`
+            // prefix marks these as not-for-user-code: user code
+            // constructs `std::bytes::BytesBuilder { }` and calls
+            // `.append() / .len() / .snapshot()` etc.; the locus's
+            // method bodies route through here.
+            ["std", "bytes", "builder", "__new"] => {
+                let _ = self.lower_std_bytes_builder_new(args, scope)?;
                 Ok(())
             }
-            ["std", "bytes", "builder_append"] => {
+            ["std", "bytes", "builder", "__append"] => {
                 let _ = self.lower_std_bytes_builder_append(args, scope)?;
                 Ok(())
             }
-            ["std", "bytes", "builder_len"] => {
+            ["std", "bytes", "builder", "__len"] => {
                 let _ = self.lower_std_bytes_builder_len(args, scope)?;
                 Ok(())
             }
-            ["std", "bytes", "builder_finish"] => {
+            ["std", "bytes", "builder", "__finish"] => {
                 let _ = self.lower_std_bytes_builder_finish(args, scope)?;
                 Ok(())
             }
-            ["std", "bytes", "builder_shift_front"] => {
+            ["std", "bytes", "builder", "__shift_front"] => {
                 let _ = self.lower_std_bytes_builder_shift_front(args, scope)?;
                 Ok(())
             }
-            ["std", "bytes", "builder_clear"] => {
+            ["std", "bytes", "builder", "__clear"] => {
                 let _ = self.lower_std_bytes_builder_clear(args, scope)?;
                 Ok(())
             }
-            ["std", "bytes", "builder_snapshot"] => {
+            ["std", "bytes", "builder", "__snapshot"] => {
                 let _ = self.lower_std_bytes_builder_snapshot(args, scope)?;
                 Ok(())
             }
-            ["std", "bytes", "builder_free"] => {
+            ["std", "bytes", "builder", "__free"] => {
                 let _ = self.lower_std_bytes_builder_free(args, scope)?;
                 Ok(())
             }
@@ -22845,29 +22862,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "str", "builder_finish"] => {
                 self.lower_std_str_builder_finish(args, scope)
             }
-            // C10 (pond follow-up): binary-safe builder.
-            ["std", "bytes", "builder_new"] => {
-                self.lower_std_bytes_builder_new(args)
+            // Internal C-primitive bridges for the BytesBuilder
+            // locus (runtime/stdlib/bytes_builder.ap). See the
+            // statement-position dispatch above for the routing
+            // rationale.
+            ["std", "bytes", "builder", "__new"] => {
+                self.lower_std_bytes_builder_new(args, scope)
             }
-            ["std", "bytes", "builder_append"] => {
+            ["std", "bytes", "builder", "__append"] => {
                 self.lower_std_bytes_builder_append(args, scope)
             }
-            ["std", "bytes", "builder_len"] => {
+            ["std", "bytes", "builder", "__len"] => {
                 self.lower_std_bytes_builder_len(args, scope)
             }
-            ["std", "bytes", "builder_finish"] => {
+            ["std", "bytes", "builder", "__finish"] => {
                 self.lower_std_bytes_builder_finish(args, scope)
             }
-            ["std", "bytes", "builder_shift_front"] => {
+            ["std", "bytes", "builder", "__shift_front"] => {
                 self.lower_std_bytes_builder_shift_front(args, scope)
             }
-            ["std", "bytes", "builder_clear"] => {
+            ["std", "bytes", "builder", "__clear"] => {
                 self.lower_std_bytes_builder_clear(args, scope)
             }
-            ["std", "bytes", "builder_snapshot"] => {
+            ["std", "bytes", "builder", "__snapshot"] => {
                 self.lower_std_bytes_builder_snapshot(args, scope)
             }
-            ["std", "bytes", "builder_free"] => {
+            ["std", "bytes", "builder", "__free"] => {
                 self.lower_std_bytes_builder_free(args, scope)
             }
             // m84: std::http::parse_request(raw: String) -> Request.
@@ -24269,11 +24289,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_std_bytes_builder_new(
         &mut self,
         args: &[Expr],
+        scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if !args.is_empty() {
+        if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder_new takes 0 args, got {}",
+                "std::bytes::builder::__new takes 1 arg (initial_cap), got {}",
                 args.len()
+            )));
+        }
+        let (cap_val, cap_ty) = self.lower_expr(&args[0], scope)?;
+        if cap_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder::__new: initial_cap must be Int, got {:?}",
+                cap_ty
             )));
         }
         let f = self
@@ -24282,13 +24310,53 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .expect("lotus_bytes_builder_new declared");
         let call = self
             .builder
-            .build_call(f, &[], "bb.new.ret")
+            .build_call(f, &[cap_val.into()], "bb.new.ret")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let ptr = call
             .try_as_basic_value()
             .left()
-            .expect("returns ptr");
-        Ok((ptr, CodegenTy::Bytes))
+            .expect("returns ptr")
+            .into_pointer_value();
+        // Carry the ptr as Int (i64) so the BytesBuilder locus's
+        // `handle` param (typed Int) can hold it. The C primitive
+        // declared a `ptr` return; ptrtoint here, inttoptr at the
+        // matching consumer sites.
+        let i64_t = self.context.i64_type();
+        let as_int = self
+            .builder
+            .build_ptr_to_int(ptr, i64_t, "bb.new.handle.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((as_int.into(), CodegenTy::Int))
+    }
+
+    /// Helper: lower an `Int`-typed handle expression and emit
+    /// `inttoptr` so the C-primitive call boundary receives a
+    /// `ptr`. Returns the original `(IntValue, BasicValueEnum)`
+    /// pair — caller forwards the int as the lowering's result
+    /// (handles "return the handle unchanged" shapes) and uses
+    /// the ptr as the C call arg. Used by every internal
+    /// `std::bytes::builder::__*` lowering that consumes a
+    /// `handle: Int` arg.
+    fn lower_bytes_builder_handle_arg(
+        &mut self,
+        arg: &Expr,
+        scope: &Scope<'ctx>,
+        diag_name: &str,
+    ) -> Result<(BasicValueEnum<'ctx>, BasicValueEnum<'ctx>), CodegenError> {
+        let (h_val, h_ty) = self.lower_expr(arg, scope)?;
+        if h_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "{}: handle must be Int (the BytesBuilder locus's \
+                 internal handle field), got {:?}",
+                diag_name, h_ty
+            )));
+        }
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let ptr = self
+            .builder
+            .build_int_to_ptr(h_val.into_int_value(), ptr_t, "bb.handle.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((h_val, ptr.into()))
     }
 
     /// C10 (pond follow-up): `std::bytes::builder_append(b: Bytes,
@@ -24304,22 +24372,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 2 {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder_append takes 2 args (b, chunk), got {}",
+                "std::bytes::builder::__append takes 2 args (handle, chunk), got {}",
                 args.len()
             )));
         }
-        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if b_ty != CodegenTy::Bytes {
-            return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder_append: builder must be Bytes \
-                 (from builder_new), got {:?}",
-                b_ty
-            )));
-        }
+        let (_h_int, handle_ptr) = self.lower_bytes_builder_handle_arg(
+            &args[0],
+            scope,
+            "std::bytes::builder::__append",
+        )?;
         let (chunk_val, chunk_ty) = self.lower_expr(&args[1], scope)?;
         if chunk_ty != CodegenTy::Bytes {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder_append: chunk must be Bytes, got \
+                "std::bytes::builder::__append: chunk must be Bytes, got \
                  {:?} (use `std::bytes::from_string(s)` to convert)",
                 chunk_ty
             )));
@@ -24328,14 +24393,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .get_function("lotus_bytes_builder_append")
             .expect("lotus_bytes_builder_append declared");
-        self.builder
+        let call = self
+            .builder
             .build_call(
                 f,
-                &[b_val.into(), chunk_val.into()],
-                "bb.append",
+                &[handle_ptr.into(), chunk_val.into()],
+                "bb.append.ret",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((b_val, CodegenTy::Bytes))
+        // Returns i64 status: 1=ok, 0=fail (realloc NULL or null
+        // handle). The BytesBuilder locus's `append` method checks
+        // this and routes to `violate alloc_failed` on 0 per F.27.
+        let status = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64 status");
+        Ok((status, CodegenTy::Int))
     }
 
     /// C10 (pond follow-up): `std::bytes::builder_len(b: Bytes) ->
@@ -24348,24 +24421,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder_len takes 1 arg (b), got {}",
+                "std::bytes::builder::__len takes 1 arg (handle), got {}",
                 args.len()
             )));
         }
-        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if b_ty != CodegenTy::Bytes {
-            return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder_len: builder must be Bytes, got {:?}",
-                b_ty
-            )));
-        }
+        let (_, handle_ptr) = self.lower_bytes_builder_handle_arg(
+            &args[0],
+            scope,
+            "std::bytes::builder::__len",
+        )?;
         let f = self
             .module
             .get_function("lotus_bytes_builder_len")
             .expect("lotus_bytes_builder_len declared");
         let call = self
             .builder
-            .build_call(f, &[b_val.into()], "bb.len.ret")
+            .build_call(f, &[handle_ptr.into()], "bb.len.ret")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let v = call
             .try_as_basic_value()
@@ -24387,24 +24458,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder_finish takes 1 arg (b), got {}",
+                "std::bytes::builder::__finish takes 1 arg (handle), got {}",
                 args.len()
             )));
         }
-        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if b_ty != CodegenTy::Bytes {
-            return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder_finish: builder must be Bytes, got {:?}",
-                b_ty
-            )));
-        }
+        let (_, handle_ptr) = self.lower_bytes_builder_handle_arg(
+            &args[0],
+            scope,
+            "std::bytes::builder::__finish",
+        )?;
         let f = self
             .module
             .get_function("lotus_bytes_builder_finish")
             .expect("lotus_bytes_builder_finish declared");
         let call = self
             .builder
-            .build_call(f, &[b_val.into()], "bb.finish.ret")
+            .build_call(f, &[handle_ptr.into()], "bb.finish.ret")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let ptr = call
             .try_as_basic_value()
@@ -24424,21 +24493,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 2 {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder_shift_front takes 2 args (b, n), got {}",
+                "std::bytes::builder::__shift_front takes 2 args (handle, n), got {}",
                 args.len()
             )));
         }
-        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if b_ty != CodegenTy::Bytes {
-            return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder_shift_front: builder must be Bytes, got {:?}",
-                b_ty
-            )));
-        }
+        let (h_int, handle_ptr) = self.lower_bytes_builder_handle_arg(
+            &args[0],
+            scope,
+            "std::bytes::builder::__shift_front",
+        )?;
         let (n_val, n_ty) = self.lower_expr(&args[1], scope)?;
         if n_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder_shift_front: n must be Int, got {:?}",
+                "std::bytes::builder::__shift_front: n must be Int, got {:?}",
                 n_ty
             )));
         }
@@ -24447,9 +24514,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .get_function("lotus_bytes_builder_shift_front")
             .expect("lotus_bytes_builder_shift_front declared");
         self.builder
-            .build_call(f, &[b_val.into(), n_val.into()], "bb.shift")
+            .build_call(f, &[handle_ptr.into(), n_val.into()], "bb.shift")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((b_val, CodegenTy::Bytes))
+        Ok((h_int, CodegenTy::Int))
     }
 
     /// Phase 0: `std::bytes::builder_clear(b: Bytes) -> Bytes`.
@@ -24461,25 +24528,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder_clear takes 1 arg (b), got {}",
+                "std::bytes::builder::__clear takes 1 arg (handle), got {}",
                 args.len()
             )));
         }
-        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if b_ty != CodegenTy::Bytes {
-            return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder_clear: builder must be Bytes, got {:?}",
-                b_ty
-            )));
-        }
+        let (h_int, handle_ptr) = self.lower_bytes_builder_handle_arg(
+            &args[0],
+            scope,
+            "std::bytes::builder::__clear",
+        )?;
         let f = self
             .module
             .get_function("lotus_bytes_builder_clear")
             .expect("lotus_bytes_builder_clear declared");
         self.builder
-            .build_call(f, &[b_val.into()], "bb.clear")
+            .build_call(f, &[handle_ptr.into()], "bb.clear")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((b_val, CodegenTy::Bytes))
+        Ok((h_int, CodegenTy::Int))
     }
 
     /// Phase 0: `std::bytes::builder_snapshot(b: Bytes) -> Bytes`.
@@ -24494,24 +24559,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder_snapshot takes 1 arg (b), got {}",
+                "std::bytes::builder::__snapshot takes 1 arg (handle), got {}",
                 args.len()
             )));
         }
-        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if b_ty != CodegenTy::Bytes {
-            return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder_snapshot: builder must be Bytes, got {:?}",
-                b_ty
-            )));
-        }
+        let (_, handle_ptr) = self.lower_bytes_builder_handle_arg(
+            &args[0],
+            scope,
+            "std::bytes::builder::__snapshot",
+        )?;
         let f = self
             .module
             .get_function("lotus_bytes_builder_snapshot")
             .expect("lotus_bytes_builder_snapshot declared");
         let call = self
             .builder
-            .build_call(f, &[b_val.into()], "bb.snapshot.ret")
+            .build_call(f, &[handle_ptr.into()], "bb.snapshot.ret")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let ptr = call
             .try_as_basic_value()
@@ -24532,25 +24595,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder_free takes 1 arg (b), got {}",
+                "std::bytes::builder::__free takes 1 arg (handle), got {}",
                 args.len()
             )));
         }
-        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if b_ty != CodegenTy::Bytes {
-            return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder_free: builder must be Bytes, got {:?}",
-                b_ty
-            )));
-        }
+        let (h_int, handle_ptr) = self.lower_bytes_builder_handle_arg(
+            &args[0],
+            scope,
+            "std::bytes::builder::__free",
+        )?;
         let f = self
             .module
             .get_function("lotus_bytes_builder_free")
             .expect("lotus_bytes_builder_free declared");
         self.builder
-            .build_call(f, &[b_val.into()], "bb.free")
+            .build_call(f, &[handle_ptr.into()], "bb.free")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((b_val, CodegenTy::Bytes))
+        Ok((h_int, CodegenTy::Int))
     }
 
     /// v1.x-16: `std::str::can_parse_float(s: String) -> Bool`.
@@ -26130,7 +26191,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// Shared lowering for the recv_into family. Validates arg
-    /// types, truncates fd to i32, and emits the call.
+    /// types, extracts the builder handle from the BytesBuilder
+    /// locus, truncates fd to i32, and emits the call.
     fn lower_recv_into_common(
         &mut self,
         args: &[Expr],
@@ -26152,13 +26214,67 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 diag_name, fd_ty
             )));
         }
+        // `buf` must be a BytesBuilder locus (see
+        // runtime/stdlib/bytes_builder.ap). The locus is passed
+        // by pointer; we GEP+load the internal `handle` field to
+        // recover the underlying lotus_str_builder_t pointer that
+        // the C primitive expects as `void *builder`. Rejecting
+        // a raw Bytes here is the load-bearing typecheck — it's
+        // why BytesBuilder was lifted out of the Bytes type
+        // (incompatible runtime ABIs; passing the wrong one
+        // silently misreads).
         let (buf_val, buf_ty) = self.lower_expr(&args[1], scope)?;
-        if buf_ty != CodegenTy::Bytes {
-            return Err(CodegenError::Unsupported(format!(
-                "{}: buf must be Bytes (a builder handle from builder_new), got {:?}",
-                diag_name, buf_ty
-            )));
-        }
+        let buf_handle = match &buf_ty {
+            CodegenTy::LocusRef(n) if n == "__StdBytesBytesBuilder" => {
+                let info = self
+                    .user_loci
+                    .get(n)
+                    .cloned()
+                    .expect("BytesBuilder locus declared in stdlib seed");
+                let (idx, field_ty) = info
+                    .fields
+                    .get("handle")
+                    .cloned()
+                    .expect("BytesBuilder has a `handle` param");
+                let buf_ptr = buf_val.into_pointer_value();
+                let field_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        buf_ptr,
+                        idx,
+                        "bb.handle.ptr",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let llvm_ty = self.llvm_basic_type(&field_ty);
+                let handle_int = self
+                    .builder
+                    .build_load(llvm_ty, field_ptr, "bb.handle")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // `handle` is Int (i64) — see bytes_builder.ap. The
+                // C primitive expects a ptr; inttoptr at the call
+                // boundary.
+                let ptr_t = self.context.ptr_type(AddressSpace::default());
+                let as_ptr = self
+                    .builder
+                    .build_int_to_ptr(
+                        handle_int.into_int_value(),
+                        ptr_t,
+                        "bb.handle.ptr.recv",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let v: BasicValueEnum<'ctx> = as_ptr.into();
+                v
+            }
+            _ => {
+                return Err(CodegenError::Unsupported(format!(
+                    "{}: buf must be std::bytes::BytesBuilder (constructed \
+                     via `std::bytes::BytesBuilder {{ initial_cap: ... }}`), \
+                     got {:?}",
+                    diag_name, buf_ty
+                )));
+            }
+        };
         let (max_val, max_ty) = self.lower_expr(&args[2], scope)?;
         if max_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -26179,7 +26295,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .builder
             .build_call(
                 f,
-                &[fd_i32.into(), buf_val.into(), max_val.into()],
+                &[fd_i32.into(), buf_handle.into(), max_val.into()],
                 "recv_into.ret",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

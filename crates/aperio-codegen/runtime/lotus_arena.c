@@ -6821,11 +6821,11 @@ const char *lotus_str_builder_finish(void *handle) {
  */
 typedef struct lotus_str_builder lotus_bytes_builder_t;
 
-void *lotus_bytes_builder_new(void) {
+void *lotus_bytes_builder_new(int64_t initial_cap) {
     lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)
         malloc(sizeof(lotus_bytes_builder_t));
     if (!b) return NULL;
-    b->cap = 64;
+    b->cap = initial_cap > 0 ? (size_t)initial_cap : 64;
     b->len = 0;
     b->buf = (char *)malloc(b->cap);
     if (!b->buf) {
@@ -6837,13 +6837,21 @@ void *lotus_bytes_builder_new(void) {
     return b;
 }
 
-void lotus_bytes_builder_append(void *handle, const void *chunk_blob) {
-    if (!handle || !chunk_blob) return;
+/* Returns 1 on success, 0 on hard failure (null handle or realloc
+ * NULL). Empty / null chunk is a no-op success. The success
+ * indicator is what the BytesBuilder locus's `append` method
+ * checks before deciding to `violate alloc_failed` (F.27 routing
+ * for fatal alloc fail). Pre-2026-05-19 this returned void and
+ * silently no-op'd on realloc fail; that silent corruption is
+ * exactly what F.27 promotes to a structural violation. */
+int64_t lotus_bytes_builder_append(void *handle, const void *chunk_blob) {
+    if (!handle) return 0;
+    if (!chunk_blob) return 1;
     lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
     /* Bytes ABI: `[i64 len][u8 data[len]]`. Read the explicit
      * length prefix — strlen would truncate at the first NUL. */
     int64_t add_signed = lotus_bytes_len(chunk_blob);
-    if (add_signed <= 0) return;
+    if (add_signed <= 0) return 1;
     size_t add = (size_t)add_signed;
     size_t need = b->len + add;
     if (need > b->cap) {
@@ -6857,7 +6865,7 @@ void lotus_bytes_builder_append(void *handle, const void *chunk_blob) {
             }
         }
         char *nb = (char *)realloc(b->buf, new_cap);
-        if (!nb) return;
+        if (!nb) return 0;
         b->buf = nb;
         b->cap = new_cap;
     }
@@ -6866,6 +6874,7 @@ void lotus_bytes_builder_append(void *handle, const void *chunk_blob) {
     const char *src = (const char *)chunk_blob + sizeof(int64_t);
     memcpy(b->buf + b->len, src, add);
     b->len = need;
+    return 1;
 }
 
 int64_t lotus_bytes_builder_len(const void *handle) {

@@ -1,0 +1,148 @@
+// std::bytes::BytesBuilder — long-lived growing-byte-buffer locus.
+//
+// The Aperio-shape replacement for the prior `std::bytes::builder_*`
+// free-fn surface. Encapsulates a malloc-backed buffer behind a
+// locus, so the buffer's lifecycle (birth → grow → optionally
+// snapshot → dissolve) is owned by a named structural thing rather
+// than threaded as a Bytes-typed "handle" the typechecker can't
+// distinguish from a regular Bytes blob.
+//
+// Why a locus:
+//   - **Type discrimination at design time.** Bytes blobs (the
+//     `[i64 len][u8 data]` ABI) and the builder header (`{cap,len,
+//     buf*}`) are NOT layout-compatible — passing a builder where
+//     Bytes is expected silently misreads. The prior surface
+//     conflated the two under the static type `Bytes`. With the
+//     builder lifted to its own locus type, `std::bytes::at(b, i)`
+//     where b is a BytesBuilder fails at typecheck.
+//   - **Auto-dissolve.** The malloc-backed buffer is released by
+//     dissolve(), which fires automatically at the let-binding's
+//     scope exit. No more "leak unless finish" hazard.
+//   - **Aperio axiom.** Anything with lifecycle, mutable state,
+//     and invariants is a locus — types are pure data, no flow.
+//     The builder grew flow.
+//
+// Canonical pattern (long-lived recv-loop buffer):
+//
+//   locus FrameClient {
+//       params { sock: Int = -1; recv_chunk: Int = 4096; }
+//       run() {
+//           let rx_buf = std::bytes::BytesBuilder {
+//               initial_cap: 4096,
+//           };
+//           loop {
+//               let got = std::io::tcp::recv_into(
+//                   self.sock, rx_buf, self.recv_chunk);
+//               if got <= 0 { break; }
+//               // peel a complete frame: rx_buf.len() / shift_front
+//               // (no per-iteration allocation against
+//               // g_bus_payload_arena)
+//           }
+//           // rx_buf.dissolve() fires here → buffer freed
+//       }
+//   }
+//
+// Method surface:
+//   - append(chunk: Bytes)         — copy chunk into the buffer tail
+//   - len() -> Int                 — current valid-byte count
+//   - snapshot() -> Bytes          — copy [0..len) into a fresh Bytes
+//                                    blob in the bus payload arena
+//                                    (builder unchanged)
+//   - shift_front(n: Int)          — drop the first n bytes (memmove,
+//                                    capacity preserved)
+//   - clear()                      — len=0, capacity preserved
+//   - finish() -> Bytes            — materialize and dissolve the
+//                                    builder; the returned Bytes
+//                                    blob is anchored in the bus
+//                                    payload arena
+//
+// Note on `finish()`: prefer `snapshot()` + auto-dissolve for
+// long-lived holders that want to keep the buffer alive between
+// snapshots. `finish()` is the one-shot accumulator shape — call
+// it exactly once, then the locus is dead.
+//
+// Fatal allocation failure on `append()` (realloc NULL on grow,
+// or a null handle from a failed birth()) is routed structurally
+// via `violate alloc_failed` per F.27. The owning locus's
+// `on_failure` handler decides the recovery policy (restart /
+// drain / bubble); a violation that bubbles past `main` exits the
+// process non-zero with the violation report on stderr.
+//
+// `birth()` can also hit a malloc failure (lotus_bytes_builder_new
+// returning NULL → self.handle = 0). The codegen restricts
+// `violate` to fn-bodies — it's not legal inside lifecycle blocks
+// — so a birth-time failure is detected lazily at the first
+// `append()` call: __append returns 0 for a null handle, which
+// the violate path catches. Other methods (`len`, `shift_front`,
+// `clear`, `snapshot`, `finish`) gracefully degrade on a null
+// handle (the C primitives all check NULL up front).
+//
+// `snapshot()` and `finish()` can also hit a payload-arena alloc
+// failure — at v1 those return an empty Bytes blob silently
+// (matching the prior surface); lifting them into violations is
+// a follow-up that needs the C primitives to distinguish
+// "empty-on-success" from "empty-on-fail" (their returns alias
+// today).
+
+locus __StdBytesBytesBuilder {
+    params {
+        // Caller-tunable starting capacity. Auto-grows on demand
+        // via doubling realloc; setting this matches expected
+        // max-frame-size avoids the early-growth memcpy churn.
+        initial_cap: Int = 64;
+        // Opaque builder handle — pointer to a `lotus_str_builder_t`
+        // header on the malloc heap, carried as an Int (pointers
+        // are i64-sized on the supported targets) so it survives
+        // the param-default discipline (Int has a literal `0`
+        // sentinel; Bytes has no empty-blob literal). Assigned in
+        // birth(), released in dissolve(). 0 means "not yet
+        // allocated". Caller code should not pass this — defaults
+        // are correct.
+        handle: Int = 0;
+    }
+    // F.27 inline closure. Fires only via explicit `violate
+    // alloc_failed;` inside one of this locus's methods. captures
+    // snapshots `initial_cap` into the violation payload so the
+    // parent's on_failure handler sees "this builder was asked
+    // for N bytes and the system refused" without poking at the
+    // dead locus's storage.
+    closure alloc_failed { captures: initial_cap; epoch inline; }
+    birth() {
+        // Malloc fail leaves self.handle = 0; the next append()
+        // catches it via __append's null-handle return and routes
+        // through `violate alloc_failed`. (Lifecycle bodies can't
+        // host `violate` directly — F.27 restricts it to fn-
+        // bodies.)
+        self.handle = std::bytes::builder::__new(self.initial_cap);
+    }
+    dissolve() {
+        std::bytes::builder::__free(self.handle);
+    }
+    fn append(chunk: Bytes) {
+        let ok = std::bytes::builder::__append(self.handle, chunk);
+        if ok == 0 {
+            violate alloc_failed;
+        }
+    }
+    fn len() -> Int {
+        return std::bytes::builder::__len(self.handle);
+    }
+    fn snapshot() -> Bytes {
+        return std::bytes::builder::__snapshot(self.handle);
+    }
+    fn shift_front(n: Int) {
+        std::bytes::builder::__shift_front(self.handle, n);
+    }
+    fn clear() {
+        std::bytes::builder::__clear(self.handle);
+    }
+    fn finish() -> Bytes {
+        // __finish frees the underlying buffer + header. Clearing
+        // self.handle to 0 makes the subsequent dissolve's __free
+        // a safe no-op (C primitive checks NULL) — avoids the
+        // double-free that would otherwise fire at scope exit.
+        let out = std::bytes::builder::__finish(self.handle);
+        self.handle = 0;
+        return out;
+    }
+}

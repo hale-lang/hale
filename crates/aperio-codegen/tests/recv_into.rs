@@ -45,16 +45,15 @@ fn tcp_recv_into_accumulates_across_calls() {
         fn main() {{
             let listen = std::io::tcp::listen_socket("127.0.0.1", {}) or raise;
             let conn = std::io::tcp::accept_one(listen) or raise;
-            let buf = std::bytes::builder_new();
+            let buf = std::bytes::BytesBuilder {{ initial_cap: 1024 }};
             let n1 = std::io::tcp::recv_into(conn, buf, 1024);
-            println("after_first len=", std::bytes::builder_len(buf), " n=", n1);
-            let snap1 = std::bytes::builder_snapshot(buf);
+            println("after_first len=", buf.len(), " n=", n1);
+            let snap1 = buf.snapshot();
             println("snap1=", std::str::from_bytes(snap1));
             let n2 = std::io::tcp::recv_into(conn, buf, 1024);
-            println("after_second len=", std::bytes::builder_len(buf), " n=", n2);
-            let snap2 = std::bytes::builder_snapshot(buf);
+            println("after_second len=", buf.len(), " n=", n2);
+            let snap2 = buf.snapshot();
             println("snap2=", std::str::from_bytes(snap2));
-            std::bytes::builder_free(buf);
             std::io::tcp::close_fd(conn);
             std::io::tcp::close_fd(listen);
         }}
@@ -120,13 +119,12 @@ fn tcp_recv_into_zero_on_peer_close() {
         fn main() {{
             let listen = std::io::tcp::listen_socket("127.0.0.1", {}) or raise;
             let conn = std::io::tcp::accept_one(listen) or raise;
-            let buf = std::bytes::builder_new();
+            let buf = std::bytes::BytesBuilder {{ initial_cap: 1024 }};
             let n1 = std::io::tcp::recv_into(conn, buf, 1024);
-            println("n1=", n1, " len=", std::bytes::builder_len(buf));
+            println("n1=", n1, " len=", buf.len());
             // Wait for the test process to close the socket.
             let n2 = std::io::tcp::recv_into(conn, buf, 1024);
-            println("n2=", n2, " len=", std::bytes::builder_len(buf));
-            std::bytes::builder_free(buf);
+            println("n2=", n2, " len=", buf.len());
             std::io::tcp::close_fd(conn);
             std::io::tcp::close_fd(listen);
         }}

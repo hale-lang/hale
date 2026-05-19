@@ -1,8 +1,10 @@
 //! Phase-0 in-place Bytes ops — the recv-loop accumulator surface
 //! that pond/websocket flagged as a substrate gap (FRICTION § "per-
-//! frame Bytes allocations accumulate"). Extends the bytes_builder
-//! family with shift_front / clear / snapshot / free so a long-lived
-//! holder can recycle a single allocation across many iterations.
+//! frame Bytes allocations accumulate"). Now reached via the
+//! BytesBuilder locus's method surface (shift_front / clear /
+//! snapshot) so a long-lived holder can recycle a single allocation
+//! across many iterations. Free is implicit via dissolve at scope
+//! exit — no more explicit `builder_free` call.
 
 use std::process::Command;
 
@@ -25,13 +27,12 @@ fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus)
 fn builder_shift_front_drops_leading_bytes() {
     let src = r#"
         fn main() {
-            let b = std::bytes::builder_new();
-            std::bytes::builder_append(b, std::bytes::from_string("hello world"));
-            std::bytes::builder_shift_front(b, 6);
-            let snap = std::bytes::builder_snapshot(b);
-            println("len=", std::bytes::builder_len(b));
+            let b = std::bytes::BytesBuilder { initial_cap: 64 };
+            b.append(std::bytes::from_string("hello world"));
+            b.shift_front(6);
+            let snap = b.snapshot();
+            println("len=", b.len());
             println("body=", std::str::from_bytes(snap));
-            std::bytes::builder_free(b);
         }
     "#;
     let (stdout, status) = build_and_run("bb_shift_front", src);
@@ -44,11 +45,10 @@ fn builder_shift_front_drops_leading_bytes() {
 fn builder_shift_front_past_len_empties() {
     let src = r#"
         fn main() {
-            let b = std::bytes::builder_new();
-            std::bytes::builder_append(b, std::bytes::from_string("xyz"));
-            std::bytes::builder_shift_front(b, 100);
-            println("len=", std::bytes::builder_len(b));
-            std::bytes::builder_free(b);
+            let b = std::bytes::BytesBuilder { initial_cap: 64 };
+            b.append(std::bytes::from_string("xyz"));
+            b.shift_front(100);
+            println("len=", b.len());
         }
     "#;
     let (stdout, status) = build_and_run("bb_shift_past", src);
@@ -60,15 +60,14 @@ fn builder_shift_front_past_len_empties() {
 fn builder_clear_keeps_capacity_drops_len() {
     let src = r#"
         fn main() {
-            let b = std::bytes::builder_new();
-            std::bytes::builder_append(b, std::bytes::from_string("abcdef"));
-            std::bytes::builder_clear(b);
-            println("after_clear=", std::bytes::builder_len(b));
-            std::bytes::builder_append(b, std::bytes::from_string("xy"));
-            println("after_append=", std::bytes::builder_len(b));
-            let snap = std::bytes::builder_snapshot(b);
+            let b = std::bytes::BytesBuilder { initial_cap: 64 };
+            b.append(std::bytes::from_string("abcdef"));
+            b.clear();
+            println("after_clear=", b.len());
+            b.append(std::bytes::from_string("xy"));
+            println("after_append=", b.len());
+            let snap = b.snapshot();
             println("body=", std::str::from_bytes(snap));
-            std::bytes::builder_free(b);
         }
     "#;
     let (stdout, status) = build_and_run("bb_clear", src);
@@ -82,14 +81,13 @@ fn builder_clear_keeps_capacity_drops_len() {
 fn builder_snapshot_leaves_builder_unchanged() {
     let src = r#"
         fn main() {
-            let b = std::bytes::builder_new();
-            std::bytes::builder_append(b, std::bytes::from_string("snap-me"));
-            let s1 = std::bytes::builder_snapshot(b);
-            let s2 = std::bytes::builder_snapshot(b);
-            println("len_after=", std::bytes::builder_len(b));
+            let b = std::bytes::BytesBuilder { initial_cap: 64 };
+            b.append(std::bytes::from_string("snap-me"));
+            let s1 = b.snapshot();
+            let s2 = b.snapshot();
+            println("len_after=", b.len());
             println("s1=", std::str::from_bytes(s1));
             println("s2=", std::str::from_bytes(s2));
-            std::bytes::builder_free(b);
         }
     "#;
     let (stdout, status) = build_and_run("bb_snapshot", src);
@@ -111,22 +109,21 @@ fn recv_loop_simulation_recycles_capacity() {
     // is empty.
     let src = r#"
         fn main() {
-            let b = std::bytes::builder_new();
+            let b = std::bytes::BytesBuilder { initial_cap: 64 };
             let frame_a = std::bytes::from_string("AAAA");
             let frame_b = std::bytes::from_string("BBBB");
             let mut i = 0;
             while i < 100 {
-                std::bytes::builder_append(b, frame_a);
-                std::bytes::builder_append(b, frame_b);
-                std::bytes::builder_shift_front(b, 4);
-                std::bytes::builder_shift_front(b, 4);
+                b.append(frame_a);
+                b.append(frame_b);
+                b.shift_front(4);
+                b.shift_front(4);
                 i = i + 1;
             }
-            println("final_len=", std::bytes::builder_len(b));
-            std::bytes::builder_append(b, std::bytes::from_string("done"));
-            let snap = std::bytes::builder_snapshot(b);
+            println("final_len=", b.len());
+            b.append(std::bytes::from_string("done"));
+            let snap = b.snapshot();
             println("body=", std::str::from_bytes(snap));
-            std::bytes::builder_free(b);
         }
     "#;
     let (stdout, status) = build_and_run("bb_recv_sim", src);

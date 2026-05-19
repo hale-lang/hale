@@ -620,23 +620,25 @@ pub fn resolve_path(segments: &[&str]) -> Option<Value> {
             name: "std::str::builder_finish",
             func: Rc::new(std_str_builder_finish),
         })),
-        // C10 (pond follow-up): binary-safe builder. Same shape as
-        // the str-builder but the chunk arg is Bytes and finish
-        // returns Bytes — embedded NULs survive end-to-end.
-        ["std", "bytes", "builder_new"] => Some(Value::Builtin(BuiltinRef {
-            name: "std::bytes::builder_new",
+        // Internal C-primitive bridges for the BytesBuilder locus
+        // (runtime/stdlib/bytes_builder.ap). The `__` prefix marks
+        // these as not-for-user-code: user code constructs the
+        // locus and calls its methods; the locus method bodies
+        // route through here.
+        ["std", "bytes", "builder", "__new"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::bytes::builder::__new",
             func: Rc::new(std_bytes_builder_new),
         })),
-        ["std", "bytes", "builder_append"] => Some(Value::Builtin(BuiltinRef {
-            name: "std::bytes::builder_append",
+        ["std", "bytes", "builder", "__append"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::bytes::builder::__append",
             func: Rc::new(std_bytes_builder_append),
         })),
-        ["std", "bytes", "builder_len"] => Some(Value::Builtin(BuiltinRef {
-            name: "std::bytes::builder_len",
+        ["std", "bytes", "builder", "__len"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::bytes::builder::__len",
             func: Rc::new(std_bytes_builder_len),
         })),
-        ["std", "bytes", "builder_finish"] => Some(Value::Builtin(BuiltinRef {
-            name: "std::bytes::builder_finish",
+        ["std", "bytes", "builder", "__finish"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::bytes::builder::__finish",
             func: Rc::new(std_bytes_builder_finish),
         })),
         // v1.x: stdin line reader. Trailing newline stripped;
@@ -1258,10 +1260,20 @@ fn std_str_builder_finish(args: &[Value]) -> Result<Value, String> {
 /// is shared with the str-builder — the only difference is
 /// what append/finish do.
 fn std_bytes_builder_new(args: &[Value]) -> Result<Value, String> {
-    if !args.is_empty() {
+    if args.len() != 1 {
         return Err(format!(
-            "std::bytes::builder_new expects 0 args, got {}",
+            "std::bytes::builder::__new expects 1 arg (initial_cap), got {}",
             args.len()
+        ));
+    }
+    // initial_cap is accepted but ignored by the interpreter — the
+    // Vec backing is auto-grown. The arg presence matches the
+    // codegen surface so a program that runs identically in both
+    // backends keeps a single source-level signature.
+    if !matches!(&args[0], Value::Int(_)) {
+        return Err(format!(
+            "std::bytes::builder::__new: initial_cap must be Int, got {}",
+            args[0].type_name()
         ));
     }
     use std::cell::RefCell;
@@ -1308,7 +1320,10 @@ fn std_bytes_builder_append(args: &[Value]) -> Result<Value, String> {
         };
         buf.extend_from_slice(&chunk);
     }
-    Ok(Value::Array(handle))
+    // 2026-05-19: returns i64 status (1=ok, 0=fail) to match the
+    // codegen surface. The Vec-backed interpreter buffer never
+    // fails to grow short of OOM, so always 1.
+    Ok(Value::Int(1))
 }
 
 fn std_bytes_builder_len(args: &[Value]) -> Result<Value, String> {

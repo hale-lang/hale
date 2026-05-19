@@ -1,14 +1,15 @@
-//! C10 (pond follow-up): binary-safe builder family
-//! `std::bytes::builder_new` / `builder_append` / `builder_len` /
-//! `builder_finish`. Mirror of the str-builder family but with
-//! Bytes ABI on both sides — embedded NUL bytes survive end-to-end.
+//! BytesBuilder locus (`std::bytes::BytesBuilder`) — binary-safe
+//! growing-byte-buffer that replaced the prior `builder_*` free-fn
+//! family. Method surface (`append`, `len`, `snapshot`, `finish`)
+//! mirrors the old free fns but routes through a typed locus so the
+//! typechecker can keep builder handles distinct from Bytes blobs.
 //!
 //! Coverage:
 //!  - 0-byte: new + immediate finish returns empty Bytes.
 //!  - Round-trip of chunks containing embedded NULs and high
 //!    bytes (0x80..0xff) — the truncate-on-NUL hazard the
 //!    str-builder family would hit.
-//!  - `builder_len` tracks the running accumulator.
+//!  - `b.len()` tracks the running accumulator.
 //!
 //! Test chunks are assembled via `std::bytes::from_int(byte)` +
 //! `std::bytes::concat(...)` because:
@@ -40,8 +41,8 @@ fn empty_builder_finishes_to_zero_length_bytes() {
     // code can shape its empty-case branch off the explicit length.
     let src = r#"
         fn main() {
-            let b = std::bytes::builder_new();
-            let out = std::bytes::builder_finish(b);
+            let b = std::bytes::BytesBuilder { initial_cap: 64 };
+            let out = b.finish();
             println("len=", len(out));
         }
     "#;
@@ -80,10 +81,10 @@ fn round_trip_preserves_embedded_nul_bytes() {
             let c1 = build_chunk(0x00, 0x01, 0x02);
             let c2 = build_chunk(0xff, 0xfe, 0x00);
 
-            let b = std::bytes::builder_new();
-            let _ = std::bytes::builder_append(b, c1);
-            let _ = std::bytes::builder_append(b, c2);
-            let out = std::bytes::builder_finish(b);
+            let b = std::bytes::BytesBuilder { initial_cap: 64 };
+            b.append(c1);
+            b.append(c2);
+            let out = b.finish();
 
             println("len=", len(out));
             println("b0=", std::bytes::at(out, 0) or -1);
@@ -117,9 +118,9 @@ fn round_trip_preserves_embedded_nul_bytes() {
 
 #[test]
 fn builder_len_tracks_running_count() {
-    // After each append, builder_len() must reflect the cumulative
-    // byte count — chunks containing NULs and high bytes count
-    // the same as any other byte (the whole point of moving off
+    // After each append, b.len() must reflect the cumulative byte
+    // count — chunks containing NULs and high bytes count the
+    // same as any other byte (the whole point of moving off
     // strlen-based str-builder accumulation).
     //
     // Three appends:
@@ -154,15 +155,15 @@ fn builder_len_tracks_running_count() {
             let cb = build_chunk2(0x00, 0x00);
             let cc = build_chunk4(0xff, 0xff, 0xff, 0xff);
 
-            let b = std::bytes::builder_new();
-            println("l0=", std::bytes::builder_len(b));
-            let _ = std::bytes::builder_append(b, ca);
-            println("l1=", std::bytes::builder_len(b));
-            let _ = std::bytes::builder_append(b, cb);
-            println("l2=", std::bytes::builder_len(b));
-            let _ = std::bytes::builder_append(b, cc);
-            println("l3=", std::bytes::builder_len(b));
-            let out = std::bytes::builder_finish(b);
+            let b = std::bytes::BytesBuilder { initial_cap: 64 };
+            println("l0=", b.len());
+            b.append(ca);
+            println("l1=", b.len());
+            b.append(cb);
+            println("l2=", b.len());
+            b.append(cc);
+            println("l3=", b.len());
+            let out = b.finish();
             println("final=", len(out));
         }
     "#;

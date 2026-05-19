@@ -2150,6 +2150,129 @@ declarative instead of folded into a free-form `Error` payload.
 - `crates/aperio-runtime/` — interpreter parity for the new
   statement and assertion-less closures.
 
+### F.28 BytesBuilder is a locus, not a primitive type (2026-05-19)
+
+**Commitment.** The bytes-accumulator surface
+(`std::bytes::builder_*`) is no longer a family of free
+functions over an opaque `Bytes` handle. It's now a stdlib
+locus, `std::bytes::BytesBuilder`, with method dispatch
+(`b.append`, `b.len`, `b.snapshot`, `b.shift_front`, `b.clear`,
+`b.finish`) and lifecycle (birth allocates the underlying
+malloc-backed buffer; dissolve frees it at scope exit). The
+prior free-fn surface is removed; the C primitives stay as
+the locus's method-body externs.
+
+**The bug being closed.** The builder header
+(`lotus_str_builder_t { cap, len, buf* }` — a separately-
+malloc'd buffer behind an internal pointer) and a `Bytes` blob
+(`[i64 len][u8 data]` — single contiguous allocation) are
+genuinely incompatible ABIs that cannot be unified without
+giving up stable handles (the body has to be relocatable; the
+Bytes blob layout forbids that). The original surface returned
+a builder as `Bytes` — the only Aperio type wide enough to
+carry a pointer — under the convention "you should treat it as
+opaque." When that convention slipped (a builder passed to
+`std::bytes::at(b, i)` reading the cap field as the length),
+the runtime silently misread and ran off the heap. Fathom hit
+this with RSS exploding 2.6 GB in 5 seconds. The mechanical
+fix is to make builder and Bytes statically distinct.
+
+**Why a locus, not a parallel primitive type.** Aperio's
+foundational axiom says types are pure data (no flow); loci
+are flow with invariants. The bytes builder is textbook flow
+— allocate → append (auto-grow) → snapshot → free — with
+invariants (`cap >= len`, `buf` is a valid malloc region,
+`len` is the count of valid bytes). It belongs on a locus.
+Introducing it as a primitive type would have closed the
+typecheck footgun, but would also have added a magic
+non-locus thing with lifecycle to the language — a special
+case that contradicts I4 (every named structural thing is in
+exactly one locus tower). The locus shape is the principled
+answer; the type-discrimination win is a free byproduct.
+
+**What the user sees.**
+
+```aperio
+fn pump_frames(sock: Int) {
+    let buf = std::bytes::BytesBuilder { initial_cap: 4096 };
+    loop {
+        let n = std::io::tcp::recv_into(sock, buf, 4096);
+        if n <= 0 { break; }
+        // ... peel via buf.len() / buf.shift_front(consumed)
+    }
+    // buf dissolves here → malloc freed, no explicit cleanup
+}
+```
+
+The typechecker rejects `std::bytes::at(buf, 0)` inside that
+loop — `at` takes `Bytes`, `buf` is a `__StdBytesBytesBuilder`
+locus reference. Same for `len(buf)`, `slice(buf, ...)`,
+anywhere a `Bytes` is expected. The discipline is mechanical.
+
+**Discarded alternatives.**
+
+- *Keep the free-fn surface and add a runtime tag bit to
+  `lotus_bytes_*` for transparent dispatch on builder
+  handles.* Rejected: every `Bytes` access pays a branch
+  forever, and the static type still doesn't distinguish the
+  two — readers have to consult runtime tags. Worse for
+  correctness *and* worse for perf.
+- *Keep the free-fn surface and add a parallel
+  `lotus_bytes_builder_*` accessor family that consumers must
+  use deliberately.* Rejected: discipline-only enforcement;
+  same class of footgun every time a new author touches the
+  code. The whole point is mechanical safety.
+- *Make `BytesBuilder` a parametric type, not a locus.*
+  Rejected per the foundational axiom — flow doesn't live on
+  types.
+
+**Failure routing (F.27).** `append()` routes realloc-NULL
+failure through `violate alloc_failed`. The locus declares
+`closure alloc_failed { captures: initial_cap; epoch inline; }`;
+`append` checks the C primitive's status return (now `int64_t`
+where it was `void` pre-2026-05-19; 1=ok, 0=fail), and routes
+through `violate` on 0. Owners of the BytesBuilder bind an
+`on_failure` policy to handle the violation (restart / drain
+/ bubble); an unhandled violation bubbles past `main` and
+exits the process non-zero with the captured payload on
+stderr.
+
+**Caveats at v1.**
+
+- `birth()` cannot `violate` directly — F.27 restricts the
+  statement to fn-bodies, not lifecycle blocks. A birth-time
+  malloc failure leaves `self.handle = 0`; the next
+  `append()` catches it (the C primitive returns 0 for a
+  null handle) and routes through `violate alloc_failed`.
+  Methods other than `append` gracefully degrade on a null
+  handle (the C primitives all check NULL up front and
+  no-op), so the worst case between birth-fail and
+  first-append is "the builder is silently inert."
+- `snapshot()` and `finish()` payload-arena alloc failures
+  silently return an empty Bytes blob today (matching the
+  prior surface). Lifting them into violations needs the C
+  primitives to distinguish "empty-on-success" from "empty-
+  on-fail" — their returns alias right now. Follow-up.
+
+**Implementation entry points.**
+
+- `crates/aperio-codegen/runtime/stdlib/bytes_builder.ap` —
+  the locus definition (params, birth, dissolve, methods).
+- `crates/aperio-codegen/src/codegen.rs` —
+  `STDLIB_PATH_RENAMES` rewrites `std::bytes::BytesBuilder` →
+  `__StdBytesBytesBuilder`; the C-primitive bridges live
+  behind `std::bytes::builder::__*` paths; `recv_into` family
+  extracts the locus's internal `handle` field via
+  struct-GEP + load + inttoptr at the C-call boundary.
+- `crates/aperio-codegen/runtime/lotus_arena.c` —
+  `lotus_bytes_builder_new` takes `int64_t initial_cap` (was
+  zero-arg); other primitives unchanged.
+- `crates/aperio-runtime/src/builtins.rs` — interpreter
+  parity moved to the `std::bytes::builder::__*` dispatch
+  paths; the `__new` impl accepts the new `initial_cap` arg
+  (currently ignored since the interpreter's `Vec` backing
+  auto-grows).
+
 ## 16. What's deferred
 
 The grammar in v0 does **not** specify:
