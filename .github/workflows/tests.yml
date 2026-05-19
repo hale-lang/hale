@@ -4,10 +4,11 @@ name: tests
 # every pull request targeting main. Linux-only at v1 — the
 # release workflow exercises macOS coverage at tag time.
 #
-# `--test-threads=1` matches the repo convention (see CLAUDE.md):
-# parallel test binaries race each other on shared `/tmp/lotus_*`
-# paths, producing "text file busy" flakes. Serial is the airtight
-# gate; per-iteration loops should target a single crate or test.
+# Uses cargo-nextest (drop-in replacement for `cargo test`) for
+# smarter scheduling: each test runs in its own process, so the
+# shared `/tmp/lotus_test_*` paths that historically required
+# `--test-threads=1` no longer collide. Workspace-wide test time
+# drops ~2-3x vs libtest.
 
 on:
   push:
@@ -54,6 +55,11 @@ jobs:
             llvm-18-dev libpolly-18-dev libzstd-dev \
             clang-18 libclang-18-dev zlib1g-dev
 
+      - name: Install cargo-nextest
+        # Prebuilt binary — installs in seconds vs ~2min for
+        # `cargo install`.
+        uses: taiki-e/install-action@nextest
+
       - name: cargo build --release --workspace
         # Build ALL workspace members first so `libaperio_ts_shim.a`
         # lands at `target/release/` before any test that links
@@ -69,9 +75,9 @@ jobs:
           set -eux
           cargo build --release --workspace
 
-      - name: cargo test --release --workspace
+      - name: cargo nextest run --release --workspace
         env:
           LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
         run: |
           set -eux
-          cargo test --release --workspace -- --test-threads=1
+          cargo nextest run --release --workspace
