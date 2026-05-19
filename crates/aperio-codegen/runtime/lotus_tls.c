@@ -44,6 +44,11 @@
 int   lotus_tcp_connect(const char *host, uint16_t port);
 int64_t lotus_bytes_len(const void *b);
 void *lotus_bytes_data(void *b);
+/* Phase 1: builder-reserve helpers for recv_into. Keep the
+ * lotus_bytes_builder_t layout opaque in this TU; let
+ * lotus_arena.c manage the growth + len bump. */
+void *lotus_bytes_builder_reserve(void *handle, int64_t n);
+void  lotus_bytes_builder_advance(void *handle, int64_t n);
 
 /* lotus_arena.c exposes the lazy-inited bus payload arena via
  * this getter so we can build Bytes blobs whose lifetime is the
@@ -251,6 +256,39 @@ void *lotus_tls_recv_bytes(int handle, int max_bytes) {
      * lotus_bytes_create. */
     *(int64_t *)blob = (int64_t)n;
     return blob;
+}
+
+/* Phase 1: caller-provided destination for TLS. Mirrors
+ * lotus_tcp_recv_into / lotus_udp_recv_into in lotus_arena.c —
+ * SSL_read into the builder's tail, bump len, no allocation in
+ * g_bus_payload_arena. Return semantics: > 0 bytes read, 0 peer
+ * closed cleanly, < 0 fatal error. */
+int64_t lotus_tls_recv_into(int handle, void *builder, int64_t max_bytes) {
+    if (handle < 0 || (size_t)handle >= g_tls_count || max_bytes <= 0) {
+        return -1;
+    }
+    SSL *ssl = g_tls_entries[handle].ssl;
+    if (!ssl) return -1;
+    char *tail = (char *)lotus_bytes_builder_reserve(builder, max_bytes);
+    if (!tail) return -1;
+    /* SSL_read returns >0 bytes, 0 on clean shutdown, <0 on
+     * error. We don't retry on SSL_ERROR_WANT_READ here because
+     * the underlying fd is blocking in pond/websocket's shape;
+     * callers driving non-blocking sockets must wrap this with
+     * their own poll() loop. */
+    int n = SSL_read(ssl, tail, (int)max_bytes);
+    if (n < 0) {
+        int err = SSL_get_error(ssl, n);
+        fprintf(stderr,
+                "lotus_tls_recv_into: SSL_read failed (err=%d)\n",
+                err);
+        ERR_print_errors_fp(stderr);
+        return -1;
+    }
+    if (n > 0) {
+        lotus_bytes_builder_advance(builder, (int64_t)n);
+    }
+    return (int64_t)n;
 }
 
 int lotus_tls_close(int handle) {

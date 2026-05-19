@@ -3083,6 +3083,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[i32_t.into(), i32_t.into()], false);
         self.module
             .add_function("lotus_tcp_recv_bytes", tcp_recv_bytes_ty, None);
+        // Phase 1: caller-provided destination — recv into a
+        // builder, zero allocation in g_bus_payload_arena.
+        // declare i64 @lotus_tcp_recv_into(i32 fd, ptr builder, i64 max_bytes)
+        let tcp_recv_into_ty = i64_t.fn_type(
+            &[i32_t.into(), ptr_t.into(), i64_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_tcp_recv_into", tcp_recv_into_ty, None);
+        // declare i64 @lotus_tls_recv_into(i32 handle, ptr builder, i64 max_bytes)
+        let tls_recv_into_ty = i64_t.fn_type(
+            &[i32_t.into(), ptr_t.into(), i64_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_tls_recv_into", tls_recv_into_ty, None);
+        // declare i64 @lotus_udp_recv_into(i32 fd, ptr builder, i64 max_bytes)
+        let udp_recv_into_ty = i64_t.fn_type(
+            &[i32_t.into(), ptr_t.into(), i64_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_udp_recv_into", udp_recv_into_ty, None);
         // Phase 2g: cross-shape converters anchored in the global
         // payload arena so the result outlives the call site.
         // declare ptr @lotus_str_from_bytes(ptr bytes)
@@ -22053,6 +22076,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_io_tcp_recv_bytes(args, scope)?;
                 Ok(())
             }
+            // Phase 1: caller-provided destination recv_into.
+            // Returns Int: > 0 bytes appended, 0 peer closed,
+            // -1 error. Non-fallible — error surfaces via the
+            // return value (mirrors POSIX read semantics).
+            ["std", "io", "tcp", "recv_into"] => {
+                let _ = self.lower_std_io_tcp_recv_into(args, scope)?;
+                Ok(())
+            }
+            ["std", "io", "tls", "recv_into"] => {
+                let _ = self.lower_std_io_tls_recv_into(args, scope)?;
+                Ok(())
+            }
+            ["std", "io", "udp", "recv_into"] => {
+                let _ = self.lower_std_io_udp_recv_into(args, scope)?;
+                Ok(())
+            }
             // TLS substrate — same statement-position wiring as tcp.
             ["std", "io", "tls", "send_bytes"] => {
                 let _ = self.lower_std_io_tls_send_bytes(args, scope)?;
@@ -22674,6 +22713,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "io", "tls", "close"] => {
                 self.lower_std_io_tls_close(args, scope)
+            }
+            ["std", "io", "tcp", "recv_into"] => {
+                self.lower_std_io_tcp_recv_into(args, scope)
+            }
+            ["std", "io", "tls", "recv_into"] => {
+                self.lower_std_io_tls_recv_into(args, scope)
+            }
+            ["std", "io", "udp", "recv_into"] => {
+                self.lower_std_io_udp_recv_into(args, scope)
             }
             ["std", "bus", "__local_dispatch"] => {
                 self.lower_std_bus_local_dispatch(args, scope)
@@ -26026,6 +26074,120 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .left()
             .expect("returns ptr");
         Ok((ptr, CodegenTy::Bytes))
+    }
+
+    /// Phase 1: lower `std::io::tcp::recv_into(fd: Int, buf: Bytes,
+    /// max_bytes: Int) -> Int`. `buf` is a builder handle (from
+    /// `std::bytes::builder_new`). Reads up to max_bytes into the
+    /// builder's tail; grows on insufficient headroom; bumps the
+    /// builder's len by the count read. Returns POSIX read(2)
+    /// semantics: > 0 bytes appended, 0 peer closed, -1 error.
+    /// Zero allocation in g_bus_payload_arena.
+    fn lower_std_io_tcp_recv_into(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        self.lower_recv_into_common(
+            args,
+            scope,
+            "lotus_tcp_recv_into",
+            "std::io::tcp::recv_into",
+        )
+    }
+
+    /// Phase 1: lower `std::io::tls::recv_into(handle: Int,
+    /// buf: Bytes, max_bytes: Int) -> Int`. SSL_read into the
+    /// builder's tail. Same return semantics as tcp_recv_into.
+    fn lower_std_io_tls_recv_into(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        self.lower_recv_into_common(
+            args,
+            scope,
+            "lotus_tls_recv_into",
+            "std::io::tls::recv_into",
+        )
+    }
+
+    /// Phase 1: lower `std::io::udp::recv_into(fd: Int, buf: Bytes,
+    /// max_bytes: Int) -> Int`. Single recvfrom into the builder's
+    /// tail (datagram boundaries preserved). Same return semantics
+    /// as tcp_recv_into.
+    fn lower_std_io_udp_recv_into(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        self.lower_recv_into_common(
+            args,
+            scope,
+            "lotus_udp_recv_into",
+            "std::io::udp::recv_into",
+        )
+    }
+
+    /// Shared lowering for the recv_into family. Validates arg
+    /// types, truncates fd to i32, and emits the call.
+    fn lower_recv_into_common(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        extern_name: &str,
+        diag_name: &str,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 3 {
+            return Err(CodegenError::Unsupported(format!(
+                "{} takes 3 args (fd, buf, max_bytes), got {}",
+                diag_name,
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        if fd_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "{}: fd must be Int, got {:?}",
+                diag_name, fd_ty
+            )));
+        }
+        let (buf_val, buf_ty) = self.lower_expr(&args[1], scope)?;
+        if buf_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "{}: buf must be Bytes (a builder handle from builder_new), got {:?}",
+                diag_name, buf_ty
+            )));
+        }
+        let (max_val, max_ty) = self.lower_expr(&args[2], scope)?;
+        if max_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "{}: max_bytes must be Int, got {:?}",
+                diag_name, max_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let fd_i32 = self
+            .builder
+            .build_int_truncate(fd_val.into_int_value(), i32_t, "recv_into.fd.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function(extern_name)
+            .unwrap_or_else(|| panic!("{} declared", extern_name));
+        let call = self
+            .builder
+            .build_call(
+                f,
+                &[fd_i32.into(), buf_val.into(), max_val.into()],
+                "recv_into.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let v = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((v, CodegenTy::Int))
     }
 
     /// Phase 2g: lower `std::str::from_bytes(b: Bytes) -> String`.

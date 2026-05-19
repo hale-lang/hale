@@ -562,6 +562,34 @@ bytes for a bound subject) can use this too.
   malloc-backed buffer without materializing a final blob —
   closes the "leak unless finish" hazard for holders that
   never call `finish`.
+
+  **Builder handles are NOT layout-compatible with regular
+  Bytes blobs.** The struct shape is
+  `{ size_t cap; size_t len; char *buf; }` (24 bytes);
+  Bytes blobs are `[int64_t len][u8 data[]]`. So
+  `lotus_bytes_at(builder, i)` / `lotus_bytes_len(builder)`
+  read the wrong slots if a builder handle is passed as a
+  Bytes value. Use `snapshot` to materialize a Bytes view or
+  `builder_len` for the running length.
+- `lotus_tcp_recv_into(fd, builder, max_bytes) -> i64` /
+  `lotus_tls_recv_into(handle, builder, max_bytes) -> i64` /
+  `lotus_udp_recv_into(fd, builder, max_bytes) -> i64` —
+  2026-05-19 (Phase 1, pond/websocket follow-up).
+  Caller-provided destination at the syscall layer. Reads
+  directly into the builder's tail; grows on insufficient
+  headroom; bumps the builder's len by the count read.
+  Return semantics mirror POSIX read(2): `> 0` bytes
+  appended, `= 0` peer closed cleanly (TCP) / zero-length
+  datagram (UDP), `< 0` fatal error. EINTR retried
+  internally. No allocation in `g_bus_payload_arena` —
+  closes the residual ~80% of the pond/websocket recv-loop
+  leak that Phase 0's in-place builder ops surfaced (the
+  syscall layer's own `[i64 len][body]` blob per call).
+  Helpers `lotus_bytes_builder_reserve(handle, n)` +
+  `lotus_bytes_builder_advance(handle, n)` factor the
+  grow + offset-bump so `lotus_tls.c` (separate translation
+  unit) can implement its recv_into without seeing the
+  builder struct layout.
 - `lotus_str_lower(s) -> char*` / `lotus_str_upper(s) -> char*`
   — ASCII case folding. One-pass byte-level fold; non-ASCII
   bytes pass through unchanged. Allocates in the bus payload

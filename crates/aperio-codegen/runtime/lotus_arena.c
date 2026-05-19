@@ -6975,6 +6975,87 @@ void lotus_bytes_builder_free(void *handle) {
 }
 
 /*
+ * Phase 1: caller-provided destination at the syscall layer. The
+ * `lotus_*_recv_bytes` shapes allocate a fresh `[i64 len][body]`
+ * blob in g_bus_payload_arena per call — the leak source flagged
+ * by pond/websocket's recv loop (~480 KB/s on a Kraken trade
+ * feed). recv_into reads directly into the caller's builder
+ * buffer. Grows the builder if its remaining headroom (cap - len)
+ * is smaller than max_bytes; the builder's len is bumped by the
+ * count read. Return semantics:
+ *
+ *   > 0  bytes appended to the builder
+ *   = 0  peer closed cleanly (TCP) / zero-length datagram (UDP)
+ *   < 0  fatal error; builder is unchanged
+ *
+ * Mirrors POSIX read(2) — partial reads are normal, the caller
+ * loops or yields. EINTR retried internally. No allocation in
+ * g_bus_payload_arena.
+ *
+ * The reserve / advance pair is exposed for lotus_tls.c (separate
+ * translation unit) to implement lotus_tls_recv_into without
+ * needing lotus_bytes_builder_t's layout.
+ */
+void *lotus_bytes_builder_reserve(void *handle, int64_t n) {
+    if (!handle || n <= 0) return NULL;
+    lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
+    size_t need = b->len + (size_t)n;
+    if (need > b->cap) {
+        size_t new_cap = b->cap ? b->cap : 64;
+        while (new_cap < need) {
+            new_cap *= 2;
+            if (new_cap < b->cap) {
+                new_cap = need;
+                break;
+            }
+        }
+        char *nb = (char *)realloc(b->buf, new_cap);
+        if (!nb) return NULL;
+        b->buf = nb;
+        b->cap = new_cap;
+    }
+    return b->buf + b->len;
+}
+
+void lotus_bytes_builder_advance(void *handle, int64_t n) {
+    if (!handle || n <= 0) return;
+    lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
+    b->len += (size_t)n;
+}
+
+int64_t lotus_tcp_recv_into(int fd, void *builder, int64_t max_bytes) {
+    if (fd < 0 || max_bytes <= 0) return -1;
+    char *tail = (char *)lotus_bytes_builder_reserve(builder, max_bytes);
+    if (!tail) return -1;
+    ssize_t n;
+    for (;;) {
+        n = read(fd, tail, (size_t)max_bytes);
+        if (n >= 0) break;
+        if (errno == EINTR) continue;
+        return -1;
+    }
+    lotus_bytes_builder_advance(builder, (int64_t)n);
+    return (int64_t)n;
+}
+
+int64_t lotus_udp_recv_into(int fd, void *builder, int64_t max_bytes) {
+    if (fd < 0 || max_bytes <= 0) return -1;
+    char *tail = (char *)lotus_bytes_builder_reserve(builder, max_bytes);
+    if (!tail) return -1;
+    /* Datagram boundaries preserved: a single recvfrom delivers
+     * at most one datagram. EINTR retried; other errors fatal. */
+    ssize_t n;
+    for (;;) {
+        n = recvfrom(fd, tail, (size_t)max_bytes, 0, NULL, NULL);
+        if (n >= 0) break;
+        if (errno == EINTR) continue;
+        return -1;
+    }
+    lotus_bytes_builder_advance(builder, (int64_t)n);
+    return (int64_t)n;
+}
+
+/*
  * v1.x-FORM-2 PR6: root-locus value-error panic.
  *
  * Called by codegen when an `or raise` is reached past every
