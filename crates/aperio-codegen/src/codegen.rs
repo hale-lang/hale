@@ -3468,6 +3468,41 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             bb_finish_ty,
             None,
         );
+        // Phase-0 in-place ops for long-lived recv-loop accumulators
+        // (pond/websocket per-frame Bytes-allocation leak).
+        // declare void @lotus_bytes_builder_shift_front(ptr handle, i64 n)
+        let bb_shift_ty = self
+            .context
+            .void_type()
+            .fn_type(&[ptr_t.into(), i64_t.into()], false);
+        self.module.add_function(
+            "lotus_bytes_builder_shift_front",
+            bb_shift_ty,
+            None,
+        );
+        // declare void @lotus_bytes_builder_clear(ptr handle)
+        let bb_clear_ty =
+            self.context.void_type().fn_type(&[ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_bytes_builder_clear",
+            bb_clear_ty,
+            None,
+        );
+        // declare ptr @lotus_bytes_builder_snapshot(ptr handle)
+        let bb_snap_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_bytes_builder_snapshot",
+            bb_snap_ty,
+            None,
+        );
+        // declare void @lotus_bytes_builder_free(ptr handle)
+        let bb_free_ty =
+            self.context.void_type().fn_type(&[ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_bytes_builder_free",
+            bb_free_ty,
+            None,
+        );
 
         // m96: tree-sitter substrate. extern "C" symbols defined
         // in `runtime/lotus_treesitter.rs` (compiled into the
@@ -12278,6 +12313,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | ["std", "bytes", "builder_append"]
             | ["std", "bytes", "builder_len"]
             | ["std", "bytes", "builder_finish"]
+            | ["std", "bytes", "builder_shift_front"]
+            | ["std", "bytes", "builder_clear"]
+            | ["std", "bytes", "builder_snapshot"]
+            | ["std", "bytes", "builder_free"]
             | ["std", "math", "sqrt"]
             | ["std", "math", "exp"]
             | ["std", "math", "log"]
@@ -22223,6 +22262,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_bytes_builder_finish(args, scope)?;
                 Ok(())
             }
+            ["std", "bytes", "builder_shift_front"] => {
+                let _ = self.lower_std_bytes_builder_shift_front(args, scope)?;
+                Ok(())
+            }
+            ["std", "bytes", "builder_clear"] => {
+                let _ = self.lower_std_bytes_builder_clear(args, scope)?;
+                Ok(())
+            }
+            ["std", "bytes", "builder_snapshot"] => {
+                let _ = self.lower_std_bytes_builder_snapshot(args, scope)?;
+                Ok(())
+            }
+            ["std", "bytes", "builder_free"] => {
+                let _ = self.lower_std_bytes_builder_free(args, scope)?;
+                Ok(())
+            }
             // m84: parse_request also reachable in statement
             // position (rare — usually you keep the result), but
             // wire it for completeness so `std::http::parse_request(raw);`
@@ -22754,6 +22809,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "bytes", "builder_finish"] => {
                 self.lower_std_bytes_builder_finish(args, scope)
+            }
+            ["std", "bytes", "builder_shift_front"] => {
+                self.lower_std_bytes_builder_shift_front(args, scope)
+            }
+            ["std", "bytes", "builder_clear"] => {
+                self.lower_std_bytes_builder_clear(args, scope)
+            }
+            ["std", "bytes", "builder_snapshot"] => {
+                self.lower_std_bytes_builder_snapshot(args, scope)
+            }
+            ["std", "bytes", "builder_free"] => {
+                self.lower_std_bytes_builder_free(args, scope)
             }
             // m84: std::http::parse_request(raw: String) -> Request.
             // Implementation lives in stdlib.ap as the bare-name
@@ -24296,6 +24363,146 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .left()
             .expect("returns ptr");
         Ok((ptr, CodegenTy::Bytes))
+    }
+
+    /// Phase 0: `std::bytes::builder_shift_front(b: Bytes, n: Int) -> Bytes`.
+    /// Drops the first n bytes in place via memmove; capacity
+    /// preserved. Returns the same builder pointer so call-site
+    /// `b = builder_shift_front(b, n)` and statement use both work.
+    fn lower_std_bytes_builder_shift_front(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder_shift_front takes 2 args (b, n), got {}",
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder_shift_front: builder must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let (n_val, n_ty) = self.lower_expr(&args[1], scope)?;
+        if n_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder_shift_front: n must be Int, got {:?}",
+                n_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bytes_builder_shift_front")
+            .expect("lotus_bytes_builder_shift_front declared");
+        self.builder
+            .build_call(f, &[b_val.into(), n_val.into()], "bb.shift")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((b_val, CodegenTy::Bytes))
+    }
+
+    /// Phase 0: `std::bytes::builder_clear(b: Bytes) -> Bytes`.
+    /// Sets len=0, capacity preserved.
+    fn lower_std_bytes_builder_clear(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder_clear takes 1 arg (b), got {}",
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder_clear: builder must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bytes_builder_clear")
+            .expect("lotus_bytes_builder_clear declared");
+        self.builder
+            .build_call(f, &[b_val.into()], "bb.clear")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((b_val, CodegenTy::Bytes))
+    }
+
+    /// Phase 0: `std::bytes::builder_snapshot(b: Bytes) -> Bytes`.
+    /// Copies the builder's current `[0..len)` into a fresh
+    /// length-prefixed Bytes blob in the bus payload arena.
+    /// Builder unchanged. The returned blob is a regular Bytes
+    /// value — `len()` / `at()` / `slice()` all work on it.
+    fn lower_std_bytes_builder_snapshot(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder_snapshot takes 1 arg (b), got {}",
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder_snapshot: builder must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bytes_builder_snapshot")
+            .expect("lotus_bytes_builder_snapshot declared");
+        let call = self
+            .builder
+            .build_call(f, &[b_val.into()], "bb.snapshot.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::Bytes))
+    }
+
+    /// Phase 0: `std::bytes::builder_free(b: Bytes)`. Dispose the
+    /// builder's malloc-backed buffer without materializing a
+    /// final Bytes blob. Pair with `builder_new()` in a long-lived
+    /// holder's `dissolve()` to close the recv-loop leak that
+    /// occurs when `finish()` is never called.
+    fn lower_std_bytes_builder_free(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder_free takes 1 arg (b), got {}",
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder_free: builder must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bytes_builder_free")
+            .expect("lotus_bytes_builder_free declared");
+        self.builder
+            .build_call(f, &[b_val.into()], "bb.free")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((b_val, CodegenTy::Bytes))
     }
 
     /// v1.x-16: `std::str::can_parse_float(s: String) -> Bool`.

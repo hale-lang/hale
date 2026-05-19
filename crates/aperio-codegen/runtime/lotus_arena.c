@@ -6905,6 +6905,76 @@ void *lotus_bytes_builder_finish(void *handle) {
 }
 
 /*
+ * Phase-0 in-place Bytes ops for long-lived recv-loop accumulators
+ * (pond/websocket FRICTION § "per-frame Bytes allocations
+ * accumulate"). The existing builder API was finish-once-and-done;
+ * the WS recv loop needs a buffer that grows, drains from the
+ * front, snapshots out a view, and disposes without producing a
+ * final Bytes blob. These four ops extend the builder lifecycle:
+ *
+ *   builder_shift_front(b, n) — drop first n bytes via memmove,
+ *                               capacity preserved.
+ *   builder_clear(b)          — len=0, capacity preserved.
+ *   builder_snapshot(b)       — copy current [0..len) into a
+ *                               fresh Bytes blob in the bus
+ *                               payload arena. Builder unchanged.
+ *   builder_free(b)           — dispose the malloc-backed buffer
+ *                               with no materialization. The
+ *                               "leak unless finish" hazard the
+ *                               old comment described is closed
+ *                               for long-lived holders that
+ *                               never call finish.
+ */
+void lotus_bytes_builder_shift_front(void *handle, int64_t n) {
+    if (!handle) return;
+    lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
+    if (n <= 0) return;
+    size_t drop = (size_t)n;
+    if (drop >= b->len) {
+        b->len = 0;
+        return;
+    }
+    /* memmove handles overlap; src+drop > dst by construction. */
+    memmove(b->buf, b->buf + drop, b->len - drop);
+    b->len -= drop;
+}
+
+void lotus_bytes_builder_clear(void *handle) {
+    if (!handle) return;
+    lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
+    b->len = 0;
+}
+
+void *lotus_bytes_builder_snapshot(void *handle) {
+    if (!handle) return lotus_bytes_empty_global();
+    lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    if (!g_bus_payload_arena) {
+        g_bus_payload_arena = lotus_arena_create();
+        if (!g_bus_payload_arena) {
+            pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+            return lotus_bytes_empty_global();
+        }
+    }
+    void *blob = lotus_bytes_create(g_bus_payload_arena, (int64_t)b->len);
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    if (!blob) {
+        return lotus_bytes_empty_global();
+    }
+    if (b->len > 0) {
+        memcpy(lotus_bytes_data(blob), b->buf, b->len);
+    }
+    return blob;
+}
+
+void lotus_bytes_builder_free(void *handle) {
+    if (!handle) return;
+    lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
+    free(b->buf);
+    free(b);
+}
+
+/*
  * v1.x-FORM-2 PR6: root-locus value-error panic.
  *
  * Called by codegen when an `or raise` is reached past every

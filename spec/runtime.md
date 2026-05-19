@@ -542,6 +542,26 @@ bytes for a bound subject) can use this too.
   buffer. N appends are amortized O(N). `finish()` copies into
   the bus payload arena (program-lifetime) and frees the
   builder.
+- `lotus_bytes_builder_new()` / `_append(b, chunk)` /
+  `_len(b) -> i64` / `_finish(b) -> Bytes*` — C10. Binary-safe
+  sibling of the str-builder family. Shares the underlying
+  `lotus_str_builder_t` struct (cap / len / buf); the split is
+  in append/finish semantics (reads the chunk's `[i64 len]`
+  prefix instead of `strlen`; finish emits a length-prefixed
+  Bytes blob with no trailing NUL).
+- `lotus_bytes_builder_shift_front(b, n)` /
+  `lotus_bytes_builder_clear(b)` /
+  `lotus_bytes_builder_snapshot(b) -> Bytes*` /
+  `lotus_bytes_builder_free(b)` — 2026-05-19 (Phase 0,
+  pond/websocket follow-up). In-place ops for long-lived
+  recv-loop accumulators. `shift_front` memmoves the tail to
+  the head and drops n bytes (capacity preserved). `clear`
+  sets len=0 (capacity preserved). `snapshot` copies the
+  current `[0..len)` into a fresh Bytes blob in the bus
+  payload arena, builder unchanged. `free` disposes the
+  malloc-backed buffer without materializing a final blob —
+  closes the "leak unless finish" hazard for holders that
+  never call `finish`.
 - `lotus_str_lower(s) -> char*` / `lotus_str_upper(s) -> char*`
   — ASCII case folding. One-pass byte-level fold; non-ASCII
   bytes pass through unchanged. Allocates in the bus payload
