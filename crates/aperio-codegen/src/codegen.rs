@@ -4521,6 +4521,347 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// Form H (2026-05-20): emit serialize IR for a fixed-size
+    /// array bus payload field. Two element shapes supported:
+    /// fixed-size primitives (single memcpy N*elem_size) and
+    /// TypeRefs (loop N times, load each pointer slot, recurse
+    /// on emit_per_field_serialize). The loop is unrolled at
+    /// codegen-time — N is statically known and typically small
+    /// (≤ 20 for fathom's SymbolBook).
+    fn emit_array_field_serialize(
+        &mut self,
+        src_field_ptr: PointerValue<'ctx>,
+        dst: PointerValue<'ctx>,
+        cursor_alloca: PointerValue<'ctx>,
+        _parent_struct_ty: StructType<'ctx>,
+        _field_idx: u32,
+        elem_ty: &CodegenTy,
+        n: u64,
+        fname: &str,
+    ) -> Result<(), CodegenError> {
+        let i64_t = self.context.i64_type();
+        let i8_t = self.context.i8_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        // Array fields in a struct are pointer-shaped (see
+        // `llvm_basic_type` — Array variants map to `ptr`); the
+        // pointer addresses a separately-allocated `[N x elem]`
+        // storage. Load it before iterating.
+        let arr_ptr = self
+            .builder
+            .build_load(ptr_t, src_field_ptr, "ser.arr.field.load")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        let arr_ty = self.llvm_array_storage_type(elem_ty, n);
+        match elem_ty {
+            CodegenTy::Int
+            | CodegenTy::Float
+            | CodegenTy::Bool
+            | CodegenTy::Time
+            | CodegenTy::Duration
+            | CodegenTy::Decimal => {
+                let elem_bytes =
+                    codegen_ty_size_bytes(self.context, elem_ty);
+                let total_bytes = n * elem_bytes;
+                let total_iv = i64_t.const_int(total_bytes, false);
+                let cursor_iv = self
+                    .builder
+                    .build_load(i64_t, cursor_alloca, "ser.arr.cursor.load")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_int_value();
+                let dst_at_cursor = unsafe {
+                    self.builder
+                        .build_gep(i8_t, dst, &[cursor_iv], "ser.arr.dst")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                };
+                self.emit_memcpy_call(
+                    dst_at_cursor,
+                    arr_ptr,
+                    total_iv,
+                    "ser.array.primitive.memcpy",
+                )?;
+                let after = self
+                    .builder
+                    .build_int_add(
+                        cursor_iv,
+                        total_iv,
+                        "ser.cursor.after.arr.prim",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(cursor_alloca, after)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok(())
+            }
+            CodegenTy::TypeRef(nested_name) => {
+                let nested_info = self
+                    .user_types
+                    .get(nested_name.as_str())
+                    .cloned()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "bus payload array `{}: [{}; {}]` — nested \
+                             type not declared",
+                            fname, nested_name, n
+                        ))
+                    })?;
+                for i in 0..n as usize {
+                    let slot = unsafe {
+                        self.builder
+                            .build_in_bounds_gep(
+                                arr_ty,
+                                arr_ptr,
+                                &[
+                                    i64_t.const_zero(),
+                                    i64_t.const_int(i as u64, false),
+                                ],
+                                "ser.arr.slot",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    };
+                    let nested_src = self
+                        .builder
+                        .build_load(ptr_t, slot, "ser.arr.nested.load")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_pointer_value();
+                    let cursor_iv = self
+                        .builder
+                        .build_load(i64_t, cursor_alloca, "ser.arr.cursor.iter")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_int_value();
+                    let dst_at_cursor = unsafe {
+                        self.builder
+                            .build_gep(
+                                i8_t,
+                                dst,
+                                &[cursor_iv],
+                                "ser.arr.dst.iter",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    };
+                    let written = self.emit_per_field_serialize(
+                        nested_src,
+                        dst_at_cursor,
+                        nested_info.struct_ty,
+                        &nested_info.field_order,
+                        &nested_info.fields,
+                    )?;
+                    let after = self
+                        .builder
+                        .build_int_add(
+                            cursor_iv,
+                            written,
+                            "ser.cursor.after.arr.elem",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_store(cursor_alloca, after)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Ok(())
+            }
+            other => Err(CodegenError::Unsupported(format!(
+                "bus payload array `{}: [{:?}; {}]` — array element type \
+                 not supported in m70 wire format. Supported elements: \
+                 primitives (Int, Float, Decimal, Bool, Duration, Time) \
+                 and user-struct TypeRefs. Strings, Bytes, and nested \
+                 arrays are post-v1 polish.",
+                fname, other, n
+            ))),
+        }
+    }
+
+    /// Form H (2026-05-20): emit deserialize IR for a fixed-size
+    /// array bus payload field. Companion to
+    /// `emit_array_field_serialize` — same N-unroll pattern, but
+    /// allocates fresh nested structs on the deserialize side
+    /// (matching the per-field TypeRef deserialize shape).
+    fn emit_array_field_deserialize(
+        &mut self,
+        dst_field_ptr: PointerValue<'ctx>,
+        src: PointerValue<'ctx>,
+        cursor_alloca: PointerValue<'ctx>,
+        _parent_struct_ty: StructType<'ctx>,
+        _field_idx: u32,
+        elem_ty: &CodegenTy,
+        n: u64,
+        fname: &str,
+    ) -> Result<(), CodegenError> {
+        let i64_t = self.context.i64_type();
+        let i8_t = self.context.i8_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        // Allocate `[N x elem]` storage in the bus payload arena;
+        // we'll store the pointer into the parent's array-field
+        // slot (pointer-shaped) after filling. The arena alloc
+        // matches what the array-repeat literal lowering does
+        // (lower_expr's `Expr::ArrayRepeat` arm). 16-byte align
+        // covers Decimal (i128) element types.
+        let arr_ty = self.llvm_array_storage_type(elem_ty, n);
+        let arr_size = arr_ty
+            .size_of()
+            .expect("array storage type has known size");
+        let alloc_fn = self
+            .module
+            .get_function("lotus_bus_payload_arena_alloc")
+            .expect("lotus_bus_payload_arena_alloc declared");
+        let arr_ptr = self
+            .builder
+            .build_call(
+                alloc_fn,
+                &[
+                    arr_size.into(),
+                    i64_t.const_int(16, false).into(),
+                ],
+                "de.arr.alloc",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("payload arena alloc returns ptr")
+            .into_pointer_value();
+        // Store the array pointer in the parent's field slot now,
+        // before filling — readers go through the pointer either
+        // way and it simplifies error paths.
+        self.builder
+            .build_store(dst_field_ptr, arr_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let _ = ptr_t;
+        match elem_ty {
+            CodegenTy::Int
+            | CodegenTy::Float
+            | CodegenTy::Bool
+            | CodegenTy::Time
+            | CodegenTy::Duration
+            | CodegenTy::Decimal => {
+                let elem_bytes =
+                    codegen_ty_size_bytes(self.context, elem_ty);
+                let total_bytes = n * elem_bytes;
+                let total_iv = i64_t.const_int(total_bytes, false);
+                let cursor_iv = self
+                    .builder
+                    .build_load(i64_t, cursor_alloca, "de.arr.cursor.load")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_int_value();
+                let src_at_cursor = unsafe {
+                    self.builder
+                        .build_gep(i8_t, src, &[cursor_iv], "de.arr.src")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                };
+                self.emit_memcpy_call(
+                    arr_ptr,
+                    src_at_cursor,
+                    total_iv,
+                    "de.array.primitive.memcpy",
+                )?;
+                let after = self
+                    .builder
+                    .build_int_add(
+                        cursor_iv,
+                        total_iv,
+                        "de.cursor.after.arr.prim",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(cursor_alloca, after)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok(())
+            }
+            CodegenTy::TypeRef(nested_name) => {
+                let nested_info = self
+                    .user_types
+                    .get(nested_name.as_str())
+                    .cloned()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "bus payload array `{}: [{}; {}]` — nested \
+                             type not declared",
+                            fname, nested_name, n
+                        ))
+                    })?;
+                let nested_size = nested_info
+                    .struct_ty
+                    .size_of()
+                    .expect("nested struct has known size");
+                let nested_alloc_fn = self
+                    .module
+                    .get_function("lotus_bus_payload_arena_alloc")
+                    .expect("lotus_bus_payload_arena_alloc declared");
+                for i in 0..n as usize {
+                    let slot = unsafe {
+                        self.builder
+                            .build_in_bounds_gep(
+                                arr_ty,
+                                arr_ptr,
+                                &[
+                                    i64_t.const_zero(),
+                                    i64_t.const_int(i as u64, false),
+                                ],
+                                "de.arr.slot",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    };
+                    let nested_dst = self
+                        .builder
+                        .build_call(
+                            nested_alloc_fn,
+                            &[
+                                nested_size.into(),
+                                i64_t.const_int(16, false).into(),
+                            ],
+                            "de.arr.nested.alloc",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .try_as_basic_value()
+                        .left()
+                        .expect("payload arena alloc returns ptr")
+                        .into_pointer_value();
+                    let cursor_iv = self
+                        .builder
+                        .build_load(i64_t, cursor_alloca, "de.arr.cursor.iter")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_int_value();
+                    let src_at_cursor = unsafe {
+                        self.builder
+                            .build_gep(
+                                i8_t,
+                                src,
+                                &[cursor_iv],
+                                "de.arr.src.iter",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    };
+                    let consumed = self.emit_per_field_deserialize_size(
+                        src_at_cursor,
+                        nested_dst,
+                        nested_info.struct_ty,
+                        &nested_info.field_order,
+                        &nested_info.fields,
+                    )?;
+                    let after = self
+                        .builder
+                        .build_int_add(
+                            cursor_iv,
+                            consumed,
+                            "de.cursor.after.arr.elem",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_store(cursor_alloca, after)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_store(slot, nested_dst)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let _ = ptr_t;
+                }
+                Ok(())
+            }
+            other => Err(CodegenError::Unsupported(format!(
+                "bus payload array `{}: [{:?}; {}]` — array element type \
+                 not supported in m70 wire format on the deserialize side.",
+                fname, other, n
+            ))),
+        }
+    }
+
     /// m70: emit IR for the body of `__serialize_T` for a struct
     /// payload, walking fields in declared order. Returns the
     /// total bytes-written value (i64) for the fn's return.
@@ -4748,13 +5089,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_store(cursor_alloca, after)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
+                CodegenTy::Array(elem_ty, n) => {
+                    // Form H (2026-05-20): fixed-size array payload.
+                    // Two shapes supported: arrays of fixed-size
+                    // primitives (memcpy N*elem_size inline) and
+                    // arrays of TypeRef (N iterations of nested
+                    // struct serialize). Other elem shapes (Array,
+                    // String, Bytes) stay deferred — the dominant
+                    // fathom case is array-of-flat-struct
+                    // (SymbolBook holds [BookLevel; 10] where
+                    // BookLevel is {Decimal, Decimal}).
+                    self.emit_array_field_serialize(
+                        src_field_ptr,
+                        dst,
+                        cursor_alloca,
+                        struct_ty,
+                        idx,
+                        elem_ty,
+                        *n,
+                        fname,
+                    )?;
+                }
                 other => {
                     return Err(CodegenError::Unsupported(format!(
                         "bus payload field `{}: {:?}` — m70 wire format \
-                         supports primitives, String, Bytes, and nested \
+                         supports primitives, String, Bytes, fixed-size \
+                         arrays of primitives or TypeRefs, and nested \
                          structs (whose leaves are primitives/String/Bytes); \
-                         arrays / tuples / enums cross-process are post-v1 \
-                         polish",
+                         tuples / enums and arrays of variable-length \
+                         elements cross-process are post-v1 polish",
                         fname, other
                     )));
                 }
@@ -5076,10 +5439,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_store(cursor_alloca, after)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
+                CodegenTy::Array(elem_ty, n) => {
+                    self.emit_array_field_deserialize(
+                        dst_field_ptr,
+                        src,
+                        cursor_alloca,
+                        struct_ty,
+                        idx,
+                        elem_ty,
+                        *n,
+                        fname,
+                    )?;
+                }
                 other => {
                     return Err(CodegenError::Unsupported(format!(
                         "bus payload field `{}: {:?}` — m70 wire format \
-                         supports primitives, String, and nested structs \
+                         supports primitives, String, fixed-size arrays \
+                         of primitives or TypeRefs, and nested structs \
                          (whose leaves are primitives/String)",
                         fname, other
                     )));
@@ -5384,10 +5760,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_store(cursor_alloca, after)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
+                CodegenTy::Array(elem_ty, n) => {
+                    self.emit_array_field_deserialize(
+                        dst_field_ptr,
+                        src,
+                        cursor_alloca,
+                        struct_ty,
+                        idx,
+                        elem_ty,
+                        *n,
+                        fname,
+                    )?;
+                }
                 other => {
                     return Err(CodegenError::Unsupported(format!(
                         "bus payload field `{}: {:?}` — m70 wire format \
-                         supports primitives, String, Bytes, and nested \
+                         supports primitives, String, Bytes, fixed-size \
+                         arrays of primitives or TypeRefs, and nested \
                          structs",
                         fname, other
                     )));
