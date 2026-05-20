@@ -111,16 +111,20 @@ locus __StdBytesBytesBuilder {
     closure alloc_failed { captures: initial_cap; epoch inline; }
     birth() {
         // lotus_bytes_builder_new returns NULL → __new yields 0.
-        // F.27 violate at birth surfaces the failure at
-        // construction (2026-05-19; previously deferred to first
-        // method call). The parent's on_failure handler runs
-        // immediately; without one, the process exits non-zero
-        // with the violation payload on stderr.
+        // The birth_check below surfaces that failure at
+        // construction via the parent's on_failure handler; the
+        // birth body stays a pure assignment so the locus is
+        // fully constructed before the check fires.
         self.handle = std::bytes::builder::__new(self.initial_cap);
-        if self.handle == 0 {
-            violate alloc_failed;
-        }
     }
+    // F.27 v2 (2026-05-20): birth_check synthesis hook. Runs
+    // AFTER birth() with the locus fully constructed; if
+    // self.handle is still 0, the malloc failed and we route
+    // through alloc_failed before any user code touches the
+    // zombie builder. Replaces the earlier "violate inside
+    // birth()" form (2026-05-19) which fired mid-birth and could
+    // see partially-constructed state.
+    birth_check { self.handle == 0 } -> violate alloc_failed;
     dissolve() {
         std::bytes::builder::__free(self.handle);
     }

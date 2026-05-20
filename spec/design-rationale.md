@@ -2237,25 +2237,76 @@ through `violate` on 0. Owners of the BytesBuilder bind an
 exits the process non-zero with the captured payload on
 stderr.
 
-**F.27 extension (2026-05-19): `violate` in lifecycle bodies.**
-The codegen restriction on `violate` was lifted for lifecycle
-blocks (birth / drain / dissolve / accept / run); they now
-participate in the same divergent-return + parent-on_failure
-routing as regular method bodies. The original spec rationale
-("only fn-bodies can violate") was an implementation
-simplification, not a structural requirement — lifecycle bodies
-are void-returning fn contexts at the codegen level, and the
-violate machinery's `build_return(None)` path handles them
-identically once `current_user_fn_ret` is set to `Some(None)` at
-lifecycle entry. Birth-time allocation failures (BytesBuilder's
-prior null-handle-with-lazy-surface caveat) now fire at
-construction; the parent's on_failure handler runs immediately,
-or — with no handler — the process exits non-zero with the
-violation payload on stderr. The accepted-child dissolve trade-
-off (`parent_accepts_us` skips dissolve bodies entirely) is
-unchanged; dissolve violate is observable only along the F.29
-locus-field cascade path where `emit_locus_field_dissolves` does
-fire the inner's dissolve.
+**F.27 v2 (2026-05-20): `birth_check` synthesis hook.** A
+declarative invariant check that runs AFTER the locus's birth()
+body completes (and after birth-epoch closures fire), at the
+well-defined point where every field has its declared
+post-birth value:
+
+    locus L {
+        params { x: Int = 0; }
+        closure invariant_broken { captures: x; epoch inline; }
+        birth() { /* set up state */ }
+        birth_check { self.x < 0 } -> violate invariant_broken;
+    }
+
+If the boolean cond evaluates to true, the named closure
+violates with the locus's fully-constructed state. Multiple
+birth_check clauses on a locus evaluate in declaration order;
+the first to fire short-circuits the rest (subsequent checks
+sit in unreachable basic blocks after the violate's
+terminator).
+
+Why a synthesis hook and not just `violate` inside birth(): the
+v1 form (2026-05-19) lifted the codegen restriction on
+`violate` in lifecycle bodies, but `violate alloc_failed` fired
+mid-birth leaves the locus PARTIALLY CONSTRUCTED — some fields
+set, others at defaults — when the on_failure handler reads
+the closure's captures. For BytesBuilder that worked by luck
+(only `initial_cap` is captured, and it's set before birth
+runs), but for any locus with multi-step birth and field
+inter-dependencies the partial-construction case produces
+undefined intermediate state in the violation payload. The
+birth_check form sidesteps this: the body runs to completion,
+the check fires at a well-defined point, the violation's
+captures read coherent state.
+
+Codegen. `emit_birth_check` (see `crates/aperio-codegen/src/codegen.rs`)
+emits the cond + violate routing INLINE at the instantiation
+site — NOT through the standard Stmt::Violate codegen. Standard
+violate's divergent return targets the CALLER's LLVM function
+(e.g. Parent.run), which is wrong for birth_check: an absorbed
+violation should let the caller keep running after the failing
+instantiation expression, not return from the caller's whole
+fn body. The inline emission writes `__drain_requested = 1`,
+allocates the ClosureViolation, branches on parent_on_failure
+(indirect-call vs dprintf+exit), then unconditionally branches
+to a continuation block so the caller proceeds normally.
+
+BytesBuilder migrated. `std::bytes::BytesBuilder` now uses the
+birth_check form for the null-handle case
+(`birth_check { self.handle == 0 } -> violate alloc_failed`),
+replacing the earlier inline `if self.handle == 0 { violate
+alloc_failed; }` in birth body.
+
+**F.27 extension (2026-05-19, superseded by F.27 v2): `violate`
+in lifecycle bodies.** The codegen restriction on `violate` was
+lifted for lifecycle blocks (birth / drain / dissolve / accept
+/ run); they now participate in the same divergent-return +
+parent-on_failure routing as regular method bodies. The
+original spec rationale ("only fn-bodies can violate") was an
+implementation simplification, not a structural requirement —
+lifecycle bodies are void-returning fn contexts at the codegen
+level, and the violate machinery's `build_return(None)` path
+handles them identically once `current_user_fn_ret` is set to
+`Some(None)` at lifecycle entry. Both forms remain supported in
+v1.x; new locus designs should prefer the birth_check synthesis
+hook for construction-time invariants (the partial-
+construction hazard described above). The accepted-child
+dissolve trade-off (`parent_accepts_us` skips dissolve bodies
+entirely) is unchanged; dissolve violate is observable only
+along the F.29 locus-field cascade path where
+`emit_locus_field_dissolves` does fire the inner's dissolve.
 
 **Caveats at v1.**
 

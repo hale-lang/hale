@@ -1463,6 +1463,75 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            LocusMember::BirthCheck(bc) => {
+                // F.27 v2: validate that the cond is a Bool expr,
+                // and that the referenced closure exists on the
+                // enclosing locus and is epoch-inline (same rules
+                // as a regular `violate NAME;`). Payload type
+                // matching against captures is deferred to a
+                // follow-up phase (same as the regular violate
+                // checker — see Stmt::Violate handler).
+                self.locals.push();
+                let cond_ty = self.check_expr(&bc.cond);
+                if cond_ty != Ty::Prim(PrimType::Bool) {
+                    self.diags.push(Diag::ty(
+                        bc.span,
+                        format!(
+                            "birth_check cond must be Bool, got {}",
+                            cond_ty.display()
+                        ),
+                    ));
+                }
+                if let Some(payload) = &bc.payload {
+                    let _ = self.check_expr(payload);
+                }
+                self.locals.pop();
+                match self.current_locus {
+                    None => {
+                        self.diags.push(Diag::ty(
+                            bc.span,
+                            "birth_check used outside a locus context"
+                                .to_string(),
+                        ));
+                    }
+                    Some(locus) => {
+                        match locus
+                            .closures
+                            .iter()
+                            .find(|c| c.name == bc.closure_name.name)
+                        {
+                            None => {
+                                self.diags.push(Diag::ty(
+                                    bc.closure_name.span,
+                                    format!(
+                                        "birth_check: locus `{}` has no \
+                                         closure named `{}`",
+                                        locus.name, bc.closure_name.name
+                                    ),
+                                ));
+                            }
+                            Some(c) if !c.is_inline => {
+                                self.diags.push(Diag::ty(
+                                    bc.closure_name.span,
+                                    format!(
+                                        "birth_check `{}`: closure `{}` on \
+                                         locus `{}` is not declared \
+                                         `epoch inline`. Only epoch-inline \
+                                         closures can be fired via \
+                                         birth_check (same rule as `violate`)",
+                                        bc.closure_name.name,
+                                        bc.closure_name.name,
+                                        locus.name
+                                    ),
+                                ));
+                            }
+                            Some(_) => {
+                                // Closure exists and is epoch-inline.
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

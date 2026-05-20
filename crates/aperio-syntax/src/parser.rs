@@ -889,11 +889,67 @@ impl Parser {
             TokenKind::Ident(s) if s == "bindings" => {
                 self.parse_bindings_block().map(LocusMember::Bindings)
             }
+            // F.27 v2 contextual keyword — `birth_check { EXPR }
+            // -> violate NAME;`. Lexes as Ident; recognized here.
+            TokenKind::Ident(s) if s == "birth_check" => {
+                self.parse_birth_check_decl().map(LocusMember::BirthCheck)
+            }
             other => Err(Diag::parse(
                 self.peek_token().span,
                 format!("expected locus member, got {:?}", other),
             )),
         }
+    }
+
+    /// F.27 v2: `birth_check { COND_EXPR } -> violate NAME[(PAYLOAD)];`.
+    /// Parses as a declarative invariant check that runs after
+    /// the locus's birth() body (and birth-epoch closures) at
+    /// instantiation. If COND_EXPR returns true, NAME's
+    /// closure violates with the locus's fully-constructed
+    /// state. Multiple birth_check clauses are evaluated in
+    /// declaration order; the first to fire short-circuits the
+    /// rest.
+    fn parse_birth_check_decl(&mut self) -> Result<BirthCheckDecl, Diag> {
+        let kw_tok = self.peek_token().clone();
+        self.bump(); // consume `birth_check` ident
+        self.expect(TokenKind::LBrace, "{")?;
+        let cond = self.parse_expr()?;
+        self.expect(TokenKind::RBrace, "}")?;
+        // `->` arrow. Lex's `Arrow` covers `->` if present;
+        // otherwise the dash + > combo is what the existing
+        // fail-disposition syntax uses. We require `->`.
+        self.expect(TokenKind::Arrow, "->")?;
+        let violate_kw = self.peek_token().clone();
+        match &violate_kw.kind {
+            TokenKind::Ident(s) if s == "violate" => {
+                self.bump();
+            }
+            _ => {
+                return Err(Diag::parse(
+                    violate_kw.span,
+                    format!(
+                        "expected `violate` after `->` in birth_check, got {:?}",
+                        violate_kw.kind
+                    ),
+                ));
+            }
+        }
+        let closure_name = self.expect_ident("closure name")?;
+        let payload = if matches!(self.peek(), TokenKind::LParen) {
+            self.bump();
+            let p = self.parse_expr()?;
+            self.expect(TokenKind::RParen, ")")?;
+            Some(p)
+        } else {
+            None
+        };
+        let semi = self.expect(TokenKind::Semi, ";")?;
+        Ok(BirthCheckDecl {
+            cond,
+            closure_name,
+            payload,
+            span: kw_tok.span.merge(semi.span),
+        })
     }
 
     /// `bindings { Topic: <transport>; ... }` — Phase 2.

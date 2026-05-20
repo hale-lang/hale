@@ -265,6 +265,41 @@ pub enum LocusMember {
     /// topic to a concrete transport, marking that topic as
     /// external for the closed-world topology classification.
     Bindings(BindingsBlock),
+    /// F.27 v2 (2026-05-20): `birth_check { EXPR } -> violate
+    /// NAME;` synthesis hook. After birth() completes (and birth-
+    /// epoch closures fire), each declared birth_check expression
+    /// is evaluated; if it returns true, the named closure
+    /// violates with the locus's fully-constructed state. The
+    /// alternative — calling `violate NAME;` inside birth() —
+    /// works but leaves the locus partially constructed (some
+    /// fields set, others at defaults) when the violation's
+    /// payload-capture reads happen. `birth_check` runs at a
+    /// well-defined point where every field has its declared
+    /// post-birth value, so the parent's `on_failure` handler
+    /// sees coherent state. Multiple birth_check clauses on a
+    /// locus are evaluated in declaration order; the first to
+    /// fire short-circuits the rest.
+    BirthCheck(BirthCheckDecl),
+}
+
+/// F.27 v2: declarative birth-time invariant check. The locus
+/// has a healthy birth iff `cond` evaluates to false; a true
+/// result violates `closure_name` with the locus's full post-
+/// birth state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BirthCheckDecl {
+    /// The boolean predicate evaluated after birth(). Reads
+    /// `self.X` like any other locus body. `true` means "this
+    /// locus is in an inconsistent post-birth state."
+    pub cond: Expr,
+    /// The closure name to violate. Must be a declared epoch-
+    /// inline closure on the same locus (same constraint as
+    /// regular `violate`).
+    pub closure_name: Ident,
+    /// Optional payload expression. Same shape as the
+    /// `violate NAME(payload)` syntax in fn bodies.
+    pub payload: Option<Expr>,
+    pub span: Span,
 }
 
 /// Phase 2: per-topic transport binding inside `main locus`.

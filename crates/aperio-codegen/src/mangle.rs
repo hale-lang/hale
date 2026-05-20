@@ -274,6 +274,16 @@ impl<'a> Mangler<'a> {
                     self.rewrite_ident(&mut entry.topic.name);
                 }
             }
+            LocusMember::BirthCheck(bc) => {
+                // F.27 v2: walk the cond + payload exprs so any
+                // generic substitution touches references inside
+                // them; the closure name is a regular ident.
+                self.walk_expr(&mut bc.cond);
+                if let Some(payload) = &mut bc.payload {
+                    self.walk_expr(payload);
+                }
+                self.rewrite_ident(&mut bc.closure_name.name);
+            }
         }
     }
 

@@ -7955,7 +7955,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | LocusMember::Failure(_)
             | LocusMember::Closure(_)
             | LocusMember::Type(_)
-            | LocusMember::Bindings(_) => {}
+            | LocusMember::Bindings(_)
+            | LocusMember::BirthCheck(_) => {}
             LocusMember::Capacity(_) => {
                 // F.22 slot cell types are concrete in v1; no
                 // generic-template use sites. Future generic Pool/
@@ -9039,9 +9040,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // Params handled in pass A1; contracts are a
                     // typecheck-only feature with no codegen ABI.
                 }
-                LocusMember::Bindings(_) => {
-                    // Bindings emitted by main-locus prelude pass; no
-                    // method-table contribution.
+                LocusMember::Bindings(_) | LocusMember::BirthCheck(_) => {
+                    // Bindings emitted by main-locus prelude pass;
+                    // birth_check clauses are emitted inline at
+                    // instantiation (see lower_locus_instantiation's
+                    // F.27 v2 block). Neither contributes to the
+                    // method table.
                 }
                 LocusMember::Lifecycle(lc) => {
                     if lc.ret.is_some() {
@@ -29538,6 +29542,59 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
+        // F.27 v2 (2026-05-20): birth_check synthesis hook. Each
+        // `birth_check { COND } -> violate NAME;` clause is
+        // evaluated AFTER birth() body + birth-epoch closures, at
+        // the well-defined point where every field has its
+        // declared post-birth value. The violate routing
+        // (set __drain_requested, indirect-call parent.on_failure
+        // or panic) is emitted INLINE here — we do not use the
+        // standard Stmt::Violate path because that path's
+        // divergent-return would return from the CALLER's LLVM
+        // function (e.g., Parent.run), not from the conceptual
+        // "construction step." Absorbed violations should leave
+        // the caller running normally after the failing
+        // instantiation expression; we branch to a continuation
+        // block instead of returning. Unhandled violations
+        // (parent_on_failure == null) still call exit(1) per the
+        // existing F.27 contract — same panic-with-diagnostic as
+        // a regular violate.
+        let birth_check_decls: Vec<BirthCheckDecl> = self
+            .program
+            .items
+            .iter()
+            .find_map(|item| match item {
+                TopDecl::Locus(l) if l.name.name == locus_name => {
+                    Some(
+                        l.members
+                            .iter()
+                            .filter_map(|m| match m {
+                                LocusMember::BirthCheck(bc) => Some(bc.clone()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
+        if !birth_check_decls.is_empty() {
+            // We need current_self set for `self.X` reads in the
+            // cond expressions to resolve against the newly-
+            // constructed locus.
+            let prev_self = self.current_self.clone();
+            self.current_self = Some(SelfCx {
+                locus_name: locus_name.to_string(),
+                struct_ty: info.struct_ty,
+                self_ptr,
+                fields: info.fields.clone(),
+            });
+            let mut scope = Scope::default();
+            for bc in &birth_check_decls {
+                self.emit_birth_check(&bc, self_ptr, &info, &locus_name, &mut scope)?;
+            }
+            self.current_self = prev_self;
+        }
         // m41: gate run() on __quarantined. If a parent's
         // on_failure called quarantine(self) during the birth-
         // closure check above, the flag is now set and we skip
@@ -35085,6 +35142,251 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder.position_at_end(after_bb);
             }
         }
+        Ok(())
+    }
+
+    /// F.27 v2: emit one birth_check inline at the instantiation
+    /// site. Evaluates the cond expression; if true, routes
+    /// through the violate machinery (sets __drain_requested,
+    /// indirect-calls parent.on_failure, OR panics with diagnostic
+    /// when no handler), then BRANCHES to a continuation block
+    /// instead of returning from the caller's LLVM function —
+    /// which is the key difference from the regular Stmt::Violate
+    /// codegen. After this routine returns, the builder is
+    /// positioned at the "after this birth_check" block; a
+    /// subsequent birth_check can be emitted onto that. The
+    /// caller (e.g., Parent.run) keeps running normally after
+    /// the instantiation when a parent handler absorbs the
+    /// violation; the panic branch is the unabsorbed case and
+    /// terminates the process per F.27's contract.
+    ///
+    /// Pre: `current_self` must be set to the newly-constructed
+    /// locus so cond's `self.X` reads resolve against its
+    /// fields.
+    fn emit_birth_check(
+        &mut self,
+        bc: &BirthCheckDecl,
+        self_ptr: PointerValue<'ctx>,
+        info: &LocusInfo<'ctx>,
+        locus_name: &str,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        // 1. Lower cond → i1.
+        let (cond_v, cond_ty) = self.lower_expr(&bc.cond, scope)?;
+        if cond_ty != CodegenTy::Bool {
+            return Err(CodegenError::Unsupported(format!(
+                "birth_check cond must be Bool, got {:?}",
+                cond_ty
+            )));
+        }
+        let func = self.current_fn.expect("current_fn set");
+        let route_bb = self
+            .context
+            .append_basic_block(func, "bcheck.route");
+        let after_bb = self
+            .context
+            .append_basic_block(func, "bcheck.after");
+        self.builder
+            .build_conditional_branch(
+                cond_v.into_int_value(),
+                route_bb,
+                after_bb,
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // 2. route_bb: violate machinery — copy of Stmt::Violate's
+        // body (lines ~17065+), trimmed to the routing + ALWAYS
+        // branching to after_bb at the end (instead of returning).
+        self.builder.position_at_end(route_bb);
+        let i64_t = self.context.i64_type();
+        let i32_t = self.context.i32_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let void_t = self.context.void_type();
+
+        // Set __drain_requested = 1.
+        let one = i64_t.const_int(1, false);
+        let dr_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                info.drain_requested_field_idx,
+                "bcheck.dr.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(dr_ptr, one)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Read parent_self + parent_on_failure from the locus
+        // struct (set at instantiation via resolve_failure_route).
+        let ps_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                info.parent_self_field_idx,
+                "bcheck.parent_self.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let parent_self = self
+            .builder
+            .build_load(ptr_t, ps_ptr, "bcheck.parent_self")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        let poh_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                info.parent_on_failure_field_idx,
+                "bcheck.parent_on_failure.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let parent_on_failure = self
+            .builder
+            .build_load(ptr_t, poh_ptr, "bcheck.parent_on_failure")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+
+        // Allocate + fill ClosureViolation.
+        let viol_info = self
+            .user_types
+            .get("ClosureViolation")
+            .cloned()
+            .expect("ClosureViolation declared at startup");
+        let size = viol_info
+            .struct_ty
+            .size_of()
+            .expect("violation struct has known size");
+        let viol_ptr = self.arena_alloc(size, "bcheck.viol.alloc")?;
+        let locus_str = self.global_string(locus_name);
+        let closure_str = self.global_string(&bc.closure_name.name);
+        let f0 = self
+            .builder
+            .build_struct_gep(
+                viol_info.struct_ty,
+                viol_ptr,
+                0,
+                "bcheck.viol.locus.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(f0, locus_str)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f1 = self
+            .builder
+            .build_struct_gep(
+                viol_info.struct_ty,
+                viol_ptr,
+                1,
+                "bcheck.viol.closure.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(f1, closure_str)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f2 = self
+            .builder
+            .build_struct_gep(
+                viol_info.struct_ty,
+                viol_ptr,
+                2,
+                "bcheck.viol.diff.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(f2, i64_t.const_zero())
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Branch on parent_on_failure null.
+        let route_then = self
+            .context
+            .append_basic_block(func, "bcheck.handler");
+        let route_bare = self
+            .context
+            .append_basic_block(func, "bcheck.bare");
+        let null_check = self
+            .builder
+            .build_is_not_null(parent_on_failure, "bcheck.has.handler")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(null_check, route_then, route_bare)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // route_then: indirect-call parent.on_failure(parent_self,
+        // self_ptr, viol_ptr), then branch to after_bb.
+        self.builder.position_at_end(route_then);
+        let handler_callee_ty = void_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.builder
+            .build_indirect_call(
+                handler_callee_ty,
+                parent_on_failure,
+                &[
+                    parent_self.into(),
+                    self_ptr.into(),
+                    viol_ptr.into(),
+                ],
+                "bcheck.on_failure.call",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(after_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // route_bare: dprintf + exit(1) — unabsorbed violation.
+        self.builder.position_at_end(route_bare);
+        let fflush_fn = self
+            .module
+            .get_function("fflush")
+            .expect("fflush declared");
+        self.builder
+            .build_call(
+                fflush_fn,
+                &[ptr_t.const_null().into()],
+                "bcheck.fflush",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let fmt = self.global_string(
+            "runtime error: ClosureViolation: locus `%s` closure `%s` (birth_check, no parent handler)\n",
+        );
+        let dprintf_fn = self
+            .module
+            .get_function("dprintf")
+            .expect("dprintf declared");
+        self.builder
+            .build_call(
+                dprintf_fn,
+                &[
+                    i32_t.const_int(2, false).into(),
+                    fmt.into(),
+                    locus_str.into(),
+                    closure_str.into(),
+                ],
+                "bcheck.dprintf",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let exit_fn = self
+            .module
+            .get_function("exit")
+            .expect("exit declared");
+        self.builder
+            .build_call(
+                exit_fn,
+                &[i32_t.const_int(1, false).into()],
+                "bcheck.exit",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unreachable()
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // 3. Position at after_bb so subsequent birth_check
+        // clauses (and the rest of instantiation) emit there.
+        self.builder.position_at_end(after_bb);
         Ok(())
     }
 
