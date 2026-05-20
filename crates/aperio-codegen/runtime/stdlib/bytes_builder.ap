@@ -130,6 +130,22 @@ locus __StdBytesBytesBuilder {
             violate alloc_failed;
         }
     }
+    // Phase-3 Site 1 (2026-05-19): copy src[lo..hi) directly into
+    // the builder's tail. Eliminates the
+    // `slice(src, lo, hi) + append(chunk)` pair's intermediate
+    // Bytes wrapper that otherwise lands in g_bus_payload_arena —
+    // the dominant residual in pond/websocket's unmask_into fast
+    // path. Routes alloc-fail through `violate alloc_failed` per
+    // F.27, same as `append`. Out-of-range indices (lo<0, hi<lo,
+    // hi>len(src)) violate too — caller bug, not a runtime
+    // condition the caller can recover from at this layer.
+    fn append_slice(src: Bytes, lo: Int, hi: Int) {
+        let ok = std::bytes::builder::__append_slice(
+            self.handle, src, lo, hi);
+        if ok == 0 {
+            violate alloc_failed;
+        }
+    }
     fn len() -> Int {
         return std::bytes::builder::__len(self.handle);
     }
@@ -151,6 +167,23 @@ locus __StdBytesBytesBuilder {
     // without allocating a snapshot per peel attempt.
     fn view() -> Bytes {
         return std::bytes::builder::__view(self.handle);
+    }
+    // Phase-3 Site 2 (2026-05-19): zero-copy String view. Returns
+    // a non-owning String pointer aliasing the builder's buffer.
+    // Lifetime is valid until the next mutation on the source
+    // builder (append / append_slice / shift_front / clear /
+    // finish); callers must not retain the view across those
+    // operations. v1 has no borrow checker, so the rule is
+    // documented-and-trusted — same shape as `view()`. Use case:
+    // a recv-loop that publishes a text-typed message field
+    // referencing the accumulator without copying the body into
+    // g_bus_payload_arena per message.
+    //
+    // The C primitive maintains `buf[len] == '\0'` after every
+    // mutation, so the returned pointer is a well-formed
+    // C string for `lotus_str_*` consumers.
+    fn text_view() -> String {
+        return std::bytes::builder::__text_view(self.handle);
     }
     fn shift_front(n: Int) {
         std::bytes::builder::__shift_front(self.handle, n);

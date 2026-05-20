@@ -144,3 +144,79 @@ fn view_after_clear_is_empty() {
     assert!(status.success(), "non-zero: {:?}", status);
     assert!(stdout.contains("len=0"), "got: {:?}", stdout);
 }
+
+#[test]
+fn text_view_returns_string_aliasing_buffer() {
+    // Phase-3 Site 2: text_view returns a non-owning String
+    // pointer aliasing the builder's buffer. Length comes from
+    // the C-string terminator that the builder maintains at
+    // buf[len] after every mutation.
+    let src = r#"
+        fn main() {
+            let b = std::bytes::BytesBuilder { initial_cap: 64 };
+            b.append(std::bytes::from_string("hello world"));
+            let s = b.text_view();
+            println("len=", len(s));
+            println("s=", s);
+        }
+    "#;
+    let (stdout, status) = build_and_run("text_view_basic", src);
+    assert!(status.success(), "non-zero: {:?}\n{}", status, stdout);
+    assert!(stdout.contains("len=11"), "got: {:?}", stdout);
+    assert!(stdout.contains("s=hello world"), "got: {:?}", stdout);
+}
+
+#[test]
+fn text_view_updates_after_mutations() {
+    // Each text_view() call returns the CURRENT state. Aliasing
+    // contract: don't retain across a mutation; fresh views are
+    // coherent. Mirrors the bytes view test shape.
+    let src = r#"
+        fn main() {
+            let b = std::bytes::BytesBuilder { initial_cap: 64 };
+            b.append(std::bytes::from_string("foo"));
+            let v1 = b.text_view();
+            println("v1=", v1);
+            b.append(std::bytes::from_string("bar"));
+            let v2 = b.text_view();
+            println("v2=", v2);
+            b.shift_front(3);
+            let v3 = b.text_view();
+            println("v3=", v3);
+            b.clear();
+            let v4 = b.text_view();
+            println("v4=", v4);
+            println("v4_len=", len(v4));
+        }
+    "#;
+    let (stdout, status) = build_and_run("text_view_mut", src);
+    assert!(status.success(), "non-zero: {:?}\n{}", status, stdout);
+    assert!(stdout.contains("v1=foo"), "v1: {:?}", stdout);
+    assert!(stdout.contains("v2=foobar"), "v2: {:?}", stdout);
+    assert!(stdout.contains("v3=bar"), "v3: {:?}", stdout);
+    assert!(stdout.contains("v4_len=0"), "v4_len: {:?}", stdout);
+}
+
+#[test]
+fn text_view_survives_grow_realloc() {
+    // initial_cap small, append more than fits → realloc fires.
+    // text_view after the grow must still be NUL-terminated at
+    // buf[len] — the realloc path must preserve the +1 reserve.
+    let src = r#"
+        fn main() {
+            let b = std::bytes::BytesBuilder { initial_cap: 4 };
+            b.append(std::bytes::from_string("this is much longer than four"));
+            let s = b.text_view();
+            println("len=", len(s));
+            println("s=", s);
+        }
+    "#;
+    let (stdout, status) = build_and_run("text_view_grow", src);
+    assert!(status.success(), "non-zero: {:?}\n{}", status, stdout);
+    assert!(stdout.contains("len=29"), "got: {:?}", stdout);
+    assert!(
+        stdout.contains("s=this is much longer than four"),
+        "got: {:?}",
+        stdout
+    );
+}

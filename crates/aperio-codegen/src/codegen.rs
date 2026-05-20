@@ -3580,6 +3580,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             bb_view_ty,
             None,
         );
+        // declare ptr @lotus_bytes_builder_text_view(ptr handle)
+        // Phase-3 Site 2 (2026-05-19): non-owning String view
+        // aliasing the builder's buffer. Returns a C-string
+        // pointer that's NUL-terminated at `buf[len]` (invariant
+        // maintained by every mutation). Lifetime tied to "no
+        // mutation of the source builder while view is in use".
+        // Kills the per-text-frame lotus_str_from_bytes alloc.
+        let bb_text_view_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_bytes_builder_text_view",
+            bb_text_view_ty,
+            None,
+        );
+        // declare i64 @lotus_bytes_builder_append_slice(ptr handle, ptr src_blob, i64 lo, i64 hi)
+        // Phase-3 Site 1 (2026-05-19): copy src[lo..hi) directly
+        // into the builder's tail. Returns 1=ok / 0=fail (null
+        // handle, out-of-range, realloc NULL). Aperio-side
+        // wrapper routes 0 through `violate alloc_failed` per
+        // F.27. Eliminates the slice+append pair's intermediate
+        // Bytes wrapper that otherwise lands in g_bus_payload_arena.
+        let bb_append_slice_ty = i64_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), i64_t.into(), i64_t.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_bytes_builder_append_slice",
+            bb_append_slice_ty,
+            None,
+        );
         // declare i64 @lotus_bytes_is_alloc_fail(ptr blob)
         // F.27 discriminator: 1 iff blob is the alloc-fail
         // sentinel returned from BytesBuilder snapshot()/finish()
@@ -12479,6 +12508,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | ["std", "bytes", "builder", "__snapshot"]
             | ["std", "bytes", "builder", "__free"]
             | ["std", "bytes", "builder", "__view"]
+            | ["std", "bytes", "builder", "__text_view"]
+            | ["std", "bytes", "builder", "__append_slice"]
             | ["std", "bytes", "__is_alloc_fail"]
             | ["std", "math", "sqrt"]
             | ["std", "math", "exp"]
@@ -22466,6 +22497,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_bytes_builder_view(args, scope)?;
                 Ok(())
             }
+            ["std", "bytes", "builder", "__append_slice"] => {
+                let _ = self.lower_std_bytes_builder_append_slice(args, scope)?;
+                Ok(())
+            }
+            ["std", "bytes", "builder", "__text_view"] => {
+                let _ = self.lower_std_bytes_builder_text_view(args, scope)?;
+                Ok(())
+            }
             ["std", "bytes", "__is_alloc_fail"] => {
                 let _ = self.lower_std_bytes_is_alloc_fail(args, scope)?;
                 Ok(())
@@ -23028,6 +23067,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "bytes", "builder", "__view"] => {
                 self.lower_std_bytes_builder_view(args, scope)
+            }
+            ["std", "bytes", "builder", "__append_slice"] => {
+                self.lower_std_bytes_builder_append_slice(args, scope)
+            }
+            ["std", "bytes", "builder", "__text_view"] => {
+                self.lower_std_bytes_builder_text_view(args, scope)
             }
             ["std", "bytes", "__is_alloc_fail"] => {
                 self.lower_std_bytes_is_alloc_fail(args, scope)
@@ -24791,6 +24836,116 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .left()
             .expect("returns ptr");
         Ok((ptr, CodegenTy::Bytes))
+    }
+
+    /// Phase-3 Site 2: lower `std::bytes::builder::__text_view(
+    /// handle: Int) -> String`. Returns a non-owning String
+    /// pointer aliasing the builder's buffer; the builder
+    /// maintains `buf[len] == '\0'` after every mutation so the
+    /// returned C-string is well-formed for the lotus_str_*
+    /// surface. Lifetime: valid until the next mutation on the
+    /// source builder (documented-and-trusted at v1).
+    fn lower_std_bytes_builder_text_view(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder::__text_view takes 1 arg (handle), got {}",
+                args.len()
+            )));
+        }
+        let (_, handle_ptr) = self.lower_bytes_builder_handle_arg(
+            &args[0],
+            scope,
+            "std::bytes::builder::__text_view",
+        )?;
+        let f = self
+            .module
+            .get_function("lotus_bytes_builder_text_view")
+            .expect("lotus_bytes_builder_text_view declared");
+        let call = self
+            .builder
+            .build_call(f, &[handle_ptr.into()], "bb.text_view.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::String))
+    }
+
+    /// Phase-3 Site 1: lower `std::bytes::builder::__append_slice(
+    /// handle: Int, src: Bytes, lo: Int, hi: Int) -> Int`. Copies
+    /// src[lo..hi) directly into the builder's tail. Returns 1=ok
+    /// / 0=fail (null handle, out-of-range, realloc NULL). The
+    /// stdlib wrapper routes 0 through `violate alloc_failed`.
+    /// Eliminates the slice+append pair's intermediate Bytes
+    /// wrapper that otherwise lands in g_bus_payload_arena.
+    fn lower_std_bytes_builder_append_slice(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 4 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder::__append_slice takes 4 args \
+                 (handle, src, lo, hi), got {}",
+                args.len()
+            )));
+        }
+        let (_, handle_ptr) = self.lower_bytes_builder_handle_arg(
+            &args[0],
+            scope,
+            "std::bytes::builder::__append_slice",
+        )?;
+        let (src_val, src_ty) = self.lower_expr(&args[1], scope)?;
+        if src_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder::__append_slice: src must be Bytes, \
+                 got {:?}",
+                src_ty
+            )));
+        }
+        let (lo_val, lo_ty) = self.lower_expr(&args[2], scope)?;
+        if lo_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder::__append_slice: lo must be Int, \
+                 got {:?}",
+                lo_ty
+            )));
+        }
+        let (hi_val, hi_ty) = self.lower_expr(&args[3], scope)?;
+        if hi_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder::__append_slice: hi must be Int, \
+                 got {:?}",
+                hi_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bytes_builder_append_slice")
+            .expect("lotus_bytes_builder_append_slice declared");
+        let call = self
+            .builder
+            .build_call(
+                f,
+                &[
+                    handle_ptr.into(),
+                    src_val.into(),
+                    lo_val.into(),
+                    hi_val.into(),
+                ],
+                "bb.append_slice.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let status = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64 status");
+        Ok((status, CodegenTy::Int))
     }
 
     /// F.27 discriminator: lower `std::bytes::__is_alloc_fail(b:

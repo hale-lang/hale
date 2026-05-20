@@ -98,6 +98,85 @@ fn builder_snapshot_leaves_builder_unchanged() {
 }
 
 #[test]
+fn builder_append_slice_copies_range_without_intermediate_alloc() {
+    // Phase-3 Site 1: append_slice copies src[lo..hi) directly
+    // into the builder's tail. Verifies the basic slice semantics
+    // (offset, length, byte-exactness incl. NULs) and that the
+    // builder's len reflects the appended range.
+    let src = r#"
+        fn main() {
+            let b = std::bytes::BytesBuilder { initial_cap: 64 };
+            // src = "0123456789", append the middle 4 bytes [3..7) = "3456"
+            let src_bytes = std::bytes::from_string("0123456789");
+            b.append_slice(src_bytes, 3, 7);
+            println("len=", b.len());
+            println("body=", std::str::from_bytes(b.snapshot()));
+            // Second append from a different region.
+            b.append_slice(src_bytes, 0, 2);
+            println("len2=", b.len());
+            println("body2=", std::str::from_bytes(b.snapshot()));
+        }
+    "#;
+    let (stdout, status) = build_and_run("bb_append_slice", src);
+    assert!(status.success(), "non-zero: {:?}\n{}", status, stdout);
+    assert!(stdout.contains("len=4"), "got: {:?}", stdout);
+    assert!(stdout.contains("body=3456"), "got: {:?}", stdout);
+    assert!(stdout.contains("len2=6"), "got: {:?}", stdout);
+    assert!(stdout.contains("body2=345601"), "got: {:?}", stdout);
+}
+
+#[test]
+fn builder_append_slice_empty_range_no_op() {
+    // append_slice with lo == hi appends nothing; len unchanged,
+    // no allocation. Same shape as `append(empty bytes)` no-op.
+    let src = r#"
+        fn main() {
+            let b = std::bytes::BytesBuilder { initial_cap: 64 };
+            b.append(std::bytes::from_string("hello"));
+            let src_bytes = std::bytes::from_string("ignored");
+            b.append_slice(src_bytes, 3, 3);
+            println("len=", b.len());
+            println("body=", std::str::from_bytes(b.snapshot()));
+        }
+    "#;
+    let (stdout, status) = build_and_run("bb_append_slice_empty", src);
+    assert!(status.success(), "non-zero: {:?}\n{}", status, stdout);
+    assert!(stdout.contains("len=5"), "got: {:?}", stdout);
+    assert!(stdout.contains("body=hello"), "got: {:?}", stdout);
+}
+
+#[test]
+fn builder_append_slice_out_of_range_violates() {
+    // hi > len(src) is a caller bug; the C primitive returns 0
+    // and the locus method routes through `violate alloc_failed`.
+    // No parent on_failure → process exits non-zero.
+    let src = r#"
+        fn main() {
+            let b = std::bytes::BytesBuilder { initial_cap: 64 };
+            let src_bytes = std::bytes::from_string("abc");
+            b.append_slice(src_bytes, 0, 99);
+            println("unreachable");
+        }
+    "#;
+    let program = aperio_syntax::parse_source(src).expect("parse");
+    let mut bin = std::env::temp_dir();
+    bin.push("lotus_test_bb_append_slice_oob");
+    build_executable(&program, &bin).expect("build");
+    let output = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit on out-of-range append_slice"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("alloc_failed"),
+        "expected closure name in stderr: {:?}",
+        stderr
+    );
+}
+
+#[test]
 fn recv_loop_simulation_recycles_capacity() {
     // The shape that motivates Phase 0: a recv loop that appends
     // a chunk, peels a fixed-length frame off the front, then
