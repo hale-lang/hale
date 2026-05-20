@@ -164,4 +164,17 @@ fn aperio_subscriber_reads_shm_ring_publishes() {
             sub_stdout
         );
     }
+
+    // Form K-cleanup (2026-05-20): after both binaries have
+    // exited cleanly, the SHM object should be shm_unlink'd by
+    // whichever process created it. /dev/shm/ should be empty
+    // for this ring name.
+    let stripped = shm_name.trim_start_matches('/');
+    let shm_path = PathBuf::from(format!("/dev/shm/{}", stripped));
+    assert!(
+        !shm_path.exists(),
+        "atexit cleanup failed: `{}` persists in /dev/shm/ after \
+         both publisher and subscriber exited",
+        shm_name
+    );
 }

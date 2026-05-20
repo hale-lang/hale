@@ -450,6 +450,35 @@ modes, and named-ring registry are post-v1. The Aperio-side
 `fallible(ClaimError)` signature is reserved for those; v1's
 `claim()` never actually fails.
 
+**Lifecycle / cleanup (2026-05-20).** Both
+`lotus_bus_register_shm_ring` (publisher) and
+`lotus_bus_register_subscriber_shm_ring` (subscriber) register
+a single `atexit` hook on first call. The hook:
+
+1. Signals every subscriber reader thread to stop via an
+   atomic `should_stop` flag.
+2. `pthread_join`s each reader thread, ensuring no in-flight
+   handler is interrupted.
+3. Frees the subscriber state allocated by the registration
+   call.
+4. `lotus_shm_ring_close`s every ring opened in this process
+   — which `shm_unlink`s the ones this process created
+   (`owns_unlink=1`), keeping `/dev/shm/` clean across
+   restarts.
+
+The atexit hook runs on a clean process exit (return from
+main, `exit(3)`). Signal-driven termination (SIGTERM, SIGKILL,
+`_exit`) bypasses atexit and leaves the SHM namespace entry
+behind until reboot or manual `shm_unlink`. A future v1.x
+SIGINT/SIGTERM handler can fold into this same teardown.
+
+**Constraint: subscriber handlers must not call `exit()`.** The
+handler runs on the reader thread; calling `exit()` from inside
+the handler invokes atexit on the reader thread, which then
+attempts to `pthread_join` itself (undefined behavior). Use
+`_exit()` if a handler needs to terminate the process
+immediately.
+
 Codegen surface for K5 lands in K4 (route-selection +
 slot-locus synthesis) and K6 (subscriber view + epoch guard).
 K5 ships the substrate; user code can't reach these symbols

@@ -270,6 +270,7 @@ void *lotus_shm_ring_read_slot(lotus_shm_ring_t *ring, uint64_t seqno) {
  */
 
 #define LOTUS_SHM_RING_MAX_BINDINGS 64
+#define LOTUS_SHM_RING_MAX_SUBSCRIBERS 64
 
 typedef struct {
     char subject[64];           /* matches lotus_bus_remote_entry's shape */
@@ -277,8 +278,52 @@ typedef struct {
     uint64_t slot_size;         /* mirrored from ring->header for memcpy */
 } shm_ring_binding_t;
 
+/* Forward decl — defined under the K6b subscriber section. */
+typedef struct shm_ring_subscriber_t shm_ring_subscriber_t;
+
 static shm_ring_binding_t g_shm_ring_bindings[LOTUS_SHM_RING_MAX_BINDINGS];
 static int g_shm_ring_binding_count = 0;
+static shm_ring_subscriber_t *
+    g_shm_ring_subscribers[LOTUS_SHM_RING_MAX_SUBSCRIBERS];
+static _Atomic int g_shm_ring_subscriber_count = 0;
+static _Atomic int g_shm_ring_atexit_registered = 0;
+
+/* Form K-cleanup (2026-05-20): process-exit teardown for all
+ * shm_ring resources owned by this process. Registered via
+ * atexit on first registration call (publisher or subscriber).
+ *
+ * Fixes the categorical leaks K4c/K6b shipped with:
+ *   - subscriber pthreads were detached (no join) and runs of
+ *     malloc'd subscriber state outlived their use
+ *   - publisher-side SHM objects were never shm_unlink'd, so
+ *     /dev/shm/ accumulated stale entries across process
+ *     restarts
+ *
+ * After this hook runs at clean exit:
+ *   - All subscriber reader threads are stopped + joined
+ *   - All subscriber state is freed
+ *   - All rings are munmap+closed
+ *   - Rings created by THIS process are shm_unlink'd (the
+ *     owns_unlink branch inside lotus_shm_ring_close)
+ *
+ * If the process exits via signal / _exit, atexit DOES NOT
+ * fire and the SHM namespace entry persists until reboot or
+ * manual shm_unlink. v1 accepts this; a future SIGINT/SIGTERM
+ * handler can fold into this same teardown.
+ */
+static void shm_ring_atexit_cleanup(void);
+
+static void ensure_shm_ring_atexit_registered(void) {
+    int expected = 0;
+    if (atomic_compare_exchange_strong_explicit(
+            &g_shm_ring_atexit_registered,
+            &expected,
+            1,
+            memory_order_acq_rel,
+            memory_order_relaxed)) {
+        atexit(shm_ring_atexit_cleanup);
+    }
+}
 
 /* Codegen emits one call per shm_ring binding in main's prelude.
  * Idempotent across the process — registering the same subject
@@ -288,6 +333,7 @@ void lotus_bus_register_shm_ring(const char *subject,
                                  uint64_t slot_size,
                                  uint64_t slot_count,
                                  const char *shm_name) {
+    ensure_shm_ring_atexit_registered();
     if (g_shm_ring_binding_count >= LOTUS_SHM_RING_MAX_BINDINGS) {
         fprintf(stderr,
                 "lotus_bus_register_shm_ring: exceeded "
@@ -385,16 +431,24 @@ int lotus_bus_publish_shm_ring(const char *subject,
  * post-v1.
  */
 
-typedef struct {
+struct shm_ring_subscriber_t {
     lotus_shm_ring_t *ring;
     void (*handler_fn)(void *self, void *slot);
     void *self_ptr;
-} shm_ring_subscriber_t;
+    pthread_t thread;
+    /* Form K-cleanup (2026-05-20): atexit hook sets this to 1
+     * before pthread_join. Reader loop checks each iteration
+     * and exits cleanly when set. Acquire-load matches the
+     * release-store in the atexit hook so the reader sees
+     * the signal promptly. */
+    _Atomic int should_stop;
+};
 
 static void *shm_ring_reader_thread(void *arg) {
     shm_ring_subscriber_t *sub = (shm_ring_subscriber_t *)arg;
     uint64_t last_seen = 0;
-    for (;;) {
+    while (!atomic_load_explicit(&sub->should_stop,
+                                  memory_order_acquire)) {
         uint64_t pub = lotus_shm_ring_published(sub->ring);
         if (pub > last_seen) {
             while (last_seen < pub) {
@@ -429,7 +483,7 @@ void lotus_bus_register_subscriber_shm_ring(const char *subject,
                                              void *self_ptr,
                                              void (*handler_fn)(void *self,
                                                                  void *slot)) {
-    (void)subject;  /* held in the per-binding record below for diag */
+    ensure_shm_ring_atexit_registered();
 
     lotus_shm_ring_t *ring =
         lotus_shm_ring_open(shm_name, slot_size, slot_count);
@@ -453,15 +507,73 @@ void lotus_bus_register_subscriber_shm_ring(const char *subject,
     sub->ring = ring;
     sub->handler_fn = handler_fn;
     sub->self_ptr = self_ptr;
+    atomic_store_explicit(&sub->should_stop, 0, memory_order_relaxed);
 
-    pthread_t tid;
-    int rc = pthread_create(&tid, NULL, shm_ring_reader_thread, sub);
+    int rc = pthread_create(&sub->thread, NULL, shm_ring_reader_thread, sub);
     if (rc != 0) {
         fprintf(stderr,
                 "lotus_bus_register_subscriber_shm_ring(`%s`): pthread_create "
                 "failed: %d\n",
                 subject, rc);
+        free(sub);
         _exit(1);
     }
-    pthread_detach(tid);  /* daemon — runs until process exit at v1 */
+    /* Register for atexit cleanup. NOT pthread_detach'd at K6b:
+     * the atexit hook signals should_stop and pthread_joins so
+     * the reader thread + its calloc'd state are released
+     * cleanly on a normal exit. */
+    int idx = atomic_fetch_add_explicit(
+        &g_shm_ring_subscriber_count, 1, memory_order_acq_rel);
+    if (idx >= LOTUS_SHM_RING_MAX_SUBSCRIBERS) {
+        fprintf(stderr,
+                "lotus_bus_register_subscriber_shm_ring(`%s`): exceeded "
+                "LOTUS_SHM_RING_MAX_SUBSCRIBERS (%d)\n",
+                subject, LOTUS_SHM_RING_MAX_SUBSCRIBERS);
+        _exit(1);
+    }
+    g_shm_ring_subscribers[idx] = sub;
+}
+
+/* Form K-cleanup (2026-05-20) — atexit teardown. Signals all
+ * subscriber readers to stop, joins them, frees their state,
+ * closes all rings (which shm_unlink's the creator-side ones).
+ *
+ * Two-pass on subscribers: first set should_stop on all, then
+ * join + free. This lets all reader threads start winding down
+ * in parallel instead of serially waiting for each. */
+static void shm_ring_atexit_cleanup(void) {
+    int n_subs = atomic_load_explicit(
+        &g_shm_ring_subscriber_count, memory_order_acquire);
+    if (n_subs > LOTUS_SHM_RING_MAX_SUBSCRIBERS) {
+        /* Capped at register time; if we overflowed the counter
+         * past the array we'd have _exit'd already, but guard
+         * against UB in the atexit hook. */
+        n_subs = LOTUS_SHM_RING_MAX_SUBSCRIBERS;
+    }
+    for (int i = 0; i < n_subs; i++) {
+        shm_ring_subscriber_t *sub = g_shm_ring_subscribers[i];
+        if (sub) {
+            atomic_store_explicit(
+                &sub->should_stop, 1, memory_order_release);
+        }
+    }
+    for (int i = 0; i < n_subs; i++) {
+        shm_ring_subscriber_t *sub = g_shm_ring_subscribers[i];
+        if (sub) {
+            pthread_join(sub->thread, NULL);
+            if (sub->ring) {
+                lotus_shm_ring_close(sub->ring);
+            }
+            free(sub);
+            g_shm_ring_subscribers[i] = NULL;
+        }
+    }
+    /* Publisher-side rings: close (and shm_unlink the
+     * creator-owned ones). */
+    for (int i = 0; i < g_shm_ring_binding_count; i++) {
+        if (g_shm_ring_bindings[i].ring) {
+            lotus_shm_ring_close(g_shm_ring_bindings[i].ring);
+            g_shm_ring_bindings[i].ring = NULL;
+        }
+    }
 }
