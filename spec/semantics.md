@@ -541,6 +541,34 @@ binding entry is delivered same-process via the cooperative
 queue. There is no `in_memory` variant — the runtime default
 covers the case and explicit syntax would be ceremony.
 
+**Operational constraints (Form K, 2026-05-20).** A binding
+entry may carry an optional `where` clause listing
+constraint keywords the dev team asserts the route must
+satisfy:
+
+```aperio
+bindings {
+    L2Updates: unix("/sock") where intra_machine, zero_copy;
+}
+```
+
+Constraints split into two orthogonal axes:
+
+- **Scope** — where the bus may reach. `intra_process` (same
+  OS process), `intra_machine` (cross-process, same machine;
+  SHM-capable), `cross_machine` (network in scope). Hierarchy:
+  `intra_process ⊂ intra_machine ⊂ cross_machine`.
+- **Behavior** — `zero_copy` (no memcpy at locus boundary;
+  requires the payload type to satisfy `is_flat_shapeable`).
+
+The parser accepts the clause and the AST records the
+constraints. Semantic enforcement (compile errors on
+contradictions like `zero_copy` + `cross_machine`, payload-
+shape rejection for `zero_copy` + variadic field) lands with
+Form K's route-selection codegen pass; until then the clause
+is reserved syntax. Existing bindings without a `where`
+clause continue to work unchanged.
+
 Bundle-wide rules:
 
 1. At most one `main` locus per bundle. Zero is fine — the

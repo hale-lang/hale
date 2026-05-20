@@ -201,11 +201,14 @@ compiler warning.
 
 ```
 trait           impl            async           await
-macro           where
+macro
 ```
 
 (`with` is no longer in this list — v1.x-VIOLATE recognizes it
-as a contextual keyword inside the `violate_stmt` production.)
+as a contextual keyword inside the `violate_stmt` production.
+`where` is no longer in this list either — Form K (2026-05-20)
+recognizes it as the suffix keyword on `binding_entry` carrying
+operational constraints.)
 
 `yield` is a real statement keyword (m26b) — explicit
 cooperative yield point; lowers to a bus-queue drain in

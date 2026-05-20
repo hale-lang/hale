@@ -952,7 +952,11 @@ impl Parser {
         })
     }
 
-    /// `bindings { Topic: <transport>; ... }` — Phase 2.
+    /// `bindings { Topic: <transport> [where <constraint>, ...]; ... }`
+    /// — Phase 2 surface, extended Form K (2026-05-20) with the
+    /// optional `where`-clause carrying operational constraints
+    /// (`intra_process`, `intra_machine`, `cross_machine`,
+    /// `zero_copy`).
     fn parse_bindings_block(&mut self) -> Result<BindingsBlock, Diag> {
         let kw_tok = self.peek_token().clone();
         self.bump(); // consume `bindings` ident
@@ -962,10 +966,12 @@ impl Parser {
             let topic = self.expect_ident("topic name")?;
             self.expect(TokenKind::Colon, ":")?;
             let transport = self.parse_transport_spec()?;
+            let constraints = self.parse_binding_constraints_opt()?;
             let semi = self.expect(TokenKind::Semi, ";")?;
             entries.push(BindingEntry {
                 topic: topic.clone(),
                 transport,
+                constraints,
                 span: topic.span.merge(semi.span),
             });
         }
@@ -974,6 +980,60 @@ impl Parser {
             entries,
             span: kw_tok.span.merge(close.span),
         })
+    }
+
+    /// Form K (2026-05-20): the optional `where <c>, <c>, ...`
+    /// suffix on a binding entry. `where` is a reserved keyword
+    /// (`TokenKind::Where`). Each constraint is a bare
+    /// identifier matched against
+    /// `BindingConstraint::from_ident`. Unknown idents produce
+    /// a diagnostic citing the constraint span.
+    fn parse_binding_constraints_opt(
+        &mut self,
+    ) -> Result<Vec<SpannedBindingConstraint>, Diag> {
+        if !self.eat(&TokenKind::Where) {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        out.push(self.parse_binding_constraint()?);
+        while self.eat(&TokenKind::Comma) {
+            out.push(self.parse_binding_constraint()?);
+        }
+        Ok(out)
+    }
+
+    fn parse_binding_constraint(
+        &mut self,
+    ) -> Result<SpannedBindingConstraint, Diag> {
+        let tok = self.peek_token().clone();
+        let name = match &tok.kind {
+            TokenKind::Ident(s) => s.clone(),
+            other => {
+                return Err(Diag::parse(
+                    tok.span,
+                    format!(
+                        "expected binding constraint name (intra_process / \
+                         intra_machine / cross_machine / zero_copy), got {:?}",
+                        other
+                    ),
+                ));
+            }
+        };
+        self.bump();
+        match BindingConstraint::from_ident(&name) {
+            Some(kind) => Ok(SpannedBindingConstraint {
+                kind,
+                span: tok.span,
+            }),
+            None => Err(Diag::parse(
+                tok.span,
+                format!(
+                    "unknown binding constraint `{}` — expected one of \
+                     intra_process, intra_machine, cross_machine, zero_copy",
+                    name
+                ),
+            )),
+        }
     }
 
     /// Transport constructor.
@@ -4217,6 +4277,144 @@ fn main() {
 }
 "#;
         parse_str(src).expect("parse failed");
+    }
+
+    #[test]
+    fn parse_binding_with_where_constraints() {
+        // Form K (2026-05-20): the optional `where ...` clause
+        // after a transport spec carries operational constraints.
+        let src = r#"
+type Ping { n: Int; }
+topic Evt { payload: Ping; }
+
+main locus App {
+    bindings {
+        Evt: unix("/tmp/evt.sock") where intra_machine, zero_copy;
+    }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let locus = prog
+            .items
+            .iter()
+            .find_map(|it| match it {
+                TopDecl::Locus(l) if l.is_main => Some(l),
+                _ => None,
+            })
+            .expect("main locus");
+        let bb = locus
+            .members
+            .iter()
+            .find_map(|m| match m {
+                LocusMember::Bindings(b) => Some(b),
+                _ => None,
+            })
+            .expect("bindings block");
+        assert_eq!(bb.entries.len(), 1);
+        let cs: Vec<BindingConstraint> = bb.entries[0]
+            .constraints
+            .iter()
+            .map(|sc| sc.kind)
+            .collect();
+        assert_eq!(
+            cs,
+            vec![BindingConstraint::IntraMachine, BindingConstraint::ZeroCopy]
+        );
+    }
+
+    #[test]
+    fn parse_binding_without_constraints_keeps_empty_vec() {
+        // Backwards-compat: a binding entry with no `where`
+        // clause parses to `constraints: vec![]`. Existing
+        // bindings tests rely on this.
+        let src = r#"
+type Ping { n: Int; }
+topic Evt { payload: Ping; }
+
+main locus App {
+    bindings {
+        Evt: unix("/tmp/evt.sock");
+    }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let locus = prog
+            .items
+            .iter()
+            .find_map(|it| match it {
+                TopDecl::Locus(l) if l.is_main => Some(l),
+                _ => None,
+            })
+            .expect("main locus");
+        let bb = locus
+            .members
+            .iter()
+            .find_map(|m| match m {
+                LocusMember::Bindings(b) => Some(b),
+                _ => None,
+            })
+            .expect("bindings block");
+        assert!(bb.entries[0].constraints.is_empty());
+    }
+
+    #[test]
+    fn parse_binding_unknown_constraint_errors() {
+        let src = r#"
+type Ping { n: Int; }
+topic Evt { payload: Ping; }
+
+main locus App {
+    bindings {
+        Evt: unix("/tmp/evt.sock") where banana;
+    }
+}
+"#;
+        let err = parse_str(src).expect_err("expected parse error");
+        assert!(
+            err.iter()
+                .any(|d| d.message.contains("unknown binding constraint")),
+            "expected unknown-constraint diag, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn parse_binding_where_works_on_adapter_transport() {
+        // `where` clause sits after the transport regardless of
+        // which variant — unix or adapter.
+        let src = r#"
+type Ping { n: Int; }
+topic Evt { payload: Ping; }
+
+main locus App {
+    bindings {
+        Evt: MyAdapter { url: "nats://x" } where cross_machine;
+    }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let locus = prog
+            .items
+            .iter()
+            .find_map(|it| match it {
+                TopDecl::Locus(l) if l.is_main => Some(l),
+                _ => None,
+            })
+            .expect("main locus");
+        let bb = locus
+            .members
+            .iter()
+            .find_map(|m| match m {
+                LocusMember::Bindings(b) => Some(b),
+                _ => None,
+            })
+            .expect("bindings block");
+        let cs: Vec<BindingConstraint> = bb.entries[0]
+            .constraints
+            .iter()
+            .map(|sc| sc.kind)
+            .collect();
+        assert_eq!(cs, vec![BindingConstraint::CrossMachine]);
     }
 
     #[test]

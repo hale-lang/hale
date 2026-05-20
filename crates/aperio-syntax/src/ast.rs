@@ -318,6 +318,69 @@ pub struct BindingEntry {
     /// bus-transport redesign. Absence-of-binding means same-
     /// process via the cooperative queue (no variant needed).
     pub transport: TransportSpec,
+    /// Form K (2026-05-20): operational constraints the dev team
+    /// asserts on this binding's route. Empty when the binding
+    /// declares only a transport. The typechecker validates that
+    /// (a) the transport variant satisfies every constraint and
+    /// (b) each topic's payload shape is compatible with the
+    /// constraints (e.g. `zero_copy` requires
+    /// `is_flat_shapeable` on the topic's payload type).
+    ///
+    /// Surface: `Topic: unix("/sock") where intra_machine,
+    /// zero_copy;`. `where` is a contextual keyword (recognized
+    /// in binding-entry position only).
+    pub constraints: Vec<SpannedBindingConstraint>,
+    pub span: Span,
+}
+
+/// Form K (2026-05-20): individual operational-constraint
+/// keyword on a `bindings { }` entry.
+///
+/// Constraints are user assertions about the route the
+/// transport must satisfy. They split into two orthogonal
+/// axes:
+///   - **Scope** (where the bus can reach): `intra_process`,
+///     `intra_machine`, `cross_machine`. Hierarchy is
+///     `intra_process ⊂ intra_machine ⊂ cross_machine`.
+///   - **Behavior** (operational requirements): `zero_copy`.
+///     Future: `durable`, `ordered`, ...
+///
+/// Multiple constraints from one axis on a single binding is
+/// the user's choice — the typechecker accepts them as `AND`.
+/// Validity (e.g. `zero_copy` + `cross_machine` is a
+/// contradiction) is enforced downstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingConstraint {
+    IntraProcess,
+    IntraMachine,
+    CrossMachine,
+    ZeroCopy,
+}
+
+impl BindingConstraint {
+    pub fn from_ident(name: &str) -> Option<Self> {
+        match name {
+            "intra_process" => Some(Self::IntraProcess),
+            "intra_machine" => Some(Self::IntraMachine),
+            "cross_machine" => Some(Self::CrossMachine),
+            "zero_copy" => Some(Self::ZeroCopy),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::IntraProcess => "intra_process",
+            Self::IntraMachine => "intra_machine",
+            Self::CrossMachine => "cross_machine",
+            Self::ZeroCopy => "zero_copy",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpannedBindingConstraint {
+    pub kind: BindingConstraint,
     pub span: Span,
 }
 

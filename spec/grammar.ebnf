@@ -164,12 +164,29 @@ birth_check_decl  = "birth_check" , "{" , expression , "}" , "->" ,
    the head's case: lowercase keyword `unix` vs capitalized
    locus name. *)
 bindings_block    = "bindings" , "{" , { binding_entry } , "}" ;
-binding_entry     = IDENTIFIER , ":" , transport_spec , ";" ;
+binding_entry     = IDENTIFIER , ":" , transport_spec ,
+                    [ binding_where ] , ";" ;
 transport_spec    = unix_transport | adapter_transport ;
 unix_transport    = "unix" , "(" , STRING_LIT , { "," , unix_kwarg } , ")" ;
 unix_kwarg        = "role" , ":" , transport_role ;
 transport_role    = "listen" | "connect" ;
 adapter_transport = LOCUS_IDENTIFIER , "{" , [ struct_init , { "," , struct_init } , [ "," ] ] , "}" ;
+
+(* Form K (2026-05-20): operational constraints the dev team
+   asserts on a binding's route. Parsed in 2026-05-20; semantic
+   enforcement (compile-error on contradictions; payload-shape
+   compatibility checks) lands with the route-selection codegen
+   pass. Constraints split into two orthogonal axes:
+     - scope: `intra_process` / `intra_machine` / `cross_machine`
+     - behavior: `zero_copy`
+   Multiple constraints from one axis are ANDed by the
+   typechecker. *)
+binding_where     = "where" , binding_constraint ,
+                    { "," , binding_constraint } ;
+binding_constraint = "intra_process"
+                   | "intra_machine"
+                   | "cross_machine"
+                   | "zero_copy" ;
 
 
 (* === 3. Params block =========================================== *)

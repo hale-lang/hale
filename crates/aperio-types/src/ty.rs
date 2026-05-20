@@ -107,3 +107,93 @@ pub fn prim_name(p: PrimType) -> &'static str {
         PrimType::StringView => "StringView",
     }
 }
+
+/// Form K (2026-05-20): does `ty` have a fixed, statically-known
+/// memory layout suitable for zero-copy bus payload routing?
+///
+/// True iff every leaf is a fixed-size primitive (Int, Uint,
+/// Float, Decimal, Bool, Time, Duration), Unit, a fixed-size
+/// array of flat-shapeable, a tuple of flat-shapeables, or a
+/// named struct whose every field is flat-shapeable.
+///
+/// False for String, Bytes, BytesView, StringView (heap-shaped
+/// / fat-pointer; their backing storage isn't part of the
+/// value's own layout), `Array(_, None)` (unbounded),
+/// `Fallible`/`Function`/`Projection` (not valid bus payloads
+/// anyway), and `Unknown` (conservative — the predicate cannot
+/// assert flatness for a type it can't see).
+///
+/// Used by Form K's route-selection matrix and the `zero_copy`
+/// binding constraint (rejects bindings whose topic payloads
+/// don't satisfy this predicate). Pure: no side effects on
+/// `scope`.
+pub fn is_flat_shapeable(ty: &Ty, scope: &crate::resolve::TopScope) -> bool {
+    let mut seen: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    is_flat_shapeable_inner(ty, scope, &mut seen)
+}
+
+fn is_flat_shapeable_inner(
+    ty: &Ty,
+    scope: &crate::resolve::TopScope,
+    seen: &mut std::collections::BTreeSet<String>,
+) -> bool {
+    match ty {
+        Ty::Prim(p) => match p {
+            PrimType::Int
+            | PrimType::Uint
+            | PrimType::Float
+            | PrimType::Decimal
+            | PrimType::Bool
+            | PrimType::Time
+            | PrimType::Duration => true,
+            PrimType::String
+            | PrimType::Bytes
+            | PrimType::BytesView
+            | PrimType::StringView => false,
+        },
+        Ty::Unit => true,
+        Ty::Array(elem, Some(_)) => is_flat_shapeable_inner(elem, scope, seen),
+        Ty::Array(_, None) => false,
+        Ty::Tuple(parts) => parts
+            .iter()
+            .all(|p| is_flat_shapeable_inner(p, scope, seen)),
+        Ty::Named(name) => {
+            // Cycle guard: a struct cannot transitively contain
+            // itself by value (codegen would reject earlier), so
+            // a re-entry on the same name is either a bug or an
+            // alias chain. Treat as "not flat" conservatively
+            // rather than recursing into a loop.
+            if !seen.insert(name.clone()) {
+                return false;
+            }
+            let res = match scope.lookup(name) {
+                Some(crate::symbol::TopSymbol::Type(info)) => match &info.kind
+                {
+                    crate::symbol::TypeKind::Struct(fields) => fields
+                        .iter()
+                        .all(|f| is_flat_shapeable_inner(&f.ty, scope, seen)),
+                    crate::symbol::TypeKind::Alias(inner) => {
+                        is_flat_shapeable_inner(inner, scope, seen)
+                    }
+                    // Enums are not currently shipped as bus
+                    // payloads on the flat path; treat as not
+                    // flat until/unless we add a discriminator
+                    // layout story.
+                    crate::symbol::TypeKind::Enum(_) => false,
+                },
+                // Unknown name / non-Type symbol → cannot assert
+                // flatness.
+                _ => false,
+            };
+            seen.remove(name);
+            res
+        }
+        // Loci-as-types, fallible, functions, unknown: not
+        // legal bus payload shapes (or unknown — conservative).
+        Ty::Projection(_, _)
+        | Ty::Function { .. }
+        | Ty::Fallible { .. }
+        | Ty::Unknown => false,
+    }
+}

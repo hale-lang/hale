@@ -79,6 +79,155 @@ pub fn check_bundle(bundle: &Bundle<'_>) -> Vec<Diag> {
 }
 
 #[cfg(test)]
+mod flat_shapeable_tests {
+    //! Form K (2026-05-20): `is_flat_shapeable` predicate
+    //! drives the route-selection matrix for the bus-decl
+    //! constraint substrate. These tests pin the predicate's
+    //! behavior on the cases the route matrix consults.
+
+    use super::*;
+    use aperio_syntax::ast::PrimType;
+    use aperio_syntax::parse_source;
+
+    use crate::resolve::{build_top_scope, TopScope};
+    use crate::symbol::Bundle;
+    use crate::ty::{is_flat_shapeable, Ty};
+
+    fn with_scope(src: &str, f: impl FnOnce(&TopScope)) {
+        let p = parse_source(src).expect("parses");
+        let mut programs = BTreeMap::new();
+        programs.insert(String::new(), &p);
+        let bundle = Bundle { programs };
+        let (scope, _) = build_top_scope(&bundle);
+        f(&scope);
+    }
+
+    #[test]
+    fn flat_for_pure_primitives() {
+        with_scope("fn main() {}", |s| {
+            for p in [
+                PrimType::Int,
+                PrimType::Uint,
+                PrimType::Float,
+                PrimType::Decimal,
+                PrimType::Bool,
+                PrimType::Time,
+                PrimType::Duration,
+            ] {
+                assert!(
+                    is_flat_shapeable(&Ty::Prim(p), s),
+                    "primitive {:?} should be flat",
+                    p
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn not_flat_for_string_and_bytes() {
+        with_scope("fn main() {}", |s| {
+            for p in [
+                PrimType::String,
+                PrimType::Bytes,
+                PrimType::BytesView,
+                PrimType::StringView,
+            ] {
+                assert!(
+                    !is_flat_shapeable(&Ty::Prim(p), s),
+                    "variadic primitive {:?} should NOT be flat",
+                    p
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn flat_for_fixed_size_array_of_flat() {
+        with_scope("fn main() {}", |s| {
+            let ty = Ty::Array(Box::new(Ty::Prim(PrimType::Int)), Some(8));
+            assert!(is_flat_shapeable(&ty, s));
+        });
+    }
+
+    #[test]
+    fn not_flat_for_unbounded_array() {
+        with_scope("fn main() {}", |s| {
+            let ty = Ty::Array(Box::new(Ty::Prim(PrimType::Int)), None);
+            assert!(!is_flat_shapeable(&ty, s));
+        });
+    }
+
+    #[test]
+    fn not_flat_for_array_of_string() {
+        with_scope("fn main() {}", |s| {
+            let ty = Ty::Array(Box::new(Ty::Prim(PrimType::String)), Some(4));
+            assert!(!is_flat_shapeable(&ty, s));
+        });
+    }
+
+    #[test]
+    fn flat_for_struct_of_primitives() {
+        with_scope(
+            "type Quote { bid: Decimal; ask: Decimal; venue: Int; } fn main() {}",
+            |s| {
+                let ty = Ty::Named("Quote".to_string());
+                assert!(is_flat_shapeable(&ty, s));
+            },
+        );
+    }
+
+    #[test]
+    fn not_flat_for_struct_with_string_field() {
+        with_scope(
+            "type Note { code: Int; text: String; } fn main() {}",
+            |s| {
+                let ty = Ty::Named("Note".to_string());
+                assert!(!is_flat_shapeable(&ty, s));
+            },
+        );
+    }
+
+    #[test]
+    fn flat_for_nested_struct_when_all_flat() {
+        with_scope(
+            "type Inner { v: Int; } type Outer { a: Inner; b: Decimal; } fn main() {}",
+            |s| {
+                let ty = Ty::Named("Outer".to_string());
+                assert!(is_flat_shapeable(&ty, s));
+            },
+        );
+    }
+
+    #[test]
+    fn not_flat_for_unknown_named() {
+        with_scope("fn main() {}", |s| {
+            let ty = Ty::Named("NoSuchType".to_string());
+            // Conservative: predicate cannot assert flatness
+            // for a type it cannot see.
+            assert!(!is_flat_shapeable(&ty, s));
+        });
+    }
+
+    #[test]
+    fn not_flat_for_fallible() {
+        with_scope("fn main() {}", |s| {
+            let ty = Ty::Fallible {
+                success: Box::new(Ty::Prim(PrimType::Int)),
+                payload: Box::new(Ty::Prim(PrimType::Int)),
+            };
+            assert!(!is_flat_shapeable(&ty, s));
+        });
+    }
+
+    #[test]
+    fn flat_for_unit() {
+        with_scope("fn main() {}", |s| {
+            assert!(is_flat_shapeable(&Ty::Unit, s));
+        });
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use aperio_syntax::parse_source;
