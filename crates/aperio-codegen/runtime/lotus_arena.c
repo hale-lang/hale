@@ -2067,37 +2067,59 @@ void lotus_bus_dispatch(lotus_bus_queue_t *queue,
                         const void *struct_payload,
                         size_t struct_size,
                         lotus_serialize_fn serialize_fn) {
-    /* Local fanout: enqueue struct bytes verbatim. Same shape
-     * as the pre-m70 path — String fields inside the struct
-     * are pointers into the publisher's arena; the local
-     * subscriber's drain copies struct bytes into its own arena
-     * and the handler reads through those pointers (which are
-     * still valid in-process). */
+    /* Phase-3 Task 11 (2026-05-20): per-subscriber arena routing
+     * for the intra-process path. Previously this enqueued the
+     * publisher's struct bytes verbatim into each subscriber's
+     * cell; String / Bytes pointers stayed aliased to the
+     * publisher's arena. For long-running publishers (mdgw
+     * normalizer class) that's an unbounded leak — the
+     * publisher's arena accumulates per-publish allocations
+     * forever, with no cap (the global-arena cap doesn't apply
+     * to locus-owned arenas).
+     *
+     * The fix: when a serialize_fn is available, route through
+     * the wire-format path (Task 9). The serialize/deserialize
+     * round-trip rebuilds the struct in each subscriber's own
+     * arena via the TLS routing, so payload pointers end up
+     * bounded by the subscriber's lifecycle. The cost is one
+     * serialize + N deserializes per publish (N = matching
+     * subscribers); roughly 2x the previous cooperative-only
+     * dispatch cost in the typical 1-sub case. Trade-off:
+     * correctness (no unbounded leak) vs. throughput.
+     *
+     * When `serialize_fn` is NULL — a payload-typeless
+     * subject the codegen didn't synthesize a wire codec for —
+     * fall back to the legacy verbatim path. Payload pointers
+     * stay aliased to publisher's arena; subscribers retain
+     * the dangling-by-design behavior the pre-Task-11 v1
+     * shipped with. */
+    if (serialize_fn) {
+        char wire_buf[LOTUS_PAYLOAD_MAX];
+        ssize_t wire_size = serialize_fn(struct_payload, wire_buf,
+                                         sizeof(wire_buf));
+        if (wire_size > 0) {
+            /* Local fanout via per-sub deserialize-into-sub-arena.
+             * Reuses the wire-dispatch path's TLS routing
+             * machinery. */
+            lotus_bus_dispatch_wire(subject, wire_buf, (size_t)wire_size);
+            /* Remote fanout: send the already-serialized wire
+             * bytes to each CONNECT-role transport bound to
+             * this subject. The serialize cost is amortized
+             * across local + remote (was previously paid only
+             * for remote). */
+            if (lotus_bus_has_remote_entries()) {
+                lotus_bus_remote_fanout(subject, wire_buf,
+                                         (size_t)wire_size);
+            }
+            return;
+        }
+        /* serialize failure → drop the publish. The cooperative
+         * surface treats this as a no-op (matches the prior
+         * remote-only failure mode). */
+        return;
+    }
+    /* Legacy verbatim local fanout (no wire codec). */
     lotus_bus_local_dispatch(queue, subject, struct_payload, struct_size);
-
-    /* Remote fanout: serialize struct → wire bytes (per-field
-     * walk; codegen synthesizes the body), then dispatch to
-     * each CONNECT-role transport bound to this subject via
-     * the existing lotus_bus_remote_fanout iteration.
-     *
-     * Skip the serialize-call entirely when no remote entries
-     * are configured at all (the common case — most programs
-     * never set LOTUS_BUS_CONFIG). The serialize walks the
-     * payload's fields into wire_buf, which costs ~10-30ns
-     * per publish even for an 8-byte payload like Tick, and
-     * the resulting bytes would be discarded by an empty
-     * remote-fanout loop. Removing that work cuts ~20% off
-     * `bus_dispatch` on cooperative-only programs.
-     *
-     * m58: local + remote share the same subject namespace per
-     * notes/open-questions #9 (emergent cardinality). */
-    if (!serialize_fn) return;
-    if (!lotus_bus_has_remote_entries()) return;
-    char wire_buf[LOTUS_PAYLOAD_MAX];
-    ssize_t wire_size = serialize_fn(struct_payload, wire_buf,
-                                     sizeof(wire_buf));
-    if (wire_size <= 0) return;
-    lotus_bus_remote_fanout(subject, wire_buf, (size_t)wire_size);
 }
 
 /* m41b semantic: null-out subject for any entry whose self

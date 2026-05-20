@@ -680,6 +680,38 @@ program leaking into the payload arena, not the fix; the fix is
 per-subscriber arena routing for m70 + `__caller_arena` threading
 for the stdlib primitives that land here.
 
+**Phase-3 Task 11 intra-process bus per-subscriber routing
+(2026-05-20).** Extends Task 9's per-sub arena pattern to the
+intra-process `<-` path. Previously `lotus_bus_dispatch` enqueued
+the publisher's struct bytes verbatim into each subscriber's
+queue cell — payload String / Bytes pointers stayed aliased to
+the publisher's locus arena. For long-running publishers (mdgw
+normalizer class) that meant an unbounded leak in the publisher's
+locus arena (the per-arena cap from Task 10 doesn't apply to
+locus-owned arenas), bounded only by the publisher's eventual
+dissolve — which for a daemon's root locus never happens.
+
+The fix: when the codegen has synthesized a wire codec for the
+payload type (the common case — every `<-` payload type gets
+one), the dispatcher serializes the publisher's struct to wire
+bytes once, then routes through `lotus_bus_dispatch_wire`. The
+wire path's per-subscriber TLS routing rebuilds the struct in
+each subscriber's own `__arena`; payload pointers end up bounded
+by the subscriber's lifecycle. Cost: one serialize + N
+deserializes per publish (N = matching subscribers). For
+cooperative-only programs with no remote subs, the
+previously-skipped serialize work is now paid on every publish.
+For programs with both local and remote subs, the serialize cost
+is amortized (same wire_buf feeds both).
+
+A payload-typeless subject (no codegen-synthesized wire codec —
+the `serialize_fn` arg is NULL) falls back to the legacy
+verbatim enqueue, preserving the pre-Task-11 v1 behavior. This
+escape hatch is intentional: it lets a hot-path subject opt out
+of the round-trip cost when the publisher controls all
+subscribers and can guarantee the payload's pointer-aliasing
+discipline.
+
 **Phase-3 Task 9 m70 per-subscriber arena routing (2026-05-20).**
 `lotus_bus_dispatch_wire` no longer parks deserialized String /
 Bytes pointers in the program-lifetime g_bus_payload_arena.
