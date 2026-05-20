@@ -2229,6 +2229,11 @@ char *lotus_str_clone(lotus_arena_t *a, const char *s) {
     return out;
 }
 
+/* lotus_bytes_clone is defined further down (alongside the
+ * other Bytes helpers) so the forward references to
+ * lotus_bytes_create / lotus_bytes_len / lotus_bytes_data
+ * resolve cleanly. */
+
 int64_t lotus_str_len(const char *s) {
     return (int64_t)strlen(s);
 }
@@ -2373,6 +2378,30 @@ void *lotus_bytes_from_buf(lotus_arena_t *a, const void *src, int64_t len) {
         return blob;
     }
     memcpy(lotus_bytes_data(blob), src, (size_t)len);
+    return blob;
+}
+
+/* F.30 (2026-05-20): deep-copy a Bytes blob (length-prefixed,
+ * may contain embedded NULs) into `a`. The companion to
+ * `lotus_str_clone` for the binary path; needed for
+ * `std::bytes::clone(view)` to upgrade a non-owning BytesView
+ * into an owned arena-backed Bytes blob.
+ *
+ * Returns NULL on alloc failure; the caller (the Aperio-side
+ * `std::bytes::clone` lowering) wraps NULL in the empty-bytes
+ * sentinel via the existing patterns. */
+void *lotus_bytes_clone(lotus_arena_t *a, const void *src) {
+    if (!a || !src) return NULL;
+    int64_t len = lotus_bytes_len(src);
+    if (len < 0) len = 0;
+    void *blob = lotus_bytes_create(a, len);
+    if (!blob) return NULL;
+    if (len > 0) {
+        memcpy(
+            lotus_bytes_data(blob),
+            (const char *)src + sizeof(int64_t),
+            (size_t)len);
+    }
     return blob;
 }
 

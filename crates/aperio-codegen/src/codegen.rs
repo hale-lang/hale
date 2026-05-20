@@ -65,6 +65,16 @@ enum CodegenTy {
     /// Length is read by dereferencing the prefix; the data
     /// pointer is the blob plus 8 bytes.
     Bytes,
+    /// F.30 (2026-05-20): non-owning view over a BytesBuilder's
+    /// buffer. Runtime layout identical to `Bytes` (same single-
+    /// pointer ABI, same `[i64 len][u8 data]` derefed at the
+    /// same offsets); typecheck-distinct so the read-vs-store
+    /// axis is visible. Returned only by `BytesBuilder.view()`.
+    BytesView,
+    /// F.30 companion: non-owning view over a BytesBuilder's
+    /// NUL-terminated buffer. Runtime layout identical to
+    /// `String`. Returned only by `BytesBuilder.text_view()`.
+    StringView,
     /// Pointer to a locus's struct. The string carries the locus
     /// name; the layout + field map live in `Cx.user_loci`. Used
     /// for the child param of `accept(g: ChildLocus)`.
@@ -1344,6 +1354,26 @@ fn expr_definitely_non_allocating(e: &Expr) -> bool {
 /// acquired. RecpoolFixed/RecpoolSlab children stay on the
 /// original path (recpool slots have their own pre-allocated
 /// lifecycle).
+/// F.30 (2026-05-20): implicit coercion gate at fn-argument
+/// READ positions. A `BytesView` flows into a `Bytes`-typed
+/// param (and `StringView` into `String`) as a no-op at
+/// runtime — same pointer ABI, same data layout — so existing
+/// stdlib readers (`std::bytes::at`, `len`, `std::str::*`)
+/// accept views without per-signature changes. Storage sites
+/// (let-binding type ascription, struct/locus field init,
+/// return-value to a different declared type) deliberately do
+/// NOT use this coercion: callers wanting owned storage must
+/// `std::bytes::clone(view)` / `std::str::clone(view)` to
+/// deep-copy explicitly, which is what makes the read-vs-store
+/// axis legible in the type signature.
+fn view_coerces_to(from: &CodegenTy, to: &CodegenTy) -> bool {
+    matches!(
+        (from, to),
+        (CodegenTy::BytesView, CodegenTy::Bytes)
+            | (CodegenTy::StringView, CodegenTy::String)
+    )
+}
+
 fn locus_arena_elidable(l: &LocusDecl) -> bool {
     // Structural disqualifiers — these consume arena at
     // instantiation regardless of method-body content.
@@ -2434,6 +2464,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
         self.module
             .add_function("lotus_str_clone", str_clone_ty, None);
+        // F.30: deep-copy Bytes blob (length-prefixed) into a
+        // destination arena. Companion to lotus_str_clone for
+        // BytesView → Bytes upgrades via `std::bytes::clone`.
+        // declare ptr @lotus_bytes_clone(ptr arena, ptr src)
+        let bytes_clone_ty =
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        self.module
+            .add_function("lotus_bytes_clone", bytes_clone_ty, None);
         let i32_t_local = self.context.i32_type();
         let str_eq_ty =
             i32_t_local.fn_type(&[ptr_t.into(), ptr_t.into()], false);
@@ -6409,6 +6447,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 PrimType::Decimal => Ok(CodegenTy::Decimal),
                 PrimType::Time => Ok(CodegenTy::Time),
                 PrimType::Bytes => Ok(CodegenTy::Bytes),
+                PrimType::BytesView => Ok(CodegenTy::BytesView),
+                PrimType::StringView => Ok(CodegenTy::StringView),
                 other => Err(CodegenError::Unsupported(format!(
                     "type primitive `{:?}` in signature",
                     other
@@ -9284,6 +9324,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 }
                                 CodegenTy::String
                                 | CodegenTy::Bytes
+                                | CodegenTy::BytesView
+                                | CodegenTy::StringView
                                 | CodegenTy::Time
                                 | CodegenTy::LocusRef(_)
                                 | CodegenTy::TypeRef(_)
@@ -9462,6 +9504,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 }
                                 CodegenTy::String
                                 | CodegenTy::Bytes
+                                | CodegenTy::BytesView
+                                | CodegenTy::StringView
                                 | CodegenTy::Time
                                 | CodegenTy::LocusRef(_)
                                 | CodegenTy::TypeRef(_)
@@ -10592,6 +10636,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Some(CodegenTy::String)
                 | Some(CodegenTy::Bytes)
+                | Some(CodegenTy::BytesView)
+                | Some(CodegenTy::StringView)
                 | Some(CodegenTy::Time)
                 | Some(CodegenTy::LocusRef(_))
                 | Some(CodegenTy::TypeRef(_))
@@ -11197,6 +11243,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // primitive that copies len + body into
                 // dest_arena, for callers that genuinely want
                 // the payload moved.
+                Ok(value)
+            }
+            CodegenTy::BytesView | CodegenTy::StringView => {
+                // F.30: a view returned from a fn keeps aliasing
+                // whatever buffer the source builder owned. The
+                // caller is responsible for treating it as a view
+                // (lifetime tied to the source builder); no
+                // deep-copy here. If the caller wants owned
+                // storage they must explicitly clone via
+                // `std::bytes::clone(v)` / `std::str::clone(v)`
+                // (see F.30 spec for the surface).
                 Ok(value)
             }
             CodegenTy::Tuple(elem_tys) => {
@@ -11936,6 +11993,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     &format!("fn `{}` arg {}", name, i),
                 )?;
                 widened.into()
+            } else if view_coerces_to(&ty, &sig.params[i]) {
+                // F.30: BytesView → Bytes / StringView → String at
+                // read-position fn-arg sites. Runtime no-op
+                // (identical pointer layout); the typecheck
+                // approval is the load-bearing piece.
+                v
             } else if ty != sig.params[i] {
                 return Err(CodegenError::Unsupported(format!(
                     "fn `{}` arg {} type mismatch: expected {:?}, got {:?}",
@@ -12534,6 +12597,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | ["std", "bytes", "builder", "__text_view"]
             | ["std", "bytes", "builder", "__append_slice"]
             | ["std", "bytes", "__is_alloc_fail"]
+            | ["std", "bytes", "clone"]
+            | ["std", "str", "clone"]
             | ["std", "math", "sqrt"]
             | ["std", "math", "exp"]
             | ["std", "math", "log"]
@@ -12586,7 +12651,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if b_ty != CodegenTy::Bytes {
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::bytes::at: b must be Bytes, got {:?}. To read \
                  a byte from a String, convert first via \
@@ -12930,7 +12995,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
-        if s_ty != CodegenTy::String {
+        if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::parse_int: s must be String, got {:?}",
                 s_ty
@@ -12991,7 +13056,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
-        if s_ty != CodegenTy::String {
+        if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::parse_float: s must be String, got {:?}",
                 s_ty
@@ -13054,7 +13119,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::read_file: path must be String, got {:?}",
                 path_ty
@@ -13174,7 +13239,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::read_bytes: path must be String, got {:?}",
                 path_ty
@@ -13324,7 +13389,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (argv_val, argv_ty) = self.lower_expr(&args[0], scope)?;
-        if argv_ty != CodegenTy::String {
+        if !matches!(argv_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::process::run: argv must be String (newline-\
                  separated), got {:?}",
@@ -13463,7 +13528,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (argv_val, argv_ty) = self.lower_expr(&args[0], scope)?;
-        if argv_ty != CodegenTy::String {
+        if !matches!(argv_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::process::__spawn: argv must be String, got {:?}",
                 argv_ty
@@ -13798,7 +13863,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (s_val, s_ty) = self.lower_expr(&args[1], scope)?;
-        if s_ty != CodegenTy::String {
+        if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::process::__pipe_write: s must be String, got {:?}",
                 s_ty
@@ -13916,14 +13981,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "{}: path must be String, got {:?}",
                 c_fn_name, path_ty
             )));
         }
         let (content_val, content_ty) = self.lower_expr(&args[1], scope)?;
-        if content_ty != CodegenTy::String {
+        if !matches!(content_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "{}: content must be String, got {:?}",
                 c_fn_name, content_ty
@@ -13981,7 +14046,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::file_size: path must be String, got {:?}",
                 path_ty
@@ -14032,7 +14097,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
-        if host_ty != CodegenTy::String {
+        if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::udp::__bind: host must be String, got {:?}",
                 host_ty
@@ -14108,7 +14173,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (host_val, host_ty) = self.lower_expr(&args[1], scope)?;
-        if host_ty != CodegenTy::String {
+        if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::udp::__send: host must be String, got {:?}", host_ty
             )));
@@ -14120,7 +14185,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (msg_val, msg_ty) = self.lower_expr(&args[3], scope)?;
-        if msg_ty != CodegenTy::String {
+        if !matches!(msg_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::udp::__send: msg must be String, got {:?}", msg_ty
             )));
@@ -14252,14 +14317,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::file::__open: path must be String, got {:?}",
                 path_ty
             )));
         }
         let (mode_val, mode_ty) = self.lower_expr(&args[1], scope)?;
-        if mode_ty != CodegenTy::String {
+        if !matches!(mode_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::file::__open: mode must be String, got {:?}",
                 mode_ty
@@ -14323,7 +14388,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (bytes_val, bytes_ty) = self.lower_expr(&args[1], scope)?;
-        if bytes_ty != CodegenTy::Bytes {
+        if !matches!(bytes_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::file::__write_bytes: bytes must be Bytes, got {:?}",
                 bytes_ty
@@ -14473,7 +14538,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::mkdir: path must be String, got {:?}",
                 path_ty
@@ -14520,14 +14585,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (src_val, src_ty) = self.lower_expr(&args[0], scope)?;
-        if src_ty != CodegenTy::String {
+        if !matches!(src_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::rename: src must be String, got {:?}",
                 src_ty
             )));
         }
         let (dst_val, dst_ty) = self.lower_expr(&args[1], scope)?;
-        if dst_ty != CodegenTy::String {
+        if !matches!(dst_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::rename: dst must be String, got {:?}",
                 dst_ty
@@ -14575,7 +14640,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::unlink: path must be String, got {:?}",
                 path_ty
@@ -14622,14 +14687,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (prefix_val, prefix_ty) = self.lower_expr(&args[0], scope)?;
-        if prefix_ty != CodegenTy::String {
+        if !matches!(prefix_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::mktemp: prefix must be String, got {:?}",
                 prefix_ty
             )));
         }
         let (suffix_val, suffix_ty) = self.lower_expr(&args[1], scope)?;
-        if suffix_ty != CodegenTy::String {
+        if !matches!(suffix_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::mktemp: suffix must be String, got {:?}",
                 suffix_ty
@@ -14728,7 +14793,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::list_dir_count: path must be String, got {:?}",
                 path_ty
@@ -14787,7 +14852,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::list_dir_at: path must be String, got {:?}",
                 path_ty
@@ -14854,7 +14919,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
-        if host_ty != CodegenTy::String {
+        if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::listen_socket: host must be String, got {:?}",
                 host_ty
@@ -14929,7 +14994,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
-        if host_ty != CodegenTy::String {
+        if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::connect: host must be String, got {:?}",
                 host_ty
@@ -16707,6 +16772,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             )?;
                             val = widened.into();
                             ty = CodegenTy::Float;
+                        } else if asc_ty != ty
+                            && matches!(
+                                (&ty, &asc_ty),
+                                (CodegenTy::BytesView, CodegenTy::Bytes)
+                                    | (CodegenTy::StringView, CodegenTy::String)
+                            )
+                        {
+                            // F.30: storage-site rejection. `let
+                            // stored: Bytes = b.view();` is the
+                            // exact footgun BytesView exists to
+                            // catch — the rhs is non-owning but
+                            // the declared type signals owned
+                            // storage. Reject with a pointer at
+                            // the explicit clone path.
+                            return Err(CodegenError::Unsupported(format!(
+                                "let `{}`: declared `{:?}` but RHS is `{:?}` \
+                                 (a non-owning view of a BytesBuilder). \
+                                 Use `let {}: {:?} = ...;` to keep the \
+                                 view's non-owning semantic, or wrap the \
+                                 RHS in `std::bytes::clone(view)` / \
+                                 `std::str::clone(view)` to deep-copy the \
+                                 contents into the caller's arena (F.30).",
+                                name.name, asc_ty, ty, name.name, ty
+                            )));
                         }
                     }
                 }
@@ -17655,7 +17744,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         match ty {
-            CodegenTy::String => {
+            CodegenTy::String | CodegenTy::StringView => {
                 let len_fn = self
                     .module
                     .get_function("lotus_str_len")
@@ -17673,7 +17762,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("lotus_str_len returns i64");
                 Ok((val, CodegenTy::Int))
             }
-            CodegenTy::Bytes => {
+            CodegenTy::Bytes | CodegenTy::BytesView => {
                 // m89: Bytes carries an explicit length prefix —
                 // not strlen, since binary data may have embedded
                 // NULs. lotus_bytes_len reads the i64 at offset 0.
@@ -19643,6 +19732,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             CodegenTy::String
             | CodegenTy::Bytes
+            | CodegenTy::BytesView
+            | CodegenTy::StringView
             | CodegenTy::Time
             | CodegenTy::LocusRef(_)
             | CodegenTy::TypeRef(_)
@@ -20881,6 +20972,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             CodegenTy::String
             | CodegenTy::Bytes
+            | CodegenTy::BytesView
+            | CodegenTy::StringView
             | CodegenTy::Time
             | CodegenTy::LocusRef(_)
             | CodegenTy::TypeRef(_)
@@ -21598,7 +21691,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         chosen.into_pointer_value(),
                     ));
                 }
-                CodegenTy::String | CodegenTy::Time => {
+                CodegenTy::String | CodegenTy::Time | CodegenTy::StringView => {
                     format.push_str("%s");
                     printf_args.push(BasicMetadataValueEnum::PointerValue(
                         val.into_pointer_value(),
@@ -21644,8 +21737,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                          values have no surface representation".into(),
                     ));
                 }
-                CodegenTy::Bytes => {
-                    // m89: print Bytes as `<bytes len=N>` so it's
+                CodegenTy::Bytes | CodegenTy::BytesView => {
+                    // m89 / F.30: print Bytes (and BytesView, same
+                    // runtime layout) as `<bytes len=N>` so it's
                     // identifiable in logs without dumping
                     // potentially-binary content. Users who want the
                     // body should write a hex / base64 helper —
@@ -22532,6 +22626,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_bytes_is_alloc_fail(args, scope)?;
                 Ok(())
             }
+            ["std", "bytes", "clone"] => {
+                let _ = self.lower_std_bytes_clone(args, scope)?;
+                Ok(())
+            }
+            ["std", "str", "clone"] => {
+                let _ = self.lower_std_str_clone(args, scope)?;
+                Ok(())
+            }
             // m84: parse_request also reachable in statement
             // position (rare — usually you keep the result), but
             // wire it for completeness so `std::http::parse_request(raw);`
@@ -23099,6 +23201,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "bytes", "__is_alloc_fail"] => {
                 self.lower_std_bytes_is_alloc_fail(args, scope)
+            }
+            ["std", "bytes", "clone"] => {
+                self.lower_std_bytes_clone(args, scope)
+            }
+            ["std", "str", "clone"] => {
+                self.lower_std_str_clone(args, scope)
             }
             // m84: std::http::parse_request(raw: String) -> Request.
             // Implementation lives in stdlib.ap as the bare-name
@@ -23856,7 +23964,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
-        if host_ty != CodegenTy::String {
+        if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__listen_socket: host must be String, got {:?}",
                 host_ty
@@ -23909,7 +24017,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
-        if host_ty != CodegenTy::String {
+        if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__connect: host must be String, got {:?}",
                 host_ty
@@ -24017,14 +24125,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
-        if s_ty != CodegenTy::String {
+        if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::index_of: s must be String, got {:?}",
                 s_ty
             )));
         }
         let (sub_val, sub_ty) = self.lower_expr(&args[1], scope)?;
-        if sub_ty != CodegenTy::String {
+        if !matches!(sub_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::index_of: sub must be String, got {:?}",
                 sub_ty
@@ -24062,7 +24170,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
-        if s_ty != CodegenTy::String {
+        if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::can_parse_int: s must be String, got {:?}",
                 s_ty
@@ -24112,7 +24220,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
-        if s_ty != CodegenTy::String {
+        if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             let hint = if matches!(s_ty, CodegenTy::Bytes) {
                 " — use `std::str::from_bytes(b)` to convert"
             } else {
@@ -24163,7 +24271,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
-        if s_ty != CodegenTy::String {
+        if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::substring: s must be String, got {:?}",
                 s_ty
@@ -24214,7 +24322,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
-        if s_ty != CodegenTy::String {
+        if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::repeat: s must be String, got {:?}",
                 s_ty
@@ -24259,7 +24367,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         let (w_val, w_ty) = self.lower_expr(&args[1], scope)?;
         let (p_val, p_ty) = self.lower_expr(&args[2], scope)?;
-        if s_ty != CodegenTy::String {
+        if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::{}: s must be String, got {:?}",
                 which, s_ty
@@ -24271,7 +24379,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 which, w_ty
             )));
         }
-        if p_ty != CodegenTy::String {
+        if !matches!(p_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::{}: pad must be String, got {:?}",
                 which, p_ty
@@ -24398,7 +24506,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if b_ty != CodegenTy::Bytes {
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::builder_append: builder must be Bytes \
                  (from builder_new), got {:?}",
@@ -24406,7 +24514,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (s_val, s_ty) = self.lower_expr(&args[1], scope)?;
-        if s_ty != CodegenTy::String {
+        if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::builder_append: s must be String, got {:?}",
                 s_ty
@@ -24436,7 +24544,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if b_ty != CodegenTy::Bytes {
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::builder_len: builder must be Bytes, got {:?}",
                 b_ty
@@ -24473,7 +24581,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if b_ty != CodegenTy::Bytes {
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::builder_finish: builder must be Bytes, got {:?}",
                 b_ty
@@ -24597,7 +24705,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             "std::bytes::builder::__append",
         )?;
         let (chunk_val, chunk_ty) = self.lower_expr(&args[1], scope)?;
-        if chunk_ty != CodegenTy::Bytes {
+        if !matches!(chunk_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::bytes::builder::__append: chunk must be Bytes, got \
                  {:?} (use `std::bytes::from_string(s)` to convert)",
@@ -24863,7 +24971,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .try_as_basic_value()
             .left()
             .expect("returns ptr");
-        Ok((ptr, CodegenTy::Bytes))
+        // F.30 (2026-05-20): the view bridge now mints `BytesView`,
+        // a typecheck-distinct non-owning shape. Runtime layout
+        // is identical to `Bytes` (same single-pointer ABI, same
+        // `[i64 len][u8 data]` deref); the type carries the
+        // "non-owning, valid until next mutation on the source
+        // builder" intent so storage sites can distinguish a view
+        // from an owned blob.
+        Ok((ptr, CodegenTy::BytesView))
     }
 
     /// Phase-3 Site 2: lower `std::bytes::builder::__text_view(
@@ -24901,7 +25016,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .try_as_basic_value()
             .left()
             .expect("returns ptr");
-        Ok((ptr, CodegenTy::String))
+        // F.30: text_view bridge mints `StringView` — same runtime
+        // layout as `String` (NUL-terminated C-string), typecheck-
+        // distinct so the non-owning intent is visible.
+        Ok((ptr, CodegenTy::StringView))
     }
 
     /// Phase-3 Site 1: lower `std::bytes::builder::__append_slice(
@@ -24929,7 +25047,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             "std::bytes::builder::__append_slice",
         )?;
         let (src_val, src_ty) = self.lower_expr(&args[1], scope)?;
-        if src_ty != CodegenTy::Bytes {
+        if !matches!(src_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::bytes::builder::__append_slice: src must be Bytes, \
                  got {:?}",
@@ -24996,7 +25114,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if b_ty != CodegenTy::Bytes {
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::bytes::__is_alloc_fail: b must be Bytes, got {:?}",
                 b_ty
@@ -25017,6 +25135,94 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok((status, CodegenTy::Int))
     }
 
+    /// F.30 (2026-05-20): `std::bytes::clone(v: BytesView) -> Bytes`.
+    /// Deep-copies the view's contents into the caller's arena
+    /// (via Task 8's TLS routing), returning an owned Bytes
+    /// blob that outlives the source builder. This is the
+    /// explicit upgrade path BytesView signals when storage
+    /// sites reject the read-only coercion. Also accepts
+    /// `Bytes` as a no-op deep copy (useful for callers that
+    /// want to clone-from-a-borrowed-source generically).
+    fn lower_std_bytes_clone(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::clone takes 1 arg (view), got {}",
+                args.len()
+            )));
+        }
+        let (v_val, v_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(v_ty, CodegenTy::BytesView | CodegenTy::Bytes) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::clone: arg must be BytesView or Bytes, got {:?}",
+                v_ty
+            )));
+        }
+        let arena = self.current_arena_ptr()?;
+        let f = self
+            .module
+            .get_function("lotus_bytes_clone")
+            .expect("lotus_bytes_clone declared");
+        let call = self
+            .builder
+            .build_call(
+                f,
+                &[arena.into(), v_val.into()],
+                "bytes.clone.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::Bytes))
+    }
+
+    /// F.30 companion: `std::str::clone(v: StringView) -> String`.
+    /// Reuses the existing m49 `lotus_str_clone` machinery — same
+    /// arena-arg shape — with the caller's current_arena as the
+    /// target. Also accepts `String` as a no-op clone.
+    fn lower_std_str_clone(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::clone takes 1 arg (view), got {}",
+                args.len()
+            )));
+        }
+        let (v_val, v_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(v_ty, CodegenTy::StringView | CodegenTy::String) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::clone: arg must be StringView or String, got {:?}",
+                v_ty
+            )));
+        }
+        let arena = self.current_arena_ptr()?;
+        let f = self
+            .module
+            .get_function("lotus_str_clone")
+            .expect("lotus_str_clone declared");
+        let call = self
+            .builder
+            .build_call(
+                f,
+                &[arena.into(), v_val.into()],
+                "str.clone.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::String))
+    }
+
     /// v1.x-16: `std::str::can_parse_float(s: String) -> Bool`.
     fn lower_std_str_can_parse_float(
         &mut self,
@@ -25030,7 +25236,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
-        if s_ty != CodegenTy::String {
+        if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::can_parse_float: s must be String, got {:?}",
                 s_ty
@@ -25085,7 +25291,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (src_val, src_ty) = self.lower_expr(&args[0], scope)?;
-        if src_ty != CodegenTy::String {
+        if !matches!(src_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::ts::parse_go: src must be String, got {:?}",
                 src_ty
@@ -25402,7 +25608,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (name_val, name_ty) = self.lower_expr(&args[0], scope)?;
-        if name_ty != CodegenTy::String {
+        if !matches!(name_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::env::var: name must be String, got {:?}",
                 name_ty
@@ -25436,7 +25642,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (name_val, name_ty) = self.lower_expr(&args[0], scope)?;
-        if name_ty != CodegenTy::String {
+        if !matches!(name_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::env::var_exists: name must be String, got {:?}",
                 name_ty
@@ -25486,7 +25692,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::read_bytes: path must be String, got {:?}",
                 path_ty
@@ -25531,7 +25737,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[1], scope)?;
-        if b_ty != CodegenTy::Bytes {
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__send_bytes: bytes must be Bytes, got {:?}",
                 b_ty
@@ -25589,7 +25795,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
-        if host_ty != CodegenTy::String {
+        if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tls::connect: host must be String, got {:?}",
                 host_ty
@@ -25668,7 +25874,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[1], scope)?;
-        if b_ty != CodegenTy::Bytes {
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tls::send_bytes: bytes must be Bytes, got {:?}",
                 b_ty
@@ -25767,14 +25973,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (subj_val, subj_ty) = self.lower_expr(&args[0], scope)?;
-        if subj_ty != CodegenTy::String {
+        if !matches!(subj_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::bus::__local_dispatch: subject must be String, got {:?}",
                 subj_ty
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[1], scope)?;
-        if b_ty != CodegenTy::Bytes {
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::bus::__local_dispatch: bytes must be Bytes, got {:?}",
                 b_ty
@@ -25888,7 +26094,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::read_file: path must be String, got {:?}",
                 path_ty
@@ -26019,14 +26225,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::write_file: path must be String, got {:?}",
                 path_ty
             )));
         }
         let (content_val, content_ty) = self.lower_expr(&args[1], scope)?;
-        if content_ty != CodegenTy::String {
+        if !matches!(content_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::write_file: content must be String, got {:?}",
                 content_ty
@@ -26090,14 +26296,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::write_file_append: path must be String, got {:?}",
                 path_ty
             )));
         }
         let (content_val, content_ty) = self.lower_expr(&args[1], scope)?;
-        if content_ty != CodegenTy::String {
+        if !matches!(content_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::write_file_append: content must be String, got {:?}",
                 content_ty
@@ -26158,7 +26364,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::mkdir: path must be String, got {:?}",
                 path_ty
@@ -26199,7 +26405,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::file_size: path must be String, got {:?}",
                 path_ty
@@ -26235,7 +26441,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::file_exists: path must be String, got {:?}",
                 path_ty
@@ -26287,7 +26493,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::extension: path must be String, got {:?}",
                 path_ty
@@ -26397,7 +26603,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (msg_val, msg_ty) = self.lower_expr(&args[1], scope)?;
-        if msg_ty != CodegenTy::String {
+        if !matches!(msg_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__send: msg must be String, got {:?}",
                 msg_ty
@@ -26727,7 +26933,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if b_ty != CodegenTy::Bytes {
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::from_bytes: b must be Bytes, got {:?}",
                 b_ty
@@ -26765,7 +26971,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
-        if s_ty != CodegenTy::String {
+        if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::bytes::from_string: s must be String, got {:?}",
                 s_ty
@@ -26804,7 +27010,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if b_ty != CodegenTy::Bytes {
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             let hint = if matches!(b_ty, CodegenTy::String) {
                 " — use `std::bytes::from_string(s)` to convert"
             } else {
@@ -26854,7 +27060,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if b_ty != CodegenTy::Bytes {
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::bytes::slice: b must be Bytes, got {:?} \
                  (use `std::bytes::from_string(s)` to convert from String)",
@@ -26955,14 +27161,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (a_val, a_ty) = self.lower_expr(&args[0], scope)?;
-        if a_ty != CodegenTy::Bytes {
+        if !matches!(a_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::bytes::concat: a must be Bytes, got {:?}",
                 a_ty
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[1], scope)?;
-        if b_ty != CodegenTy::Bytes {
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::bytes::concat: b must be Bytes, got {:?}",
                 b_ty
@@ -27005,7 +27211,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if b_ty != CodegenTy::Bytes {
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::crypto::sha1: b must be Bytes, got {:?}",
                 b_ty
@@ -27044,7 +27250,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if b_ty != CodegenTy::Bytes {
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::crypto::sha256: b must be Bytes, got {:?}",
                 b_ty
@@ -27081,14 +27287,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (key_val, key_ty) = self.lower_expr(&args[0], scope)?;
-        if key_ty != CodegenTy::Bytes {
+        if !matches!(key_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::crypto::hmac_sha256: key must be Bytes, got {:?}",
                 key_ty
             )));
         }
         let (msg_val, msg_ty) = self.lower_expr(&args[1], scope)?;
-        if msg_ty != CodegenTy::Bytes {
+        if !matches!(msg_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::crypto::hmac_sha256: msg must be Bytes, got {:?}",
                 msg_ty
@@ -27129,7 +27335,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if b_ty != CodegenTy::Bytes {
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::text::base64::encode: b must be Bytes, got {:?}",
                 b_ty
@@ -27168,7 +27374,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
-        if s_ty != CodegenTy::String {
+        if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::text::base64::decode: s must be String, got {:?}",
                 s_ty
@@ -27268,7 +27474,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::list_dir_count: path must be String, got {:?}",
                 path_ty
@@ -27305,7 +27511,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
-        if path_ty != CodegenTy::String {
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::fs::list_dir_at: path must be String, got {:?}",
                 path_ty
@@ -33797,7 +34003,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )
         })?;
         let (subj_val, subj_ty) = self.lower_expr(subject, scope)?;
-        if subj_ty != CodegenTy::String {
+        if !matches!(subj_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "bus send subject must be String; got {:?}",
                 subj_ty

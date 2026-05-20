@@ -103,5 +103,7 @@ pub fn prim_name(p: PrimType) -> &'static str {
         PrimType::Time => "Time",
         PrimType::Duration => "Duration",
         PrimType::Bytes => "Bytes",
+        PrimType::BytesView => "BytesView",
+        PrimType::StringView => "StringView",
     }
 }

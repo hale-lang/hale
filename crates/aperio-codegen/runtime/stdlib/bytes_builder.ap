@@ -169,7 +169,7 @@ locus __StdBytesBytesBuilder {
     // documented-and-trusted. Use case: a parser reading via
     // std::bytes::at / len / slice over an rx_buf accumulator
     // without allocating a snapshot per peel attempt.
-    fn view() -> Bytes {
+    fn view() -> BytesView {
         return std::bytes::builder::__view(self.handle);
     }
     // Phase-3 Site 2 (2026-05-19): zero-copy String view. Returns
@@ -186,7 +186,7 @@ locus __StdBytesBytesBuilder {
     // The C primitive maintains `buf[len] == '\0'` after every
     // mutation, so the returned pointer is a well-formed
     // C string for `lotus_str_*` consumers.
-    fn text_view() -> String {
+    fn text_view() -> StringView {
         return std::bytes::builder::__text_view(self.handle);
     }
     fn shift_front(n: Int) {

@@ -2498,6 +2498,85 @@ ordering of the cascade (outer body → inner cascade → outer
 arena_destroy), and a 100k-iteration construct-destroy loop
 exercising the cascade path under load.
 
+### F.30 BytesView — non-owning view as a distinct type (2026-05-20)
+
+The Phase-2 `view()` / Phase-3 `text_view()` machinery hands back
+a non-owning pointer that's layout-compatible with `Bytes`. The
+ergonomic win is real (`std::bytes::at`, `len`, `slice` all just
+work) but the type system can't distinguish a fresh arena-owned
+`Bytes` blob from a non-owning view whose validity ends at the
+next mutation on the source builder. Fungible call sites,
+divergent lifetimes; a footgun symmetric to the pre-F.28
+"passing a builder where `Bytes` was expected" hazard the locus
+lift closed.
+
+**Design move:** introduce `BytesView` as a distinct type. It
+aliases `Bytes` at runtime (same `[i64 len][u8 data]` pointer
+shape, zero allocation) but carries different intent at
+typecheck:
+
+- `BytesBuilder.view() -> BytesView` (was `Bytes`).
+- `BytesBuilder.text_view() -> StringView` (was `String`) —
+  symmetric companion for the C-string-shaped case.
+- A `BytesView` coerces implicitly to `Bytes` ONLY at function-
+  argument positions where the parameter is declared `Bytes` —
+  i.e. read-only use sites (`std::bytes::at(v, i)`, `len(v)`,
+  pattern-matching, etc.). The coercion is a no-op at runtime
+  (same pointer) but the typechecker emits it as an explicit
+  cast so the read-vs-store axis is visible.
+- A `BytesView` does NOT coerce to `Bytes` at storage sites: a
+  field declared `bytes: Bytes` or a `let x: Bytes = …`
+  rejects a `BytesView` value. Callers wanting owned storage
+  must call `.clone_to_bytes()` explicitly, which deep-copies
+  into the caller's arena (via Task 8's TLS-routed allocator).
+- `BytesView` IS allowed at storage sites whose declared type
+  is `BytesView`. Fathom's pond/websocket pattern — storing a
+  view in `self.last_message.bytes` with a documented
+  "deferred clear" invariant — remains expressible; the type
+  signature now declares the lifetime intent, and any
+  maintainer reading the struct knows the field is non-owning.
+
+**What this catches:**
+
+- Accidental fungibility — a function whose param is declared
+  `Bytes` (signaling "you can keep this") now rejects a
+  `BytesView` value at the call site; the caller must
+  explicitly `clone_to_bytes()` to opt into the deep copy.
+- Field declarations carry lifetime intent. A struct with
+  `bytes: BytesView` is self-documenting about the non-owning
+  semantic; the type-vs-`Bytes` distinction is visible at
+  every read site of the struct.
+
+**What this DOES NOT catch (deferred to F.30b):**
+
+- Mutation of the source builder while a `BytesView` from it
+  is still observable. The "future maintainer adds
+  `frag_buf.append(...)` between `frag_buf.text_view()` and
+  the consumer's read" hazard requires either a borrow
+  checker (compile-time lifetime tracking) or a runtime
+  epoch guard (BytesBuilder bumps a `mutation_epoch` on
+  every mutating op; BytesView captures the epoch at
+  construction; reads through BytesView check the epoch
+  matches). The runtime guard is the cheaper v1.x partial fix
+  (~half day); the borrow checker is v2 territory.
+
+**Why distinct-type ships before the lifetime enforcement:**
+The Design lens (form-before-content): a distinct type is a
+SYNTAX-LEVEL commitment the rest of the system rests on. A
+runtime epoch guard works regardless of whether the type is
+distinct; a borrow checker is most useful when the type carries
+the lifetime annotation. Both lifetime-enforcement options sit
+ABOVE this depth. Settling the type first means whichever
+enforcement we ship later integrates without re-shaping the
+surface.
+
+**Codegen.** `BytesView` (and `StringView`) compile to the same
+LLVM pointer type as `Bytes` / `String`. The implicit
+read-site coercion is a typecheck-only no-op; the codegen path
+treats both types identically when emitting reads. The
+`.clone_to_bytes()` method lowers to `lotus_bytes_clone(caller_arena,
+src)` (analogous to the existing `lotus_str_clone`).
+
 ## 16. What's deferred
 
 The grammar in v0 does **not** specify:

@@ -785,6 +785,23 @@ pub enum PrimType {
     Time,
     Duration,
     Bytes,
+    /// F.30 (2026-05-20): non-owning view over a BytesBuilder's
+    /// buffer. Runtime layout identical to `Bytes` (same
+    /// `[i64 len][u8 data]` pointer), but typecheck-distinct.
+    /// Returned by `BytesBuilder.view()`. Coerces to `Bytes`
+    /// implicitly at function-argument READ positions; rejected
+    /// at storage positions whose declared type is `Bytes`
+    /// (caller must explicitly `.clone_to_bytes()` for owned
+    /// storage). Storage AS `BytesView` is allowed and signals
+    /// the non-owning intent in the type signature.
+    BytesView,
+    /// F.30 companion: non-owning view over a BytesBuilder's
+    /// NUL-terminated buffer (same lifetime contract as
+    /// `BytesView`; same construction site, just the C-string
+    /// reading shape). Returned by `BytesBuilder.text_view()`.
+    /// Coerces to `String` at fn-arg read positions, rejected
+    /// at `String`-typed storage.
+    StringView,
 }
 
 #[derive(Debug, Clone, PartialEq)]
