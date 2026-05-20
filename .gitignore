@@ -5,6 +5,12 @@ target/
 *.so
 *.dylib
 
+# Published stable compiler binary for downstream app teams.
+# Pinned via scripts/publish-stable.sh; lives outside git so the
+# in-flight refactor cycle on `target/release/aperio` doesn't
+# churn it underneath consumers.
+/bin/
+
 # Editor / IDE
 .vscode/
 .idea/

@@ -83,6 +83,26 @@ The `aperio` CLI accepts a single `.ap` file or a directory; a
 directory bundles every `.ap` in it as one program (one binary).
 See `aperio --help` for the full surface.
 
+### Pinning to a stable compiler (downstream app teams)
+
+App teams (`pond`, `fathom`, `mdgw`, etc.) that depend on the
+Aperio compiler should pin to `bin/aperio` rather than
+`target/release/aperio`. The `bin/` directory is gitignored and
+populated explicitly by `scripts/publish-stable.sh`, so the
+compiler-team's in-flight `target/release/aperio` churn doesn't
+move underneath consumers between publishes. A `bin/VERSION` file
+records the source commit + branch + publish date so app teams
+can pin-check before a burn / deploy.
+
+```sh
+# As the compiler team, after validating a change:
+scripts/publish-stable.sh           # build + copy to bin/aperio
+
+# As a downstream app team, pin against the stable binary:
+~/code/lotus-lang/bin/aperio build my_app.ap
+cat ~/code/lotus-lang/bin/VERSION   # what am I running?
+```
+
 If your project depends on Aperio libraries hosted in git
 repos, declare them in `aperio.toml`:
 
