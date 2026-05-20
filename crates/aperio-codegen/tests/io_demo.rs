@@ -9,7 +9,6 @@
 //! example consumes std::env / std::str::parse_int from
 //! the v1.x stdlib to wire its parameters.
 
-use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -92,16 +91,20 @@ impl Demo {
             .spawn()
             .expect("spawn io-demo");
 
+        // The Listener's default `max_accepts: 1` means a single
+        // accepted connection advances the demo past its accept
+        // loop and into the log-write + exit path. `wait_until_listening`'s
+        // own probe IS that connection — the demo doesn't read its
+        // payload anyway (default `__default_on_connection` just
+        // prints the fd and dissolves the Stream). A previous
+        // version of this helper did a second connect+write here
+        // and raced the listener's exit on slow CI, getting
+        // ECONNRESET. The probe alone is sufficient.
         assert!(
             wait_until_listening(self.port),
             "io-demo never bound to 127.0.0.1:{}",
             self.port
         );
-
-        let mut sock = std::net::TcpStream::connect(("127.0.0.1", self.port))
-            .expect("connect to demo");
-        let _ = sock.write_all(b"hello\n");
-        drop(sock);
 
         let out = listener_proc.wait_with_output().expect("listener wait");
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
