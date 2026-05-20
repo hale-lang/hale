@@ -614,6 +614,20 @@ Transport surface:
   own cache line (separate from the producer's `seqno`)
   so the two sides don't pingpong each other's writes.
 
+  **Birth-order trap (single-binary + `block`).** Aperio
+  births child loci in `params`-declaration order. In a
+  single-binary deployment where a Producer's `birth()`
+  immediately publishes onto a `block`-policy ring, the
+  Consumer locus MUST be declared *before* the Producer in
+  the parent's `params` block — otherwise the Producer's
+  first overflow blocks on a `consumer_seqno` that no live
+  reader will ever advance, and the process hangs. Order
+  the consumer first or move the publishing into a `run()`
+  body that runs after all child births. (Cross-binary
+  deployments aren't affected — the subscriber lives in a
+  different process and exists before the publisher
+  process starts.)
+
 **In-memory delivery is absence-of-entry.** A topic with no
 binding entry is delivered same-process via the cooperative
 queue. There is no `in_memory` variant — the runtime default
