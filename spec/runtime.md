@@ -573,37 +573,64 @@ bytes for a bound subject) can use this too.
   the next mutation on the source builder. `free` disposes
   the malloc-backed buffer.
 
-  **F.30 (2026-05-20) type promotion.** The runtime
-  `_view` / `_text_view` C primitives still return raw
-  pointers; the Aperio-visible method surface now returns
-  `BytesView` / `StringView` (typecheck-distinct from `Bytes`
-  / `String`, runtime-identical). The codegen lowering of
-  the bridge mints the view types; the locus method body's
-  declared return type matches. The view-to-owned upgrade
-  paths (`std::bytes::clone`, `std::str::clone`) are backed
-  by `lotus_bytes_clone(arena, src)` (new) and
+  **F.30 (2026-05-20) type promotion.** The Aperio-visible
+  method surface returns `BytesView` / `StringView`
+  (typecheck-distinct from `Bytes` / `String`). The view-to-
+  owned upgrade paths (`std::bytes::clone`, `std::str::clone`)
+  are backed by `lotus_bytes_clone(arena, src)` (new) and
   `lotus_str_clone(arena, src)` (existing m49).
 
-  **Memory layout (Phase-2 (1)).** Diverges from
-  `lotus_str_builder_t` to support zero-copy `view()`. Header
-  is `{cap, buf}`; the data area is preceded inline by an
-  8-byte length prefix matching the Bytes ABI:
+  **F.30b (2026-05-20) view layout + epoch guard.** The
+  `_view` / `_text_view` C primitives no longer return a raw
+  aliasing pointer; they allocate a 24-byte fat-pointer
+  struct in the caller arena:
+
+  ```c
+  typedef struct lotus_view {
+      void   *data;             // aliasing ptr (Bytes-shaped
+                                //   for BytesView, NUL-term
+                                //   for StringView)
+      void   *builder;          // ptr to source builder
+      int64_t stamped_epoch;    // builder->mutation_epoch at
+                                //   view-creation time
+  } lotus_view_t;
+  ```
+
+  `lotus_bytes_builder_t` gains an `int64_t mutation_epoch`
+  field bumped by every mutating op (`append`, `append_slice`,
+  `shift_front`, `clear`, `advance`). Codegen at view-coerce
+  sites emits a call to `lotus_bytes_view_data` /
+  `lotus_str_view_data`, which compares the stamped epoch
+  against the live epoch and calls `lotus_view_stale_panic`
+  (noreturn — stderr + `_exit(1)`) on mismatch. The 5b
+  literal-default coercion calls `lotus_view_from_static_data`
+  to allocate a `lotus_view_t` with `builder=NULL`; the
+  helpers skip the epoch check on the NULL branch.
+
+  **Memory layout (Phase-2 (1)).** The builder header is
+  `{cap, buf, mutation_epoch}`; the data area is preceded
+  inline by an 8-byte length prefix matching the Bytes ABI:
 
   ```
-  malloc'd region: [int64_t len][u8 data[cap]]
+  malloc'd region: [int64_t len][u8 data[cap]][NUL]
                                 ^
                                 buf
   ```
 
-  `view(b)` returns `b->buf - 8` — a pointer that
+  `view(b)` returns a fat-pointer `lotus_view_t*` whose
+  `data` field is `b->buf - 8` — a pointer that
   `lotus_bytes_len` / `lotus_bytes_at` / `lotus_bytes_data`
-  can dereference directly. Append / shift_front / clear /
-  finish all update the inline prefix in sync with the data
-  mutation. Cost: one extra pointer dereference per len
-  access vs the prior `{cap, len, buf*}` shape. Trade-off
-  taken in exchange for the substrate-enabled zero-alloc
-  read path. `lotus_str_builder_t` (for `std::str::*`) keeps
-  the prior layout — no view surface there yet.
+  can dereference directly once unpacked via the view-data
+  helper. Append / append_slice / shift_front / clear / advance
+  all update the inline prefix in sync with the data mutation
+  AND bump `mutation_epoch`. Cost: one extra pointer
+  dereference per len access vs the prior `{cap, len, buf*}`
+  shape; plus 24 bytes / view-call in the caller arena and a
+  ~4-instruction read-time overhead at each coerce site for
+  the epoch check. Trade-off taken in exchange for the
+  substrate-enabled zero-alloc read path and F.30b's loud-
+  failure guard. `lotus_str_builder_t` (for `std::str::*`)
+  keeps the prior layout — no view surface there yet.
 
   These primitives are no longer the user-facing surface;
   they're the C externs called by the
