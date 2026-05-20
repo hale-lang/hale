@@ -105,6 +105,21 @@ typedef struct lotus_arena {
      * a no-op and codegen routes teardown through the recpool's
      * release entry point instead. */
     int                  fixed_size;
+    /* Phase-3 safety net (2026-05-19): if non-zero, the arena's
+     * total chunk-byte allocation is capped. `chunk_byte_total`
+     * tracks sum of chunk.cap across the live chunk list; the
+     * fresh-chunk path in lotus_arena_alloc refuses to grow past
+     * `chunk_byte_cap` and returns NULL instead. Used for
+     * g_bus_payload_arena so a leaking long-running program
+     * crashes loudly with the cap diagnostic on stderr instead
+     * of an OOM kill. Zero means unbounded (the default for
+     * locus-owned arenas, which are bounded by locus lifecycle
+     * already). */
+    size_t               chunk_byte_total;
+    size_t               chunk_byte_cap;
+    /* Human-readable name for the cap diagnostic. NULL means use
+     * the generic message. */
+    const char          *cap_diag_name;
 } lotus_arena_t;
 
 static lotus_arena_chunk_t *lotus_arena_new_chunk(size_t cap) {
@@ -137,6 +152,9 @@ static lotus_arena_t *lotus_arena_alloc_struct(void) {
     a->free_cap   = 0;
     a->next_slot  = 0;
     a->fixed_size = 0;
+    a->chunk_byte_total = a->head->cap;
+    a->chunk_byte_cap   = 0;
+    a->cap_diag_name    = NULL;
     return a;
 }
 
@@ -197,8 +215,36 @@ void *lotus_arena_alloc(lotus_arena_t *a, size_t size, size_t align) {
         size_t cap  = need > a->default_chunk_size
                           ? need
                           : a->default_chunk_size;
+        /* Phase-3 safety net: if a byte-cap is set, refuse to
+         * grow the arena past it. Returns NULL; the caller is
+         * responsible for surfacing the failure (the existing
+         * lotus_bytes_alloc_fail_sentinel / empty_global paths
+         * already do this for most stdlib callers; m70
+         * deserialize fns will surface a corrupted payload that
+         * the F.27 routing should pick up). dprintf a one-line
+         * diagnostic on first hit so the cap event is visible
+         * in production logs. */
+        if (a->chunk_byte_cap > 0 &&
+            a->chunk_byte_total + cap > a->chunk_byte_cap) {
+            static int diag_emitted = 0;
+            if (!diag_emitted) {
+                diag_emitted = 1;
+                const char *name = a->cap_diag_name
+                    ? a->cap_diag_name : "(unnamed arena)";
+                dprintf(2,
+                    "lotus: arena cap hit (%s): %zu / %zu bytes; "
+                    "subsequent allocations will return NULL. "
+                    "This is a hard cap meant to surface leaks "
+                    "early; investigate which producer is "
+                    "depositing without an owner reclaiming. "
+                    "See spec/memory.md \xc2\xa7 m20 / Phase-2 (4).\n",
+                    name, a->chunk_byte_total, a->chunk_byte_cap);
+            }
+            return NULL;
+        }
         lotus_arena_chunk_t *fresh = lotus_arena_new_chunk(cap);
         if (!fresh) return NULL;
+        a->chunk_byte_total += fresh->cap;
         fresh->next = c;
         a->head = fresh;
         c = fresh;
@@ -4634,10 +4680,47 @@ void lotus_bus_dispatch_wire(const char *subject,
 static lotus_arena_t   *g_bus_payload_arena       = NULL;
 static pthread_mutex_t  g_bus_payload_arena_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/* Phase-3 safety net (2026-05-19): bound g_bus_payload_arena to a
+ * fixed byte budget so a leaking long-running program crashes
+ * loudly via the cap diagnostic instead of an OOM kill. The cap
+ * is set at the only place the arena is created (this helper);
+ * all 35+ lazy-init sites in this file go through it. Default
+ * 64 MiB; overridable via LOTUS_BUS_PAYLOAD_ARENA_CAP env var (in
+ * bytes) for capacity-planning experiments. The cap event is
+ * dprintf'd to stderr exactly once per process. Subsequent
+ * allocations against the capped arena return NULL; existing
+ * callers (snapshot/finish via alloc_fail_sentinel,
+ * lotus_bytes_create returning NULL through empty_global,
+ * recv_bytes returning empty Bytes) already surface NULL as
+ * "empty / failure" so the cap converts an OOM to a degraded
+ * service mode rather than a crash. The proper fix
+ * (per-subscriber arena routing for m70 wire-dispatch, plus
+ * __caller_arena threading for the stdlib primitives that land
+ * here) lives elsewhere; this is the floor. */
+#define LOTUS_BUS_PAYLOAD_ARENA_DEFAULT_CAP_BYTES \
+    ((size_t)64 * 1024 * 1024)
+
+static lotus_arena_t *lotus_bus_payload_arena_create_capped(void) {
+    lotus_arena_t *a = lotus_arena_create();
+    if (!a) return NULL;
+    size_t cap = LOTUS_BUS_PAYLOAD_ARENA_DEFAULT_CAP_BYTES;
+    const char *env = getenv("LOTUS_BUS_PAYLOAD_ARENA_CAP");
+    if (env && env[0]) {
+        char *end = NULL;
+        unsigned long long v = strtoull(env, &end, 10);
+        if (end != env && v > 0 && v <= SIZE_MAX) {
+            cap = (size_t)v;
+        }
+    }
+    a->chunk_byte_cap = cap;
+    a->cap_diag_name  = "g_bus_payload_arena";
+    return a;
+}
+
 void *lotus_bus_payload_arena_alloc(size_t size, size_t align) {
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return NULL;
@@ -4656,7 +4739,7 @@ void *lotus_bus_payload_arena_alloc(size_t size, size_t align) {
 lotus_arena_t *lotus_bus_payload_arena_get(void) {
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
     }
     lotus_arena_t *p = g_bus_payload_arena;
     pthread_mutex_unlock(&g_bus_payload_arena_mutex);
@@ -4674,7 +4757,7 @@ lotus_arena_t *lotus_bus_payload_arena_get(void) {
 void *lotus_fs_read_bytes_global(const char *path) {
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return NULL;
@@ -4719,7 +4802,7 @@ void *lotus_fs_read_bytes_global(const char *path) {
 void *lotus_os_getrandom(int64_t n) {
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             errno = ENOMEM;
@@ -5095,7 +5178,7 @@ int lotus_process_run(
      * this call frame. */
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             free(out_buf); free(err_buf);
@@ -5355,7 +5438,7 @@ const char *lotus_process_pipe_read_nonblocking(int32_t fd) {
     buf[r] = '\0';
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             errno = ENOMEM;
@@ -5415,7 +5498,7 @@ const char *lotus_fs_list_dir_global(const char *path) {
     static const char empty[1] = { 0 };
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return empty;
@@ -5440,7 +5523,7 @@ const char *lotus_fs_extension_global(const char *path) {
     if (!ext) return empty;
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return empty;
@@ -5464,7 +5547,7 @@ const char *lotus_fs_extension_global(const char *path) {
 static void *lotus_bytes_empty_global(void) {
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return NULL;
@@ -5514,7 +5597,7 @@ void *lotus_tcp_recv_bytes(int fd, int max_bytes) {
     }
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return NULL;
@@ -5563,7 +5646,7 @@ const char *lotus_str_from_bytes(const void *b) {
     if (len <= 0) return empty;
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return empty;
@@ -5592,7 +5675,7 @@ void *lotus_bytes_from_str(const char *s) {
     int64_t len = (int64_t)strlen(s);
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return NULL;
@@ -5640,7 +5723,7 @@ void *lotus_bytes_slice(const void *b, int64_t lo, int64_t hi) {
     int64_t out_len = hi - lo;
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return NULL;
@@ -5670,7 +5753,7 @@ void *lotus_bytes_slice(const void *b, int64_t lo, int64_t hi) {
 void *lotus_bytes_from_int(int64_t v) {
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return NULL;
@@ -5697,7 +5780,7 @@ void *lotus_bytes_concat(const void *a, const void *b) {
     int64_t total = la + lb;
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return NULL;
@@ -5788,7 +5871,7 @@ void *lotus_crypto_sha1(const void *b) {
 
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return NULL;
@@ -5940,7 +6023,7 @@ void *lotus_crypto_sha256(const void *b) {
 
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return NULL;
@@ -6001,7 +6084,7 @@ void *lotus_crypto_hmac_sha256(const void *key_b, const void *msg_b) {
 
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return NULL;
@@ -6031,7 +6114,7 @@ const char *lotus_text_base64_encode(const void *b) {
 
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return NULL;
@@ -6096,7 +6179,7 @@ static int b64_decode_char(int c) {
 void *lotus_text_base64_decode(const char *s) {
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return NULL;
@@ -6268,7 +6351,7 @@ const char *lotus_fs_list_dir_at(const char *path, int64_t idx) {
     size_t len = (size_t)(end - p);
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return empty;
@@ -6333,7 +6416,7 @@ const char *lotus_fs_mktemp(const char *prefix, const char *suffix) {
      * outlives this call frame, then drop the malloc buffer. */
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             free(tmpl);
@@ -6424,7 +6507,7 @@ const char *lotus_str_lower(const char *s) {
     size_t n = strlen(s);
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return "";
@@ -6466,7 +6549,7 @@ const char *lotus_str_trim(const char *s) {
     size_t out_len = hi - lo;
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return "";
@@ -6501,7 +6584,7 @@ const char *lotus_str_substring(const char *s, int64_t lo, int64_t hi) {
     size_t out_len = (size_t)(hi - lo);
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return "";
@@ -6529,7 +6612,7 @@ const char *lotus_str_replace(const char *s, const char *needle,
         size_t n = strlen(s);
         pthread_mutex_lock(&g_bus_payload_arena_mutex);
         if (!g_bus_payload_arena) {
-            g_bus_payload_arena = lotus_arena_create();
+            g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
             if (!g_bus_payload_arena) {
                 pthread_mutex_unlock(&g_bus_payload_arena_mutex);
                 return "";
@@ -6566,7 +6649,7 @@ const char *lotus_str_replace(const char *s, const char *needle,
 
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return "";
@@ -6604,7 +6687,7 @@ const char *lotus_str_repeat(const char *s, int64_t n) {
     size_t total = sl * (size_t)n;
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return "";
@@ -6635,7 +6718,7 @@ const char *lotus_str_pad_left(const char *s, int64_t width, const char *pad) {
         size_t n = sl;
         pthread_mutex_lock(&g_bus_payload_arena_mutex);
         if (!g_bus_payload_arena) {
-            g_bus_payload_arena = lotus_arena_create();
+            g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
             if (!g_bus_payload_arena) {
                 pthread_mutex_unlock(&g_bus_payload_arena_mutex);
                 return "";
@@ -6653,7 +6736,7 @@ const char *lotus_str_pad_left(const char *s, int64_t width, const char *pad) {
     size_t total = (size_t)width;
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return "";
@@ -6678,7 +6761,7 @@ const char *lotus_str_pad_right(const char *s, int64_t width, const char *pad) {
     size_t sl = strlen(s);
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return "";
@@ -6702,7 +6785,7 @@ const char *lotus_str_upper(const char *s) {
     size_t n = strlen(s);
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return "";
@@ -6797,7 +6880,7 @@ const char *lotus_str_builder_finish(void *handle) {
     lotus_str_builder_t *b = (lotus_str_builder_t *)handle;
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             free(b->buf);
@@ -6991,7 +7074,7 @@ void *lotus_bytes_builder_finish(void *handle) {
     int64_t cur_len = lotus_bb_len(b);
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             free(b->buf - sizeof(int64_t));
@@ -7068,7 +7151,7 @@ void *lotus_bytes_builder_snapshot(void *handle) {
     int64_t cur_len = lotus_bb_len(b);
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
     if (!g_bus_payload_arena) {
-        g_bus_payload_arena = lotus_arena_create();
+        g_bus_payload_arena = lotus_bus_payload_arena_create_capped();
         if (!g_bus_payload_arena) {
             pthread_mutex_unlock(&g_bus_payload_arena_mutex);
             return lotus_bytes_alloc_fail_sentinel();

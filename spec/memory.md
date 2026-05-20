@@ -663,6 +663,23 @@ m20 deliberately keeps free fns + main on the program-wide arena
 class — chunked-class per-coordinatee sub-regions land in m22,
 the recognition-class fixed pool in m23.
 
+**Phase-3 hard byte-cap on `g_bus_payload_arena` (2026-05-19;
+safety net).** The arena now refuses to grow past
+`LOTUS_BUS_PAYLOAD_ARENA_CAP` (default 64 MiB, env-overridable
+for capacity-planning experiments). When the cap fires
+`lotus_arena_alloc` returns NULL; one diagnostic line goes to
+stderr identifying the cap event and the arena's name; subsequent
+allocations against the capped arena keep returning NULL.
+Existing callers — BytesBuilder `snapshot()` / `finish()` via the
+alloc-fail sentinel + violate routing, recv_bytes returning
+empty Bytes, `lotus_bytes_create` returning NULL through
+`empty_global` — already surface NULL as degraded service, so the
+cap converts a slow OOM into structural failure that surfaces
+through the F.27 channel. This is the floor for a long-running
+program leaking into the payload arena, not the fix; the fix is
+per-subscriber arena routing for m70 + `__caller_arena` threading
+for the stdlib primitives that land here.
+
 **Phase-2 (4) `g_bus_payload_arena` reclaim investigation
 (2026-05-19; finding: NOT reclaimable under current semantics).**
 The handoff posed: "should `lotus_bus_dispatch_wire`'s
