@@ -382,6 +382,13 @@ pub fn build_executable_with_imports(
     let runtime_tls_c_path = obj_path.with_extension("tls.c");
     std::fs::write(&runtime_tls_c_path, RUNTIME_TLS_C_SOURCE)
         .map_err(|e| CodegenError::Link(format!("write runtime TLS C: {}", e)))?;
+    // Form K5: SHM ring substrate. Separate translation unit so
+    // it stays disentangled from arena / TLS concerns. Compiled
+    // unconditionally; the symbols are dead-stripped by the
+    // linker if no user program references them.
+    let runtime_shm_ring_c_path = obj_path.with_extension("shm_ring.c");
+    std::fs::write(&runtime_shm_ring_c_path, RUNTIME_SHM_RING_C_SOURCE)
+        .map_err(|e| CodegenError::Link(format!("write runtime SHM ring C: {}", e)))?;
 
     // m96: locate the tree-sitter shim staticlib produced by the
     // sibling `aperio-ts-shim` workspace crate. We don't try to
@@ -400,7 +407,13 @@ pub fn build_executable_with_imports(
         .arg(&obj_path)
         .arg(&runtime_c_path)
         .arg(&runtime_tls_c_path)
+        .arg(&runtime_shm_ring_c_path)
         .arg("-O2")
+        // Form K5: SHM ring uses shm_open / shm_unlink which on
+        // Linux live in librt. The functions are no-ops on macOS
+        // (POSIX shm there is libc), but -lrt is portable on
+        // Linux and harmless on macOS via -Wl,--as-needed.
+        .arg("-lrt")
         // m27: pinned-class loci spawn pthreads via the
         // pthread_create / pthread_join externs declared in
         // codegen. Linker needs -lpthread to satisfy them. Link
@@ -433,6 +446,7 @@ pub fn build_executable_with_imports(
     let _ = std::fs::remove_file(&obj_path);
     let _ = std::fs::remove_file(&runtime_c_path);
     let _ = std::fs::remove_file(&runtime_tls_c_path);
+    let _ = std::fs::remove_file(&runtime_shm_ring_c_path);
     if !status.success() {
         return Err(CodegenError::Link(format!(
             "clang exited with {}",
@@ -450,6 +464,12 @@ pub fn build_executable_with_imports(
 /// lifetimes).
 const RUNTIME_C_SOURCE: &str = include_str!("../runtime/lotus_arena.c");
 const RUNTIME_TLS_C_SOURCE: &str = include_str!("../runtime/lotus_tls.c");
+/// Form K5 (2026-05-20) — POSIX SHM ring substrate for zero-copy
+/// bus payload routing. Independent translation unit; pulled in
+/// unconditionally so user programs that bind a topic to a
+/// zero_copy route link cleanly. Symbol names are `lotus_shm_ring_*`.
+const RUNTIME_SHM_RING_C_SOURCE: &str =
+    include_str!("../runtime/lotus_shm_ring.c");
 
 /// m96: find `libaperio_ts_shim.a`, the staticlib produced by the
 /// sibling `aperio-ts-shim` workspace crate. Returns `None` if the

@@ -417,6 +417,45 @@ bytes, and fans into local subscribers via
 thread path; out-of-band recv loops (any code holding wire
 bytes for a bound subject) can use this too.
 
+**SHM ring substrate (Form K5, 2026-05-20).** POSIX shared-
+memory ring backing the zero-copy bus route. Six C primitives in
+`runtime/lotus_shm_ring.c`, linked unconditionally so user
+programs that bind a topic to a zero_copy route resolve cleanly:
+
+- `lotus_shm_ring_open(name, slot_size, slot_count)` — open or
+  attach (creates if it doesn't exist; validates header on
+  attach). Returns a per-process handle.
+- `lotus_shm_ring_claim(ring)` — publisher gets a pointer to
+  the next slot. v1 is single-producer; never fails.
+- `lotus_shm_ring_commit(ring)` — release-orders the slot
+  writes before atomic-incrementing the published seqno.
+- `lotus_shm_ring_published(ring)` — acquire-load the seqno
+  for subscriber-side polling.
+- `lotus_shm_ring_read_slot(ring, seqno)` — subscriber gets a
+  pointer to the slot for `seqno`. Returns NULL if not yet
+  committed OR wrapped past (slow consumer).
+- `lotus_shm_ring_close(ring)` — unmap + close fd; unlink the
+  SHM object if this handle created it.
+
+Layout in SHM: a 64-byte cache-aligned header
+(`lotus_shm_ring_header_t` — magic, slot_size, slot_count,
+atomic seqno) followed by N slots of `slot_size` bytes each.
+Header magic + sizes are validated on attach to catch ABI
+mismatches across binaries pinned to the same ring name.
+
+v1 scope: single-producer, multi-consumer; in-memory delivery is
+in scope (POSIX shm_open works intra-machine cross-process).
+Multi-producer (CAS-based claim), back-pressure / timeout
+modes, and named-ring registry are post-v1. The Aperio-side
+`fallible(ClaimError)` signature is reserved for those; v1's
+`claim()` never actually fails.
+
+Codegen surface for K5 lands in K4 (route-selection +
+slot-locus synthesis) and K6 (subscriber view + epoch guard).
+K5 ships the substrate; user code can't reach these symbols
+directly without going through the slot-locus surface a
+zero_copy binding produces.
+
 ### Closure-test infrastructure
 
 - **Default epoch is `dissolve`.** Closures with no `epoch`
