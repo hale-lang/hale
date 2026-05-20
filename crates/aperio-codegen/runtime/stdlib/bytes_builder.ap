@@ -109,6 +109,14 @@ locus __StdBytesBytesBuilder {
     // for N bytes and the system refused" without poking at the
     // dead locus's storage.
     closure alloc_failed { captures: initial_cap; epoch inline; }
+    // F.30b OOB split (2026-05-20): out-of-range indices on
+    // `append_slice` route here instead of through
+    // `alloc_failed` — fathom's production on_failure handlers
+    // misread `initial_cap` as evidence of memory exhaustion
+    // when the real cause was a caller-supplied bad index.
+    // captures snapshots the offending `lo` and `hi` so the
+    // handler sees the actual indices.
+    closure index_oob { captures: lo, hi; epoch inline; }
     birth() {
         // lotus_bytes_builder_new returns NULL → __new yields 0.
         // The birth_check below surfaces that failure at
@@ -139,14 +147,18 @@ locus __StdBytesBytesBuilder {
     // `slice(src, lo, hi) + append(chunk)` pair's intermediate
     // Bytes wrapper that otherwise lands in g_bus_payload_arena —
     // the dominant residual in pond/websocket's unmask_into fast
-    // path. Routes alloc-fail through `violate alloc_failed` per
-    // F.27, same as `append`. Out-of-range indices (lo<0, hi<lo,
-    // hi>len(src)) violate too — caller bug, not a runtime
-    // condition the caller can recover from at this layer.
+    // path. The C primitive returns 1=ok / 0=alloc-fail / -1=OOB;
+    // this method branches to the appropriate closure (2026-05-20
+    // — pre-split both routed through alloc_failed, which misled
+    // fathom's production on_failure handlers into reporting
+    // memory exhaustion when the real cause was a bad index).
     fn append_slice(src: Bytes, lo: Int, hi: Int) {
-        let ok = std::bytes::builder::__append_slice(
+        let r = std::bytes::builder::__append_slice(
             self.handle, src, lo, hi);
-        if ok == 0 {
+        if r == -1 {
+            violate index_oob;
+        }
+        if r == 0 {
             violate alloc_failed;
         }
     }

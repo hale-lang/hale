@@ -147,9 +147,14 @@ fn builder_append_slice_empty_range_no_op() {
 
 #[test]
 fn builder_append_slice_out_of_range_violates() {
-    // hi > len(src) is a caller bug; the C primitive returns 0
-    // and the locus method routes through `violate alloc_failed`.
-    // No parent on_failure → process exits non-zero.
+    // hi > len(src) is a caller bug; the C primitive returns -1
+    // (post 2026-05-20 OOB split) and the locus method routes
+    // through `violate index_oob`. Pre-split the OOB and alloc-
+    // fail paths both routed through `alloc_failed`, which
+    // misled fathom's production on_failure handlers — they
+    // read `captures.initial_cap` and concluded "memory
+    // exhausted" when the real cause was a bad index. No parent
+    // on_failure → process exits non-zero.
     let src = r#"
         fn main() {
             let b = std::bytes::BytesBuilder { initial_cap: 64 };
@@ -170,9 +175,62 @@ fn builder_append_slice_out_of_range_violates() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("alloc_failed"),
+        stderr.contains("index_oob"),
         "expected closure name in stderr: {:?}",
         stderr
+    );
+    // OOB should NOT misroute to alloc_failed.
+    assert!(
+        !stderr.contains("alloc_failed"),
+        "OOB should not route through alloc_failed: {:?}",
+        stderr
+    );
+}
+
+#[test]
+fn builder_append_slice_oob_distinguishable_from_alloc_failed() {
+    // The whole point of the OOB split: a parent on_failure
+    // handler can tell the two failure modes apart via
+    // err.closure. Pre-split both reported "alloc_failed";
+    // post-split OOB reports "index_oob" so handlers can
+    // distinguish a caller bug (bad index) from a system
+    // failure (memory exhaustion).
+    let src = r#"
+        locus Catcher {
+            accept(b: std::bytes::BytesBuilder) { }
+            on_failure(b: std::bytes::BytesBuilder, err: ClosureViolation) {
+                println("absorbed closure=", err.closure);
+            }
+            run() {
+                let b = std::bytes::BytesBuilder { initial_cap: 32 };
+                let src_bytes = std::bytes::from_string("abc");
+                b.append_slice(src_bytes, 5, 10);
+                println("catcher.run continued");
+            }
+        }
+        fn main() { Catcher { }; }
+    "#;
+    let program = aperio_syntax::parse_source(src).expect("parse");
+    let mut bin = std::env::temp_dir();
+    bin.push("lotus_test_bb_append_slice_oob_distinguishable");
+    build_executable(&program, &bin).expect("build");
+    let output = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "expected handler to absorb the violation: stderr={:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("absorbed closure=index_oob"),
+        "expected index_oob route (not alloc_failed): {:?}",
+        stdout
+    );
+    assert!(
+        stdout.contains("catcher.run continued"),
+        "expected run() to keep going after absorbed violation: {:?}",
+        stdout
     );
 }
 

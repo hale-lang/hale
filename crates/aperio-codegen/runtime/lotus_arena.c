@@ -7278,18 +7278,35 @@ void lotus_bytes_builder_free(void *handle) {
  * builder's tail. Eliminates the `slice(b, lo, hi) + append(slice)`
  * pair that allocates a fresh Bytes wrapper in g_bus_payload_arena
  * per call — the dominant residual in pond/websocket's unmask_into
- * fast path. Returns 1 on success, 0 on hard failure (null handle,
- * out-of-range indices, realloc NULL). Aperio-side wrapper routes
- * 0 through `violate alloc_failed` per F.27. */
+ * fast path.
+ *
+ * Return contract (2026-05-20 — OOB split per fathom FRICTION #5b
+ * follow-up):
+ *   1 ok
+ *   0 alloc-fail (null handle OR realloc NULL)
+ *  -1 out-of-range indices (lo < 0 / hi < lo / hi > src_len, or
+ *                            non-empty range on a null src_blob)
+ *
+ * The Aperio-side wrapper branches on the three states and
+ * violates `alloc_failed` (with captures: initial_cap) or
+ * `index_oob` (with captures: lo, hi) as appropriate. The earlier
+ * shape collapsed both into 0 and routed everything through
+ * `violate alloc_failed`, which misled fathom's production
+ * on_failure handlers — they read `captures.initial_cap` and
+ * concluded "memory exhausted" when the real cause was a caller-
+ * supplied bad index. */
 int64_t lotus_bytes_builder_append_slice(void *handle,
                                          const void *src_blob,
                                          int64_t lo,
                                          int64_t hi) {
     if (!handle) return 0;
-    if (!src_blob) return (lo == hi) ? 1 : 0;
+    /* Null src + non-empty range is structurally OOB (the caller
+     * asserts `[lo, hi)` exists in a blob with no body). Null src +
+     * empty range is a no-op success — matches the prior shape. */
+    if (!src_blob) return (lo == 0 && hi == 0) ? 1 : -1;
     lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
     int64_t src_len = lotus_bytes_len(src_blob);
-    if (lo < 0 || hi < lo || hi > src_len) return 0;
+    if (lo < 0 || hi < lo || hi > src_len) return -1;
     int64_t add = hi - lo;
     if (add == 0) return 1;
     int64_t cur_len = lotus_bb_len(b);
