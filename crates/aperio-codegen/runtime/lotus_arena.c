@@ -6924,7 +6924,29 @@ typedef struct lotus_bytes_builder {
                        `text_view()` can return `buf` as a C
                        string. The invariant `buf[len] == '\0'` is
                        maintained by every mutating op. */
+    /* F.30b (2026-05-20): monotonic mutation counter. Bumped by
+     * every mutating op (append, append_slice, shift_front,
+     * clear, finish). view() and text_view() snapshot this into
+     * the returned lotus_view_t's stamped_epoch; read-site
+     * unpacking compares against this live value and panics on
+     * mismatch. Catches "mutated between view() and read"
+     * misuse loudly at the read site. */
+    int64_t mutation_epoch;
 } lotus_bytes_builder_t;
+
+/* F.30b (2026-05-20): fat-pointer view struct returned by view()
+ * and text_view(). Allocated in the caller arena (TLS-routed) so
+ * its lifetime matches the calling scope's arena. The `data`
+ * field carries the aliasing pointer that was the entire view
+ * before F.30b (Bytes-shaped for BytesView, C-string for
+ * StringView); `builder` + `stamped_epoch` carry the epoch-check
+ * metadata used by lotus_bytes_view_data / lotus_str_view_data
+ * at every read site. */
+typedef struct lotus_view {
+    void   *data;
+    void   *builder;
+    int64_t stamped_epoch;
+} lotus_view_t;
 
 /* Read the inline length prefix at `buf - 8`. */
 static inline int64_t lotus_bb_len(const lotus_bytes_builder_t *b) {
@@ -6953,7 +6975,70 @@ void *lotus_bytes_builder_new(int64_t initial_cap) {
     b->buf = region + sizeof(int64_t);
     lotus_bb_set_len(b, 0);
     b->buf[0] = '\0';
+    b->mutation_epoch = 0;
     return b;
+}
+
+/* F.30b (2026-05-20): noreturn panic helper invoked by the view-
+ * unpack helpers when the stamped epoch on a view doesn't match
+ * the live mutation_epoch on its source builder. Indicates the
+ * source builder was mutated between view() and this read —
+ * programmer error, not a recoverable runtime condition. Mirrors
+ * lotus_root_panic's shape (stderr + non-zero exit). */
+__attribute__((noreturn))
+void lotus_view_stale_panic(const char *kind,
+                            int64_t stamped, int64_t current) {
+    fprintf(stderr,
+            "violation: %s read after source BytesBuilder mutated "
+            "(stamped_epoch=%lld, current=%lld). The view's source "
+            "buffer changed between view() and read; the aliased "
+            "data is no longer the same bytes you observed at "
+            "view-creation time. v1 has no borrow checker, so this "
+            "is enforced at runtime — restructure to either "
+            "snapshot() before the mutation or take view() after "
+            "the mutation completes.\n",
+            kind, (long long)stamped, (long long)current);
+    fflush(stderr);
+    _exit(1);
+}
+
+/* F.30b read-site unpacking helpers. Codegen emits a call to one
+ * of these at every BytesView/StringView read-coercion site. The
+ * helper compares the view's stamped_epoch against the source
+ * builder's live mutation_epoch and panics on mismatch; on the OK
+ * path returns the underlying data pointer (Bytes-shaped for
+ * view(), C-string for text_view()). */
+void *lotus_bytes_view_data(void *view_ptr) {
+    if (!view_ptr) return lotus_bytes_empty_global();
+    lotus_view_t *v = (lotus_view_t *)view_ptr;
+    if (!v->builder) {
+        /* View created over a null handle — pre-F.30b shape
+         * returned the empty-Bytes sentinel from view(). Keep
+         * that fall-through here so callers see the same data
+         * (empty Bytes) rather than panicking on a no-op view. */
+        return v->data ? v->data : lotus_bytes_empty_global();
+    }
+    int64_t current =
+        ((const lotus_bytes_builder_t *)v->builder)->mutation_epoch;
+    if (current != v->stamped_epoch) {
+        lotus_view_stale_panic("BytesView", v->stamped_epoch, current);
+    }
+    return v->data;
+}
+
+const char *lotus_str_view_data(void *view_ptr) {
+    static const char empty[1] = { 0 };
+    if (!view_ptr) return empty;
+    lotus_view_t *v = (lotus_view_t *)view_ptr;
+    if (!v->builder) {
+        return v->data ? (const char *)v->data : empty;
+    }
+    int64_t current =
+        ((const lotus_bytes_builder_t *)v->builder)->mutation_epoch;
+    if (current != v->stamped_epoch) {
+        lotus_view_stale_panic("StringView", v->stamped_epoch, current);
+    }
+    return (const char *)v->data;
 }
 
 /* Returns 1 on success, 0 on hard failure (null handle or realloc
@@ -7000,6 +7085,7 @@ int64_t lotus_bytes_builder_append(void *handle, const void *chunk_blob) {
     memcpy(b->buf + cur_len, src, add);
     lotus_bb_set_len(b, (int64_t)need);
     b->buf[need] = '\0';
+    b->mutation_epoch += 1;
     return 1;
 }
 
@@ -7020,28 +7106,60 @@ int64_t lotus_bytes_builder_len(const void *handle) {
  * caller must not retain it across a mutation. v1 has no borrow
  * checker, so the rule is documented-and-trusted — same shape as
  * the rest of the locus's lifetime story. */
+/* F.30b (2026-05-20): returns a fat-pointer view struct (data +
+ * builder + stamped_epoch) allocated in the caller arena. The
+ * `data` field is the aliasing pointer that was the entire view
+ * pre-F.30b (Bytes-shaped: buf - 8, suitable for lotus_bytes_len
+ * / lotus_bytes_at / lotus_bytes_data once unpacked via
+ * lotus_bytes_view_data). The stamping happens here so the
+ * caller's read sites can compare against the live epoch. */
 void *lotus_bytes_builder_view(void *handle) {
-    if (!handle) return lotus_bytes_empty_global();
+    lotus_arena_t *arena = lotus_caller_arena_or_global();
+    lotus_view_t *v = arena
+        ? (lotus_view_t *)lotus_arena_alloc(arena, sizeof(lotus_view_t),
+                                            _Alignof(lotus_view_t))
+        : NULL;
+    if (!v) return NULL;
+    if (!handle) {
+        v->data = lotus_bytes_empty_global();
+        v->builder = NULL;
+        v->stamped_epoch = 0;
+        return v;
+    }
     lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
-    /* buf - 8 IS a valid Bytes pointer: the i64 len lives at
-     * offset 0, data lives at offset 8. lotus_bytes_len /
-     * lotus_bytes_at / lotus_bytes_data all just work. */
-    return b->buf - sizeof(int64_t);
+    v->data = b->buf - sizeof(int64_t);
+    v->builder = b;
+    v->stamped_epoch = b->mutation_epoch;
+    return v;
 }
 
 /* Phase-3 Site 2 (2026-05-19): non-owning String view aliasing
- * the builder's buffer. Returns `buf` directly; the builder
- * maintains `buf[len] == '\0'` after every mutation, so the
- * returned pointer is a valid C string for strlen / printf / the
- * lotus_str_* surface. Lifetime: valid until the next mutation
- * on the source builder. Same documented-and-trusted contract
- * as `view()`. Kills the per-message lotus_str_from_bytes alloc
- * in pond/websocket's bytes_as_text. */
-const char *lotus_bytes_builder_text_view(void *handle) {
+ * the builder's buffer. The builder maintains `buf[len] == '\0'`
+ * after every mutation so the returned pointer (in the view's
+ * `data` field) is a valid C string for strlen / printf / the
+ * lotus_str_* surface once unpacked via lotus_str_view_data.
+ * F.30b (2026-05-20): now returns a fat-pointer view struct like
+ * `view()` so the read-site epoch check catches "builder mutated
+ * between text_view() and read." */
+void *lotus_bytes_builder_text_view(void *handle) {
     static const char empty[1] = { 0 };
-    if (!handle) return empty;
+    lotus_arena_t *arena = lotus_caller_arena_or_global();
+    lotus_view_t *v = arena
+        ? (lotus_view_t *)lotus_arena_alloc(arena, sizeof(lotus_view_t),
+                                            _Alignof(lotus_view_t))
+        : NULL;
+    if (!v) return NULL;
+    if (!handle) {
+        v->data = (void *)empty;
+        v->builder = NULL;
+        v->stamped_epoch = 0;
+        return v;
+    }
     lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
-    return b->buf;
+    v->data = b->buf;
+    v->builder = b;
+    v->stamped_epoch = b->mutation_epoch;
+    return v;
 }
 
 void *lotus_bytes_builder_finish(void *handle) {
@@ -7096,6 +7214,7 @@ void lotus_bytes_builder_shift_front(void *handle, int64_t n) {
     if (drop >= (size_t)cur_len) {
         lotus_bb_set_len(b, 0);
         b->buf[0] = '\0';
+        b->mutation_epoch += 1;
         return;
     }
     /* memmove handles overlap; src+drop > dst by construction. */
@@ -7103,6 +7222,7 @@ void lotus_bytes_builder_shift_front(void *handle, int64_t n) {
     int64_t new_len = cur_len - (int64_t)drop;
     lotus_bb_set_len(b, new_len);
     b->buf[new_len] = '\0';
+    b->mutation_epoch += 1;
 }
 
 void lotus_bytes_builder_clear(void *handle) {
@@ -7110,6 +7230,7 @@ void lotus_bytes_builder_clear(void *handle) {
     lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
     lotus_bb_set_len(b, 0);
     b->buf[0] = '\0';
+    b->mutation_epoch += 1;
 }
 
 void *lotus_bytes_builder_snapshot(void *handle) {
@@ -7172,6 +7293,7 @@ int64_t lotus_bytes_builder_append_slice(void *handle,
     memcpy(b->buf + cur_len, src, (size_t)add);
     lotus_bb_set_len(b, (int64_t)need);
     b->buf[need] = '\0';
+    b->mutation_epoch += 1;
     return 1;
 }
 
@@ -7224,6 +7346,7 @@ void lotus_bytes_builder_advance(void *handle, int64_t n) {
     if (!handle || n <= 0) return;
     lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
     lotus_bb_set_len(b, lotus_bb_len(b) + n);
+    b->mutation_epoch += 1;
 }
 
 int64_t lotus_tcp_recv_into(int fd, void *builder, int64_t max_bytes) {

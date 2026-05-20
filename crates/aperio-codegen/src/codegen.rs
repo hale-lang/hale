@@ -1356,16 +1356,23 @@ fn expr_definitely_non_allocating(e: &Expr) -> bool {
 /// lifecycle).
 /// F.30 (2026-05-20): implicit coercion gate at fn-argument
 /// READ positions. A `BytesView` flows into a `Bytes`-typed
-/// param (and `StringView` into `String`) as a no-op at
-/// runtime — same pointer ABI, same data layout — so existing
-/// stdlib readers (`std::bytes::at`, `len`, `std::str::*`)
-/// accept views without per-signature changes. Storage sites
-/// (let-binding type ascription, struct/locus field init,
-/// return-value to a different declared type) deliberately do
-/// NOT use this coercion: callers wanting owned storage must
-/// `std::bytes::clone(view)` / `std::str::clone(view)` to
-/// deep-copy explicitly, which is what makes the read-vs-store
-/// axis legible in the type signature.
+/// param (and `StringView` into `String`) — typecheck-distinct,
+/// but the consumer reads the view's underlying data after an
+/// unpack. Storage sites (let-binding type ascription,
+/// struct/locus field init, return-value to a different declared
+/// type) deliberately do NOT use this coercion: callers wanting
+/// owned storage must `std::bytes::clone(view)` /
+/// `std::str::clone(view)` to deep-copy explicitly, which is what
+/// makes the read-vs-store axis legible in the type signature.
+///
+/// F.30b (2026-05-20): the runtime path is no longer a no-op.
+/// `BytesView` / `StringView` are pointers to a fat-pointer
+/// struct (`{data, builder, stamped_epoch}`); `view_coerces_to`
+/// callers must run the value through `unpack_view_if_needed`
+/// before passing it to a C primitive that expects the
+/// non-view layout. The unpack helper checks epoch staleness
+/// and panics on mismatch (catching the "mutated between view()
+/// and read" hazard).
 fn view_coerces_to(from: &CodegenTy, to: &CodegenTy) -> bool {
     matches!(
         (from, to),
@@ -3658,6 +3665,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function(
             "lotus_bytes_builder_text_view",
             bb_text_view_ty,
+            None,
+        );
+        // F.30b (2026-05-20): view-unpack helpers. Codegen emits a
+        // call at every BytesView → Bytes / StringView → String
+        // read-position coercion site. The helper compares the
+        // view's stamped_epoch against the source builder's live
+        // mutation_epoch and panics on mismatch; on the OK path
+        // returns the underlying data pointer (Bytes-shaped for
+        // bytes_view_data, NUL-terminated C string for str_view_data).
+        // declare ptr @lotus_bytes_view_data(ptr view)
+        // declare ptr @lotus_str_view_data(ptr view)
+        let view_data_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_bytes_view_data",
+            view_data_ty,
+            None,
+        );
+        self.module.add_function(
+            "lotus_str_view_data",
+            view_data_ty,
             None,
         );
         // declare i64 @lotus_bytes_builder_append_slice(ptr handle, ptr src_blob, i64 lo, i64 hi)
@@ -11934,6 +11961,42 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// F.30b (2026-05-20): unpack a view's underlying data pointer
+    /// for a read-position consumer. For a `BytesView` value calls
+    /// `lotus_bytes_view_data` (returns the Bytes-shaped data ptr);
+    /// for `StringView` calls `lotus_str_view_data` (returns the
+    /// NUL-terminated C-string ptr). Both helpers compare the
+    /// view's stamped_epoch against the source builder's live
+    /// mutation_epoch and panic on mismatch — catching "builder
+    /// mutated between view() and read" misuse at the read site.
+    /// Non-view types pass through unchanged. Call this at every
+    /// codegen site where a value of declared type "could be a
+    /// view or its non-view sibling" is about to flow into a C
+    /// primitive that expects the non-view layout.
+    fn unpack_view_if_needed(
+        &mut self,
+        value: BasicValueEnum<'ctx>,
+        ty: &CodegenTy,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let helper_name = match ty {
+            CodegenTy::BytesView => "lotus_bytes_view_data",
+            CodegenTy::StringView => "lotus_str_view_data",
+            _ => return Ok(value),
+        };
+        let f = self
+            .module
+            .get_function(helper_name)
+            .unwrap_or_else(|| panic!("{} declared", helper_name));
+        let call = self
+            .builder
+            .build_call(f, &[value.into()], "view.unpack")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(call
+            .try_as_basic_value()
+            .left()
+            .expect("view-unpack helper returns ptr"))
+    }
+
     fn lower_user_fn_call(
         &mut self,
         name: &str,
@@ -12023,11 +12086,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 )?;
                 widened.into()
             } else if view_coerces_to(&ty, &sig.params[i]) {
-                // F.30: BytesView → Bytes / StringView → String at
-                // read-position fn-arg sites. Runtime no-op
-                // (identical pointer layout); the typecheck
-                // approval is the load-bearing piece.
-                v
+                // F.30 / F.30b: BytesView → Bytes / StringView →
+                // String at read-position fn-arg sites. Emits a
+                // call to the unpack helper which compares the
+                // view's stamped_epoch against the source builder's
+                // live mutation_epoch and panics on mismatch — the
+                // F.30b safety net that catches "builder mutated
+                // between view() and read." Returns the underlying
+                // data pointer (Bytes-shaped for BytesView,
+                // C-string for StringView) on the OK path.
+                self.unpack_view_if_needed(v, &ty)?
             } else if ty != sig.params[i] {
                 return Err(CodegenError::Unsupported(format!(
                     "fn `{}` arg {} type mismatch: expected {:?}, got {:?}",
@@ -12691,6 +12759,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 b_ty
             )));
         }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         let (i_val, i_ty) = self.lower_expr(&args[1], scope)?;
         if i_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -13033,6 +13102,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 s_ty
             )));
         }
+        let s_val = self.unpack_view_if_needed(s_val, &s_ty)?;
         let can_fn = self
             .module
             .get_function("lotus_str_can_parse_int")
@@ -13094,6 +13164,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 s_ty
             )));
         }
+        let s_val = self.unpack_view_if_needed(s_val, &s_ty)?;
         let can_fn = self
             .module
             .get_function("lotus_str_can_parse_float")
@@ -13158,6 +13229,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 s_ty
             )));
         }
+        let s_val = self.unpack_view_if_needed(s_val, &s_ty)?;
         let i64_t = self.context.i64_type();
         let i128_t = self.context.i128_type();
         let can_fn = self
@@ -13252,6 +13324,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         let i32_t = self.context.i32_type();
         let i64_t = self.context.i64_type();
         let i8_t = self.context.i8_type();
@@ -13372,6 +13445,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         // Global-arena wrapper — returns a pointer in the bus
         // payload arena so the value survives the call frame.
         let read_bytes_fn = self
@@ -13523,6 +13597,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 argv_ty
             )));
         }
+        let argv_val = self.unpack_view_if_needed(argv_val, &argv_ty)?;
         let i32_t = self.context.i32_type();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
 
@@ -13661,6 +13736,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 argv_ty
             )));
         }
+        let argv_val = self.unpack_view_if_needed(argv_val, &argv_ty)?;
         let i32_t = self.context.i32_type();
         let i64_t = self.context.i64_type();
 
@@ -13996,6 +14072,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 s_ty
             )));
         }
+        let s_val = self.unpack_view_if_needed(s_val, &s_ty)?;
         let i32_t = self.context.i32_type();
         let i64_t = self.context.i64_type();
         let fd_i32 = self
@@ -14114,6 +14191,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 c_fn_name, path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         let (content_val, content_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(content_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
@@ -14121,6 +14199,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 c_fn_name, content_ty
             )));
         }
+        let content_val = self.unpack_view_if_needed(content_val, &content_ty)?;
         let len_fn = self
             .module
             .get_function("lotus_str_len")
@@ -14179,6 +14258,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         let size_fn = self
             .module
             .get_function("lotus_fs_file_size")
@@ -14230,6 +14310,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 host_ty
             )));
         }
+        let host_val = self.unpack_view_if_needed(host_val, &host_ty)?;
         let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
         if port_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -14305,6 +14386,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 "std::io::udp::__send: host must be String, got {:?}", host_ty
             )));
         }
+        let host_val = self.unpack_view_if_needed(host_val, &host_ty)?;
         let (port_val, port_ty) = self.lower_expr(&args[2], scope)?;
         if port_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -14317,6 +14399,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 "std::io::udp::__send: msg must be String, got {:?}", msg_ty
             )));
         }
+        let msg_val = self.unpack_view_if_needed(msg_val, &msg_ty)?;
         let i16_t = self.context.i16_type();
         let i32_t = self.context.i32_type();
         let fd_i32 = self
@@ -14450,6 +14533,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         let (mode_val, mode_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(mode_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
@@ -14457,6 +14541,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 mode_ty
             )));
         }
+        let mode_val = self.unpack_view_if_needed(mode_val, &mode_ty)?;
         let f = self
             .module
             .get_function("lotus_file_open")
@@ -14521,6 +14606,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 bytes_ty
             )));
         }
+        let bytes_val = self.unpack_view_if_needed(bytes_val, &bytes_ty)?;
         // Bytes ABI: ptr → [i64 len][u8 data[len]]. Decode the
         // length prefix then call lotus_file_write_all on the
         // body pointer.
@@ -14671,6 +14757,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         let mkdir_fn = self
             .module
             .get_function("lotus_fs_mkdir")
@@ -14718,6 +14805,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 src_ty
             )));
         }
+        let src_val = self.unpack_view_if_needed(src_val, &src_ty)?;
         let (dst_val, dst_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(dst_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
@@ -14725,6 +14813,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 dst_ty
             )));
         }
+        let dst_val = self.unpack_view_if_needed(dst_val, &dst_ty)?;
         let rename_fn = self
             .module
             .get_function("lotus_fs_rename")
@@ -14773,6 +14862,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         let unlink_fn = self
             .module
             .get_function("lotus_fs_unlink")
@@ -14820,6 +14910,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 prefix_ty
             )));
         }
+        let prefix_val = self.unpack_view_if_needed(prefix_val, &prefix_ty)?;
         let (suffix_val, suffix_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(suffix_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
@@ -14827,6 +14918,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 suffix_ty
             )));
         }
+        let suffix_val = self.unpack_view_if_needed(suffix_val, &suffix_ty)?;
         // Compose the IoError.path string at call time:
         //   prefix + "XXXXXX" + suffix
         // The runtime mktemp builds the same shape; we reproduce
@@ -14926,6 +15018,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         let exists_fn = self
             .module
             .get_function("lotus_fs_file_exists")
@@ -14985,6 +15078,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         let (idx_val, idx_ty) = self.lower_expr(&args[1], scope)?;
         if idx_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -15052,6 +15146,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 host_ty
             )));
         }
+        let host_val = self.unpack_view_if_needed(host_val, &host_ty)?;
         let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
         if port_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -15127,6 +15222,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 host_ty
             )));
         }
+        let host_val = self.unpack_view_if_needed(host_val, &host_ty)?;
         let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
         if port_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -17870,6 +17966,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
+        let v = self.unpack_view_if_needed(v, &ty)?;
         match ty {
             CodegenTy::String | CodegenTy::StringView => {
                 let len_fn = self
@@ -21819,6 +21916,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     ));
                 }
                 CodegenTy::String | CodegenTy::Time | CodegenTy::StringView => {
+                    // F.30b: unpack a StringView to its underlying
+                    // C-string ptr (with epoch check) before printf.
+                    let val = self.unpack_view_if_needed(val, &ty)?;
                     format.push_str("%s");
                     printf_args.push(BasicMetadataValueEnum::PointerValue(
                         val.into_pointer_value(),
@@ -21865,14 +21965,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     ));
                 }
                 CodegenTy::Bytes | CodegenTy::BytesView => {
-                    // m89 / F.30: print Bytes (and BytesView, same
-                    // runtime layout) as `<bytes len=N>` so it's
-                    // identifiable in logs without dumping
-                    // potentially-binary content. Users who want the
-                    // body should write a hex / base64 helper —
-                    // direct stringification would be lossy for
-                    // binary data and confusing for ASCII data
-                    // (NUL-terminated assumptions break).
+                    // m89 / F.30: print Bytes (and BytesView) as
+                    // `<bytes len=N>` so it's identifiable in logs
+                    // without dumping potentially-binary content.
+                    // Users who want the body should write a hex /
+                    // base64 helper — direct stringification would
+                    // be lossy for binary data and confusing for
+                    // ASCII data (NUL-terminated assumptions break).
+                    // F.30b: unpack a BytesView to its underlying
+                    // Bytes-shaped data ptr before lotus_bytes_len.
+                    let val = self.unpack_view_if_needed(val, &ty)?;
                     let len_fn = self
                         .module
                         .get_function("lotus_bytes_len")
@@ -24147,6 +24249,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 host_ty
             )));
         }
+        let host_val = self.unpack_view_if_needed(host_val, &host_ty)?;
         let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
         if port_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -24200,6 +24303,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 host_ty
             )));
         }
+        let host_val = self.unpack_view_if_needed(host_val, &host_ty)?;
         let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
         if port_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -24308,6 +24412,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 s_ty
             )));
         }
+        let s_val = self.unpack_view_if_needed(s_val, &s_ty)?;
         let (sub_val, sub_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(sub_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
@@ -24315,6 +24420,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 sub_ty
             )));
         }
+        let sub_val = self.unpack_view_if_needed(sub_val, &sub_ty)?;
         let f = self
             .module
             .get_function("lotus_str_index_of")
@@ -24353,6 +24459,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 s_ty
             )));
         }
+        let s_val = self.unpack_view_if_needed(s_val, &s_ty)?;
         let i32_t = self.context.i32_type();
         let f = self
             .module
@@ -24408,6 +24515,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 which, s_ty, hint
             )));
         }
+        let s_val = self.unpack_view_if_needed(s_val, &s_ty)?;
         let extern_name = match which {
             "lower" => "lotus_str_lower",
             "upper" => "lotus_str_upper",
@@ -24454,6 +24562,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 s_ty
             )));
         }
+        let s_val = self.unpack_view_if_needed(s_val, &s_ty)?;
         let (lo_val, lo_ty) = self.lower_expr(&args[1], scope)?;
         if lo_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -24505,6 +24614,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 s_ty
             )));
         }
+        let s_val = self.unpack_view_if_needed(s_val, &s_ty)?;
         let (n_val, n_ty) = self.lower_expr(&args[1], scope)?;
         if n_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -24550,6 +24660,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 which, s_ty
             )));
         }
+        let s_val = self.unpack_view_if_needed(s_val, &s_ty)?;
         if w_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::{}: width must be Int, got {:?}",
@@ -24562,6 +24673,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 which, p_ty
             )));
         }
+        let p_val = self.unpack_view_if_needed(p_val, &p_ty)?;
         let extern_name = match which {
             "pad_left" => "lotus_str_pad_left",
             "pad_right" => "lotus_str_pad_right",
@@ -24690,6 +24802,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 b_ty
             )));
         }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         let (s_val, s_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
@@ -24697,6 +24810,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 s_ty
             )));
         }
+        let s_val = self.unpack_view_if_needed(s_val, &s_ty)?;
         let f = self
             .module
             .get_function("lotus_str_builder_append")
@@ -24727,6 +24841,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 b_ty
             )));
         }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         let f = self
             .module
             .get_function("lotus_str_builder_len")
@@ -24764,6 +24879,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 b_ty
             )));
         }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         let f = self
             .module
             .get_function("lotus_str_builder_finish")
@@ -24889,6 +25005,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 chunk_ty
             )));
         }
+        let chunk_val = self.unpack_view_if_needed(chunk_val, &chunk_ty)?;
         let f = self
             .module
             .get_function("lotus_bytes_builder_append")
@@ -25231,6 +25348,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 src_ty
             )));
         }
+        let src_val = self.unpack_view_if_needed(src_val, &src_ty)?;
         let (lo_val, lo_ty) = self.lower_expr(&args[2], scope)?;
         if lo_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -25297,6 +25415,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 b_ty
             )));
         }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         let f = self
             .module
             .get_function("lotus_bytes_is_alloc_fail")
@@ -25338,6 +25457,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 v_ty
             )));
         }
+        let v_val = self.unpack_view_if_needed(v_val, &v_ty)?;
         let arena = self.current_arena_ptr()?;
         let f = self
             .module
@@ -25380,6 +25500,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 v_ty
             )));
         }
+        let v_val = self.unpack_view_if_needed(v_val, &v_ty)?;
         let arena = self.current_arena_ptr()?;
         let f = self
             .module
@@ -25419,6 +25540,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 s_ty
             )));
         }
+        let s_val = self.unpack_view_if_needed(s_val, &s_ty)?;
         let i32_t = self.context.i32_type();
         let f = self
             .module
@@ -25474,6 +25596,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 src_ty
             )));
         }
+        let src_val = self.unpack_view_if_needed(src_val, &src_ty)?;
         let f = self
             .module
             .get_function("lotus_ts_parse_go")
@@ -25791,6 +25914,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 name_ty
             )));
         }
+        let name_val = self.unpack_view_if_needed(name_val, &name_ty)?;
         let f = self
             .module
             .get_function("lotus_env_var")
@@ -25825,6 +25949,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 name_ty
             )));
         }
+        let name_val = self.unpack_view_if_needed(name_val, &name_ty)?;
         let i32_t = self.context.i32_type();
         let f = self
             .module
@@ -25875,6 +26000,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         let f = self
             .module
             .get_function("lotus_fs_read_bytes_global")
@@ -25920,6 +26046,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 b_ty
             )));
         }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         // Truncate fd's Int (i64) → i32 to match the C ABI.
         let i32_t = self.context.i32_type();
         let fd_i32 = self
@@ -25978,6 +26105,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 host_ty
             )));
         }
+        let host_val = self.unpack_view_if_needed(host_val, &host_ty)?;
         let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
         if port_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -26057,6 +26185,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 b_ty
             )));
         }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         let i32_t = self.context.i32_type();
         let i64_t = self.context.i64_type();
         let h_i32 = self
@@ -26156,6 +26285,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 subj_ty
             )));
         }
+        let subj_val = self.unpack_view_if_needed(subj_val, &subj_ty)?;
         let (b_val, b_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
@@ -26163,6 +26293,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 b_ty
             )));
         }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         // The C primitive takes (subject, wire_ptr, wire_size).
         // Bytes carries an explicit length prefix; load it and
         // pass the body pointer plus the length explicitly so the
@@ -26277,6 +26408,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         let i8_t = self.context.i8_type();
         let i64_t = self.context.i64_type();
         let zero64 = i64_t.const_zero();
@@ -26408,6 +26540,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         let (content_val, content_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(content_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
@@ -26415,6 +26548,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 content_ty
             )));
         }
+        let content_val = self.unpack_view_if_needed(content_val, &content_ty)?;
         let i64_t = self.context.i64_type();
 
         // strlen(content) → i64 length on the wire.
@@ -26479,6 +26613,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         let (content_val, content_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(content_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
@@ -26486,6 +26621,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 content_ty
             )));
         }
+        let content_val = self.unpack_view_if_needed(content_val, &content_ty)?;
         let i64_t = self.context.i64_type();
         let len_fn = self
             .module
@@ -26547,6 +26683,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         let i64_t = self.context.i64_type();
         let f = self
             .module
@@ -26588,6 +26725,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         let f = self
             .module
             .get_function("lotus_fs_file_size")
@@ -26624,6 +26762,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         let i32_t = self.context.i32_type();
         let i1_t = self.context.bool_type();
         let f = self
@@ -26676,6 +26815,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         let f = self
             .module
             .get_function("lotus_fs_extension_global")
@@ -26786,6 +26926,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 msg_ty
             )));
         }
+        let msg_val = self.unpack_view_if_needed(msg_val, &msg_ty)?;
         let i32_t = self.context.i32_type();
         let i64_t = self.context.i64_type();
         let fd_i32 = self
@@ -27116,6 +27257,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 b_ty
             )));
         }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         let f = self
             .module
             .get_function("lotus_str_from_bytes")
@@ -27154,6 +27296,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 s_ty
             )));
         }
+        let s_val = self.unpack_view_if_needed(s_val, &s_ty)?;
         let f = self
             .module
             .get_function("lotus_bytes_from_str")
@@ -27198,6 +27341,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 b_ty, hint
             )));
         }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         let (i_val, i_ty) = self.lower_expr(&args[1], scope)?;
         if i_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -27244,6 +27388,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 b_ty
             )));
         }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         let (lo_val, lo_ty) = self.lower_expr(&args[1], scope)?;
         if lo_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -27344,6 +27489,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 a_ty
             )));
         }
+        let a_val = self.unpack_view_if_needed(a_val, &a_ty)?;
         let (b_val, b_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
@@ -27351,6 +27497,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 b_ty
             )));
         }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         let f = self
             .module
             .get_function("lotus_bytes_concat")
@@ -27394,6 +27541,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 b_ty
             )));
         }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         let f = self
             .module
             .get_function("lotus_crypto_sha1")
@@ -27433,6 +27581,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 b_ty
             )));
         }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         let f = self
             .module
             .get_function("lotus_crypto_sha256")
@@ -27470,6 +27619,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 key_ty
             )));
         }
+        let key_val = self.unpack_view_if_needed(key_val, &key_ty)?;
         let (msg_val, msg_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(msg_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
@@ -27477,6 +27627,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 msg_ty
             )));
         }
+        let msg_val = self.unpack_view_if_needed(msg_val, &msg_ty)?;
         let f = self
             .module
             .get_function("lotus_crypto_hmac_sha256")
@@ -27518,6 +27669,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 b_ty
             )));
         }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         let f = self
             .module
             .get_function("lotus_text_base64_encode")
@@ -27557,6 +27709,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 s_ty
             )));
         }
+        let s_val = self.unpack_view_if_needed(s_val, &s_ty)?;
         let f = self
             .module
             .get_function("lotus_text_base64_decode")
@@ -27657,6 +27810,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         let f = self
             .module
             .get_function("lotus_fs_list_dir_count")
@@ -27694,6 +27848,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 path_ty
             )));
         }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
         let (idx_val, idx_ty) = self.lower_expr(&args[1], scope)?;
         if idx_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -34186,6 +34341,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 subj_ty
             )));
         }
+        let subj_val = self.unpack_view_if_needed(subj_val, &subj_ty)?;
         // v1.x-FRAMEWORK: ephemeral-payload fast path. When the
         // value is a bare struct literal, the publisher-side
         // storage is dead after lotus_bus_dispatch returns (the

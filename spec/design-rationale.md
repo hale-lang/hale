@@ -2547,35 +2547,101 @@ typecheck:
   semantic; the type-vs-`Bytes` distinction is visible at
   every read site of the struct.
 
-**What this DOES NOT catch (deferred to F.30b):**
+**What this DOES NOT catch (was deferred to F.30b — now closed):**
 
 - Mutation of the source builder while a `BytesView` from it
   is still observable. The "future maintainer adds
   `frag_buf.append(...)` between `frag_buf.text_view()` and
-  the consumer's read" hazard requires either a borrow
-  checker (compile-time lifetime tracking) or a runtime
-  epoch guard (BytesBuilder bumps a `mutation_epoch` on
-  every mutating op; BytesView captures the epoch at
-  construction; reads through BytesView check the epoch
-  matches). The runtime guard is the cheaper v1.x partial fix
-  (~half day); the borrow checker is v2 territory.
+  the consumer's read" hazard. Two enforcement options were
+  on the table: a compile-time borrow checker (v2 territory)
+  or a runtime epoch guard (v1.x). The runtime guard shipped
+  2026-05-20 — see F.30b below.
 
-**Why distinct-type ships before the lifetime enforcement:**
-The Design lens (form-before-content): a distinct type is a
-SYNTAX-LEVEL commitment the rest of the system rests on. A
-runtime epoch guard works regardless of whether the type is
-distinct; a borrow checker is most useful when the type carries
-the lifetime annotation. Both lifetime-enforcement options sit
-ABOVE this depth. Settling the type first means whichever
-enforcement we ship later integrates without re-shaping the
-surface.
+### F.30b BytesView / StringView mutation-while-live runtime guard (2026-05-20)
 
-**Codegen.** `BytesView` (and `StringView`) compile to the same
-LLVM pointer type as `Bytes` / `String`. The implicit
-read-site coercion is a typecheck-only no-op; the codegen path
-treats both types identically when emitting reads. The
-`.clone_to_bytes()` method lowers to `lotus_bytes_clone(caller_arena,
-src)` (analogous to the existing `lotus_str_clone`).
+**The remaining hazard after F.30:**
+The distinct-type work in F.30 catches the fungibility hazard
+(stored a view where Bytes was expected). It does NOT catch the
+*timing* hazard:
+
+```aperio
+let v = frag_buf.text_view();
+frag_buf.append(more_bytes);   // ← invalidates v silently
+let txt: String = v;           // ← reads stale bytes; no diagnostic
+```
+
+The view aliases the builder's buffer; the second `append` may
+realloc the buffer or shift its contents, leaving the view
+observably-broken with no compile-time signal. The Aperio v1
+language has no borrow checker (compile-time lifetime tracking)
+to close this at typecheck.
+
+**Design move:** runtime epoch guard.
+
+- `lotus_bytes_builder_t` gains a monotonic `int64_t mutation_epoch`
+  field, bumped by every mutating op (`append`, `append_slice`,
+  `shift_front`, `clear`, `advance`).
+- `view()` and `text_view()` no longer return a bare aliasing
+  pointer. They return a small fat-pointer struct
+  `{ data: ptr, builder: ptr, stamped_epoch: i64 }` allocated in
+  the caller arena. `data` carries the aliasing pointer that
+  used to be the entire return value; `builder` + `stamped_epoch`
+  carry the epoch-check metadata.
+- Every read-site coercion (`view_coerces_to(BytesView, Bytes)`
+  / `(StringView, String)` and the `len(view)` / `println(view)`
+  builtins) emits a call to `lotus_bytes_view_data` or
+  `lotus_str_view_data`. The helper compares the view's
+  stamped_epoch against the builder's live mutation_epoch; on
+  mismatch it calls `lotus_view_stale_panic` (noreturn) — stderr
+  diagnostic + `_exit(1)`.
+
+**Failure routing.** Stale-view detection is a runtime panic, not
+a closure violation. Closures are for recoverable conditions the
+owning locus can handle (e.g. alloc fail → restart / drain /
+bubble). A stale view is a *programmer error* — the code that
+held the view past a mutation is structurally wrong, no
+restructuring at the locus level can recover it. Hard panic with
+a clear diagnostic mirrors how out-of-bounds array reads behave
+in the rest of the language.
+
+**What this catches:**
+
+- The "future maintainer adds a mutation between view() and read"
+  regression — exits non-zero at the moment of misuse, with the
+  view kind on stderr.
+- Equivalent for `text_view() → StringView` consumers.
+
+**What this still doesn't catch:**
+
+- View captured before `finish()` or `dissolve()`, then read
+  after. The builder's memory is freed; the view's `builder`
+  pointer dangles; the epoch load is undefined behavior. Same
+  shape as today's lifetime contract — separate concern, would
+  need either reference counting or compile-time lifetime
+  tracking to close.
+
+**Codegen impact.** `BytesView` and `StringView` are still
+distinct types at typecheck (unchanged from F.30). Their LLVM
+representation is still `ptr` — the same single-pointer ABI as
+`Bytes` / `String` — but the pointer now points to the
+fat-pointer struct instead of directly at the data. The
+unpack-and-check helpers are mechanically inserted at every
+view-accepting consumer site (the `view_coerces_to` consultation,
+the `len()` builtin, the `println` arms). Other consumers
+(struct field storage of `BytesView` / `StringView`, function
+arguments declared as view types) are pass-through — the view
+flows along until it hits a read-coercion site, where the unpack
+fires.
+
+**Allocator.** Each `view()` / `text_view()` call allocates 24
+bytes (sizeof `lotus_view_t`) in the caller's arena (TLS-routed
+via `lotus_caller_arena_or_global`). For a recv-loop calling
+view() once per peel and discarding immediately, the per-call
+cost is one bump-allocator increment per view + a small read-time
+overhead at each coercion (4-5 instructions plus a function
+call). Acceptable for v1; if profiling shows it as a bottleneck
+in the hot path the helper can be inlined as LLVM IR rather than
+a C call.
 
 ## 16. What's deferred
 

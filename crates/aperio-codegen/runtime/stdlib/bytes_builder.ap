@@ -161,31 +161,37 @@ locus __StdBytesBytesBuilder {
         return out;
     }
     // Phase-2 (1): zero-copy view. Returns a non-owning Bytes
-    // pointer aliasing the builder's `[i64 len][u8 data]` region —
-    // no allocation, no copy. Lifetime is valid until the next
-    // mutation on the source builder (append / shift_front /
-    // clear / finish); callers must not retain the view across
-    // those operations. v1 has no borrow checker, so the rule is
-    // documented-and-trusted. Use case: a parser reading via
-    // std::bytes::at / len / slice over an rx_buf accumulator
-    // without allocating a snapshot per peel attempt.
+    // pointer aliasing the builder's `[i64 len][u8 data]` region.
+    // Use case: a parser reading via std::bytes::at / len / slice
+    // over an rx_buf accumulator without allocating a snapshot
+    // per peel attempt.
+    //
+    // F.30b runtime guard (2026-05-20): the view captures the
+    // builder's mutation_epoch at construction. Reads via the
+    // view_coerces_to / len(view) coercion path call into
+    // lotus_bytes_view_data which compares the stamped epoch
+    // against the builder's live mutation_epoch; mismatch (i.e.
+    // any mutating op fired since view() returned) panics with a
+    // clear stderr diagnostic and `_exit(1)`. Catches "future
+    // maintainer added append between view() and read" at the
+    // moment of misuse rather than letting the alias silently
+    // observe shifted bytes.
     fn view() -> BytesView {
         return std::bytes::builder::__view(self.handle);
     }
     // Phase-3 Site 2 (2026-05-19): zero-copy String view. Returns
     // a non-owning String pointer aliasing the builder's buffer.
-    // Lifetime is valid until the next mutation on the source
-    // builder (append / append_slice / shift_front / clear /
-    // finish); callers must not retain the view across those
-    // operations. v1 has no borrow checker, so the rule is
-    // documented-and-trusted — same shape as `view()`. Use case:
-    // a recv-loop that publishes a text-typed message field
-    // referencing the accumulator without copying the body into
-    // g_bus_payload_arena per message.
+    // Use case: a recv-loop that publishes a text-typed message
+    // field referencing the accumulator without copying the body
+    // into g_bus_payload_arena per message.
     //
-    // The C primitive maintains `buf[len] == '\0'` after every
-    // mutation, so the returned pointer is a well-formed
-    // C string for `lotus_str_*` consumers.
+    // F.30b runtime guard (2026-05-20): same epoch-stamping
+    // mechanism as `view()`. Reads via the view_coerces_to /
+    // println(view) / len(view) coercion path call into
+    // lotus_str_view_data, which panics on epoch mismatch. The
+    // builder maintains `buf[len] == '\0'` after every mutation,
+    // so the unpacked pointer is a well-formed C string for
+    // `lotus_str_*` consumers.
     fn text_view() -> StringView {
         return std::bytes::builder::__text_view(self.handle);
     }
