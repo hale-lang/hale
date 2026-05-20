@@ -1,17 +1,47 @@
 # Aperio
 
+[![Tests](https://github.com/aperio-lang/aperio/actions/workflows/tests.yml/badge.svg)](https://github.com/aperio-lang/aperio/actions/workflows/tests.yml)
+[![Docs](https://github.com/aperio-lang/aperio/actions/workflows/docs.yml/badge.svg)](https://aperio-lang.github.io/aperio/)
+[![License](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](./LICENSE)
+[![LLVM](https://img.shields.io/badge/LLVM-18-red.svg)](https://llvm.org/)
+[![Status](https://img.shields.io/badge/status-experimental-yellow.svg)](#status)
+[![GC](https://img.shields.io/badge/GC-0-brightgreen.svg)](#state-of-the-culture)
+[![async/await](https://img.shields.io/badge/async%2Fawait-0-brightgreen.svg)](#state-of-the-culture)
+[![native](https://img.shields.io/badge/native-human_%2B_agent-8957e5.svg)](./AGENTS.md)
+
 > **Experimental language. Breaking changes welcome.**
+> **v0.x — still in the part of the curve where the design is negotiable.**
 
-Aperio is a small programming language for systems built out of
-**loci** — typed, lifecycled units that publish and subscribe to
-each other through a typed bus. Apps, services, handlers, caches,
-schedulers, libraries: everything is a locus. Composition is
-recursive — loci nest inside loci all the way down.
+Aperio is a small programming language built on one observation: half the
+orchestration tooling shipped since 2023 is an under-specified, schema-shaped
+attempt at a programming language, and *half a language* is the most expensive
+shape software can take. We wrote the other half.
 
-The language compiles to native binaries via LLVM, has a
-tree-walking interpreter for fast iteration, and ships a small
-stdlib (`std::io::tcp`, `std::io::fs`, `std::http`, `std::time`,
-`std::str`, ...) bundled into every program.
+The unit is the **locus** — typed, lifecycled, owning a memory region, talking
+to other loci over a typed bus. Everything named and structural in an Aperio
+program is a locus. Apps are loci. Services are loci. Caches are loci.
+Handlers are loci. Libraries are loci. Loci nest inside loci all the way down.
+
+What the language deliberately doesn't have:
+
+- No `class`, no `module`, no `package` — the locus subsumes them.
+- No `Vec<T>` — write `@form(vec)` on a locus and storage discipline becomes
+  part of the declaration.
+- No `async`/`await` — concurrency lives on the typed bus.
+- No garbage collector and no borrow checker — the hierarchy is explicit in
+  the source, so dissolve is deterministic.
+- No `try`/`catch` in lifecycle methods — failures flow vertically to the
+  parent's `on_failure` handler.
+- No visibility modifiers, no traits — v0 doesn't need them.
+
+The intended primary author is an LLM. The intended primary reader is a
+person. The language is shaped for both — small primitive surface, low
+decision-overhead per statement, opinionated enough that there's usually a
+right answer before you write the code.
+
+Aperio compiles to native binaries via LLVM 18 and ships a tree-walking
+interpreter for fast iteration. The stdlib (`std::io::tcp`, `std::io::fs`,
+`std::http`, `std::time`, `std::str`, ...) is bundled into every program.
 
 ## A small program
 
@@ -45,21 +75,20 @@ fn main() {
 }
 ```
 
-Two loci communicate over a typed topic. `Counter` subscribes;
-`Pulse` publishes. Lifecycle is implicit: `Pulse { iters: 4 }`
-constructs the locus, runs its `run()` body to completion, then
-dissolves. The result printed is `sum=10`.
+Two loci communicate over a typed topic. `Counter` subscribes; `Pulse`
+publishes. Lifecycle is implicit: `Pulse { iters: 4 }` constructs the locus,
+runs its `run()` body to completion, then dissolves. The result printed is
+`sum=10`.
 
 ## Try it
 
-**Prerequisites:** a Rust toolchain (1.95+), **LLVM 18** dev
-libraries with `llvm-config-18` on `PATH` (or
-`LLVM_SYS_180_PREFIX` set), `clang` (used as the linker for
-`aperio build`), and `git`. Platform-specific install commands
+**Prerequisites:** a Rust toolchain (1.95+), **LLVM 18** dev libraries with
+`llvm-config-18` on `PATH` (or `LLVM_SYS_180_PREFIX` set), `clang` (used as
+the linker for `aperio build`), and `git`. Platform-specific install commands
 for Debian/Ubuntu, macOS Homebrew, and Fedora are in
 [`docs/src/getting-started/install.md`](./docs/src/getting-started/install.md).
-LLVM 17 / 19 / 20 will not work — the codegen crate pins
-`inkwell` to `llvm18-0`.
+LLVM 17 / 19 / 20 will not work — the codegen crate pins `inkwell` to
+`llvm18-0`. We know. It's on the list.
 
 ```sh
 git clone https://github.com/aperio-lang/aperio
@@ -79,32 +108,12 @@ cargo run -p aperio-cli --bin aperio -- build hello.ap
 ./hello
 ```
 
-The `aperio` CLI accepts a single `.ap` file or a directory; a
-directory bundles every `.ap` in it as one program (one binary).
-See `aperio --help` for the full surface.
+The `aperio` CLI accepts a single `.ap` file or a directory; a directory
+bundles every `.ap` in it as one program (one binary). See `aperio --help`
+for the full surface.
 
-### Pinning to a stable compiler (downstream app teams)
-
-App teams (`pond`, `fathom`, `mdgw`, etc.) that depend on the
-Aperio compiler should pin to `bin/aperio` rather than
-`target/release/aperio`. The `bin/` directory is gitignored and
-populated explicitly by `scripts/publish-stable.sh`, so the
-compiler-team's in-flight `target/release/aperio` churn doesn't
-move underneath consumers between publishes. A `bin/VERSION` file
-records the source commit + branch + publish date so app teams
-can pin-check before a burn / deploy.
-
-```sh
-# As the compiler team, after validating a change:
-scripts/publish-stable.sh           # build + copy to bin/aperio
-
-# As a downstream app team, pin against the stable binary:
-~/code/lotus-lang/bin/aperio build my_app.ap
-cat ~/code/lotus-lang/bin/VERSION   # what am I running?
-```
-
-If your project depends on Aperio libraries hosted in git
-repos, declare them in `aperio.toml`:
+If your project depends on Aperio libraries hosted in git repos, declare
+them in `aperio.toml`:
 
 ```toml
 [deps]
@@ -112,34 +121,33 @@ helpers = { git = "https://github.com/me/helpers", rev = "abc123" }
 finance = { git = "https://github.com/me/finance", tag = "v0.1.0" }
 ```
 
-Then `aperio fetch` clones each into `vendor/<name>/` and pins
-the resolved commits to `aperio.lock`. The existing `import
-"vendor/helpers" as h;` directive picks them up — no extra
-configuration needed. (Hand-vendored libraries stay under
-`lib/<name>/`; the toolchain only writes to `vendor/`.)
+Then `aperio fetch` clones each into `vendor/<name>/` and pins the resolved
+commits to `aperio.lock`. The existing `import "vendor/helpers" as h;`
+directive picks them up — no extra configuration needed. (Hand-vendored
+libraries stay under `lib/<name>/`; the toolchain only writes to `vendor/`.)
 
 ## Where to go next
 
-- **Docs site** — <https://aperio-lang.github.io/aperio/>
-  (built from `docs/` via mdbook).
+- **Docs site** — <https://aperio-lang.github.io/aperio/> (built from
+  `docs/` via mdbook).
 - **`spec/`** — the canonical language reference. Start with
   [`spec/styleguide.md`](./spec/styleguide.md), then
   [`spec/semantics.md`](./spec/semantics.md) and
   [`spec/grammar.ebnf`](./spec/grammar.ebnf).
-- **[`AGENTS.md`](./AGENTS.md)** — load-bearing prompt for AI
-  agents writing `.ap` programs. Compiler / stdlib / spec work
-  has separate briefs under [`agents/`](./agents/).
-- **[`apps/`](./apps)** — working programs built in Aperio
-  (`cli-demo`, `log-router`, `ssg`, `tcp-echo`, `ws-echo`,
-  ...). Read these to see real shape.
-- **`crates/aperio-codegen/tests/fixtures/examples/`** — small
-  per-feature anchor programs the parser is checked against.
+- **[`AGENTS.md`](./AGENTS.md)** — load-bearing prompt for AI agents writing
+  `.ap` programs. Compiler / stdlib / spec work has separate briefs under
+  [`agents/`](./agents/).
+- **[`apps/`](./apps)** — working programs built in Aperio (`cli-demo`,
+  `log-router`, `ssg`, `tcp-echo`, `ws-echo`, ...). Read these to see real
+  shape.
+- **`crates/aperio-codegen/tests/fixtures/examples/`** — small per-feature
+  anchor programs the parser is checked against.
 - **[`aperio-lang/pond`](https://github.com/aperio-lang/pond)** —
-  community-contrib libraries (protocols, parsers, common shapes
-  too specific for stdlib). Many lotus grow in a pond. Vendor
-  via `aperio.toml` → `aperio fetch`.
-- **Sibling repos** — <https://github.com/aperio-lang/examples>
-  and <https://github.com/aperio-lang/bench>.
+  community-contrib libraries (protocols, parsers, common shapes too
+  specific for stdlib). Many lotus grow in a pond. Vendor via `aperio.toml`
+  → `aperio fetch`.
+- **Sibling repos** — <https://github.com/aperio-lang/examples> and
+  <https://github.com/aperio-lang/bench>.
 
 ## Layout
 
@@ -159,29 +167,48 @@ crates/
   aperio-ts-shim/           tree-sitter staticlib (powers std::ts)
 ```
 
-The C runtime symbols are prefixed `lotus_*` (arena, bus, tcp,
-transport). That's intentional: *Aperio* is the language; *lotus*
-is the runtime substrate Aperio programs run on.
+The C runtime symbols are prefixed `lotus_*`. That's not a relic — it's the
+design. **Aperio** is the language; **lotus** is the runtime substrate
+Aperio programs run on. Two names, two layers, one project.
+
+## State of the culture
+
+Aperio commits hard and tells you about it:
+
+- **Three projection classes** (`Rich`, `Chunked`, `Recognition`). No fourth.
+- **Three modes** (`bulk`, `harmonic`, `resolution`). No fourth.
+- **One form per locus.** Compose at the locus level, not the form level.
+- **Vertical-only failure flow.** Parent-policy decides recovery.
+- **Region-based memory, deterministic dissolve.** No GC, no ARC, no
+  reference counting.
+- **Closure assertions as language constructs.** Yes, the runtime audits
+  your invariants. Yes, that's the point.
+
+If your problem decomposes cleanly into loci + bus + capacity + closure,
+you'll move fast. If it doesn't, the language will tell you so. There is
+no permissive escape hatch — that's the feature, not the bug.
+
+If you're looking for "express anything," this isn't it. If you're looking
+for "express what production systems actually need without 700 lines of
+ceremony," keep reading.
 
 ## Status
 
 Experimental. The compiler self-hosts the topic system, structural
-interfaces (F.20), `@form(...)` lowerings (vec, hashmap,
-ring_buffer), `fallible(T)` error model, capacity-tuple memory
-discipline, cooperative + pinned schedulers, and AF_UNIX / TCP
-cross-process bus transports. The reference test suite is the
-~70 in-tree fixture programs under
-`crates/aperio-codegen/tests/fixtures/examples/` plus per-feature
-tests under `crates/aperio-codegen/tests/`.
+interfaces (F.20), `@form(...)` lowerings (vec, hashmap, ring_buffer),
+`fallible(T)` error model, capacity-tuple memory discipline, cooperative
++ pinned schedulers, and AF_UNIX / TCP cross-process bus transports.
+The reference test suite is the ~70 in-tree fixture programs under
+`crates/aperio-codegen/tests/fixtures/examples/` plus per-feature tests
+under `crates/aperio-codegen/tests/`.
 
 Breaking changes are expected; pin to a commit if you build on it.
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](./LICENSE).
-Attribution and any third-party notices are tracked in
-[`NOTICE`](./NOTICE).
+Licensed under the [Apache License, Version 2.0](./LICENSE). Attribution
+and any third-party notices are tracked in [`NOTICE`](./NOTICE).
 
-Unless you explicitly state otherwise, any contribution
-intentionally submitted for inclusion in Aperio shall be
-licensed as above, without additional terms or conditions.
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in Aperio shall be licensed as above, without
+additional terms or conditions.
