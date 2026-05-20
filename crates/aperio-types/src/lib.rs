@@ -547,6 +547,56 @@ mod binding_constraint_tests {
     }
 
     #[test]
+    fn shm_ring_with_aperio_subscriber_rejected() {
+        // Form K6a: a same-bundle Aperio subscriber on a
+        // shm_ring-bound topic produces a clear diagnostic
+        // until subscriber-side codegen lands.
+        let src = r#"
+            type TickPayload { px: Int; sz: Int; }
+            topic Tick { payload: TickPayload; }
+            locus Pub { bus { publish Tick; } }
+            locus Sub {
+                bus { subscribe Tick as on_tick of type TickPayload; }
+                fn on_tick(t: TickPayload) { }
+            }
+            main locus App {
+                bindings {
+                    Tick: shm_ring("/x") where zero_copy;
+                }
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| d.message.contains("shm_ring")
+                && d.message.contains("Aperio-side subscribers")),
+            "expected shm_ring subscriber-not-wired diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn shm_ring_publish_only_is_clean() {
+        // Publish-only on a shm_ring binding (no subscriber
+        // declared in the bundle) is the supported v1 shape.
+        let src = r#"
+            type TickPayload { px: Int; sz: Int; }
+            topic Tick { payload: TickPayload; }
+            locus Pub { bus { publish Tick; } }
+            main locus App {
+                bindings {
+                    Tick: shm_ring("/x") where zero_copy;
+                }
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            !diags.iter().any(|d| d.message.contains("shm_ring")),
+            "publish-only shm_ring should be clean, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
     fn binding_without_where_clause_unaffected() {
         // Regression guard: bindings without a `where` clause
         // continue to typecheck cleanly.

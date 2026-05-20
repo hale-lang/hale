@@ -562,6 +562,16 @@ Transport surface:
   [[slot-locus-design]]) for the zero-memcpy path is
   post-v1; the implicit `<-` path covers the common case.
 
+  **Subscribers (Form K6a, 2026-05-20).** Aperio-side `bus
+  subscribe` for shm_ring-bound topics is not yet wired —
+  the typechecker rejects a same-bundle `subscribe Tick`
+  when `Tick` is bound to `shm_ring(...)`, naming the
+  publisher path's K4c shipping and pointing at the C
+  `lotus_shm_ring_*` primitives as the supported v1
+  consumer path. Reader-thread + view-into-slot codegen
+  for Aperio subscribers lands when a workload needs
+  Aperio-to-Aperio zero-copy.
+
 **In-memory delivery is absence-of-entry.** A topic with no
 binding entry is delivered same-process via the cooperative
 queue. There is no `in_memory` variant — the runtime default
