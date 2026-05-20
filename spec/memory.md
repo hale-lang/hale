@@ -680,8 +680,32 @@ program leaking into the payload arena, not the fix; the fix is
 per-subscriber arena routing for m70 + `__caller_arena` threading
 for the stdlib primitives that land here.
 
+**Phase-3 Task 9 m70 per-subscriber arena routing (2026-05-20).**
+`lotus_bus_dispatch_wire` no longer parks deserialized String /
+Bytes pointers in the program-lifetime g_bus_payload_arena.
+Instead it iterates the matching subscribers, sets the TLS
+caller-arena (Task 8 indirection) to each subscriber's own
+`__arena` (via the m20 fixed-offset slot-0 GEP), and deserializes
+the wire bytes per-subscriber into that arena. The payload
+pointers in the enqueued struct_buf now alias the subscriber's
+own arena, bounded by the subscriber's lifecycle — no
+program-lifetime deposit, no eventual OOM.
+
+Cost: deserialize is invoked once per matching subscriber rather
+than once total. Acceptable for typical fan-out (1–3 subs per
+subject); high-fan-out subjects pay a real bill that could be
+optimized via deserialize-once-then-clone-per-sub if a workload
+demands it.
+
+Closes the original Phase-2 (4) investigation's finding ("not
+reclaimable under current semantics"): the answer was never to
+reclaim the global arena but to skip it entirely — the m20 spec
+("each subscriber's arena outlives the payload pointer") now
+holds by construction because the deserialize-time allocator IS
+the subscriber's arena.
+
 **Phase-2 (4) `g_bus_payload_arena` reclaim investigation
-(2026-05-19; finding: NOT reclaimable under current semantics).**
+(2026-05-19; superseded by Phase-3 Task 9).**
 The handoff posed: "should `lotus_bus_dispatch_wire`'s
 `g_bus_payload_arena` deposit reclaim per dispatch since m20
 memcpy's into subscriber arena anyway?" The answer is no, and

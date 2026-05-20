@@ -2036,6 +2036,13 @@ void lotus_bus_dispatch_wire(const char *subject,
                              const void *wire_bytes,
                              size_t wire_size);
 
+/* Phase-3 Task 9 (2026-05-20): forward decl of the caller-arena
+ * TLS pointer. Defined further down alongside the other
+ * caller_arena helpers; needed here because lotus_bus_dispatch_wire
+ * sets it per-subscriber to route deserialize allocations into
+ * each subscriber's own __arena. */
+extern __thread lotus_arena_t *lotus_current_caller_arena;
+
 /* m70: lotus_bus_dispatch's signature grew a 5th arg — a per-
  * subject serialize fn pointer (NULL for cooperative-only
  * publishers; codegen always passes the right one for cross-
@@ -4644,23 +4651,53 @@ void lotus_bus_dispatch_wire(const char *subject,
                              const void *wire_bytes,
                              size_t wire_size) {
     if (!subject || !wire_bytes || wire_size == 0) return;
-    lotus_deserialize_fn deserialize = NULL;
+    /* Phase-3 Task 9 (2026-05-20): per-subscriber arena routing.
+     * Previously this deserialize-once-then-fanout shape parked
+     * the deserialized String/Bytes pointers in the program-
+     * lifetime g_bus_payload_arena (leaky for long-running
+     * cross-process consumers). Now we iterate matching
+     * subscribers and deserialize INTO EACH SUBSCRIBER'S OWN
+     * arena via the TLS-routed allocator (Task 8 helpers); the
+     * payload pointers in the enqueued struct_buf alias the
+     * subscriber's own __arena, bounded by the subscriber's
+     * lifecycle. Cost: deserialize is called once per matching
+     * subscriber instead of once total — a real cost for high-
+     * fan-out subjects, but the structural correctness win is
+     * load-bearing for production daemons (HYPERLOOP-MDGW).
+     *
+     * The m20 spec's "subscriber's arena outlives the payload
+     * pointer" guarantee now holds end-to-end: the pointer was
+     * allocated in the subscriber's arena to begin with, so it
+     * stays valid until the subscriber dissolves. No more
+     * program-lifetime deposit. */
+    char struct_buf[LOTUS_PAYLOAD_MAX];
+    lotus_arena_t *prev_tls = lotus_current_caller_arena;
     for (size_t i = 0; i < g_bus_count; i++) {
         lotus_bus_entry_t *e = &g_bus_entries[i];
         if (!e->subject) continue;
         if (!lotus_subject_match(e->subject, subject)) continue;
-        deserialize = e->deserialize;
-        break;
+        if (!e->deserialize) continue;
+        /* Load the subscriber's __arena via the m20 fixed-offset
+         * GEP: slot 0 of every locus struct is `__arena: ptr`. */
+        lotus_arena_t *sub_arena =
+            e->self_ptr
+                ? *(lotus_arena_t **)e->self_ptr
+                : NULL;
+        lotus_current_caller_arena = sub_arena;
+        ssize_t struct_size = e->deserialize(
+            wire_bytes, wire_size, struct_buf, sizeof(struct_buf));
+        if (struct_size <= 0) continue;
+        if (e->mailbox) {
+            lotus_mailbox_post(
+                e->mailbox, e->handler, e->self_ptr,
+                struct_buf, (size_t)struct_size);
+        } else if (g_bus_queue_for_remote) {
+            lotus_bus_queue_enqueue(
+                g_bus_queue_for_remote, e->handler, e->self_ptr,
+                struct_buf, (size_t)struct_size);
+        }
     }
-    if (!deserialize) return;
-    char struct_buf[LOTUS_PAYLOAD_MAX];
-    ssize_t struct_size = deserialize(
-        wire_bytes, wire_size, struct_buf, sizeof(struct_buf));
-    if (struct_size <= 0) return;
-    lotus_bus_local_dispatch(g_bus_queue_for_remote,
-                             subject,
-                             struct_buf,
-                             (size_t)struct_size);
+    lotus_current_caller_arena = prev_tls;
 }
 
 /* m70: lazy global "payload arena" for String byte storage in
@@ -4734,7 +4771,7 @@ static lotus_arena_t *lotus_bus_payload_arena_create_capped(void) {
  * backward compat: any caller (in C or interpreter land) that
  * forgets to set the TLS still gets a valid arena, just the
  * leaky one. */
-static __thread lotus_arena_t *lotus_current_caller_arena = NULL;
+__thread lotus_arena_t *lotus_current_caller_arena = NULL;
 
 void lotus_set_caller_arena(lotus_arena_t *a) {
     lotus_current_caller_arena = a;
