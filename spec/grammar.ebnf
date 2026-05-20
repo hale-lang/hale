@@ -132,7 +132,23 @@ locus_member      = params_block
                   | const_decl
                   | type_decl
                   | bindings_block
+                  | birth_check_decl
                   ;
+
+(* F.27 v2 (2026-05-20): declarative birth-time invariant check.
+   Runs AFTER birth() body completes (and after birth-epoch
+   closures fire), at the well-defined point where every field
+   has its declared post-birth value. If COND_EXPR evaluates to
+   true, the named closure violates with the locus's fully-
+   constructed state. Multiple birth_check clauses fire in
+   declaration order; the first to fire short-circuits the rest.
+   Closure name must resolve to a declared `epoch inline`
+   closure on the enclosing locus. The `violate` keyword is
+   contextual (lexes as Ident); recognized inside the arrow's
+   RHS only. *)
+birth_check_decl  = "birth_check" , "{" , expression , "}" , "->" ,
+                    "violate" , IDENTIFIER ,
+                    [ "(" , expression , ")" ] , ";" ;
 
 (* Phase 2: per-topic transport binding. Only legal inside a
    `main` locus. The same library can be deployed differently in

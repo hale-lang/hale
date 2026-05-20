@@ -743,6 +743,48 @@ as `Never`, the same as `fail` in fallible fn bodies and
 same block is reachable; the typechecker does not require a
 trailing `return` on a `violate` branch.
 
+### `birth_check` synthesis hook
+
+(F.27 v2, 2026-05-20.) A declarative form for construction-time
+invariants:
+
+```aperio
+locus L {
+    params { x: Int = 0; }
+    closure invariant_broken { captures: x; epoch inline; }
+    birth() { /* set up state */ }
+    birth_check { self.x < 0 } -> violate invariant_broken;
+}
+```
+
+After `birth()` body completes and birth-epoch closures have
+fired, each declared `birth_check` clause's `cond` expression is
+evaluated. A `true` result fires the named closure with the
+locus's fully-constructed state — every field reads its
+declared post-birth value, so the on_failure handler's
+capture-snapshot sees coherent state. Multiple clauses evaluate
+in declaration order; the first to fire short-circuits the
+rest.
+
+Why a separate clause vs. calling `violate NAME;` inside the
+birth body: a violate mid-birth leaves the locus partially
+constructed (some fields set, others at defaults) when the
+on_failure handler reads captures. `birth_check` runs the body
+to completion before the check fires, so the post-birth invariant
+of "every field has its declared value" holds at violation time.
+The runtime-routing semantics are otherwise identical to a
+regular `violate` (drain_requested set, parent on_failure
+absorbs or process exits non-zero with diagnostic). The codegen
+emits the check + violate routing INLINE at the instantiation
+site, branching to a continuation block on absorbed violations
+rather than returning from the caller's fn — the absorbed-then-
+continue contract matches what users expect when wrapping the
+instantiation in a parent that handles the failure.
+
+The check expression is read-only against `self.X` fields; the
+closure name must resolve to a declared epoch-inline closure on
+the same locus, same constraint as a regular violate.
+
 ### `self.draining`
 
 While the locus is draining, the synthetic `self.draining`

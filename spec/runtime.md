@@ -573,6 +573,17 @@ bytes for a bound subject) can use this too.
   the next mutation on the source builder. `free` disposes
   the malloc-backed buffer.
 
+  **F.30 (2026-05-20) type promotion.** The runtime
+  `_view` / `_text_view` C primitives still return raw
+  pointers; the Aperio-visible method surface now returns
+  `BytesView` / `StringView` (typecheck-distinct from `Bytes`
+  / `String`, runtime-identical). The codegen lowering of
+  the bridge mints the view types; the locus method body's
+  declared return type matches. The view-to-owned upgrade
+  paths (`std::bytes::clone`, `std::str::clone`) are backed
+  by `lotus_bytes_clone(arena, src)` (new) and
+  `lotus_str_clone(arena, src)` (existing m49).
+
   **Memory layout (Phase-2 (1)).** Diverges from
   `lotus_str_builder_t` to support zero-copy `view()`. Header
   is `{cap, buf}`; the data area is preceded inline by an
