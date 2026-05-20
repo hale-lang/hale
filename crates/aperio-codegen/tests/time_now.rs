@@ -94,3 +94,48 @@ fn main() {
         stdout
     );
 }
+
+#[test]
+fn time_from_unix_constructs_iso8601_string() {
+    // 2026-05-20 — direct construction from epoch seconds.
+    // 1700000000 is 2023-11-14T22:13:20Z. Unblocks venue parsers
+    // that want to stamp venue_ts / recv_ts at runtime instead
+    // of falling through to the compile-time literal default.
+    let src = r#"
+fn main() {
+    let t = std::time::time_from_unix(1700000000);
+    println("t=", t);
+}
+"#;
+    let out = build_and_run("time_from_unix_basic", src);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("t=2023-11-14T22:13:20Z"),
+        "expected ISO 8601 UTC from epoch 1700000000; got: {:?}",
+        stdout
+    );
+}
+
+#[test]
+fn time_from_unix_round_trips_through_now() {
+    // now() returns Int (epoch seconds); time_from_unix turns
+    // that Int back into a Time. The composition stamps "right
+    // now" as a Time value at runtime — the recv_ts shape mdgw
+    // gateways need.
+    let src = r#"
+fn main() {
+    let n = std::time::now();
+    let stamp = std::time::time_from_unix(n);
+    // Just check the prefix — year+T separator are stable
+    // even though seconds tick during the test run.
+    println("stamp=", stamp);
+}
+"#;
+    let out = build_and_run("time_from_unix_now", src);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Test runs in 2026 or later. Loose check: must be 4-digit
+    // year + 'T' + 8-char time + 'Z'.
+    assert!(stdout.contains("stamp=20"), "got: {:?}", stdout);
+    assert!(stdout.contains("T"), "got: {:?}", stdout);
+    assert!(stdout.contains("Z"), "got: {:?}", stdout);
+}

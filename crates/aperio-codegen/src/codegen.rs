@@ -3264,6 +3264,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             time_now_seconds_ty,
             None,
         );
+        // declare ptr @lotus_time_from_unix(i64 n)
+        // Returns a NUL-terminated ISO 8601 UTC string in the
+        // caller arena, the runtime representation of a Time value.
+        let time_from_unix_ty = ptr_t.fn_type(&[i64_t.into()], false);
+        self.module.add_function(
+            "lotus_time_from_unix",
+            time_from_unix_ty,
+            None,
+        );
 
         // Phase 2e: list_dir index API. count + at over the
         // cached newline-blob; both share the global payload arena.
@@ -3467,6 +3476,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function(
             "lotus_str_can_parse_float",
             can_parse_float_ty,
+            None,
+        );
+        // declare void @lotus_str_parse_decimal(ptr s, ptr out_hi, ptr out_lo)
+        // The i128 mantissa is returned as two i64 halves via out
+        // pointers — matches the lotus_decimal_to_string convention
+        // (the LLVM/C ABI for __int128 is awkward to wire uniformly).
+        let parse_decimal_ty = self.context.void_type().fn_type(
+            &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_str_parse_decimal",
+            parse_decimal_ty,
+            None,
+        );
+        // declare i32 @lotus_str_can_parse_decimal(ptr s)
+        let can_parse_decimal_ty = i32_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_str_can_parse_decimal",
+            can_parse_decimal_ty,
             None,
         );
 
@@ -12507,6 +12536,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "str", "parse_float"] => Ok(Some(
                 self.lower_std_str_parse_float_fallible(args, scope)?,
             )),
+            ["std", "str", "parse_decimal"] => Ok(Some(
+                self.lower_std_str_parse_decimal_fallible(args, scope)?,
+            )),
             // C4 (pond/crypto follow-up): CSPRNG getrandom.
             ["std", "os", "getrandom"] => Ok(Some(
                 self.lower_std_os_getrandom_fallible(args, scope)?,
@@ -13100,6 +13132,101 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             "parse_float",
             Some((value_f64, CodegenTy::Float)),
             "str.parse_float",
+        )
+    }
+
+    /// `std::str::parse_decimal(s) -> Decimal fallible(ParseError)`.
+    /// Same shape as parse_int_fallible. The C primitive returns
+    /// the i128 mantissa via two i64 out-params (hi:lo split) to
+    /// match the lotus_decimal_to_string convention; this lowering
+    /// reconstructs the i128 LLVM value via sext+shl+or.
+    fn lower_std_str_parse_decimal_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::parse_decimal takes 1 arg (s), got {}",
+                args.len()
+            )));
+        }
+        let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::parse_decimal: s must be String, got {:?}",
+                s_ty
+            )));
+        }
+        let i64_t = self.context.i64_type();
+        let i128_t = self.context.i128_type();
+        let can_fn = self
+            .module
+            .get_function("lotus_str_can_parse_decimal")
+            .expect("lotus_str_can_parse_decimal declared");
+        let can_i32 = self
+            .builder
+            .build_call(can_fn, &[s_val.into()], "parse_decimal.can")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                can_i32,
+                self.context.i32_type().const_zero(),
+                "parse_decimal.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let hi_slot = self.alloca_in_entry(i64_t.into(), "parse_decimal.hi")?;
+        let lo_slot = self.alloca_in_entry(i64_t.into(), "parse_decimal.lo")?;
+        let parse_fn = self
+            .module
+            .get_function("lotus_str_parse_decimal")
+            .expect("lotus_str_parse_decimal declared");
+        self.builder
+            .build_call(
+                parse_fn,
+                &[s_val.into(), hi_slot.into(), lo_slot.into()],
+                "parse_decimal.split",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let hi_i64 = self
+            .builder
+            .build_load(i64_t, hi_slot, "parse_decimal.hi.load")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let lo_i64 = self
+            .builder
+            .build_load(i64_t, lo_slot, "parse_decimal.lo.load")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let hi_wide = self
+            .builder
+            .build_int_s_extend(hi_i64, i128_t, "parse_decimal.hi.sext")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let lo_wide = self
+            .builder
+            .build_int_z_extend(lo_i64, i128_t, "parse_decimal.lo.zext")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let shift = i128_t.const_int(64, false);
+        let hi_shifted = self
+            .builder
+            .build_left_shift(hi_wide, shift, "parse_decimal.hi.shl")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let value_i128 = self
+            .builder
+            .build_or(hi_shifted, lo_wide, "parse_decimal.value")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.complete_parse_fallible_call(
+            is_err,
+            s_val,
+            "parse_decimal",
+            Some((value_i128.into(), CodegenTy::Decimal)),
+            "str.parse_decimal",
         )
     }
 
@@ -22124,6 +22251,44 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok((sec.into(), CodegenTy::Int))
     }
 
+    /// `std::time::time_from_unix(n: Int) -> Time` — direct
+    /// construction from epoch seconds. Lowers to a call into
+    /// `lotus_time_from_unix`, which gmtime_r + strftime's the
+    /// epoch into a 24-byte ISO 8601 UTC buffer in the caller arena.
+    /// Mirrors the runtime shape of compile-time Time literals.
+    fn lower_std_time_from_unix(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::time::time_from_unix takes 1 arg (n), got {}",
+                args.len()
+            )));
+        }
+        let (n_val, n_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(n_ty, CodegenTy::Int) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::time::time_from_unix: n must be Int, got {:?}",
+                n_ty
+            )));
+        }
+        let from_unix_fn = self
+            .module
+            .get_function("lotus_time_from_unix")
+            .expect("lotus_time_from_unix declared");
+        let call = self
+            .builder
+            .build_call(from_unix_fn, &[n_val.into()], "time.from_unix")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_time_from_unix returns ptr");
+        Ok((ptr, CodegenTy::Time))
+    }
+
     /// Lower `time::sleep(duration)` to a monotonic-clock,
     /// EINTR-retrying `clock_nanosleep` call. The lowered IR is:
     ///
@@ -22814,6 +22979,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_time_now(args)?;
                 Ok(())
             }
+            ["std", "time", "time_from_unix"] => {
+                let _ = self.lower_std_time_from_unix(args, scope)?;
+                Ok(())
+            }
             // m79: std::process::exit. Calls libc exit() with the
             // user-supplied code, then emits unreachable + a fresh
             // basic block so subsequent statements (dead but
@@ -23256,6 +23425,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 result.ok_or_else(|| CodegenError::Unsupported(
                     "std::json::find_bool_field returns Bool but called in a position that expects no value".to_string()))
             }
+            ["std", "json", "find_field_raw"] => {
+                let result = self.lower_user_fn_call("__json_find_field_raw", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::find_field_raw returns String but called in a position that expects no value".to_string()))
+            }
             ["std", "json", "array_first"] => {
                 let result = self.lower_user_fn_call("__json_array_first", args, scope)?;
                 result.ok_or_else(|| CodegenError::Unsupported(
@@ -23404,6 +23578,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // as Int. Statement-position sibling lives in
             // lower_stdlib_path_call.
             ["std", "time", "now"] => self.lower_std_time_now(args),
+            ["std", "time", "time_from_unix"] => {
+                self.lower_std_time_from_unix(args, scope)
+            }
             // std::math::* libm Float primitives. Resolves
             // notes/aperio-friction.md 2026-05-10 float-surface-gaps
             // (the `std::math` sub-bullet). v0 cut: unary

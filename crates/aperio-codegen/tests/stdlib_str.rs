@@ -130,3 +130,92 @@ fn parse_int_round_trips_with_arithmetic() {
     assert!(status.success());
     assert!(stdout.contains("doubled=200"), "got: {:?}", stdout);
 }
+
+#[test]
+fn parse_decimal_handles_basic_inputs() {
+    // 2026-05-20 — parse_decimal returns `Decimal fallible(ParseError)`.
+    // Mantissa is i128 with implicit scale 9 (matches Decimal literal
+    // codegen). Trailing-zero precision survives — the IEEE 754
+    // rounding that bit parse_float on Kraken book qtys doesn't apply.
+    let src = r#"
+        fn main() {
+            let a = std::str::parse_decimal("100.5") or raise;
+            let b = std::str::parse_decimal("0") or raise;
+            let c = std::str::parse_decimal("-7.25") or raise;
+            let d = std::str::parse_decimal("0.00005100") or raise;
+            let e = std::str::parse_decimal("12345.678901234") or raise;
+            println("a=", a);
+            println("b=", b);
+            println("c=", c);
+            println("d=", d);
+            println("e=", e);
+        }
+    "#;
+    let (stdout, status) = build_and_run("parse_decimal_basic", src);
+    assert!(status.success());
+    assert!(stdout.contains("a=100.5"), "got: {:?}", stdout);
+    assert!(stdout.contains("b=0"), "got: {:?}", stdout);
+    assert!(stdout.contains("c=-7.25"), "got: {:?}", stdout);
+    // Trailing zeros past 9 fractional digits get truncated, but
+    // 8 digits round-trip — Kraken book-qty precision.
+    assert!(stdout.contains("d=0.000051"), "got: {:?}", stdout);
+    assert!(stdout.contains("e=12345.678901234"), "got: {:?}", stdout);
+}
+
+#[test]
+fn parse_decimal_err_arm_substitutes_zero_on_garbage_input() {
+    let src = r#"
+        fn main() {
+            let bad1 = std::str::parse_decimal("abc") or 0.0d;
+            let bad2 = std::str::parse_decimal("12.3abc") or 0.0d;
+            let bad3 = std::str::parse_decimal("") or 0.0d;
+            let bad4 = std::str::parse_decimal(".") or 0.0d;
+            println("bad1=", bad1);
+            println("bad2=", bad2);
+            println("bad3=", bad3);
+            println("bad4=", bad4);
+        }
+    "#;
+    let (stdout, status) = build_and_run("parse_decimal_garbage", src);
+    assert!(status.success());
+    assert!(stdout.contains("bad1=0"), "got: {:?}", stdout);
+    assert!(stdout.contains("bad2=0"), "got: {:?}", stdout);
+    assert!(stdout.contains("bad3=0"), "got: {:?}", stdout);
+    assert!(stdout.contains("bad4=0"), "got: {:?}", stdout);
+}
+
+#[test]
+fn parse_decimal_err_payload_carries_kind_and_input() {
+    let src = r#"
+        fn main() {
+            let s = "not a number";
+            let v = std::str::parse_decimal(s) or {
+                println("kind=", err.kind, " input=", err.input);
+                -1.0d
+            };
+            println("v=", v);
+        }
+    "#;
+    let (stdout, status) = build_and_run("parse_decimal_err_payload", src);
+    assert!(status.success(), "non-zero: {:?}", status);
+    assert!(stdout.contains("kind=parse_decimal"), "got: {:?}", stdout);
+    assert!(stdout.contains("input=not a number"), "got: {:?}", stdout);
+    assert!(stdout.contains("v=-1"), "got: {:?}", stdout);
+}
+
+#[test]
+fn parse_decimal_round_trips_through_arithmetic() {
+    // Confirms the parsed Decimal behaves as Decimal — i128
+    // mantissa arithmetic survives the fallible flip.
+    let src = r#"
+        fn main() {
+            let p = std::str::parse_decimal("100.40") or raise;
+            let q = std::str::parse_decimal("0.005") or raise;
+            let total = p + q;
+            println("total=", total);
+        }
+    "#;
+    let (stdout, status) = build_and_run("parse_decimal_arith", src);
+    assert!(status.success());
+    assert!(stdout.contains("total=100.405"), "got: {:?}", stdout);
+}

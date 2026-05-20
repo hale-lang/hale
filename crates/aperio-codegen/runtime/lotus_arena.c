@@ -4267,6 +4267,77 @@ int lotus_str_can_parse_float(const char *s) {
 }
 
 /*
+ * Parse a Decimal literal source spelling into an i128 mantissa
+ * with implicit scale 9. Mirrors parse_decimal_to_i128_scale9 in
+ * codegen.rs — accepts optional trailing 'd', optional leading
+ * sign, '_' digit separators, and truncates at exactly 9 fractional
+ * digits (pads with zeros below 9). The i128 result is split into
+ * two i64 halves (hi:lo) for ABI portability — same convention
+ * used by lotus_decimal_to_string for the print path.
+ *
+ * On malformed / overflowed input, writes 0,0 and the can-variant
+ * returns 0. Callers that need to distinguish "0.0" from "bad input"
+ * gate on lotus_str_can_parse_decimal first.
+ */
+static int parse_decimal_to_i128(const char *s, __int128 *out) {
+    if (!s) return 0;
+    size_t n = strlen(s);
+    if (n == 0) return 0;
+    if (s[n - 1] == 'd') n -= 1;
+    if (n == 0) return 0;
+    size_t i = 0;
+    __int128 sign = 1;
+    if (s[i] == '-') { sign = -1; i += 1; }
+    else if (s[i] == '+') { i += 1; }
+    if (i >= n) return 0;
+    __int128 mantissa = 0;
+    int frac_digits = 0;
+    int seen_dot = 0;
+    int seen_digit = 0;
+    for (; i < n; i++) {
+        char c = s[i];
+        if (c >= '0' && c <= '9') {
+            seen_digit = 1;
+            if (!seen_dot || frac_digits < 9) {
+                __int128 prev = mantissa;
+                mantissa = mantissa * 10 + (__int128)(c - '0');
+                /* overflow guard: re-divide and compare */
+                if (mantissa / 10 != prev) return 0;
+                if (seen_dot) frac_digits += 1;
+            }
+        } else if (c == '.' && !seen_dot) {
+            seen_dot = 1;
+        } else if (c == '_') {
+            /* digit separator */
+        } else {
+            return 0;
+        }
+    }
+    if (!seen_digit) return 0;
+    while (frac_digits < 9) {
+        __int128 prev = mantissa;
+        mantissa = mantissa * 10;
+        if (mantissa / 10 != prev) return 0;
+        frac_digits += 1;
+    }
+    *out = sign * mantissa;
+    return 1;
+}
+
+void lotus_str_parse_decimal(const char *s, int64_t *out_hi, int64_t *out_lo) {
+    __int128 m = 0;
+    (void)parse_decimal_to_i128(s, &m);
+    /* On failure m stays 0; the codegen guards on can_parse first. */
+    *out_lo = (int64_t)(uint64_t)m;
+    *out_hi = (int64_t)(m >> 64);
+}
+
+int lotus_str_can_parse_decimal(const char *s) {
+    __int128 m = 0;
+    return parse_decimal_to_i128(s, &m);
+}
+
+/*
  * m58: deployment-config subject binding.
  *
  * Layered on top of the m57 AF_UNIX transport: a startup config
@@ -6297,6 +6368,33 @@ int64_t lotus_time_now_seconds(void) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     return (int64_t)ts.tv_sec;
+}
+
+/*
+ * Construct a Time value from epoch seconds. v0 Time at codegen
+ * level is a NUL-terminated ISO 8601 string in UTC (matches the
+ * compile-time backtick-literal form). Allocates a 24-byte buffer
+ * in the caller arena and fills it via gmtime_r + strftime.
+ * Returns "" on any failure (gmtime returns NULL, strftime
+ * truncates, arena alloc fails).
+ */
+const char *lotus_time_from_unix(int64_t n) {
+    static const char empty[1] = { 0 };
+    lotus_arena_t *arena = lotus_caller_arena_or_global();
+    if (!arena) return empty;
+    char *buf = (char *)lotus_arena_alloc(arena, 24, 1);
+    if (!buf) return empty;
+    time_t t = (time_t)n;
+    struct tm tm;
+    if (!gmtime_r(&t, &tm)) {
+        buf[0] = '\0';
+        return buf;
+    }
+    size_t k = strftime(buf, 24, "%Y-%m-%dT%H:%M:%SZ", &tm);
+    if (k == 0) {
+        buf[0] = '\0';
+    }
+    return buf;
 }
 
 /*

@@ -539,6 +539,10 @@ pub fn resolve_path(segments: &[&str]) -> Option<Value> {
             name: "time::now",
             func: Rc::new(time_now),
         })),
+        ["std", "time", "time_from_unix"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::time::time_from_unix",
+            func: Rc::new(std_time_from_unix),
+        })),
         // v1.x-16: parse_float / can_parse_float / base64::decode.
         // String-parsing primitives (interpreter parity with codegen).
         ["std", "str", "parse_float"] => Some(Value::Builtin(BuiltinRef {
@@ -738,6 +742,14 @@ pub fn resolve_path(segments: &[&str]) -> Option<Value> {
         ["std", "str", "can_parse_int"] => Some(Value::Builtin(BuiltinRef {
             name: "std::str::can_parse_int",
             func: Rc::new(std_str_can_parse_int),
+        })),
+        ["std", "str", "parse_decimal"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::str::parse_decimal",
+            func: Rc::new(std_str_parse_decimal),
+        })),
+        ["std", "str", "can_parse_decimal"] => Some(Value::Builtin(BuiltinRef {
+            name: "std::str::can_parse_decimal",
+            func: Rc::new(std_str_can_parse_decimal),
         })),
         // math — libm-shaped float primitives.
         ["std", "math", "sqrt"] => Some(Value::Builtin(BuiltinRef {
@@ -2250,6 +2262,84 @@ fn std_str_can_parse_int(args: &[Value]) -> Result<Value, String> {
         }
     };
     Ok(Value::Bool(s.trim().parse::<i64>().is_ok()))
+}
+
+fn std_str_parse_decimal(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::str::parse_decimal takes 1 arg, got {}",
+            args.len()
+        ));
+    }
+    let s = match &args[0] {
+        Value::String(s) => s,
+        other => {
+            return Err(format!(
+                "std::str::parse_decimal expects String, got {}",
+                other.type_name()
+            ))
+        }
+    };
+    match crate::value::DecimalVal::parse(s) {
+        Some(d) => Ok(Value::Decimal(d)),
+        None => Ok(Value::FallibleErr(Box::new(parse_error_value(
+            "parse_decimal", s,
+        )))),
+    }
+}
+
+fn std_str_can_parse_decimal(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::str::can_parse_decimal takes 1 arg, got {}",
+            args.len()
+        ));
+    }
+    let s = match &args[0] {
+        Value::String(s) => s,
+        other => {
+            return Err(format!(
+                "std::str::can_parse_decimal expects String, got {}",
+                other.type_name()
+            ))
+        }
+    };
+    Ok(Value::Bool(crate::value::DecimalVal::parse(s).is_some()))
+}
+
+fn std_time_from_unix(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "std::time::time_from_unix takes 1 arg, got {}",
+            args.len()
+        ));
+    }
+    let n = match &args[0] {
+        Value::Int(n) => *n,
+        other => {
+            return Err(format!(
+                "std::time::time_from_unix expects Int, got {}",
+                other.type_name()
+            ))
+        }
+    };
+    // ISO 8601 UTC, matches lotus_time_from_unix C side.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let t: libc::time_t = n as libc::time_t;
+    let ok = unsafe { libc::gmtime_r(&t, &mut tm) };
+    if ok.is_null() {
+        return Ok(Value::Time(String::new()));
+    }
+    let s = format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    );
+    Ok(Value::Time(s))
 }
 
 // === math ====================================================

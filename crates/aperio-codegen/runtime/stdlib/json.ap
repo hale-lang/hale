@@ -433,12 +433,19 @@ fn __json_find_bool_field(json: String, name: String) -> Bool {
     return raw == "true";
 }
 
-// Internal: locate `"<name>":` in `json` and return the
-// value token verbatim (incl. surrounding quotes for strings).
-// Whitespace around the colon and after is skipped; the value
-// token ends at the first comma / closing brace / closing
-// bracket at the top level. Top-level meaning: respects nested
-// braces/brackets/quote pairs but doesn't descend into them.
+// Locate `"<name>":` in `json` and return the value token
+// verbatim. Whitespace around the colon and after is skipped;
+// the value's end is determined by its leading character:
+//   - `"` — walk until unescaped closing quote, return incl. quotes
+//   - `{` / `[` — bracket-balanced walk respecting embedded strings,
+//                 returns the entire `{...}` / `[...]` substring
+//   - else  — walk until comma / `}` / `]` / whitespace (numeric /
+//             true / false / null)
+//
+// Surfaces as `std::json::find_field_raw(json, name)`. Useful as
+// the recursive descent primitive for nested JSON: the value of an
+// outer field can be re-fed into find_*_field / find_field_raw for
+// deeper extraction without parsing the whole structure.
 fn __json_find_field_raw(json: String, name: String) -> String {
     let needle = "\"" + name + "\"";
     let needle_pos = std::str::index_of(json, needle);
@@ -446,20 +453,20 @@ fn __json_find_field_raw(json: String, name: String) -> String {
     let total = len(json);
     // Advance past `"name"`.
     let mut p = needle_pos + len(needle);
+    let bs = std::bytes::from_string(json);
     // Skip whitespace + colon + whitespace.
     while p < total {
-        let c = std::bytes::at(std::bytes::from_string(json), p) or 0;
+        let c = std::bytes::at(bs, p) or 0;
         if c == 32 || c == 9 || c == 10 || c == 13 { p = p + 1; }
         else if c == 58 { p = p + 1; break; }
         else { return ""; }
     }
     while p < total {
-        let c = std::bytes::at(std::bytes::from_string(json), p) or 0;
+        let c = std::bytes::at(bs, p) or 0;
         if c == 32 || c == 9 || c == 10 || c == 13 { p = p + 1; }
         else { break; }
     }
     // p is now at start of value. Find end of value token.
-    let bs = std::bytes::from_string(json);
     let start_v = p;
     let first = std::bytes::at(bs, p) or 0;
     if first == 34 {
@@ -469,6 +476,29 @@ fn __json_find_field_raw(json: String, name: String) -> String {
             let c = std::bytes::at(bs, p) or 0;
             if c == 92 { p = p + 2; continue; }
             if c == 34 { p = p + 1; break; }
+            p = p + 1;
+        }
+        return json[start_v..p];
+    }
+    if first == 123 || first == 91 {
+        // Object {...} or array [...]: bracket-balanced walk.
+        // Tracks nested braces/brackets, respects string contents
+        // so brackets inside string values don't shift the depth.
+        let mut depth = 0;
+        let mut in_string = false;
+        while p < total {
+            let c = std::bytes::at(bs, p) or 0;
+            if in_string {
+                if c == 92 { p = p + 2; continue; }
+                if c == 34 { in_string = false; }
+            } else {
+                if c == 34 { in_string = true; }
+                else if c == 123 || c == 91 { depth = depth + 1; }
+                else if c == 125 || c == 93 {
+                    depth = depth - 1;
+                    if depth == 0 { p = p + 1; break; }
+                }
+            }
             p = p + 1;
         }
         return json[start_v..p];

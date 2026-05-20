@@ -98,3 +98,52 @@ fn build_array_passes_raw_entries_through() {
     assert!(status.success());
     assert!(stdout.contains(r#"a=[{"k": 1}, {"k": 2}]"#), "got: {:?}", stdout);
 }
+
+#[test]
+fn find_field_raw_returns_value_token_verbatim() {
+    // 2026-05-20 — find_field_raw exposes the substring of a
+    // field's value token. Numeric / bool / string forms all
+    // return the raw bytes (incl. surrounding quotes for strings).
+    let src = r#"
+        fn main() {
+            let s = "{\"name\":\"alice\",\"age\":30,\"active\":true}";
+            let v_name   = std::json::find_field_raw(s, "name");
+            let v_age    = std::json::find_field_raw(s, "age");
+            let v_active = std::json::find_field_raw(s, "active");
+            let v_miss   = std::json::find_field_raw(s, "missing");
+            println("name=", v_name);
+            println("age=", v_age);
+            println("active=", v_active);
+            println("miss=[", v_miss, "]");
+        }
+    "#;
+    let (stdout, status) = build_and_run("find_field_raw", src);
+    assert!(status.success());
+    assert!(stdout.contains("name=\"alice\""), "got: {:?}", stdout);
+    assert!(stdout.contains("age=30"), "got: {:?}", stdout);
+    assert!(stdout.contains("active=true"), "got: {:?}", stdout);
+    assert!(stdout.contains("miss=[]"), "got: {:?}", stdout);
+}
+
+#[test]
+fn find_field_raw_enables_nested_object_descent() {
+    // The point of exposing find_field_raw — Kraken-style
+    // wrapped payloads where the real fields live inside a
+    // nested object. Two-step extract: find_field_raw to get
+    // the inner object's substring, then find_string_field for
+    // the leaf scalars.
+    let src = r#"
+        fn main() {
+            let s = "{\"result\":{\"channel\":\"book\",\"symbol\":\"XBT/USD\"}}";
+            let inner = std::json::find_field_raw(s, "result");
+            let ch = std::json::find_string_field(inner, "channel");
+            let sy = std::json::find_string_field(inner, "symbol");
+            println("ch=", ch);
+            println("sy=", sy);
+        }
+    "#;
+    let (stdout, status) = build_and_run("find_field_raw_nested", src);
+    assert!(status.success());
+    assert!(stdout.contains("ch=book"), "got: {:?}", stdout);
+    assert!(stdout.contains("sy=XBT/USD"), "got: {:?}", stdout);
+}
