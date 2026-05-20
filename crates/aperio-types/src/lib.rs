@@ -465,7 +465,7 @@ mod binding_constraint_tests {
             main locus App {
                 accept(p: Pub) { }
                 bindings {
-                    Evt: shm_ring("/aperio_evt") where zero_copy, intra_machine;
+                    Evt: shm_ring("/aperio_evt", on_overflow: drop) where zero_copy, intra_machine;
                 }
             }
         "#;
@@ -488,7 +488,7 @@ mod binding_constraint_tests {
             main locus App {
                 accept(p: Pub) { }
                 bindings {
-                    Evt: shm_ring("/aperio_evt") where cross_machine;
+                    Evt: shm_ring("/aperio_evt", on_overflow: drop) where cross_machine;
                 }
             }
         "#;
@@ -510,7 +510,7 @@ mod binding_constraint_tests {
             main locus App {
                 accept(p: Pub) { }
                 bindings {
-                    Evt: shm_ring("/aperio_evt") where intra_process;
+                    Evt: shm_ring("/aperio_evt", on_overflow: drop) where intra_process;
                 }
             }
         "#;
@@ -534,7 +534,7 @@ mod binding_constraint_tests {
             main locus App {
                 accept(p: Pub) { }
                 bindings {
-                    Evt: shm_ring("/aperio_evt") where zero_copy;
+                    Evt: shm_ring("/aperio_evt", on_overflow: drop) where zero_copy;
                 }
             }
         "#;
@@ -562,7 +562,7 @@ mod binding_constraint_tests {
             }
             main locus App {
                 bindings {
-                    Tick: shm_ring("/x") where zero_copy;
+                    Tick: shm_ring("/x", on_overflow: drop) where zero_copy;
                 }
             }
         "#;
@@ -585,7 +585,7 @@ mod binding_constraint_tests {
             locus Pub { bus { publish Tick; } }
             main locus App {
                 bindings {
-                    Tick: shm_ring("/x") where zero_copy;
+                    Tick: shm_ring("/x", on_overflow: drop) where zero_copy;
                 }
             }
         "#;

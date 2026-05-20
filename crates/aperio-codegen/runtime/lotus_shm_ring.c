@@ -50,26 +50,50 @@
 #include <unistd.h>
 #include <errno.h>
 
-#define LOTUS_SHM_RING_MAGIC 0x4C5253524E4730ULL  /* "LRSRNG0" */
+/* Magic bumped at K7 (2026-05-20) when the header layout grew
+ * the consumer_seqno cache line. Attaches against a different
+ * magic value are rejected by lotus_shm_ring_open's validation
+ * branch (catches binaries pinned to different ABI generations
+ * trying to share a ring). */
+#define LOTUS_SHM_RING_MAGIC 0x4C5253524E4731ULL  /* "LRSRNG1" */
 
-/* In-SHM header — exactly 64 bytes (one cache line). Field order
- * is part of the on-disk layout; do not reorder without bumping
- * the magic. */
+/* Publisher-side overflow policy. Stored per-process on the
+ * handle (NOT in SHM — different attachers may have different
+ * preferences). ABI value is part of the codegen interface;
+ * keep in sync with aperio_syntax::ast::ShmRingOverflow.
+ * `runtime_tag()`. */
+typedef enum {
+    LOTUS_SHM_OVERFLOW_BLOCK = 0,
+    LOTUS_SHM_OVERFLOW_DROP = 1,
+    LOTUS_SHM_OVERFLOW_FAIL = 2,
+} lotus_shm_overflow_policy_t;
+
+/* In-SHM header — TWO cache lines (128 bytes). The producer's
+ * seqno and the consumer's seqno live on separate cache lines so
+ * neither side's writes pingpong the other side's reads. Field
+ * order is part of the on-disk layout; do not reorder without
+ * bumping LOTUS_SHM_RING_MAGIC. */
 typedef struct {
+    /* Cache line 0 — owned by the publisher. */
     uint64_t magic;
     uint64_t slot_size;
     uint64_t slot_count;
-    _Atomic uint64_t seqno;  /* monotonic; 0 = nothing committed */
-    uint64_t _pad[4];        /* round to 64 B */
+    _Atomic uint64_t seqno;        /* monotonic published count */
+    uint64_t _pad0[4];              /* round to 64 B */
+    /* Cache line 1 — owned by the consumer. Form K7 (2026-05-20). */
+    _Atomic uint64_t consumer_seqno; /* last fully-consumed seqno */
+    uint64_t _pad1[7];              /* round to 64 B */
 } lotus_shm_ring_header_t;
 
-_Static_assert(sizeof(lotus_shm_ring_header_t) == 64,
-               "ring header must be exactly one cache line");
+_Static_assert(sizeof(lotus_shm_ring_header_t) == 128,
+               "ring header must be exactly two cache lines");
 _Static_assert(offsetof(lotus_shm_ring_header_t, seqno) == 24,
                "seqno offset is part of the on-disk layout");
+_Static_assert(offsetof(lotus_shm_ring_header_t, consumer_seqno) == 64,
+               "consumer_seqno must live on its own cache line");
 
 /* Per-process handle. NOT in the SHM region — each process keeps
- * its own. */
+ * its own, including the publisher's overflow policy choice. */
 typedef struct {
     lotus_shm_ring_header_t *header;
     void *slots_base;       /* points just past the header */
@@ -77,6 +101,7 @@ typedef struct {
     size_t mapped_size;
     char shm_name[96];      /* for shm_unlink at close */
     int owns_unlink;        /* 1 if this handle should shm_unlink on close */
+    lotus_shm_overflow_policy_t overflow_policy;  /* K7 */
 } lotus_shm_ring_t;
 
 /* Open or attach to a SHM ring.
@@ -95,7 +120,8 @@ typedef struct {
  */
 lotus_shm_ring_t *lotus_shm_ring_open(const char *name,
                                       uint64_t slot_size,
-                                      uint64_t slot_count) {
+                                      uint64_t slot_count,
+                                      lotus_shm_overflow_policy_t policy) {
     if (!name || slot_size == 0 || slot_count == 0) {
         errno = EINVAL;
         return NULL;
@@ -144,6 +170,8 @@ lotus_shm_ring_t *lotus_shm_ring_open(const char *name,
         hdr->slot_size = slot_size;
         hdr->slot_count = slot_count;
         atomic_store_explicit(&hdr->seqno, 0, memory_order_release);
+        atomic_store_explicit(&hdr->consumer_seqno, 0,
+                                memory_order_release);
     } else {
         /* Existing ring — validate the header matches our request. */
         if (hdr->magic != LOTUS_SHM_RING_MAGIC ||
@@ -169,6 +197,7 @@ lotus_shm_ring_t *lotus_shm_ring_open(const char *name,
     ring->fd = fd;
     ring->mapped_size = total;
     ring->owns_unlink = owns;
+    ring->overflow_policy = policy;
     strncpy(ring->shm_name, name, sizeof(ring->shm_name) - 1);
     return ring;
 }
@@ -185,15 +214,55 @@ void lotus_shm_ring_close(lotus_shm_ring_t *ring) {
 
 /* Publisher: claim the next slot.
  *
- * Returns a pointer to the slot the next commit() will publish.
- * The slot's contents are whatever the previous claim of this
- * index left behind — publisher must overwrite, not assume zero.
+ * Form K7 (2026-05-20): back-pressure semantics determined by
+ * the ring's overflow_policy (set at lotus_shm_ring_open time):
  *
- * v1 SPSC: never fails. Always returns slots[(seqno + 1) % count].
+ *   - DROP: never fails. Always returns slots[(seqno + 1) %
+ *     count]. May overwrite unread slots — silent data loss if
+ *     consumers are slow. Pre-K7 behavior; preserved for stale-
+ *     is-worthless feeds.
+ *   - BLOCK: when the ring is full (published - consumer_seqno
+ *     >= slot_count), spin with 100us nanosleeps until the
+ *     consumer catches up, then return the slot. No timeout —
+ *     deadlocks if the consumer dies.
+ *   - FAIL: when the ring is full, returns NULL. Caller (the
+ *     publish_shm_ring wrapper) panics with a clear diagnostic.
+ *     Post-K7 work will route this through fallible-`<-` for
+ *     graceful caller-side handling.
+ *
+ * The DROP fast path costs one atomic load + arithmetic. The
+ * BLOCK/FAIL paths add a second atomic load of consumer_seqno,
+ * which lives on its own cache line — so the load only stalls
+ * on a true overflow (cache line was last written by the
+ * consumer's update, which only matters when we're checking
+ * back-pressure anyway).
+ *
+ * Returns the slot's contents are whatever the previous claim of
+ * this index left behind — publisher must overwrite, not assume
+ * zero.
  */
 void *lotus_shm_ring_claim(lotus_shm_ring_t *ring) {
     uint64_t cur = atomic_load_explicit(&ring->header->seqno,
                                          memory_order_relaxed);
+    if (ring->overflow_policy != LOTUS_SHM_OVERFLOW_DROP) {
+        uint64_t consumer = atomic_load_explicit(
+            &ring->header->consumer_seqno, memory_order_acquire);
+        uint64_t in_flight = cur - consumer;
+        if (in_flight >= ring->header->slot_count) {
+            if (ring->overflow_policy == LOTUS_SHM_OVERFLOW_FAIL) {
+                return NULL;
+            }
+            /* BLOCK: nanosleep until the consumer makes progress. */
+            for (;;) {
+                struct timespec ts = {0, 100 * 1000};  /* 100us */
+                nanosleep(&ts, NULL);
+                consumer = atomic_load_explicit(
+                    &ring->header->consumer_seqno,
+                    memory_order_acquire);
+                if (cur - consumer < ring->header->slot_count) break;
+            }
+        }
+    }
     uint64_t idx = (cur + 1) % ring->header->slot_count;
     return (char *)ring->slots_base + idx * ring->header->slot_size;
 }
@@ -332,7 +401,8 @@ static void ensure_shm_ring_atexit_registered(void) {
 void lotus_bus_register_shm_ring(const char *subject,
                                  uint64_t slot_size,
                                  uint64_t slot_count,
-                                 const char *shm_name) {
+                                 const char *shm_name,
+                                 int32_t overflow_policy) {
     ensure_shm_ring_atexit_registered();
     if (g_shm_ring_binding_count >= LOTUS_SHM_RING_MAX_BINDINGS) {
         fprintf(stderr,
@@ -355,8 +425,9 @@ void lotus_bus_register_shm_ring(const char *subject,
             _exit(1);
         }
     }
-    lotus_shm_ring_t *ring =
-        lotus_shm_ring_open(shm_name, slot_size, slot_count);
+    lotus_shm_ring_t *ring = lotus_shm_ring_open(
+        shm_name, slot_size, slot_count,
+        (lotus_shm_overflow_policy_t)overflow_policy);
     if (!ring) {
         fprintf(stderr,
                 "lotus_bus_register_shm_ring(`%s`, %s): open failed: %s\n",
@@ -395,6 +466,22 @@ int lotus_bus_publish_shm_ring(const char *subject,
             _exit(1);
         }
         void *slot = lotus_shm_ring_claim(b->ring);
+        if (!slot) {
+            /* Form K7 (2026-05-20): FAIL policy fired. v1 panics
+             * with a clear diagnostic — process exits non-zero so
+             * supervisors see the back-pressure event instead of
+             * silently losing data. Post-K7 work will route this
+             * through fallible-`<-` so callers can address it
+             * gracefully. */
+            fprintf(stderr,
+                    "lotus_bus_publish_shm_ring(`%s`): ring full and "
+                    "`on_overflow: fail` policy is set — consumer not "
+                    "draining fast enough. To handle gracefully, "
+                    "switch to `on_overflow: block` (rate-match) or "
+                    "`on_overflow: drop` (accept loss).\n",
+                    subject);
+            _exit(1);
+        }
         memcpy(slot, value, value_size);
         lotus_shm_ring_commit(b->ring);
         return 0;
@@ -462,6 +549,14 @@ static void *shm_ring_reader_thread(void *arg) {
                  * with a fresh publish. Skip silently at v1; the
                  * post-v1 epoch guard will surface this. */
             }
+            /* Form K7 (2026-05-20): release-publish the consumer
+             * cursor after the batch. Publisher's back-pressure
+             * check (BLOCK/FAIL policies) reads this with acquire
+             * semantics; consumer_seqno living on its own cache
+             * line keeps the producer's `seqno` writes from
+             * pingponging this update. */
+            atomic_store_explicit(&sub->ring->header->consumer_seqno,
+                                    last_seen, memory_order_release);
         } else {
             struct timespec ts = {0, 100 * 1000};  /* 100us */
             nanosleep(&ts, NULL);
@@ -485,8 +580,11 @@ void lotus_bus_register_subscriber_shm_ring(const char *subject,
                                                                  void *slot)) {
     ensure_shm_ring_atexit_registered();
 
-    lotus_shm_ring_t *ring =
-        lotus_shm_ring_open(shm_name, slot_size, slot_count);
+    /* Subscriber side never calls claim(), so the policy is
+     * effectively irrelevant — use DROP (zero overhead in claim
+     * if the subscriber accidentally publishes too). */
+    lotus_shm_ring_t *ring = lotus_shm_ring_open(
+        shm_name, slot_size, slot_count, LOTUS_SHM_OVERFLOW_DROP);
     if (!ring) {
         fprintf(stderr,
                 "lotus_bus_register_subscriber_shm_ring(`%s`, `%s`): open "

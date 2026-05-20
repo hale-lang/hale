@@ -30,9 +30,20 @@
  * the test binary. */
 typedef struct lotus_shm_ring_t lotus_shm_ring_t;
 
+/* Form K7 (2026-05-20): open takes an overflow policy. The C
+ * driver doesn't exercise back-pressure, so use DROP (zero
+ * overhead in claim) here — these tests pre-date K7 and
+ * validate the lower-level primitives, not the policy machinery. */
+typedef enum {
+    LOTUS_SHM_OVERFLOW_BLOCK = 0,
+    LOTUS_SHM_OVERFLOW_DROP = 1,
+    LOTUS_SHM_OVERFLOW_FAIL = 2,
+} lotus_shm_overflow_policy_t;
+
 extern lotus_shm_ring_t *lotus_shm_ring_open(const char *name,
                                               uint64_t slot_size,
-                                              uint64_t slot_count);
+                                              uint64_t slot_count,
+                                              lotus_shm_overflow_policy_t policy);
 extern void lotus_shm_ring_close(lotus_shm_ring_t *ring);
 extern void *lotus_shm_ring_claim(lotus_shm_ring_t *ring);
 extern void lotus_shm_ring_commit(lotus_shm_ring_t *ring);
@@ -54,7 +65,7 @@ static int test_roundtrip(const char *name) {
     /* Single ring — same handle for produce and consume. Models
      * "in-process SPMC" — what K3's slot locus will exercise on
      * the codegen side. */
-    lotus_shm_ring_t *ring = lotus_shm_ring_open(name, SLOT_SIZE, SLOT_COUNT);
+    lotus_shm_ring_t *ring = lotus_shm_ring_open(name, SLOT_SIZE, SLOT_COUNT, LOTUS_SHM_OVERFLOW_DROP);
     if (!ring) {
         fprintf(stderr, "open failed: %s\n", strerror(errno));
         return 2;
@@ -102,7 +113,7 @@ static int test_roundtrip(const char *name) {
 }
 
 static int test_wraparound(const char *name) {
-    lotus_shm_ring_t *ring = lotus_shm_ring_open(name, SLOT_SIZE, SLOT_COUNT);
+    lotus_shm_ring_t *ring = lotus_shm_ring_open(name, SLOT_SIZE, SLOT_COUNT, LOTUS_SHM_OVERFLOW_DROP);
     if (!ring) {
         fprintf(stderr, "open failed: %s\n", strerror(errno));
         return 2;
@@ -170,7 +181,7 @@ static int test_wraparound(const char *name) {
 
 static int test_ipc_parent(const char *name) {
     /* Exclusive-creator path — owns the unlink. */
-    lotus_shm_ring_t *ring = lotus_shm_ring_open(name, SLOT_SIZE, SLOT_COUNT);
+    lotus_shm_ring_t *ring = lotus_shm_ring_open(name, SLOT_SIZE, SLOT_COUNT, LOTUS_SHM_OVERFLOW_DROP);
     if (!ring) {
         fprintf(stderr, "parent: open failed: %s\n", strerror(errno));
         return 2;
@@ -204,7 +215,7 @@ static int test_ipc_child(const char *name) {
      * SHM object yet when the child spawns. */
     lotus_shm_ring_t *ring = NULL;
     for (int tries = 0; tries < 100; tries++) {
-        ring = lotus_shm_ring_open(name, SLOT_SIZE, SLOT_COUNT);
+        ring = lotus_shm_ring_open(name, SLOT_SIZE, SLOT_COUNT, LOTUS_SHM_OVERFLOW_DROP);
         if (ring) break;
         struct timespec ts = {0, 5 * 1000 * 1000};
         nanosleep(&ts, NULL);

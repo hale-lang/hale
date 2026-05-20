@@ -172,12 +172,15 @@ unix_kwarg        = "role" , ":" , transport_role ;
 transport_role    = "listen" | "connect" ;
 adapter_transport = LOCUS_IDENTIFIER , "{" , [ struct_init , { "," , struct_init } , [ "," ] ] , "}" ;
 
-(* Form K4b (2026-05-20): POSIX SHM ring substrate for the
+(* Form K4b + K7 (2026-05-20): POSIX SHM ring substrate for the
    zero-copy route. Name is the shm_open object name; slot_count
-   defaults to 128 when omitted. *)
+   defaults to 128 when omitted; on_overflow is REQUIRED (no
+   default) — picks the back-pressure policy. *)
 shm_ring_transport = "shm_ring" , "(" , STRING_LIT ,
                      { "," , shm_ring_kwarg } , ")" ;
-shm_ring_kwarg    = "slot_count" , ":" , INT_LIT ;
+shm_ring_kwarg    = ( "slot_count" , ":" , INT_LIT )
+                  | ( "on_overflow" , ":" , overflow_policy ) ;
+overflow_policy    = "block" | "drop" | "fail" ;
 
 (* Form K (2026-05-20): operational constraints the dev team
    asserts on a binding's route. Parsed in 2026-05-20; semantic

@@ -23,9 +23,18 @@
 
 typedef struct lotus_shm_ring_t lotus_shm_ring_t;
 
+/* Form K7 (2026-05-20): open takes an overflow policy. Reader-
+ * only driver — use DROP (the reader never calls claim). */
+typedef enum {
+    LOTUS_SHM_OVERFLOW_BLOCK = 0,
+    LOTUS_SHM_OVERFLOW_DROP = 1,
+    LOTUS_SHM_OVERFLOW_FAIL = 2,
+} lotus_shm_overflow_policy_t;
+
 extern lotus_shm_ring_t *lotus_shm_ring_open(const char *name,
                                               uint64_t slot_size,
-                                              uint64_t slot_count);
+                                              uint64_t slot_count,
+                                              lotus_shm_overflow_policy_t policy);
 extern void lotus_shm_ring_close(lotus_shm_ring_t *ring);
 extern uint64_t lotus_shm_ring_published(lotus_shm_ring_t *ring);
 extern void *lotus_shm_ring_read_slot(lotus_shm_ring_t *ring,
@@ -54,7 +63,7 @@ int main(int argc, char **argv) {
      * ring; we wait for it. */
     lotus_shm_ring_t *ring = NULL;
     for (int tries = 0; tries < 200 && !ring; tries++) {
-        ring = lotus_shm_ring_open(name, sizeof(Tick), slot_count);
+        ring = lotus_shm_ring_open(name, sizeof(Tick), slot_count, LOTUS_SHM_OVERFLOW_DROP);
         if (!ring) {
             struct timespec ts = {0, 5 * 1000 * 1000};
             nanosleep(&ts, NULL);

@@ -1149,12 +1149,16 @@ impl Parser {
                 })
             }
             "shm_ring" => {
-                // Form K4b (2026-05-20): SHM ring transport.
-                // `shm_ring("/name", slot_count: N)`. Name is
-                // required; slot_count defaults to 128.
+                // Form K4b + K7 (2026-05-20): SHM ring transport.
+                // `shm_ring("/name", slot_count: N, on_overflow: <policy>)`.
+                // Name is required; slot_count defaults to 128;
+                // on_overflow is REQUIRED (no default) — Form K7
+                // forces the user to think about back-pressure
+                // semantics for each high-throughput topic.
                 self.expect(TokenKind::LParen, "(")?;
                 let name = self.expect_string_literal("shm_ring name")?;
                 let mut slot_count: u64 = 128;
+                let mut overflow: Option<ShmRingOverflow> = None;
                 while self.eat(&TokenKind::Comma) {
                     let key = self.expect_ident("shm_ring kwarg name")?;
                     self.expect(TokenKind::Colon, ":")?;
@@ -1187,12 +1191,42 @@ impl Parser {
                                 }
                             }
                         }
+                        "on_overflow" => {
+                            let tok = self.peek_token().clone();
+                            let policy_name = match &tok.kind {
+                                TokenKind::Ident(s) => s.clone(),
+                                other => {
+                                    return Err(Diag::parse(
+                                        tok.span,
+                                        format!(
+                                            "expected `block`, `drop`, or `fail` for \
+                                             `on_overflow:`, got {:?}",
+                                            other
+                                        ),
+                                    ));
+                                }
+                            };
+                            self.bump();
+                            overflow = Some(match ShmRingOverflow::from_ident(&policy_name) {
+                                Some(p) => p,
+                                None => {
+                                    return Err(Diag::parse(
+                                        tok.span,
+                                        format!(
+                                            "unknown `on_overflow` policy `{}` \
+                                             (expected `block`, `drop`, or `fail`)",
+                                            policy_name
+                                        ),
+                                    ));
+                                }
+                            });
+                        }
                         other => {
                             return Err(Diag::parse(
                                 key.span,
                                 format!(
                                     "unknown `shm_ring` kwarg `{}` (recognized: \
-                                     `slot_count`)",
+                                     `slot_count`, `on_overflow`)",
                                     other
                                 ),
                             ));
@@ -1200,9 +1234,21 @@ impl Parser {
                     }
                 }
                 let close = self.expect(TokenKind::RParen, ")")?;
+                let overflow = overflow.ok_or_else(|| {
+                    Diag::parse(
+                        head_tok.span.merge(close.span),
+                        "shm_ring binding requires `on_overflow:` (one of \
+                         `block`, `drop`, `fail`) — Form K7 has no default \
+                         back-pressure policy; pick one explicitly. `block` \
+                         waits for the consumer; `drop` overwrites (silent \
+                         data loss); `fail` panics on ring-full"
+                            .to_string(),
+                    )
+                })?;
                 Ok(TransportSpec::ShmRing {
                     name,
                     slot_count,
+                    overflow,
                     span: head_tok.span.merge(close.span),
                 })
             }
@@ -4477,15 +4523,16 @@ main locus App {
 
     #[test]
     fn parse_shm_ring_transport_with_default_slot_count() {
-        // Form K4b (2026-05-20): `shm_ring("/name")` parses to
-        // ShmRing with slot_count defaulting to 128.
+        // Form K4b + K7 (2026-05-20): `shm_ring("/name", on_overflow: X)`
+        // parses; slot_count defaults to 128; on_overflow is
+        // required.
         let src = r#"
 type Ping { n: Int; }
 topic Evt { payload: Ping; }
 
 main locus App {
     bindings {
-        Evt: shm_ring("/aperio_evt") where zero_copy;
+        Evt: shm_ring("/aperio_evt", on_overflow: drop) where zero_copy;
     }
 }
 "#;
@@ -4508,9 +4555,10 @@ main locus App {
             .expect("bindings block");
         assert_eq!(bb.entries.len(), 1);
         match &bb.entries[0].transport {
-            TransportSpec::ShmRing { name, slot_count, .. } => {
+            TransportSpec::ShmRing { name, slot_count, overflow, .. } => {
                 assert_eq!(name, "/aperio_evt");
                 assert_eq!(*slot_count, 128);
+                assert_eq!(*overflow, ShmRingOverflow::Drop);
             }
             other => panic!("expected ShmRing, got {:?}", other),
         }
@@ -4524,7 +4572,7 @@ topic Evt { payload: Ping; }
 
 main locus App {
     bindings {
-        Evt: shm_ring("/aperio_evt", slot_count: 256);
+        Evt: shm_ring("/aperio_evt", slot_count: 256, on_overflow: block);
     }
 }
 "#;
@@ -4546,9 +4594,10 @@ main locus App {
             })
             .expect("bindings block");
         match &bb.entries[0].transport {
-            TransportSpec::ShmRing { name, slot_count, .. } => {
+            TransportSpec::ShmRing { name, slot_count, overflow, .. } => {
                 assert_eq!(name, "/aperio_evt");
                 assert_eq!(*slot_count, 256);
+                assert_eq!(*overflow, ShmRingOverflow::Block);
             }
             other => panic!("expected ShmRing, got {:?}", other),
         }
@@ -4562,7 +4611,7 @@ topic Evt { payload: Ping; }
 
 main locus App {
     bindings {
-        Evt: shm_ring("/aperio_evt", slot_count: 0);
+        Evt: shm_ring("/aperio_evt", slot_count: 0, on_overflow: drop);
     }
 }
 "#;
@@ -4573,6 +4622,87 @@ main locus App {
             "expected positive-slot-count diag, got: {:?}",
             err
         );
+    }
+
+    #[test]
+    fn parse_shm_ring_missing_on_overflow_rejected() {
+        // Form K7: on_overflow is REQUIRED — no default. Forces
+        // the user to think about back-pressure semantics.
+        let src = r#"
+type Ping { n: Int; }
+topic Evt { payload: Ping; }
+
+main locus App {
+    bindings {
+        Evt: shm_ring("/aperio_evt", slot_count: 64) where zero_copy;
+    }
+}
+"#;
+        let err = parse_str(src).expect_err("expected error");
+        assert!(
+            err.iter()
+                .any(|d| d.message.contains("requires `on_overflow:`")),
+            "expected missing-on_overflow diag, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn parse_shm_ring_unknown_overflow_policy_rejected() {
+        let src = r#"
+type Ping { n: Int; }
+topic Evt { payload: Ping; }
+
+main locus App {
+    bindings {
+        Evt: shm_ring("/aperio_evt", on_overflow: ignore);
+    }
+}
+"#;
+        let err = parse_str(src).expect_err("expected error");
+        assert!(
+            err.iter()
+                .any(|d| d.message.contains("unknown `on_overflow` policy")),
+            "expected unknown-policy diag, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn parse_shm_ring_overflow_fail_policy() {
+        let src = r#"
+type Ping { n: Int; }
+topic Evt { payload: Ping; }
+
+main locus App {
+    bindings {
+        Evt: shm_ring("/aperio_evt", on_overflow: fail);
+    }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let locus = prog
+            .items
+            .iter()
+            .find_map(|it| match it {
+                TopDecl::Locus(l) if l.is_main => Some(l),
+                _ => None,
+            })
+            .expect("main locus");
+        let bb = locus
+            .members
+            .iter()
+            .find_map(|m| match m {
+                LocusMember::Bindings(b) => Some(b),
+                _ => None,
+            })
+            .expect("bindings block");
+        match &bb.entries[0].transport {
+            TransportSpec::ShmRing { overflow, .. } => {
+                assert_eq!(*overflow, ShmRingOverflow::Fail);
+            }
+            other => panic!("expected ShmRing, got {:?}", other),
+        }
     }
 
     #[test]

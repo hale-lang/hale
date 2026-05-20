@@ -421,8 +421,10 @@ pub enum TransportSpec {
     },
     /// Form K4b (2026-05-20): POSIX SHM ring transport backing the
     /// zero-copy bus route. `shm_ring("/ring_name",
-    /// slot_count: N)` — name is the SHM object name (passed
-    /// directly to `shm_open`), slot_count is the ring depth.
+    /// slot_count: N, on_overflow: <policy>)` — name is the SHM
+    /// object name (passed directly to `shm_open`), slot_count
+    /// is the ring depth, on_overflow is the back-pressure
+    /// policy (Form K7, REQUIRED — no default).
     ///
     /// Implies `zero_copy`. Satisfies `intra_machine`. Rejects
     /// `intra_process` (SHM is cross-process by design) and
@@ -436,8 +438,67 @@ pub enum TransportSpec {
     ShmRing {
         name: String,
         slot_count: u64,
+        overflow: ShmRingOverflow,
         span: Span,
     },
+}
+
+/// Form K7 (2026-05-20): publisher-side back-pressure policy
+/// for a `shm_ring(...)` binding. Required at the binding site —
+/// there is intentionally no default. Forces the user to think
+/// about back-pressure semantics for each high-throughput
+/// topic.
+///
+/// Discriminator runtime ABI: matches the C
+/// `lotus_shm_overflow_policy_t` enum. Block=0, Drop=1, Fail=2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShmRingOverflow {
+    /// `block` — when the ring is full, the publisher spins +
+    /// sleeps until a consumer catches up. No timeout in v1;
+    /// deadlocks if the consumer dies. Right for control-plane
+    /// topics where latency doesn't matter and data must not
+    /// be lost.
+    Block,
+    /// `drop` — when the ring is full, the publisher overwrites
+    /// unread slots (today's behavior). Right for stale-is-
+    /// worthless feeds (market data tickers, telemetry).
+    /// Consumers may silently miss messages.
+    Drop,
+    /// `fail` — when the ring is full, the publisher panics
+    /// with a clear diagnostic. v1's hard-failure form of
+    /// the long-promised `fallible(ClaimError)` shape.
+    /// Graceful caller-side handling via fallible-`<-` is a
+    /// post-K7 follow-up; today, fail = process exits.
+    Fail,
+}
+
+impl ShmRingOverflow {
+    pub fn from_ident(name: &str) -> Option<Self> {
+        match name {
+            "block" => Some(Self::Block),
+            "drop" => Some(Self::Drop),
+            "fail" => Some(Self::Fail),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Block => "block",
+            Self::Drop => "drop",
+            Self::Fail => "fail",
+        }
+    }
+
+    /// Runtime ABI discriminator. Must match the C
+    /// `lotus_shm_overflow_policy_t` enum.
+    pub fn runtime_tag(self) -> i32 {
+        match self {
+            Self::Block => 0,
+            Self::Drop => 1,
+            Self::Fail => 2,
+        }
+    }
 }
 
 /// Direction-of-traffic for point-to-point substrate transports.

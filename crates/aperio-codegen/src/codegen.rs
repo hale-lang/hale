@@ -1131,6 +1131,7 @@ struct BusState;
 /// (`lower_send_shm_ring`) and subscribe-side (subscriber
 /// registration in `emit_locus_birth`) can both consult it.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]  // K7's `overflow` reserved for K7b fallible-`<-`
 struct ShmRingBindingInfo {
     /// Name of the topic's payload struct type (single-segment
     /// TypeRef). Used to look up the struct's size_of() at the
@@ -1140,6 +1141,12 @@ struct ShmRingBindingInfo {
     slot_count: u64,
     /// User-supplied SHM object name from the binding.
     shm_name: String,
+    /// Form K7 (2026-05-20): publisher-side back-pressure policy.
+    /// emit_bindings_prelude reads this from the AST directly
+    /// today; reserved here for K7b's fallible-`<-` enforcement
+    /// (publish sites on a `fail`-policy topic will need to
+    /// require a `or raise|substitute|hand-off` disposition).
+    overflow: ShmRingOverflow,
 }
 
 /// m47 (enums): per-enum metadata. Variants in declaration order;
@@ -2982,16 +2989,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
-        // Form K4c (2026-05-20): shm_ring binding registration +
-        // publish-side dispatch. The registration call (emitted in
-        // emit_bindings_prelude for each ShmRing binding) opens the
-        // SHM ring and adds it to a per-subject registry. The
-        // publish call (emitted in lower_send when the target
-        // topic is shm_ring-bound) looks up the ring and routes
-        // through claim + memcpy + commit.
-        // declare void @lotus_bus_register_shm_ring(ptr subject, i64 slot_size, i64 slot_count, ptr shm_name)
+        // Form K4c + K7 (2026-05-20): shm_ring binding registration +
+        // publish-side dispatch. K7 adds the overflow_policy i32
+        // discriminator (matches ast::ShmRingOverflow::runtime_tag).
+        // declare void @lotus_bus_register_shm_ring(ptr subject, i64 slot_size, i64 slot_count, ptr shm_name, i32 overflow_policy)
         let bus_register_shm_ring_ty = void_t.fn_type(
-            &[ptr_t.into(), i64_t.into(), i64_t.into(), ptr_t.into()],
+            &[
+                ptr_t.into(),
+                i64_t.into(),
+                i64_t.into(),
+                ptr_t.into(),
+                i32_t.into(),
+            ],
             false,
         );
         self.module.add_function(
@@ -6814,7 +6823,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if let LocusMember::Bindings(b) = m {
                 for entry in &b.entries {
                     if let TransportSpec::ShmRing {
-                        name, slot_count, ..
+                        name, slot_count, overflow, ..
                     } = &entry.transport
                     {
                         let subj = wire_subjects
@@ -6831,6 +6840,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 payload_type_name: payload_name,
                                 slot_count: *slot_count,
                                 shm_name: name.clone(),
+                                overflow: *overflow,
                             },
                         );
                     }
@@ -6918,7 +6928,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         )?;
                         continue;
                     }
-                    TransportSpec::ShmRing { name, slot_count, .. } => {
+                    TransportSpec::ShmRing { name, slot_count, overflow, .. } => {
                         // Form K4c (2026-05-20): emit the
                         // shm_ring registration + record the
                         // subject for lower_send's publish-side
@@ -6996,6 +7006,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .module
                             .get_function("lotus_bus_register_shm_ring")
                             .expect("lotus_bus_register_shm_ring declared");
+                        // Form K7: overflow policy passed as i32
+                        // discriminator. Block=0, Drop=1, Fail=2;
+                        // matches lotus_shm_overflow_policy_t in
+                        // the C runtime.
+                        let policy_val = i32_t.const_int(
+                            overflow.runtime_tag() as u64,
+                            true,
+                        );
                         self.builder
                             .build_call(
                                 register_shm_ring_fn,
@@ -7004,6 +7022,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     slot_size.into(),
                                     slot_count_val.into(),
                                     name_ptr.into(),
+                                    policy_val.into(),
                                 ],
                                 "lotus.shm_ring.register",
                             )

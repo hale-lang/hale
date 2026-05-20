@@ -66,7 +66,7 @@ fn aperio_subscriber_reads_shm_ring_publishes() {
 
         main locus App {{
             bindings {{
-                Tick: shm_ring("{shm_name}", slot_count: {slot_count}) where zero_copy;
+                Tick: shm_ring("{shm_name}", slot_count: {slot_count}, on_overflow: drop) where zero_copy;
             }}
         }}
 
@@ -103,7 +103,7 @@ fn aperio_subscriber_reads_shm_ring_publishes() {
 
         main locus App {{
             bindings {{
-                Tick: shm_ring("{shm_name}", slot_count: {slot_count}) where zero_copy;
+                Tick: shm_ring("{shm_name}", slot_count: {slot_count}, on_overflow: drop) where zero_copy;
             }}
         }}
 

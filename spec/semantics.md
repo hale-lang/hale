@@ -536,15 +536,16 @@ Transport surface:
   Inbound dispatch from an adapter into the local handler set
   awaits the `__bus_local_dispatch` opening (deferred).
 
-- `shm_ring("/name", slot_count: N)` — POSIX SHM ring
-  substrate backing the zero-copy route. Name is the
-  shm_open object name; slot_count defaults to 128 when not
-  specified. Satisfies `intra_machine` and `zero_copy`
-  constraints intrinsically. Slot size is derived at codegen
-  from the topic's payload type (which must satisfy
-  `is_flat_shapeable` — variadic fields rejected).
-  Substrate-provided: the runtime's `lotus_shm_ring_*`
-  primitives in `runtime/lotus_shm_ring.c` own the lifecycle.
+- `shm_ring("/name", slot_count: N, on_overflow: <policy>)` —
+  POSIX SHM ring substrate backing the zero-copy route. Name
+  is the shm_open object name; slot_count defaults to 128 when
+  not specified. `on_overflow` is REQUIRED — see "Back-pressure"
+  below. Satisfies `intra_machine` and `zero_copy` constraints
+  intrinsically. Slot size is derived at codegen from the
+  topic's payload type (which must satisfy `is_flat_shapeable`
+  — variadic fields rejected). Substrate-provided: the
+  runtime's `lotus_shm_ring_*` primitives in
+  `runtime/lotus_shm_ring.c` own the lifecycle.
 
   At codegen, each shm_ring binding emits a
   `lotus_bus_register_shm_ring(subject, slot_size,
@@ -586,6 +587,32 @@ Transport surface:
   the slot is skipped silently (lotus_shm_ring_read_slot
   returns NULL). Post-v1 work will generalize F.30b's
   stamped-epoch guard for per-field read checks.
+
+  **Back-pressure (Form K7, 2026-05-20).** `on_overflow:`
+  is required on every shm_ring binding — there's
+  intentionally no default. Three policies:
+
+  - `block` — publisher's `claim()` spins with 100µs
+    nanosleeps until the consumer's release-stored
+    `consumer_seqno` advances enough for a free slot.
+    No timeout in v1; deadlocks if the consumer dies.
+    Right for control-plane topics where latency tolerates
+    backpressure but data must not be lost.
+  - `drop` — publisher's `claim()` returns the next slot
+    unconditionally (pre-K7 behavior). Slow consumers
+    silently miss messages. Right for stale-is-worthless
+    feeds (market data tickers, telemetry).
+  - `fail` — publisher's `claim()` returns NULL when the
+    ring is full; the `publish_shm_ring` wrapper panics
+    with a clear stderr diagnostic and `_exit(1)`.
+    Process-level visibility into back-pressure events.
+    Graceful caller-side handling via fallible-`<-` is a
+    K7b follow-up; today, fail = process exits.
+
+  The consumer's reader thread release-stores the cursor
+  after each batch of dispatches; the cursor lives on its
+  own cache line (separate from the producer's `seqno`)
+  so the two sides don't pingpong each other's writes.
 
 **In-memory delivery is absence-of-entry.** A topic with no
 binding entry is delivered same-process via the cooperative

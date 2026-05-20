@@ -98,7 +98,7 @@ fn aperio_publisher_routes_through_shm_ring() {
 
         main locus App {{
             bindings {{
-                Tick: shm_ring("{shm_name}", slot_count: {slot_count}) where zero_copy;
+                Tick: shm_ring("{shm_name}", slot_count: {slot_count}, on_overflow: drop) where zero_copy;
             }}
         }}
 
@@ -182,7 +182,7 @@ fn shm_object_unlinked_on_clean_exit() {
         }}
         main locus App {{
             bindings {{
-                Tick: shm_ring("{shm_name}", slot_count: {slot_count}) where zero_copy;
+                Tick: shm_ring("{shm_name}", slot_count: {slot_count}, on_overflow: drop) where zero_copy;
             }}
         }}
         fn main() {{
