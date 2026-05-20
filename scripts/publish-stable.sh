@@ -78,8 +78,24 @@ fi
 SRC="$ROOT/target/release/aperio"
 DST="$ROOT/bin/aperio"
 
+# Tree-sitter staticlib produced by the `aperio-ts-shim` workspace
+# crate. The aperio binary links against this at user-program
+# codegen-link time — `std::io::fs::__StdSourceWalk` transitively
+# references `lotus_ts_*` symbols, so even a program that only
+# touches `std::io::fs::read_file` needs the shim to link.
+# Publishing it alongside `bin/aperio` so app teams pinned to
+# `bin/` link cleanly (fathom FRICTION #6, fixed 2026-05-20).
+TS_SHIM_SRC="$ROOT/target/release/libaperio_ts_shim.a"
+TS_SHIM_DST="$ROOT/bin/libaperio_ts_shim.a"
+
 if [[ ! -x "$SRC" ]]; then
     echo "error: $SRC missing or not executable" >&2
+    exit 1
+fi
+if [[ ! -f "$TS_SHIM_SRC" ]]; then
+    echo "error: $TS_SHIM_SRC missing — build the workspace first" >&2
+    echo "(\`cargo build --release\` produces the staticlib as a" >&2
+    echo "side-effect of building aperio-ts-shim)." >&2
     exit 1
 fi
 
@@ -96,6 +112,7 @@ fi
 mkdir -p "$ROOT/bin"
 cp "$SRC" "$DST"
 chmod +x "$DST"
+cp "$TS_SHIM_SRC" "$TS_SHIM_DST"
 
 GIT_SHA="$(git rev-parse HEAD)"
 GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
@@ -106,9 +123,14 @@ aperio published-stable snapshot
 commit: $GIT_SHA
 branch: $GIT_BRANCH
 date:   $DATE
+artifacts:
+  - bin/aperio  (compiler binary)
+  - bin/libaperio_ts_shim.a  (tree-sitter shim — link dependency
+    for std::io::fs and std::ts::* user code)
 EOF
 
 echo "==> published $DST"
+echo "    + $TS_SHIM_DST"
 echo "    commit:  $GIT_SHA"
 echo "    branch:  $GIT_BRANCH"
 echo "    date:    $DATE"

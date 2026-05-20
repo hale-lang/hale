@@ -455,20 +455,37 @@ const RUNTIME_TLS_C_SOURCE: &str = include_str!("../runtime/lotus_tls.c");
 /// sibling `aperio-ts-shim` workspace crate. Returns `None` if the
 /// staticlib hasn't been built yet — the user-program link will
 /// then succeed only if the program doesn't actually call any
-/// `std::ts::*` primitive (the externs would resolve to undefined
-/// at link time and clang would error). For the dogfood phase the
-/// workspace target dir is right next to this crate; an installed
-/// `aperio` binary from `cargo install` would need a packaged
-/// substrate, which is a follow-up.
+/// `lotus_ts_*` symbol (the externs would resolve to undefined at
+/// link time and clang would error). std::io::fs's
+/// `__StdSourceWalk` transitively references those symbols, so a
+/// program that only touches `std::io::fs::read_file` still needs
+/// the shim.
 ///
-/// Lookup order: `APERIO_TS_SHIM_A` env var (explicit override),
-/// then `target/release/`, then `target/debug/` relative to the
-/// codegen crate's manifest dir.
+/// Lookup order:
+///   1. `APERIO_TS_SHIM_A` env var (explicit override)
+///   2. Sibling of the running aperio binary
+///      (`$(dirname current_exe)/libaperio_ts_shim.a`) — the
+///      `bin/aperio` publish ships the staticlib alongside the
+///      binary so app teams pinned to `bin/aperio` link cleanly
+///      (fathom FRICTION #6, fixed 2026-05-20). `scripts/publish-
+///      stable.sh` is what places it here.
+///   3. Workspace `target/release/`
+///   4. Workspace `target/debug/`
 fn locate_ts_shim_staticlib() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("APERIO_TS_SHIM_A") {
         let pb = PathBuf::from(p);
         if pb.exists() {
             return Some(pb);
+        }
+    }
+    // bin/aperio publish ships the staticlib next to itself —
+    // matches the path the publish-stable.sh script writes to.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("libaperio_ts_shim.a");
+            if p.exists() {
+                return Some(p);
+            }
         }
     }
     // CARGO_MANIFEST_DIR at build time of aperio-codegen is
