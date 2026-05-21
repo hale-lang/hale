@@ -433,7 +433,16 @@ pub fn build_executable_with_imports(
         // but symbol GC at the codegen-level is moot since the
         // .c file references them at translation-unit scope.
         .arg("-lssl")
-        .arg("-lcrypto");
+        .arg("-lcrypto")
+        // 2026-05-21: -rdynamic exports the dynamic symbol table
+        // so backtrace_symbols_fd / addr2line can resolve symbol
+        // names from runtime stack frames. Used by the
+        // LOTUS_ARENA_LOG_BIG_CHUNKS diagnostic — without
+        // -rdynamic the backtrace prints raw offsets only,
+        // forcing the user to manually addr2line every frame.
+        // Cost: ~50 KB of extra symbol-table bytes in the final
+        // binary, no runtime overhead.
+        .arg("-rdynamic");
     if let Some(p) = ts_shim_path.as_ref() {
         clang.arg(p);
         // Rust staticlibs depend on libdl + libm via libstd.

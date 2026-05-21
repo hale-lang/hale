@@ -32,6 +32,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <pthread.h>
 #include <sched.h>
@@ -61,6 +62,13 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <poll.h>
+/* LOTUS_ARENA_LOG_BIG_CHUNKS (2026-05-21): backtrace-on-big-
+ * alloc diagnostic for hunting unbounded chunk growth in a
+ * long-running daemon. <execinfo.h> is glibc-only; the call
+ * sites below #ifdef it out for platforms that lack backtrace(). */
+#if defined(__GLIBC__)
+#include <execinfo.h>
+#endif
 /* std::process::rss_bytes (2026-05-21): getrusage for the
  * process's resident-set high-water mark. Backs the
  * observability primitive used to verify
@@ -158,6 +166,62 @@ static __thread lotus_arena_chunk_t *
     g_chunk_pool[LOTUS_CHUNK_POOL_CAP];
 static __thread int g_chunk_pool_count = 0;
 
+/* LOTUS_ARENA_LOG_BIG_CHUNKS (2026-05-21): on first call, parse
+ * the env var to a byte threshold. Subsequent calls return the
+ * cached threshold. 0 disables logging. The env var value is
+ * parsed as decimal bytes; e.g. LOTUS_ARENA_LOG_BIG_CHUNKS=1048576
+ * logs every chunk >= 1 MiB. A bare "1" / "on" / "true" defaults
+ * to 1 MiB. */
+static size_t lotus_arena_big_chunk_threshold(void) {
+    static int initialized = 0;
+    static size_t threshold = 0;
+    if (!initialized) {
+        initialized = 1;
+        const char *env = getenv("LOTUS_ARENA_LOG_BIG_CHUNKS");
+        if (env && env[0]) {
+            if (strcmp(env, "1") == 0
+                || strcmp(env, "on") == 0
+                || strcmp(env, "true") == 0
+                || strcmp(env, "yes") == 0)
+            {
+                threshold = 1024 * 1024;
+            } else {
+                char *end = NULL;
+                unsigned long long v = strtoull(env, &end, 10);
+                if (end != env && v > 0) {
+                    threshold = (size_t)v;
+                }
+            }
+        }
+    }
+    return threshold;
+}
+
+/* Emit a one-line diagnostic with size, monotonic seqno, and a
+ * small backtrace. Cap at the first ~200 events to keep stderr
+ * from drowning in a tight loop — once a workload has logged 200
+ * big allocs, the pattern is usually obvious. */
+static void lotus_arena_log_big_chunk(size_t cap) {
+    static _Atomic int seq = 0;
+    int n = atomic_fetch_add_explicit(&seq, 1, memory_order_relaxed);
+    if (n >= 200) return;
+    fprintf(stderr,
+            "[arena_big_chunk #%d] cap=%zu bytes (%.2f MiB)\n",
+            n, cap, (double)cap / (1024.0 * 1024.0));
+#if defined(__GLIBC__)
+    void *frames[12];
+    int got = backtrace(frames, 12);
+    /* backtrace_symbols_fd writes to a raw fd; bypasses libc
+     * locks that might be held by the calling thread. Frame 0
+     * is this fn; frame 1 is lotus_arena_new_chunk; useful
+     * call stack starts at frame 2. */
+    if (got > 2) {
+        backtrace_symbols_fd(frames + 2, got - 2, fileno(stderr));
+    }
+#endif
+    fflush(stderr);
+}
+
 static lotus_arena_chunk_t *lotus_arena_new_chunk(size_t cap) {
     /* Pool only the common-case default chunk size. Mixing
      * sizes in one freelist would force a scan per pop. */
@@ -169,6 +233,10 @@ static lotus_arena_chunk_t *lotus_arena_new_chunk(size_t cap) {
         /* c->cap already == LOTUS_ARENA_CHUNK_BYTES; the pool
          * is invariant on that. */
         return c;
+    }
+    size_t big_threshold = lotus_arena_big_chunk_threshold();
+    if (big_threshold > 0 && cap >= big_threshold) {
+        lotus_arena_log_big_chunk(cap);
     }
     lotus_arena_chunk_t *c =
         (lotus_arena_chunk_t *)malloc(sizeof(lotus_arena_chunk_t) + cap);
