@@ -2830,6 +2830,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false);
         self.module
             .add_function("lotus_str_from_decimal", dec_str_arena_ty, None);
+        // declare double @lotus_decimal_to_float(i64 hi, i64 lo)
+        // 2026-05-21: direct i128 → f64 conversion at scale 9.
+        // Backs std::decimal::to_float(d), killing the ASCII
+        // round-trip in downstream hot paths (DecimalFloat.to_float
+        // used to format and re-parse).
+        let f64_t = self.context.f64_type();
+        let dec_to_float_ty =
+            f64_t.fn_type(&[i64_t.into(), i64_t.into()], false);
+        self.module
+            .add_function("lotus_decimal_to_float", dec_to_float_ty, None);
 
         // The single program-wide arena pointer. Initialized in
         // the prelude of main; consulted by every arena-allocated
@@ -23366,6 +23376,62 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// &ts)` followed by `ts.tv_sec * 1_000_000_000 + ts.tv_nsec`.
     /// Result is a `Duration` (i64 nanoseconds since an
     /// unspecified reference).
+    /// `std::decimal::to_float(d: Decimal) -> Float` (2026-05-21).
+    /// Direct i128 → f64 conversion at scale 9 via the new
+    /// `lotus_decimal_to_float` C primitive. Replaces the
+    /// `to_string(d)` → strip "ns"-like-suffix → `parse_float`
+    /// ASCII round-trip downstream consumers were doing in
+    /// hot paths (e.g. metrics gauges setting Float values
+    /// from Decimal book prices). The i128 splits into hi/lo
+    /// at the call boundary to match the codebase's existing
+    /// Decimal C ABI convention.
+    fn lower_std_decimal_to_float(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::decimal::to_float takes 1 arg (Decimal), got {}",
+                args.len()
+            )));
+        }
+        let (v, ty) = self.lower_expr(&args[0], scope)?;
+        if ty != CodegenTy::Decimal {
+            return Err(CodegenError::Unsupported(format!(
+                "std::decimal::to_float: arg must be Decimal, got {:?}",
+                ty
+            )));
+        }
+        let i64_t = self.context.i64_type();
+        let i128_v = v.into_int_value();
+        let lo = self
+            .builder
+            .build_int_truncate(i128_v, i64_t, "dec.to_f.lo")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let shift = self.context.i128_type().const_int(64, false);
+        let hi_wide = self
+            .builder
+            .build_right_shift(i128_v, shift, true, "dec.to_f.hi_w")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let hi = self
+            .builder
+            .build_int_truncate(hi_wide, i64_t, "dec.to_f.hi")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_decimal_to_float")
+            .expect("lotus_decimal_to_float declared");
+        let res = self
+            .builder
+            .build_call(f, &[hi.into(), lo.into()], "dec.to_float.call")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_decimal_to_float returns double");
+        Ok((res, CodegenTy::Float))
+    }
+
     /// `std::time::monotonic_ns() -> Int` (2026-05-21). Same
     /// clock_gettime(CLOCK_MONOTONIC) shape as `monotonic()` but
     /// types the result as `Int` (i64 ns) instead of `Duration`.
@@ -24206,6 +24272,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_time_monotonic_ns(args)?;
                 Ok(())
             }
+            ["std", "decimal", "to_float"] => {
+                let _ = self.lower_std_decimal_to_float(args, scope)?;
+                Ok(())
+            }
             // C7 (pond follow-up): wall-clock seconds-since-epoch.
             // Statement position discards the return; expression
             // sibling lives in lower_stdlib_path_call_expr.
@@ -24813,6 +24883,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // expression falls through to the catch-all error.
             ["std", "time", "monotonic"] => self.lower_time_monotonic(args),
             ["std", "time", "monotonic_ns"] => self.lower_time_monotonic_ns(args),
+            ["std", "decimal", "to_float"] => self.lower_std_decimal_to_float(args, scope),
             // C7 (pond follow-up): wall-clock seconds-since-epoch
             // as Int. Statement-position sibling lives in
             // lower_stdlib_path_call.

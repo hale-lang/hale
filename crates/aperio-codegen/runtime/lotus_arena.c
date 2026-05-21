@@ -178,6 +178,50 @@ static __thread lotus_arena_chunk_t *
     g_chunk_pool[LOTUS_CHUNK_POOL_CAP];
 static __thread int g_chunk_pool_count = 0;
 
+/* LOTUS_CHUNK_POOL_STATS — when set, every chunk
+ * acquire / release tallies into per-thread counters that
+ * dump to stderr at process exit. Useful for diagnosing
+ * "pool isn't recycling" symptoms — pairs hits vs misses,
+ * stores vs overflows. The counters are __thread so each
+ * scheduler thread reports its own numbers; the atexit
+ * handler runs on the thread that registered it (main).
+ * Set to 1 (or any non-empty value) to enable. */
+static __thread uint64_t g_chunk_pool_hits = 0;
+static __thread uint64_t g_chunk_pool_misses = 0;
+static __thread uint64_t g_chunk_pool_stores = 0;
+static __thread uint64_t g_chunk_pool_overflows = 0;
+
+static int lotus_chunk_pool_stats_enabled(void) {
+    static int initialized = 0;
+    static int enabled = 0;
+    if (!initialized) {
+        initialized = 1;
+        const char *env = getenv("LOTUS_CHUNK_POOL_STATS");
+        enabled = env && env[0] && env[0] != '0';
+    }
+    return enabled;
+}
+
+static void lotus_chunk_pool_stats_dump(void) {
+    if (!lotus_chunk_pool_stats_enabled()) return;
+    fprintf(stderr,
+            "[chunk_pool main-thread] hits=%llu misses=%llu "
+            "stores=%llu overflows=%llu pool_size=%d\n",
+            (unsigned long long)g_chunk_pool_hits,
+            (unsigned long long)g_chunk_pool_misses,
+            (unsigned long long)g_chunk_pool_stores,
+            (unsigned long long)g_chunk_pool_overflows,
+            g_chunk_pool_count);
+    fflush(stderr);
+}
+
+__attribute__((constructor))
+static void lotus_chunk_pool_stats_install(void) {
+    if (lotus_chunk_pool_stats_enabled()) {
+        atexit(lotus_chunk_pool_stats_dump);
+    }
+}
+
 /* LOTUS_ARENA_LOG_BIG_CHUNKS (2026-05-21): on first call, parse
  * the env var to a byte threshold. Subsequent calls return the
  * cached threshold. 0 disables logging. The env var value is
@@ -366,7 +410,11 @@ static lotus_arena_chunk_t *lotus_arena_new_chunk(size_t cap) {
         c->used = 0;
         /* c->cap already == LOTUS_ARENA_CHUNK_BYTES; the pool
          * is invariant on that. */
+        g_chunk_pool_hits++;
         return c;
+    }
+    if (cap == LOTUS_ARENA_CHUNK_BYTES) {
+        g_chunk_pool_misses++;
     }
     size_t big_threshold = lotus_arena_big_chunk_threshold();
     if (big_threshold > 0 && cap >= big_threshold) {
@@ -391,7 +439,11 @@ static void lotus_arena_release_chunk(lotus_arena_chunk_t *c) {
         && g_chunk_pool_count < LOTUS_CHUNK_POOL_CAP)
     {
         g_chunk_pool[g_chunk_pool_count++] = c;
+        g_chunk_pool_stores++;
         return;
+    }
+    if (c->cap == LOTUS_ARENA_CHUNK_BYTES) {
+        g_chunk_pool_overflows++;
     }
     free(c);
 }
@@ -2816,6 +2868,19 @@ char *lotus_str_from_decimal(lotus_arena_t *a, int64_t hi, uint64_t lo) {
     if (!out) return NULL;
     lotus_decimal_to_string(hi, lo, out);
     return out;
+}
+
+/* std::decimal::to_float (2026-05-21): direct i128 → f64
+ * conversion at scale 9 (`mantissa × 10^-9`). Replaces the
+ * `to_string(d)` → strip → `parse_float` ASCII round-trip
+ * downstream consumers were doing for Decimal → Float in
+ * hot paths. The C cast from __int128 to double is one
+ * compiler intrinsic; the / 1e9 applies the implicit scale.
+ * Loss-of-precision on very large mantissas is the same
+ * floor as `(double)i64`, just over a wider range. */
+double lotus_decimal_to_float(int64_t hi, uint64_t lo) {
+    __int128 m = ((__int128)hi << 64) | (__int128)lo;
+    return (double)m / 1.0e9;
 }
 
 void lotus_decimal_to_string(int64_t hi, uint64_t lo, char *buf) {
