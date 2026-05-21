@@ -7601,28 +7601,45 @@ typedef struct lotus_bytes_builder {
                        `text_view()` can return `buf` as a C
                        string. The invariant `buf[len] == '\0'` is
                        maintained by every mutating op. */
-    /* F.30b (2026-05-20): monotonic mutation counter. Bumped by
-     * every mutating op (append, append_slice, shift_front,
-     * clear, finish). view() and text_view() snapshot this into
-     * the returned lotus_view_t's stamped_epoch; read-site
-     * unpacking compares against this live value and panics on
-     * mismatch. Catches "mutated between view() and read"
-     * misuse loudly at the read site. */
+    /* F.30b: monotonic mutation counter. Bumped by every mutating
+     * op (append, append_slice, shift_front, clear, finish).
+     * view() and text_view() snapshot this into the returned
+     * lotus_view_t's `epoch` field; read-site unpacking compares
+     * against this live value and panics on mismatch. Catches
+     * "mutated between view() and read" misuse loudly at the
+     * read site. Only `+= 1` from 0, so the static sentinel
+     * (`-1`) on view structs is never produced by a real
+     * builder. */
     int64_t mutation_epoch;
 } lotus_bytes_builder_t;
 
-/* F.30b (2026-05-20): fat-pointer view struct returned by view()
- * and text_view(). Allocated in the caller arena (TLS-routed) so
- * its lifetime matches the calling scope's arena. The `data`
- * field carries the aliasing pointer that was the entire view
- * before F.30b (Bytes-shaped for BytesView, C-string for
- * StringView); `builder` + `stamped_epoch` carry the epoch-check
- * metadata used by lotus_bytes_view_data / lotus_str_view_data
- * at every read site. */
+/* F.30b view-ABI compaction (2026-05-22 PM): the view is now a
+ * 16-byte by-value struct. Was {data, builder, stamped_epoch}
+ * (24B) heap-allocated per view() call — that arena_alloc was the
+ * dominant residual chunk-allocation trigger in long-running
+ * recv loops (~134 view()/sec in the fathom websocket peeler).
+ *
+ * Now: `src` is overloaded — either the builder pointer (when
+ * `epoch >= 0`, i.e. a real builder view) or the static-lifetime
+ * data pointer (when `epoch == LOTUS_VIEW_EPOCH_STATIC`, used for
+ * literal defaults via lotus_view_from_static_data and the
+ * null-handle path of builder_view / builder_text_view).
+ *
+ * Read-site helpers recompute the underlying data pointer from
+ * `((lotus_bytes_builder_t*)v.src)->buf` at unpack time. mutation
+ * counters are bumped only by `+= 1` from 0, so non-negative
+ * values are always "real builder"; the sentinel `-1` is unreachable
+ * by natural increment.
+ *
+ * The struct's `{void*, int64_t}` layout fits the SysV AMD64
+ * ABI's ≤16-byte two-INTEGER-eightbytes return: both helper return
+ * values land in `rax`/`rdx`, and by-value args land in two arg
+ * registers. No memory traffic for views in the hot path. */
+#define LOTUS_VIEW_EPOCH_STATIC ((int64_t)-1)
+
 typedef struct lotus_view {
-    void   *data;
-    void   *builder;
-    int64_t stamped_epoch;
+    void   *src;
+    int64_t epoch;
 } lotus_view_t;
 
 /* Read the inline length prefix at `buf - 8`. */
@@ -7681,60 +7698,60 @@ void lotus_view_stale_panic(const char *kind,
 
 /* F.30b read-site unpacking helpers. Codegen emits a call to one
  * of these at every BytesView/StringView read-coercion site. The
- * helper compares the view's stamped_epoch against the source
- * builder's live mutation_epoch and panics on mismatch; on the OK
- * path returns the underlying data pointer (Bytes-shaped for
- * view(), C-string for text_view()). */
-void *lotus_bytes_view_data(void *view_ptr) {
-    if (!view_ptr) return lotus_bytes_empty_global();
-    lotus_view_t *v = (lotus_view_t *)view_ptr;
-    if (!v->builder) {
-        /* View created over a null handle — pre-F.30b shape
-         * returned the empty-Bytes sentinel from view(). Keep
-         * that fall-through here so callers see the same data
-         * (empty Bytes) rather than panicking on a no-op view. */
-        return v->data ? v->data : lotus_bytes_empty_global();
+ * helper compares the view's epoch against the source builder's
+ * live mutation_epoch and panics on mismatch; on the OK path
+ * returns the underlying data pointer (Bytes-shaped for view(),
+ * C-string for text_view()). View struct is passed by value (two
+ * INTEGER eightbytes in arg registers per SysV ABI). */
+void *lotus_bytes_view_data(lotus_view_t v) {
+    if (v.epoch == LOTUS_VIEW_EPOCH_STATIC) {
+        /* Static-lifetime view (built via lotus_view_from_static_data
+         * or the null-handle path of builder_view). `src` is the
+         * underlying data pointer; no epoch check. */
+        return v.src ? v.src : lotus_bytes_empty_global();
     }
-    int64_t current =
-        ((const lotus_bytes_builder_t *)v->builder)->mutation_epoch;
-    if (current != v->stamped_epoch) {
-        lotus_view_stale_panic("BytesView", v->stamped_epoch, current);
+    if (!v.src) return lotus_bytes_empty_global();
+    const lotus_bytes_builder_t *b = (const lotus_bytes_builder_t *)v.src;
+    int64_t current = b->mutation_epoch;
+    if (current != v.epoch) {
+        lotus_view_stale_panic("BytesView", v.epoch, current);
     }
-    return v->data;
+    /* Recompute data pointer at read time — `buf - 8` is the
+     * `[i64 len][u8 data]` Bytes ABI shape. */
+    return b->buf - sizeof(int64_t);
 }
 
-const char *lotus_str_view_data(void *view_ptr) {
+const char *lotus_str_view_data(lotus_view_t v) {
     static const char empty[1] = { 0 };
-    if (!view_ptr) return empty;
-    lotus_view_t *v = (lotus_view_t *)view_ptr;
-    if (!v->builder) {
-        return v->data ? (const char *)v->data : empty;
+    if (v.epoch == LOTUS_VIEW_EPOCH_STATIC) {
+        return v.src ? (const char *)v.src : empty;
     }
-    int64_t current =
-        ((const lotus_bytes_builder_t *)v->builder)->mutation_epoch;
-    if (current != v->stamped_epoch) {
-        lotus_view_stale_panic("StringView", v->stamped_epoch, current);
+    if (!v.src) return empty;
+    const lotus_bytes_builder_t *b = (const lotus_bytes_builder_t *)v.src;
+    int64_t current = b->mutation_epoch;
+    if (current != v.epoch) {
+        lotus_view_stale_panic("StringView", v.epoch, current);
     }
-    return (const char *)v->data;
+    /* Recompute at read time — `buf[len] == '\0'` invariant
+     * makes `buf` directly a C-string. */
+    return (const char *)b->buf;
 }
 
-/* F.30b (5b) (2026-05-20): wrap a static-lifetime String/Bytes
- * pointer in a view struct for storage-site default coercion.
- * The `builder` field is NULL — signals lotus_*_view_data that
- * there's no epoch check to run (the underlying data is program-
- * lifetime). Used at struct/locus field-init sites where the
- * declared type is StringView/BytesView and the initializer is a
- * String/Bytes literal (which are stored in the global string
- * table, program-lifetime). */
-void *lotus_view_from_static_data(void *data) {
-    lotus_arena_t *arena = lotus_caller_arena_or_global();
-    if (!arena) return NULL;
-    lotus_view_t *v = (lotus_view_t *)lotus_arena_alloc(
-        arena, sizeof(lotus_view_t), _Alignof(lotus_view_t));
-    if (!v) return NULL;
-    v->data = data;
-    v->builder = NULL;
-    v->stamped_epoch = 0;
+/* F.30b (5b): wrap a static-lifetime String/Bytes pointer in a
+ * view struct for storage-site default coercion. The epoch
+ * sentinel signals lotus_*_view_data that there's no epoch
+ * check to run; `src` carries the data pointer directly. Used
+ * at struct/locus field-init sites where the declared type is
+ * StringView/BytesView and the initializer is a String/Bytes
+ * literal (stored in the global string table, program-lifetime).
+ *
+ * Post-PM compaction: no arena allocation — the view is returned
+ * by value. The pre-PM shape lotus_arena_alloc'd 16 bytes per
+ * call; that allocation is gone. */
+lotus_view_t lotus_view_from_static_data(void *data) {
+    lotus_view_t v;
+    v.src = data;
+    v.epoch = LOTUS_VIEW_EPOCH_STATIC;
     return v;
 }
 
@@ -7803,59 +7820,47 @@ int64_t lotus_bytes_builder_len(const void *handle) {
  * caller must not retain it across a mutation. v1 has no borrow
  * checker, so the rule is documented-and-trusted — same shape as
  * the rest of the locus's lifetime story. */
-/* F.30b (2026-05-20): returns a fat-pointer view struct (data +
- * builder + stamped_epoch) allocated in the caller arena. The
- * `data` field is the aliasing pointer that was the entire view
- * pre-F.30b (Bytes-shaped: buf - 8, suitable for lotus_bytes_len
- * / lotus_bytes_at / lotus_bytes_data once unpacked via
- * lotus_bytes_view_data). The stamping happens here so the
- * caller's read sites can compare against the live epoch. */
-void *lotus_bytes_builder_view(void *handle) {
-    lotus_arena_t *arena = lotus_caller_arena_or_global();
-    lotus_view_t *v = arena
-        ? (lotus_view_t *)lotus_arena_alloc(arena, sizeof(lotus_view_t),
-                                            _Alignof(lotus_view_t))
-        : NULL;
-    if (!v) return NULL;
+/* F.30b view ABI: returns a 16-byte view struct by value (no
+ * arena allocation in the hot path — that was the dominant
+ * residual chunk-allocation trigger in long-running recv loops).
+ * `src` is the builder pointer; the data pointer (`buf - 8`,
+ * Bytes-shaped) is recomputed at read time by
+ * lotus_bytes_view_data. `epoch` snapshots the builder's
+ * mutation counter so read-site staleness checks see the
+ * version the caller observed. */
+lotus_view_t lotus_bytes_builder_view(void *handle) {
+    lotus_view_t v;
     if (!handle) {
-        v->data = lotus_bytes_empty_global();
-        v->builder = NULL;
-        v->stamped_epoch = 0;
+        /* Null-handle path: reuse the static sentinel so the
+         * read site sees the empty-Bytes global and doesn't
+         * dereference src as a builder. */
+        v.src = lotus_bytes_empty_global();
+        v.epoch = LOTUS_VIEW_EPOCH_STATIC;
         return v;
     }
     lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
-    v->data = b->buf - sizeof(int64_t);
-    v->builder = b;
-    v->stamped_epoch = b->mutation_epoch;
+    v.src = b;
+    v.epoch = b->mutation_epoch;
     return v;
 }
 
-/* Phase-3 Site 2 (2026-05-19): non-owning String view aliasing
- * the builder's buffer. The builder maintains `buf[len] == '\0'`
- * after every mutation so the returned pointer (in the view's
- * `data` field) is a valid C string for strlen / printf / the
- * lotus_str_* surface once unpacked via lotus_str_view_data.
- * F.30b (2026-05-20): now returns a fat-pointer view struct like
- * `view()` so the read-site epoch check catches "builder mutated
- * between text_view() and read." */
-void *lotus_bytes_builder_text_view(void *handle) {
+/* Phase-3 Site 2: non-owning String view aliasing the builder's
+ * buffer. The builder maintains `buf[len] == '\0'` after every
+ * mutation so the recomputed read-time pointer (`b->buf`) is a
+ * valid C string for strlen / printf / the lotus_str_* surface.
+ * F.30b view-ABI compaction: 16-byte struct returned by value,
+ * data pointer recomputed at unpack time by lotus_str_view_data. */
+lotus_view_t lotus_bytes_builder_text_view(void *handle) {
     static const char empty[1] = { 0 };
-    lotus_arena_t *arena = lotus_caller_arena_or_global();
-    lotus_view_t *v = arena
-        ? (lotus_view_t *)lotus_arena_alloc(arena, sizeof(lotus_view_t),
-                                            _Alignof(lotus_view_t))
-        : NULL;
-    if (!v) return NULL;
+    lotus_view_t v;
     if (!handle) {
-        v->data = (void *)empty;
-        v->builder = NULL;
-        v->stamped_epoch = 0;
+        v.src = (void *)empty;
+        v.epoch = LOTUS_VIEW_EPOCH_STATIC;
         return v;
     }
     lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
-    v->data = b->buf;
-    v->builder = b;
-    v->stamped_epoch = b->mutation_epoch;
+    v.src = b;
+    v.epoch = b->mutation_epoch;
     return v;
 }
 

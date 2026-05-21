@@ -2,13 +2,13 @@
 //!
 //! BytesBuilder gains a monotonic `mutation_epoch` field bumped
 //! by every mutating op (append / append_slice / shift_front /
-//! clear / advance). view() and text_view() now return a small
-//! fat-pointer struct (`{data, builder, stamped_epoch}`) allocated
-//! in the caller arena. Read-site coercions (`view_coerces_to`
-//! and the println / len builtin arms) unpack via
-//! lotus_bytes_view_data / lotus_str_view_data, which compare the
-//! view's stamped epoch against the builder's current epoch and
-//! `_exit(1)` with a clear diagnostic on stderr on mismatch.
+//! clear / advance). view() and text_view() return a 16-byte
+//! by-value struct (`{src, epoch}`) — no arena allocation.
+//! Read-site coercions (`view_coerces_to` and the println / len
+//! builtin arms) unpack via lotus_bytes_view_data /
+//! lotus_str_view_data, which compare the view's stamped epoch
+//! against the builder's current epoch and `_exit(1)` with a
+//! clear diagnostic on stderr on mismatch.
 //!
 //! These tests exercise the panic path — a view captured before
 //! a mutation, then read after, should exit non-zero with

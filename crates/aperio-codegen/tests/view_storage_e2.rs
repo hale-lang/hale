@@ -5,9 +5,10 @@
 //! literal types as String, not StringView. E2 carves out an
 //! exception for *literal* defaults: the underlying data lives
 //! in the global string table at program-lifetime, so wrapping
-//! it in a view struct with builder=NULL is structurally safe.
-//! The unpack helper sees the NULL builder and skips the epoch
-//! check; the read returns the underlying String/Bytes ptr.
+//! it in a view struct with the static-epoch sentinel is
+//! structurally safe. The unpack helper sees the sentinel and
+//! returns `src` directly (the literal's data ptr) without an
+//! epoch check.
 //!
 //! Non-literal expressions (e.g. `let x: StringView = some_fn();`)
 //! still reject — those values might not have program-lifetime

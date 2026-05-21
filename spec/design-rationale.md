@@ -2581,19 +2581,23 @@ to close this at typecheck.
 - `lotus_bytes_builder_t` gains a monotonic `int64_t mutation_epoch`
   field, bumped by every mutating op (`append`, `append_slice`,
   `shift_front`, `clear`, `advance`).
-- `view()` and `text_view()` no longer return a bare aliasing
-  pointer. They return a small fat-pointer struct
-  `{ data: ptr, builder: ptr, stamped_epoch: i64 }` allocated in
-  the caller arena. `data` carries the aliasing pointer that
-  used to be the entire return value; `builder` + `stamped_epoch`
-  carry the epoch-check metadata.
+- `view()` and `text_view()` return a 16-byte by-value struct
+  `lotus_view_t { src: ptr, epoch: i64 }`. `src` is overloaded:
+  when `epoch >= 0` it's the source builder pointer (real view);
+  when `epoch == LOTUS_VIEW_EPOCH_STATIC = -1` it's the static
+  data pointer (lotus_view_from_static_data, or the null-handle
+  path of builder_view / builder_text_view). The underlying
+  aliasing data pointer is *recomputed* at unpack time from
+  `((lotus_bytes_builder_t*)v.src)->buf` (Bytes-shape: `buf - 8`;
+  C-string shape: `buf`), so the view itself doesn't store it.
 - Every read-site coercion (`view_coerces_to(BytesView, Bytes)`
   / `(StringView, String)` and the `len(view)` / `println(view)`
   builtins) emits a call to `lotus_bytes_view_data` or
   `lotus_str_view_data`. The helper compares the view's
-  stamped_epoch against the builder's live mutation_epoch; on
+  `epoch` against the builder's live `mutation_epoch`; on
   mismatch it calls `lotus_view_stale_panic` (noreturn) — stderr
-  diagnostic + `_exit(1)`.
+  diagnostic + `_exit(1)`. The static sentinel skips the check
+  and returns `src` directly.
 
 **Failure routing.** Stale-view detection is a runtime panic, not
 a closure violation. Closures are for recoverable conditions the
@@ -2622,26 +2626,29 @@ in the rest of the language.
 
 **Codegen impact.** `BytesView` and `StringView` are still
 distinct types at typecheck (unchanged from F.30). Their LLVM
-representation is still `ptr` — the same single-pointer ABI as
-`Bytes` / `String` — but the pointer now points to the
-fat-pointer struct instead of directly at the data. The
-unpack-and-check helpers are mechanically inserted at every
-view-accepting consumer site (the `view_coerces_to` consultation,
-the `len()` builtin, the `println` arms). Other consumers
-(struct field storage of `BytesView` / `StringView`, function
-arguments declared as view types) are pass-through — the view
-flows along until it hits a read-coercion site, where the unpack
-fires.
+representation is a `{ptr, i64}` struct passed and returned by
+value — SysV AMD64's "two INTEGER eightbytes ≤ 16 bytes" rule
+puts the view in `{rax, rdx}` on return and two arg registers
+on entry, so the hot path moves through SSA without memory
+traffic. The unpack-and-check helpers are mechanically inserted
+at every view-accepting consumer site (the `view_coerces_to`
+consultation, the `len()` builtin, the `println` arms). Other
+consumers (struct field storage of `BytesView` / `StringView`,
+function arguments declared as view types) are pass-through —
+the view flows along until it hits a read-coercion site, where
+the unpack fires.
 
-**Allocator.** Each `view()` / `text_view()` call allocates 24
-bytes (sizeof `lotus_view_t`) in the caller's arena (TLS-routed
-via `lotus_caller_arena_or_global`). For a recv-loop calling
-view() once per peel and discarding immediately, the per-call
-cost is one bump-allocator increment per view + a small read-time
-overhead at each coercion (4-5 instructions plus a function
-call). Acceptable for v1; if profiling shows it as a bottleneck
-in the hot path the helper can be inlined as LLVM IR rather than
-a C call.
+**Allocator.** No arena allocation per `view()` / `text_view()`
+call (2026-05-22 PM compaction). Pre-compaction was a 24-byte
+heap-allocated struct via `lotus_arena_alloc`, and that
+allocation was the dominant residual chunk-allocation trigger
+in long-running recv loops (~134 view()/sec in the downstream
+websocket peeler). The compact form materializes the view in
+two SSA registers; the caller's storage slot (if any) is a
+16-byte struct alloca that the existing arena routing already
+covers. Read-time cost is unchanged — a one-load epoch check
+plus a recompute of `buf - 8` (Bytes) or `buf` (Str) from the
+builder pointer.
 
 ## 16. What's deferred
 

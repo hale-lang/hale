@@ -758,21 +758,36 @@ zero_copy binding produces.
   are backed by `lotus_bytes_clone(arena, src)` (new) and
   `lotus_str_clone(arena, src)` (existing m49).
 
-  **F.30b (2026-05-20) view layout + epoch guard.** The
-  `_view` / `_text_view` C primitives no longer return a raw
-  aliasing pointer; they allocate a 24-byte fat-pointer
-  struct in the caller arena:
+  **F.30b view layout + epoch guard (2026-05-22 PM compaction).**
+  The `_view` / `_text_view` C primitives return a 16-byte
+  by-value struct — no arena allocation in the hot path. Pre-
+  compaction was a 24-byte struct heap-allocated per call,
+  and that allocation was the dominant residual chunk-
+  allocation trigger in long-running recv loops:
 
   ```c
+  #define LOTUS_VIEW_EPOCH_STATIC ((int64_t)-1)
+
   typedef struct lotus_view {
-      void   *data;             // aliasing ptr (Bytes-shaped
-                                //   for BytesView, NUL-term
-                                //   for StringView)
-      void   *builder;          // ptr to source builder
-      int64_t stamped_epoch;    // builder->mutation_epoch at
-                                //   view-creation time
+      void   *src;     // builder ptr (epoch >= 0, real view)
+                       // OR static data ptr (epoch == -1,
+                       //   static-lifetime view from
+                       //   lotus_view_from_static_data or
+                       //   the null-handle path of
+                       //   builder_view / builder_text_view).
+      int64_t epoch;   // stamped mutation_epoch, or the
+                       //   static sentinel.
   } lotus_view_t;
   ```
+
+  The `{void*, int64_t}` layout fits SysV AMD64's "two
+  INTEGER eightbytes ≤ 16 bytes" return-by-value rule —
+  both registers (`rax`, `rdx`) carry the view; arg-by-value
+  passes in two integer arg registers. The underlying data
+  pointer is *recomputed* at unpack time from
+  `((lotus_bytes_builder_t*)v.src)->buf` (Bytes-shape:
+  `buf - 8`; C-string shape: `buf`), so the view itself
+  doesn't need to store it.
 
   `lotus_bytes_builder_t` gains an `int64_t mutation_epoch`
   field bumped by every mutating op (`append`, `append_slice`,
@@ -782,8 +797,9 @@ zero_copy binding produces.
   against the live epoch and calls `lotus_view_stale_panic`
   (noreturn — stderr + `_exit(1)`) on mismatch. The 5b
   literal-default coercion calls `lotus_view_from_static_data`
-  to allocate a `lotus_view_t` with `builder=NULL`; the
-  helpers skip the epoch check on the NULL branch.
+  to construct the view in-register with the static
+  sentinel; the helpers skip the epoch check on that branch
+  and return `v.src` directly as the underlying data pointer.
 
   **Memory layout (Phase-2 (1)).** The builder header is
   `{cap, buf, mutation_epoch}`; the data area is preceded
@@ -795,19 +811,18 @@ zero_copy binding produces.
                                 buf
   ```
 
-  `view(b)` returns a fat-pointer `lotus_view_t*` whose
-  `data` field is `b->buf - 8` — a pointer that
-  `lotus_bytes_len` / `lotus_bytes_at` / `lotus_bytes_data`
-  can dereference directly once unpacked via the view-data
-  helper. Append / append_slice / shift_front / clear / advance
-  all update the inline prefix in sync with the data mutation
-  AND bump `mutation_epoch`. Cost: one extra pointer
-  dereference per len access vs the prior `{cap, len, buf*}`
-  shape; plus 24 bytes / view-call in the caller arena and a
-  ~4-instruction read-time overhead at each coerce site for
-  the epoch check. Trade-off taken in exchange for the
-  substrate-enabled zero-alloc read path and F.30b's loud-
-  failure guard. `lotus_str_builder_t` (for `std::str::*`)
+  `view(b)` returns a 16-byte `lotus_view_t` whose `src`
+  field is the builder pointer; the read-site helper
+  recomputes the data pointer as `b->buf - 8` (Bytes-shape,
+  suitable for `lotus_bytes_len` / `lotus_bytes_at` /
+  `lotus_bytes_data`). Append / append_slice / shift_front /
+  clear / advance all update the inline prefix in sync with
+  the data mutation AND bump `mutation_epoch`. Cost: one
+  extra pointer dereference per len access vs the prior
+  `{cap, len, buf*}` shape, plus a one-load epoch check at
+  every view-coerce site. Zero arena allocation per view()
+  call (the dominant residual chunk-alloc trigger pre-
+  compaction). `lotus_str_builder_t` (for `std::str::*`)
   keeps the prior layout — no view surface there yet.
 
   These primitives are no longer the user-facing surface;

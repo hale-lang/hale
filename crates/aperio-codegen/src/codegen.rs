@@ -1498,14 +1498,13 @@ fn expr_definitely_non_allocating(e: &Expr) -> bool {
 /// `std::str::clone(view)` to deep-copy explicitly, which is what
 /// makes the read-vs-store axis legible in the type signature.
 ///
-/// F.30b (2026-05-20): the runtime path is no longer a no-op.
-/// `BytesView` / `StringView` are pointers to a fat-pointer
-/// struct (`{data, builder, stamped_epoch}`); `view_coerces_to`
-/// callers must run the value through `unpack_view_if_needed`
-/// before passing it to a C primitive that expects the
-/// non-view layout. The unpack helper checks epoch staleness
-/// and panics on mismatch (catching the "mutated between view()
-/// and read" hazard).
+/// F.30b: the runtime path is no longer a no-op. `BytesView` /
+/// `StringView` are 16-byte by-value structs (`{src, epoch}` —
+/// see `view_struct_ty`); `view_coerces_to` callers must run the
+/// value through `unpack_view_if_needed` before passing it to a
+/// C primitive that expects the non-view layout. The unpack
+/// helper checks epoch staleness and panics on mismatch
+/// (catching the "mutated between view() and read" hazard).
 fn view_coerces_to(from: &CodegenTy, to: &CodegenTy) -> bool {
     matches!(
         (from, to),
@@ -1514,16 +1513,17 @@ fn view_coerces_to(from: &CodegenTy, to: &CodegenTy) -> bool {
     )
 }
 
-/// F.30b (5b) (2026-05-20): String/Bytes literal → StringView/BytesView
+/// F.30b (5b): String/Bytes literal → StringView/BytesView
 /// coercion at storage-site defaults. Only fires when the
 /// initializer is a String / Bytes *literal* — those values live
 /// in the global string table at program-lifetime, so wrapping
-/// them in a view struct with `builder = NULL` is structurally
-/// safe (the read-site unpack helper skips the epoch check when
-/// builder is NULL). Non-literal expressions don't qualify: an
-/// arbitrary String returned from a function might not have
-/// program-lifetime semantics, and storing it as a View would
-/// silently bypass the F.30 owned-vs-view distinction.
+/// them via `lotus_view_from_static_data` (the static-epoch
+/// sentinel `-1` signals "no source builder, just return src
+/// directly at unpack") is structurally safe. Non-literal
+/// expressions don't qualify: an arbitrary String returned from
+/// a function might not have program-lifetime semantics, and
+/// storing it as a View would silently bypass the F.30
+/// owned-vs-view distinction.
 fn literal_to_view_coerces(
     from: &CodegenTy,
     to: &CodegenTy,
@@ -3906,40 +3906,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             bb_free_ty,
             None,
         );
-        // declare ptr @lotus_bytes_builder_view(ptr handle)
-        // Phase-2 (1): zero-copy non-owning Bytes view aliasing the
-        // builder's inline `[i64 len][u8 data]` region. Lifetime
-        // tied to "no mutation of the source builder while view is
-        // in use" — documented-and-trusted at v1.
-        let bb_view_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        // F.30b view-ABI compaction (2026-05-22 PM): the view is
+        // a 16-byte `{void *src, int64_t epoch}` struct passed and
+        // returned by value. Both eightbytes are INTEGER class per
+        // SysV AMD64, so returns land in {rax, rdx} and by-value
+        // args land in two arg registers — no memory traffic, no
+        // arena_alloc per view() call (the dominant residual
+        // chunk-allocation trigger pre-rework).
+        let view_struct_ty = self.view_struct_ty();
+        // declare {ptr, i64} @lotus_bytes_builder_view(ptr handle)
+        let bb_view_ty = view_struct_ty.fn_type(&[ptr_t.into()], false);
         self.module.add_function(
             "lotus_bytes_builder_view",
             bb_view_ty,
             None,
         );
-        // declare ptr @lotus_bytes_builder_text_view(ptr handle)
-        // Phase-3 Site 2 (2026-05-19): non-owning String view
-        // aliasing the builder's buffer. Returns a C-string
-        // pointer that's NUL-terminated at `buf[len]` (invariant
-        // maintained by every mutation). Lifetime tied to "no
-        // mutation of the source builder while view is in use".
-        // Kills the per-text-frame lotus_str_from_bytes alloc.
-        let bb_text_view_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        // declare {ptr, i64} @lotus_bytes_builder_text_view(ptr handle)
+        let bb_text_view_ty = view_struct_ty.fn_type(&[ptr_t.into()], false);
         self.module.add_function(
             "lotus_bytes_builder_text_view",
             bb_text_view_ty,
             None,
         );
-        // F.30b (2026-05-20): view-unpack helpers. Codegen emits a
-        // call at every BytesView → Bytes / StringView → String
-        // read-position coercion site. The helper compares the
-        // view's stamped_epoch against the source builder's live
-        // mutation_epoch and panics on mismatch; on the OK path
-        // returns the underlying data pointer (Bytes-shaped for
-        // bytes_view_data, NUL-terminated C string for str_view_data).
-        // declare ptr @lotus_bytes_view_data(ptr view)
-        // declare ptr @lotus_str_view_data(ptr view)
-        let view_data_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        // View-unpack helpers — take a view by value, return the
+        // underlying data pointer (Bytes-shaped for bytes_view_data,
+        // NUL-terminated C string for str_view_data). The helper
+        // compares the view's epoch against the source builder's
+        // live mutation_epoch and panics on mismatch; the static
+        // sentinel `epoch == -1` skips the check.
+        // declare ptr @lotus_bytes_view_data({ptr, i64} view)
+        // declare ptr @lotus_str_view_data({ptr, i64} view)
+        let view_data_ty = ptr_t.fn_type(&[view_struct_ty.into()], false);
         self.module.add_function(
             "lotus_bytes_view_data",
             view_data_ty,
@@ -3951,13 +3948,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
         // F.30b (5b): wrap a static-data ptr (String/Bytes literal)
-        // in a view struct with builder=NULL. The unpack helper
-        // skips the epoch check when builder is NULL, so the
-        // wrapped value passes through cleanly at read sites.
-        // declare ptr @lotus_view_from_static_data(ptr data)
+        // in a view struct with the static-epoch sentinel. The
+        // unpack helper skips the epoch check and returns `src`
+        // directly. No arena allocation — the view materializes in
+        // SSA registers and lands in the caller's storage slot.
+        // declare {ptr, i64} @lotus_view_from_static_data(ptr data)
+        let view_static_ty = view_struct_ty.fn_type(&[ptr_t.into()], false);
         self.module.add_function(
             "lotus_view_from_static_data",
-            view_data_ty,
+            view_static_ty,
             None,
         );
         // declare i64 @lotus_bytes_builder_append_slice(ptr handle, ptr src_blob, i64 lo, i64 hi)
@@ -10338,10 +10337,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                             .fn_type(&llvm_param_tys, false)
                                     }
                                 }
+                                CodegenTy::BytesView
+                                | CodegenTy::StringView => self
+                                    .view_struct_ty()
+                                    .fn_type(&llvm_param_tys, false),
                                 CodegenTy::String
                                 | CodegenTy::Bytes
-                                | CodegenTy::BytesView
-                                | CodegenTy::StringView
                                 | CodegenTy::Time
                                 | CodegenTy::LocusRef(_)
                                 | CodegenTy::TypeRef(_)
@@ -10518,10 +10519,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                             .fn_type(&llvm_param_tys, false)
                                     }
                                 }
+                                CodegenTy::BytesView
+                                | CodegenTy::StringView => self
+                                    .view_struct_ty()
+                                    .fn_type(&llvm_param_tys, false),
                                 CodegenTy::String
                                 | CodegenTy::Bytes
-                                | CodegenTy::BytesView
-                                | CodegenTy::StringView
                                 | CodegenTy::Time
                                 | CodegenTy::LocusRef(_)
                                 | CodegenTy::TypeRef(_)
@@ -11662,10 +11665,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         self.context.i32_type().fn_type(&llvm_param_tys, false)
                     }
                 }
+                Some(CodegenTy::BytesView) | Some(CodegenTy::StringView) => self
+                    .view_struct_ty()
+                    .fn_type(&llvm_param_tys, false),
                 Some(CodegenTy::String)
                 | Some(CodegenTy::Bytes)
-                | Some(CodegenTy::BytesView)
-                | Some(CodegenTy::StringView)
                 | Some(CodegenTy::Time)
                 | Some(CodegenTy::LocusRef(_))
                 | Some(CodegenTy::TypeRef(_))
@@ -13003,20 +13007,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .builder
             .build_call(f, &[value.into()], "view.from_static")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // F.30b view-ABI compaction: helper returns the 16-byte
+        // view struct by value; no arena allocation.
         Ok(call
             .try_as_basic_value()
             .left()
-            .expect("lotus_view_from_static_data returns ptr"))
+            .expect("lotus_view_from_static_data returns view struct"))
     }
 
-    /// F.30b (2026-05-20): unpack a view's underlying data pointer
-    /// for a read-position consumer. For a `BytesView` value calls
-    /// `lotus_bytes_view_data` (returns the Bytes-shaped data ptr);
-    /// for `StringView` calls `lotus_str_view_data` (returns the
-    /// NUL-terminated C-string ptr). Both helpers compare the
-    /// view's stamped_epoch against the source builder's live
-    /// mutation_epoch and panic on mismatch — catching "builder
-    /// mutated between view() and read" misuse at the read site.
+    /// F.30b: unpack a view's underlying data pointer for a
+    /// read-position consumer. For a `BytesView` value calls
+    /// `lotus_bytes_view_data` (returns the Bytes-shaped data ptr,
+    /// recomputed as `b->buf - 8`); for `StringView` calls
+    /// `lotus_str_view_data` (returns the NUL-terminated C-string
+    /// `b->buf`). Both helpers compare the view's stamped epoch
+    /// against the source builder's live mutation_epoch and panic
+    /// on mismatch — catching "builder mutated between view() and
+    /// read" misuse at the read site.
     /// Non-view types pass through unchanged. Call this at every
     /// codegen site where a value of declared type "could be a
     /// view or its non-view sibling" is about to flow into a C
@@ -13035,6 +13042,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .get_function(helper_name)
             .unwrap_or_else(|| panic!("{} declared", helper_name));
+        // F.30b view-ABI compaction: `value` is the view struct
+        // passed by value. The helper checks the staleness epoch
+        // (when the static sentinel isn't set) and returns the
+        // underlying data ptr.
         let call = self
             .builder
             .build_call(f, &[value.into()], "view.unpack")
@@ -13137,7 +13148,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // F.30 / F.30b: BytesView → Bytes / StringView →
                 // String at read-position fn-arg sites. Emits a
                 // call to the unpack helper which compares the
-                // view's stamped_epoch against the source builder's
+                // view's stamped epoch against the source builder's
                 // live mutation_epoch and panics on mismatch — the
                 // F.30b safety net that catches "builder mutated
                 // between view() and read." Returns the underlying
@@ -21073,10 +21084,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.context.i32_type().into()
                 }
             }
+            CodegenTy::BytesView | CodegenTy::StringView => {
+                // F.30b view ABI: 16-byte struct value, alloca'd
+                // by struct type so loads/stores move the full
+                // {src, epoch} pair atomically.
+                self.view_struct_ty().into()
+            }
             CodegenTy::String
             | CodegenTy::Bytes
-            | CodegenTy::BytesView
-            | CodegenTy::StringView
             | CodegenTy::Time
             | CodegenTy::LocusRef(_)
             | CodegenTy::TypeRef(_)
@@ -22313,10 +22328,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     _ => self.context.i32_type().into(),
                 }
             }
+            CodegenTy::BytesView | CodegenTy::StringView => {
+                // F.30b view ABI: views are 16-byte by-value
+                // structs `{void *src, int64_t epoch}`. The same
+                // type is used at field/storage sites and as the
+                // return type of view-producing helpers.
+                self.view_struct_ty().into()
+            }
             CodegenTy::String
             | CodegenTy::Bytes
-            | CodegenTy::BytesView
-            | CodegenTy::StringView
             | CodegenTy::Time
             | CodegenTy::LocusRef(_)
             | CodegenTy::TypeRef(_)
@@ -26508,18 +26528,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .builder
             .build_call(f, &[handle_ptr.into()], "bb.view.ret")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let ptr = call
+        // F.30b view-ABI compaction: helper returns the 16-byte
+        // view struct by value. Downstream sites that need to
+        // pass it through `unpack_view_if_needed` to dereference
+        // the underlying data still take a BasicValueEnum.
+        let view_val = call
             .try_as_basic_value()
             .left()
-            .expect("returns ptr");
-        // F.30 (2026-05-20): the view bridge now mints `BytesView`,
-        // a typecheck-distinct non-owning shape. Runtime layout
-        // is identical to `Bytes` (same single-pointer ABI, same
-        // `[i64 len][u8 data]` deref); the type carries the
-        // "non-owning, valid until next mutation on the source
-        // builder" intent so storage sites can distinguish a view
-        // from an owned blob.
-        Ok((ptr, CodegenTy::BytesView))
+            .expect("lotus_bytes_builder_view returns view struct");
+        Ok((view_val, CodegenTy::BytesView))
     }
 
     /// Phase-3 Site 2: lower `std::bytes::builder::__text_view(
@@ -26553,14 +26570,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .builder
             .build_call(f, &[handle_ptr.into()], "bb.text_view.ret")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let ptr = call
+        // F.30b view-ABI compaction: helper returns the 16-byte
+        // view struct by value; the C-string ptr is recomputed at
+        // unpack time from the builder's `buf`.
+        let view_val = call
             .try_as_basic_value()
             .left()
-            .expect("returns ptr");
-        // F.30: text_view bridge mints `StringView` — same runtime
-        // layout as `String` (NUL-terminated C-string), typecheck-
-        // distinct so the non-owning intent is visible.
-        Ok((ptr, CodegenTy::StringView))
+            .expect("lotus_bytes_builder_text_view returns view struct");
+        Ok((view_val, CodegenTy::StringView))
     }
 
     /// Phase-3 Site 1: lower `std::bytes::builder::__append_slice(
@@ -30474,10 +30491,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             {
                 // F.30b (5b): String/Bytes literal default → View
                 // storage. The literal lives in the global string
-                // table (program-lifetime), so wrapping it in a
-                // view struct with builder=NULL is structurally
-                // safe; the read-site unpack helper skips the
-                // epoch check on the NULL branch.
+                // table (program-lifetime), so wrapping it via
+                // lotus_view_from_static_data (epoch = static
+                // sentinel) is structurally safe; the read-site
+                // unpack helper sees the sentinel and returns
+                // `src` directly without an epoch check.
                 let wrapped = self.wrap_literal_as_view(val)?;
                 (wrapped, declared_ty.clone())
             } else {
@@ -36371,9 +36389,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // F.30b (5b): wrap a String/Bytes literal in a
                 // view struct so a `text: StringView = ""` or
                 // `body: BytesView = b""` field declaration
-                // type-checks. The wrapped view has builder=NULL,
-                // signaling lotus_*_view_data to skip the epoch
-                // check (the underlying data is program-lifetime).
+                // type-checks. The wrapped view carries the
+                // static-epoch sentinel; lotus_*_view_data sees
+                // it and returns `src` directly (the underlying
+                // data is program-lifetime — no epoch check).
                 let wrapped = self.wrap_literal_as_view(val)?;
                 (wrapped, declared_ty.clone())
             } else {
@@ -36902,6 +36921,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn iface_fat_struct_ty(&self) -> inkwell::types::StructType<'ctx> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         self.context.struct_type(&[ptr_t.into(), ptr_t.into()], false)
+    }
+
+    /// F.30b view-ABI compaction: 16-byte view value passed/returned
+    /// by value. `{void *src, int64_t epoch}` — `src` is either the
+    /// builder pointer (real view) or the static data pointer (when
+    /// epoch == LOTUS_VIEW_EPOCH_STATIC = -1, the static sentinel).
+    /// Layout matches `lotus_view_t` in lotus_arena.c; SysV AMD64
+    /// returns both eightbytes in `rax`/`rdx`. Same struct shape is
+    /// used for BytesView and StringView — the C-side helpers
+    /// (`lotus_bytes_view_data` / `lotus_str_view_data`) read the
+    /// Bytes-shape (`buf - 8`) or C-string shape (`buf`) at unpack
+    /// time, so the codegen-visible type is uniform.
+    fn view_struct_ty(&self) -> inkwell::types::StructType<'ctx> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        self.context.struct_type(&[ptr_t.into(), i64_t.into()], false)
     }
 
     /// Allocate `size` bytes through the lotus region allocator.
