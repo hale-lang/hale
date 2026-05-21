@@ -368,8 +368,25 @@ locus __StdHttpServer {
         // partially-constructed Server skips the close.
         listen_fd: Int = -1;
     }
+    // v1.x polish (2026-05-20): violate at birth() when the
+    // listen socket can't bind. Previously birth() proceeded
+    // with listen_fd = -1, ready_signal still printed, run()
+    // then spammed `accept: Bad file descriptor` at full speed
+    // (fathom hit this in a restart-within-60s scenario where
+    // the previous Server's port was in TIME_WAIT). The
+    // violation surfaces the bind failure immediately so a
+    // supervising parent's on_failure can address it (e.g.
+    // exit non-zero, signal an oracle), or it bubbles to the
+    // root if unaddressed.
+    closure listen_failed {
+        captures: host, port;
+        epoch inline;
+    }
     birth() {
         self.listen_fd = std::io::tcp::__listen_socket(self.host, self.port);
+        if self.listen_fd < 0 {
+            violate listen_failed;
+        }
         if len(self.ready_signal) > 0 {
             println(self.ready_signal);
         }

@@ -173,7 +173,7 @@ locus DataIngest      : schedule pinned      { ... }
 
 | Class | Yield discipline | Resource |
 |---|---|---|
-| **Cooperative** (default) | Yields between substrate cells (handler exit, lifecycle transition, bus dispatch, `time::sleep`, explicit `yield`). Handler bodies are atomic. | Shares a scheduler thread with other cooperative loci. |
+| **Cooperative** (default) | Yields between substrate cells (handler exit, lifecycle transition, bus dispatch, `time::sleep`, explicit `yield`). Handler bodies are atomic. See "`time::sleep` yield-point caveat" below. | Shares a scheduler thread with other cooperative loci. |
 | **Pinned** | No yield to siblings; owns its scheduler. Bus events to/from cross thread boundaries via formal mailbox post. | Dedicated OS thread, optionally pinned to a CPU core. |
 
 #### Why no "greedy" class
@@ -192,6 +192,38 @@ share with siblings, is signaling that it belongs in a *deeper
 layer of the lotus* — its own thread, formal cross-boundary
 posts, fewer neighbors. That's a layering decision, not a third
 scheduling regime. Two classes, no third position, by design.
+
+#### `time::sleep` yield-point caveat (v1.x polish 2026-05-20)
+
+The "Yield discipline" row above lists `time::sleep` as a yield
+point. That holds for the cooperative scheduler's queue — sleeps
+in the same cooperative locus do let the runtime drain
+in-flight handler invocations before the loop body resumes.
+
+It does NOT today drain the cross-thread mailbox bus dispatch
+path. A `main locus` looping `while { std::time::sleep(100ms);
+... }` will not deliver inbound handler invocations queued from
+a `unix(...)`-bound (or other cross-thread-routed) `subscribe`
+declaration. The handlers post into the mailbox; the cooperative
+scheduler never observes the dispatch until an explicit `yield;`
+runs the drain.
+
+**Working pattern:** add an explicit `yield;` after the sleep
+in any loop body that consumes cross-thread-bound bus events.
+
+```aperio
+run() {
+    while !self.bail {
+        std::time::sleep(100ms);
+        yield;   // drain cross-thread bus dispatch into handlers
+        // ... loop body sees the latest dispatches
+    }
+}
+```
+
+A future runtime change may fold cross-thread mailbox draining
+into the sleep yield point. Until then, the explicit `yield;`
+is the documented form.
 
 (Compare: rich / chunked / recognition projection classes are
 genuinely three-way because N≈10, N≈30, and N≈300 are

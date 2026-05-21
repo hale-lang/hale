@@ -3047,6 +3047,20 @@ int lotus_tcp_listen_socket(const char *host, uint16_t port) {
         close(sock);
         return -1;
     }
+    /* v1.x polish (2026-05-20): SO_REUSEPORT in addition to
+     * SO_REUSEADDR. The pair covers more restart-within-TIME_WAIT
+     * edge cases than SO_REUSEADDR alone — specifically when the
+     * previous process exited via SIGKILL with TCP state still in
+     * the kernel's tear-down window. fathom hit this on /metrics
+     * port 9100 restart-within-60s. SO_REUSEPORT is Linux 3.9+
+     * and is best-effort: log + continue if the kernel rejects
+     * the option, since SO_REUSEADDR already covers the common
+     * case. */
+#ifdef SO_REUSEPORT
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) < 0) {
+        /* Not fatal — keep going with just SO_REUSEADDR. */
+    }
+#endif
     if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         perror("lotus_tcp_listen_socket: bind");
         close(sock);
