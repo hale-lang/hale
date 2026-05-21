@@ -61,6 +61,11 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <poll.h>
+/* std::process::rss_bytes (2026-05-21): getrusage for the
+ * process's resident-set high-water mark. Backs the
+ * observability primitive that fathom's mdgw uses to verify
+ * the Phase-4 method-scratch reclaim actually bounds memory. */
+#include <sys/resource.h>
 
 /* Default chunk size: 64KB. Big enough that most loci fit in
  * one chunk, small enough that a leaf locus that allocates a
@@ -5277,6 +5282,33 @@ static int lotus_process_split_argv(
  * failure. ENOENT if the executable isn't found, EACCES if it's
  * not executable, ENOMEM on allocation failure, etc.
  */
+/* std::process::rss_bytes (2026-05-21): the calling process's
+ * peak resident-set size in bytes. Wraps getrusage(RUSAGE_SELF).
+ *
+ * Linux reports ru_maxrss in KiB (the kernel's `struct rusage`
+ * comment says "maximum resident set size (in kilobytes)"; man
+ * getrusage confirms `ru_maxrss` is "in kilobytes" on Linux).
+ * BSD / macOS report it in bytes. We're targeting Linux for v1
+ * so we multiply by 1024 unconditionally. If we ever care about
+ * BSD parity, this is one #ifdef away.
+ *
+ * The "peak" framing (high-water mark, not current RSS) is what
+ * `getrusage` actually exposes — there's no syscall for current
+ * RSS that doesn't go through /proc. For observability the peak
+ * is usually what matters (alarm thresholds key off worst-case);
+ * a future `current_rss_bytes()` could parse /proc/self/statm
+ * once the read_file fix lands.
+ *
+ * On failure (getrusage rejects, vanishingly rare) returns 0 so
+ * the caller doesn't get a negative value through the i64 ABI. */
+int64_t lotus_process_rss_bytes(void) {
+    struct rusage ru;
+    if (getrusage(RUSAGE_SELF, &ru) != 0) {
+        return 0;
+    }
+    return (int64_t)ru.ru_maxrss * 1024;
+}
+
 int lotus_process_run(
     const char *argv_blob,
     int32_t *out_code,

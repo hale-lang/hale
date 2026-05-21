@@ -3212,6 +3212,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // declare i32 @getpid(void)  — POSIX, backs std::process::pid()
         let getpid_ty = i32_t.fn_type(&[], false);
         self.module.add_function("getpid", getpid_ty, None);
+        // declare i64 @lotus_process_rss_bytes(void)
+        // 2026-05-21: peak resident-set size in bytes via
+        // getrusage(RUSAGE_SELF). Observability primitive — lets
+        // Aperio code measure its own memory pressure without
+        // needing the read_file-of-/proc/self/statm path
+        // (synthesized files report st_size=0 so read_file's
+        // fstat-based sizing returns empty; separate fix).
+        let rss_bytes_ty = i64_t.fn_type(&[], false);
+        self.module
+            .add_function("lotus_process_rss_bytes", rss_bytes_ty, None);
 
         // m73b: TCP primitives reachable from Aperio source via
         // the `std::io::tcp::__*` magic-path calls. lotus_tcp_t
@@ -23602,6 +23612,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_process_pid(args)?;
                 Ok(())
             }
+            ["std", "process", "rss_bytes"] => {
+                let _ = self.lower_std_process_rss_bytes(args)?;
+                Ok(())
+            }
             ["std", "io", "tcp", "__listen_socket"] => {
                 let _ = self.lower_std_io_tcp_listen_socket(args, scope)?;
                 Ok(())
@@ -24279,6 +24293,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         match segs {
             ["std", "process", "pid"] => self.lower_std_process_pid(args),
+            ["std", "process", "rss_bytes"] => self.lower_std_process_rss_bytes(args),
             ["std", "io", "tcp", "__listen_socket"] => {
                 self.lower_std_io_tcp_listen_socket(args, scope)
             }
@@ -25258,6 +25273,40 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_int_s_extend(pid_i32, i64_t, "pid.i64")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok((pid_i64.into(), CodegenTy::Int))
+    }
+
+    /// `std::process::rss_bytes() -> Int` (2026-05-21). Returns
+    /// the calling process's peak resident-set size in bytes via
+    /// `getrusage(RUSAGE_SELF)`. Observability primitive —
+    /// fathom's mdgw uses this to verify the Phase-4 method-
+    /// scratch reclaim actually bounds memory in a long-running
+    /// daemon (the previous attempt to read /proc/self/statm via
+    /// `std::io::fs::read_file` hit the synthesized-file
+    /// fstat-returns-0 bug). Peak (not current) RSS is what
+    /// getrusage exposes; alarm thresholds typically want the
+    /// worst-case anyway.
+    fn lower_std_process_rss_bytes(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if !args.is_empty() {
+            return Err(CodegenError::Unsupported(format!(
+                "std::process::rss_bytes takes 0 arguments, got {}",
+                args.len()
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_process_rss_bytes")
+            .expect("lotus_process_rss_bytes declared");
+        let bytes = self
+            .builder
+            .build_call(f, &[], "rss_bytes.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_process_rss_bytes returns i64");
+        Ok((bytes, CodegenTy::Int))
     }
 
     /// Lower `std::io::tcp::__listen_socket(host: String,

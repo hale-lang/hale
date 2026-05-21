@@ -405,7 +405,7 @@ tree. Quick reference grouped by `std::*` namespace prefix:
 
 | Namespace | Surface (shipped) | Source |
 |---|---|---|
-| `std::process` | `pid() -> Int`, `exit(code: Int)` | path-call dispatch in `aperio-codegen` |
+| `std::process` | `pid() -> Int`, `exit(code: Int)`, `rss_bytes() -> Int` | path-call dispatch in `aperio-codegen` |
 | `std::env` | `args_count()`, `arg(i)`, `arg_or(i, default)`, `var(name)`, `var_exists(name)` | path-call dispatch + main-prelude argv stash |
 | `std::time` | `monotonic() -> Duration`, `sleep(d: Duration)`, `now() -> Int`, `time_from_unix(n: Int) -> Time` | `clock_gettime(CLOCK_MONOTONIC)` + EINTR-retrying `clock_nanosleep`; `now()` calls `clock_gettime(CLOCK_REALTIME)` via `lotus_time_now_seconds`; `time_from_unix` formats `gmtime_r` + `strftime` ISO 8601 UTC via `lotus_time_from_unix` |
 | `std::str` | `parse_int(s) -> Int fallible(ParseError)`, `parse_float(s) -> Float fallible(ParseError)`, `parse_decimal(s) -> Decimal fallible(ParseError)`, `can_parse_int(s) -> Bool`, `can_parse_float(s) -> Bool`, `can_parse_decimal(s) -> Bool`, `index_of`, `lower` / `upper`, `trim`, `substring(s, lo, hi)`, `replace`, `repeat`, `pad_left` / `pad_right`, `from_bytes`, `builder_new` / `builder_append` / `builder_len` / `builder_finish` | `lotus_str_*` C runtime primitives |
@@ -712,6 +712,33 @@ expected `kind: String` / `input: String` fields, calls to
 naming the fix paths (rename your type, match the stdlib
 shape, or use the qualified path). Previously this case
 panicked at codegen time.
+
+### `std::process::rss_bytes()` — observability primitive (2026-05-21)
+
+Returns the calling process's peak resident-set size in bytes
+via `getrusage(RUSAGE_SELF)`. The "peak" framing (high-water
+mark, not current RSS) is what `getrusage` exposes — there's no
+syscall for current RSS that doesn't go through `/proc`. Alarm
+thresholds typically want the worst-case anyway.
+
+```aperio
+let bytes = std::process::rss_bytes();
+println("rss=", to_string(bytes));
+```
+
+Returns 0 if `getrusage` rejects (vanishingly rare). Linux
+reports the underlying value in KiB and we multiply by 1024
+unconditionally; macOS / BSD parity is one `#ifdef` away if a
+workload ever asks.
+
+**Why this lives as a path-call, not `std::io::fs::read_file
+("/proc/self/statm")`:** synthesized `/proc` files report
+`st_size == 0`, and `read_file` sizes its internal buffer via
+`fstat` — the resulting read returns the empty string. Until
+`read_file` learns to grow its buffer on short reads (separate
+follow-up), `rss_bytes()` is the supported path. Pair with
+fathom's mdgw observability shape: stamp RSS into a Prometheus
+gauge once per heartbeat, alarm on growth slopes.
 
 ### `Server.shutdown()` — interruptible accept loop (2026-05-21)
 
