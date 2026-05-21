@@ -788,6 +788,85 @@ subscribers; bounding it is forward work, not a follow-up to F.28
 "can we reclaim per dispatch?" finds the previously-investigated
 answer.
 
+**Phase-4 per-method scratch reclaim (2026-05-21).** Locus
+method bodies (lifecycle `birth` / `run` / `accept` / `drain` /
+`dissolve`, user-fn members, mode bodies) now open a per-call
+scratch subregion of `self.__arena` on entry, route transient
+allocations through it via `current_arena_ptr()`, and destroy
+the subregion at every return point. Before this, every
+allocation made by a long-running `run()` loop (JSON parse
+strings, format-string concats, metric-label entries, every
+stdlib primitive that lands on `lotus_caller_arena_or_global`)
+landed in `self.__arena` directly — bounded only by the
+locus's lifetime, which for a daemon's root locus or any
+event-loop service is the entire process. fathom's kraken
+mdgw measured 2.4 MB/sec growth on the L2 hot path before the
+fix, OOM-killed at the 2 GB container cap every ~13 minutes
+(see fathom's `lib/venues/kraken/FRICTION.md` "mdgw RSS
+grows monotonically"). Post-fix the scratch resets each method
+call so transient allocations have a bounded lifetime
+matching the call's frame.
+
+Two correctness invariants make this safe:
+
+  1. Heap-typed `self.X = expr` stores deep-copy `expr` into
+     `self.__arena` BEFORE the store, so the persisted
+     pointer outlives the scratch destroy. `String`, `Bytes`,
+     `TypeRef`, `Tuple`, `Array`, `Interface`, and
+     payload-bearing `Enum` are heap-typed; `BytesView` /
+     `StringView` / `LocusRef` / scalars / cells pass through.
+     The copier reuses `emit_return_value_deep_copy`. Bytes
+     now uses `lotus_bytes_clone` (was a pass-through under
+     the previous program-lifetime assumption — broken once
+     payloads can live in scratch).
+  2. Heap-typed return values from a method are deep-copied
+     into the caller's arena before the scratch destroy. The
+     caller publishes its `current_arena_ptr()` via
+     `lotus_set_caller_arena` immediately before each method
+     call (mirroring the stdlib primitive contract). The
+     callee snapshots `lotus_caller_arena_or_global()` at the
+     method's entry block into a fn-local alloca and uses
+     THAT snapshot — NOT a fresh TLS read at exit — as the
+     deep-copy destination. The snapshot dance avoids a
+     subtle bug where any nested method call inside the body
+     would clobber TLS, leaving the epilogue to deep-copy
+     into the wrong arena (whichever nested callee was
+     called last).
+
+Cost: two mallocs (subregion arena struct + initial 64 KiB
+chunk) and two frees per method call. For typical short
+methods this is roughly 100–400 ns of overhead per call; on
+fathom's 70 L2/sec hot path with dozens of methods per frame
+that's ~7 µs per second of aggregate overhead — invisible
+next to the JSON parse / decimal arithmetic the methods do.
+An `lotus_arena_reset` primitive (subregion reuse: keep
+chunks, set `used=0`) could amortize this to ~5–10 ns per
+call but is deferred — the leak's the load-bearing bug; the
+fast-path optimization can follow.
+
+Locus instantiation routing is unchanged. Child locus structs
+allocate via their own routes (parent arena if parent accepts
+them, lazy-global if the fn returns the child type, otherwise
+stack alloca) — `lower_locus_instantiation` doesn't read
+`current_arena_ptr()`. So a method body that does `let _w =
+ChildLocus { };` still gets the child instantiation routed to
+the parent's arena, not scratch, and the deferred-dissolve
+mechanism continues to govern child teardown.
+
+The free-fn path (`lotus_arena_create_subregion(__caller_arena)`
+at entry, destroyed at exit, with allocations routed to
+`__caller_arena` directly post-cross-seed-segv-fix) is
+unchanged. Free fns called from inside a method body get
+`__caller_arena = method's scratch` — anything they alloc
+lives in the same scratch and gets reclaimed at the outer
+method's exit. The cross-seed-segv test pattern (foreign
+vec push from inside a free fn) continues to work because
+those tests call from `main`, not from a method body. A
+method body that pushes a heap value into a foreign locus's
+vec without the wrapping locus owning it would still
+dangle — same boundary the cross-seed-segv fix originally
+documented; the fix here doesn't widen or narrow it.
+
 **m49 closes the free-fn gap.** Every non-main free fn takes
 an implicit `__caller_arena: ptr` first param at the LLVM ABI.
 `main` keeps the program-wide `arena.global` it always had —

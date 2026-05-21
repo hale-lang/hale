@@ -23,6 +23,28 @@ the model: runtime is automatic; stdlib is explicit.
   on dissolution. Bump allocation within a region; no per-object
   metadata; no GC. The framework's lotus structure provides the
   scope; the allocator just respects it.
+- **Per-method scratch (2026-05-21).** Each locus method body
+  (lifecycle / user-fn / mode) opens a per-call subregion of
+  `self.__arena` at entry and destroys it at every return.
+  Transient allocations made inside the body — `to_string`,
+  `String` concat, `std::str::*` / `std::json::*` / `std::bytes::*`
+  results, format-string composition — route through the
+  scratch via `current_arena_ptr()` and get reclaimed at method
+  exit. Heap-typed `self.X = expr` stores deep-copy into
+  `self.__arena` before the store so persisted state outlives
+  the scratch destroy. Heap return values are deep-copied into
+  the caller's arena via a fn-local snapshot of
+  `lotus_caller_arena_or_global()` taken at the method's entry
+  block. Callers publish their `current_arena_ptr()` via
+  `lotus_set_caller_arena` immediately before each method call
+  (same TLS contract as stdlib primitives). Without this,
+  long-running `run()` loops accumulated every transient
+  allocation into the locus's lifetime arena — fathom's
+  kraken mdgw measured 2.4 MB/sec growth on the L2 hot path,
+  OOM at ~13 min under a 2 GB container cap. See
+  `spec/memory.md` "Phase-4 per-method scratch reclaim" for
+  the full design (invariants, cost model, interaction with
+  the cross-seed-segv routing).
 - **Per-projection-class allocation strategy.** Rich → simple
   arena; chunked → arena with per-coordinatee sub-regions;
   recognition → recpool, sub-mode-typed at the declaration

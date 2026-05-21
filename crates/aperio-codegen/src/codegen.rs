@@ -315,6 +315,8 @@ pub fn build_executable_with_imports(
         current_arena_override: None,
         current_user_fn_caller_arena: None,
         current_user_fn_arena: None,
+        current_method_scratch: None,
+        current_method_caller_arena: None,
         current_user_fn_exit_bb: None,
         current_user_fn_ret_alloca: None,
         current_user_fn_fallible: None,
@@ -993,6 +995,31 @@ struct Cx<'ctx, 'p> {
     current_user_fn_arena: Option<PointerValue<'ctx>>,
     current_user_fn_exit_bb: Option<inkwell::basic_block::BasicBlock<'ctx>>,
     current_user_fn_ret_alloca: Option<PointerValue<'ctx>>,
+    /// Bus-arena reclaim (2026-05-21): locus method bodies open a
+    /// per-call subregion of `self.__arena` and route transient
+    /// allocations through it, so a long-running `run()` loop
+    /// doesn't accumulate every JSON-parse / metric-label / String-
+    /// concat allocation into the locus's lifetime arena. The slot
+    /// holds the subregion ptr (allocated via
+    /// `lotus_arena_create_subregion`); `current_arena_ptr()` reads
+    /// it when set; the method epilogue deep-copies any heap return
+    /// value via `current_method_caller_arena` into the caller's
+    /// arena and then destroys the subregion. Heap-typed stores to
+    /// `self.X` deep-copy into `self.__arena` directly so the
+    /// stored pointer outlives the subregion's destroy.
+    current_method_scratch: Option<PointerValue<'ctx>>,
+    /// Bus-arena reclaim (2026-05-21): the caller's arena pointer
+    /// snapshotted at the method's entry block via
+    /// `lotus_caller_arena_or_global`. We snapshot up-front
+    /// because TLS gets clobbered by any nested method/stdlib
+    /// call inside the body (each emits its own
+    /// `lotus_set_caller_arena` for its own callees), so reading
+    /// TLS at the epilogue would land in the wrong arena. The
+    /// epilogue's return-value deep-copy reads this alloca
+    /// instead of TLS — the value is whatever TLS was at body
+    /// entry (= the arena the caller published before invoking
+    /// us).
+    current_method_caller_arena: Option<PointerValue<'ctx>>,
     /// v1.x-FORM-2 PR6: per-call fallible-fn state. Set in
     /// `lower_user_fn_body` when `sig.fallible` is `Some`; cleared
     /// when the body finishes. `Stmt::Fail` writes the payload
@@ -3891,6 +3918,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function(
             "lotus_set_caller_arena",
             set_caller_arena_ty,
+            None,
+        );
+        // declare ptr @lotus_caller_arena_or_global()
+        // Bus-arena reclaim (2026-05-21): the read side of the
+        // TLS caller-arena pair. Locus-method epilogues call this
+        // to find the deep-copy destination for heap return
+        // values — the same arena the caller set via
+        // `lotus_set_caller_arena` just before the call. Falls
+        // back to the capped g_bus_payload_arena (lazy global)
+        // when TLS is null so degenerate entry paths don't
+        // deref a NULL arena.
+        let caller_arena_or_global_ty = ptr_t.fn_type(&[], false);
+        self.module.add_function(
+            "lotus_caller_arena_or_global",
+            caller_arena_or_global_ty,
             None,
         );
         // declare i64 @lotus_bytes_is_alloc_fail(ptr blob)
@@ -10645,6 +10687,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 });
                 self.loops.clear();
                 self.push_dissolve_frame();
+                self.open_method_scratch()?;
 
                 let mut scope = Scope::default();
 
@@ -10682,11 +10725,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let end = self.lower_block(&lc.body, &mut scope)?;
                 if end == BlockEnd::Open {
                     self.flush_dissolve_frame()?;
+                    self.close_method_scratch()?;
                     self.builder
                         .build_return(None)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 } else {
                     let _ = self.deferred_dissolves.pop();
+                    self.current_method_scratch = None;
+                    self.current_method_caller_arena = None;
                 }
 
                 self.current_fn = None;
@@ -11123,6 +11169,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 });
                 self.loops.clear();
                 self.push_dissolve_frame();
+                self.open_method_scratch()?;
 
                 let mut scope = Scope::default();
                 for (i, p) in fd.params.iter().enumerate() {
@@ -11313,6 +11360,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                     match ret_ty {
                         None => {
+                            self.close_method_scratch()?;
                             self.builder
                                 .build_return(None)
                                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -11327,6 +11375,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                 } else {
                     let _ = self.deferred_dissolves.pop();
+                    self.current_method_scratch = None;
+                    self.current_method_caller_arena = None;
                 }
 
                 self.current_fn = None;
@@ -11368,6 +11418,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 });
                 self.loops.clear();
                 self.push_dissolve_frame();
+                self.open_method_scratch()?;
 
                 let mut scope = Scope::default();
                 for (i, p) in md.params.iter().enumerate() {
@@ -11387,6 +11438,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.flush_dissolve_frame()?;
                     match ret_ty {
                         None => {
+                            self.close_method_scratch()?;
                             self.builder
                                 .build_return(None)
                                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -11401,6 +11453,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                 } else {
                     let _ = self.deferred_dissolves.pop();
+                    self.current_method_scratch = None;
+                    self.current_method_caller_arena = None;
                 }
 
                 self.current_fn = None;
@@ -12131,18 +12185,36 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(res)
             }
             CodegenTy::Bytes => {
-                // m89: Bytes returned from a fn is shipped through
-                // the same lazy-global-payload arena that
-                // read_bytes uses, so the returned pointer is
-                // already program-lifetime-safe. No deep-copy
-                // into dest_arena needed (and we'd lose the
-                // length prefix if we tried to use lotus_str_clone,
-                // which strlens). Pass the value through as-is —
-                // future m89 follow-up: a `lotus_bytes_clone`
-                // primitive that copies len + body into
-                // dest_arena, for callers that genuinely want
-                // the payload moved.
-                Ok(value)
+                // Bus-arena reclaim (2026-05-21): clone the Bytes
+                // payload into dest_arena via the length-aware
+                // copier. Previously this arm passed through on
+                // the assumption that the value already lived in
+                // the program-lifetime payload arena, but with
+                // per-method scratch a Bytes built inside a method
+                // body lives in the scratch and would dangle on
+                // method-exit destroy. The free-fn path pays a
+                // one-memcpy cost when src/dest are the same
+                // arena; for moderately-sized binary payloads
+                // that's negligible vs the alternative of leaving
+                // a dangling pointer. Use `lotus_bytes_clone`
+                // (defined alongside `lotus_bytes_from_buf`) so
+                // the length prefix is honored.
+                let f = self
+                    .module
+                    .get_function("lotus_bytes_clone")
+                    .expect("lotus_bytes_clone declared");
+                let res = self
+                    .builder
+                    .build_call(
+                        f,
+                        &[dest_arena.into(), value.into_pointer_value().into()],
+                        "deep_copy.bytes.clone",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_bytes_clone returns ptr");
+                Ok(res)
             }
             CodegenTy::BytesView | CodegenTy::StringView => {
                 // F.30: a view returned from a fn keeps aliasing
@@ -18355,6 +18427,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let (v, _) = self.lower_binop(bin_op, cur, rhs, &slot_ty)?;
                     v
                 };
+                // Bus-arena reclaim (2026-05-21): when the
+                // assignment target is a heap-typed `self.X`
+                // field, deep-copy the rhs into `self.__arena`.
+                // The method-scratch the rhs lives in is destroyed
+                // at method exit; without the copy the stored
+                // pointer would dangle on the next read.
+                // `maybe_self_field_heap_copy` short-circuits to
+                // identity for scalar slots and for non-method
+                // contexts, so this is cheap on the common path.
+                let new_val = if target.head.name == "self"
+                    && target.tail.len() == 1
+                    && matches!(target.tail[0], LValueSeg::Field(_))
+                {
+                    self.maybe_self_field_heap_copy(new_val, &slot_ty)?
+                } else {
+                    new_val
+                };
                 self.builder
                     .build_store(slot_ptr, new_val)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -20627,6 +20716,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // — they don't own a per-call subregion, so `return` from
         // them stays a direct build_return as before.
         let in_free_fn = self.current_user_fn_exit_bb.is_some();
+        // Bus-arena reclaim (2026-05-21): locus methods (user-fn
+        // members, modes) now open a per-call scratch subregion
+        // — distinct from the free-fn `exit_bb` path. At each
+        // `return`, we must (a) deep-copy a heap return value
+        // out of the scratch into the caller's arena (read from
+        // TLS via `lotus_caller_arena_or_global`), then (b)
+        // destroy the scratch, then (c) `build_return`. The TLS
+        // read mirrors the stdlib primitive contract: callers
+        // set `lotus_set_caller_arena` immediately before
+        // invoking a method, so the epilogue's deep-copy lands
+        // in the caller's own arena and the returned pointer
+        // survives the scratch destroy.
+        let in_method_with_scratch =
+            !in_free_fn && self.current_method_scratch.is_some();
         match (expr, ret_ty) {
             (None, None) => {
                 if in_free_fn {
@@ -20635,6 +20738,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_unconditional_branch(exit_bb)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 } else {
+                    if in_method_with_scratch {
+                        self.close_method_scratch()?;
+                    }
                     self.builder
                         .build_return(None)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -20706,6 +20812,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let exit_bb = self.current_user_fn_exit_bb.unwrap();
                     self.builder
                         .build_unconditional_branch(exit_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                } else if in_method_with_scratch {
+                    let copied = self.emit_method_return_deep_copy(v, &declared_ty)?;
+                    self.close_method_scratch()?;
+                    self.builder
+                        .build_return(Some(&copied))
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 } else {
                     self.builder
@@ -31627,6 +31739,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             llvm_args.push(v.into());
         }
+        // Bus-arena reclaim (2026-05-21): publish the caller's
+        // arena via TLS so the callee's per-method scratch
+        // epilogue can deep-copy any heap return value into the
+        // right place. Mirrors the stdlib primitive contract.
+        // Reading our `current_arena_ptr()` AFTER arg lowering
+        // (which may itself nest method calls and clobber TLS)
+        // gives the callee the freshest caller view.
+        self.emit_set_caller_arena()?;
         let call = self
             .builder
             .build_call(
@@ -32050,6 +32170,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             llvm_args.push(v.into());
         }
+        // Bus-arena reclaim (2026-05-21): publish the caller's
+        // arena via TLS so the callee's per-method scratch
+        // epilogue lands its heap-return deep-copy in the
+        // caller's arena. Same shape as the self-method-call
+        // counterpart above.
+        self.emit_set_caller_arena()?;
         let call = self
             .builder
             .build_call(
@@ -33724,6 +33850,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             },
         };
+        // Bus-arena reclaim (2026-05-21): publish caller arena
+        // via TLS for the same reason as the direct-method-call
+        // sites — the locus method behind this vtable slot now
+        // opens a per-call scratch and deep-copies any heap
+        // return into TLS.
+        self.emit_set_caller_arena()?;
         let call = self
             .builder
             .build_indirect_call(
@@ -36391,6 +36523,248 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(raw.into_pointer_value())
     }
 
+    /// Bus-arena reclaim (2026-05-21): heap types where a
+    /// `self.X = expr` store from inside a method body must
+    /// deep-copy `expr` into `self.__arena` so the stored pointer
+    /// outlives the method-scratch destroy. Scalars / views /
+    /// LocusRefs are pass-through (views alias their source;
+    /// loci use their own arena routing). Enum is conservative
+    /// — we let `emit_return_value_deep_copy` decide based on
+    /// payload presence.
+    fn ty_needs_self_field_deep_copy(ty: &CodegenTy) -> bool {
+        match ty {
+            CodegenTy::Int
+            | CodegenTy::Float
+            | CodegenTy::Bool
+            | CodegenTy::Decimal
+            | CodegenTy::Time
+            | CodegenTy::Duration
+            | CodegenTy::FnPtr { .. }
+            | CodegenTy::LocusRef(_)
+            | CodegenTy::BytesView
+            | CodegenTy::StringView
+            | CodegenTy::Cell(_, _) => false,
+            CodegenTy::String
+            | CodegenTy::Bytes
+            | CodegenTy::TypeRef(_)
+            | CodegenTy::Tuple(_)
+            | CodegenTy::Array(_, _)
+            | CodegenTy::Interface(_)
+            | CodegenTy::Enum(_) => true,
+        }
+    }
+
+    /// Bus-arena reclaim (2026-05-21): when a method body stores
+    /// a heap-typed value into `self.X`, deep-copy the value into
+    /// `self.__arena` before the store so the persisted pointer
+    /// outlives the per-method scratch's destroy at method exit.
+    /// Returns `value` unchanged when:
+    ///   * no scratch is active (top-level free fn / synthesized
+    ///     closure body / etc. — allocations land where the
+    ///     existing routing puts them);
+    ///   * the slot type is a scalar / view / locus-ref / cell;
+    /// otherwise routes through `emit_return_value_deep_copy`
+    /// targeting `self.__arena`.
+    fn maybe_self_field_heap_copy(
+        &mut self,
+        value: BasicValueEnum<'ctx>,
+        slot_ty: &CodegenTy,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        if self.current_method_scratch.is_none() {
+            return Ok(value);
+        }
+        if !Self::ty_needs_self_field_deep_copy(slot_ty) {
+            return Ok(value);
+        }
+        let cs = self
+            .current_self
+            .clone()
+            .expect("scratch active implies current_self");
+        let info = self
+            .user_loci
+            .get(&cs.locus_name)
+            .cloned()
+            .expect("current_self points to a declared locus");
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let arena_field_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                cs.self_ptr,
+                info.arena_field_idx,
+                "self.__arena.for_field_copy",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let dest_arena = self
+            .builder
+            .build_load(ptr_t, arena_field_ptr, "self.__arena.field_dest")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        self.emit_return_value_deep_copy(value, slot_ty, dest_arena)
+    }
+
+    /// Bus-arena reclaim (2026-05-21): open a per-method-call
+    /// scratch subregion of `self.__arena` and stash it in a fn-
+    /// local alloca. Sets `current_method_scratch` so subsequent
+    /// `current_arena_ptr()` reads route allocations through the
+    /// subregion instead of the locus's lifetime arena.
+    ///
+    /// Caller must already have a positioned builder (entry block
+    /// of the method body, after any param/self setup) and must
+    /// have set `current_self` to the locus self_ptr — this helper
+    /// reads `self.__arena` via the same GEP pattern as
+    /// `current_arena_ptr`'s fallback path. The scratch is the
+    /// alloc target throughout the body; the matching
+    /// `close_method_scratch` at exit destroys it.
+    fn open_method_scratch(&mut self) -> Result<(), CodegenError> {
+        let cs = self
+            .current_self
+            .clone()
+            .expect("open_method_scratch requires current_self");
+        let info = self
+            .user_loci
+            .get(&cs.locus_name)
+            .cloned()
+            .expect("current_self points to a declared locus");
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let arena_field_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                cs.self_ptr,
+                info.arena_field_idx,
+                "self.__arena.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let self_arena = self
+            .builder
+            .build_load(ptr_t, arena_field_ptr, "self.__arena.for_scratch")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        let subregion_create = self
+            .module
+            .get_function("lotus_arena_create_subregion")
+            .expect("lotus_arena_create_subregion declared");
+        let scratch_ptr = self
+            .builder
+            .build_call(
+                subregion_create,
+                &[self_arena.into()],
+                "method.scratch.create",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("subregion_create returns ptr")
+            .into_pointer_value();
+        let scratch_alloca = self
+            .builder
+            .build_alloca(ptr_t, "method.scratch.slot")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(scratch_alloca, scratch_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.current_method_scratch = Some(scratch_alloca);
+        // Snapshot the caller's arena before any user code runs.
+        // The lazy global is the documented fallback when the
+        // caller didn't publish via TLS (entry from main, native
+        // entry point, etc.), so a one-shot read here gives a
+        // valid arena ptr in every case.
+        let lookup_fn = self
+            .module
+            .get_function("lotus_caller_arena_or_global")
+            .expect("lotus_caller_arena_or_global declared");
+        let caller_arena_ptr = self
+            .builder
+            .build_call(lookup_fn, &[], "method.caller_arena.snapshot")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_caller_arena_or_global returns ptr")
+            .into_pointer_value();
+        let caller_arena_alloca = self
+            .builder
+            .build_alloca(ptr_t, "method.caller_arena.slot")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(caller_arena_alloca, caller_arena_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.current_method_caller_arena = Some(caller_arena_alloca);
+        Ok(())
+    }
+
+    /// Bus-arena reclaim (2026-05-21): deep-copy a method's heap
+    /// return value out of the per-call scratch into the caller's
+    /// arena. Reads the caller arena from TLS via
+    /// `lotus_caller_arena_or_global` — the caller (free fn,
+    /// other method body, main, etc.) is expected to set TLS
+    /// via `emit_set_caller_arena` immediately before the call,
+    /// so the lookup is a single load on the fast path. Scalars
+    /// pass through unchanged. The actual recursive copy is
+    /// delegated to `emit_return_value_deep_copy`, which also
+    /// handles Tuple/Array/TypeRef/Interface/Bytes/String.
+    fn emit_method_return_deep_copy(
+        &mut self,
+        value: BasicValueEnum<'ctx>,
+        ty: &CodegenTy,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        if !Self::ty_needs_self_field_deep_copy(ty) {
+            // Same set of types that need cross-arena copy
+            // for self-field stores. Scalars / views / loci
+            // / cells pass through.
+            return Ok(value);
+        }
+        // Read the caller-arena snapshot we took at body entry.
+        // Reading TLS here would land in the wrong arena if any
+        // nested method/stdlib call has clobbered it (every such
+        // call publishes its own caller-arena before invoking),
+        // so we keep the entry-time snapshot in a local alloca
+        // and reuse it across every `return` in this body.
+        let slot = self
+            .current_method_caller_arena
+            .expect("method scratch active implies caller-arena snapshot");
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let dest_arena = self
+            .builder
+            .build_load(ptr_t, slot, "method.caller_arena.load")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        self.emit_return_value_deep_copy(value, ty, dest_arena)
+    }
+
+    /// Destroy the method-scratch subregion. Caller is responsible
+    /// for any return-value deep-copy BEFORE this runs — once the
+    /// subregion is destroyed the chunk bytes are freed and any
+    /// pointer that aliases them is dangling. Clears
+    /// `current_method_scratch` so further `current_arena_ptr`
+    /// reads fall through to the self-arena path (matches the
+    /// invariant outside method bodies).
+    fn close_method_scratch(&mut self) -> Result<(), CodegenError> {
+        let Some(slot) = self.current_method_scratch else {
+            return Ok(());
+        };
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let scratch_ptr = self
+            .builder
+            .build_load(ptr_t, slot, "method.scratch.load")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        let destroy_fn = self
+            .module
+            .get_function("lotus_arena_destroy")
+            .expect("lotus_arena_destroy declared");
+        self.builder
+            .build_call(
+                destroy_fn,
+                &[scratch_ptr.into()],
+                "method.scratch.destroy",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.current_method_scratch = None;
+        self.current_method_caller_arena = None;
+        Ok(())
+    }
+
     /// Phase-3 (2026-05-19): emit a `lotus_set_caller_arena(arena)`
     /// call passing the current arena pointer. Stdlib primitives
     /// that return heap values (Bytes / String) read this TLS to
@@ -36418,6 +36792,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             return Ok(p);
         }
         let ptr_t = self.context.ptr_type(AddressSpace::default());
+        // Bus-arena reclaim (2026-05-21): in a locus method body
+        // route transient allocations through the per-call scratch
+        // subregion (held in `current_method_scratch`) rather than
+        // the locus's lifetime `self.__arena`. The subregion is
+        // destroyed at method exit; heap-typed stores to `self.X`
+        // deep-copy into `self.__arena` so persisted values
+        // outlive the subregion. Without scratch routing, a
+        // long-running `run()` loop accumulates every JSON-parse /
+        // metric-label / String-concat allocation into
+        // `self.__arena` for the locus's whole lifetime — the
+        // 2.4 MB/sec leak fathom measured on the market-data
+        // gateway. The scratch slot is set by
+        // `lower_locus_method_bodies` for every method flavor
+        // (lifecycle / user-fn / mode); when None we fall through
+        // to the lifetime arena, preserving the behavior of paths
+        // that haven't been migrated yet (locus instantiation,
+        // synthesized closure-eval bodies).
+        if let Some(scratch) = self.current_method_scratch {
+            let arena_ptr = self
+                .builder
+                .build_load(ptr_t, scratch, "method.scratch.cur")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            return Ok(arena_ptr.into_pointer_value());
+        }
         if let Some(cs) = self.current_self.clone() {
             let info = self
                 .user_loci

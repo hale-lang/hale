@@ -151,20 +151,39 @@ fn subregion_call_elided_for_elidable_child() {
     "#;
     let ir = dump_ir(src, "subregion-elide");
 
-    // Find the Coord.run body and check only its hot loop.
+    // Find the Coord.run body and check only its hot loop. The
+    // method body itself opens a scratch subregion at entry
+    // (bus-arena reclaim 2026-05-21), so a single
+    // `lotus_arena_create_subregion` call IS expected — but it
+    // lives at function entry, not inside the per-iteration
+    // while.body. The elision check is about per-child subregion
+    // creation, so scope the assertion to the hot loop block.
     let coord_run_start = ir.find("define void @Coord.run").expect("Coord.run defined");
     let coord_run_end = ir[coord_run_start..]
         .find("\n}")
         .map(|i| coord_run_start + i)
         .unwrap_or(ir.len());
     let coord_run_body = &ir[coord_run_start..coord_run_end];
+    // Carve out the while.body block (per-iteration code).
+    let body_start = coord_run_body
+        .find("while.body:")
+        .expect("Coord.run has while.body");
+    let body_after = &coord_run_body[body_start..];
+    let body_end = body_after
+        .find("\nwhile.cond:")
+        .or_else(|| body_after.find("\nwhile.end:"))
+        .map(|i| body_start + i)
+        .unwrap_or(coord_run_body.len());
+    let while_body = &coord_run_body[body_start..body_end];
     assert!(
-        !coord_run_body.contains("@lotus_arena_create_subregion"),
-        "Coord.run must not call lotus_arena_create_subregion when child is arena_elidable:\n{}",
-        coord_run_body,
+        !while_body.contains("@lotus_arena_create_subregion"),
+        "per-iteration Worker instantiation must not call \
+         lotus_arena_create_subregion (child is arena_elidable); \
+         while.body:\n{}",
+        while_body,
     );
     assert!(
-        coord_run_body.contains("@lotus_arena_alloc"),
-        "Coord.run must still allocate the Worker struct via lotus_arena_alloc",
+        while_body.contains("@lotus_arena_alloc"),
+        "Coord.run while.body must still allocate the Worker struct via lotus_arena_alloc",
     );
 }
