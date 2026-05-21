@@ -2527,7 +2527,39 @@ int lotus_str_eq(const char *l, const char *r) {
  * subregion destroy. Same shape as concat with a NULL right side
  * — kept as a separate symbol so the call-site IR is one helper
  * call, not a concat-with-empty-literal dance. */
+/* 2026-05-21: static-literal skip. String literals (`"foo"`) lower
+ * to globals in the binary's .rodata segment — program-lifetime,
+ * safe to alias forever. Cloning them into an arena is pure
+ * waste; the cloned bytes have the same lifetime as the original
+ * pointer (which is already infinite). The hashmap.set / vec.push
+ * / locus-field-init deep-copy paths shipped this session clone
+ * every String field unconditionally, including statically-known
+ * metric names ("heartbeats_total") and other long-lived keys.
+ *
+ * Linker-provided symbols `__executable_start` and `_edata` bracket
+ * the binary's mapped image (text + rodata + initialized data).
+ * Any pointer inside that range came from a static-storage global,
+ * is program-lifetime, and pass-through is safe. glibc exports
+ * these symbols on every Linux build; the #ifdef gates them out
+ * on non-glibc platforms where the clone is just paid as it was
+ * before. */
+#if defined(__GLIBC__)
+extern char __executable_start[];
+extern char _edata[];
+static inline int lotus_str_is_static_literal(const char *s) {
+    return s >= __executable_start && s < _edata;
+}
+#else
+static inline int lotus_str_is_static_literal(const char *s) {
+    (void)s;
+    return 0;
+}
+#endif
+
 char *lotus_str_clone(lotus_arena_t *a, const char *s) {
+    if (lotus_str_is_static_literal(s)) {
+        return (char *)s;
+    }
     size_t n = strlen(s);
     char *out = (char *)lotus_arena_alloc(a, n + 1, 1);
     if (!out) return NULL;

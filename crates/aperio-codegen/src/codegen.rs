@@ -23366,6 +23366,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// &ts)` followed by `ts.tv_sec * 1_000_000_000 + ts.tv_nsec`.
     /// Result is a `Duration` (i64 nanoseconds since an
     /// unspecified reference).
+    /// `std::time::monotonic_ns() -> Int` (2026-05-21). Same
+    /// clock_gettime(CLOCK_MONOTONIC) shape as `monotonic()` but
+    /// types the result as `Int` (i64 ns) instead of `Duration`.
+    /// Kills the ASCII round-trip pattern downstream consumers
+    /// were doing (`to_string(monotonic())` → strip "ns" →
+    /// `parse_int`) at hot-path rates — three String ops per
+    /// reading dropped to one syscall. The Duration return shape
+    /// stays available for callers who actually want the
+    /// formatted-Duration ergonomics.
+    fn lower_time_monotonic_ns(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let (value, _ty) = self.lower_time_monotonic(args)?;
+        Ok((value, CodegenTy::Int))
+    }
+
     fn lower_time_monotonic(
         &mut self,
         args: &[Expr],
@@ -24185,6 +24202,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_time_monotonic(args)?;
                 Ok(())
             }
+            ["std", "time", "monotonic_ns"] => {
+                let _ = self.lower_time_monotonic_ns(args)?;
+                Ok(())
+            }
             // C7 (pond follow-up): wall-clock seconds-since-epoch.
             // Statement position discards the return; expression
             // sibling lives in lower_stdlib_path_call_expr.
@@ -24791,6 +24812,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // sleep is statement-only; trying to use it in an
             // expression falls through to the catch-all error.
             ["std", "time", "monotonic"] => self.lower_time_monotonic(args),
+            ["std", "time", "monotonic_ns"] => self.lower_time_monotonic_ns(args),
             // C7 (pond follow-up): wall-clock seconds-since-epoch
             // as Int. Statement-position sibling lives in
             // lower_stdlib_path_call.
