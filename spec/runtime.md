@@ -247,6 +247,61 @@ A future runtime change may fold cross-thread mailbox draining
 into the sleep yield point. Until then, the explicit `yield;`
 is the documented form.
 
+**Item B from the 2026-05-21 friction log** flagged a related
+shape: a cooperative publisher's `<-` cell never fires the
+pinned subscriber's handler mid-program; the cell drains only
+at dissolve. Same root cause — `yield;` doesn't drain the
+cross-thread mailbox even though the spec wording implies it
+should. The working pattern there is direct method invocation
+on the receiver (`self.on_subscribe(req)`) inside the publisher's
+loop, bypassing the bus for the in-binary case. Cross-binary
+flows (unix / shm_ring transport with their own reader threads)
+work fine because their dispatch path doesn't go through the
+cooperative-pinned mailbox at all. The runtime fix is the same
+as the sleep case: extend `yield;` to drain the cross-thread
+mailbox. Deferred until a workload demands the bus-shaped path
+specifically (today's workaround composes the same handler
+body from both bus and direct entry points).
+
+#### Long-running cooperative children block parent run() (D)
+
+When a locus declares another locus as a `params` field —
+`metrics_server: std::http::Server = ...` — the child's full
+lifecycle (`birth → run → drain → dissolve`) runs synchronously
+inside the parent's birth-time instantiation chain. Cooperative
+children block: a child Server with `max_accepts: -1` enters its
+accept loop and never returns, so the parent's run() never
+starts. Documented in fathom's friction log as item D ("`std::
+http::Server` as child of a parent with non-trivial `run()`
+blocks parent").
+
+This is a consequence of the cooperative scheduler's serialized
+model, not a bug: cooperative siblings can't run concurrently
+within one scheduler. The shipped resolutions:
+
+  1. **Sibling-in-main pattern** — declare long-running co-
+     resident loci as siblings in `main` rather than as one's
+     child. Cooperative + pinned siblings coexist there (the
+     pinned one runs on its own thread). To shut them down
+     gracefully when one finishes (fathom's mdgw exits its
+     duration_s), call `metrics_server.shutdown()` from the
+     finishing locus's thread — the C-iii interruptible-accept
+     work makes this the supported pattern.
+
+  2. **Pin the child** — declare the child as `: schedule
+     pinned` so its run() spawns its own thread and returns
+     immediately to the parent. Works when you own the child
+     locus's declaration; the std:: surface ships cooperative
+     by default and overriding requires a wrapper locus that
+     re-instantiates the cooperative child inside its own
+     pinned run() body. Practical for one-off cases; not
+     ergonomic enough to recommend broadly.
+
+A substrate change that dispatches cooperative children's run()
+asynchronously (parent's run() starts immediately after the
+child's birth() returns) would tighten this. Deferred — the
+sibling-with-shutdown pattern covers fathom's case after C-iii.
+
 (Compare: rich / chunked / recognition projection classes are
 genuinely three-way because N≈10, N≈30, and N≈300 are
 different cost regimes at scale — memory has more genuine
