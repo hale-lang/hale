@@ -442,7 +442,21 @@ pub fn build_executable_with_imports(
         // forcing the user to manually addr2line every frame.
         // Cost: ~50 KB of extra symbol-table bytes in the final
         // binary, no runtime overhead.
-        .arg("-rdynamic");
+        .arg("-rdynamic")
+        // 2026-05-21: linker --wrap intercepts for the libc
+        // allocator entry points. Routes every malloc / realloc
+        // / calloc / mmap through __wrap_<fn> in lotus_arena.c,
+        // which logs >threshold allocations when
+        // LOTUS_ARENA_LOG_BIG_CHUNKS is set (and is a no-op
+        // otherwise). Distinct labels per syscall so the report
+        // tells which path fired. Catches allocations that
+        // bypass the arena chunk path (BytesBuilder grow-by-
+        // doubling realloc, hashmap grow calloc, openssl /
+        // libc internals via mmap).
+        .arg("-Wl,--wrap=malloc")
+        .arg("-Wl,--wrap=realloc")
+        .arg("-Wl,--wrap=calloc")
+        .arg("-Wl,--wrap=mmap");
     if let Some(p) = ts_shim_path.as_ref() {
         clang.arg(p);
         // Rust staticlibs depend on libdl + libm via libstd.

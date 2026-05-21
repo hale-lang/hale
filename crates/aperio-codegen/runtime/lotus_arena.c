@@ -201,25 +201,89 @@ static size_t lotus_arena_big_chunk_threshold(void) {
  * small backtrace. Cap at the first ~200 events to keep stderr
  * from drowning in a tight loop — once a workload has logged 200
  * big allocs, the pattern is usually obvious. */
-static void lotus_arena_log_big_chunk(size_t cap) {
+static void lotus_log_big_alloc_event(const char *label, size_t cap) {
     static _Atomic int seq = 0;
     int n = atomic_fetch_add_explicit(&seq, 1, memory_order_relaxed);
     if (n >= 200) return;
     fprintf(stderr,
-            "[arena_big_chunk #%d] cap=%zu bytes (%.2f MiB)\n",
-            n, cap, (double)cap / (1024.0 * 1024.0));
+            "[%s #%d] cap=%zu bytes (%.2f MiB)\n",
+            label, n, cap, (double)cap / (1024.0 * 1024.0));
 #if defined(__GLIBC__)
     void *frames[12];
     int got = backtrace(frames, 12);
     /* backtrace_symbols_fd writes to a raw fd; bypasses libc
      * locks that might be held by the calling thread. Frame 0
-     * is this fn; frame 1 is lotus_arena_new_chunk; useful
-     * call stack starts at frame 2. */
+     * is this fn; frame 1 is the wrapper / chunk-emitter;
+     * useful call stack starts at frame 2. */
     if (got > 2) {
         backtrace_symbols_fd(frames + 2, got - 2, fileno(stderr));
     }
 #endif
     fflush(stderr);
+}
+
+static void lotus_arena_log_big_chunk(size_t cap) {
+    lotus_log_big_alloc_event("arena_big_chunk", cap);
+}
+
+/* LOTUS_ALLOC_LOG_BIG (2026-05-21 follow-up): linker --wrap
+ * intercept for the libc allocator entry points. When the env
+ * var threshold is set (shares the LOTUS_ARENA_LOG_BIG_CHUNKS
+ * setting), every malloc / realloc / calloc / mmap call larger
+ * than the threshold logs label + size + backtrace through the
+ * shared `lotus_log_big_alloc_event` helper above. Distinct
+ * labels per syscall so the report tells you which path fired
+ * (e.g. mmap_big vs realloc_big), and so existing arena_big_chunk
+ * entries stay easy to grep for.
+ *
+ * The wrapping is unconditional at link time — every binary
+ * goes through these wrappers. The cost when disabled (env var
+ * unset) is one int read + one branch per allocation, which is
+ * a rounding error compared to the syscall / heap-walk cost the
+ * allocator itself pays.
+ *
+ * Forward decls for the __real_* counterparts come from
+ * `-Wl,--wrap=<fn>`: ld renames every malloc reference in this
+ * TU to __wrap_malloc, and __real_malloc is the genuine libc
+ * malloc. */
+extern void *__real_malloc(size_t size);
+extern void *__real_realloc(void *ptr, size_t size);
+extern void *__real_calloc(size_t nmemb, size_t size);
+extern void *__real_mmap(void *addr, size_t length, int prot,
+                         int flags, int fd, off_t offset);
+
+void *__wrap_malloc(size_t size) {
+    size_t t = lotus_arena_big_chunk_threshold();
+    if (t > 0 && size >= t) {
+        lotus_log_big_alloc_event("malloc_big", size);
+    }
+    return __real_malloc(size);
+}
+
+void *__wrap_realloc(void *ptr, size_t size) {
+    size_t t = lotus_arena_big_chunk_threshold();
+    if (t > 0 && size >= t) {
+        lotus_log_big_alloc_event("realloc_big", size);
+    }
+    return __real_realloc(ptr, size);
+}
+
+void *__wrap_calloc(size_t nmemb, size_t size) {
+    size_t total = nmemb * size;
+    size_t t = lotus_arena_big_chunk_threshold();
+    if (t > 0 && total >= t) {
+        lotus_log_big_alloc_event("calloc_big", total);
+    }
+    return __real_calloc(nmemb, size);
+}
+
+void *__wrap_mmap(void *addr, size_t length, int prot,
+                  int flags, int fd, off_t offset) {
+    size_t t = lotus_arena_big_chunk_threshold();
+    if (t > 0 && length >= t) {
+        lotus_log_big_alloc_event("mmap_big", length);
+    }
+    return __real_mmap(addr, length, prot, flags, fd, offset);
 }
 
 static lotus_arena_chunk_t *lotus_arena_new_chunk(size_t cap) {
