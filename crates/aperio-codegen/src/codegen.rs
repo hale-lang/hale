@@ -18229,6 +18229,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     op, fname_ident.name
                                 )));
                             }
+                            // Bus-arena reclaim follow-up (2026-05-21):
+                            // `[T; N]` of a heap type stores POINTERS
+                            // (per `llvm_basic_type`: TypeRef / Tuple
+                            // / Array / etc. all lower to `ptr`). With
+                            // Phase-4 method scratch active, a literal
+                            // built by the rhs (e.g. `BookLevel { ... }`)
+                            // lives in the per-call scratch — storing
+                            // its pointer into self.X[i] would dangle
+                            // on method exit. Deep-copy into the
+                            // locus's __arena via the same helper that
+                            // single-segment self.X = expr uses.
+                            // fathom-reported (2026-05-21): SymbolBook
+                            // `[BookLevel; 10]` slot reads after method
+                            // exit returned crossed-book / factor-of-10
+                            // garbage from the freed scratch chunks.
+                            let rhs = self.maybe_self_field_heap_copy(
+                                rhs, &elem_ty,
+                            )?;
                             self.builder
                                 .build_store(slot_ptr, rhs)
                                 .map_err(|e| {

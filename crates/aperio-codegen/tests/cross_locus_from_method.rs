@@ -113,6 +113,100 @@ fn push_directly_from_method_body_survives_arena_clobber() {
 }
 
 #[test]
+fn indexed_self_field_struct_assign_anchors_in_self_arena() {
+    // fathom-reported (2026-05-21): SymbolBook's
+    // `self.bids[i] = BookLevel { price, qty }` shape stored a
+    // POINTER to a BookLevel literal in the array slot. With
+    // Phase-4 method scratch active, the literal lived in the
+    // per-call scratch and the pointer dangled on method exit.
+    // Reads from `self.bids[i].price` after returned crossed-
+    // book values + factor-of-10 buy-probe garbage because
+    // freed scratch chunks got reused as the locus's next
+    // allocation cursor.
+    //
+    // The indexed two-segment self-assignment path
+    // (`self.X[i] = v`) skipped the cross-arena deep-copy that
+    // single-segment `self.X = v` already had. This test pins
+    // the fix: literal struct values stored into array slots
+    // must be deep-copied into the locus's __arena before the
+    // store, same as direct field stores.
+    //
+    // Stress shape: birth() populates slots, run() calls
+    // several methods that allocate transient scratch (forcing
+    // chunk reuse), then reads back. Pre-fix the reads returned
+    // garbage from the freed scratch chunks.
+    let src = r#"
+        type Level { price: Decimal; qty: Decimal; }
+
+        locus Book {
+            params {
+                bids: [Level; 4] = [
+                    Level { price: 0.0d, qty: 0.0d },
+                    Level { price: 0.0d, qty: 0.0d },
+                    Level { price: 0.0d, qty: 0.0d },
+                    Level { price: 0.0d, qty: 0.0d },
+                ];
+            }
+            fn set_bid(i: Int, p: Decimal, q: Decimal) {
+                self.bids[i] = Level { price: p, qty: q };
+            }
+            fn touch_scratch() {
+                // Allocate transient stuff to force the chunk
+                // pool to recycle freed method-scratch chunks
+                // before the next read.
+                let mut i = 0;
+                while i < 64 {
+                    let _trash = "filler-" + to_string(i);
+                    i = i + 1;
+                }
+            }
+            fn get_price(i: Int) -> Decimal {
+                return self.bids[i].price;
+            }
+            fn get_qty(i: Int) -> Decimal {
+                return self.bids[i].qty;
+            }
+        }
+
+        fn main() {
+            let b = Book { };
+            b.set_bid(0, 77000.5d, 0.001d);
+            b.set_bid(1, 77000.4d, 0.002d);
+            b.set_bid(2, 77000.3d, 0.005d);
+            b.set_bid(3, 77000.2d, 0.010d);
+
+            // Force scratch reuse between writes and reads.
+            b.touch_scratch();
+            b.touch_scratch();
+
+            println("p0=", b.get_price(0), " q0=", b.get_qty(0));
+            println("p3=", b.get_price(3), " q3=", b.get_qty(3));
+        }
+    "#;
+    let (stdout, status) = build_and_run("indexed_struct_anchor", src);
+    assert!(
+        status.success(),
+        "indexed self.X[i] = StructLit SIGSEGV'd; status: {:?}, stdout: {:?}",
+        status,
+        stdout,
+    );
+    assert!(
+        stdout.contains("p0=77000.5"),
+        "indexed array slot pointer dangled — fathom Decimal-scale \
+         corruption regression. Got stdout: {:?}",
+        stdout,
+    );
+    assert!(
+        stdout.contains("q0=0.001"),
+        "stdout: {:?}", stdout
+    );
+    assert!(
+        stdout.contains("p3=77000.2") && stdout.contains("q3=0.01"),
+        "stdout: {:?}", stdout
+    );
+}
+
+#[test]
 fn hashmap_set_with_three_plus_decimal_fields_does_not_segfault() {
     // fathom-reported (2026-05-21): a `@form(hashmap)` Entry
     // type with 3+ Decimal fields SIGSEGV'd at insert. Root
