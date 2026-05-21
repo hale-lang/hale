@@ -63,7 +63,7 @@
 #include <poll.h>
 /* std::process::rss_bytes (2026-05-21): getrusage for the
  * process's resident-set high-water mark. Backs the
- * observability primitive that fathom's mdgw uses to verify
+ * observability primitive used to verify
  * the Phase-4 method-scratch reclaim actually bounds memory. */
 #include <sys/resource.h>
 
@@ -258,9 +258,9 @@ lotus_arena_t *lotus_arena_create_subregion(lotus_arena_t *parent) {
  * raw offset (lotus_align_up(used, align)) IS NOT enough — the
  * returned pointer is `base + off`, and `base` carries its own
  * misalignment that the bare offset-alignment ignores. Align the
- * actual pointer address instead. Bug 2026-05-20: fathom's
- * SymbolBook segfault root cause — Decimal (i128) stores in
- * struct fields used `movaps`, which traps on 8-byte-aligned
+ * actual pointer address instead. Bug 2026-05-20: original
+ * Decimal-in-struct segfault root cause — Decimal (i128) stores
+ * in struct fields used `movaps`, which traps on 8-byte-aligned
  * destinations. */
 static inline size_t lotus_arena_off_for(
     const lotus_arena_chunk_t *c, size_t align)
@@ -2154,7 +2154,7 @@ void lotus_bus_dispatch(lotus_bus_queue_t *queue,
      * for the intra-process path. Previously this enqueued the
      * publisher's struct bytes verbatim into each subscriber's
      * cell; String / Bytes pointers stayed aliased to the
-     * publisher's arena. For long-running publishers (mdgw
+     * publisher's arena. For long-running publishers (a high-rate
      * normalizer class) that's an unbounded leak — the
      * publisher's arena accumulates per-publish allocations
      * forever, with no cap (the global-arena cap doesn't apply
@@ -3113,7 +3113,7 @@ int lotus_tcp_listen_socket(const char *host, uint16_t port) {
      * SO_REUSEADDR. The pair covers more restart-within-TIME_WAIT
      * edge cases than SO_REUSEADDR alone — specifically when the
      * previous process exited via SIGKILL with TCP state still in
-     * the kernel's tear-down window. fathom hit this on /metrics
+     * the kernel's tear-down window. Surfaced by an HTTP /metrics
      * port 9100 restart-within-60s. SO_REUSEPORT is Linux 3.9+
      * and is best-effort: log + continue if the kernel rejects
      * the option, since SO_REUSEADDR already covers the common
@@ -3559,8 +3559,8 @@ const char *lotus_fs_mktemp(const char *prefix, const char *suffix);
  * entries, FIFO pipes, sockets) fstat returns `st_size = 0`
  * even though read(2) yields real content — the existing
  * read_file path pre-allocates a 0-byte buffer and reads
- * nothing, surfacing an empty String. fathom hit this trying
- * to expose `/proc/self/statm` as a Prometheus gauge.
+ * nothing, surfacing an empty String. Surfaced by an attempt
+ * to expose `/proc/self/statm` as a metrics gauge.
  *
  * This variant reads into a growing buffer (4 KiB initial,
  * doubling, capped at 64 MiB) and returns a NUL-terminated
@@ -7499,7 +7499,7 @@ void lotus_bytes_builder_free(void *handle) {
  * per call — the dominant residual in pond/websocket's unmask_into
  * fast path.
  *
- * Return contract (2026-05-20 — OOB split per fathom FRICTION #5b
+ * Return contract (2026-05-20 — OOB split, downstream FRICTION #5b
  * follow-up):
  *   1 ok
  *   0 alloc-fail (null handle OR realloc NULL)
@@ -7510,7 +7510,7 @@ void lotus_bytes_builder_free(void *handle) {
  * violates `alloc_failed` (with captures: initial_cap) or
  * `index_oob` (with captures: lo, hi) as appropriate. The earlier
  * shape collapsed both into 0 and routed everything through
- * `violate alloc_failed`, which misled fathom's production
+ * `violate alloc_failed`, which misled downstream production
  * on_failure handlers — they read `captures.initial_cap` and
  * concluded "memory exhausted" when the real cause was a caller-
  * supplied bad index. */
@@ -7557,7 +7557,7 @@ int64_t lotus_bytes_builder_append_slice(void *handle,
  * Phase 1: caller-provided destination at the syscall layer. The
  * `lotus_*_recv_bytes` shapes allocate a fresh `[i64 len][body]`
  * blob in g_bus_payload_arena per call — the leak source flagged
- * by pond/websocket's recv loop (~480 KB/s on a Kraken trade
+ * by pond/websocket's recv loop (~480 KB/s on a high-rate JSON
  * feed). recv_into reads directly into the caller's builder
  * buffer. Grows the builder if its remaining headroom (cap - len)
  * is smaller than max_bytes; the builder's len is bumped by the

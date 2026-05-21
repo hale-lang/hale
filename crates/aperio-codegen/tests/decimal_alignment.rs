@@ -1,5 +1,5 @@
 //! Regression test for the Decimal-field-in-struct segfault
-//! (fathom F7-segfault, 2026-05-20). Root cause:
+//! (i128 alignment segfault, 2026-05-20). Root cause:
 //! `lotus_arena_alloc` was aligning the offset within the chunk
 //! rather than the actual returned pointer address. The chunk's
 //! data region starts after a 24-byte header — 8-byte aligned
@@ -56,44 +56,44 @@ fn struct_with_decimal_default_does_not_segfault() {
 
 #[test]
 fn struct_with_many_decimal_fields_does_not_segfault() {
-    // fathom's actual shape — a struct with two Decimal fields,
-    // used as the default-init type on a high-field-count locus
-    // (SymbolBook with 20 BookLevel fields).
+    // The original repro shape — a flat record with two Decimal
+    // fields, used as the default-init type on a high-field-
+    // count locus (20 such records sitting side by side).
     let src = r#"
-        type BookLevel {
-            price: Decimal = 0.0d;
-            qty: Decimal = 0.0d;
+        type Cell {
+            a: Decimal = 0.0d;
+            b: Decimal = 0.0d;
         }
-        locus SymbolBook {
+        locus Grid {
             params {
-                b1:  BookLevel = BookLevel { };
-                b2:  BookLevel = BookLevel { };
-                b3:  BookLevel = BookLevel { };
-                b4:  BookLevel = BookLevel { };
-                b5:  BookLevel = BookLevel { };
-                b6:  BookLevel = BookLevel { };
-                b7:  BookLevel = BookLevel { };
-                b8:  BookLevel = BookLevel { };
-                b9:  BookLevel = BookLevel { };
-                b10: BookLevel = BookLevel { };
-                a1:  BookLevel = BookLevel { };
-                a2:  BookLevel = BookLevel { };
-                a3:  BookLevel = BookLevel { };
-                a4:  BookLevel = BookLevel { };
-                a5:  BookLevel = BookLevel { };
-                a6:  BookLevel = BookLevel { };
-                a7:  BookLevel = BookLevel { };
-                a8:  BookLevel = BookLevel { };
-                a9:  BookLevel = BookLevel { };
-                a10: BookLevel = BookLevel { };
+                c01: Cell = Cell { };
+                c02: Cell = Cell { };
+                c03: Cell = Cell { };
+                c04: Cell = Cell { };
+                c05: Cell = Cell { };
+                c06: Cell = Cell { };
+                c07: Cell = Cell { };
+                c08: Cell = Cell { };
+                c09: Cell = Cell { };
+                c10: Cell = Cell { };
+                c11: Cell = Cell { };
+                c12: Cell = Cell { };
+                c13: Cell = Cell { };
+                c14: Cell = Cell { };
+                c15: Cell = Cell { };
+                c16: Cell = Cell { };
+                c17: Cell = Cell { };
+                c18: Cell = Cell { };
+                c19: Cell = Cell { };
+                c20: Cell = Cell { };
             }
         }
         fn main() {
-            let sb = SymbolBook { };
+            let g = Grid { };
             println("ok");
         }
     "#;
-    let out = build_and_run("symbol_book_20", src);
+    let out = build_and_run("grid_20", src);
     assert!(
         out.status.success(),
         "expected clean exit; status={:?} stderr={:?}",
@@ -109,36 +109,37 @@ fn struct_with_many_decimal_fields_does_not_segfault() {
 
 #[test]
 fn multi_decimal_fallible_fn_returning_struct_does_not_segfault() {
-    // fathom F4: multi-Decimal flat-struct return from a fallible
-    // free-fn into a local binding. The friction noted F4
-    // didn't repro in a smoke test, only in mdgw's runtime path.
-    // After the alignment fix this shape works end-to-end —
-    // F7-segfault and F4 shared the same root cause.
+    // F4: multi-Decimal flat-struct return from a fallible free
+    // fn into a local binding. The friction noted F4 didn't
+    // repro in a smoke test, only in a real-workload runtime
+    // path. After the alignment fix this shape works end-to-end
+    // — F4 and the in-struct movdqa segfault shared the same
+    // root cause.
     let src = r#"
-        type L1Update {
-            symbol: String = "";
-            bid: Decimal = 0.0d;
-            bid_qty: Decimal = 0.0d;
-            ask: Decimal = 0.0d;
-            ask_qty: Decimal = 0.0d;
+        type Record {
+            label: String = "";
+            x1: Decimal = 0.0d;
+            x2: Decimal = 0.0d;
+            x3: Decimal = 0.0d;
+            x4: Decimal = 0.0d;
         }
-        fn parse_ticker(s: String) -> L1Update fallible(ParseError) {
-            return L1Update {
-                symbol: s,
-                bid: 100.5d,
-                bid_qty: 1.0d,
-                ask: 101.5d,
-                ask_qty: 2.0d,
+        fn parse(s: String) -> Record fallible(ParseError) {
+            return Record {
+                label: s,
+                x1: 100.5d,
+                x2: 1.0d,
+                x3: 101.5d,
+                x4: 2.0d,
             };
         }
         fn main() {
-            let l1 = parse_ticker("XBT/USD") or L1Update { };
-            println("symbol=", l1.symbol);
-            println("bid=", l1.bid);
-            println("ask=", l1.ask);
+            let r = parse("abc") or Record { };
+            println("label=", r.label);
+            println("x1=", r.x1);
+            println("x3=", r.x3);
         }
     "#;
-    let out = build_and_run("parse_ticker", src);
+    let out = build_and_run("parse_record", src);
     assert!(
         out.status.success(),
         "expected clean exit; status={:?} stderr={:?}",
@@ -146,9 +147,9 @@ fn multi_decimal_fallible_fn_returning_struct_does_not_segfault() {
         String::from_utf8_lossy(&out.stderr),
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("symbol=XBT/USD"), "got: {:?}", stdout);
-    assert!(stdout.contains("bid=100.5"), "got: {:?}", stdout);
-    assert!(stdout.contains("ask=101.5"), "got: {:?}", stdout);
+    assert!(stdout.contains("label=abc"), "got: {:?}", stdout);
+    assert!(stdout.contains("x1=100.5"), "got: {:?}", stdout);
+    assert!(stdout.contains("x3=101.5"), "got: {:?}", stdout);
 }
 
 #[test]

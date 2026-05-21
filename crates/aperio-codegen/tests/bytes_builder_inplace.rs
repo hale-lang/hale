@@ -151,7 +151,7 @@ fn builder_append_slice_out_of_range_violates() {
     // (post 2026-05-20 OOB split) and the locus method routes
     // through `violate index_oob`. Pre-split the OOB and alloc-
     // fail paths both routed through `alloc_failed`, which
-    // misled fathom's production on_failure handlers — they
+    // misled downstream production on_failure handlers — they
     // read `captures.initial_cap` and concluded "memory
     // exhausted" when the real cause was a bad index. No parent
     // on_failure → process exits non-zero.

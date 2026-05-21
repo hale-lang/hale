@@ -32,7 +32,7 @@ fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus)
 
 #[test]
 fn struct_field_string_view_default_empty_literal_works() {
-    // The fathom WsMessage pattern: a struct field declared
+    // The captured-message pattern: a struct field declared
     // `text: StringView = ""`. Pre-E2 this rejected at codegen.
     let src = r#"
         type Msg {
@@ -120,7 +120,7 @@ fn locus_field_string_view_default_empty_literal_works() {
 fn struct_field_view_default_then_overridden_with_view_works() {
     // The full pipeline: a struct declares `text: StringView = ""`
     // for the construction-site default, but the actual fill is
-    // a real view from a BytesBuilder. Mirrors fathom's
+    // a real view from a BytesBuilder. Mirrors the
     // pond/websocket `text: frag_buf.text_view()` shape — the
     // default is a placeholder; the real value is a builder view.
     let src = r#"

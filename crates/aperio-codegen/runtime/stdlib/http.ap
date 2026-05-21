@@ -372,7 +372,7 @@ locus __StdHttpServer {
     // listen socket can't bind. Previously birth() proceeded
     // with listen_fd = -1, ready_signal still printed, run()
     // then spammed `accept: Bad file descriptor` at full speed
-    // (fathom hit this in a restart-within-60s scenario where
+    // (surfaced by a restart-within-60s scenario where
     // the previous Server's port was in TIME_WAIT). The
     // violation surfaces the bind failure immediately so a
     // supervising parent's on_failure can address it (e.g.
@@ -399,7 +399,7 @@ locus __StdHttpServer {
             // Before, a -1 return (fd closed cross-thread, listen
             // socket shut down by `shutdown()`, kernel error) was
             // ignored — the loop spun on EBADF passing -1 down
-            // into __http_handle_one_conn at line rate (fathom
+            // into __http_handle_one_conn at line rate (real workload
             // hit this: 1.6M log lines in seconds when bind
             // failed in birth() and run() proceeded anyway, a
             // bug closed in `199f861`). The right behavior is to
@@ -422,7 +422,7 @@ locus __StdHttpServer {
     // scheduler running the Server's run() can't pump other
     // work while accept blocks, so the wake has to come from
     // outside the scheduler. Typical pattern: a pinned sibling
-    // locus (e.g. fathom's KrakenMdgw) finishes its duration_s
+    // locus (e.g. a pinned gateway) finishes its duration_s
     // and calls `metrics_server.shutdown()` from its own
     // thread before main() returns; run() unblocks, exits the
     // loop, and dissolve() does the actual close. fd stays

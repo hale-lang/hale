@@ -490,7 +490,7 @@ const RUNTIME_SHM_RING_C_SOURCE: &str =
 ///      (`$(dirname current_exe)/libaperio_ts_shim.a`) — the
 ///      `bin/aperio` publish ships the staticlib alongside the
 ///      binary so app teams pinned to `bin/aperio` link cleanly
-///      (fathom FRICTION #6, fixed 2026-05-20). `scripts/publish-
+///      (downstream link-step issue, fixed 2026-05-20). `scripts/publish-
 ///      stable.sh` is what places it here.
 ///   3. Workspace `target/release/`
 ///   4. Workspace `target/debug/`
@@ -4737,7 +4737,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// TypeRefs (loop N times, load each pointer slot, recurse
     /// on emit_per_field_serialize). The loop is unrolled at
     /// codegen-time — N is statically known and typically small
-    /// (≤ 20 for fathom's SymbolBook).
+    /// (~10–20 for the canonical fixed-cap-array use case).
     fn emit_array_field_serialize(
         &mut self,
         src_field_ptr: PointerValue<'ctx>,
@@ -5306,9 +5306,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // arrays of TypeRef (N iterations of nested
                     // struct serialize). Other elem shapes (Array,
                     // String, Bytes) stay deferred — the dominant
-                    // fathom case is array-of-flat-struct
-                    // (SymbolBook holds [BookLevel; 10] where
-                    // BookLevel is {Decimal, Decimal}).
+                    // use case is array-of-flat-struct (e.g. a
+                    // fixed-cap `[Cell; 10]` where Cell is a flat
+                    // record of scalars).
                     self.emit_array_field_serialize(
                         src_field_ptr,
                         dst,
@@ -12288,9 +12288,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // 16-byte align matches the rest of the
                             // codebase's struct-alloc default — i128
                             // fields nested in a tuple element need
-                            // movdqa-compatible alignment. fathom
-                            // segfault repro: 3+ Decimal fields in
-                            // a @form(hashmap) Entry, post-Phase-4
+                            // movdqa-compatible alignment. Segfault
+                            // repro: 3+ Decimal fields in a
+                            // @form(hashmap) Cell, post-Phase-4
                             // scratch where the deep-copy went via
                             // this arm.
                             i64_t.const_int(16, false).into(),
@@ -12378,8 +12378,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             dest_arena.into(),
                             bytes.into(),
                             // 16-byte align for i128 elements / i128
-                            // nested in element structs. Same fathom
-                            // segfault root as the tuple/struct arms.
+                            // nested in element structs. Same root
+                            // cause as the tuple/struct arms.
                             i64_t.const_int(16, false).into(),
                         ],
                         "fn.ret.arr.alloc",
@@ -12475,12 +12475,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             bytes.into(),
                             // 16-byte align — matches the standard
                             // user-struct alloc path (arena_alloc's
-                            // default after the 2026-05-20 F7-segv
-                            // fix). i128 (Decimal) fields generate
-                            // movdqa on x86_64 which traps on 8-byte
-                            // alignment. fathom segfault repro: 3+
-                            // Decimal fields in a @form(hashmap)
-                            // Entry, triggered by the Phase-4
+                            // default after the 2026-05-20 i128
+                            // alignment fix). i128 (Decimal) fields
+                            // generate movdqa on x86_64 which traps
+                            // on 8-byte alignment. Segfault repro:
+                            // 3+ Decimal fields in a @form(hashmap)
+                            // Cell, triggered by the Phase-4
                             // method-scratch deep-copy going through
                             // this arm.
                             i64_t.const_int(16, false).into(),
@@ -14346,12 +14346,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// which doesn't trust fstat for sizing. For synthesized
     /// files (`/proc/*`, `/sys/*`, FIFO pipes) the previous
     /// fstat-then-read pattern returned an empty String because
-    /// `st_size = 0` — fathom hit this trying to read
-    /// `/proc/self/statm`. The growing-buffer variant reads into
-    /// a doubling buffer (4 KiB → 64 MiB cap) and returns a
-    /// NUL-terminated String anchored in the caller's arena.
-    /// NULL return → IoError via the standard
-    /// `complete_io_fallible_call` shape.
+    /// `st_size = 0` — surfaced by an attempt to read
+    /// `/proc/self/statm` for process introspection. The
+    /// growing-buffer variant reads into a doubling buffer
+    /// (4 KiB → 64 MiB cap) and returns a NUL-terminated String
+    /// anchored in the caller's arena. NULL return → IoError
+    /// via the standard `complete_io_fallible_call` shape.
     fn lower_std_io_fs_read_file_fallible(
         &mut self,
         args: &[Expr],
@@ -18234,16 +18234,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // (per `llvm_basic_type`: TypeRef / Tuple
                             // / Array / etc. all lower to `ptr`). With
                             // Phase-4 method scratch active, a literal
-                            // built by the rhs (e.g. `BookLevel { ... }`)
+                            // built by the rhs (e.g. `Cell { ... }`)
                             // lives in the per-call scratch — storing
                             // its pointer into self.X[i] would dangle
                             // on method exit. Deep-copy into the
                             // locus's __arena via the same helper that
                             // single-segment self.X = expr uses.
-                            // fathom-reported (2026-05-21): SymbolBook
-                            // `[BookLevel; 10]` slot reads after method
-                            // exit returned crossed-book / factor-of-10
-                            // garbage from the freed scratch chunks.
+                            // Surfaced 2026-05-21: fixed-cap arrays of
+                            // Decimal-bearing structs (`[Cell; 10]`
+                            // where Cell is `{Decimal, Decimal}`)
+                            // returned corrupted values from freed
+                            // scratch chunks after method exit.
                             let rhs = self.maybe_self_field_heap_copy(
                                 rhs, &elem_ty,
                             )?;
@@ -25317,14 +25318,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// `std::process::rss_bytes() -> Int` (2026-05-21). Returns
     /// the calling process's peak resident-set size in bytes via
-    /// `getrusage(RUSAGE_SELF)`. Observability primitive —
-    /// fathom's mdgw uses this to verify the Phase-4 method-
-    /// scratch reclaim actually bounds memory in a long-running
-    /// daemon (the previous attempt to read /proc/self/statm via
-    /// `std::io::fs::read_file` hit the synthesized-file
-    /// fstat-returns-0 bug). Peak (not current) RSS is what
-    /// getrusage exposes; alarm thresholds typically want the
-    /// worst-case anyway.
+    /// `getrusage(RUSAGE_SELF)`. Observability primitive — lets
+    /// a long-running daemon verify the Phase-4 method-scratch
+    /// reclaim actually bounds memory (the previous attempt to
+    /// read /proc/self/statm via `std::io::fs::read_file` hit
+    /// the synthesized-file fstat-returns-0 bug). Peak (not
+    /// current) RSS is what getrusage exposes; alarm thresholds
+    /// typically want the worst-case anyway.
     fn lower_std_process_rss_bytes(
         &mut self,
         args: &[Expr],
@@ -30368,6 +30368,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     locus_name, fname, declared_ty, val_ty
                 )));
             }
+            // Bus-arena reclaim follow-up (2026-05-21): when this
+            // instantiation runs inside a method body, the
+            // field-init expression's value may live in the
+            // caller's per-method scratch. Storing the pointer
+            // verbatim into the new locus's struct works at the
+            // moment, but the method scratch destroys at method
+            // exit and any later read of the field dereferences
+            // freed memory. Surfaced by a factory-method pattern:
+            // `Handle { store: self.store, key: k }` returned
+            // from inside `Registry.handle_for()` — `k` was a
+            // String concat in `handle_for()`'s scratch; the
+            // Handle in lazy-global later read garbage for its
+            // key when the chained `.touch()` call dereferenced
+            // it.
+            //
+            // Anchor heap-typed values in the new locus's arena
+            // before the store. `current_arena_override` was set
+            // above to the new locus's __arena, so reusing the
+            // same destination keeps the layout consistent with
+            // the existing locus instantiation routing.
+            let val = if let Some(dest_arena) = self.current_arena_override {
+                if Self::ty_needs_self_field_deep_copy(&declared_ty) {
+                    self.emit_return_value_deep_copy(
+                        val, &declared_ty, dest_arena,
+                    )?
+                } else {
+                    val
+                }
+            } else {
+                val
+            };
             let field_ptr = self
                 .builder
                 .build_struct_gep(
@@ -36778,7 +36809,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // per arena allocation on average (most allocs are 8-byte-
         // aligned naturally, so they pay nothing extra; only an
         // arena head landing at an 8-but-not-16 offset bumps).
-        // Fixed 2026-05-20 after fathom F7-segfault repro.
+        // Fixed 2026-05-20 after the i128 alignment segfault repro.
         self.arena_alloc_aligned(size, 16, name)
     }
 
@@ -37087,9 +37118,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // outlive the subregion. Without scratch routing, a
         // long-running `run()` loop accumulates every JSON-parse /
         // metric-label / String-concat allocation into
-        // `self.__arena` for the locus's whole lifetime — the
-        // 2.4 MB/sec leak fathom measured on the market-data
-        // gateway. The scratch slot is set by
+        // `self.__arena` for the locus's whole lifetime — a
+        // multi-MB/sec leak rate measured on a long-running
+        // daemon workload. The scratch slot is set by
         // `lower_locus_method_bodies` for every method flavor
         // (lifecycle / user-fn / mode); when None we fall through
         // to the lifetime arena, preserving the behavior of paths

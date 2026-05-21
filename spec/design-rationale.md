@@ -1524,7 +1524,7 @@ translation impls) once a workload forces the design.
 
 **v0 status:** sketched only; not implemented. F.20 ships first
 because it solves the immediate friction (Sink). F.21 ships
-when the n-dim growth arc has its first concrete demo (mdgw or
+when the n-dim growth arc has its first concrete demo (a high-rate ingest or
 triangulator).
 
 ### F.19 Per-directory seed model
@@ -2439,7 +2439,7 @@ story.
 **Discarded alternatives.**
 
 - *Field annotation `@inplace` on Bytes/String fields.*
-  Considered (one of three options in fathom's handoff). Rejected
+  Considered (one of three options in a downstream handoff). Rejected
   because the underlying need is "a locus owns growing buffer
   storage with its own lifecycle" — that's a locus, not an
   annotation on a primitive. Plus annotations don't compose with

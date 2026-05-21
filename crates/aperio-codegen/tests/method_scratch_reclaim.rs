@@ -6,12 +6,11 @@
 //! values land in a per-method caller-arena snapshot taken at the
 //! body's entry block.
 //!
-//! Closes the substrate side of fathom's measured 2.4 MB/sec mdgw
-//! leak (every L2 frame's JSON-parse / String-concat / metric-
-//! label allocations used to pile into the locus's lifetime arena
-//! for the whole process). See
-//! `/home/riley/code/fathom/lib/venues/kraken/FRICTION.md`
-//! "mdgw RSS grows monotonically".
+//! Closes the substrate side of a measured multi-MB/sec leak
+//! in a long-running daemon workload — every recv-loop frame's
+//! transient allocations (JSON parse, String concat, metric
+//! labels) used to pile into the locus's lifetime arena for
+//! the whole process.
 //!
 //! This file pins three claims:
 //!   1. The IR for a locus lifecycle method body contains the
@@ -93,7 +92,7 @@ fn carve_fn_body<'a>(ir: &'a str, name: &str) -> &'a str {
 
 #[test]
 fn run_body_opens_and_destroys_scratch_subregion() {
-    // The hot-loop shape from fathom's mdgw: run() loops, body
+    // The hot-loop shape from a long-running pinned daemon: run() loops, body
     // allocates Strings via to_string and `+`, doesn't store
     // anywhere. Without the per-method scratch every iteration's
     // transients pile into the locus's lifetime arena.

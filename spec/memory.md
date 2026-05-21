@@ -438,8 +438,8 @@ correct shape: align the cursor address `(c+1) + c->used` to
 side passes `align = 16` from `arena_alloc` to cover the widest
 scalar type (i128 / Decimal) — earlier the codegen passed 8 and
 the C side only aligned the offset, leading to `movaps` segfaults
-on Decimal stores into struct fields (fathom F7-segfault / F4
-root cause, 2026-05-20). Both layers are necessary: the codegen
+on Decimal stores into struct fields (i128-alignment segfault,
+root cause for two downstream repros, 2026-05-20). Both layers are necessary: the codegen
 must ask for the natural alignment of the widest scalar it can
 emit, and the C arena must honor that alignment at the pointer
 level, not the offset level.
@@ -702,7 +702,7 @@ for the stdlib primitives that land here.
 intra-process `<-` path. Previously `lotus_bus_dispatch` enqueued
 the publisher's struct bytes verbatim into each subscriber's
 queue cell — payload String / Bytes pointers stayed aliased to
-the publisher's locus arena. For long-running publishers (mdgw
+the publisher's locus arena. For long-running publishers (a high-rate
 normalizer class) that meant an unbounded leak in the publisher's
 locus arena (the per-arena cap from Task 10 doesn't apply to
 locus-owned arenas), bounded only by the publisher's eventual
@@ -799,13 +799,12 @@ strings, format-string concats, metric-label entries, every
 stdlib primitive that lands on `lotus_caller_arena_or_global`)
 landed in `self.__arena` directly — bounded only by the
 locus's lifetime, which for a daemon's root locus or any
-event-loop service is the entire process. fathom's kraken
-mdgw measured 2.4 MB/sec growth on the L2 hot path before the
-fix, OOM-killed at the 2 GB container cap every ~13 minutes
-(see fathom's `lib/venues/kraken/FRICTION.md` "mdgw RSS
-grows monotonically"). Post-fix the scratch resets each method
-call so transient allocations have a bounded lifetime
-matching the call's frame.
+event-loop service is the entire process. A real workload
+measured multi-MB/sec growth on a hot message-dispatch path
+before the fix, OOM-killed at a typical container cap within
+minutes. Post-fix the scratch resets each method call so
+transient allocations have a bounded lifetime matching the
+call's frame.
 
 Two correctness invariants make this safe:
 
@@ -835,10 +834,11 @@ Two correctness invariants make this safe:
 
 Cost: two mallocs (subregion arena struct + initial 64 KiB
 chunk) and two frees per method call. For typical short
-methods this is roughly 100–400 ns of overhead per call; on
-fathom's 70 L2/sec hot path with dozens of methods per frame
-that's ~7 µs per second of aggregate overhead — invisible
-next to the JSON parse / decimal arithmetic the methods do.
+methods this is roughly 100–400 ns of overhead per call; at a
+typical hot-path rate of dozens of methods per dispatched
+frame at ~70 frames/sec, that's ~7 µs per second of aggregate
+overhead — invisible next to the JSON parse / decimal
+arithmetic the methods do.
 An `lotus_arena_reset` primitive (subregion reuse: keep
 chunks, set `used=0`) could amortize this to ~5–10 ns per
 call but is deferred — the leak's the load-bearing bug; the

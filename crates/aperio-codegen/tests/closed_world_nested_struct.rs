@@ -57,7 +57,7 @@ fn closed_world_canonical_nested_struct_string_field() {
             bus { publish TickT; }
             run() {
                 TickT <- Tick {
-                    symbol:   "BTC-USD",
+                    symbol:   "ABC-123",
                     side:     Side { kind: "bid" },
                     venue_ts: `2026-01-01T12:00:00Z`,
                     recv_ts:  `2026-01-01T13:00:00Z`,

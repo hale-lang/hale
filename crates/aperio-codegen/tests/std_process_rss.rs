@@ -1,6 +1,6 @@
 //! `std::process::rss_bytes() -> Int` — observability primitive
 //! backed by `getrusage(RUSAGE_SELF)`. Returns the peak resident
-//! set size in bytes. Useful for fathom-style daemons that want
+//! set size in bytes. Useful for long-running daemons that want
 //! to assert their memory pressure stays bounded (and is the
 //! workaround for read_file-of-/proc/self/statm returning empty
 //! because synthesized files report st_size=0).

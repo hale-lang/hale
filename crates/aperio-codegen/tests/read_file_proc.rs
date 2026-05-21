@@ -4,7 +4,7 @@
 //! Pre-fix, the codegen path pre-sized the buffer to `fstat`'s
 //! reading and read into it — for synthesized files the buffer
 //! was 1 byte (just the NUL terminator) and the read produced
-//! nothing. Closing fathom's friction-log item: `read_file
+//! nothing. Closing a downstream friction-log item: `read_file
 //! can't read /proc/self/statm`.
 //!
 //! Post-fix, the codegen routes through

@@ -1,10 +1,9 @@
 //! Form H (2026-05-20): fixed-size arrays as bus payload fields.
 //! Pre-fix, m70's wire codec rejected any array-typed payload
 //! field with "arrays / tuples / enums cross-process are post-v1
-//! polish". Fathom's SymbolBook (the canonical fixed-N-levels
-//! order-book shape) needed this — workaround was hand-spelling
-//! 20 numbered fields + N-way dispatch ladders in setter/getter
-//! methods.
+//! polish". The canonical fixed-N-cells record shape needed
+//! this — the workaround was hand-spelling N numbered fields
+//! plus N-way dispatch ladders in setter/getter methods.
 //!
 //! Form H carves out the fixed-size case: `[T; N]` where T is a
 //! primitive (Int / Float / Decimal / Bool / Duration / Time)
@@ -31,35 +30,35 @@ fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus)
 
 #[test]
 fn array_of_typeref_payload_roundtrips() {
-    // fathom's SymbolBook-shape: [BookLevel; N] where BookLevel
+    // the fixed-cap array-of-struct shape: [Cell; N] where Cell
     // has Decimal fields. The pre-Form-H rejection was at the
     // m70 wire-format walker on the publisher's serialize.
     let src = r#"
-        type BookLevel {
-            price: Decimal = 0.0d;
-            qty: Decimal = 0.0d;
+        type Cell {
+            x: Decimal = 0.0d;
+            y: Decimal = 0.0d;
         }
         type SnapshotMsg {
-            symbol: String = "";
-            bids: [BookLevel; 5] = [BookLevel { }; 5];
+            label: String = "";
+            cells: [Cell; 5] = [Cell { }; 5];
         }
         topic Snapshots { payload: SnapshotMsg; }
 
         locus Subscriber {
             bus { subscribe Snapshots as h; }
             fn h(m: SnapshotMsg) {
-                println("symbol=", m.symbol);
-                println("bid0.price=", m.bids[0].price);
-                println("bid0.qty=", m.bids[0].qty);
-                println("bid1.price=", m.bids[1].price);
+                println("label=", m.label);
+                println("c0.x=", m.cells[0].x);
+                println("c0.y=", m.cells[0].y);
+                println("c1.x=", m.cells[1].x);
             }
         }
         locus Publisher {
             bus { publish Snapshots; }
             birth() {
                 let m = SnapshotMsg {
-                    symbol: "XBT/USD",
-                    bids: [BookLevel { price: 100.5d, qty: 1.0d }; 5],
+                    label: "ABC-123",
+                    cells: [Cell { x: 100.5d, y: 1.0d }; 5],
                 };
                 Snapshots <- m;
             }
@@ -68,10 +67,10 @@ fn array_of_typeref_payload_roundtrips() {
     "#;
     let (stdout, status) = build_and_run("typeref_array", src);
     assert!(status.success(), "non-zero: {:?}", status);
-    assert!(stdout.contains("symbol=XBT/USD"), "got: {:?}", stdout);
-    assert!(stdout.contains("bid0.price=100.5"), "got: {:?}", stdout);
-    assert!(stdout.contains("bid0.qty=1"), "got: {:?}", stdout);
-    assert!(stdout.contains("bid1.price=100.5"), "got: {:?}", stdout);
+    assert!(stdout.contains("label=ABC-123"), "got: {:?}", stdout);
+    assert!(stdout.contains("c0.x=100.5"), "got: {:?}", stdout);
+    assert!(stdout.contains("c0.y=1"), "got: {:?}", stdout);
+    assert!(stdout.contains("c1.x=100.5"), "got: {:?}", stdout);
 }
 
 #[test]

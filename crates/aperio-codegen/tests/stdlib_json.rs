@@ -127,14 +127,14 @@ fn find_field_raw_returns_value_token_verbatim() {
 
 #[test]
 fn find_field_raw_enables_nested_object_descent() {
-    // The point of exposing find_field_raw — Kraken-style
+    // The point of exposing find_field_raw — wrapped-JSON
     // wrapped payloads where the real fields live inside a
     // nested object. Two-step extract: find_field_raw to get
     // the inner object's substring, then find_string_field for
     // the leaf scalars.
     let src = r#"
         fn main() {
-            let s = "{\"result\":{\"channel\":\"book\",\"symbol\":\"XBT/USD\"}}";
+            let s = "{\"result\":{\"channel\":\"data\",\"symbol\":\"ABC-123\"}}";
             let inner = std::json::find_field_raw(s, "result");
             let ch = std::json::find_string_field(inner, "channel");
             let sy = std::json::find_string_field(inner, "symbol");
@@ -144,6 +144,6 @@ fn find_field_raw_enables_nested_object_descent() {
     "#;
     let (stdout, status) = build_and_run("find_field_raw_nested", src);
     assert!(status.success());
-    assert!(stdout.contains("ch=book"), "got: {:?}", stdout);
-    assert!(stdout.contains("sy=XBT/USD"), "got: {:?}", stdout);
+    assert!(stdout.contains("ch=data"), "got: {:?}", stdout);
+    assert!(stdout.contains("sy=ABC-123"), "got: {:?}", stdout);
 }

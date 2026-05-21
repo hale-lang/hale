@@ -4716,9 +4716,10 @@ main locus App {
     fn parse_array_literal_with_trailing_comma() {
         // v1.x polish (2026-05-20): multi-line array literals
         // with trailing commas now parse. Single-line form
-        // works too — same code path. Reported by fathom as a
-        // cosmetic friction; idiomatic Aperio mirrors Rust's
-        // trailing-comma allowance on collection literals.
+        // works too — same code path. Reported as a cosmetic
+        // friction by a downstream consumer; idiomatic Aperio
+        // mirrors Rust's trailing-comma allowance on collection
+        // literals.
         let multi_line = r#"
             type B { v: Int; }
             fn main() {

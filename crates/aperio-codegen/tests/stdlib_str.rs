@@ -136,7 +136,7 @@ fn parse_decimal_handles_basic_inputs() {
     // 2026-05-20 — parse_decimal returns `Decimal fallible(ParseError)`.
     // Mantissa is i128 with implicit scale 9 (matches Decimal literal
     // codegen). Trailing-zero precision survives — the IEEE 754
-    // rounding that bit parse_float on Kraken book qtys doesn't apply.
+    // rounding that bit parse_float on high-precision decimals doesn't apply.
     let src = r#"
         fn main() {
             let a = std::str::parse_decimal("100.5") or raise;
@@ -157,7 +157,7 @@ fn parse_decimal_handles_basic_inputs() {
     assert!(stdout.contains("b=0"), "got: {:?}", stdout);
     assert!(stdout.contains("c=-7.25"), "got: {:?}", stdout);
     // Trailing zeros past 9 fractional digits get truncated, but
-    // 8 digits round-trip — Kraken book-qty precision.
+    // 8 digits round-trip — high-precision decimal use case.
     assert!(stdout.contains("d=0.000051"), "got: {:?}", stdout);
     assert!(stdout.contains("e=12345.678901234"), "got: {:?}", stdout);
 }

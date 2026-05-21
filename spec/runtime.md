@@ -39,9 +39,10 @@ the model: runtime is automatic; stdlib is explicit.
   `lotus_set_caller_arena` immediately before each method call
   (same TLS contract as stdlib primitives). Without this,
   long-running `run()` loops accumulated every transient
-  allocation into the locus's lifetime arena — fathom's
-  kraken mdgw measured 2.4 MB/sec growth on the L2 hot path,
-  OOM at ~13 min under a 2 GB container cap. See
+  allocation into the locus's lifetime arena — a real
+  workload measured multiple MB/sec of growth on a hot
+  message-dispatch path, OOM within minutes under a typical
+  container cap. See
   `spec/memory.md` "Phase-4 per-method scratch reclaim" for
   the full design (invariants, cost model, interaction with
   the cross-seed-segv routing).
@@ -271,7 +272,7 @@ lifecycle (`birth → run → drain → dissolve`) runs synchronously
 inside the parent's birth-time instantiation chain. Cooperative
 children block: a child Server with `max_accepts: -1` enters its
 accept loop and never returns, so the parent's run() never
-starts. Documented in fathom's friction log as item D ("`std::
+starts. Documented as item D ("`std::
 http::Server` as child of a parent with non-trivial `run()`
 blocks parent").
 
@@ -283,7 +284,7 @@ within one scheduler. The shipped resolutions:
      resident loci as siblings in `main` rather than as one's
      child. Cooperative + pinned siblings coexist there (the
      pinned one runs on its own thread). To shut them down
-     gracefully when one finishes (fathom's mdgw exits its
+     gracefully when one finishes (e.g. a pinned gateway exits its
      duration_s), call `metrics_server.shutdown()` from the
      finishing locus's thread — the C-iii interruptible-accept
      work makes this the supported pattern.
@@ -300,7 +301,7 @@ within one scheduler. The shipped resolutions:
 A substrate change that dispatches cooperative children's run()
 asynchronously (parent's run() starts immediately after the
 child's birth() returns) would tighten this. Deferred — the
-sibling-with-shutdown pattern covers fathom's case after C-iii.
+sibling-with-shutdown pattern covers the production case after C-iii.
 
 (Compare: rich / chunked / recognition projection classes are
 genuinely three-way because N≈10, N≈30, and N≈300 are
@@ -466,7 +467,7 @@ and modes; specific transports come from stdlib (`std::bus::*`).
   emit from any handler return; the runtime routes to the
   configured transport.
 - **Multi-transport dispatch.** A single binary may bind
-  different channels to different transports (a market-data
+  different channels to different transports (a real-time event
   channel to UDP multicast; a control channel to NATS; a
   test channel to in-memory). The router maintains per-channel
   transport bindings established at deployment time from
@@ -693,7 +694,7 @@ zero_copy binding produces.
   retry. The same primitive on both paths means observable
   scheduling behavior is identical regardless of the
   compilation route — important for a system targeting
-  trading-grade clock semantics where the substrate cannot
+  high-precision clock semantics where the substrate cannot
   drift between development and production.
 
 ### I/O — minimal

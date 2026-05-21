@@ -120,8 +120,8 @@ fn main() {
 fn time_from_unix_round_trips_through_now() {
     // now() returns Int (epoch seconds); time_from_unix turns
     // that Int back into a Time. The composition stamps "right
-    // now" as a Time value at runtime — the recv_ts shape mdgw
-    // gateways need.
+    // now" as a Time value at runtime — the timestamp shape data
+    // ingest services need.
     let src = r#"
 fn main() {
     let n = std::time::now();

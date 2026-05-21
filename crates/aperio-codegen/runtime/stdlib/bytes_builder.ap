@@ -111,7 +111,7 @@ locus __StdBytesBytesBuilder {
     closure alloc_failed { captures: initial_cap; epoch inline; }
     // F.30b OOB split (2026-05-20): out-of-range indices on
     // `append_slice` route here instead of through
-    // `alloc_failed` — fathom's production on_failure handlers
+    // `alloc_failed` — downstream production on_failure handlers
     // misread `initial_cap` as evidence of memory exhaustion
     // when the real cause was a caller-supplied bad index.
     // captures snapshots the offending `lo` and `hi` so the
@@ -150,7 +150,7 @@ locus __StdBytesBytesBuilder {
     // path. The C primitive returns 1=ok / 0=alloc-fail / -1=OOB;
     // this method branches to the appropriate closure (2026-05-20
     // — pre-split both routed through alloc_failed, which misled
-    // fathom's production on_failure handlers into reporting
+    // downstream production on_failure handlers into reporting
     // memory exhaustion when the real cause was a bad index).
     fn append_slice(src: Bytes, lo: Int, hi: Int) {
         let r = std::bytes::builder::__append_slice(

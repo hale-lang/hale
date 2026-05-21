@@ -113,16 +113,89 @@ fn push_directly_from_method_body_survives_arena_clobber() {
 }
 
 #[test]
+fn locus_field_init_anchors_heap_values_in_new_arena() {
+    // Pattern: a locus method returns a freshly-constructed
+    // child locus whose param field carries a String built
+    // from inside the method's scratch. Pre-fix the field
+    // store kept the scratch pointer; after the method exited
+    // and freed its scratch, a subsequent method call on the
+    // returned child read garbage where the String used to be.
+    //
+    // Surfaced by a factory shape: `Registry.handle_for(name) ->
+    // Handle` where the Handle's `key: String` was a concat of
+    // method args. The Handle was allocated in lazy-global
+    // (returns_this_locus routing), but its `key` field still
+    // aimed at the per-method scratch. Chunk-pool recycling
+    // overwrote the freed scratch by the time the chained
+    // `.touch()` call dereferenced `self.key`.
+    //
+    // Fix: at locus-instantiation field-init, deep-copy heap-
+    // typed values into the new locus's __arena before storing.
+    // current_arena_override is set to the new locus's arena
+    // during this loop, so the deep-copy destination is right
+    // there.
+    let src = r#"
+        locus Handle {
+            params { key: String = ""; }
+            fn touch() {
+                // Force chunk-pool reuse before reading self.key.
+                let mut i = 0;
+                while i < 64 {
+                    let _trash = "filler-" + to_string(i);
+                    i = i + 1;
+                }
+                println("touched key=", self.key);
+            }
+        }
+
+        locus Factory {
+            fn handle_for(prefix: String, n: Int) -> Handle {
+                let k = prefix + "-" + to_string(n);
+                return Handle { key: k };
+            }
+        }
+
+        locus Driver {
+            params { fac: Factory = Factory { }; }
+            fn drive() {
+                self.fac.handle_for("alpha", 42).touch();
+                self.fac.handle_for("beta", 43).touch();
+            }
+            run() {
+                let mut i = 0;
+                while i < 3 {
+                    self.drive();
+                    i = i + 1;
+                }
+            }
+        }
+
+        fn main() { Driver { }; }
+    "#;
+    let (stdout, status) = build_and_run("factory_string_field", src);
+    assert!(
+        status.success(),
+        "factory-pattern returned locus's String field clobbered \
+         by scratch recycle; status: {:?}, stdout: {:?}",
+        status, stdout,
+    );
+    assert!(
+        stdout.contains("touched key=alpha-42"),
+        "locus field-init deep-copy regressed (got: {:?})",
+        stdout,
+    );
+    assert!(stdout.contains("touched key=beta-43"), "stdout: {:?}", stdout);
+}
+
+#[test]
 fn indexed_self_field_struct_assign_anchors_in_self_arena() {
-    // fathom-reported (2026-05-21): SymbolBook's
-    // `self.bids[i] = BookLevel { price, qty }` shape stored a
-    // POINTER to a BookLevel literal in the array slot. With
-    // Phase-4 method scratch active, the literal lived in the
-    // per-call scratch and the pointer dangled on method exit.
-    // Reads from `self.bids[i].price` after returned crossed-
-    // book values + factor-of-10 buy-probe garbage because
-    // freed scratch chunks got reused as the locus's next
-    // allocation cursor.
+    // `self.cells[i] = Cell { a, b }` from inside a method
+    // body stored a POINTER to a Cell literal in the array
+    // slot. With Phase-4 method scratch active, the literal
+    // lived in the per-call scratch and the pointer dangled
+    // on method exit. Later reads of `self.cells[i].a` returned
+    // garbage because the per-thread chunk pool recycled the
+    // freed scratch chunks for subsequent method calls.
     //
     // The indexed two-segment self-assignment path
     // (`self.X[i] = v`) skipped the cross-arena deep-copy that
@@ -132,55 +205,53 @@ fn indexed_self_field_struct_assign_anchors_in_self_arena() {
     // store, same as direct field stores.
     //
     // Stress shape: birth() populates slots, run() calls
-    // several methods that allocate transient scratch (forcing
-    // chunk reuse), then reads back. Pre-fix the reads returned
+    // methods that allocate transient scratch (forcing chunk
+    // reuse), then reads back. Pre-fix the reads returned
     // garbage from the freed scratch chunks.
+    //
+    // Decimal-typed payload fields are the stressed case here
+    // because i128 needs 16-byte-aligned loads (movdqa on
+    // x86_64), and the original bug surfaced first as wrong
+    // scale rather than a crash — a value-level corruption
+    // rather than an alignment fault.
     let src = r#"
-        type Level { price: Decimal; qty: Decimal; }
+        type Cell { a: Decimal; b: Decimal; }
 
-        locus Book {
+        locus Grid {
             params {
-                bids: [Level; 4] = [
-                    Level { price: 0.0d, qty: 0.0d },
-                    Level { price: 0.0d, qty: 0.0d },
-                    Level { price: 0.0d, qty: 0.0d },
-                    Level { price: 0.0d, qty: 0.0d },
+                cells: [Cell; 4] = [
+                    Cell { a: 0.0d, b: 0.0d },
+                    Cell { a: 0.0d, b: 0.0d },
+                    Cell { a: 0.0d, b: 0.0d },
+                    Cell { a: 0.0d, b: 0.0d },
                 ];
             }
-            fn set_bid(i: Int, p: Decimal, q: Decimal) {
-                self.bids[i] = Level { price: p, qty: q };
+            fn put(i: Int, x: Decimal, y: Decimal) {
+                self.cells[i] = Cell { a: x, b: y };
             }
             fn touch_scratch() {
-                // Allocate transient stuff to force the chunk
-                // pool to recycle freed method-scratch chunks
-                // before the next read.
                 let mut i = 0;
                 while i < 64 {
                     let _trash = "filler-" + to_string(i);
                     i = i + 1;
                 }
             }
-            fn get_price(i: Int) -> Decimal {
-                return self.bids[i].price;
-            }
-            fn get_qty(i: Int) -> Decimal {
-                return self.bids[i].qty;
-            }
+            fn get_a(i: Int) -> Decimal { return self.cells[i].a; }
+            fn get_b(i: Int) -> Decimal { return self.cells[i].b; }
         }
 
         fn main() {
-            let b = Book { };
-            b.set_bid(0, 77000.5d, 0.001d);
-            b.set_bid(1, 77000.4d, 0.002d);
-            b.set_bid(2, 77000.3d, 0.005d);
-            b.set_bid(3, 77000.2d, 0.010d);
+            let g = Grid { };
+            g.put(0, 11.5d, 0.001d);
+            g.put(1, 22.4d, 0.002d);
+            g.put(2, 33.3d, 0.005d);
+            g.put(3, 44.2d, 0.010d);
 
-            // Force scratch reuse between writes and reads.
-            b.touch_scratch();
-            b.touch_scratch();
+            g.touch_scratch();
+            g.touch_scratch();
 
-            println("p0=", b.get_price(0), " q0=", b.get_qty(0));
-            println("p3=", b.get_price(3), " q3=", b.get_qty(3));
+            println("a0=", g.get_a(0), " b0=", g.get_b(0));
+            println("a3=", g.get_a(3), " b3=", g.get_b(3));
         }
     "#;
     let (stdout, status) = build_and_run("indexed_struct_anchor", src);
@@ -191,72 +262,72 @@ fn indexed_self_field_struct_assign_anchors_in_self_arena() {
         stdout,
     );
     assert!(
-        stdout.contains("p0=77000.5"),
-        "indexed array slot pointer dangled — fathom Decimal-scale \
+        stdout.contains("a0=11.5"),
+        "indexed array slot pointer dangled — Decimal-scale \
          corruption regression. Got stdout: {:?}",
         stdout,
     );
     assert!(
-        stdout.contains("q0=0.001"),
+        stdout.contains("b0=0.001"),
         "stdout: {:?}", stdout
     );
     assert!(
-        stdout.contains("p3=77000.2") && stdout.contains("q3=0.01"),
+        stdout.contains("a3=44.2") && stdout.contains("b3=0.01"),
         "stdout: {:?}", stdout
     );
 }
 
 #[test]
 fn hashmap_set_with_three_plus_decimal_fields_does_not_segfault() {
-    // fathom-reported (2026-05-21): a `@form(hashmap)` Entry
-    // type with 3+ Decimal fields SIGSEGV'd at insert. Root
-    // cause: emit_return_value_deep_copy's TypeRef-struct arm
-    // alloc'd the destination struct with align=8, but i128
-    // (Decimal) fields generate movdqa on x86_64 which traps
-    // on 8-byte alignment. The Phase-4 method-scratch reclaim
-    // routes hashmap.set through this arm because the value
-    // struct needs to anchor in the receiver's __arena instead
-    // of the caller's scratch — making the alignment bug
-    // suddenly load-bearing.
+    // A `@form(hashmap)` cell type with 3+ Decimal fields
+    // SIGSEGV'd at insert. Root cause:
+    // emit_return_value_deep_copy's TypeRef-struct arm alloc'd
+    // the destination struct with align=8, but i128 (Decimal)
+    // fields generate movdqa on x86_64 which traps on 8-byte
+    // alignment. The Phase-4 method-scratch reclaim routes
+    // hashmap.set through this arm because the value struct
+    // needs to anchor in the receiver's __arena instead of the
+    // caller's scratch — making the alignment bug suddenly
+    // load-bearing.
     //
     // The fix bumps every emit_return_value_deep_copy alloc
     // site (Tuple / Array / TypeRef / Interface) to align=16,
     // matching the standard arena_alloc default applied to
-    // user-struct allocs after the 2026-05-20 F7-segv fix.
+    // user-struct allocs after the earlier i128 alignment fix.
     let src = r#"
-        type Quote {
+        type Cell {
             id: Int;
-            bid: Decimal;
-            ask: Decimal;
-            mid: Decimal;
+            x: Decimal;
+            y: Decimal;
+            z: Decimal;
         }
 
         @form(hashmap)
-        locus QuoteMap {
-            capacity { pool quotes of Quote indexed_by id; }
+        locus CellMap {
+            capacity { pool cells of Cell indexed_by id; }
         }
 
         fn main() {
-            let m = QuoteMap { };
-            m.set(Quote { id: 1, bid: 1.5d, ask: 2.5d, mid: 2.0d });
-            m.set(Quote { id: 2, bid: 3.5d, ask: 4.5d, mid: 4.0d });
-            let q1 = m.get(1) or raise;
-            let q2 = m.get(2) or raise;
-            println("q1 bid=", q1.bid, " ask=", q1.ask, " mid=", q1.mid);
-            println("q2 bid=", q2.bid, " ask=", q2.ask, " mid=", q2.mid);
+            let m = CellMap { };
+            m.set(Cell { id: 1, x: 1.5d, y: 2.5d, z: 2.0d });
+            m.set(Cell { id: 2, x: 3.5d, y: 4.5d, z: 4.0d });
+            let c1 = m.get(1) or raise;
+            let c2 = m.get(2) or raise;
+            println("c1 x=", c1.x, " y=", c1.y, " z=", c1.z);
+            println("c2 x=", c2.x, " y=", c2.y, " z=", c2.z);
         }
     "#;
     let (stdout, status) = build_and_run("three_dec_hashmap", src);
     assert!(
         status.success(),
-        "3-decimal hashmap Entry SIGSEGV'd — i128 alignment in \
+        "3-decimal hashmap Cell SIGSEGV'd — i128 alignment in \
          emit_return_value_deep_copy regressed; status: {:?}, \
          stdout: {:?}",
         status,
         stdout,
     );
-    assert!(stdout.contains("q1 bid=1.5 ask=2.5 mid=2"), "stdout: {:?}", stdout);
-    assert!(stdout.contains("q2 bid=3.5 ask=4.5 mid=4"), "stdout: {:?}", stdout);
+    assert!(stdout.contains("c1 x=1.5 y=2.5 z=2"), "stdout: {:?}", stdout);
+    assert!(stdout.contains("c2 x=3.5 y=4.5 z=4"), "stdout: {:?}", stdout);
 }
 
 #[test]
@@ -342,9 +413,9 @@ fn ring_buffer_push_with_dynamic_string_from_method_survives() {
     // a get() per the synth surface listed in
     // try_lower_form_ring_buffer_method), but the survival of
     // the buffer itself across the clobber + the absence of a
-    // crash on read of len() is the proof. A real consumer (e.g.
-    // fathom's per-symbol last-N-corrupt-timestamps ring) would
-    // hit the dangling read on its own consume path.
+    // crash on read of len() is the proof. A real consumer
+    // (e.g. a windowed ring of recent events) would hit the
+    // dangling read on its own consume path.
     assert!(stdout.contains("len=1"), "stdout: {:?}", stdout);
 }
 
