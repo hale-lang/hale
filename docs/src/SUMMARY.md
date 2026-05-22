@@ -31,6 +31,7 @@
 - [Run a topic across binaries](./how-tos/multi-binary-bus.md)
 - [Mix pinned + cooperative threads](./how-tos/threading.md)
 - [Keep memory bounded](./how-tos/keeping-memory-bounded.md)
+- [Bind a C library](./how-tos/ffi-bindings.md)
 
 # Reference
 

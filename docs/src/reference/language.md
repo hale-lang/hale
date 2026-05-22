@@ -103,3 +103,18 @@ once you've internalized Concepts.
 - [`spec/stdlib.md`](https://github.com/aperio-lang/aperio/blob/main/spec/stdlib.md) —
   full surface, phase by phase. Authoritative list of what
   ships in the bundled stdlib.
+
+## Foreign-function interface
+
+For binding to C-ABI libraries outside stdlib's curated set,
+Aperio exposes user-extensible `@ffi("c")` declarations. Library
+authors ship bindings (`pond/raylib`, `pond/sqlite`, ...)
+without compiler changes.
+
+- [Bind a C library](../how-tos/ffi-bindings.md) — minimum
+  end-to-end how-to.
+- [`spec/ffi.md`](https://github.com/aperio-lang/aperio/blob/main/spec/ffi.md) —
+  authoritative contract: syntax, ABI, lifetime rules,
+  diagnostic surface.
+- [`agents/binding-packages.md`](https://github.com/aperio-lang/aperio/blob/main/agents/binding-packages.md) —
+  authoring brief for binding-library packages.

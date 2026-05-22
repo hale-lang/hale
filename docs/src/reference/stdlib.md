@@ -6,6 +6,15 @@ install, no manual import for stdlib namespaces (just inline
 surface. The authoritative phase-by-phase history lives at
 [`spec/stdlib.md`](https://github.com/aperio-lang/aperio/blob/main/spec/stdlib.md).
 
+`std::*` is the curated bundled-with-the-compiler surface; the
+link floor is libc + OpenSSL only. For C-ABI bindings to other
+libraries (raylib, sqlite, curl, SDL, ...), Aperio exposes a
+user-extensible FFI mechanism — library authors land bindings
+in pond / vendored libs without compiler changes. See
+[Bind a C library](../how-tos/ffi-bindings.md) for the how-to
+and [`spec/ffi.md`](https://github.com/aperio-lang/aperio/blob/main/spec/ffi.md)
+for the substrate contract.
+
 ## Two shapes
 
 The stdlib comes in two structurally distinct shapes, with a

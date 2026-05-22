@@ -177,10 +177,25 @@ clone lands at `vendor/<name>/`, which becomes one Aperio seed
 - **Source goes at the repo root**, not under `src/`. Nested
   directories are NOT crawled — they exist for the author's
   organization only.
-- **Don't include `aperio.toml` in a library.** Aperio v1 has
-  no transitive resolution; the consumer is responsible for
-  vendoring any libraries your library depends on. Document
-  those requirements in your README.
+- **Include `aperio.toml` in a library only if it has FFI
+  bindings.** As of 2026-05-22, a library that declares
+  `@ffi("c")` functions ships an `aperio.toml` with an `[ffi]`
+  section listing `link = [...]` (C libraries the consumer's
+  link line should pull in) and `csrc = [...]` (C glue files
+  compiled alongside the runtime). The consumer's build reads
+  the section automatically at import time — no manual
+  `--link` / `--csrc` flags needed. See [`spec/ffi.md`](./ffi.md)
+  for the FFI contract and
+  [`agents/binding-packages.md`](../agents/binding-packages.md)
+  for the authoring brief. Pure-Aperio libraries (no `@ffi`)
+  have no reason to ship `aperio.toml`; their consumers
+  resolve them through the standard import lookup.
+
+  v1 still has no transitive `[deps]` resolution: a library
+  declaring its own `[deps]` won't have those auto-fetched by
+  the consumer's `aperio fetch`. The consumer vendors every
+  dependency themselves. Document any indirect requirements in
+  your README.
 - **Tag releases** if you want consumers to pin via
   `tag = "vX.Y.Z"`. The toolchain doesn't enforce semver — the
   tag is just a git ref — but consumers will read your tag

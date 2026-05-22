@@ -55,6 +55,15 @@ topic Tick { payload: TickPayload; }
 That's it. The topic decl is one place; both binaries see the
 same wire shape because they compile from the same source.
 
+**Type identity is path-based, not alias-based.** Either binary
+could `import "shared" as s;` or `import "shared" as topics;` —
+the mangler keys off the lib's canonical path (workspace-root-
+relative), not the importer's alias. Both binaries see the same
+internal symbol for `TickPayload` regardless of how each
+imports it. That's what makes the shared-DTO pattern work
+naturally — wire bytes match because layouts match, AND the
+in-language type identity matches across consumers.
+
 ## The publisher
 
 ```aperio
