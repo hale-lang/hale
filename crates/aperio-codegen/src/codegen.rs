@@ -12274,36 +12274,56 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// TypeRef, has-payload-Enum) reject for v0.1 — none currently
     /// appear as free-fn returns; ship as a follow-up when a
     /// workload demands.
-    /// Cross-arena store deep-copy with a runtime same-arena skip.
-    /// Used at @form(hashmap).set / @form(vec).set / .push /
-    /// @form(ring_buffer).push — sites where the value being
-    /// stored crosses from the caller's method scratch into a
-    /// long-lived locus arena, so heap-pointer fields need to
-    /// re-anchor (the deep-copy invariant from `5300071` /
-    /// `d435e9b` / `ea0a609`).
+    /// Cross-arena store anchor-in-place for **inline-storage**
+    /// containers — specifically @form(hashmap).set, where the
+    /// runtime memcpys the value's bytes directly into the slot
+    /// (`value_size = sizeof(Cell)`). The deep-copy invariant from
+    /// `d435e9b` only requires that the value's heap-pointer
+    /// fields be anchored in `dest_arena` so the slot's bytes hold
+    /// valid pointers after the caller's method scratch destroys.
     ///
-    /// The runtime check (`lotus_arena_contains_ptr`) catches the
-    /// read-modify-write pattern where the value already lives in
-    /// the destination arena — e.g. the metrics shape:
+    /// **Not** used for @form(vec).push/.set/@form(ring_buffer).push
+    /// — those store pointers to structs (`elem_size = sizeof(ptr)
+    /// = 8`), so the source struct itself must outlive caller
+    /// scratch. They route through `emit_cross_arena_store_deep_copy_ptr`
+    /// instead, which preserves the legacy fresh-outer-alloc path
+    /// plus d9335bf's same-arena outer-pointer skip.
     ///
-    /// ```ignore
-    /// let e = self.store.get(self.key) or MetricEntry { };
-    /// self.store.set(MetricEntry { key: e.key, ... });
-    /// ```
+    /// Pre-rework (d9335bf) this allocated a fresh outer struct in
+    /// dest_arena, walked fields into it, and returned the new
+    /// pointer — the runtime then memcpy'd those bytes into the
+    /// slot and the fresh allocation became immediately garbage.
+    /// Downstream fathom MetricMap residency dump pinned this:
+    /// ~50 bytes wasted per `Counter.inc()` × ~128 calls/sec =
+    /// 0.38 MiB/min permanent growth in the hashmap's arena, even
+    /// though all 11 metric cells are registered at boot and the
+    /// .set pattern carries through same-pointer String fields
+    /// from `e = store.get(key)`.
     ///
-    /// `e` is in `self.store.__arena`; the freshly-built outer
-    /// struct literal is in method scratch but its fields point
-    /// back into the store. `lotus_str_clone` already handles the
-    /// String/Bytes fields via 2026-05-21's same-arena skip; this
-    /// adds the equivalent for the outer struct when the entire
-    /// value is already in dest. For new entries built from
-    /// external data (the dominant BookApplier upsert shape) the
-    /// check misses and we fall through to the existing deep-copy
-    /// — one extra arena walk per store, but the walk is O(chunks)
-    /// and the trade-off mirrors `6a56d7c`'s.
+    /// Anchor-in-place: walk the source struct's fields, rewrite
+    /// each heap-typed field to a `dest_arena`-anchored version
+    /// (via `emit_return_value_deep_copy` which routes through
+    /// `lotus_str_clone` / `lotus_bytes_clone` with their existing
+    /// same-arena and static-literal skips from `6a56d7c`). Leave
+    /// scalar fields alone (already in the source's bytes). Return
+    /// the source pointer — the runtime memcpys from there.
     ///
-    /// Pass-through for non-pointer-shaped types (scalars, FnPtr,
-    /// views) — no allocation to skip.
+    /// For Counter.inc's same-arena RMW pattern, every heap field
+    /// is a pointer into dest_arena already, so the per-field
+    /// clones short-circuit to identity stores. Net: zero new
+    /// allocations per call. For SymbolBook's pure-scalar Cell,
+    /// no heap fields exist; we just return the source pointer.
+    /// For genuinely new heap content (fresh String name on first
+    /// metric registration), the per-field clone allocates as
+    /// before — the structural cost matches what the slot will
+    /// actually hold.
+    ///
+    /// Nested compound fields (TypeRef-in-TypeRef, Array of
+    /// structs, etc.) still go through `emit_return_value_deep_copy`
+    /// per field — that's necessary because the FIELD stores a
+    /// pointer that must outlive caller scratch, so a fresh nested
+    /// allocation in dest_arena is unavoidable. Outer-skip alone
+    /// is the dominant win.
     fn emit_cross_arena_store_deep_copy(
         &mut self,
         value: BasicValueEnum<'ctx>,
@@ -12311,10 +12331,173 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         dest_arena: PointerValue<'ctx>,
         site_name: &str,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
-        // Types that emit_return_value_deep_copy already handles
-        // cheaply (pure SSA identity, or already-skipped clones)
-        // — branch insertion would just be noise. Forward
-        // directly.
+        match ty {
+            // Scalars + views + LocusRefs + Cells: bytes/handle
+            // live in the source's storage directly; no separate
+            // heap-pointer to anchor.
+            CodegenTy::Int
+            | CodegenTy::Float
+            | CodegenTy::Bool
+            | CodegenTy::Decimal
+            | CodegenTy::Time
+            | CodegenTy::Duration
+            | CodegenTy::FnPtr { .. }
+            | CodegenTy::BytesView
+            | CodegenTy::StringView
+            | CodegenTy::LocusRef(_)
+            | CodegenTy::Cell(_, _) => Ok(value),
+
+            // String/Bytes: themselves pointers. Slot holds the
+            // pointer, which must be in dest_arena (or static).
+            // The clone helpers already same-arena-skip per
+            // 6a56d7c — identity if already there.
+            CodegenTy::String | CodegenTy::Bytes => {
+                self.emit_return_value_deep_copy(value, ty, dest_arena)
+            }
+
+            // TypeRef: the dominant cell shape (user-declared
+            // structs). Anchor heap-typed fields in place; leave
+            // scalars untouched. Return the source pointer so the
+            // runtime memcpy reads from the now-anchored bytes.
+            CodegenTy::TypeRef(name) => {
+                let name = name.clone();
+                self.anchor_struct_fields_in_place(
+                    value, &name, dest_arena, site_name,
+                )
+            }
+
+            // Tuple/Array/Interface/Enum at the top level: less
+            // common as cell types. Fall through to the legacy
+            // outer-alloc + field-copy path. If a workload
+            // surfaces these as a leak, extend the anchor-in-place
+            // approach to them.
+            _ => self.emit_return_value_deep_copy(value, ty, dest_arena),
+        }
+    }
+
+    /// Walk a struct value's fields in-place, replacing each
+    /// heap-typed field with its `dest_arena`-anchored version.
+    /// Scalar and view fields are left as-is (they live in the
+    /// source's storage directly). Returns the source pointer —
+    /// the bytes at that pointer now hold anchored pointers
+    /// suitable for memcpy into long-lived inline storage (a
+    /// hashmap slot, vec buffer cell, etc.).
+    ///
+    /// Idempotent: a second call on the same struct sees every
+    /// heap field already in dest_arena (or pointing to a static
+    /// literal), so every clone short-circuits to identity.
+    fn anchor_struct_fields_in_place(
+        &mut self,
+        value: BasicValueEnum<'ctx>,
+        type_name: &str,
+        dest_arena: PointerValue<'ctx>,
+        site_name: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let info = self
+            .user_types
+            .get(type_name)
+            .cloned()
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "anchor_struct_fields_in_place: unknown type `{}`",
+                    type_name
+                ))
+            })?;
+        let src_ptr = value.into_pointer_value();
+        for fname in &info.field_order {
+            let (idx, fty) = info
+                .fields
+                .get(fname)
+                .cloned()
+                .expect("field_order lists declared fields");
+            if !Self::field_needs_anchor(&fty) {
+                continue;
+            }
+            let field_slot = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    src_ptr,
+                    idx,
+                    &format!(
+                        "{}.anchor.{}.{}.ptr",
+                        site_name, type_name, fname
+                    ),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let llvm_field_ty = self.llvm_basic_type(&fty);
+            let field_val = self
+                .builder
+                .build_load(
+                    llvm_field_ty,
+                    field_slot,
+                    &format!(
+                        "{}.anchor.{}.{}.load",
+                        site_name, type_name, fname
+                    ),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // String/Bytes: clone with same-arena skip (6a56d7c).
+            // Nested compound: emit_return_value_deep_copy
+            // allocates fresh nested storage in dest_arena (the
+            // field stores a pointer that must outlive scratch).
+            let anchored = self.emit_return_value_deep_copy(
+                field_val, &fty, dest_arena,
+            )?;
+            self.builder
+                .build_store(field_slot, anchored)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        Ok(value)
+    }
+
+    /// Predicate: does this field type carry a heap pointer that
+    /// needs to be anchored in the destination arena? Scalars +
+    /// views + locus-refs + cells don't (their bytes/handle live
+    /// in the parent struct's storage). String/Bytes/TypeRef/
+    /// Tuple/Array/Interface/Enum do.
+    fn field_needs_anchor(ty: &CodegenTy) -> bool {
+        !matches!(
+            ty,
+            CodegenTy::Int
+                | CodegenTy::Float
+                | CodegenTy::Bool
+                | CodegenTy::Decimal
+                | CodegenTy::Time
+                | CodegenTy::Duration
+                | CodegenTy::FnPtr { .. }
+                | CodegenTy::BytesView
+                | CodegenTy::StringView
+                | CodegenTy::LocusRef(_)
+                | CodegenTy::Cell(_, _)
+        )
+    }
+
+    /// Cross-arena store deep-copy for **pointer-storage**
+    /// containers — @form(vec).push, @form(vec).set,
+    /// @form(ring_buffer).push. Those slots hold an 8-byte
+    /// pointer (`elem_size = sizeof(ptr)`); the source struct
+    /// itself must outlive the caller's method scratch, so a
+    /// fresh allocation in `dest_arena` is mandatory.
+    ///
+    /// Same shape as d9335bf: emit a runtime
+    /// `lotus_arena_contains_ptr(dest_arena, src)` check; on hit,
+    /// pass src through (the slot will store the existing
+    /// pointer, which is already long-lived). On miss, allocate
+    /// a fresh outer struct in dest_arena, walk + deep-copy
+    /// fields recursively, return the new pointer.
+    fn emit_cross_arena_store_deep_copy_ptr(
+        &mut self,
+        value: BasicValueEnum<'ctx>,
+        ty: &CodegenTy,
+        dest_arena: PointerValue<'ctx>,
+        site_name: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        // Pass-through arms (scalars / views / locus refs / leaf
+        // heap types) match the existing emit_return_value_deep_copy
+        // contract — no value to skip-check, and the helper does
+        // the right thing (identity for scalars, same-arena clone
+        // for String/Bytes).
         match ty {
             CodegenTy::Int
             | CodegenTy::Float
@@ -12328,16 +12511,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::LocusRef(_)
             | CodegenTy::String
             | CodegenTy::Bytes => {
-                return self.emit_return_value_deep_copy(
-                    value,
-                    ty,
-                    dest_arena,
-                );
+                return self.emit_return_value_deep_copy(value, ty, dest_arena);
             }
             _ => {}
         }
-        // Pointer-shaped compound (TypeRef, Tuple, Array,
-        // Interface, has-payload Enum). Emit the runtime check.
         let src_ptr = value.into_pointer_value();
         let contains_fn = self
             .module
@@ -12386,24 +12563,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_conditional_branch(cond, skip_bb, copy_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // skip arm: pass src through.
         self.builder.position_at_end(skip_bb);
         self.builder
             .build_unconditional_branch(join_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // copy arm: existing deep-copy.
         self.builder.position_at_end(copy_bb);
-        let copied = self.emit_return_value_deep_copy(
-            value,
-            ty,
-            dest_arena,
-        )?;
-        // The deep-copy is straight-line for the compound arms
-        // (no internal branching), so the builder is still
-        // positioned in copy_bb. Grab the actual incoming block
-        // for the phi in case future deep-copy logic grows
-        // branches.
+        let copied = self.emit_return_value_deep_copy(value, ty, dest_arena)?;
         let copy_end = self
             .builder
             .get_insert_block()
@@ -12412,7 +12578,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_unconditional_branch(join_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // join: phi src / copied.
         self.builder.position_at_end(join_bb);
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let phi = self
@@ -17034,7 +17199,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         CodegenError::LlvmEmit(e.to_string())
                     })?
                     .into_pointer_value();
-                let val = self.emit_cross_arena_store_deep_copy(
+                let val = self.emit_cross_arena_store_deep_copy_ptr(
                     val,
                     &elem_ty,
                     dest_arena,
@@ -33187,7 +33352,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         CodegenError::LlvmEmit(e.to_string())
                     })?
                     .into_pointer_value();
-                let arg_val = self.emit_cross_arena_store_deep_copy(
+                let arg_val = self.emit_cross_arena_store_deep_copy_ptr(
                     arg_val,
                     &slot.elem_ty,
                     dest_arena,
@@ -34339,7 +34504,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         CodegenError::LlvmEmit(e.to_string())
                     })?
                     .into_pointer_value();
-                let arg_val = self.emit_cross_arena_store_deep_copy(
+                let arg_val = self.emit_cross_arena_store_deep_copy_ptr(
                     arg_val,
                     &slot.elem_ty,
                     dest_arena,
