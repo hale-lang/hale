@@ -221,6 +221,36 @@ narrow down a leak.
    loops (`out = out + ...`) and chains of `String + String + ...`.
    Replace with `BytesBuilder` or `json::Builder` accumulators.
 
+## Validated: Aperio holds the language-layer line
+
+A May 2026 long-running production service (fathom mdgw against
+the Kraken WS feed, 10 symbols, ~250 frames/sec, hot recv +
+dispatch + bus-publish loop) was instrumented with
+`LOTUS_ARENA_RESIDENCY=1` +
+`LOTUS_ARENA_LOG_CHUNK_ATTACH=4096`. Over a 12-minute burn:
+
+- Every named arena was flat at boot residency (no growth).
+- Every `kind=root` chunk attach occurred at boot — handle
+  pre-registration, subscribe encoding. **Zero per-frame
+  attaches to long-lived arenas.**
+- `g_bus_payload_arena` stayed at 0 chunks across the entire
+  burn — confirming bus publishes do not accumulate.
+
+The same workload's VmRSS grew at ~0.12 MB/min. That growth was
+in `[heap]` but did NOT correspond to any Aperio arena event.
+`MALLOC_TRIM_THRESHOLD_` + `MALLOC_ARENA_MAX` tuning had no
+measurable effect, ruling out glibc internal fragmentation.
+The conclusion: the residual is in upstream C-library code
+(OpenSSL `SSL_read` record-reassembly buffers being the prime
+suspect, with glibc stdio buffers for `/proc` reads as a
+secondary), not anything Aperio is responsible for.
+
+**Takeaway: the patterns above are sufficient. If your code
+follows them and you still see RSS creep, you've found a
+glibc/OpenSSL/kernel-buffer issue, not an Aperio one.** The
+diagnostic workflow below tells you definitively which side
+of that line you're on.
+
 ## Known issues + future work
 
 - **`LOTUS_CHUNK_POOL_CAP` is compile-time** (hardcoded 256 in
