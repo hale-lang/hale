@@ -914,23 +914,43 @@ reclaim on a real-world long-running workload:
        for very-long-running arenas; deferred until a
        workload surfaces the cost.
 
-  4. **Outer-struct same-arena skip at cross-arena store
-     boundaries** (2026-05-22 PM). The hashmap.set / vec.set
-     / vec.push / ring_buffer.push deep-copy paths (from
-     `5300071` / `d435e9b` / `ea0a609`) now run a runtime
-     `lotus_arena_contains_ptr(dest_arena, src)` check before
-     allocating a fresh struct in the destination arena. When
-     the value already lives in dest — same-arena RMW shape,
-     `let e = store.get(key); store.set(Cell { ...e... })` —
-     the entire outer-struct allocation + field-recursion is
-     skipped and `src` passes through. Complements skip (3),
-     which only covered the leaf String/Bytes clone calls
-     inside the recursive walk. Emitted as an LLVM conditional
-     branch with a 2-way phi over the deep-copy and the
-     pass-through arm; same O(chunks) walk cost as (3). For
-     fresh values built in method scratch (the dominant
-     create-from-external-data shape) the check misses and we
-     fall through to the existing allocate-and-copy.
+  4. **Outer-struct same-arena skip at pointer-storage
+     containers.** @form(vec).push / @form(vec).set /
+     @form(ring_buffer).push slots hold an 8-byte pointer to
+     a struct allocated separately. The deep-copy path runs a
+     runtime `lotus_arena_contains_ptr(dest_arena, src)` check
+     before allocating a fresh outer struct: if `src` is
+     already in dest, the existing pointer is stored and the
+     allocation is skipped. Catches read-modify-write shapes
+     where the value flows through dest's arena.
+
+  5. **Anchor-in-place at inline-storage containers.**
+     @form(hashmap) cells live inline in the slots buffer
+     (`value_size = sizeof(Cell)`) — the runtime memcpys the
+     value's bytes directly into the slot, so the deep-copy's
+     outer struct allocation is wasted work. Instead, walk
+     the source struct's fields and rewrite each heap-typed
+     field to a `dest_arena`-anchored version (via the existing
+     `lotus_str_clone` / `lotus_bytes_clone` with their
+     same-arena skips); leave scalars untouched. The runtime's
+     memcpy reads from the now-anchored source struct. Net for
+     the canonical `Counter.inc()` / `Gauge.set()` RMW pattern
+     (same-pointer heap fields carried through from
+     `e = store.get(key)`): zero new allocations per call.
+
+  6. **In-place mutation at `self.X = Struct{...}` and
+     `self.X[i] = Struct{...}` assigns.** Locus self-fields
+     (and elements of self-array-fields) are pre-allocated at
+     instantiation time — every field has either a default or
+     an instantiation-supplied value, so by the time any
+     method body runs the slot's pointer is non-null and points
+     to a struct in `self.__arena`. Assignment to such a slot
+     anchors the rhs's heap fields in `self.__arena` (same
+     mechanism as #5), then memcpys the rhs's bytes over the
+     existing struct's bytes via the slot's pointer. The slot's
+     pointer doesn't change; `self.__arena` doesn't grow under
+     repeated assigns to the same slot. Bounds locus arenas
+     under any assign frequency.
 
 **m49 closes the free-fn gap.** Every non-main free fn takes
 an implicit `__caller_arena: ptr` first param at the LLVM ABI.
