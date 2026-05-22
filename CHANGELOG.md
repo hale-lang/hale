@@ -19,7 +19,7 @@ here as historical labels — the spec no longer carries them.
 
 ---
 
-## 2026-05-22 — leak hunt + view ABI compaction + diagnostic harness
+## 2026-05-22 — leak hunt + view ABI compaction + diagnostic harness + user-extensible FFI
 
 Long-running daemon (fathom mdgw) hit a hard memory cap
 in ~13 minutes under live upstream load. Session goal: identify
@@ -138,6 +138,69 @@ flat across a 60s burn under live upstream load). Subsequent
 verification burns confirmed RSS slope dropped from 0.79 →
 0.195 MB/min mid-session, then to near-zero structural drift
 after the sret + String in-place fixes landed.
+
+- `f034893` **[docs] [spec] [changelog]** Removed every named
+  trading-venue reference from the docs (Kraken, XBT/USD, etc.)
+  + redirected outbound links from the keeping-memory-bounded
+  how-to to the in-tree `agents/memory-patterns.md`. The
+  examples / measurements stay intact under generic naming
+  (`Service`, `mdgw`, `ws.upstream`, `wire-format timestamps`,
+  etc.). Aperio is a general-purpose language; the docs ship
+  domain-agnostic.
+
+- `65e3c06` **[notes]** `notes/ffi-design.md` — design memo
+  for the user-extensible `@ffi("c")` mechanism. Captures the
+  pivot away from "ship `std::raylib` / `std::pty` in stdlib"
+  toward letting library authors land bindings in pond (or any
+  community repo) via `@ffi` decls + `aperio.toml [ffi]`
+  sections. Three-stage rollout — staging table inside the
+  memo, all three now shipped.
+
+- `a5f71c7` **[lang] [codegen] [runtime] [spec]** Stage 1 of
+  the FFI mechanism: parser accepts `@ffi("c") fn name(args) ->
+  ret;` annotations on top-level free fns; typecheck validates
+  parameter / return types against the FFI-portable subset
+  (scalars + String/Bytes/views/Duration/Time, plus named
+  user-type structs); codegen emits LLVM `declare` (not
+  `define`) so the linker resolves against C glue at link time;
+  `aperio build` learns repeatable `--link <name>` /
+  `--csrc <path>` flags. Vertical-slice regression test
+  builds + links + runs an Aperio program with a hand-shipped
+  `.c` file end-to-end. See [`spec/ffi.md`](./spec/ffi.md) for
+  the canonical contract.
+
+- `018f926` **[codegen] [build] [docs] [spec]** Stages 2 + 3
+  of the FFI mechanism:
+
+  * Struct-by-pointer + sret-style returns. User-type structs
+    pass as `ptr` at the boundary (C glue dereferences);
+    struct returns gain a hidden first arg, callee fills.
+    Sidesteps per-platform struct-by-value ABI classification
+    (SysV register-class / Win64 shadow store / aarch64 HVA)
+    without per-target lowering passes. Unblocks any non-
+    trivial binding (raylib Color/Vec3, sqlite handles, etc.).
+  * `aperio.toml [ffi]` auto-pickup. When `aperio build`
+    resolves an `import` against a directory containing
+    `aperio.toml`, the file's `[ffi]` section's `link` +
+    `csrc` accumulate into the build's clang invocation
+    automatically. Consumers just `import "pond/raylib" as
+    ray;` — no `--link` / `--csrc` flags needed.
+  * Mangler — `@ffi` fn names get identity renames so their
+    LLVM symbol stays as the literal C symbol the glue
+    exports. Cross-lib uniqueness is a library-author concern
+    (recommendation: prefix every `@ffi` fn with the lib's
+    identifier).
+  * `agents/binding-packages.md` — authoring brief for binding
+    libs. File layout, three-layer Aperio surface, C-glue
+    skeleton with by-pointer/sret conventions, naming, optional
+    helpers (idempotent init, error-sentinel translation),
+    testing approach, when `@ffi` is the wrong answer.
+    Cross-linked from `AGENTS.md`.
+
+  Closes the FFI work end-to-end. Side effect: the memory
+  note `project_sqlite_deferred_to_pond` becomes unblocked —
+  sqlite + curl + SDL + ffmpeg etc. all bind through the same
+  mechanism with zero compiler-side change.
 
 ## 2026-05-21 — Phase-4 per-method scratch reclaim + chunk pool
 
