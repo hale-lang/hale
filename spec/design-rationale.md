@@ -825,10 +825,14 @@ A `let mut x: int` is mutable; the `int` type itself is not
 "mutable" or "immutable." This avoids the type-level mutability
 machinery seen in some languages.
 
-## F. Locked design commitments (v0.1.2 — from delivery plan)
+## F. Locked design commitments
 
-These commitments came from the delivery-plan turn and lock in
-specific decisions for the language's evolution toward v1.0:
+The F-series are the language's locked design commitments —
+each one is a stable navigation tag referenced from code
+comments, spec sections, and CHANGELOG entries. Section
+numbering is stable; new commitments append at the end with
+fresh F.N tags. Ship-dates for each commitment live in
+[`../CHANGELOG.md`](../CHANGELOG.md).
 
 ### F.1 Optimize for runtime perf, never sacrifice behavior
 
@@ -940,7 +944,7 @@ error.
 
 This is the framework's contract-graded visibility commitment
 expressed as a type rule. The full typing rule lives in
-`spec/types.md` (Phase 0 deliverable).
+[`types.md`](./types.md).
 
 The check fires once per parent locus that declares any
 `consume` entry. The parent's `accept(c: ChildType)`
@@ -1331,11 +1335,11 @@ The typechecker recognizes `k_max` on every locus type as
 `Ty::Float`; the runtime errors cleanly on missing params or
 zero denominator rather than producing NaN or infinity.
 
-Read shape is uniform across receivers (B14 / G31, 2026-05-17):
-`self.k_max` inside a locus method and `g.k_max` on a borrowed
-LocusRef `g` lower to the same arithmetic — codegen extracts the
-field-load helper so non-self receivers reach the same path.
-Same rule applies to the F.27 synthetic `draining` flag.
+Read shape is uniform across receivers: `self.k_max` inside a
+locus method and `g.k_max` on a borrowed LocusRef `g` lower to
+the same arithmetic — codegen extracts the field-load helper so
+non-self receivers reach the same path. Same rule applies to
+the F.27 synthetic `draining` flag.
 
 This makes the framework's signature equation an executable
 language primitive. A closure can audit against it directly:
@@ -1423,13 +1427,14 @@ satisfaction is implicit (Go's shape, not Rust's). Interfaces
 admit no default methods at v0; the body is signature-only.
 
 **Why.** Multiple friction-log entries pointed at the same gap:
-`std::text::Sink` shipped as a tagged-locus antipattern (one
+`std::text::Sink` had been a tagged-locus antipattern (one
 locus with `dest: String` branching on every method) because
-there was no interface mechanism; `std::log::StdoutSink` had to
-couple through the bus for the same reason. Structural interfaces
-let `StdoutSink` / `StringSink` / `FileSink` coexist as
-separate loci with one shared surface, eliminating the inner
-dispatch entirely. The Go-shape (structural, no `impl`
+there was no interface mechanism; `std::log::StdoutSink` had
+to couple through the bus for the same reason. Structural
+interfaces let `StdoutSink` / `StringSink` / `FileSink`
+coexist as separate loci with one shared surface, eliminating
+the inner dispatch entirely. The Go-shape (structural, no
+`impl`
 declaration) is the simplest mechanism that solves the friction
 without adding a trait/impl-coherence design surface that v0
 isn't ready for.
@@ -1453,62 +1458,52 @@ a concrete arg.
 - *Interface inheritance / extension* (`interface SuperSink :
   Sink { ... }`). Reject for v0; same scope-creep argument.
 
-**Implementation status (Phase A + Phase B).**
+**How it lowers.** `interface Name { fn ...; ... }` parses to
+an `InterfaceDecl` and registers as `TopSymbol::Interface` in
+the bundle scope. The typechecker enforces the structural-impl
+rule at every call site where a fn declares an interface-typed
+param; mismatches produce typed diagnostics (missing method,
+arity, param type, return type).
 
-- **Phase A — parser / AST / resolver / typechecker (shipped
-  2026-05-10).** The `interface` keyword parses, `InterfaceDecl`
-  lands in the AST, `TopSymbol::Interface` registers in the
-  bundle scope, the typechecker enforces the structural-impl
-  rule at every call site where a fn declares an interface-typed
-  param. Mismatches produce typed diagnostics (missing method,
-  arity, param type, return type).
-- **Phase B — codegen vtable dispatch (shipped 2026-05-11).**
-  `CodegenTy::Interface(name)` represents an interface value at
-  the codegen layer; LLVM-level layout is a single `ptr` to an
-  arena-allocated `{i8* data, i8* vtable}` fat-pointer struct
-  (uniform single-pointer ABI matching `LocusRef`). Per (locus,
-  interface) pair, `ensure_vtable` synthesizes a static
-  `[N x ptr]` global `__vt.<locus>.<iface>` holding the locus's
-  methods in interface-declaration order. At call sites where a
-  fn declares an interface-typed param, `coerce_to_interface`
-  arena-allocs the fat-pointer struct and stores
-  `data = locus_ptr`, `vtable = __vt.<locus>.<iface>`. Method
-  calls on an interface receiver lower in
-  `lower_iface_method_call`: load data + vtable, GEP to the
-  method's slot (decl-order index), `build_indirect_call`
-  through the m80 machinery with `data` as the implicit self
-  arg. End-to-end coverage in
-  `crates/aperio-codegen/tests/interface_dispatch.rs`.
-- **Phase B follow-ups.** Most of the deferred surface has
-  landed across two follow-up milestones. Storing an interface
-  value in a locus param/field shipped 2026-05-16 alongside the
-  `std::http::Handler` interface; the field-store path coerces
-  locus → interface at the literal site and the stored fat
-  pointer aliases the underlying locus's region. `@form(vec)`
-  cell elements of interface type shipped 2026-05-17 (A10);
-  `push`/`set` coerce and the stored cell mutation writes
-  through. Free-fn return of an interface value shipped
-  2026-05-18: the return site inserts the locus → interface
-  coercion, the m90 locus-instantiation routing is extended to
-  fire when the fn declares `-> Interface(I)` and the
-  instantiated locus satisfies I (so the underlying locus lives
-  in the program-lifetime payload arena rather than the fn
-  subregion), and `emit_return_value_deep_copy` deep-copies the
-  16-byte fat-pointer struct into the caller's arena. Same
-  milestone also fixed a typecheck reject where interface →
-  same-interface pass-through was treated as a structural-impl
-  failure. Coverage:
-  `crates/aperio-codegen/tests/interface_return.rs`,
-  `crates/aperio-codegen/tests/interface_in_form_vec.rs`, and
-  the pre-existing `sink_polymorphism.rs`.
-  Still deferred: interface elements inside tuples and fixed
-  arrays. The gap is the broader composite-construction
-  coercion shape (recursive coercion at the construction site
-  plus locus-routing across nested return positions); the same
-  gap governs tuple-of-`LocusRef` escape today, where the
-  pointers in the returned tuple alias loci in the fn's stack
-  frame and only happen to read correctly because the freed
-  memory hasn't been clobbered yet.
+`CodegenTy::Interface(name)` represents an interface value at
+the codegen layer; LLVM-level layout is a single `ptr` to an
+arena-allocated `{i8* data, i8* vtable}` fat-pointer struct
+(uniform single-pointer ABI matching `LocusRef`). Per (locus,
+interface) pair, `ensure_vtable` synthesizes a static
+`[N x ptr]` global `__vt.<locus>.<iface>` holding the locus's
+methods in interface-declaration order. At call sites where a
+fn declares an interface-typed param, `coerce_to_interface`
+arena-allocs the fat-pointer struct and stores
+`data = locus_ptr`, `vtable = __vt.<locus>.<iface>`. Method
+calls on an interface receiver lower in
+`lower_iface_method_call`: load data + vtable, GEP to the
+method's slot (decl-order index), `build_indirect_call`
+through the m80 machinery with `data` as the implicit self
+arg.
+
+Interface values are storable in locus param fields,
+`@form(vec)` cell elements, and free-fn return positions
+— field-store / cell-set / return-coercion sites all insert
+the locus → interface coercion automatically. For free-fn
+returns, the m90 locus-instantiation routing extends to fire
+when the fn declares `-> Interface(I)` and the instantiated
+locus satisfies I, so the underlying locus lives in the
+program-lifetime payload arena rather than the fn subregion;
+`emit_return_value_deep_copy` deep-copies the 16-byte
+fat-pointer struct into the caller's arena.
+
+Still deferred: interface elements inside tuples and fixed
+arrays. The gap is the broader composite-construction
+coercion shape (recursive coercion at the construction site
+plus locus-routing across nested return positions); the same
+gap governs tuple-of-`LocusRef` escape today, where the
+pointers in the returned tuple alias loci in the fn's stack
+frame and only happen to read correctly because the freed
+memory hasn't been clobbered yet.
+
+Coverage: `crates/aperio-codegen/tests/interface_dispatch.rs`,
+`interface_return.rs`, `interface_in_form_vec.rs`,
+`sink_polymorphism.rs`.
 
 ### F.21 Cascading-dimension interface (sketch)
 
@@ -1654,7 +1649,7 @@ parent-override of slot 0." No new behavior at v0 — F.22
 *names* the existing capability so future slot-1..N overrides
 sit on a consistent vocabulary.
 
-**Slot 1..N parent-override (v1.x-4 + v1.x-4b, SHIPPED).** A
+**Slot 1..N parent-override.** A
 parent declares `capacity { pool entries of Int as_parent_for
 Child; }` and any `Child` accepted by this parent gets its
 matching slot pointer replaced with the parent's at accept
@@ -1767,7 +1762,7 @@ the spec; implementation tasks are tracked at the friction
 plan level (`crates/aperio-codegen/runtime/lotus_arena.c`
 gets Pool + Heap primitives first; codegen surface follows).
 
-### F.23 Int → Float widening at let/arg sites (Phase 2c, 2026-05-11; broadened B13 / G30, 2026-05-17)
+### F.23 Int → Float widening at let/arg sites
 
 Codegen inserts an implicit `sitofp` widening at the following
 surfaces:
@@ -1780,14 +1775,14 @@ surfaces:
   the call site. Same rule applies to user-declared fns and to
   stdlib path-calls (`std::math::sqrt(n)` with `n: Int` works
   without `2.0` literals).
-- **binary-op promotion** (B13 / G30, 2026-05-17) — when
+- **binary-op promotion** — when
   exactly one side of an arithmetic or comparison binop is
   `Int` and the other is `Float`, the `Int` side widens and the
   op produces `Float` (or `Bool` for comparisons). Symmetric:
   either side can be the one that widens. Lets `0.5 + n`,
   `i < 0.5`, `3 * 1.5` typecheck without sprinkling `to_float`
   helpers at every mixed call site.
-- **user-type field init** (B13 / G30, 2026-05-17) — assigning
+- **user-type field init** — assigning
   an `Int` value into a `Float`-typed struct field at literal-
   init time widens at the store. Lets a config bundle declare
   `timeout: Float` and accept an `Int` from the caller without
@@ -1797,13 +1792,13 @@ surfaces:
 `Decimal` never participates in implicit cross-type conversion;
 other numeric pairs (Int↔Decimal, Float↔Decimal) still reject.
 
-**Why.** The friction-log entry
-`notes/aperio-friction.md` 2026-05-10 `float-surface-gaps`
-documented the cost of forcing every Float-heavy library to
-carry parallel Int+Float counters and explicit conversion
-plumbing. Phase 2c also shipped `std::math::{sqrt, exp, log,
-floor, ceil, pow}`; the widening makes those libm primitives
-ergonomic by removing the per-callsite `to_float()` ceremony.
+**Why.** The friction-log entry `float-surface-gaps` in
+`notes/aperio-friction.md` documented the cost of forcing every
+Float-heavy library to carry parallel Int+Float counters and
+explicit conversion plumbing. `std::math::{sqrt, exp, log,
+floor, ceil, pow}` shipped alongside the widening so the libm
+primitives are ergonomic without per-callsite `to_float()`
+ceremony.
 
 **Considered and rejected.**
 
@@ -1817,7 +1812,7 @@ ergonomic by removing the per-callsite `to_float()` ceremony.
   is non-obvious enough that explicit operator surface is the
   right answer when it lands.
 
-### F.24 Block-tail expression / `if` as expression (Phase 2b, 2026-05-11)
+### F.24 Block-tail expression / `if` as expression
 
 A block's last item may be an expression *without* a trailing
 `;`. In expression position (let-RHS, fn-call argument, if-arm
@@ -1840,20 +1835,19 @@ unchanged.
 `ElseBranch::ElseIf` recurses and the innermost arm's tail
 feeds the phi at the outermost merge.
 
-**Why.** The friction-log entry
-`notes/aperio-friction.md` 2026-05-10 `if-needs-block-value`
-documented the canonical case: index selection, default
-fallbacks, and ternary-ish expressions all need a small
-conditional value, and the pre-2b workaround
-(`let mut x = i; if cond { x = j; }`) is verbose and obscures
-intent.
+**Why.** The friction-log entry `if-needs-block-value` in
+`notes/aperio-friction.md` documented the canonical case: index
+selection, default fallbacks, and ternary-ish expressions all
+need a small conditional value, and the statement-only-if
+workaround (`let mut x = i; if cond { x = j; }`) is verbose and
+obscures intent.
 
 The shape is form-completeness within the expression-evaluation
 substrate: match-arm direct expressions
 (`MatchArmBody::Expr(Expr)`) and function-body returns already
-produced values; if-blocks were the lone holdout. Phase 2b
-closes the form-asymmetry — same shape as Rust, which is what
-the friction-log entry asked for.
+produced values; if-blocks were the lone holdout. Closes the
+form-asymmetry — same shape as Rust, which is what the
+friction-log entry asked for.
 
 **Considered and rejected.**
 
@@ -1868,7 +1862,7 @@ the friction-log entry asked for.
   Requiring `else` at the value-form makes the writer's
   intent (this is a value, not a side-effect) explicit.
 
-### F.25 Cross-seed imports — vendored source, alias-required (v1.x-IMPORT, 2026-05-13)
+### F.25 Cross-seed imports — vendored source, alias-required
 
 An importer references a vendored library by literal path with
 a required alias:
@@ -1897,17 +1891,16 @@ per-build path-rename table parallel to the static
 `STDLIB_PATH_RENAMES` table. The user never writes the mangled
 form; `alias::Name` resolves through the table at codegen.
 
-**Why.** F.19 (per-directory seed model) shipped 2026-05-11 and
-fixed the single-file-app-monolith friction at the intra-seed
-layer. Cross-seed sharing remained deferred — the `module`
-keyword was reserved with no semantics. Cross-app helper
-patterns (tagged-accumulator, directory walks, JSON glue) lived
-in the std seed because there was no library home; the std seed
-grew to absorb friction that should live in user libraries.
+**Why.** F.19 (per-directory seed model) fixed the
+single-file-app-monolith friction at the intra-seed layer.
+Cross-seed sharing remained the next gap: cross-app helper
+patterns (tagged-accumulator, directory walks, JSON glue)
+had no library home, so the std seed absorbed friction that
+should have lived in user libraries.
 
-v1.x-IMPORT (this milestone) opens user libraries as a
-first-class shape: user helpers can graduate from copy-paste /
-std-seed-bloat to a vendored shared lib.
+F.25 opens user libraries as a first-class shape: user helpers
+can graduate from copy-paste / std-seed-bloat to a vendored
+shared lib.
 
 **Vendor-the-source as the v1 commitment.** A real package
 manager (registry + fetch + semver + lockfile) is several
@@ -1960,7 +1953,7 @@ rule — same discipline applied at a different layer.
 § "Implementation entry points" for the file paths and primary
 functions.
 
-### F.27 Inline closure violation (v1.x-VIOLATE, 2026-05-15)
+### F.27 Inline closure violation
 
 A locus method body can escalate a value error into a structural
 failure by declaring an assertion-less `epoch inline` closure and
@@ -2087,7 +2080,7 @@ bodies, bus-handler methods (`subscribe X as foo` → `fn foo`),
 mode-method bodies. The same body shape gets the same primitive.
 
 **Why.** The two-channel rule (locus methods cannot declare
-`fallible(E)`) shipped to keep recovery paths legible: parents
+`fallible(E)`) keeps recovery paths legible: parents
 handle structural failures (`on_failure`), free fns and
 `@form`-synthesized methods handle value errors (`fallible`).
 But the bridge between them — converting a caught value error
@@ -2150,7 +2143,7 @@ declarative instead of folded into a free-form `Error` payload.
 - `crates/aperio-runtime/` — interpreter parity for the new
   statement and assertion-less closures.
 
-### F.28 BytesBuilder is a locus, not a primitive type (2026-05-19)
+### F.28 BytesBuilder is a locus, not a primitive type
 
 **Commitment.** The bytes-accumulator surface
 (`std::bytes::builder_*`) is no longer a family of free
@@ -2229,15 +2222,15 @@ anywhere a `Bytes` is expected. The discipline is mechanical.
 **Failure routing (F.27).** `append()` routes realloc-NULL
 failure through `violate alloc_failed`. The locus declares
 `closure alloc_failed { captures: initial_cap; epoch inline; }`;
-`append` checks the C primitive's status return (now `int64_t`
-where it was `void` pre-2026-05-19; 1=ok, 0=fail), and routes
-through `violate` on 0. Owners of the BytesBuilder bind an
+`append` checks the C primitive's `int64_t` status return
+(1=ok, 0=fail), and routes through `violate` on 0. Owners of
+the BytesBuilder bind an
 `on_failure` policy to handle the violation (restart / drain
 / bubble); an unhandled violation bubbles past `main` and
 exits the process non-zero with the captured payload on
 stderr.
 
-**F.27 v2 (2026-05-20): `birth_check` synthesis hook.** A
+**F.27 v2: `birth_check` synthesis hook.** A
 declarative invariant check that runs AFTER the locus's birth()
 body completes (and after birth-epoch closures fire), at the
 well-defined point where every field has its declared
@@ -2258,7 +2251,7 @@ sit in unreachable basic blocks after the violate's
 terminator).
 
 Why a synthesis hook and not just `violate` inside birth(): the
-v1 form (2026-05-19) lifted the codegen restriction on
+v1 form lifted the codegen restriction on
 `violate` in lifecycle bodies, but `violate alloc_failed` fired
 mid-birth leaves the locus PARTIALLY CONSTRUCTED — some fields
 set, others at defaults — when the on_failure handler reads
@@ -2289,7 +2282,7 @@ birth_check form for the null-handle case
 replacing the earlier inline `if self.handle == 0 { violate
 alloc_failed; }` in birth body.
 
-**F.27 extension (2026-05-19, superseded by F.27 v2): `violate`
+**F.27 extension (superseded by F.27 v2): `violate`
 in lifecycle bodies.** The codegen restriction on `violate` was
 lifted for lifecycle blocks (birth / drain / dissolve / accept
 / run); they now participate in the same divergent-return +
@@ -2311,12 +2304,11 @@ along the F.29 locus-field cascade path where
 **Caveats at v1.**
 
 - `snapshot()` / `finish()` payload-arena alloc failures route
-  through `violate alloc_failed` per the snapshot/finish
-  follow-up (2026-05-19). The C primitives use a dedicated
-  alloc-fail sentinel pointer on every failure path; the locus
-  method body discriminates via `std::bytes::__is_alloc_fail`
-  before returning. The previous "empty-on-success aliases
-  empty-on-fail" hazard is closed.
+  through `violate alloc_failed`. The C primitives use a
+  dedicated alloc-fail sentinel pointer on every failure path;
+  the locus method body discriminates via
+  `std::bytes::__is_alloc_fail` before returning, closing the
+  prior "empty-on-success aliases empty-on-fail" hazard.
 
 **Implementation entry points.**
 
@@ -2337,7 +2329,7 @@ along the F.29 locus-field cascade path where
   (currently ignored since the interpreter's `Vec` backing
   auto-grows).
 
-**Phase-2 (1): zero-copy `view()` (2026-05-19).** Added
+**Phase-2 (1): zero-copy `view()`.** Added
 `b.view() -> Bytes` returning a non-owning Bytes pointer that
 aliases the builder's buffer. Pond/websocket's recv loop had a
 residual leak after Phase 1 — `rx_buf.snapshot()` per peel
@@ -2380,7 +2372,7 @@ Tests: `crates/aperio-codegen/tests/bytes_builder_view.rs` —
 appends, slice composition, shift_front reflection, and
 clear-then-view.
 
-### F.29 Locus-typed param fields with lifecycle cascade (Phase-2 (2), 2026-05-19)
+### F.29 Locus-typed param fields with lifecycle cascade
 
 **Commitment.** A locus's `params` block may declare a field
 whose type is another locus (user-defined or stdlib).
@@ -2406,11 +2398,10 @@ locus WsClient {
 The owning locus's lifecycle cascades into the child:
 - **Birth.** Default-init evaluates the child literal,
   including running the child's `birth()` body. The child's
-  state lives past the construction expression — pre-2026-05-19,
-  the child dissolved eagerly at the end of its literal, leaving
-  the parent's slot dangling. The fix routes child instantiation
-  through a `parent_owns_via_field` path analogous to the
-  existing `parent_accepts_us` path.
+  state lives past the construction expression: child
+  instantiation routes through a `parent_owns_via_field` path
+  analogous to the existing `parent_accepts_us` path, so the
+  child doesn't dissolve eagerly at the end of its literal.
 - **Dissolve.** The parent's dissolve dispatch fires the child's
   full `drain → __dissolve_closures → dissolve → arena_destroy`
   sequence per `LocusRef`-typed field, in field-declaration order,
@@ -2498,7 +2489,7 @@ ordering of the cascade (outer body → inner cascade → outer
 arena_destroy), and a 100k-iteration construct-destroy loop
 exercising the cascade path under load.
 
-### F.30 BytesView — non-owning view as a distinct type (2026-05-20)
+### F.30 BytesView — non-owning view as a distinct type
 
 The Phase-2 `view()` / Phase-3 `text_view()` machinery hands back
 a non-owning pointer that's layout-compatible with `Bytes`. The
@@ -2554,10 +2545,10 @@ typecheck:
   `frag_buf.append(...)` between `frag_buf.text_view()` and
   the consumer's read" hazard. Two enforcement options were
   on the table: a compile-time borrow checker (v2 territory)
-  or a runtime epoch guard (v1.x). The runtime guard shipped
-  2026-05-20 — see F.30b below.
+  or a runtime epoch guard (v1.x). The runtime guard ships
+  as F.30b below.
 
-### F.30b BytesView / StringView mutation-while-live runtime guard (2026-05-20)
+### F.30b BytesView / StringView mutation-while-live runtime guard
 
 **The remaining hazard after F.30:**
 The distinct-type work in F.30 catches the fungibility hazard
@@ -2639,28 +2630,23 @@ the view flows along until it hits a read-coercion site, where
 the unpack fires.
 
 **Allocator.** No arena allocation per `view()` / `text_view()`
-call (2026-05-22 PM compaction). Pre-compaction was a 24-byte
-heap-allocated struct via `lotus_arena_alloc`, and that
-allocation was the dominant residual chunk-allocation trigger
-in long-running recv loops (~134 view()/sec in the downstream
-websocket peeler). The compact form materializes the view in
-two SSA registers; the caller's storage slot (if any) is a
-16-byte struct alloca that the existing arena routing already
-covers. Read-time cost is unchanged — a one-load epoch check
-plus a recompute of `buf - 8` (Bytes) or `buf` (Str) from the
-builder pointer.
+call. The 16-byte by-value struct materializes in two SSA
+registers; the caller's storage slot (if any) is a 16-byte
+struct alloca that the existing arena routing already covers.
+Read-time cost is a one-load epoch check plus a recompute of
+`buf - 8` (Bytes) or `buf` (Str) from the builder pointer.
 
 ## 16. What's deferred
 
 The grammar in v0 does **not** specify:
 
 - **Trait system.** No `trait` keyword in v0 (reserved). The
-  Go-style structural `interface` form (F.20) shipped 2026-05-11
-  with Phase A typecheck + Phase B codegen vtable dispatch;
-  loci structurally satisfy interfaces with no `impl I for L`
-  declaration. Rust-style traits with explicit impl blocks,
-  trait bounds on generics, and coherence remain a future
-  extension. Generics today are bound only by projection class.
+  Go-style structural `interface` form (F.20) handles the
+  immediate need — loci structurally satisfy interfaces with
+  no `impl I for L` declaration. Rust-style traits with
+  explicit impl blocks, trait bounds on generics, and coherence
+  remain a future extension. Generics today are bound only by
+  projection class.
 - **Effect / capability system.** Substrate-derivation anchor
   tracking is currently a runtime concern enforced by closure
   tests. A future version may move it into the type system as
