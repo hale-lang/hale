@@ -104,10 +104,14 @@ fn top_const_locals_shadow_globals() {
 }
 
 #[test]
-fn top_const_non_literal_value_errors_clearly() {
-    // Computed const value isn't supported (matching locus-param
-    // default-literal rule). Build should fail with a focused
-    // diagnostic naming the const and the shape rule.
+fn top_const_non_literal_value_lowers_at_use_site() {
+    // 2026-05-22 (F.1): non-literal const initializers (computed
+    // expressions, struct literals, etc.) used to error with a
+    // "value must be a literal" diagnostic. Now they're stored
+    // as deferred Expr in `user_const_exprs` and re-lowered at
+    // each use site (same lifetime as inlining the expression
+    // by hand). The arithmetic case here folds at IR-build time
+    // through the normal Binary lowering.
     let src = r#"
         const X: Int = 1 + 2;
 
@@ -115,22 +119,27 @@ fn top_const_non_literal_value_errors_clearly() {
             println("x=", to_string(X));
         }
     "#;
-    let program = aperio_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
-        "aperio_top_level_const_non_lit_{}",
-        std::process::id()
-    ));
-    let err = build_executable(&program, &bin).expect_err("expected build failure");
-    let msg = format!("{}", err);
-    assert!(
-        msg.contains("const `X`"),
-        "diag should name the const: {:?}",
-        msg
-    );
-    assert!(
-        msg.contains("literal"),
-        "diag should reference the literal rule: {:?}",
-        msg
-    );
+    let (stdout, status) = build_and_run("non_lit_compute", src);
+    assert!(status.success(), "non-zero: {:?}", status);
+    assert!(stdout.contains("x=3"), "stdout: {:?}", stdout);
+}
+
+#[test]
+fn top_const_struct_literal_value_lowers_at_use_site() {
+    // 2026-05-22 (F.1): struct literals are the load-bearing F.1
+    // case — locus param defaults already accepted them; consts
+    // didn't until this change. Verify the natural shape works.
+    let src = r#"
+        type Pair { a: Int = 0; b: Int = 0; }
+
+        const ORIGIN: Pair = Pair { a: 3, b: 4 };
+
+        fn main() {
+            let p = ORIGIN;
+            println("a=", to_string(p.a), " b=", to_string(p.b));
+        }
+    "#;
+    let (stdout, status) = build_and_run("non_lit_struct", src);
+    assert!(status.success(), "non-zero: {:?}", status);
+    assert!(stdout.contains("a=3 b=4"), "stdout: {:?}", stdout);
 }

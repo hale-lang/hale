@@ -93,8 +93,8 @@ pub enum TokenKind {
     Dissolve,
     OnFailure,
 
-    // Keywords — mode
-    Mode,
+    // Keywords — mode. `mode` itself is contextual; see
+    // `parse_locus_member`.
     Bulk,
     Harmonic,
     Resolution,
@@ -440,8 +440,12 @@ impl<'a> Lexer<'a> {
             "dissolve" => TokenKind::Dissolve,
             "on_failure" => TokenKind::OnFailure,
 
-            // Mode
-            "mode" => TokenKind::Mode,
+            // Mode. `mode` is contextually keyworded — recognized
+            // only at locus-member position (see
+            // `parse_locus_member`). Lexing it as Ident frees the
+            // name for use as a param/field on user types
+            // (raylib bindings: `cam.mode: Int`). Same pattern as
+            // `bindings`/`birth_check`/`pool`/`heap`.
             "bulk" => TokenKind::Bulk,
             "harmonic" => TokenKind::Harmonic,
             "resolution" => TokenKind::Resolution,

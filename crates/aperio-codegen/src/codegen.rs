@@ -333,6 +333,7 @@ pub fn build_executable_with_options(
         user_enums: BTreeMap::new(),
         user_interfaces: BTreeSet::new(),
         user_consts: BTreeMap::new(),
+        user_const_exprs: BTreeMap::new(),
         import_renames: import_renames
             .iter()
             .map(|(segs, mangled)| (segs.clone(), mangled.clone()))
@@ -1003,6 +1004,15 @@ struct Cx<'ctx, 'p> {
     /// site via `const_param` (so the const acts as a true
     /// compile-time constant, not a global load).
     user_consts: BTreeMap<String, ParamValue>,
+    /// Top-level `const NAME: T = EXPR;` initializers that aren't
+    /// scalar literals (struct literals, etc.). Stored as the
+    /// (deferred expression, ascribed type) pair; lowered through
+    /// `lower_expr` at each use site so the per-call-site arena
+    /// context applies (e.g. a struct const referenced from a fn
+    /// body materializes into the caller's arena, same as if the
+    /// user had written the struct literal inline). Checked after
+    /// `user_consts` (scalar-literal fast path).
+    user_const_exprs: BTreeMap<String, (Expr, TypeExpr)>,
     /// v1.x-IMPORT: per-build path-rename table for cross-seed
     /// imports. Same shape as `STDLIB_PATH_RENAMES` but populated
     /// per build from the user's `import "lib/X" as foo;`
@@ -6765,14 +6775,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             })
             .collect();
         for c in &user_const_decls {
-            let pv = param_value(&c.value).map_err(|e| {
-                CodegenError::Unsupported(format!(
-                    "const `{}`: value must be a literal at v1 codegen \
-                     (matching locus-param default rules); inner error: {}",
-                    c.name.name, e
-                ))
-            })?;
-            self.user_consts.insert(c.name.name.clone(), pv);
+            // Scalar-literal fast path: same shape as locus-param
+            // `params { ... }` defaults — value lowers to a
+            // constant via `const_param` at every use site.
+            match param_value(&c.value) {
+                Ok(pv) => {
+                    self.user_consts.insert(c.name.name.clone(), pv);
+                }
+                Err(_) => {
+                    // Non-literal (e.g. `const X: T = T { ... };`):
+                    // store the deferred expression + ascribed type
+                    // and re-lower at each use site through
+                    // `lower_expr`. Mirrors how locus params handle
+                    // `DefaultInit::Expr` defaults.
+                    self.user_const_exprs.insert(
+                        c.name.name.clone(),
+                        (c.value.clone(), c.ty.clone()),
+                    );
+                }
+            }
         }
 
         // Pass C: lower lifecycle method bodies (birth, run, ...).
@@ -19141,20 +19162,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }
                     }
                     if target.tail.len() != 1 {
-                        return Err(CodegenError::Unsupported(format!(
-                            "assignment target `self.{}` with {} segment(s) \
-                             not yet supported",
-                            target
-                                .tail
-                                .iter()
-                                .filter_map(|s| match s {
-                                    LValueSeg::Field(i) => Some(i.name.as_str()),
-                                    _ => None,
-                                })
-                                .collect::<Vec<_>>()
-                                .join("."),
-                            target.tail.len()
-                        )));
+                        // Deeper-than-one-segment self lvalue
+                        // (`self.cache.rows[i] = X`,
+                        // `self.k.field = X`, etc.). Route through
+                        // the general walker. The walker emits a
+                        // plain store, not the in-place anchor
+                        // memcpy used for the 1-segment fast path —
+                        // deeper paths are rare enough that the
+                        // residual allocation cost is acceptable;
+                        // when a workload surfaces a hot path we
+                        // can extend the in-place treatment.
+                        let (slot_ptr, slot_ty, slot_name) =
+                            self.resolve_lvalue_chain(target, scope)?;
+                        return self.finish_lvalue_assign(
+                            slot_ptr, slot_ty, slot_name, op, value, scope,
+                        );
                     }
                     let field_name = match &target.tail[0] {
                         LValueSeg::Field(i) => i.name.clone(),
@@ -19337,9 +19359,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         format!("{}[idx]", target.head.name),
                     )
                 } else {
-                    return Err(CodegenError::Unsupported(
-                        "non-self field/index assignment target".to_string(),
-                    ));
+                    // Non-self field / index / deeper paths
+                    // (`local.field = X`, `local.f1.f2 = X`,
+                    // `local.f1[i].f2 = X`, etc.). Route through
+                    // the general walker; emits a plain store.
+                    let (slot_ptr, slot_ty, slot_name) =
+                        self.resolve_lvalue_chain(target, scope)?;
+                    return self.finish_lvalue_assign(
+                        slot_ptr, slot_ty, slot_name, op, value, scope,
+                    );
                 };
 
                 let (rhs, rhs_ty) = self.lower_expr(value, scope)?;
@@ -22213,6 +22241,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         let (val, ty) = self.const_param(&pv);
                         return Ok((val, ty));
                     }
+                    if let Some((expr, _ty)) =
+                        self.user_const_exprs.get(&mangled).cloned()
+                    {
+                        return self.lower_expr(&expr, scope);
+                    }
                 }
                 Err(CodegenError::Unsupported(format!(
                     "unresolved path `{}`",
@@ -22257,6 +22290,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if let Some(pv) = self.user_consts.get(&id.name).cloned() {
                     let (val, ty) = self.const_param(&pv);
                     return Ok((val, ty));
+                }
+                // Non-literal const (struct literal etc.): re-lower
+                // the stored initializer expression in the current
+                // scope. Each use site allocates fresh, matching the
+                // semantics of writing the literal inline.
+                if let Some((expr, _ty)) =
+                    self.user_const_exprs.get(&id.name).cloned()
+                {
+                    return self.lower_expr(&expr, scope);
                 }
                 // m80: a bare identifier in expression position
                 // can be a user function name used as a value.
@@ -38076,6 +38118,418 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Interface(_)
             | CodegenTy::Enum(_) => true,
         }
+    }
+
+    /// Generic lvalue walker for assignment targets that the
+    /// fast-path branches in `Stmt::Assign` didn't match (1-segment
+    /// `self.X`, 2-segment `self.X[i]`, 1-segment `local`,
+    /// 1-segment `cell.field` on Cell<TypeRef>, 1-segment
+    /// `arr[i]` on a fixed-size array). Walks the lvalue tail
+    /// segment by segment and produces the slot pointer + slot
+    /// type for the terminal segment.
+    ///
+    /// Step semantics:
+    ///   * Field on a struct (LocusRef / TypeRef / Cell<TypeRef>):
+    ///     GEP into the struct's field. If non-terminal and the
+    ///     field is itself a struct pointer, load to step into it.
+    ///     If non-terminal and the field is Array, retain the
+    ///     field's slot ptr so the next Index segment can load the
+    ///     array ptr.
+    ///   * Index on an Array slot: load the array ptr, GEP at idx.
+    ///     If non-terminal and the element type is a struct
+    ///     pointer, load to step into it.
+    ///
+    /// Caller pairs this with `finish_lvalue_assign` for the rhs
+    /// store. The walker itself emits no stores; just the GEPs +
+    /// loads needed to address the final slot.
+    fn resolve_lvalue_chain(
+        &mut self,
+        target: &LValue,
+        scope: &Scope<'ctx>,
+    ) -> Result<(PointerValue<'ctx>, CodegenTy, String), CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i32_t = self.context.i32_type();
+
+        // State while walking:
+        //   `cur_ptr` — current LLVM pointer.
+        //   `cur_struct` — Some when cur_ptr points at a struct's
+        //     storage; carries the struct's layout for the next
+        //     Field segment.
+        //   `array_slot_ty` — Some(Array(elem, n)) when cur_ptr is
+        //     a SLOT holding the array's payload pointer; consumed
+        //     by the next Index segment.
+        let mut cur_ptr: PointerValue<'ctx>;
+        let mut cur_struct: Option<(StructType<'ctx>, BTreeMap<String, (u32, CodegenTy)>)>;
+        let mut array_slot_ty: Option<CodegenTy>;
+        let mut name: String;
+
+        if target.head.name == "self" {
+            let cs = self.current_self.as_ref().cloned().ok_or_else(|| {
+                CodegenError::Unsupported(
+                    "`self.X =` outside a locus method".to_string(),
+                )
+            })?;
+            cur_ptr = cs.self_ptr;
+            cur_struct = Some((cs.struct_ty, cs.fields.clone()));
+            array_slot_ty = None;
+            name = "self".to_string();
+        } else {
+            let (alloca, ty) = scope
+                .locals
+                .get(&target.head.name)
+                .cloned()
+                .ok_or_else(|| {
+                    CodegenError::Unsupported(format!(
+                        "assignment to unbound `{}`",
+                        target.head.name
+                    ))
+                })?;
+            name = target.head.name.clone();
+            // Open the local's "container" — for struct-pointer
+            // locals (TypeRef / LocusRef / Cell<TypeRef>) load the
+            // pointer so the next Field segment walks into the
+            // struct. For Array locals, retain the alloca as the
+            // array-slot ptr.
+            match &ty {
+                CodegenTy::TypeRef(n) => {
+                    let info = self.user_types.get(n).cloned().ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "lvalue: type `{}` not declared",
+                            n
+                        ))
+                    })?;
+                    let loaded = self
+                        .builder
+                        .build_load(ptr_t, alloca, &name)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_pointer_value();
+                    cur_ptr = loaded;
+                    cur_struct = Some((info.struct_ty, info.fields));
+                    array_slot_ty = None;
+                }
+                CodegenTy::LocusRef(n) => {
+                    let info = self.user_loci.get(n).cloned().ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "lvalue: locus `{}` not declared",
+                            n
+                        ))
+                    })?;
+                    let loaded = self
+                        .builder
+                        .build_load(ptr_t, alloca, &name)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_pointer_value();
+                    cur_ptr = loaded;
+                    cur_struct = Some((info.struct_ty, info.fields));
+                    array_slot_ty = None;
+                }
+                CodegenTy::Cell(inner, _)
+                    if matches!(inner.as_ref(), CodegenTy::TypeRef(_)) =>
+                {
+                    let n = match inner.as_ref() {
+                        CodegenTy::TypeRef(n) => n.clone(),
+                        _ => unreachable!(),
+                    };
+                    let info = self.user_types.get(&n).cloned().ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "lvalue: Cell<{}>: type not declared",
+                            n
+                        ))
+                    })?;
+                    let loaded = self
+                        .builder
+                        .build_load(ptr_t, alloca, &name)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_pointer_value();
+                    cur_ptr = loaded;
+                    cur_struct = Some((info.struct_ty, info.fields));
+                    array_slot_ty = None;
+                }
+                CodegenTy::Array(elem, n_cap) => {
+                    cur_ptr = alloca;
+                    cur_struct = None;
+                    array_slot_ty = Some(CodegenTy::Array(elem.clone(), *n_cap));
+                }
+                other => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "lvalue: head `{}` has non-addressable type {:?}",
+                        target.head.name, other
+                    )));
+                }
+            }
+        }
+
+        if target.tail.is_empty() {
+            return Err(CodegenError::Unsupported(format!(
+                "lvalue walker called with empty tail for `{}`",
+                target.head.name
+            )));
+        }
+
+        for (i, seg) in target.tail.iter().enumerate() {
+            let is_last = i == target.tail.len() - 1;
+            match seg {
+                LValueSeg::Field(fident) => {
+                    let (struct_ty, fields) =
+                        cur_struct.clone().ok_or_else(|| {
+                            CodegenError::Unsupported(format!(
+                                "field access `.{}` on non-struct lvalue `{}`",
+                                fident.name, name
+                            ))
+                        })?;
+                    let (idx, fty) = fields
+                        .get(&fident.name)
+                        .cloned()
+                        .ok_or_else(|| {
+                            CodegenError::Unsupported(format!(
+                                "no field `{}` on `{}`",
+                                fident.name, name
+                            ))
+                        })?;
+                    let field_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            struct_ty,
+                            cur_ptr,
+                            idx,
+                            &format!("{}.{}.ptr", name, fident.name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    name = format!("{}.{}", name, fident.name);
+
+                    if is_last {
+                        return Ok((field_ptr, fty, name));
+                    }
+
+                    match fty {
+                        CodegenTy::TypeRef(n) => {
+                            let info =
+                                self.user_types.get(&n).cloned().ok_or_else(
+                                    || {
+                                        CodegenError::Unsupported(format!(
+                                            "lvalue: type `{}` not declared",
+                                            n
+                                        ))
+                                    },
+                                )?;
+                            let loaded = self
+                                .builder
+                                .build_load(ptr_t, field_ptr, &name)
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                                .into_pointer_value();
+                            cur_ptr = loaded;
+                            cur_struct = Some((info.struct_ty, info.fields));
+                            array_slot_ty = None;
+                        }
+                        CodegenTy::LocusRef(n) => {
+                            let info =
+                                self.user_loci.get(&n).cloned().ok_or_else(
+                                    || {
+                                        CodegenError::Unsupported(format!(
+                                            "lvalue: locus `{}` not declared",
+                                            n
+                                        ))
+                                    },
+                                )?;
+                            let loaded = self
+                                .builder
+                                .build_load(ptr_t, field_ptr, &name)
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                                .into_pointer_value();
+                            cur_ptr = loaded;
+                            cur_struct = Some((info.struct_ty, info.fields));
+                            array_slot_ty = None;
+                        }
+                        CodegenTy::Cell(inner, _)
+                            if matches!(inner.as_ref(), CodegenTy::TypeRef(_)) =>
+                        {
+                            let n = match inner.as_ref() {
+                                CodegenTy::TypeRef(n) => n.clone(),
+                                _ => unreachable!(),
+                            };
+                            let info =
+                                self.user_types.get(&n).cloned().ok_or_else(
+                                    || {
+                                        CodegenError::Unsupported(format!(
+                                            "lvalue: Cell<{}>: type not declared",
+                                            n
+                                        ))
+                                    },
+                                )?;
+                            let loaded = self
+                                .builder
+                                .build_load(ptr_t, field_ptr, &name)
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                                .into_pointer_value();
+                            cur_ptr = loaded;
+                            cur_struct = Some((info.struct_ty, info.fields));
+                            array_slot_ty = None;
+                        }
+                        CodegenTy::Array(elem, n_cap) => {
+                            cur_ptr = field_ptr;
+                            cur_struct = None;
+                            array_slot_ty =
+                                Some(CodegenTy::Array(elem, n_cap));
+                        }
+                        other => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "lvalue: cannot step into non-struct field `{}` \
+                                 of type {:?}",
+                                name, other
+                            )));
+                        }
+                    }
+                }
+                LValueSeg::Index(idx_expr) => {
+                    let arr_ty = array_slot_ty.clone().ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "index `[...]` on non-array lvalue `{}`",
+                            name
+                        ))
+                    })?;
+                    let (elem_ty, n_cap) = match arr_ty {
+                        CodegenTy::Array(elem, n) => (*elem, n),
+                        _ => unreachable!("checked above"),
+                    };
+                    let arr_ptr = self
+                        .builder
+                        .build_load(ptr_t, cur_ptr, &format!("{}.arr", name))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_pointer_value();
+                    let (idx_val, idx_ty) = self.lower_expr(idx_expr, scope)?;
+                    if idx_ty != CodegenTy::Int {
+                        return Err(CodegenError::Unsupported(format!(
+                            "array index must be Int, got {:?}",
+                            idx_ty
+                        )));
+                    }
+                    let storage_ty = self.llvm_array_storage_type(&elem_ty, n_cap);
+                    let slot_ptr = unsafe {
+                        self.builder
+                            .build_gep(
+                                storage_ty,
+                                arr_ptr,
+                                &[
+                                    i32_t.const_int(0, false),
+                                    idx_val.into_int_value(),
+                                ],
+                                &format!("{}.idx", name),
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    };
+                    name = format!("{}[idx]", name);
+
+                    if is_last {
+                        return Ok((slot_ptr, elem_ty, name));
+                    }
+
+                    match elem_ty {
+                        CodegenTy::TypeRef(ref n) => {
+                            let info =
+                                self.user_types.get(n).cloned().ok_or_else(
+                                    || {
+                                        CodegenError::Unsupported(format!(
+                                            "lvalue: type `{}` not declared",
+                                            n
+                                        ))
+                                    },
+                                )?;
+                            let loaded = self
+                                .builder
+                                .build_load(ptr_t, slot_ptr, &name)
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                                .into_pointer_value();
+                            cur_ptr = loaded;
+                            cur_struct = Some((info.struct_ty, info.fields));
+                            array_slot_ty = None;
+                        }
+                        CodegenTy::LocusRef(ref n) => {
+                            let info =
+                                self.user_loci.get(n).cloned().ok_or_else(
+                                    || {
+                                        CodegenError::Unsupported(format!(
+                                            "lvalue: locus `{}` not declared",
+                                            n
+                                        ))
+                                    },
+                                )?;
+                            let loaded = self
+                                .builder
+                                .build_load(ptr_t, slot_ptr, &name)
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                                .into_pointer_value();
+                            cur_ptr = loaded;
+                            cur_struct = Some((info.struct_ty, info.fields));
+                            array_slot_ty = None;
+                        }
+                        other => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "lvalue: cannot step into non-struct array \
+                                 element of type {:?}",
+                                other
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        unreachable!("lvalue walker exited loop without returning");
+    }
+
+    /// Common rhs-evaluate + type-check + store for the generic
+    /// lvalue walker's callers. Routes through
+    /// `emit_self_field_inplace_assign` so heap-typed slots reached
+    /// through a deeper path (e.g. `self.cache.rows[i] = Row { ... }`)
+    /// get the same anchor + memcpy treatment as the 1-segment self
+    /// fast path. The helper internally fast-paths scalar slots
+    /// (plain store) and non-self contexts (also plain store —
+    /// there's no long-lived `self.__arena` to anchor into), so
+    /// using it uniformly is always at least as correct as a bare
+    /// store.
+    fn finish_lvalue_assign(
+        &mut self,
+        slot_ptr: PointerValue<'ctx>,
+        slot_ty: CodegenTy,
+        slot_name: String,
+        op: &AssignOp,
+        value: &Expr,
+        scope: &Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let (rhs, rhs_ty) = self.lower_expr(value, scope)?;
+        let new_val = if matches!(op, AssignOp::Eq) {
+            if rhs_ty != slot_ty {
+                return Err(CodegenError::Unsupported(format!(
+                    "type mismatch in assignment to `{}`: \
+                     slot {:?} vs rhs {:?}",
+                    slot_name, slot_ty, rhs_ty
+                )));
+            }
+            rhs
+        } else {
+            let bin_op = match op {
+                AssignOp::PlusEq => BinOp::Add,
+                AssignOp::MinusEq => BinOp::Sub,
+                AssignOp::StarEq => BinOp::Mul,
+                AssignOp::SlashEq => BinOp::Div,
+                AssignOp::PercentEq => BinOp::Mod,
+                other => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "compound assignment {:?}",
+                        other
+                    )));
+                }
+            };
+            let llvm_ty = self.llvm_basic_type(&slot_ty);
+            let cur = self
+                .builder
+                .build_load(llvm_ty, slot_ptr, &slot_name)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let (v, _) = self.lower_binop(bin_op, cur, rhs, &slot_ty)?;
+            v
+        };
+        self.emit_self_field_inplace_assign(slot_ptr, new_val, &slot_ty)?;
+        Ok(BlockEnd::Open)
     }
 
     /// Bus-arena reclaim (2026-05-21): when a method body stores

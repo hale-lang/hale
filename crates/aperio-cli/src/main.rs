@@ -974,10 +974,19 @@ fn run_build(target: &Path) -> ExitCode {
             items: merged_items,
             span: merged.span,
         };
-        // myapp/ → myapp; output lands next to target.
+        // myapp/ → myapp; output lands next to target. When the
+        // user passes `.` (or any path without a useful trailing
+        // component — `./`, `..`), `Path::file_name` returns None;
+        // canonicalize to recover the actual directory name so the
+        // emitted binary is `<dir>/<dir>` instead of `<dir>/main`.
         let bin_name = target
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
+            .or_else(|| {
+                target.canonicalize().ok().and_then(|p| {
+                    p.file_name().map(|s| s.to_string_lossy().into_owned())
+                })
+            })
             .unwrap_or_else(|| "main".to_string());
         let mut output = target.to_path_buf();
         output.push(&bin_name);

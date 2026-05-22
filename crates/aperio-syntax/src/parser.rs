@@ -943,7 +943,12 @@ impl Parser {
             TokenKind::Birth | TokenKind::Accept | TokenKind::Run | TokenKind::Drain | TokenKind::Dissolve => {
                 self.parse_lifecycle_decl().map(LocusMember::Lifecycle)
             }
-            TokenKind::Mode => self.parse_mode_decl().map(LocusMember::Mode),
+            // `mode` is contextual; recognized as a member-
+            // introducer here. Frees the identifier for use as a
+            // param/field name (raylib's `cam.mode` etc.).
+            TokenKind::Ident(s) if s == "mode" => {
+                self.parse_mode_decl().map(LocusMember::Mode)
+            }
             TokenKind::OnFailure => self.parse_failure_decl().map(LocusMember::Failure),
             TokenKind::Closure => self.parse_closure_decl().map(LocusMember::Closure),
             TokenKind::Fn => self.parse_fn_decl().map(LocusMember::Fn),
@@ -1722,7 +1727,9 @@ impl Parser {
     }
 
     fn parse_mode_decl(&mut self) -> Result<ModeDecl, Diag> {
-        let kw = self.expect(TokenKind::Mode, "mode")?;
+        // Caller guarantees current token is `Ident("mode")`.
+        let kw = self.peek_token().clone();
+        self.bump();
         let kind_tok = self.bump();
         let kind = match kind_tok.kind {
             TokenKind::Bulk => ModeKind::Bulk,
@@ -3642,7 +3649,6 @@ fn try_member_keyword_as_name(k: &TokenKind) -> Option<&'static str> {
         TokenKind::Contract => "contract",
         TokenKind::Bus => "bus",
         TokenKind::Capacity => "capacity",
-        TokenKind::Mode => "mode",
         TokenKind::Tier => "tier",
         TokenKind::Projection => "projection",
         TokenKind::Perspective => "perspective",

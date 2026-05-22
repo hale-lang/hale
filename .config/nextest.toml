@@ -1,0 +1,21 @@
+# nextest configuration for the workspace test suite.
+#
+# Most tests are fully process-isolated (one process per test) and
+# write to per-test /tmp paths that nextest's process model already
+# keeps apart. A handful of tests instead build into a committed
+# fixture directory under `crates/aperio-cli/tests/fixtures/` —
+# they share that on-disk path and race when run in parallel
+# (test A deletes the built binary at preamble while test B is
+# between its successful build and its `read(&built_bin)`, dropping
+# B with ENOENT). The libtest --test-threads=1 flag avoids the
+# same race locally; this file is the nextest equivalent.
+#
+# `test-group = { max-threads = 1 }` serializes only the binaries
+# named below; everything else stays fully parallel.
+
+[[profile.default.overrides]]
+filter = 'binary(three_hop_import)'
+test-group = 'shared-fixture-dir'
+
+[test-groups]
+shared-fixture-dir = { max-threads = 1 }
