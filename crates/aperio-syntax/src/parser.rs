@@ -323,9 +323,25 @@ impl Parser {
     }
 
     fn parse_top_decl(&mut self) -> Result<TopDecl, Diag> {
-        // v1.x-FORM-1: optional `@form(...)` annotation prefix.
-        // v1 recognizes this only as a prefix to `locus`.
+        // Annotation prefix dispatch. `@form(...)` precedes
+        // `locus`; `@ffi("c")` precedes `fn`. Peek the ident after
+        // `@` to decide which annotation parser to call.
         if matches!(self.peek(), TokenKind::At) {
+            let kind_tok = self.peek_at(1);
+            let is_ffi = matches!(&kind_tok, TokenKind::Ident(s) if s == "ffi");
+            if is_ffi {
+                let ffi = self.parse_ffi_annotation()?;
+                if !matches!(self.peek(), TokenKind::Fn) {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "expected `fn` after `@ffi(...)` annotation",
+                    ));
+                }
+                let mut fn_decl = self.parse_fn_decl_with_ffi(Some(ffi.clone()))?;
+                fn_decl.span = ffi.span.merge(fn_decl.span);
+                return Ok(TopDecl::Fn(fn_decl));
+            }
+            // Otherwise expect `@form(...)` followed by `locus`.
             let form = self.parse_form_annotation()?;
             if !matches!(self.peek(), TokenKind::Locus) {
                 return Err(Diag::parse(
@@ -476,7 +492,7 @@ impl Parser {
         if !is_form {
             return Err(Diag::parse(
                 next.span,
-                "expected `form` after `@` (v1 recognizes only `@form(...)` annotations)",
+                "expected `form` or `ffi` after `@` (recognized annotation prefixes)",
             ));
         }
         self.bump();
@@ -498,6 +514,57 @@ impl Parser {
         Ok(FormAnnotation {
             name: form_name,
             args,
+            span: at.span.merge(close.span),
+        })
+    }
+
+    /// Stage-1 FFI (2026-05-22): parse `@ffi("c")` — the
+    /// annotation prefix that marks the following `fn` declaration
+    /// as an external C-ABI binding. Stage 1 accepts only the
+    /// literal `"c"`; future ABIs (e.g. `"system"`) would extend
+    /// the set. The annotation is only valid in front of a
+    /// top-level free fn at Stage 1 (the dispatch in
+    /// `parse_top_decl` enforces this).
+    ///
+    /// Grammar: `'@' 'ffi' '(' STRING ')'`.
+    fn parse_ffi_annotation(&mut self) -> Result<FfiAnnotation, Diag> {
+        let at = self.expect(TokenKind::At, "@")?;
+        let next = self.peek_token().clone();
+        let is_ffi = matches!(&next.kind, TokenKind::Ident(s) if s == "ffi");
+        if !is_ffi {
+            return Err(Diag::parse(
+                next.span,
+                "expected `ffi` after `@`",
+            ));
+        }
+        self.bump();
+        self.expect(TokenKind::LParen, "(")?;
+        let abi_tok = self.peek_token().clone();
+        let abi = match &abi_tok.kind {
+            TokenKind::StringLit(s) => {
+                self.bump();
+                s.clone()
+            }
+            _ => {
+                return Err(Diag::parse(
+                    abi_tok.span,
+                    "expected ABI string literal — `@ffi(\"c\")` is the only \
+                     form accepted at Stage 1",
+                ));
+            }
+        };
+        if abi != "c" {
+            return Err(Diag::parse(
+                abi_tok.span,
+                format!(
+                    "unsupported FFI ABI {:?} — Stage 1 accepts only `\"c\"`",
+                    abi
+                ),
+            ));
+        }
+        let close = self.expect(TokenKind::RParen, ")")?;
+        Ok(FfiAnnotation {
+            abi,
             span: at.span.merge(close.span),
         })
     }
@@ -2080,6 +2147,21 @@ impl Parser {
     }
 
     fn parse_fn_decl(&mut self) -> Result<FnDecl, Diag> {
+        self.parse_fn_decl_with_ffi(None)
+    }
+
+    /// Stage-1 FFI: when `ffi` is `Some(_)`, the fn declaration
+    /// terminates with `;` instead of a `{ ... }` body. A
+    /// synthesized empty `Block` is stored so downstream consumers
+    /// (typecheck, codegen) can keep the existing `body: Block`
+    /// shape; they branch on `fd.ffi.is_some()` to take the FFI
+    /// code paths. Fallible markers are rejected on FFI fns —
+    /// failure crosses the C-ABI boundary as an error sentinel,
+    /// not via Aperio's fallible channel.
+    fn parse_fn_decl_with_ffi(
+        &mut self,
+        ffi: Option<FfiAnnotation>,
+    ) -> Result<FnDecl, Diag> {
         let kw = self.expect(TokenKind::Fn, "fn")?;
         let name = self.expect_ident("function name")?;
         let generics = self.parse_generic_params_opt()?;
@@ -2103,6 +2185,45 @@ impl Parser {
         // followed immediately by `(`. Outside this position,
         // `fallible` is an ordinary ident.
         let fallible = self.parse_fallible_marker_opt()?;
+        if let Some(ffi_marker) = &ffi {
+            if !generics.is_empty() {
+                return Err(Diag::parse(
+                    ffi_marker.span,
+                    "`@ffi` fn must not be generic — the C-ABI boundary \
+                     is monomorphic",
+                ));
+            }
+            if let Some(fallible_ty) = &fallible {
+                return Err(Diag::parse(
+                    fallible_ty.span(),
+                    "`@ffi` fn must not be `fallible(...)` — C functions \
+                     return an error sentinel, the Aperio wrapper above \
+                     translates to `fallible(E)` if needed",
+                ));
+            }
+            let semi = self.expect(
+                TokenKind::Semi,
+                "; (an `@ffi` fn declaration has no body)",
+            )?;
+            // Synthesize an empty block so downstream consumers
+            // keep the existing `body: Block` shape. The block's
+            // span points at the trailing `;` of the declaration.
+            let body = Block {
+                stmts: Vec::new(),
+                tail: None,
+                span: semi.span,
+            };
+            return Ok(FnDecl {
+                name,
+                generics,
+                params,
+                ret,
+                fallible,
+                ffi,
+                span: kw.span.merge(semi.span),
+                body,
+            });
+        }
         // Push/pop fallible-body context around the body so
         // `fail <expr>;` is recognized inside (and only inside)
         // a fallible fn's body.
@@ -2116,6 +2237,7 @@ impl Parser {
             params,
             ret,
             fallible,
+            ffi,
             span: kw.span.merge(body.span),
             body,
         })

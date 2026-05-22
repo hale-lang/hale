@@ -32,6 +32,16 @@ indirect calls prepend it before user-visible args. See
 `stdlib/io_tcp.ap` for the canonical use:
 `Listener.on_connection: fn(std::io::tcp::Stream)`.
 
+**FFI-portable subset (Stage-1 FFI, 2026-05-22):** the primitive
+type set above carries an additional axis of distinction at the
+`@ffi("c")` boundary: which types have a stable C-ABI mapping.
+`Int` / `Float` / `Bool` / `Duration` / `Time` / `String` /
+`Bytes` / `BytesView` / `StringView` may appear in `@ffi`
+parameter and return positions; `Decimal` / `Uint` are
+typecheck-rejected (platform-variable ABI or Aperio-internal).
+See [`spec/ffi.md`](./ffi.md) for the full marshalling table and
+the lifetime contract.
+
 ## Compound types
 
 | Construct | Form | Notes |

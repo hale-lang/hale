@@ -45,6 +45,15 @@ magic path; see [`design-rationale.md` § F.25](./design-rationale.md).
   third-party module; nothing in stdlib is tied into the
   compiler.
 
+`std::*` is the curated path for ships-with-the-compiler bindings
+(libc + OpenSSL only at the link floor). User-extensible C-ABI
+bindings live outside this surface — see [`spec/ffi.md`](./ffi.md)
+for `@ffi("c")` declarations, the mechanism by which library
+authors land bindings to third-party C libraries (raylib, sqlite,
+curl, ...) in community repos like pond. The stdlib's narrow link
+surface is preserved exactly because user code can extend the FFI
+surface without touching the compiler.
+
 ## Module surface
 
 | Namespace | Surface | Source |

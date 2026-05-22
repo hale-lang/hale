@@ -686,6 +686,92 @@ fn collect_known_names(top: &TopScope) -> BTreeMap<String, Span> {
     m
 }
 
+/// Stage-1 FFI (2026-05-22): predicate returning the rejection
+/// reason if `ty` is not portable across the C-ABI boundary.
+/// Returns `None` when the type is permitted in `@ffi` parameter
+/// and return positions. See `spec/ffi.md` for the contract.
+///
+/// Stage 1 allows: scalar primitives (Int / Float / Bool /
+/// Duration / Time), reference primitives with stable C
+/// representation (String → `const char *`, Bytes → Aperio
+/// `[int64 len][payload]` ptr, BytesView / StringView → 16-byte
+/// struct by value), and named user-type structs (layout-
+/// compatible C struct by value — the library author is
+/// responsible for keeping the Aperio side and C side in sync;
+/// future spec iteration may add a layout-assertion mechanism).
+///
+/// Stage 1 rejects: `Decimal` (i128 ABI is platform-variable),
+/// `Uint` (Aperio-internal type, no portable C mapping at v0),
+/// projections / arrays / tuples / fallibles / functions / unit-
+/// in-param-position. Unit (`Ty::Unit`) is allowed only as a
+/// return type — the parser models `fn ...;` (no `-> T`) as
+/// `ret: None`, which downstream represents as Unit; the caller
+/// of this predicate already handles that path.
+fn ffi_type_unportable(ty: &Ty) -> Option<&'static str> {
+    match ty {
+        Ty::Prim(p) => match p {
+            PrimType::Int
+            | PrimType::Float
+            | PrimType::Bool
+            | PrimType::String
+            | PrimType::Bytes
+            | PrimType::BytesView
+            | PrimType::StringView
+            | PrimType::Time
+            | PrimType::Duration => None,
+            PrimType::Decimal => Some(
+                "Decimal (i128) has platform-variable ABI; marshal as \
+                 Int/Float at the Aperio side instead",
+            ),
+            PrimType::Uint => Some(
+                "Uint is Aperio-internal; declare as Int in the @ffi \
+                 signature",
+            ),
+        },
+        // Unit allowed in return position; check_fn handles `ret:
+        // None`. A `Ty::Unit` reaching this predicate from a param
+        // came from an empty `()` type expr, which is invalid.
+        Ty::Unit => Some(
+            "() (unit) is not a meaningful FFI parameter type",
+        ),
+        // Named user-type structs are permitted at Stage 1. The
+        // library author is responsible for keeping the Aperio
+        // struct's field order + types layout-compatible with the
+        // C struct on the other side. Future spec iteration may
+        // add a `@ffi_layout("c")` attribute for compile-time
+        // layout assertions.
+        Ty::Named(_) => None,
+        Ty::Projection(_, _) => Some(
+            "projection-typed values (Rich / Chunked / Recognition) \
+             carry per-locus metadata and don't cross the C-ABI \
+             boundary",
+        ),
+        Ty::Array(_, _) => Some(
+            "fixed-size arrays don't cross the C-ABI boundary at \
+             Stage 1; pass Bytes / a wrapper struct instead",
+        ),
+        Ty::Tuple(_) => Some(
+            "tuples have no portable C struct layout; declare a named \
+             type instead",
+        ),
+        Ty::Function { .. } => Some(
+            "function-pointer types are not yet FFI-portable; declare \
+             the wrapper at the C side and pass a struct/handle",
+        ),
+        Ty::Fallible { .. } => Some(
+            "fallible(E) is an Aperio internal channel; C functions \
+             must return an error sentinel and the Aperio wrapper \
+             above translates",
+        ),
+        // Unknown comes from unresolved type names. Be permissive
+        // — the named-type resolution may not have completed yet,
+        // or the type may live behind an import this check can't
+        // see. Codegen will catch genuinely-broken signatures at
+        // LLVM-declaration emit time.
+        Ty::Unknown => None,
+    }
+}
+
 struct Checker<'a> {
     top: &'a TopScope,
     known: &'a BTreeMap<String, Span>,
@@ -1741,6 +1827,53 @@ impl<'a> Checker<'a> {
         let prev_locus = self.current_locus;
         if locus.is_some() {
             self.current_locus = locus;
+        }
+        // Stage-1 FFI (2026-05-22): @ffi fn declarations validate
+        // their parameter and return types against the FFI-portable
+        // type set, then skip body verification (the body is a
+        // synthesized empty Block, per parse_fn_decl_with_ffi).
+        // Locus context is forbidden — @ffi only valid on top-level
+        // free fns at Stage 1; the parser dispatch in
+        // parse_top_decl enforces this, but defend in depth here.
+        if let Some(ffi) = &decl.ffi {
+            if locus.is_some() {
+                self.diags.push(Diag::ty(
+                    ffi.span,
+                    "`@ffi` is only valid on top-level free fns at Stage 1, \
+                     not on locus methods",
+                ));
+            }
+            for p in &decl.params {
+                let ty = resolve_type_expr(&p.ty, self.known);
+                if let Some(reason) = ffi_type_unportable(&ty) {
+                    self.diags.push(Diag::ty(
+                        p.ty.span(),
+                        format!(
+                            "`@ffi` fn `{}` parameter `{}` has type {} — {}",
+                            decl.name.name,
+                            p.name.name,
+                            ty.display(),
+                            reason,
+                        ),
+                    ));
+                }
+            }
+            if let Some(ret_te) = &decl.ret {
+                let ret_ty = resolve_type_expr(ret_te, self.known);
+                if let Some(reason) = ffi_type_unportable(&ret_ty) {
+                    self.diags.push(Diag::ty(
+                        ret_te.span(),
+                        format!(
+                            "`@ffi` fn `{}` return type {} — {}",
+                            decl.name.name,
+                            ret_ty.display(),
+                            reason,
+                        ),
+                    ));
+                }
+            }
+            self.current_locus = prev_locus;
+            return;
         }
         // v1.x-FORM-1: push fallible_ctx if this fn is fallible.
         let prev_fallible = self.fallible_ctx.take();

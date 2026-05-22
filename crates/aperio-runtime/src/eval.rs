@@ -4241,6 +4241,9 @@ fn lookup_method(decl: &LocusDecl, name: &str) -> Option<FnDecl> {
                     params: md.params.clone(),
                     ret: md.ret.clone(),
                     fallible: None,
+                    // Synthesized FnDecl wrapping a mode body —
+                    // never an @ffi declaration.
+                    ffi: None,
                     body: md.body.clone(),
                     span: md.span,
                 });

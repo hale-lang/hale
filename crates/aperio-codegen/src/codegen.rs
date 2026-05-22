@@ -182,6 +182,18 @@ impl std::fmt::Display for CodegenError {
 
 impl std::error::Error for CodegenError {}
 
+/// Stage-1 FFI (2026-05-22): per-build link surface declared by
+/// `@ffi("c")` consumers. `link_libs` accumulate as `-l<name>` on
+/// the clang link line; `csrc_files` compile alongside the C
+/// runtime. Stage 2 will populate this from `aperio.toml [ffi]`
+/// sections of imported libs; Stage 1 wires it through the CLI's
+/// `--link` and `--csrc` flags.
+#[derive(Default, Debug, Clone)]
+pub struct BuildOptions {
+    pub link_libs: Vec<String>,
+    pub csrc_files: Vec<std::path::PathBuf>,
+}
+
 /// Compile `program` to an executable at `output_path`. Uses
 /// `clang` to link the object file produced by LLVM. Equivalent
 /// to `build_executable_with_imports(program, output_path, &[])`;
@@ -206,6 +218,23 @@ pub fn build_executable_with_imports(
     program: &Program,
     output_path: &Path,
     import_renames: &[(Vec<String>, String)],
+) -> Result<(), CodegenError> {
+    build_executable_with_options(
+        program,
+        output_path,
+        import_renames,
+        &BuildOptions::default(),
+    )
+}
+
+/// Stage-1 FFI entry point. Accepts a `BuildOptions` that carries
+/// the link surface for `@ffi("c")` consumers. The CLI's `--link`
+/// and `--csrc` flags route here.
+pub fn build_executable_with_options(
+    program: &Program,
+    output_path: &Path,
+    import_renames: &[(Vec<String>, String)],
+    options: &BuildOptions,
 ) -> Result<(), CodegenError> {
     // A7 (G16): resolve `BusSubject::QualifiedTopic(alias::Foo)`
     // — cross-seed topic refs the parser admits — to plain
@@ -469,6 +498,18 @@ pub fn build_executable_with_imports(
         // Adding these unconditionally is harmless when no
         // staticlib symbols are actually pulled in.
         clang.arg("-ldl").arg("-lm");
+    }
+    // Stage-1 FFI: append the per-build link surface from
+    // BuildOptions. Each `--link <lib>` becomes `-l<lib>`; each
+    // `--csrc <path>` is passed directly to clang as a translation
+    // unit compiled alongside the runtime. The `@ffi("c") fn ...`
+    // declarations in user code emit LLVM externs that the linker
+    // resolves against these inputs.
+    for lib in &options.link_libs {
+        clang.arg(format!("-l{}", lib));
+    }
+    for csrc in &options.csrc_files {
+        clang.arg(csrc);
     }
     let status = clang
         .arg("-o")
@@ -1324,6 +1365,15 @@ struct FnSig<'ctx> {
     /// KwSelf / Field read / Index read / numeric Binary / Unary /
     /// If with non-allocating arms → non-allocating.
     non_allocating: bool,
+    /// Stage-1 FFI (2026-05-22): when `true`, this fn is an
+    /// `@ffi("c")` declaration. The LLVM-level signature uses the
+    /// C-ABI shape directly (no implicit `__caller_arena` prefix,
+    /// no fallible sret slots, no Aperio-internal type wrapping).
+    /// Body lowering is skipped (the body is an empty synthesized
+    /// block per the parser). Call sites take the FFI dispatch in
+    /// `lower_user_fn_call` — direct call with the user-visible
+    /// args only.
+    is_ffi: bool,
 }
 
 /// FORM-3 (2026-05-13): syntactic classifier for fn bodies that
@@ -8423,6 +8473,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .fallible
                     .as_ref()
                     .map(|t| Self::substitute_type_expr(t, subst)),
+                // @ffi is only valid on top-level free fns at
+                // Stage 1, never on locus members — but copy the
+                // field through for shape uniformity.
+                ffi: fd.ffi.clone(),
                 body: Self::substitute_block_type_ascriptions(
                     &fd.body, subst,
                 ),
@@ -8662,6 +8716,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             params: new_params,
             ret: new_ret,
             fallible: new_fallible,
+            // Monomorphized fns inherit the template's @ffi
+            // annotation; @ffi + generics is rejected at parse
+            // time so in practice this is always None here.
+            ffi: template.ffi.clone(),
             body: new_body,
             span: template.span.clone(),
         })
@@ -11637,6 +11695,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // are known and inference can pin the type args.
             return Ok(());
         }
+        // Stage-1 FFI (2026-05-22): @ffi("c") declarations get a
+        // separate signature build — no implicit __caller_arena
+        // prefix, no fallible sret slots, no Aperio-internal type
+        // wrapping. The LLVM function is `add_function`-emitted
+        // with the literal Aperio fn name as the C symbol; with
+        // no body emitted later (lower_user_fn_body skips for
+        // ffi), LLVM treats this as `declare` and the linker
+        // resolves at link time against the .c file the library
+        // author shipped.
+        if f.ffi.is_some() {
+            return self.declare_ffi_fn(f);
+        }
         let mut param_tys = Vec::with_capacity(f.params.len());
         let ptr_t_for_caller_arena =
             self.context.ptr_type(AddressSpace::default());
@@ -11789,9 +11859,142 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ret: ret_ty,
                 fallible: fallible_payload_ty,
                 non_allocating,
+                is_ffi: false,
             },
         );
         Ok(())
+    }
+
+    /// Stage-1 FFI (2026-05-22): declare an `@ffi("c")` fn at the
+    /// LLVM level. The C-ABI signature is built from the Aperio
+    /// types per `spec/ffi.md`'s marshalling table — no implicit
+    /// `__caller_arena` prefix, no fallible sret slots, no
+    /// monomorphization. The LLVM symbol is the literal Aperio fn
+    /// name; the library author's `.c` glue exports a function
+    /// with that same name, and the linker resolves at link time.
+    /// No body IR is emitted (the parser synthesizes an empty
+    /// `Block` for @ffi fns; `lower_user_fn_body` short-circuits).
+    /// Result: LLVM emits `declare <ret> @<name>(<args>)` and the
+    /// final link line picks up the implementation.
+    fn declare_ffi_fn(&mut self, f: &FnDecl) -> Result<(), CodegenError> {
+        let mut param_tys = Vec::with_capacity(f.params.len());
+        let mut llvm_param_tys: Vec<inkwell::types::BasicMetadataTypeEnum> =
+            Vec::with_capacity(f.params.len());
+        let mut defaults: Vec<Option<Expr>> = Vec::with_capacity(f.params.len());
+        for p in &f.params {
+            if p.default.is_some() {
+                return Err(CodegenError::Unsupported(format!(
+                    "@ffi fn `{}`: parameter defaults are not supported \
+                     across the C-ABI boundary (param `{}` has a default)",
+                    f.name.name, p.name.name
+                )));
+            }
+            let lt = self.type_expr_to_codegen_ty(&p.ty)?;
+            let llvm_ty = self.llvm_ffi_param_type(&lt, &f.name.name, &p.name.name)?;
+            llvm_param_tys.push(llvm_ty);
+            param_tys.push(lt);
+            defaults.push(None);
+        }
+        let ret_te_normalized: Option<&TypeExpr> = match &f.ret {
+            Some(TypeExpr::Tuple(parts, _)) if parts.is_empty() => None,
+            other => other.as_ref(),
+        };
+        let ret_ty: Option<CodegenTy> = match ret_te_normalized {
+            Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
+            None => None,
+        };
+        let fn_ty = match &ret_ty {
+            Some(rt) => {
+                let llvm_ret = self.llvm_ffi_return_type(rt, &f.name.name)?;
+                llvm_ret.fn_type(&llvm_param_tys, false)
+            }
+            None => self
+                .context
+                .void_type()
+                .fn_type(&llvm_param_tys, false),
+        };
+        let func = self.module.add_function(&f.name.name, fn_ty, None);
+        self.user_fns.insert(
+            f.name.name.clone(),
+            FnSig {
+                func,
+                params: param_tys,
+                defaults,
+                ret: ret_ty,
+                fallible: None,
+                non_allocating: true,
+                is_ffi: true,
+            },
+        );
+        Ok(())
+    }
+
+    /// FFI parameter-type lowering. Maps an Aperio codegen type to
+    /// the LLVM type used at the C-ABI boundary per `spec/ffi.md`.
+    /// User-type structs (TypeRef) are not yet wired for FFI
+    /// codegen at Stage 1 — returns a clear `Unsupported` error
+    /// so the library author knows to wait for the struct-passing
+    /// PR rather than silently misuse it.
+    fn llvm_ffi_param_type(
+        &self,
+        ty: &CodegenTy,
+        fn_name: &str,
+        param_name: &str,
+    ) -> Result<inkwell::types::BasicMetadataTypeEnum<'ctx>, CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        match ty {
+            CodegenTy::Int
+            | CodegenTy::Duration
+            | CodegenTy::Time => Ok(self.context.i64_type().into()),
+            CodegenTy::Float => Ok(self.context.f64_type().into()),
+            CodegenTy::Bool => Ok(self.context.i32_type().into()),
+            CodegenTy::String | CodegenTy::Bytes => Ok(ptr_t.into()),
+            CodegenTy::BytesView | CodegenTy::StringView => {
+                // 16-byte struct by value: { ptr, i64 }.
+                Ok(self.view_struct_ty().into())
+            }
+            CodegenTy::TypeRef(_)
+            | CodegenTy::Tuple(_)
+            | CodegenTy::Array(_, _)
+            | CodegenTy::Interface(_)
+            | CodegenTy::Enum(_)
+            | CodegenTy::LocusRef(_)
+            | CodegenTy::Cell(_, _)
+            | CodegenTy::FnPtr { .. }
+            | CodegenTy::Decimal => Err(CodegenError::Unsupported(format!(
+                "@ffi fn `{}` parameter `{}`: type {:?} is not yet wired \
+                 for FFI codegen at Stage 1 (typecheck permitted it but \
+                 the LLVM marshalling has not landed). See spec/ffi.md \
+                 for the supported set.",
+                fn_name, param_name, ty
+            ))),
+        }
+    }
+
+    /// FFI return-type lowering. Mirror of `llvm_ffi_param_type`
+    /// for the return slot.
+    fn llvm_ffi_return_type(
+        &self,
+        ty: &CodegenTy,
+        fn_name: &str,
+    ) -> Result<inkwell::types::BasicTypeEnum<'ctx>, CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        match ty {
+            CodegenTy::Int
+            | CodegenTy::Duration
+            | CodegenTy::Time => Ok(self.context.i64_type().into()),
+            CodegenTy::Float => Ok(self.context.f64_type().into()),
+            CodegenTy::Bool => Ok(self.context.i32_type().into()),
+            CodegenTy::String | CodegenTy::Bytes => Ok(ptr_t.into()),
+            CodegenTy::BytesView | CodegenTy::StringView => {
+                Ok(self.view_struct_ty().into())
+            }
+            _ => Err(CodegenError::Unsupported(format!(
+                "@ffi fn `{}` return type {:?} is not yet wired for \
+                 FFI codegen at Stage 1. See spec/ffi.md.",
+                fn_name, ty
+            ))),
+        }
     }
 
     /// Lower a user fn's body. Each declared param is materialized
@@ -11812,6 +12015,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // call sites pin the type args. lower_call_expr
             // synthesizes + lowers per-instantiation bodies on-
             // demand.
+            return Ok(());
+        }
+        if f.ffi.is_some() {
+            // Stage-1 FFI: @ffi fns have no Aperio-side body to
+            // lower. The LLVM declaration emitted by declare_ffi_fn
+            // is sufficient; the linker resolves against the
+            // library author's C glue at link time.
             return Ok(());
         }
         let sig = self
@@ -13454,6 +13664,100 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .expect("view-unpack helper returns ptr"))
     }
 
+    /// Stage-1 FFI (2026-05-22): lower a call to an `@ffi("c")`
+    /// declaration. Direct call into the LLVM-declared extern with
+    /// the user-visible args only — no implicit `__caller_arena`
+    /// prefix, no fallible sret slots, no monomorphization. Each
+    /// arg is lowered normally then coerced to the C-ABI shape:
+    /// `Bool` zero-extends to i32; views unpack to their 16-byte
+    /// struct; String / Bytes pass as ptr unchanged; scalars
+    /// (Int / Float / Time / Duration) pass through.
+    fn lower_ffi_fn_call(
+        &mut self,
+        name: &str,
+        sig: &FnSig<'ctx>,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
+        if args.len() != sig.params.len() {
+            return Err(CodegenError::Unsupported(format!(
+                "@ffi fn `{}` expects {} args, got {}",
+                name,
+                sig.params.len(),
+                args.len()
+            )));
+        }
+        let mut lowered_args: Vec<inkwell::values::BasicMetadataValueEnum> =
+            Vec::with_capacity(args.len());
+        for (i, arg) in args.iter().enumerate() {
+            let (val, val_ty) = self.lower_expr(arg, scope)?;
+            let expected = &sig.params[i];
+            if &val_ty != expected {
+                return Err(CodegenError::Unsupported(format!(
+                    "@ffi fn `{}` arg {}: expected {:?}, got {:?}",
+                    name, i, expected, val_ty
+                )));
+            }
+            let coerced: inkwell::values::BasicValueEnum<'ctx> =
+                match expected {
+                    CodegenTy::Bool => {
+                        // Aperio Bool lowers to LLVM i1; the C ABI
+                        // table uses i32. Zero-extend at the call.
+                        let i32_t = self.context.i32_type();
+                        let zext = self
+                            .builder
+                            .build_int_z_extend(
+                                val.into_int_value(),
+                                i32_t,
+                                "ffi.bool.zext",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        zext.into()
+                    }
+                    _ => val,
+                };
+            lowered_args.push(coerced.into());
+        }
+        let call = self
+            .builder
+            .build_call(sig.func, &lowered_args, &format!("{}.ffi.call", name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ret_ty_opt = sig.ret.clone();
+        match ret_ty_opt {
+            None => Ok(None),
+            Some(ret_ty) => {
+                let raw = call
+                    .try_as_basic_value()
+                    .left()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "@ffi fn `{}` declared a return type but the \
+                             LLVM call produced no value",
+                            name
+                        ))
+                    })?;
+                let coerced = match &ret_ty {
+                    CodegenTy::Bool => {
+                        // C-side returned i32; truncate back to i1
+                        // for Aperio's Bool ABI internally.
+                        let i1_t = self.context.bool_type();
+                        let trunc = self
+                            .builder
+                            .build_int_truncate(
+                                raw.into_int_value(),
+                                i1_t,
+                                "ffi.bool.trunc",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        trunc.into()
+                    }
+                    _ => raw,
+                };
+                Ok(Some((coerced, ret_ty)))
+            }
+        }
+    }
+
     fn lower_user_fn_call(
         &mut self,
         name: &str,
@@ -13467,6 +13771,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .ok_or_else(|| {
                 CodegenError::Unsupported(format!("call to unknown fn `{}`", name))
             })?;
+        if sig.is_ffi {
+            return self.lower_ffi_fn_call(name, &sig, args, scope);
+        }
         if sig.fallible.is_some() {
             return Err(CodegenError::Unsupported(format!(
                 "fallible fn `{}`: call must be addressed via `or raise` / \

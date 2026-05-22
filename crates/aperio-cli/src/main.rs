@@ -881,7 +881,19 @@ fn run_build(target: &Path) -> ExitCode {
         }
         return ExitCode::from(1);
     }
-    match aperio_codegen::build_executable_with_imports(&program, &output, &renames) {
+    let options = match parse_build_options() {
+        Ok(o) => o,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            return ExitCode::from(2);
+        }
+    };
+    match aperio_codegen::build_executable_with_options(
+        &program,
+        &output,
+        &renames,
+        &options,
+    ) {
         Ok(()) => {
             eprintln!("built: {}", output.display());
             ExitCode::SUCCESS
@@ -891,6 +903,43 @@ fn run_build(target: &Path) -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+/// Stage-1 FFI (2026-05-22): parse `--link` / `--csrc` flags from
+/// `aperio build`'s trailing argv. Each flag is repeatable; the
+/// flag and its value are two separate argv entries (no `=`
+/// shorthand at Stage 1). Unknown flags surface as a clear
+/// diagnostic so the user knows we didn't silently swallow them.
+fn parse_build_options() -> Result<aperio_codegen::BuildOptions, String> {
+    let mut opts = aperio_codegen::BuildOptions::default();
+    let args: Vec<String> = std::env::args().collect();
+    let mut i = 3;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--link" => {
+                let v = args.get(i + 1).ok_or_else(|| {
+                    "--link requires a library name (e.g. --link raylib)"
+                        .to_string()
+                })?;
+                opts.link_libs.push(v.clone());
+                i += 2;
+            }
+            "--csrc" => {
+                let v = args.get(i + 1).ok_or_else(|| {
+                    "--csrc requires a path to a .c file".to_string()
+                })?;
+                opts.csrc_files.push(std::path::PathBuf::from(v));
+                i += 2;
+            }
+            other => {
+                return Err(format!(
+                    "unknown `aperio build` flag: {}",
+                    other
+                ));
+            }
+        }
+    }
+    Ok(opts)
 }
 
 /// Merge a set of parsed Programs into a single Program by

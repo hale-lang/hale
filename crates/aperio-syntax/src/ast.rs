@@ -149,6 +149,24 @@ pub struct FormAnnotation {
     pub span: Span,
 }
 
+/// `@ffi("c")` annotation on a free fn declaration. Marks the fn
+/// as an external C-ABI binding: parser accepts no body
+/// (terminator is `;`), typechecker validates the parameter and
+/// return types against the FFI-portable subset (see
+/// `spec/ffi.md`), codegen emits an LLVM `declare` rather than a
+/// `define`. Call sites lower as direct calls to the symbol named
+/// by the fn — no `__std_*` mangling.
+///
+/// `abi` is currently always `"c"`; future ABIs (e.g. `"system"`
+/// for Windows stdcall) would extend the set. Annotation only
+/// valid on top-level free fns at Stage 1; locus methods,
+/// perspective methods, and interface signatures may not carry it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FfiAnnotation {
+    pub abi: String,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FormArg {
     pub name: Ident,
@@ -850,6 +868,13 @@ pub struct FnDecl {
     /// (see [`Stmt::Fail`]) exits via the error path with the
     /// expression as the typed payload.
     pub fallible: Option<TypeExpr>,
+    /// Stage-1 FFI (2026-05-22): optional `@ffi("c")` annotation
+    /// marking this fn as an external C-ABI binding. When `Some`,
+    /// `body` is a synthesized empty block (parser accepts no
+    /// body; terminator is `;`) and downstream passes (typecheck,
+    /// codegen) take the FFI-specific code paths. See
+    /// `notes/ffi-design.md` and `spec/ffi.md`.
+    pub ffi: Option<FfiAnnotation>,
     pub body: Block,
     pub span: Span,
 }
