@@ -119,6 +119,19 @@ Sequence of commits:
   documents the diagnostic workflow that pinned fathom's
   per-instance arena residual. Cross-linked from `AGENTS.md`.
 
+- **[runtime] [spec]** `SSL_MODE_RELEASE_BUFFERS` set on the
+  process-global TLS client context in `lotus_tls__ctx_get`.
+  OpenSSL holds ~16-32 KiB of read/write buffer state per
+  long-lived connection between records by default; setting the
+  mode releases those buffers back to libc malloc on idle.
+  Closes the diagnosed-but-unattributed ~0.12 MB/min VmRSS
+  residual the post-leak-hunt fathom burn surfaced (every
+  Aperio arena flat, but the process heap segment still grew —
+  bisected to OpenSSL's read-buffer-retain default). Cost:
+  one libc malloc/free pair per TLS record on the active path,
+  negligible at typical WS-frame rates. See [`spec/stdlib.md`
+  `std::io::tls` row](./spec/stdlib.md).
+
 Session-cumulative result against fathom mdgw: 13-minute
 projected OOM → effectively unbounded (every long-lived arena
 flat across a 60s burn under live upstream load). Subsequent

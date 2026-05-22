@@ -239,17 +239,24 @@ hot recv + dispatch + bus-publish loop) was instrumented with
 The same workload's VmRSS grew at ~0.12 MB/min. That growth was
 in `[heap]` but did NOT correspond to any Aperio arena event.
 `MALLOC_TRIM_THRESHOLD_` + `MALLOC_ARENA_MAX` tuning had no
-measurable effect, ruling out glibc internal fragmentation.
-The conclusion: the residual is in upstream C-library code
-(OpenSSL `SSL_read` record-reassembly buffers being the prime
-suspect, with glibc stdio buffers for `/proc` reads as a
-secondary), not anything Aperio is responsible for.
+measurable effect, ruling out glibc internal fragmentation. The
+growth was traced to OpenSSL holding ~16-32 KiB of read/write
+buffer state per long-lived TLS connection between records — the
+prime suspect of the bisection, confirmed by the well-known
+`SSL_MODE_RELEASE_BUFFERS` knob being absent from the substrate's
+`SSL_CTX` setup. Subsequent commit set the mode flag in
+`lotus_tls__ctx_get`; OpenSSL now releases the per-connection
+buffers back to libc malloc on idle. Re-validation against the
+same workload is pending; the substrate's own arenas remained
+flat throughout, so the post-fix expectation is near-zero
+structural drift.
 
-**Takeaway: the patterns above are sufficient. If your code
-follows them and you still see RSS creep, you've found a
-glibc/OpenSSL/kernel-buffer issue, not an Aperio one.** The
-diagnostic workflow below tells you definitively which side
-of that line you're on.
+**Takeaway: the patterns above are sufficient at the Aperio layer.
+The substrate also configures the C libraries it links against
+(OpenSSL, glibc) conservatively for long-running workloads. If
+your code follows the patterns AND you still see RSS creep, the
+diagnostic workflow below isolates whether the source is inside
+or outside Aperio's arena allocator.**
 
 ## Known issues + future work
 

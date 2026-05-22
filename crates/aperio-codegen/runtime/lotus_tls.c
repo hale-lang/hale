@@ -90,6 +90,20 @@ static SSL_CTX *lotus_tls__ctx_get(void) {
         ERR_print_errors_fp(stderr);
         return NULL;
     }
+    /* 2026-05-22 PM: SSL_MODE_RELEASE_BUFFERS — release the
+     * per-connection read+write buffers (each ~16-32 KiB) back to
+     * libc malloc when no record is in flight, rather than holding
+     * them for the lifetime of the SSL object. The cost is a
+     * libc malloc/free pair per TLS record on the active path,
+     * negligible at typical WS-frame rates; the win is flat memory
+     * on long-running TLS clients. Without this, fathom-shaped
+     * workloads (a handful of long-lived TLS streams, sporadic
+     * record traffic) accumulated ~0.12 MB/min in the [heap]
+     * segment outside Aperio's arena allocator — well-known
+     * OpenSSL behavior and well-known fix. See
+     * https://www.openssl.org/docs/man3.0/man3/SSL_CTX_set_mode.html
+     */
+    SSL_CTX_set_mode(ctx, SSL_MODE_RELEASE_BUFFERS);
     /* System trust store (e.g. /etc/ssl/certs on Debian/Ubuntu,
      * the macOS Keychain via OpenSSL's adapter). */
     if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
