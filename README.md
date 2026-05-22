@@ -91,7 +91,7 @@ the linker for `aperio build`), and `git`. Platform-specific install commands
 for Debian/Ubuntu, macOS Homebrew, and Fedora are in
 [`docs/src/getting-started/install.md`](./docs/src/getting-started/install.md).
 LLVM 17 / 19 / 20 will not work — the codegen crate pins `inkwell` to
-`llvm18-0`. We know. It's on the list.
+`llvm18-0`.
 
 ```sh
 git clone https://github.com/aperio-lang/aperio
@@ -137,6 +137,9 @@ libraries stay under `lib/<name>/`; the toolchain only writes to `vendor/`.)
   [`spec/styleguide.md`](./spec/styleguide.md), then
   [`spec/semantics.md`](./spec/semantics.md) and
   [`spec/grammar.ebnf`](./spec/grammar.ebnf).
+- **[`CHANGELOG.md`](./CHANGELOG.md)** — historical record of behavior
+  changes. The spec files represent current state; `CHANGELOG.md`
+  records what shipped when.
 - **[`AGENTS.md`](./AGENTS.md)** — load-bearing prompt for AI agents writing
   `.ap` programs. Compiler / stdlib / spec work has separate briefs under
   [`agents/`](./agents/).
@@ -160,6 +163,7 @@ libraries stay under `lib/<name>/`; the toolchain only writes to `vendor/`.)
 
 ```
 spec/                       grammar + semantics + design rationale
+CHANGELOG.md                historical record (spec/ has current state)
 AGENTS.md                   load-bearing prompt for .ap-authoring agents
 agents/                     role briefs for compiler / stdlib work
 apps/                       working programs built in Aperio
@@ -202,14 +206,15 @@ ceremony," keep reading.
 ## Status
 
 Experimental. The compiler self-hosts the topic system, structural
-interfaces (F.20), `@form(...)` lowerings (vec, hashmap, ring_buffer),
-`fallible(T)` error model, capacity-tuple memory discipline, cooperative
-+ pinned schedulers, and AF_UNIX / TCP cross-process bus transports.
-The reference test suite is the ~70 in-tree fixture programs under
-`crates/aperio-codegen/tests/fixtures/examples/` plus per-feature tests
-under `crates/aperio-codegen/tests/`.
+interfaces, `@form(...)` lowerings (vec, hashmap, ring_buffer),
+`fallible(T)` error model, capacity-tuple memory discipline,
+cooperative + pinned schedulers, and AF_UNIX / TCP cross-process bus
+transports. The reference test suite is the ~70 in-tree fixture
+programs under `crates/aperio-codegen/tests/fixtures/examples/` plus
+per-feature tests under `crates/aperio-codegen/tests/`.
 
 Breaking changes are expected; pin to a commit if you build on it.
+See [`CHANGELOG.md`](./CHANGELOG.md) for what's moved recently.
 
 ## License
 
