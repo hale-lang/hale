@@ -501,16 +501,23 @@ pub fn build_executable_with_options(
         clang.arg("-ldl").arg("-lm");
     }
     // Stage-1 FFI: append the per-build link surface from
-    // BuildOptions. Each `--link <lib>` becomes `-l<lib>`; each
-    // `--csrc <path>` is passed directly to clang as a translation
-    // unit compiled alongside the runtime. The `@ffi("c") fn ...`
-    // declarations in user code emit LLVM externs that the linker
-    // resolves against these inputs.
-    for lib in &options.link_libs {
-        clang.arg(format!("-l{}", lib));
-    }
+    // BuildOptions. Each `--csrc <path>` is passed as a translation
+    // unit compiled alongside the runtime; each `--link <lib>`
+    // becomes `-l<lib>`. csrc inputs come FIRST so the GNU ld
+    // left-to-right symbol-resolution algorithm has the csrc's
+    // unresolved references on hand when it reaches the libs —
+    // a `-lraylib` placed before `glue.c` was silently discarded
+    // because nothing pending referenced its symbols yet, then
+    // `glue.c`'s `InitWindow` / `DrawText` calls surfaced as
+    // undefined despite libraylib.a being on the path
+    // (iris FRICTION F.7). The `@ffi("c") fn ...` declarations
+    // in user code emit LLVM externs that the linker resolves
+    // against this combined input set.
     for csrc in &options.csrc_files {
         clang.arg(csrc);
+    }
+    for lib in &options.link_libs {
+        clang.arg(format!("-l{}", lib));
     }
     let status = clang
         .arg("-o")
@@ -15892,6 +15899,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .get_function("lotus_process_pipe_read_nonblocking")
             .expect("lotus_process_pipe_read_nonblocking declared");
+        // F.8 sweep — see lower_std_str_builder_finish for rationale.
+        self.emit_set_caller_arena()?;
         let ret_ptr = self
             .builder
             .build_call(f, &[fd_i32.into()], "proc.pread.ret")
@@ -16363,6 +16372,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .get_function("lotus_udp_recv_bytes_global")
             .expect("lotus_udp_recv_bytes_global declared");
+        // F.8 sweep — see lower_std_str_builder_finish for rationale.
+        self.emit_set_caller_arena()?;
         let blob_ptr = self
             .builder
             .build_call(f, &[fd_i32.into(), cap_i32.into()], "udp.recv.blob")
@@ -16977,6 +16988,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .get_function("lotus_fs_list_dir_at")
             .expect("lotus_fs_list_dir_at declared");
+        // F.8 sweep — see lower_std_str_builder_finish for rationale.
+        self.emit_set_caller_arena()?;
         let s_ptr = self
             .builder
             .build_call(
@@ -27154,6 +27167,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .get_function("lotus_str_builder_finish")
             .expect("lotus_str_builder_finish declared");
+        // F.6/F.8 sweep (iris FRICTION): publish the current arena
+        // into the caller-arena TLS so the C-side's
+        // lotus_bus_payload_arena_alloc routes the returned String
+        // through this frame's arena. Same prologue as
+        // stdin::read_line and the str_lower / str_upper family.
+        self.emit_set_caller_arena()?;
         let call = self
             .builder
             .build_call(f, &[b_val.into()], "sb.finish.ret")
@@ -27358,6 +27377,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .get_function("lotus_bytes_builder_finish")
             .expect("lotus_bytes_builder_finish declared");
+        // F.8 sweep — see lower_std_str_builder_finish for the
+        // full rationale. The C-side routes through the TLS via
+        // lotus_caller_or_global_bytes_create.
+        self.emit_set_caller_arena()?;
         let call = self
             .builder
             .build_call(f, &[handle_ptr.into()], "bb.finish.ret")
@@ -30283,6 +30306,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .get_function("lotus_file_read_line_global")
             .expect("lotus_file_read_line_global declared");
+        // F.8 sweep — see lower_std_str_builder_finish for rationale.
+        self.emit_set_caller_arena()?;
         let s_ptr = self
             .builder
             .build_call(f, &[fd_i32.into()], "file.read_line.ret")

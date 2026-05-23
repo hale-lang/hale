@@ -327,7 +327,24 @@ impl<'a> Lexer<'a> {
                         if b == b'\n' {
                             break;
                         }
-                        self.pos += 1;
+                        // spec/tokens.md permits non-ASCII inside
+                        // comments. A bare `pos += 1` lands in the
+                        // middle of a multi-byte UTF-8 sequence on
+                        // chars like em-dash (—) or box-draw (─),
+                        // which then trips the downstream
+                        // `&source[..]` slice on a char-boundary
+                        // check (brained FRICTION F.8). Advance by
+                        // UTF-8 char width when the leading byte
+                        // is non-ASCII.
+                        if b < 0x80 {
+                            self.pos += 1;
+                        } else {
+                            let ch = self.source[self.pos..]
+                                .chars()
+                                .next()
+                                .expect("non-ASCII leading byte implies a char");
+                            self.pos += ch.len_utf8();
+                        }
                     }
                 }
                 Some(b'/') if self.peek_at(1) == Some(b'*') => {
@@ -337,7 +354,15 @@ impl<'a> Lexer<'a> {
                             self.pos += 2;
                             break;
                         }
-                        self.pos += 1;
+                        if b < 0x80 {
+                            self.pos += 1;
+                        } else {
+                            let ch = self.source[self.pos..]
+                                .chars()
+                                .next()
+                                .expect("non-ASCII leading byte implies a char");
+                            self.pos += ch.len_utf8();
+                        }
                     }
                 }
                 _ => return,
