@@ -20299,6 +20299,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let ty = ty.clone();
         match ty {
             CodegenTy::String => Ok(v),
+            CodegenTy::Time => {
+                // v0 Time at runtime is a ptr to a NUL-terminated
+                // ISO 8601 string (literals store the source
+                // spelling directly; `std::time::time_from_unix`
+                // emits the gmtime_r+strftime-formatted string).
+                // The String ABI is the same single-pointer shape,
+                // so to_string(Time) is identity. Resolves brained
+                // FRICTION F.2. Real i64-since-epoch lowering with
+                // a value→string trip stays deferred.
+                Ok(v)
+            }
             CodegenTy::Int => {
                 let arena_ptr = self.current_arena_ptr()?;
                 let f = self

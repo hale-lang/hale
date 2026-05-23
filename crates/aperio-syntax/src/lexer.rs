@@ -1217,41 +1217,47 @@ impl<'a> Lexer<'a> {
                 return Ok(Token::new($kind, span));
             }};
         }
-        // 3-char operators
+        // 3-char operators. Match on the raw byte slice rather
+        // than `&self.source[pos..pos+3]` — the latter panics when
+        // pos+3 lands mid-UTF-8-codepoint, e.g. immediately before
+        // a non-ASCII char in a String literal (brained F.9 — the
+        // opening `(` of `println("─x")` reaches here with the
+        // next bytes being `("` + the first byte of `─`).
+        // All multi-char ops are pure ASCII, so a non-ASCII byte
+        // in the window guarantees no match.
         if self.bytes.len() >= self.pos + 3 {
-            let s3 = &self.source[self.pos..self.pos + 3];
-            match s3 {
-                "..=" => emit!(TokenKind::DotDotEq, 3),
-                _ => {}
+            let b3 = &self.bytes[self.pos..self.pos + 3];
+            if matches!(b3, b"..=") {
+                emit!(TokenKind::DotDotEq, 3);
             }
         }
-        // 2-char operators
+        // 2-char operators — same byte-slice approach.
         if self.bytes.len() >= self.pos + 2 {
-            let s2 = &self.source[self.pos..self.pos + 2];
-            match s2 {
-                "==" => emit!(TokenKind::EqEq, 2),
-                "!=" => emit!(TokenKind::NotEq, 2),
-                "<=" => emit!(TokenKind::LtEq, 2),
-                ">=" => emit!(TokenKind::GtEq, 2),
-                "&&" => emit!(TokenKind::AndAnd, 2),
-                "||" => emit!(TokenKind::OrOr, 2),
-                "<<" => emit!(TokenKind::Shl, 2),
-                ">>" => emit!(TokenKind::Shr, 2),
-                "+=" => emit!(TokenKind::PlusEq, 2),
-                "-=" => emit!(TokenKind::MinusEq, 2),
-                "*=" => emit!(TokenKind::StarEq, 2),
-                "/=" => emit!(TokenKind::SlashEq, 2),
-                "%=" => emit!(TokenKind::PercentEq, 2),
-                "&=" => emit!(TokenKind::AmpEq, 2),
-                "|=" => emit!(TokenKind::PipeEq, 2),
-                "^=" => emit!(TokenKind::CaretEq, 2),
-                "~~" => emit!(TokenKind::TildeTilde, 2),
-                "->" => emit!(TokenKind::Arrow, 2),
-                "<-" => emit!(TokenKind::LeftArrow, 2),
-                "=>" => emit!(TokenKind::FatArrow, 2),
-                "::" => emit!(TokenKind::ColonColon, 2),
-                ".." => emit!(TokenKind::DotDot, 2),
-                "??" => emit!(TokenKind::QuestionQuestion, 2),
+            let b2 = &self.bytes[self.pos..self.pos + 2];
+            match b2 {
+                b"==" => emit!(TokenKind::EqEq, 2),
+                b"!=" => emit!(TokenKind::NotEq, 2),
+                b"<=" => emit!(TokenKind::LtEq, 2),
+                b">=" => emit!(TokenKind::GtEq, 2),
+                b"&&" => emit!(TokenKind::AndAnd, 2),
+                b"||" => emit!(TokenKind::OrOr, 2),
+                b"<<" => emit!(TokenKind::Shl, 2),
+                b">>" => emit!(TokenKind::Shr, 2),
+                b"+=" => emit!(TokenKind::PlusEq, 2),
+                b"-=" => emit!(TokenKind::MinusEq, 2),
+                b"*=" => emit!(TokenKind::StarEq, 2),
+                b"/=" => emit!(TokenKind::SlashEq, 2),
+                b"%=" => emit!(TokenKind::PercentEq, 2),
+                b"&=" => emit!(TokenKind::AmpEq, 2),
+                b"|=" => emit!(TokenKind::PipeEq, 2),
+                b"^=" => emit!(TokenKind::CaretEq, 2),
+                b"~~" => emit!(TokenKind::TildeTilde, 2),
+                b"->" => emit!(TokenKind::Arrow, 2),
+                b"<-" => emit!(TokenKind::LeftArrow, 2),
+                b"=>" => emit!(TokenKind::FatArrow, 2),
+                b"::" => emit!(TokenKind::ColonColon, 2),
+                b".." => emit!(TokenKind::DotDot, 2),
+                b"??" => emit!(TokenKind::QuestionQuestion, 2),
                 _ => {}
             }
         }
