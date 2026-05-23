@@ -356,6 +356,9 @@ pub fn build_executable_with_options(
         generic_locus_templates: BTreeMap::new(),
         defer_next_locus_dissolve: false,
         instantiating_for_parent_field: false,
+        placement_for_next_locus_instantiation: None,
+        main_placement_map: BTreeMap::new(),
+        main_locus_name: None,
         vtables: BTreeMap::new(),
     };
 
@@ -1190,6 +1193,34 @@ struct Cx<'ctx, 'p> {
     /// outermost instantiation owns the flag, nested ones see
     /// false.
     instantiating_for_parent_field: bool,
+    /// F.31 (2026-05-23): placement override for the next
+    /// `lower_locus_instantiation` call. The main-locus
+    /// params-init loop sets this per-field (looking up the
+    /// field name in `main_placement_map`) before lowering each
+    /// field's default expression; the adapter-binding emit path
+    /// sets it to `Pinned(None)` before lowering the adapter
+    /// locus literal (adapter loci instantiated inline in
+    /// `bindings { }` are pinned-equivalent by construction).
+    /// `lower_locus_instantiation` consumes via `mem::take` so
+    /// the first nested locus instantiation absorbs the override
+    /// and inner ones see None.
+    placement_for_next_locus_instantiation: Option<ScheduleClass>,
+    /// F.31: per-main-locus map of `params` field name →
+    /// effective placement. Built once at codegen startup from
+    /// `main locus`'s `placement { }` block. Used by the
+    /// main-locus params-init loop to set
+    /// `placement_for_next_locus_instantiation` per field. An
+    /// absent field defaults to `Cooperative` (placement
+    /// pool routing comes in Phase 4).
+    main_placement_map: BTreeMap<String, ScheduleClass>,
+    /// F.31: name of the main locus (if any) for the bundle.
+    /// Cached at startup so the params-init loop can detect
+    /// "we're instantiating main" without re-walking the
+    /// program. None when the bundle has no `main` locus
+    /// (free-fn-main shape with statement-position
+    /// instantiations) — placement entries have nowhere to live
+    /// in that case.
+    main_locus_name: Option<String>,
     /// F.20 Phase B: per-(locus, interface) vtable globals.
     /// Synthesized lazily by `ensure_vtable` the first time a
     /// given locus is coerced to a given interface. Layout is
@@ -6413,6 +6444,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // main's prelude.
         self.collect_shm_ring_subjects();
 
+        // F.31 (2026-05-23): pre-pass over main locus's
+        // placement entries. Populates `main_placement_map`
+        // keyed by `params` field name, plus caches
+        // `main_locus_name` so the params-init loop in
+        // `lower_locus_instantiation` can decide whether to
+        // override the per-field placement.
+        self.collect_main_placement();
+
         // Pass A0: declare every user-defined `type` so locus
         // params, fn signatures, and struct literals can reference
         // them by name regardless of source order. Plain data
@@ -6998,19 +7037,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // Pure-cooperative fast path: when no locus in the program
-        // declares `: schedule pinned`, the bus queue is accessed
-        // by exactly one thread (the cooperative scheduler's main)
-        // and the queue mutex is dead weight (~20-40ns/event).
-        // When any pinned locus exists, mark the bus so its
-        // enqueue/drain take the mutex normally. Set before any
-        // user code runs so pinned threads (spawned later at the
-        // first pinned instantiation) never observe the flag unset
-        // on their publish path.
-        let has_pinned_locus = self
-            .user_loci
+        // Pure-cooperative fast path: when no thread crosses the
+        // bus boundary, the queue mutex is dead weight (~20-40ns/
+        // event). When any pinned-equivalent thread exists, mark
+        // the bus so its enqueue/drain take the mutex normally.
+        //
+        // F.31 (2026-05-23): under placement-at-main, "pinned-
+        // equivalent" comes from two sources: (a) any
+        // `placement { field: pinned[(core = N)]; }` entry in
+        // the main locus, and (b) any adapter locus instantiated
+        // inline in `bindings { }` (always pinned-equivalent
+        // by construction — recv-loop on its own thread). The
+        // legacy per-locus `info.schedule_class == Pinned` check
+        // is gone (every user locus now defaults to Cooperative).
+        let has_pinned_placement = self
+            .main_placement_map
             .values()
-            .any(|info| matches!(info.schedule_class, ScheduleClass::Pinned(_)));
+            .any(|sc| matches!(sc, ScheduleClass::Pinned(_)));
+        let has_adapter_binding = self.program.items.iter().any(|item| {
+            matches!(item, TopDecl::Locus(l) if l.is_main && l.members.iter().any(|m| {
+                matches!(m, LocusMember::Bindings(b) if b.entries.iter().any(|e| {
+                    matches!(&e.transport, TransportSpec::Adapter { .. })
+                }))
+            }))
+        });
+        let has_pinned_locus = has_pinned_placement || has_adapter_binding;
         if has_pinned_locus {
             let mark_pinned_fn = self
                 .module
@@ -7128,6 +7179,51 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             },
                         );
                     }
+                }
+            }
+        }
+    }
+
+    /// F.31 (2026-05-23): pre-pass over `main locus`'s
+    /// `placement { }` block. Caches `main_locus_name` and
+    /// populates `main_placement_map` keyed by field name with
+    /// the effective ScheduleClass for each placement entry.
+    ///
+    /// PlacementSpec → ScheduleClass mapping:
+    /// - `pinned` → `ScheduleClass::Pinned(None)`
+    /// - `pinned(core = N)` → `ScheduleClass::Pinned(Some(N))`
+    /// - `cooperative` / `cooperative(pool = X)` → `ScheduleClass::Cooperative`
+    ///   (pool-routing — Phase 4 — extends ScheduleClass with the
+    ///   pool tag; v1 of this phase honors pinned vs cooperative
+    ///   only, single-pool semantics)
+    ///
+    /// Unspecified main-locus params default to Cooperative
+    /// (no entry in the map → no override → falls back to the
+    /// locus's default schedule_class, which is now Cooperative
+    /// for every user locus per the F.31 spec amendment).
+    fn collect_main_placement(&mut self) {
+        let main_locus = self.program.items.iter().find_map(|item| match item {
+            TopDecl::Locus(l) if l.is_main => Some(l),
+            _ => None,
+        });
+        let Some(l) = main_locus else { return };
+        self.main_locus_name = Some(l.name.name.clone());
+        for m in &l.members {
+            if let LocusMember::Placement(pb) = m {
+                for entry in &pb.entries {
+                    let sc = match &entry.spec {
+                        PlacementSpec::Pinned { core } => {
+                            ScheduleClass::Pinned(*core)
+                        }
+                        PlacementSpec::Cooperative { pool: _ } => {
+                            // v1 of this phase: pool-routing not
+                            // yet wired (Phase 4). Cooperative is
+                            // single-pool / main-thread.
+                            ScheduleClass::Cooperative
+                        }
+                    };
+                    self.main_placement_map
+                        .insert(entry.field.name.clone(), sc);
                 }
             }
         }
@@ -7388,9 +7484,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // in the payload arena (program-lifetime). Restore the
         // saved value afterwards so we don't bleed this routing
         // shape into anything that follows.
+        //
+        // F.31 (2026-05-23): adapter loci instantiated inline
+        // in `bindings { }` are pinned-equivalent by
+        // construction — their `run()` recv-loops need a
+        // dedicated thread regardless of any placement entry.
+        // Set the placement override so the recursive
+        // lower_locus_instantiation sees Pinned(None) for the
+        // adapter; the standard pinned codegen paths kick in.
+        // Pre-F.31 this fell out of the adapter locus's
+        // `: schedule pinned` annotation; F.31 makes it
+        // implicit at the bindings-inline site.
         let saved_ret = self.current_user_fn_ret.clone();
         self.current_user_fn_ret =
             Some(Some(CodegenTy::LocusRef(locus.name.clone())));
+        self.placement_for_next_locus_instantiation =
+            Some(ScheduleClass::Pinned(None));
         let mut scope = Scope::default();
         let (self_val, _self_ty) = self.lower_expr(&locus_lit, &mut scope)?;
         self.current_user_fn_ret = saved_ret;
@@ -30752,6 +30861,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the outermost instantiation in the expression takes it.
         let parent_owns_via_field =
             std::mem::take(&mut self.instantiating_for_parent_field);
+        // F.31 (2026-05-23): consume any placement override the
+        // caller set. The override is collected here (so it
+        // doesn't leak into nested instantiations) but NOT yet
+        // applied to `info.schedule_class` — the override
+        // consumption needs careful integration with the locus
+        // struct layout (mailbox field, etc. are decided at
+        // declare-time from schedule_class, before placement is
+        // known) and with the deferred-dissolve frame routing
+        // for cross-pool teardown. Phase 3a takes the consumption
+        // out so the placement scan can land without functional
+        // change; Phase 3b wires the override end-to-end after
+        // pre-determining "this locus has at-least-one pinned
+        // placement entry" at locus-declare time so the struct
+        // layout includes the pinned fields.
+        let _placement_override =
+            std::mem::take(&mut self.placement_for_next_locus_instantiation);
         let info = self
             .user_loci
             .get(locus_name)
@@ -31651,7 +31776,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let prev_arena_override = self.current_arena_override;
         self.current_arena_override = Some(new_arena.into_pointer_value());
+        // F.31 (2026-05-23): if we're instantiating the main
+        // locus, its `placement { }` block's entries override
+        // the schedule_class for each field's child
+        // instantiation. The lookup happens once per field
+        // inside the loop below (set immediately before
+        // lower_expr, consumed by the recursive call to
+        // lower_locus_instantiation).
+        let is_main_locus = self
+            .main_locus_name
+            .as_ref()
+            .map(|n| n == locus_name)
+            .unwrap_or(false);
         for (fname, default) in info.defaults.iter() {
+            // F.31: per-field placement override for main-locus
+            // params. Looked up by field name in
+            // `main_placement_map`; absent fields default to
+            // None (the recursive call will keep the locus's
+            // own schedule_class — Cooperative under F.31).
+            if is_main_locus {
+                self.placement_for_next_locus_instantiation = self
+                    .main_placement_map
+                    .get(fname.as_str())
+                    .cloned();
+            }
             // Phase-2 (2): set the parent-field flag so a locus
             // literal evaluated for this field doesn't run its
             // eager dissolve. The flag is taken on entry to
