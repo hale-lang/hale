@@ -44,6 +44,19 @@ with the spec, the spec wins.
   `i < 0.5`), and user-type field-init positions. Strictly
   one-way; Decimal never participates. See `types.md` §
   "Numeric coercion".
+- Locus → Interface coercion (F.20 Phase B): at fn args,
+  returns, struct/locus field initializers, `@form(vec)` cell
+  push, `or`-fallback substitutes, and — as of G20 2026-05-23
+  — at composite-typed let-binding ascriptions
+  (`let arr: [Greeter; 2] = [Hi {}, Hey {}];`,
+  `let pair: (Greeter, Greeter) = (Hi {}, Hey {});`,
+  `let arr: [Greeter; 3] = [Hi {}; 3];`). The codegen
+  propagates the ascription's element type through
+  `lower_expr_into(expr, hint)` so per-position
+  `coerce_to_interface` fires at construction. Composite
+  *return* positions (and the nested locus-escape they
+  imply) remain deferred — see `types.md` § "Composite-
+  construction coercion".
 
 ## Storage and memory
 

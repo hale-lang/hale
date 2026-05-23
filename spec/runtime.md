@@ -196,7 +196,7 @@ locus DataIngest      : schedule pinned      { ... }
 
 | Class | Yield discipline | Resource |
 |---|---|---|
-| **Cooperative** (default) | Yields between substrate cells (handler exit, lifecycle transition, bus dispatch, `time::sleep`, explicit `yield`). Handler bodies are atomic. See "`time::sleep` yield-point caveat" below. | Shares a scheduler thread with other cooperative loci. |
+| **Cooperative** (default) | Yields between substrate cells (handler exit, lifecycle transition, bus dispatch, `time::sleep`, explicit `yield`). `time::sleep` folds in `lotus_bus_queue_drain` after `clock_nanosleep` returns so cells posted by other threads deliver mid-loop; see "`time::sleep` drain semantics" below. Handler bodies are atomic. | Shares a scheduler thread with other cooperative loci. |
 | **Pinned** | No yield to siblings; owns its scheduler. Bus events to/from cross thread boundaries via formal mailbox post. | Dedicated OS thread, optionally pinned to a CPU core. |
 
 #### Why no "greedy" class
@@ -216,53 +216,47 @@ layer of the lotus* — its own thread, formal cross-boundary
 posts, fewer neighbors. That's a layering decision, not a third
 scheduling regime. Two classes, no third position, by design.
 
-#### `time::sleep` yield-point caveat (v1.x polish 2026-05-20)
+#### `time::sleep` drain semantics
 
-The "Yield discipline" row above lists `time::sleep` as a yield
-point. That holds for the cooperative scheduler's queue — sleeps
-in the same cooperative locus do let the runtime drain
-in-flight handler invocations before the loop body resumes.
-
-It does NOT today drain the cross-thread mailbox bus dispatch
-path. A `main locus` looping `while { std::time::sleep(100ms);
-... }` will not deliver inbound handler invocations queued from
-a `unix(...)`-bound (or other cross-thread-routed) `subscribe`
-declaration. The handlers post into the mailbox; the cooperative
-scheduler never observes the dispatch until an explicit `yield;`
-runs the drain.
-
-**Working pattern:** add an explicit `yield;` after the sleep
-in any loop body that consumes cross-thread-bound bus events.
+The codegen lowering of `std::time::sleep(d)` ends its
+EINTR-retry loop with an inline call to `lotus_bus_queue_drain`
+against the program-wide cooperative queue. A cooperative
+subscriber looping
 
 ```aperio
 run() {
     while !self.bail {
         std::time::sleep(100ms);
-        yield;   // drain cross-thread bus dispatch into handlers
-        // ... loop body sees the latest dispatches
+        // ... loop body sees handlers fired during the sleep
     }
 }
 ```
 
-A future runtime change may fold cross-thread mailbox draining
-into the sleep yield point. Until then, the explicit `yield;`
-is the documented form.
+receives cells posted by other threads — unix-bound reader
+threads, pinned publishers via `lotus_bus_local_dispatch`, etc.
+— right when each sleep returns, without an explicit `yield;`.
+The drain is idempotent, so existing code with `sleep; yield;`
+stays correct.
 
-**Item B from the 2026-05-21 friction log** flagged a related
-shape: a cooperative publisher's `<-` cell never fires the
-pinned subscriber's handler mid-program; the cell drains only
-at dissolve. Same root cause — `yield;` doesn't drain the
-cross-thread mailbox even though the spec wording implies it
-should. The working pattern there is direct method invocation
-on the receiver (`self.on_subscribe(req)`) inside the publisher's
+The pinned-mailbox path is unchanged: pinned subscribers wake
+on `lotus_mailbox_post`'s condvar broadcast regardless of what
+the cooperative scheduler is doing.
+
+**Item B from the 2026-05-21 friction log** is a separate,
+still-open shape: a cooperative publisher's `<-` cell to a
+pinned subscriber. The publish enqueues on the pinned
+subscriber's mailbox via `lotus_mailbox_post` (correct), and
+the condvar broadcast SHOULD wake the pinned thread blocked
+in `lotus_mailbox_drain_one`. Empirically the cell drains
+only at dissolve in some configurations — root cause not yet
+isolated; the `time::sleep` fix here doesn't address it
+because the mailbox path doesn't touch `g_bus_queue`. The
+documented workaround is direct method invocation on the
+receiver (`self.on_subscribe(req)`) inside the publisher's
 loop, bypassing the bus for the in-binary case. Cross-binary
-flows (unix / shm_ring transport with their own reader threads)
-work fine because their dispatch path doesn't go through the
-cooperative-pinned mailbox at all. The runtime fix is the same
-as the sleep case: extend `yield;` to drain the cross-thread
-mailbox. Deferred until a workload demands the bus-shaped path
-specifically (today's workaround composes the same handler
-body from both bus and direct entry points).
+flows (unix / shm_ring transport with their own reader
+threads) work fine because their dispatch path lands in
+`g_bus_queue` and benefits from the sleep-folded drain above.
 
 #### Long-running cooperative children block parent run() (D)
 

@@ -145,7 +145,11 @@ loci run."
 - **No mid-handler yield in cooperative.** Within one handler
   body, the cooperative scheduler does not preempt. If you
   need to yield mid-work, factor into multiple handlers or
-  use `std::time::sleep` / explicit `yield;`.
+  use `std::time::sleep` / explicit `yield;`. (`time::sleep`
+  folds in the cooperative bus drain after it returns, so a
+  cooperative subscriber looping `while { sleep; ... }`
+  delivers cross-thread bus traffic mid-loop without needing
+  an explicit `yield;`.)
 - **No shared mutable state.** No `Arc<Mutex<T>>`-shaped
   primitive. Cross-thread coordination is bus-shaped.
 

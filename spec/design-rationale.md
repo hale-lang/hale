@@ -1492,18 +1492,30 @@ program-lifetime payload arena rather than the fn subregion;
 `emit_return_value_deep_copy` deep-copies the 16-byte
 fat-pointer struct into the caller's arena.
 
-Still deferred: interface elements inside tuples and fixed
-arrays. The gap is the broader composite-construction
-coercion shape (recursive coercion at the construction site
-plus locus-routing across nested return positions); the same
-gap governs tuple-of-`LocusRef` escape today, where the
-pointers in the returned tuple alias loci in the fn's stack
-frame and only happen to read correctly because the freed
-memory hasn't been clobbered yet.
+**G20 follow-up (2026-05-23):** interface elements inside fixed
+arrays, array-repeat literals, and tuples now coerce at the
+construction site. The codegen routes the RHS through
+`lower_expr_into(expr, hint)` when a let-binding carries a
+composite ascription, propagating the element type down so
+per-position `coerce_to_interface` fires before the "mixes
+element types" check would reject heterogeneous LocusRefs.
+`Ty::assignable_from` extends recursively through Array, Tuple,
+Fallible, and Projection composites so typecheck sees the
+ascription as compatible with the inferred-from-leaves type.
+
+Still deferred: locus-routing across nested return positions.
+A fn declared `-> [Greeter; N]` instantiating loci inside its
+return expression still aliases the fn's stack frame —
+`emit_return_value_deep_copy`'s composite extension plus the
+m90 routing extension to nested-position locus instantiations
+need to fire together. Same gap governs tuple-of-`LocusRef`
+escape today, where the pointers in the returned tuple alias
+loci in the fn's stack frame and only happen to read correctly
+because the freed memory hasn't been clobbered yet.
 
 Coverage: `crates/aperio-codegen/tests/interface_dispatch.rs`,
 `interface_return.rs`, `interface_in_form_vec.rs`,
-`sink_polymorphism.rs`.
+`interface_in_composites.rs`, `sink_polymorphism.rs`.
 
 ### F.21 Cascading-dimension interface (sketch)
 

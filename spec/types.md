@@ -190,6 +190,17 @@ following positions:
   expression of LocusRef type satisfying `I` coerces
   (added 2026-05-18). E.g. `lookup(...) or Hello { }`
   where `lookup` returns `Greeter fallible(...)`.
+- **let-binding ascription with composite type (G20,
+  2026-05-23).** `let arr: [Greeter; 2] = [Hi {}, Hey {}];`
+  coerces each element through the ascription's element type;
+  same shape for `let pair: (Greeter, Greeter) = (Hi {}, Hey
+  {});` and `let arr: [Greeter; 3] = [Hi {}; 3];`. The codegen
+  routes the RHS through `lower_expr_into(expr, hint)` so the
+  composite-element coerce fires per position. The single-
+  element let-ascription case is still permissive-via-Unknown
+  (interface names resolve to `Ty::Unknown` at typecheck per
+  `collect_known_names`); composite-element coercion picks up
+  where the single case's implicit handling leaves off.
 
 The return path uses two cooperating mechanisms: at the return
 site, an implicit locus → interface coercion builds the fat
@@ -201,11 +212,38 @@ struct itself is then deep-copied into the caller's arena by
 `emit_return_value_deep_copy`. Single-element coverage is in
 `crates/aperio-codegen/tests/interface_return.rs`.
 
-Interface elements inside tuples and fixed arrays remain gated
-on the same broader composite-construction coercion design that
-governs tuple-of-`LocusRef` escape — recursive coercion at
-composite-construction sites plus locus-routing across nested
-return positions. Deferred.
+**Composite-construction coercion (G20, 2026-05-23).** Interface
+elements inside fixed-size arrays, array-repeat literals, and
+tuples are now coerced at the construction site when the
+destination type is known. The let-RHS with a composite
+ascription is the wired entry point:
+
+```aperio
+let arr:  [Greeter; 2]    = [Hi { }, Hey { }];
+let arr3: [Greeter; 3]    = [Hi { }; 3];
+let pair: (Greeter, Greeter) = (Hi { }, Hey { });
+```
+
+The codegen propagates the ascription's element type through
+`lower_expr_into(expr, hint)` so per-position
+`coerce_to_interface` fires before the array's "mixes element
+types" check would otherwise reject heterogeneous LocusRefs.
+Tests live in
+`crates/aperio-codegen/tests/interface_in_composites.rs`.
+
+Once the let-RHS coerces, the array's static type is already
+`Array<Interface, N>` (or the tuple's positional types are
+`Interface`), so flowing it to fn-args, struct fields, or
+return positions of the same type goes through plain type
+matching — no further coercion is needed at the consumer
+side.
+
+**Still deferred:** locus-routing across nested return positions
+— a fn declared `-> [Greeter; N]` instantiating loci inline in
+its return expression still aliases the fn's stack frame.
+Closing that needs the m90 routing extension to fire on nested
+locus instantiations inside composite returns, the same gap that
+governs tuple-of-`LocusRef` escape today.
 
 F.11 child acceptance (`accept(c: ConcreteLocus) { ... }`) is
 intentionally NOT in the coerce list above. The child-accept

@@ -82,13 +82,37 @@ impl Ty {
     }
 
     /// Is `self` assignable from `other`? Milestone-2 rule:
-    /// `Unknown` is bidirectionally compatible; otherwise
-    /// structural equality.
+    /// `Unknown` is bidirectionally compatible (recursively
+    /// through composite types); otherwise structural equality.
+    ///
+    /// The recursive Unknown-permissiveness lets an interface-
+    /// typed slot accept a satisfying locus inside composite
+    /// shapes — `let arr: [Greeter; 2] = [Hi {}, Hey {}];`
+    /// works because Greeter resolves to Unknown
+    /// (`collect_known_names` omits Interface decls today), and
+    /// the per-element Unknown ≈ Hi check now passes. Codegen
+    /// emits the per-element fat-pointer coercion at the
+    /// destination's known type. G20 (2026-05-23).
     pub fn assignable_from(&self, other: &Ty) -> bool {
         if matches!(self, Ty::Unknown) || matches!(other, Ty::Unknown) {
             return true;
         }
-        self == other
+        match (self, other) {
+            (Ty::Array(a_elem, a_n), Ty::Array(b_elem, b_n)) if a_n == b_n => {
+                a_elem.assignable_from(b_elem)
+            }
+            (Ty::Tuple(a), Ty::Tuple(b)) if a.len() == b.len() => {
+                a.iter().zip(b.iter()).all(|(x, y)| x.assignable_from(y))
+            }
+            (Ty::Fallible { success: a_s, payload: a_p },
+             Ty::Fallible { success: b_s, payload: b_p }) => {
+                a_s.assignable_from(b_s) && a_p.assignable_from(b_p)
+            }
+            (Ty::Projection(a_c, a_inner), Ty::Projection(b_c, b_inner)) if a_c == b_c => {
+                a_inner.assignable_from(b_inner)
+            }
+            _ => self == other,
+        }
     }
 }
 

@@ -19,6 +19,67 @@ here as historical labels — the spec no longer carries them.
 
 ---
 
+## 2026-05-23 — time::sleep folds in cooperative bus drain + G20 composite-construction interface coercion
+
+Two narrow fixes, both gated by spec deferrals that turned out
+to be smaller than their notes suggested:
+
+- **[codegen] [spec]** `time::sleep` now ends its
+  EINTR-retry loop with an inline `lotus_bus_queue_drain`
+  call. A cooperative subscriber looping
+  `while { std::time::sleep(...); ... }` delivers cells
+  posted by other threads (unix-bound reader threads, pinned
+  publishers via `lotus_bus_local_dispatch`) right when each
+  sleep returns — no explicit `yield;` needed. Existing
+  `sleep; yield;` code stays correct; the drain is
+  idempotent. Replaces the documented "`time::sleep`
+  yield-point caveat" workaround in `spec/runtime.md` with
+  "drain semantics." Item B from the 2026-05-21 friction
+  log (cooperative publisher's `<-` to a pinned subscriber
+  via `lotus_mailbox_post`) is a separate path and remains
+  open. Test:
+  `crates/aperio-codegen/tests/sleep_drains_bus.rs`
+  (verified to fail without the fix and pass with it).
+
+- **[codegen] [lang] [spec]** G20 follow-up — locus →
+  interface coercion at composite-construction sites.
+  `Ty::assignable_from` now walks Array, Tuple, Fallible,
+  and Projection composites recursively so Unknown-
+  permissiveness reaches inside (interfaces resolve to
+  `Ty::Unknown` at typecheck per `collect_known_names`).
+  New `lower_expr_into(expr, hint)` codegen helper
+  propagates the destination's element type through
+  Array, ArrayRepeat, and Tuple lowerings so per-position
+  `coerce_to_interface` fires before the "mixes element
+  types" check would reject heterogeneous LocusRefs.
+  Wired into `Stmt::Let` when the binding carries an
+  ascription; fn-arg / struct-field-init / return
+  position would extend cleanly but stay out of this
+  slice. Closes the let-RHS half of the
+  `spec/types.md` F.20 deferred note:
+  ```aperio
+  let arr:  [Greeter; 2] = [Hi {}, Hey {}];
+  let arr3: [Greeter; 3] = [Hi {}; 3];
+  let pair: (Greeter, Greeter) = (Hi {}, Hey {});
+  ```
+  all build and dispatch correctly. Composite *return*
+  positions (and the m90 routing extension to nested locus
+  instantiations) remain gated — same shape that governs
+  tuple-of-`LocusRef` escape today. Tests:
+  `crates/aperio-codegen/tests/interface_in_composites.rs`
+  (4 cases).
+
+Workspace test count: 1026 → 1030. Spec updates:
+`spec/types.md` § "Composite-construction coercion" /
+F.20 coerce-list; `spec/runtime.md` § "`time::sleep` drain
+semantics"; `spec/stdlib.md` `std::time` row;
+`spec/design-rationale.md` F.20 G20 follow-up. Docs:
+`docs/src/reference/language.md`,
+`docs/src/concepts/lifecycle-time.md`,
+`docs/src/how-tos/threading.md`.
+
+---
+
 ## 2026-05-22 — leak hunt + view ABI compaction + diagnostic harness + user-extensible FFI + path-based DTO identity + iris/fathom friction sweep
 
 Long-running daemon (fathom mdgw) hit a hard memory cap

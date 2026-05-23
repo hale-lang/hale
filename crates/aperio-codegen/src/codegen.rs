@@ -18911,7 +18911,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if self.expr_is_locus_literal(value_to_lower) {
                     self.defer_next_locus_dissolve = true;
                 }
-                let lower_result = self.lower_expr(value_to_lower, scope);
+                // G20 (2026-05-23): if the let has an ascription
+                // and the ascription resolves to a composite type
+                // with Interface elements, route the RHS through
+                // `lower_expr_into` so element-level coercion
+                // fires at construction. For Float/View/plain-
+                // ascription cases this is equivalent to plain
+                // `lower_expr` (the helper's fallback path).
+                let hint_ty = ascribed
+                    .as_ref()
+                    .and_then(|asc| self.type_expr_to_codegen_ty(asc).ok());
+                let lower_result =
+                    self.lower_expr_into(value_to_lower, scope, hint_ty.as_ref());
                 self.defer_next_locus_dissolve = false;
                 let (mut val, mut ty) = lower_result?;
                 // Int → Float widening at a Float-ascribed let
@@ -23118,6 +23129,186 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// G20 (2026-05-23): lower an expression with a per-position
+    /// destination-type hint so locus → interface coercion fires
+    /// at composite construction. The hint is recursive:
+    /// `Array<Interface, N>` propagates `Interface` to each
+    /// element; `Tuple(T1, T2)` propagates `T1`/`T2` per position.
+    ///
+    /// For composite hints (Array, ArrayRepeat, Tuple) the helper
+    /// duplicates the matching `lower_expr` machinery but routes
+    /// element lowering recursively through itself so leaves see
+    /// their expected slot type. Non-composite shapes fall through
+    /// to plain `lower_expr` + a post-lowering single-Interface
+    /// coerce.
+    ///
+    /// Scope at v1.x: arg-position only (let-RHS with ascription).
+    /// Return position + nested locus-escape via composite returns
+    /// remain gated on the broader composite-construction-coercion
+    /// design — see `spec/types.md` F.20 deferred section.
+    fn lower_expr_into(
+        &mut self,
+        e: &Expr,
+        scope: &Scope<'ctx>,
+        hint: Option<&CodegenTy>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        match (hint, e) {
+            (
+                Some(CodegenTy::Array(elem_hint, want_n)),
+                Expr::Array(parts, _),
+            ) if parts.len() as u64 == *want_n => {
+                if parts.is_empty() {
+                    return self.lower_expr(e, scope);
+                }
+                let mut elem_vals: Vec<BasicValueEnum<'ctx>> =
+                    Vec::with_capacity(parts.len());
+                for p in parts {
+                    let (v, got) =
+                        self.lower_expr_into(p, scope, Some(elem_hint.as_ref()))?;
+                    if &got != elem_hint.as_ref() {
+                        return Err(CodegenError::Unsupported(format!(
+                            "array literal element type {:?} doesn't match \
+                             ascription's element type {:?}",
+                            got, elem_hint
+                        )));
+                    }
+                    elem_vals.push(v);
+                }
+                let n = *want_n;
+                let i32_t = self.context.i32_type();
+                let arr_ty = self.llvm_array_storage_type(elem_hint, n);
+                let bytes = arr_ty
+                    .size_of()
+                    .expect("array storage type has known size");
+                let arr_ptr =
+                    self.arena_alloc(bytes, "array.coerced.alloc")?;
+                for (i, v) in elem_vals.iter().enumerate() {
+                    let slot = unsafe {
+                        self.builder
+                            .build_gep(
+                                arr_ty,
+                                arr_ptr,
+                                &[
+                                    i32_t.const_int(0, false),
+                                    i32_t.const_int(i as u64, false),
+                                ],
+                                &format!("array.coerced.slot{}", i),
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?
+                    };
+                    self.builder
+                        .build_store(slot, *v)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Ok((
+                    arr_ptr.into(),
+                    CodegenTy::Array(elem_hint.clone(), n),
+                ))
+            }
+            (
+                Some(CodegenTy::Array(elem_hint, want_n)),
+                Expr::ArrayRepeat { val, count, .. },
+            ) if *count == *want_n && *count > 0 => {
+                let (v, got) =
+                    self.lower_expr_into(val, scope, Some(elem_hint.as_ref()))?;
+                if &got != elem_hint.as_ref() {
+                    return Err(CodegenError::Unsupported(format!(
+                        "array-repeat element type {:?} doesn't match \
+                         ascription's element type {:?}",
+                        got, elem_hint
+                    )));
+                }
+                let n = *count;
+                let i32_t = self.context.i32_type();
+                let arr_ty = self.llvm_array_storage_type(elem_hint, n);
+                let bytes = arr_ty
+                    .size_of()
+                    .expect("array storage type has known size");
+                let arr_ptr =
+                    self.arena_alloc(bytes, "array.repeat.coerced.alloc")?;
+                for i in 0..n {
+                    let slot = unsafe {
+                        self.builder
+                            .build_gep(
+                                arr_ty,
+                                arr_ptr,
+                                &[
+                                    i32_t.const_int(0, false),
+                                    i32_t.const_int(i, false),
+                                ],
+                                &format!("array.rep.coerced.slot{}", i),
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?
+                    };
+                    self.builder
+                        .build_store(slot, v)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Ok((
+                    arr_ptr.into(),
+                    CodegenTy::Array(elem_hint.clone(), n),
+                ))
+            }
+            (Some(CodegenTy::Tuple(want_tys)), Expr::Tuple(parts, _))
+                if parts.len() == want_tys.len() && parts.len() >= 2 =>
+            {
+                let mut elem_vals: Vec<BasicValueEnum<'ctx>> =
+                    Vec::with_capacity(parts.len());
+                let mut elem_tys: Vec<CodegenTy> =
+                    Vec::with_capacity(parts.len());
+                for (p, h) in parts.iter().zip(want_tys.iter()) {
+                    let (v, got) = self.lower_expr_into(p, scope, Some(h))?;
+                    elem_vals.push(v);
+                    elem_tys.push(got);
+                }
+                let storage_ty = self.llvm_tuple_storage_type(&elem_tys);
+                let bytes = storage_ty
+                    .size_of()
+                    .expect("tuple storage type has known size");
+                let tup_ptr =
+                    self.arena_alloc(bytes, "tuple.coerced.alloc")?;
+                let i32_t = self.context.i32_type();
+                for (i, v) in elem_vals.iter().enumerate() {
+                    let slot = unsafe {
+                        self.builder
+                            .build_gep(
+                                storage_ty,
+                                tup_ptr,
+                                &[
+                                    i32_t.const_int(0, false),
+                                    i32_t.const_int(i as u64, false),
+                                ],
+                                &format!("tuple.coerced.slot{}", i),
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?
+                    };
+                    self.builder
+                        .build_store(slot, *v)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Ok((tup_ptr.into(), CodegenTy::Tuple(elem_tys)))
+            }
+            _ => {
+                let (v, got) = self.lower_expr(e, scope)?;
+                if let (Some(CodegenTy::Interface(iface)), CodegenTy::LocusRef(l)) =
+                    (hint, &got)
+                {
+                    let fat =
+                        self.coerce_to_interface(v.into_pointer_value(), l, iface)?;
+                    Ok((fat.into(), CodegenTy::Interface(iface.clone())))
+                } else {
+                    Ok((v, got))
+                }
+            }
+        }
+    }
+
     /// Lower an `if`-as-expression. The then- and else- blocks must
     /// each have a trailing expression; the values are phi-merged at
     /// the join point and the phi is the if-expression's value. An
@@ -24728,6 +24919,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         self.builder.position_at_end(done_bb);
+        // Drain the cooperative bus queue after sleep returns so a
+        // long-running `while { time::sleep(...); ... }` loop in a
+        // cooperative subscriber delivers cells posted by other
+        // threads during the sleep (unix-bound reader threads,
+        // pinned publishers, etc.). Without this the cells sit in
+        // g_bus_queue until the body's next natural drain point —
+        // the documented workaround was `sleep; yield;`. The drain
+        // is folded in so the canonical pattern just works.
+        self.emit_bus_drain()?;
         Ok(())
     }
 

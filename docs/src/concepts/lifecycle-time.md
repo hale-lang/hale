@@ -155,9 +155,17 @@ points:
    the subscriber's handler runs at its scheduler's next
    yield point.
 4. **`time::sleep(d)`.** Yields for at least `d` real time.
+   After the underlying `clock_nanosleep` returns, the
+   substrate drains the cooperative bus queue inline — so a
+   cooperative subscriber whose `run()` loops with
+   `time::sleep(...)` delivers cells posted by other threads
+   (unix-bound reader threads, pinned publishers) mid-loop
+   without an explicit `yield;`. The drain is idempotent;
+   existing `sleep; yield;` code stays correct.
 5. **Explicit `yield;`** — a statement-level construct that
    lets you insert a cooperative yield inside a long internal
-   loop.
+   loop. Still useful for loops that don't sleep but want to
+   surface queued cells at a known checkpoint.
 
 Between yield points, the cooperative locus has the scheduler
 thread exclusively. No other locus's code runs on that
