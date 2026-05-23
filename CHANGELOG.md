@@ -364,6 +364,73 @@ after the sret + String in-place fixes landed.
   binary is the lightest correct fix. Other tests stay fully
   parallel.
 
+- `8acd9d5` **[codegen] [lang]** Iris F.7 / F.8 + brained F.8 —
+  clang link-order reorder, caller-arena prologue sweep, lexer
+  non-ASCII in comments.
+
+  Iris F.7: `-l<libs>` came BEFORE `csrc` files in the clang
+  invocation, so any csrc that referenced symbols in a linked
+  static lib (raylib `glue.c` → `libraylib.a`) silently
+  surfaced as `undefined reference`. GNU ld resolves
+  left-to-right; libs only resolve currently-unresolved
+  references, and the csrc hadn't compiled yet at the
+  `-lraylib` slot. Reordered to csrc-first, matching GCC
+  convention. Iris's workaround (pass `libraylib.a` as a
+  csrc-shaped entry) can now drop.
+
+  Iris F.8 + brained F.6-class: six String/Bytes-returning
+  C-runtime lowerings were missing the `emit_set_caller_arena()`
+  prologue — `str_builder_finish`, `bytes_builder_finish`,
+  `fs::list_dir_at`, `udp::recv`, `process::pipe_read`,
+  `file::read_line`. All allocate the returned value via
+  `lotus_bus_payload_arena_alloc` / `lotus_caller_or_global_
+  bytes_create`, both of which read the
+  `lotus_current_caller_arena` TLS. Without the prologue the
+  TLS carried whatever stale value the last nested call left
+  behind — typically a destroyed sub-region from a prior
+  call's scratch. Verified by removing iris's F.8 workaround
+  (`demo.step.flush` dummy publish) and running four
+  consecutive `iris.demos.run name=hello` calls through
+  `--mcp` cleanly.
+
+  Brained F.8: `skip_ws_and_comments`'s line- and block-comment
+  scanners advanced `self.pos += 1` per byte even on multi-
+  byte UTF-8 leaders (em-dash, box-draw, arrow); the next
+  char-boundary check on `&self.source[..]` then panicked
+  inside `lex_op_or_punct`. `spec/tokens.md` explicitly
+  permits non-ASCII inside both string literals and comments.
+  Switched to char-boundary-aware advance when the leading
+  byte is >= 0x80, mirroring how `lex_string` already
+  handles it.
+
+- `67e29cf` **[lang] [codegen]** Brained F.9 + F.2 —
+  lex_op_or_punct UTF-8 panic + `to_string(Time)`.
+
+  Brained F.9: after 8acd9d5's comment-scanner fix, a related
+  panic surfaced for string literals whose body begins with a
+  non-ASCII char (`println("─x")`). Control reached
+  `lex_op_or_punct` at the `(` immediately before the string;
+  its 3-char and 2-char multi-op detection sliced
+  `&self.source[pos..pos+3]` / `[pos..pos+2]` as `&str`,
+  panicking when pos+N landed inside the trailing multi-byte
+  codepoint. All multi-char operators are pure ASCII, so the
+  fix is to match on the raw byte slice (`b"..="`, `b"=="`, …)
+  rather than &str — no char-boundary precondition.
+
+  Brained F.2: `to_string(Time)` errored with "not supported
+  for type Time" even though `std::time::time_from_unix(n)
+  -> Time` produced a perfectly usable ISO 8601 string at
+  runtime. Root cause: v0 Time at the CodegenTy level is
+  already a ptr to a NUL-terminated string (literals lower
+  to a global string; `time_from_unix` returns a freshly-
+  formatted gmtime_r + strftime buffer). The String ABI is
+  the same single-pointer shape, so `to_string(Time)` is
+  identity — but the dispatch in `value_to_string` didn't
+  include the Time arm and fell through to the catch-all
+  error. Added the identity arm. Real i64-since-epoch Time
+  representation stays deferred per `spec/types.md`'s v0
+  placeholder note.
+
 ## 2026-05-21 — Phase-4 per-method scratch reclaim + chunk pool
 
 - `7cc4439` **[codegen] [spec]** Phase-4 method-scratch reclaim
