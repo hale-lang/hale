@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 280" role="img" aria-label="Aperio — hypergraph programming">
+  <title>Aperio — hypergraph programming</title>
+  <rect width="1200" height="280" fill="#0E1F1A"/>
+  <g transform="translate(376 76) scale(1.6)">
+    <g transform="translate(40 40)" fill="none" stroke="#F5F1E8" stroke-width="0.9">
+      <ellipse cx="0" cy="-23" rx="5.5" ry="12"/>
+      <ellipse cx="0" cy="-23" rx="5.5" ry="12" transform="rotate(60)"/>
+      <ellipse cx="0" cy="-23" rx="5.5" ry="12" transform="rotate(120)"/>
+      <ellipse cx="0" cy="-23" rx="5.5" ry="12" transform="rotate(180)"/>
+      <ellipse cx="0" cy="-23" rx="5.5" ry="12" transform="rotate(240)"/>
+      <ellipse cx="0" cy="-23" rx="5.5" ry="12" transform="rotate(300)"/>
+    </g>
+    <g transform="translate(40 40)">
+      <rect x="-8" y="-8" width="16" height="16" fill="none" stroke="#F5F1E8" stroke-width="0.9"/>
+      <circle cx="-3.5" cy="0" r="2" fill="#F5F1E8"/>
+      <circle cx="3.5" cy="0" r="2" fill="none" stroke="#F5F1E8" stroke-width="0.9"/>
+      <line x1="-1.5" y1="0" x2="1.5" y2="0" stroke="#F5F1E8" stroke-width="0.9"/>
+    </g>
+  </g>
+  <text x="552" y="156" font-family="Georgia, 'Times New Roman', serif" font-size="88" fill="#F5F1E8">Aperio</text>
+  <text x="552" y="196" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="20" fill="#B5AB94">hypergraph programming</text>
+</svg>

@@ -1,0 +1,122 @@
+/*
+ * Aperio — brand tokens
+ * hypergraph programming
+ *
+ * Palette, typography, and semantic color mappings.
+ * Pair with mdbook-aperio.css for the docs site.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap');
+
+:root {
+  /* -------------------------------------------------------------------- */
+  /*  Palette — jade (primary)                                            */
+  /* -------------------------------------------------------------------- */
+  --aperio-jade-50:  #E1F5EE;
+  --aperio-jade-100: #9FE1CB;
+  --aperio-jade-200: #5DCAA5;
+  --aperio-jade-400: #1D9E75;
+  --aperio-jade-500: #0F6E56;   /* primary */
+  --aperio-jade-700: #085041;
+  --aperio-jade-900: #04342C;
+
+  /* -------------------------------------------------------------------- */
+  /*  Palette — ivory (primary surface)                                   */
+  /* -------------------------------------------------------------------- */
+  --aperio-ivory-50:  #FBF8F1;
+  --aperio-ivory-100: #F5F1E8;  /* primary surface */
+  --aperio-ivory-200: #E8E1D0;
+  --aperio-ivory-400: #B5AB94;
+  --aperio-ivory-700: #5A5048;
+  --aperio-ivory-900: #2A2620;
+
+  /* -------------------------------------------------------------------- */
+  /*  Palette — coral (accent, the lotus blossom)                         */
+  /* -------------------------------------------------------------------- */
+  --aperio-coral-50:  #FAECE7;
+  --aperio-coral-100: #F5C4B3;
+  --aperio-coral-200: #F0997B;  /* primary accent */
+  --aperio-coral-400: #D85A30;
+  --aperio-coral-700: #712B13;
+
+  /* -------------------------------------------------------------------- */
+  /*  Palette — ink (deep text on light surfaces)                         */
+  /* -------------------------------------------------------------------- */
+  --aperio-ink-900: #0E1116;
+  --aperio-ink-700: #2A2620;
+  --aperio-ink-500: #5A5048;
+
+  /* -------------------------------------------------------------------- */
+  /*  Dark surface (deep jade ink — used as the dark mode background)     */
+  /* -------------------------------------------------------------------- */
+  --aperio-dark-bg:   #0E1F1A;
+  --aperio-dark-bg-2: #0B1814;
+  --aperio-dark-bg-3: #153028;
+
+  /* -------------------------------------------------------------------- */
+  /*  Typography                                                          */
+  /* -------------------------------------------------------------------- */
+  --aperio-font-serif: 'Fraunces', 'Tiempos Headline', Georgia, 'Times New Roman', serif;
+  --aperio-font-sans:  'IBM Plex Sans', 'Söhne', system-ui, -apple-system, sans-serif;
+  --aperio-font-mono:  'IBM Plex Mono', 'Berkeley Mono', 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* -------------------------------------------------------------------- */
+  /*  Semantic tokens — light mode (default)                              */
+  /* -------------------------------------------------------------------- */
+  --aperio-bg-primary:    var(--aperio-ivory-100);
+  --aperio-bg-secondary:  var(--aperio-ivory-50);
+  --aperio-bg-tertiary:   var(--aperio-ivory-200);
+
+  --aperio-fg-primary:    var(--aperio-ink-900);
+  --aperio-fg-secondary:  var(--aperio-ink-700);
+  --aperio-fg-tertiary:   var(--aperio-ink-500);
+
+  --aperio-accent:        var(--aperio-jade-500);
+  --aperio-accent-strong: var(--aperio-jade-700);
+  --aperio-accent-warm:   var(--aperio-coral-400);
+
+  --aperio-border:        rgba(14, 17, 22, 0.12);
+  --aperio-rule:          rgba(14, 17, 22, 0.08);
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Semantic tokens — dark mode                                           */
+/* ---------------------------------------------------------------------- */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --aperio-bg-primary:    var(--aperio-dark-bg);
+    --aperio-bg-secondary:  var(--aperio-dark-bg-2);
+    --aperio-bg-tertiary:   var(--aperio-dark-bg-3);
+
+    --aperio-fg-primary:    var(--aperio-ivory-100);
+    --aperio-fg-secondary:  var(--aperio-ivory-400);
+    --aperio-fg-tertiary:   #8A8175;
+
+    --aperio-accent:        var(--aperio-jade-200);
+    --aperio-accent-strong: var(--aperio-jade-100);
+    --aperio-accent-warm:   var(--aperio-coral-200);
+
+    --aperio-border:        rgba(245, 241, 232, 0.12);
+    --aperio-rule:          rgba(245, 241, 232, 0.08);
+  }
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Manual overrides (use [data-theme="dark"] on <html> to force dark)    */
+/* ---------------------------------------------------------------------- */
+[data-theme="dark"] {
+  --aperio-bg-primary:    var(--aperio-dark-bg);
+  --aperio-bg-secondary:  var(--aperio-dark-bg-2);
+  --aperio-bg-tertiary:   var(--aperio-dark-bg-3);
+
+  --aperio-fg-primary:    var(--aperio-ivory-100);
+  --aperio-fg-secondary:  var(--aperio-ivory-400);
+  --aperio-fg-tertiary:   #8A8175;
+
+  --aperio-accent:        var(--aperio-jade-200);
+  --aperio-accent-strong: var(--aperio-jade-100);
+  --aperio-accent-warm:   var(--aperio-coral-200);
+
+  --aperio-border:        rgba(245, 241, 232, 0.12);
+  --aperio-rule:          rgba(245, 241, 232, 0.08);
+}

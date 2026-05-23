@@ -1,0 +1,214 @@
+/*
+ * Aperio — mdbook theme override
+ *
+ * Drop this in `theme/aperio.css` in your mdbook project and add
+ * `additional-css = ["theme/aperio.css"]` under [output.html] in book.toml.
+ *
+ * Reskins the existing `light` theme (used as the brand default) and the
+ * `coal` / `navy` themes (used as the brand dark) with Aperio's palette
+ * and typography. `rust` and `ayu` are left as-is — they're alternate
+ * themes the reader can opt into.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap');
+
+/* ---------------------------------------------------------------------- */
+/*  Brand tokens — duplicated here so this file is drop-in standalone.    */
+/* ---------------------------------------------------------------------- */
+:root {
+  --aperio-jade-100: #9FE1CB;
+  --aperio-jade-200: #5DCAA5;
+  --aperio-jade-500: #0F6E56;
+  --aperio-jade-700: #085041;
+
+  --aperio-ivory-50:  #FBF8F1;
+  --aperio-ivory-100: #F5F1E8;
+  --aperio-ivory-200: #E8E1D0;
+  --aperio-ivory-400: #B5AB94;
+  --aperio-ivory-700: #5A5048;
+
+  --aperio-coral-100: #F5C4B3;
+  --aperio-coral-200: #F0997B;
+  --aperio-coral-700: #712B13;
+
+  --aperio-ink-500: #5A5048;
+  --aperio-ink-700: #2A2620;
+  --aperio-ink-900: #0E1116;
+
+  --aperio-dark-bg:   #0E1F1A;
+  --aperio-dark-bg-2: #0B1814;
+  --aperio-dark-bg-3: #153028;
+
+  --aperio-font-serif: 'Fraunces', 'Tiempos Headline', Georgia, 'Times New Roman', serif;
+  --aperio-font-sans:  'IBM Plex Sans', 'Söhne', system-ui, -apple-system, sans-serif;
+  --aperio-font-mono:  'IBM Plex Mono', 'Berkeley Mono', 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Light theme — the brand default                                       */
+/* ---------------------------------------------------------------------- */
+.light,
+html.light {
+  --bg: var(--aperio-ivory-100);
+  --fg: var(--aperio-ink-900);
+
+  --sidebar-bg: var(--aperio-ivory-50);
+  --sidebar-fg: var(--aperio-ink-700);
+  --sidebar-non-existant: var(--aperio-ivory-400);
+  --sidebar-active: var(--aperio-jade-500);
+  --sidebar-spacer: rgba(14, 17, 22, 0.08);
+
+  --scrollbar: var(--aperio-ivory-400);
+
+  --icons: var(--aperio-ink-500);
+  --icons-hover: var(--aperio-jade-500);
+
+  --links: var(--aperio-jade-500);
+
+  --inline-code-color: var(--aperio-jade-700);
+
+  --theme-popup-bg: var(--aperio-ivory-50);
+  --theme-popup-border: rgba(14, 17, 22, 0.12);
+  --theme-hover: var(--aperio-ivory-200);
+
+  --quote-bg: var(--aperio-ivory-50);
+  --quote-border: var(--aperio-jade-500);
+
+  --warning-border: var(--aperio-coral-400, #D85A30);
+
+  --table-border-color: rgba(14, 17, 22, 0.12);
+  --table-header-bg: var(--aperio-ivory-200);
+  --table-alternate-bg: var(--aperio-ivory-50);
+
+  --searchbar-border-color: rgba(14, 17, 22, 0.12);
+  --searchbar-bg: var(--aperio-ivory-50);
+  --searchbar-fg: var(--aperio-ink-900);
+  --searchbar-shadow-color: rgba(14, 17, 22, 0.08);
+
+  --searchresults-header-fg: var(--aperio-ink-700);
+  --searchresults-border-color: rgba(14, 17, 22, 0.12);
+  --searchresults-li-bg: var(--aperio-ivory-200);
+
+  --search-mark-bg: var(--aperio-coral-100);
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Coal & navy — the brand dark                                          */
+/* ---------------------------------------------------------------------- */
+.coal, .navy,
+html.coal, html.navy {
+  --bg: var(--aperio-dark-bg);
+  --fg: var(--aperio-ivory-100);
+
+  --sidebar-bg: var(--aperio-dark-bg-2);
+  --sidebar-fg: var(--aperio-ivory-400);
+  --sidebar-non-existant: var(--aperio-ivory-700);
+  --sidebar-active: var(--aperio-jade-200);
+  --sidebar-spacer: rgba(245, 241, 232, 0.12);
+
+  --scrollbar: var(--aperio-ivory-700);
+
+  --icons: var(--aperio-ivory-400);
+  --icons-hover: var(--aperio-jade-200);
+
+  --links: var(--aperio-jade-200);
+
+  --inline-code-color: var(--aperio-coral-200);
+
+  --theme-popup-bg: var(--aperio-dark-bg-2);
+  --theme-popup-border: rgba(245, 241, 232, 0.12);
+  --theme-hover: var(--aperio-dark-bg-3);
+
+  --quote-bg: var(--aperio-dark-bg-2);
+  --quote-border: var(--aperio-jade-200);
+
+  --warning-border: var(--aperio-coral-200);
+
+  --table-border-color: rgba(245, 241, 232, 0.12);
+  --table-header-bg: var(--aperio-dark-bg-3);
+  --table-alternate-bg: var(--aperio-dark-bg-2);
+
+  --searchbar-border-color: rgba(245, 241, 232, 0.12);
+  --searchbar-bg: var(--aperio-dark-bg-2);
+  --searchbar-fg: var(--aperio-ivory-100);
+  --searchbar-shadow-color: rgba(0, 0, 0, 0.4);
+
+  --searchresults-header-fg: var(--aperio-ivory-400);
+  --searchresults-border-color: rgba(245, 241, 232, 0.12);
+  --searchresults-li-bg: var(--aperio-dark-bg-3);
+
+  --search-mark-bg: var(--aperio-coral-700);
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Typography                                                            */
+/* ---------------------------------------------------------------------- */
+body, .content {
+  font-family: var(--aperio-font-sans);
+  font-feature-settings: "ss01", "cv11";
+}
+
+h1, h2, h3, h4, h5, h6,
+.menu-title {
+  font-family: var(--aperio-font-serif);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+h1 {
+  font-weight: 400;
+  letter-spacing: -0.02em;
+}
+
+code, pre, .hljs,
+.editor, .ace_editor {
+  font-family: var(--aperio-font-mono);
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Links — restrained but distinct                                       */
+/* ---------------------------------------------------------------------- */
+a {
+  text-decoration: underline;
+  text-decoration-thickness: 0.5px;
+  text-underline-offset: 3px;
+  transition: text-decoration-thickness 120ms ease;
+}
+a:hover {
+  text-decoration-thickness: 1.5px;
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Inline code — a hint of jade, no shouting                             */
+/* ---------------------------------------------------------------------- */
+.light code, html.light code {
+  background: var(--aperio-ivory-200);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.coal code, .navy code,
+html.coal code, html.navy code {
+  background: var(--aperio-dark-bg-3);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Block quotes — italic + jade rule                                     */
+/* ---------------------------------------------------------------------- */
+blockquote {
+  border-left-width: 3px;
+  font-style: italic;
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Sidebar chapter list — sans for clarity                               */
+/* ---------------------------------------------------------------------- */
+.chapter li.chapter-item {
+  font-family: var(--aperio-font-sans);
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+.chapter li.chapter-item strong {
+  font-weight: 500;
+}

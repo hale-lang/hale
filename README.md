@@ -1,4 +1,7 @@
-# Aperio
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/aperio-banner-dark.svg">
+  <img alt="Aperio — hypergraph programming" src="docs/assets/aperio-banner-light.svg" width="100%">
+</picture>
 
 [![Tests](https://github.com/aperio-lang/aperio/actions/workflows/tests.yml/badge.svg)](https://github.com/aperio-lang/aperio/actions/workflows/tests.yml)
 [![Docs](https://github.com/aperio-lang/aperio/actions/workflows/docs.yml/badge.svg)](https://aperio-lang.github.io/aperio/)

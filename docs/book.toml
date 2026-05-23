@@ -19,6 +19,9 @@ edit-url-template = "https://github.com/aperio-lang/aperio/edit/main/docs/{path}
 # before book.js calls hljs.highlightAll(), so all aperio fences
 # pick it up. See docs/theme/aperio.js.
 additional-js = ["theme/aperio.js"]
+# Brand theme: reskins the `light` theme as the brand default and
+# `coal` / `navy` as the brand dark. `rust` / `ayu` left untouched.
+additional-css = ["theme/aperio.css"]
 
 [output.html.fold]
 enable = true
