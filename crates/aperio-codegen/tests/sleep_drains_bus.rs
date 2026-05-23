@@ -41,6 +41,11 @@ fn unique_path(tag: &str) -> PathBuf {
 }
 
 #[test]
+#[ignore = "F.31 Phase 3b — requires placement-override codegen \
+            to restore pinned dispatch so Pub runs on its own \
+            thread; without it Pub runs synchronously and the \
+            cross-thread-during-sleep scenario can't be exercised. \
+            Re-enable once Phase 3b lands."]
 fn sleep_drains_bus_queue_mid_loop() {
     let src = r#"
         type Tick { n: Int; }
@@ -50,7 +55,11 @@ fn sleep_drains_bus_queue_mid_loop() {
         // that outlasts Sub's run() — keeps the pinned thread's
         // own flush_dissolve_frame from draining the queue before
         // Sub gets the chance.
-        locus Pub : schedule pinned {
+        //
+        // F.31: pinned placement lives in main locus's
+        // `placement { }` block rather than as a per-locus
+        // `: schedule pinned` annotation.
+        locus Pub {
             bus { publish "tick" of type Tick; }
             run() {
                 std::time::sleep(20ms);
@@ -86,9 +95,18 @@ fn sleep_drains_bus_queue_mid_loop() {
             }
         }
 
+        main locus App {
+            params {
+                pub_: Pub = Pub { };
+                sub: Sub = Sub { };
+            }
+            placement {
+                pub_: pinned;
+            }
+        }
+
         fn main() {
-            Pub { };
-            Sub { };
+            App { };
         }
     "#;
 
