@@ -359,6 +359,7 @@ pub fn build_executable_with_options(
         placement_for_next_locus_instantiation: None,
         main_placement_map: BTreeMap::new(),
         main_locus_name: None,
+        pinned_locus_types: BTreeSet::new(),
         vtables: BTreeMap::new(),
     };
 
@@ -1221,6 +1222,22 @@ struct Cx<'ctx, 'p> {
     /// instantiations) — placement entries have nowhere to live
     /// in that case.
     main_locus_name: Option<String>,
+    /// F.31 Phase 3b: set of locus type names that are
+    /// instantiated pinned-equivalent SOMEWHERE in the bundle.
+    /// Populated from: (a) `placement { field: pinned[(core=N)]; }`
+    /// entries on main locus — resolves the field's params-
+    /// declared locus type; (b) `bindings { Topic: AdapterLocus
+    /// { ... }; }` entries — adapter loci are pinned-equivalent
+    /// by construction (recv-loop on own thread).
+    ///
+    /// `declare_locus_struct` reads this set: any locus type
+    /// in the set gets the pinned-required struct fields
+    /// (mailbox slot for subscribers, etc.) regardless of the
+    /// locus's own `: schedule` annotation (which is gone in
+    /// F.31). Per-instance core affinity stays per-instance via
+    /// the placement_override mechanism in
+    /// `lower_locus_instantiation`.
+    pinned_locus_types: BTreeSet<String>,
     /// F.20 Phase B: per-(locus, interface) vtable globals.
     /// Synthesized lazily by `ensure_vtable` the first time a
     /// given locus is coerced to a given interface. Layout is
@@ -7208,6 +7225,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         });
         let Some(l) = main_locus else { return };
         self.main_locus_name = Some(l.name.name.clone());
+
+        // Build a name → locus-type-name map for main's params so
+        // we can resolve placement entries' field references back
+        // to the locus type that gets pinned.
+        let mut params_locus_types: BTreeMap<String, String> = BTreeMap::new();
+        for m in &l.members {
+            if let LocusMember::Params(pb) = m {
+                for p in &pb.params {
+                    if let Some(TypeExpr::Named { path, generic_args, .. }) =
+                        &p.ty
+                    {
+                        if path.segments.len() == 1 && generic_args.is_empty() {
+                            params_locus_types.insert(
+                                p.name.name.clone(),
+                                path.segments[0].name.clone(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Walk placement entries: populate main_placement_map +
+        // pinned_locus_types.
         for m in &l.members {
             if let LocusMember::Placement(pb) = m {
                 for entry in &pb.entries {
@@ -7223,7 +7264,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }
                     };
                     self.main_placement_map
-                        .insert(entry.field.name.clone(), sc);
+                        .insert(entry.field.name.clone(), sc.clone());
+                    // F.31 Phase 3b: if the entry pins the field,
+                    // mark the field's locus TYPE as pinned-
+                    // equivalent so its struct layout includes
+                    // pinned-required fields.
+                    if matches!(sc, ScheduleClass::Pinned(_)) {
+                        if let Some(locus_ty) =
+                            params_locus_types.get(&entry.field.name)
+                        {
+                            self.pinned_locus_types
+                                .insert(locus_ty.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Walk binding entries: adapter loci instantiated inline
+        // are pinned-equivalent by construction.
+        for m in &l.members {
+            if let LocusMember::Bindings(bb) = m {
+                for entry in &bb.entries {
+                    if let TransportSpec::Adapter { locus, .. } =
+                        &entry.transport
+                    {
+                        self.pinned_locus_types.insert(locus.name.clone());
+                    }
                 }
             }
         }
@@ -9795,7 +9862,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // and the deferred-dissolve flush (main thread, signals
         // shutdown before pthread_join). Cooperative loci and
         // pinned loci without subscriptions don't need this.
-        let has_subscribe = matches!(schedule_class, ScheduleClass::Pinned(_))
+        //
+        // F.31 (2026-05-23): "is this locus pinned?" no longer
+        // comes from a per-locus annotation. We consult
+        // `pinned_locus_types`, populated at codegen startup
+        // from main's `placement { }` entries + adapter
+        // bindings. Any locus that's instantiated pinned-
+        // equivalent anywhere in the bundle gets pinned-fields
+        // in its struct layout. Per-instance core affinity
+        // varies via the placement_override at instantiation
+        // time; struct layout is type-level uniform.
+        let is_pinned_locus_type =
+            self.pinned_locus_types.contains(&l.name.name);
+        let has_subscribe = is_pinned_locus_type
             && l.members.iter().any(|m| match m {
                 LocusMember::Bus(b) => b.members.iter().any(|bm| {
                     matches!(bm, BusMember::Subscribe { .. })
@@ -30861,20 +30940,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the outermost instantiation in the expression takes it.
         let parent_owns_via_field =
             std::mem::take(&mut self.instantiating_for_parent_field);
-        // F.31 (2026-05-23): consume any placement override the
-        // caller set. The override is collected here (so it
-        // doesn't leak into nested instantiations) but NOT yet
-        // applied to `info.schedule_class` — the override
-        // consumption needs careful integration with the locus
-        // struct layout (mailbox field, etc. are decided at
-        // declare-time from schedule_class, before placement is
-        // known) and with the deferred-dissolve frame routing
-        // for cross-pool teardown. Phase 3a takes the consumption
-        // out so the placement scan can land without functional
-        // change; Phase 3b wires the override end-to-end after
-        // pre-determining "this locus has at-least-one pinned
-        // placement entry" at locus-declare time so the struct
-        // layout includes the pinned fields.
+        // F.31 (2026-05-23): the caller may have set a placement
+        // override for this instantiation (main-locus params-
+        // init loop, adapter-binding emit). Phase 3a collects
+        // the override here (so it doesn't leak into nested
+        // instantiations) but Phase 3b's full wiring — pushing
+        // the locus onto the deferred-dissolve frame with
+        // pinned-marker semantics AND applying the override —
+        // depends on placing the parent-frame correctly. Today
+        // the placement is pushed onto whatever frame is
+        // `last_mut()`, which during nested params-init can be
+        // a transient frame that doesn't survive past the
+        // outer locus's instantiation. The cooperative dispatch
+        // fires on the nested frame's pop, the pthread runs
+        // separately, and we get a double-dispatch + segfault.
+        //
+        // Phase 3b will land the deferred-frame routing fix
+        // (push placements onto the OUTER caller's frame, not
+        // the inner params-init frame). For now the override is
+        // discarded — every locus runs cooperative regardless
+        // of placement. The pre-pass that builds
+        // `pinned_locus_types` from placement + adapter
+        // bindings still lays out pinned-required struct fields
+        // for affected locus types, so when the override
+        // application lands the struct shape is ready.
         let _placement_override =
             std::mem::take(&mut self.placement_for_next_locus_instantiation);
         let info = self
