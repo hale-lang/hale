@@ -11,6 +11,13 @@ name: tests
 # shared `/tmp/lotus_test_*` paths that historically required
 # `--test-threads=1` no longer collide. Workspace-wide test time
 # drops ~2-3x vs libtest.
+#
+# Partition-then-fanout shape: one `build` job compiles + archives
+# the workspace test binaries; N parallel `test` jobs each run a
+# hash-partitioned subset of the archive. Total wall-clock drops
+# from ~7min to ~3min at the cost of ~2-3x CI minutes (separate
+# runner boot per partition). Worth it for branch-iteration
+# velocity.
 
 on:
   push:
@@ -28,9 +35,12 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
+
 jobs:
-  test:
-    name: cargo test --workspace
+  build:
+    name: build + archive
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,7 +59,7 @@ jobs:
           restore-keys: |
             cargo-tests-x86_64-linux-llvm18-
 
-      - name: Install LLVM 18
+      - name: Install LLVM 18 + clang
         run: |
           set -eux
           sudo apt-get update
@@ -71,15 +81,89 @@ jobs:
         # forces it), so a fresh checkout that goes straight to
         # `cargo test` misses the artifact and fails with
         # `undefined reference to lotus_ts_*`.
-        env:
-          LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
-        run: |
-          set -eux
-          cargo build --release --workspace
+        run: cargo build --release --workspace
 
-      - name: cargo nextest run --release --workspace
-        env:
-          LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
+      - name: cargo nextest archive
+        # Bundles all compiled test binaries + workspace metadata
+        # into a zstd-compressed tarball. Test runners unpack and
+        # execute without rebuilding. Fixtures referenced via
+        # CARGO_MANIFEST_DIR are remapped at the test side via
+        # `--workspace-remap` if needed; on Actions runners both
+        # phases check out to the same path so no remap is
+        # required.
+        run: |
+          cargo nextest archive \
+            --archive-file tests.tar.zst \
+            --release --workspace
+
+      - name: Upload nextest archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-archive
+          path: tests.tar.zst
+          retention-days: 1
+
+      - name: Upload runtime artifacts
+        # `libaperio_ts_shim.a` is needed by codegen tests that
+        # invoke clang to link compiled `.ap` programs. nextest
+        # archive doesn't include arbitrary build outputs, so the
+        # staticlib goes as a separate artifact.
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-artifacts
+          path: target/release/libaperio_ts_shim.a
+          retention-days: 1
+
+  test:
+    name: test ${{ matrix.partition }}/4
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      # Don't short-circuit other partitions on first failure —
+      # we want to see the full failure picture across the suite.
+      fail-fast: false
+      matrix:
+        partition: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        # Tests reference fixture files under
+        # `crates/*/tests/fixtures/` via CARGO_MANIFEST_DIR-rooted
+        # paths. Checkout to the same directory the build runner
+        # used so the paths align.
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install LLVM 18 + clang
+        # Test runners need libLLVM.so.18 at runtime (llvm-sys
+        # links dynamically) AND clang-18 for the
+        # compile-Aperio-test invocations.
         run: |
           set -eux
-          cargo nextest run --release --workspace
+          sudo apt-get update
+          sudo apt-get install -y \
+            llvm-18-dev libpolly-18-dev libzstd-dev \
+            clang-18 libclang-18-dev zlib1g-dev
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Download nextest archive
+        uses: actions/download-artifact@v4
+        with:
+          name: nextest-archive
+
+      - name: Download runtime artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-artifacts
+          path: target/release
+
+      - name: cargo nextest run (partition ${{ matrix.partition }}/4)
+        # `hash:I/N` deterministically partitions by test name —
+        # same test always lands on the same partition across
+        # runs, so a flake is reproducible to its partition.
+        run: |
+          cargo nextest run \
+            --archive-file tests.tar.zst \
+            --partition hash:${{ matrix.partition }}/4
