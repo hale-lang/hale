@@ -163,7 +163,18 @@ jobs:
         # `hash:I/N` deterministically partitions by test name —
         # same test always lands on the same partition across
         # runs, so a flake is reproducible to its partition.
+        #
+        # `--extract-to .` unpacks the archive into the workspace
+        # root (target/release/ etc.) rather than nextest's default
+        # temp dir, so `CARGO_BIN_EXE_aperio` (baked at compile
+        # time to the workspace's target/release/aperio path)
+        # resolves on the test runner. `--extract-overwrite`
+        # allows the staticlib downloaded by the previous step at
+        # target/release/ to be replaced or preserved during
+        # extraction without aborting.
         run: |
           cargo nextest run \
             --archive-file tests.tar.zst \
+            --extract-to . \
+            --extract-overwrite \
             --partition hash:${{ matrix.partition }}/4
