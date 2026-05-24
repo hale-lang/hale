@@ -1,0 +1,122 @@
+// pond/http/client — URL parsing.
+//
+// One free fn: `parse_url(s) -> Url fallible(HttpError)`.
+// Handles the subset of URL syntax HTTP/1.1 clients need —
+// scheme + host + optional :port + optional path. No userinfo,
+// no fragments, no query-parameter decoding (the query string
+// rides along in `path` because that's all an HTTP request line
+// needs).
+//
+// Free fn (catalog pattern 6) — pure transformation, no state.
+
+// Default ports per RFC 7330. TLS landed 2026-05-18 (upstream
+// e9a99df); both schemes are live in the connect path.
+fn __default_port_for_scheme(scheme: String) -> Int {
+    if scheme == "http"  { return 80; }
+    if scheme == "https" { return 443; }
+    return 0;
+}
+
+// Parse a URL string into a Url record.
+//
+// Accepted shapes:
+//   http://host/path
+//   http://host:port/path
+//   http://host
+//   http://host:port
+//   //host/path                    (scheme inherited, defaults to "http")
+//
+// Rejects: bare paths, missing host, malformed port.
+fn parse_url(s: String) -> Url fallible(HttpError) {
+    let total = len(s);
+    if total <= 0 {
+        fail HttpError {
+            kind: "bad_url",
+            status: 0,
+            detail: "empty url"
+        };
+    }
+
+    // Find scheme separator "://". Absent → assume http.
+    let scheme_sep = std::str::index_of(s, "://");
+    let mut scheme = "http";
+    let mut after_scheme_idx = 0;
+    if scheme_sep >= 0 {
+        scheme = s[0..scheme_sep];
+        after_scheme_idx = scheme_sep + 3;
+    } else {
+        // Tolerate `//host/path` as a shorthand for `http://host/path`.
+        let lead = std::str::index_of(s, "//");
+        if lead == 0 {
+            after_scheme_idx = 2;
+        } else {
+            fail HttpError {
+                kind: "bad_url",
+                status: 0,
+                detail: "missing scheme://"
+            };
+        }
+    }
+
+    if after_scheme_idx >= total {
+        fail HttpError {
+            kind: "bad_url",
+            status: 0,
+            detail: "missing host"
+        };
+    }
+
+    // Split host[:port] from path. Look for first `/` in the
+    // remainder.
+    let tail = s[after_scheme_idx..total];
+    let tail_len = len(tail);
+    let path_sep = std::str::index_of(tail, "/");
+    let mut authority = "";
+    let mut path = "/";
+    if path_sep < 0 {
+        authority = tail;
+    } else {
+        authority = tail[0..path_sep];
+        path = tail[path_sep..tail_len];
+    }
+
+    if len(authority) <= 0 {
+        fail HttpError {
+            kind: "bad_url",
+            status: 0,
+            detail: "empty authority"
+        };
+    }
+
+    // Split authority into host[:port].
+    let auth_len = len(authority);
+    let port_sep = std::str::index_of(authority, ":");
+    let mut host = authority;
+    let mut port = __default_port_for_scheme(scheme);
+    if port_sep >= 0 {
+        host = authority[0..port_sep];
+        let port_str = authority[(port_sep + 1)..auth_len];
+        port = std::str::parse_int(port_str) or 0;
+        if port <= 0 {
+            fail HttpError {
+                kind: "bad_url",
+                status: 0,
+                detail: "bad port"
+            };
+        }
+    }
+    if len(host) <= 0 {
+        fail HttpError {
+            kind: "bad_url",
+            status: 0,
+            detail: "empty host"
+        };
+    }
+
+    return Url {
+        scheme: scheme,
+        host: host,
+        port: port,
+        path: path
+    };
+}

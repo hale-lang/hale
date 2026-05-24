@@ -1,0 +1,17 @@
+# hale.toml — link surface for heron consumers.
+#
+# When an Hale program imports `vendor/pond/heron`, the
+# build picks up `link` and `csrc` from this file automatically
+# (per spec/ffi.md § "hale.toml [ffi] auto-pickup").
+#
+# Requires libtree-sitter installed on the build host:
+#   apt:  sudo apt install libtree-sitter-dev
+#   brew: brew install tree-sitter
+#   src:  https://github.com/tree-sitter/tree-sitter
+
+[ffi]
+link = ["tree-sitter"]
+csrc = [
+    "glue.c",
+    "src/parser.c",
+]

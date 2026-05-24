@@ -1,0 +1,78 @@
+// petal_extract.hl — end-to-end demonstration of the
+// lotus_viz pipeline against a single .hl file.
+//
+// Reads a file, parses via heron, walks the AST to extract
+// Petals, resolves F.29 parent edges, lays out positions,
+// and prints the result. No rendering — this is the pipeline
+// validation harness, not the cinematic surface.
+//
+// Build (assumes iris workspace + vendored heron):
+//   hale build .
+//
+// Run:
+//   ./examples /home/riley/code/hale-lang/iris/main.hl
+//
+// Expected output (truncated):
+//   petals: 17
+//     depth 0  Iris  (chunked) — main.hl:N
+//     depth 1  ShellPane  — shell_pane.hl:N
+//     depth 1  SourcePane  — source_pane.hl:N
+//     ...
+
+import "lib/heron" as heron;
+
+fn main() {
+    if std::env::args_count() < 2 {
+        println("usage: petal_extract <file.hl>");
+        return;
+    }
+
+    let path = std::env::arg(1);
+    let content = std::io::fs::read_file(path) or "";
+    if content == "" {
+        println("could not read file: ", path);
+        return;
+    }
+
+    let provider = TreeSitterHaleParser { };
+    if !provider.parser.is_ready() {
+        println("heron parser allocation failed — libtree-sitter installed?");
+        return;
+    }
+
+    provider.parse_file(path, content);
+    let tree = provider.tree();
+
+    layout_tree(tree);
+
+    println("petals: ", to_string(tree.len()));
+    let n = tree.len();
+    let mut i = 0;
+    while i < n {
+        let p = tree.get(i) or raise;
+        let depth_marker = repeat_str("  ", p.depth);
+        let kind_name = kind_name(p.kind);
+        let proj_name = projection_name(p.projection);
+        let proj_suffix = "";
+        if p.projection.tag != 0 {
+            proj_suffix = " (" + proj_name + ")";
+        }
+        println(
+            depth_marker, "depth ", to_string(p.depth), "  ",
+            p.name, " [", kind_name, "]", proj_suffix,
+            " — ", p.file, ":", to_string(p.line));
+        i = i + 1;
+    }
+}
+
+// Small helper — Hale's std::str doesn't ship `repeat`
+// across all builds. Build a string by repeated concat.
+fn repeat_str(s: String, n: Int) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < n {
+        out = out + s;
+        i = i + 1;
+    }
+    return out;
+}

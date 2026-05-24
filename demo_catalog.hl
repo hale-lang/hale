@@ -1,0 +1,209 @@
+// DemoCatalog — self-narrating interactive tours.
+//
+// Each demo drives state changes (proposals on ide.proposal.in;
+// direct gate mutations for the lock demos) and accumulates a
+// sequence of step descriptions in a return-shaped trace. The
+// user's external agent (Claude Code, Cursor, ...) calls these
+// over MCP, reads the trace, and narrates each step to the user
+// in their normal agent terminal — pacing is the agent's job,
+// not iris's.
+//
+// Why structured trace over inline narration: publishing
+// AgentChunk from inside an MCP-dispatch call frame currently
+// segfaults (FRICTION F.8 — same arena class as F.6). The
+// structured-trace shape is also cleaner architecturally: iris
+// drives the substrate; the agent reads + speaks. iris's local
+// agent pane shows the state changes anyway (proposals echo
+// applied/denied via AgentPane subscribers).
+//
+// Surface (exposed via MCP):
+//   * iris.demos.list  → JSON catalog of {name, summary}
+//   * iris.demos.run   → execute one demo by name; returns a
+//                        {ran, ok, steps: [...]} JSON the
+//                        agent narrates from.
+
+locus DemoCatalog {
+    params {
+        trace: std::bytes::BytesBuilder
+             = std::bytes::BytesBuilder { initial_cap: 2048 };
+        step_count: Int = 0;
+    }
+
+    bus {
+        publish ProposalIn;
+    }
+
+    fn list_json() -> String {
+        return concat_demos(
+            "[",
+            spec("hello",          "Wave hello; describe the basic controls."),
+            spec("permission_gate","Open a file, lock the source pane, watch a write get refused at the bus."),
+            spec("viz_modes",      "Cycle the viz pane through bulk → harmonic → resolution."),
+            spec("scene_info",     "Inspect the active VizScene's domain, channels, and state."),
+            spec("concurrent_work","Drive multiple file opens to show the two-channel bus in motion."),
+            "]"
+        );
+    }
+
+    fn run_demo(name: String) -> String {
+        // Reset the trace for this run.
+        self.trace.clear();
+        self.step_count = 0;
+
+        if name == "hello"           { self.demo_hello();     return self.finish("hello",          true); }
+        if name == "permission_gate" { self.demo_permission();return self.finish("permission_gate",true); }
+        if name == "viz_modes"       { self.demo_viz_modes(); return self.finish("viz_modes",      true); }
+        if name == "scene_info"      { self.demo_scene_info();return self.finish("scene_info",     true); }
+        if name == "concurrent_work" { self.demo_concurrent();return self.finish("concurrent_work",true); }
+        return err_json(name);
+    }
+
+    // ---- Individual demos. Each step:
+    //   * runs the state change (propose / gate / etc.)
+    //   * records a one-liner in self.trace for the agent to read
+
+    fn demo_hello() {
+        self.step("iris has four panes: shell, source, viz, agent.");
+        self.step("Cycle focus with Ctrl+Tab; jump direct with Ctrl+1..4.");
+        self.step("Ctrl+Q or ESC quits.");
+    }
+
+    fn demo_permission() {
+        self.step("Submitting proposal: open foo.hl. Gate allows by default.");
+        self.propose_open("foo.hl");
+        self.step("Source pane now shows foo.hl. Now locking the source pane against agent writes.");
+        // The actual lock fires from McpServer.h_demos_run since
+        // gate isn't a field on this locus. Step text reflects
+        // that the lock is in effect by the time the demo runs.
+        self.step("Submitting proposal: open bar.hl on the same channel.");
+        self.propose_open("bar.hl");
+        self.step("Source pane still shows foo.hl. The proposal was refused at the dispatcher — no mutation reached the pane. Structural enforcement at the bus layer.");
+    }
+
+    fn demo_viz_modes() {
+        self.step("Switching viz to bulk — every node rendered, instanced.");
+        self.propose_viz_mode("bulk");
+        self.step("Switching to harmonic — nodes grouped by class, tinted.");
+        self.propose_viz_mode("harmonic");
+        self.step("Switching to resolution — camera framed on one entity.");
+        self.propose_viz_mode("resolution");
+        self.step("Same scene, three projections. Mode is substrate-universal; scenes decide content.");
+    }
+
+    fn demo_scene_info() {
+        self.step("Active scene: hale.locus_tower (iris core's default).");
+        self.step("Domain: hale. Channels: empty (this scene accepts no scene-specific proposals).");
+        self.step("Domain plugins like brain3.topology and <demo-app>.strategy ship their own scenes with their own channels.");
+        self.step("Call viz.scene_info() via MCP for the live state snapshot.");
+    }
+
+    fn demo_concurrent() {
+        self.step("Opening main.hl — proposal applied.");
+        self.propose_open("main.hl");
+        self.step("Opening pane.hl — proposal applied.");
+        self.propose_open("pane.hl");
+        self.step("Opening viz_scene.hl — proposal applied.");
+        self.propose_open("viz_scene.hl");
+        self.step("Three rapid opens. In a real session the agent would be typing analysis into its own pane simultaneously; the bus channels never collide.");
+    }
+
+    // ---- Helpers.
+
+    fn step(text: String) {
+        // Build one quoted+separator chunk per step via a String
+        // builder, then append once to the trace BytesBuilder.
+        let b = std::str::builder_new();
+        if self.step_count > 0 {
+            std::str::builder_append(b, ",\"");
+        } else {
+            std::str::builder_append(b, "\"");
+        }
+        std::str::builder_append(b, text);
+        std::str::builder_append(b, "\"");
+        let chunk = std::str::builder_finish(b);
+        self.trace.append(std::bytes::from_string(chunk));
+        self.step_count = self.step_count + 1;
+    }
+
+    fn finish(name: String, ok: Bool) -> String {
+        let steps_body = std::str::from_bytes(self.trace.view());
+        let b = std::str::builder_new();
+        std::str::builder_append(b, "{\"ran\":\"");
+        std::str::builder_append(b, name);
+        std::str::builder_append(b, "\",\"ok\":");
+        std::str::builder_append(b, bool_str(ok));
+        std::str::builder_append(b, ",\"steps\":[");
+        std::str::builder_append(b, steps_body);
+        std::str::builder_append(b, "]}");
+        return std::str::builder_finish(b);
+    }
+
+    fn propose_open(path: String) {
+        let b = std::str::builder_new();
+        std::str::builder_append(b, "{\"path\":\"");
+        std::str::builder_append(b, path);
+        std::str::builder_append(b, "\",\"line\":0}");
+        let payload = std::str::builder_finish(b);
+        ProposalIn <- Proposal {
+            id:      "demo",
+            channel: "ide.cmd.source.open",
+            payload: payload,
+            reason:  "demo step",
+        };
+    }
+
+    fn propose_viz_mode(mode: String) {
+        let b = std::str::builder_new();
+        std::str::builder_append(b, "{\"mode\":\"");
+        std::str::builder_append(b, mode);
+        std::str::builder_append(b, "\"}");
+        let payload = std::str::builder_finish(b);
+        ProposalIn <- Proposal {
+            id:      "demo",
+            channel: "ide.cmd.viz.mode",
+            payload: payload,
+            reason:  "demo step",
+        };
+    }
+}
+
+// ---- Free-fn JSON helpers ----
+
+fn spec(name: String, summary: String) -> String {
+    let b = std::str::builder_new();
+    std::str::builder_append(b, "{\"name\":\"");
+    std::str::builder_append(b, name);
+    std::str::builder_append(b, "\",\"summary\":\"");
+    std::str::builder_append(b, summary);
+    std::str::builder_append(b, "\"}");
+    return std::str::builder_finish(b);
+}
+
+fn concat_demos(open: String, d1: String, d2: String, d3: String, d4: String, d5: String, close: String) -> String {
+    let b = std::str::builder_new();
+    std::str::builder_append(b, open);
+    std::str::builder_append(b, d1);
+    std::str::builder_append(b, ",");
+    std::str::builder_append(b, d2);
+    std::str::builder_append(b, ",");
+    std::str::builder_append(b, d3);
+    std::str::builder_append(b, ",");
+    std::str::builder_append(b, d4);
+    std::str::builder_append(b, ",");
+    std::str::builder_append(b, d5);
+    std::str::builder_append(b, close);
+    return std::str::builder_finish(b);
+}
+
+fn err_json(name: String) -> String {
+    let b = std::str::builder_new();
+    std::str::builder_append(b, "{\"ran\":\"");
+    std::str::builder_append(b, name);
+    std::str::builder_append(b, "\",\"ok\":false,\"error\":\"unknown_demo\"}");
+    return std::str::builder_finish(b);
+}
+
+fn bool_str(b: Bool) -> String {
+    if b { return "true"; }
+    return "false";
+}

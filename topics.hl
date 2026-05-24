@@ -1,0 +1,33 @@
+// Bus topics flowing in iris.
+//
+// Topic decls (per pond/subprocess pattern) wire a typed payload
+// to a literal subject string. Publishers / subscribers reference
+// topics by name; subscribers via `bus { subscribe TopicName as
+// handler; }` and publishers via `publish TopicName;` + a
+// `TopicName <- payload;` send (or the literal-subject form).
+
+import "lib/raylib" as ray;
+
+// User-input flow (AgentPane → AgentHarness)
+topic UserPromptIn { payload: UserPrompt; subject: "ide.agent.user_input"; }
+
+// Agent → UI events
+topic AgentChunk        { payload: Chunk;             subject: "ide.event.agent.chunk"; }
+topic AgentTurnDone     { payload: TurnComplete;      subject: "ide.event.agent.turn_complete"; }
+topic AgentToolCall     { payload: ToolCall;          subject: "ide.event.agent.tool_call"; }
+topic AgentToolResult   { payload: ToolResult;        subject: "ide.event.agent.tool_result"; }
+topic AgentError        { payload: AgentErrorPayload; subject: "ide.event.agent.error"; }
+topic AgentReady        { payload: AgentReadyChanged; subject: "ide.event.agent.ready_changed"; }
+
+// Proposal pipeline (Phase 1)
+topic ProposalIn       { payload: Proposal; subject: "ide.proposal.in"; }
+topic ProposalApplied  { payload: Applied;  subject: "ide.proposal.applied"; }
+topic ProposalDenied   { payload: Denial;   subject: "ide.proposal.denied"; }
+
+// Per-channel command topics (dispatcher → pane subscribers)
+topic SrcOpenCmd     { payload: SourceOpen;      subject: "ide.cmd.source.open"; }
+topic VizCameraCmd   { payload: ray::Camera3D;   subject: "ide.cmd.viz.camera"; }
+topic VizModeCmd     { payload: VizMode;         subject: "ide.cmd.viz.mode"; }
+
+// Source pane → all subscribers (currently VizPane → active scene).
+topic SrcChangedEvt  { payload: SourceChanged;   subject: "ide.event.source.changed"; }

@@ -1,0 +1,76 @@
+// VizPane — Phase 3. Scene-hosting surface for the viz pane.
+//
+// Holds one active VizScene at a time; iris core ships
+// LotusFlowerScene (from lib/lotus_viz) as the default per
+// VISION.md §4 — the lotus flower is the universal default
+// VizScene for any Hale locus tower. Universal substrate
+// (camera primitives, viz mode, click delegation) lives on
+// VizPane; everything else delegates to the active scene's
+// render / dispatch / on_source_changed / on_click.
+//
+// F.20 → F.29 interface-typed field: the default
+// `LotusFlowerScene { }` coerces to VizScene at the field-init
+// site. Lifecycle cascades through the field; swapping scenes
+// (ide.cmd.viz.set_scene proposal) is a future capability.
+
+import "lib/raylib"    as ray;
+import "lib/lotus_viz" as lotus_viz;
+
+locus VizPane {
+    params {
+        active_scene: VizScene = lotus_viz::LotusFlowerScene { };
+        focused:      Bool     = false;
+        mode:         String   = "bulk";    // bulk / harmonic / resolution
+    }
+
+    bus {
+        // Forwards into the active scene.
+        subscribe SrcChangedEvt as on_source_change;
+        subscribe VizCameraCmd  as on_camera_cmd;
+        subscribe VizModeCmd    as on_mode_cmd;
+    }
+
+    fn focus_gain() { self.focused = true; }
+    fn focus_lose() { self.focused = false; }
+    fn name() -> String { return "viz"; }
+
+    fn render(s: RenderSurface) {
+        render_frame(s, "viz");
+        // Scene draws inside the pane's rect. Stub raylib means
+        // no visible output today; lights up with real raylib.
+        self.active_scene.render(s);
+    }
+
+    fn on_key(k: KeyEvent) {
+        if !self.focused { return; }
+        // Mode keys (substrate, universal across scenes).
+        if k.code == ray::KEY_ONE   { self.mode = "bulk";       return; }
+        if k.code == ray::KEY_TWO   { self.mode = "harmonic";   return; }
+        if k.code == ray::KEY_THREE { self.mode = "resolution"; return; }
+        // Camera primitives (WASD fly) — future. For now
+        // delegated to scene.on_click via a hypothetical mouse
+        // path; raw key fall-through is no-op.
+    }
+
+    // ---- Bus handlers.
+
+    fn on_source_change(c: SourceChanged) {
+        self.active_scene.on_source_changed(c.path, c.content);
+    }
+
+    fn on_camera_cmd(c: ray::Camera3D) {
+        self.active_scene.set_camera(c);
+    }
+
+    fn on_mode_cmd(m: VizMode) {
+        self.mode = m.mode;
+    }
+
+    // ---- Inspection / MCP surface.
+
+    fn scene_name() -> String     { return self.active_scene.name(); }
+    fn scene_domain() -> String   { return self.active_scene.domain(); }
+    fn scene_channels() -> String { return self.active_scene.channels_json(); }
+    fn scene_state() -> String    { return self.active_scene.state_json(); }
+    fn current_mode() -> String   { return self.mode; }
+}

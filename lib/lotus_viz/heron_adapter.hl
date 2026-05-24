@@ -1,0 +1,402 @@
+// heron_adapter.hl — heron-backed LocusTreeProvider.
+//
+// Lives in lotus_viz (not in heron) because the adapter is
+// the consumer-specific glue between heron's general parser
+// surface and lotus_viz's specific LocusTreeProvider interface.
+// heron stays domain-agnostic; lotus_viz owns the mapping
+// from "Hale AST" to "lotus tree of petals."
+//
+// Walks heron's tree-sitter AST and extracts Petals into a
+// LocusTree. scene.hl instantiates this as the default
+// provider — replaces the EmptyProvider stub for production
+// use.
+
+import "../heron" as heron;
+
+// ---- The provider ----
+//
+// LocusTreeProvider is declared in parse.hl (same seed,
+// interface only). This adapter implements it.
+
+locus TreeSitterHaleParser {
+    params {
+        parser: heron::Parser = heron::Parser { };
+        tree:   LocusTree     = LocusTree { };
+    }
+
+    // ---- LocusTreeProvider interface ----
+
+    fn parse_file(path: String, content: String) {
+        if !self.parser.is_ready() {
+            // Parser allocation failed at birth — fail soft;
+            // tree stays whatever it was. Diagnostic surface
+            // (bus event, status_json) is a follow-up.
+            return;
+        }
+
+        // Re-parse semantics: drop any existing petals from
+        // this file path before adding new ones. Keeps
+        // multi-call parse_file (workspace scan; incremental
+        // re-parse on source change) idempotent without
+        // requiring callers to clear() first.
+        remove_petals_from_file(self.tree, path);
+
+        // Parse into the parser's owned tree slot. Avoids the
+        // M90 leak that the external-Tree API would hit on
+        // every parse (see lib/heron/STATUS.md).
+        if !self.parser.parse_into_self(content) {
+            return;
+        }
+
+        let root = self.parser.current_root();
+        if heron::node_is_null(root) {
+            heron::node_delete(root);
+            return;
+        }
+
+        // Walk source_file's named children. Each top-level
+        // decl that produces a petal goes into self.tree.
+        walk_top_level(self.tree, root, path);
+
+        heron::node_delete(root);
+        // The parser's owned tree stays alive until next
+        // parse_into_self call (which frees it) or parser
+        // dissolve. No per-call leak.
+
+        // Wire F.29 parent-child edges across the whole tree.
+        // O(N^2) — fine at the petal counts the flower handles
+        // (tens to hundreds). Re-runs every parse so
+        // newly-introduced loci can become parents of
+        // already-parsed children too.
+        resolve_parent_edges(self.tree);
+    }
+
+    fn clear() {
+        // Petals from previous parses are no longer wanted;
+        // pop the vec down to zero. (@form(vec).pop is the
+        // primitive we have at v0; a clear() method on the
+        // form is post-v0 polish.)
+        let mut i = self.tree.len();
+        while i > 0 {
+            let _ = self.tree.pop() or raise;
+            i = i - 1;
+        }
+    }
+
+    fn tree() -> LocusTree {
+        return self.tree;
+    }
+}
+
+// ---- Top-level walker ----
+
+fn walk_top_level(tree: LocusTree, root: heron::Node, file_path: String) {
+    let n = heron::node_named_child_count(root);
+    let mut i = 0;
+    while i < n {
+        let child = heron::node_named_child(root, i);
+        let kind = heron::node_kind(child);
+
+        if kind == "locus_decl" {
+            emit_locus_petal(tree, child, file_path);
+        }
+        if kind == "type_decl" {
+            emit_type_petal(tree, child, file_path);
+        }
+        if kind == "interface_decl" {
+            emit_iface_petal(tree, child, file_path);
+        }
+        // Other top-level decls (function_decl, const_decl,
+        // perspective_decl, topic_decl, module_decl,
+        // import_decl, ffi_function_decl) don't become petals
+        // at v0. The flower's about locus structure; free
+        // fns + consts are flat helpers, not towers.
+
+        heron::node_delete(child);
+        i = i + 1;
+    }
+}
+
+// ---- Per-decl emitters ----
+
+fn emit_locus_petal(tree: LocusTree, decl: heron::Node, file_path: String) {
+    let name_node = heron::node_field(decl, "name");
+    if heron::node_is_null(name_node) {
+        heron::node_delete(name_node);
+        return;
+    }
+    let name = heron::node_text(name_node);
+    let row = heron::node_start_row(decl);
+    heron::node_delete(name_node);
+
+    let proj = detect_projection(decl);
+    let children = collect_child_type_names(decl);
+
+    let p = Petal {
+        id:               petal_id(file_path, name),
+        name:             name,
+        kind:             locus_kind(),
+        projection:       proj,
+        parent_id:        "",   // resolved later by resolve_parent_edges
+        file:             file_path,
+        line:             row + 1,
+        child_type_names: children,
+    };
+    tree.push(p);
+}
+
+fn emit_type_petal(tree: LocusTree, decl: heron::Node, file_path: String) {
+    let name_node = heron::node_field(decl, "name");
+    if heron::node_is_null(name_node) {
+        heron::node_delete(name_node);
+        return;
+    }
+    let name = heron::node_text(name_node);
+    let row = heron::node_start_row(decl);
+    heron::node_delete(name_node);
+
+    let p = Petal {
+        id:         petal_id(file_path, name),
+        name:       name,
+        kind:       type_kind(),
+        projection: projection_none(),
+        parent_id:  "",
+        file:       file_path,
+        line:       row + 1,
+    };
+    tree.push(p);
+}
+
+fn emit_iface_petal(tree: LocusTree, decl: heron::Node, file_path: String) {
+    let name_node = heron::node_field(decl, "name");
+    if heron::node_is_null(name_node) {
+        heron::node_delete(name_node);
+        return;
+    }
+    let name = heron::node_text(name_node);
+    let row = heron::node_start_row(decl);
+    heron::node_delete(name_node);
+
+    let p = Petal {
+        id:         petal_id(file_path, name),
+        name:       name,
+        kind:       iface_kind(),
+        projection: projection_none(),
+        parent_id:  "",
+        file:       file_path,
+        line:       row + 1,
+    };
+    tree.push(p);
+}
+
+// ---- Projection-class detection ----
+
+fn detect_projection(decl: heron::Node) -> ProjectionClass {
+    let n = heron::node_named_child_count(decl);
+    let mut i = 0;
+    let mut result = projection_none();
+    while i < n {
+        let c = heron::node_named_child(decl, i);
+        let kind = heron::node_kind(c);
+        if kind == "locus_annotations" {
+            result = detect_projection_in_annotations(c);
+        }
+        heron::node_delete(c);
+        i = i + 1;
+    }
+    return result;
+}
+
+fn detect_projection_in_annotations(annos: heron::Node) -> ProjectionClass {
+    let n = heron::node_named_child_count(annos);
+    let mut i = 0;
+    let mut result = projection_none();
+    while i < n {
+        let anno = heron::node_named_child(annos, i);
+        let pn = heron::node_named_child_count(anno);
+        let mut j = 0;
+        while j < pn {
+            let sub = heron::node_named_child(anno, j);
+            if heron::node_kind(sub) == "projection_class" {
+                result = projection_class_from_text(heron::node_text(sub));
+            }
+            heron::node_delete(sub);
+            j = j + 1;
+        }
+        heron::node_delete(anno);
+        i = i + 1;
+    }
+    return result;
+}
+
+fn projection_class_from_text(t: String) -> ProjectionClass {
+    if std::str::index_of(t, "rich") == 0 {
+        return projection_rich();
+    }
+    if std::str::index_of(t, "chunked") == 0 {
+        return projection_chunked();
+    }
+    if std::str::index_of(t, "recognition") == 0 {
+        return projection_recognition();
+    }
+    return projection_none();
+}
+
+// ---- F.29 child-type-name collection ----
+
+fn collect_child_type_names(decl: heron::Node) -> String {
+    let b = std::str::builder_new();
+    let n = heron::node_named_child_count(decl);
+    let mut i = 0;
+    while i < n {
+        let c = heron::node_named_child(decl, i);
+        if heron::node_kind(c) == "params_block" {
+            collect_from_params_block(c, b);
+        }
+        heron::node_delete(c);
+        i = i + 1;
+    }
+    return std::str::builder_finish(b);
+}
+
+fn collect_from_params_block(params_node: heron::Node, b: Int) {
+    let n = heron::node_named_child_count(params_node);
+    let mut i = 0;
+    while i < n {
+        let pd = heron::node_named_child(params_node, i);
+        if heron::node_kind(pd) == "param_decl" {
+            let type_node = heron::node_field(pd, "type");
+            if !heron::node_is_null(type_node) {
+                let name = single_ident_named_type(type_node);
+                if name != "" {
+                    std::str::builder_append(b, name);
+                    std::str::builder_append(b, "\n");
+                }
+            }
+            heron::node_delete(type_node);
+        }
+        heron::node_delete(pd);
+        i = i + 1;
+    }
+}
+
+fn single_ident_named_type(type_node: heron::Node) -> String {
+    if heron::node_kind(type_node) != "named_type" { return ""; }
+    let qn = heron::node_named_child(type_node, 0);
+    if heron::node_is_null(qn) { heron::node_delete(qn); return ""; }
+    if heron::node_kind(qn) != "qualified_name" {
+        heron::node_delete(qn);
+        return "";
+    }
+    if heron::node_named_child_count(qn) != 1 {
+        heron::node_delete(qn);
+        return "";
+    }
+    let id = heron::node_named_child(qn, 0);
+    let name = heron::node_text(id);
+    heron::node_delete(id);
+    heron::node_delete(qn);
+    return name;
+}
+
+// ---- F.29 parent-edge resolution ----
+
+fn resolve_parent_edges(tree: LocusTree) {
+    let n = tree.len();
+
+    // Pass 1: reset all parent_id + depth.
+    let mut i = 0;
+    while i < n {
+        let p = tree.get(i) or raise;
+        if p.parent_id != "" || p.depth != 0 {
+            let mut updated = p;
+            updated.parent_id = "";
+            updated.depth = 0;
+            tree.set(i, updated) or raise;
+        }
+        i = i + 1;
+    }
+
+    // Pass 2: set parent_id wherever a child-type-name
+    // matches another petal's name.
+    i = 0;
+    while i < n {
+        let parent = tree.get(i) or raise;
+        if parent.child_type_names != "" && parent.kind.tag == 0 {
+            set_parents_for_children(tree, parent, n);
+        }
+        i = i + 1;
+    }
+
+    // Pass 3: compute depth by walking each petal's parent
+    // chain. Iterate until no changes.
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let mut k = 0;
+        while k < n {
+            let p = tree.get(k) or raise;
+            if p.parent_id != "" {
+                let parent_depth = depth_of_id(tree, p.parent_id, n);
+                let new_depth = parent_depth + 1;
+                if p.depth != new_depth {
+                    let mut updated = p;
+                    updated.depth = new_depth;
+                    tree.set(k, updated) or raise;
+                    changed = true;
+                }
+            }
+            k = k + 1;
+        }
+    }
+}
+
+fn set_parents_for_children(tree: LocusTree, parent: Petal, n: Int) {
+    let mut j = 0;
+    while j < n {
+        let candidate = tree.get(j) or raise;
+        if candidate.id != parent.id {
+            if name_appears_in(parent.child_type_names, candidate.name) {
+                let mut updated = candidate;
+                updated.parent_id = parent.id;
+                tree.set(j, updated) or raise;
+            }
+        }
+        j = j + 1;
+    }
+}
+
+fn name_appears_in(lines: String, name: String) -> Bool {
+    if lines == "" || name == "" { return false; }
+    let needle = name + "\n";
+    return std::str::index_of(lines, needle) >= 0;
+}
+
+fn depth_of_id(tree: LocusTree, id: String, n: Int) -> Int {
+    let mut i = 0;
+    while i < n {
+        let p = tree.get(i) or raise;
+        if p.id == id { return p.depth; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// ---- Per-file petal removal (re-parse idempotency) ----
+
+fn remove_petals_from_file(tree: LocusTree, path: String) {
+    let mut i = 0;
+    while i < tree.len() {
+        let p = tree.get(i) or raise;
+        if p.file == path {
+            let last_idx = tree.len() - 1;
+            if i != last_idx {
+                let last = tree.get(last_idx) or raise;
+                tree.set(i, last) or raise;
+            }
+            let _ = tree.pop() or raise;
+        } else {
+            i = i + 1;
+        }
+    }
+}

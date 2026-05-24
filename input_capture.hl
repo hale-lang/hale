@@ -1,0 +1,35 @@
+// InputCapture — polls raylib's input queue per frame, returns
+// the next KeyEvent (or an empty event if no key is queued).
+//
+// Phase 1: synchronous poll() method that callers (currently
+// `fn main()`) invoke per tick. Phase 0/Phase 2a's frame loop
+// will call this once per frame. Future phases may extend this
+// to mouse events, text-input events, etc.
+
+import "lib/raylib" as ray;
+
+locus InputCapture {
+    params { }
+
+    // Pull the next queued keystroke. Returns a KeyEvent with
+    // code == 0 if nothing is queued (caller checks).
+    fn poll() -> KeyEvent {
+        let code = ray::get_key_pressed();
+        if code == 0 {
+            return KeyEvent { };
+        }
+        let ctrl_down  = ray::is_key_down(ray::KEY_LEFT_CONTROL)
+                      || ray::is_key_down(ray::KEY_RIGHT_CONTROL);
+        let shift_down = ray::is_key_down(ray::KEY_LEFT_SHIFT)
+                      || ray::is_key_down(ray::KEY_RIGHT_SHIFT);
+        let alt_down   = ray::is_key_down(ray::KEY_LEFT_ALT)
+                      || ray::is_key_down(ray::KEY_RIGHT_ALT);
+        return KeyEvent {
+            code:  code,
+            char:  ray::get_char_pressed(),
+            ctrl:  ctrl_down,
+            shift: shift_down,
+            alt:   alt_down,
+        };
+    }
+}

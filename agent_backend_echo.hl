@@ -1,0 +1,71 @@
+// EchoBackend — the deterministic test AgentBackend.
+//
+// Publishes the user's prompt back as a chunk (prefixed) plus a
+// turn_complete event. If the prompt starts with "open ", also
+// emits an iris.proposal{} block to exercise the Phase 1
+// proposal pipeline end-to-end. No tools, no history, always
+// ready. Real Anthropic + brain3 backends land in Phase 2b / 2c.
+
+locus EchoBackend {
+    params {
+        prefix: String = "echo> ";
+    }
+
+    bus {
+        publish AgentChunk;
+        publish AgentTurnDone;
+    }
+
+    fn name() -> String   { return "echo"; }
+    fn model() -> String  { return "stub"; }
+    fn is_ready() -> Bool { return true; }
+
+    fn load_history() {
+        // No history — nothing to replay.
+    }
+
+    fn submit_user_input(prompt: String) {
+        AgentChunk <- Chunk { text: self.prefix };
+        AgentChunk <- Chunk { text: prompt };
+        AgentChunk <- Chunk { text: "\n" };
+
+        // Demonstrative: prompts of the form "open <path>" emit
+        // a proposal that opens the path in the source pane.
+        // Real backends emit proposals based on actual LLM
+        // reasoning; echo emits them via a hardcoded pattern so
+        // the pipeline runs deterministically.
+        if is_open_command(prompt) {
+            let path = command_arg(prompt);
+            AgentChunk <- Chunk { text: "iris.proposal { \"channel\": \"ide.cmd.source.open\", \"payload\": { \"path\": \"" };
+            AgentChunk <- Chunk { text: path };
+            AgentChunk <- Chunk { text: "\", \"line\": 0 }, \"reason\": \"echo handler — open command\" }" };
+        }
+
+        AgentTurnDone <- TurnComplete { };
+    }
+
+    fn submit_tool_result(tool_call_id: String, result_json: String) {
+        // Echo doesn't request tools.
+        let _ = tool_call_id;
+        let _ = result_json;
+    }
+
+    fn cancel() {
+        // Echo is synchronous — nothing in flight.
+    }
+}
+
+// ---- Helpers (free fns; available across the iris seed) ----
+
+fn is_open_command(prompt: String) -> Bool {
+    let n = len(prompt);
+    if n < 5 { return false; }
+    let head = std::str::substring(prompt, 0, 5);
+    return head == "open ";
+}
+
+fn command_arg(prompt: String) -> String {
+    let n = len(prompt);
+    if n <= 5 { return ""; }
+    return std::str::substring(prompt, 5, n);
+}

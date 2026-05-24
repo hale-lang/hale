@@ -1,0 +1,18 @@
+// ShellPane — Phase 1 stub. PTY subprocess + scrollback comes in
+// Phase 4. For now: empty rectangle with the label "shell".
+
+locus ShellPane {
+    params {
+        focused: Bool = false;
+    }
+    fn focus_gain() { self.focused = true; }
+    fn focus_lose() { self.focused = false; }
+    fn name() -> String { return "shell"; }
+    fn render(s: RenderSurface) {
+        render_frame(s, "shell");
+    }
+    fn on_key(k: KeyEvent) {
+        // Phase 4 wires this through to the PTY stdin.
+        let _ = k;
+    }
+}

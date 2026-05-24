@@ -1,0 +1,110 @@
+// Stub smoke test — exercises iris/lib/{raylib,pty,sse} stub
+// surfaces end-to-end. Pass = exits 0 silent (per std::test
+// convention).
+//
+// Build + run:
+//     cd iris && hale build tests/stub_smoke && ./tests/stub_smoke/stub_smoke
+//
+// When real bindings land, this test stays useful as a surface-
+// coverage check — every fn we expect users to call should be
+// callable here.
+
+import "../../lib/raylib" as ray;
+import "../../lib/pty" as ptylib;
+import "../../lib/sse" as sse;
+
+fn main() {
+    test_raylib_surface();
+    test_pty_stub();
+    test_sse_stub();
+}
+
+// ---- raylib: just confirm every call is reachable.
+
+fn test_raylib_surface() {
+    // Window lifecycle
+    ray::init_window(800, 600, "test");
+    std::test::assert(!ray::should_close(), "stub should_close returns false");
+    ray::set_target_fps(60);
+    std::test::assert_eq_int(ray::get_screen_width(), 1280, "stub screen width");
+    std::test::assert_eq_int(ray::get_screen_height(), 720, "stub screen height");
+
+    // Frame
+    ray::begin_frame();
+    ray::clear_background(ray::Color { r: 0, g: 0, b: 0 });
+    ray::begin_scissor(ray::Rect { x: 0.0, y: 0.0, width: 100.0, height: 100.0 });
+    ray::end_scissor();
+    ray::end_frame();
+
+    // 2D draw
+    ray::draw_text("hi", 10, 10, 14, ray::Color { r: 255 });
+    ray::draw_rect(ray::Rect { width: 50.0, height: 50.0 }, ray::Color { });
+    let w = ray::measure_text("hello", 14);
+    std::test::assert(w > 0, "measure_text returns positive width");
+
+    // 3D draw
+    let cam = ray::Camera3D { };
+    ray::begin_mode_3d(cam);
+    ray::draw_cube(ray::Vec3 { }, ray::Vec3 { x: 1.0, y: 1.0, z: 1.0 }, ray::Color { });
+    ray::draw_grid(10, 1.0);
+    ray::end_mode_3d();
+    let cam2 = ray::update_camera(cam, ray::CAMERA_ORBITAL);
+    std::test::assert_eq_int(cam2.projection, cam.projection, "stub update_camera pass-through");
+
+    // Input
+    std::test::assert(!ray::is_key_down(ray::KEY_A), "stub key down false");
+    std::test::assert_eq_int(ray::get_char_pressed(), 0, "stub no char");
+
+    ray::close_window();
+}
+
+// ---- pty: drive the stub through inject + read + write + drain.
+
+fn test_pty_stub() {
+    let p = ptylib::Pty { cmd: "/bin/sh" };
+
+    // No data yet.
+    let buf = std::bytes::BytesBuilder { initial_cap: 256 };
+    let n0 = ptylib::read_nonblocking(p, buf, 1024) or raise;
+    std::test::assert_eq_int(n0, 0, "empty pty reads 0");
+
+    // Inject some output and re-read.
+    ptylib::stub_inject_output(p, std::bytes::from_string("hello\n"));
+    let n1 = ptylib::read_nonblocking(p, buf, 1024) or raise;
+    std::test::assert_eq_int(n1, 6, "pty reads injected 6 bytes");
+
+    // Write captures into stub_input.
+    let written = ptylib::write(p, std::bytes::from_string("ls\n")) or raise;
+    std::test::assert_eq_int(written, 3, "pty write returns count");
+    let captured = ptylib::stub_drain_input(p);
+    std::test::assert_eq_int(len(captured), 3, "stub_drain_input returns 3 bytes");
+
+    // Closed pty fails.
+    ptylib::stub_set_alive(p, false);
+    std::test::assert(!ptylib::is_alive(p), "stub_set_alive false");
+}
+
+// ---- sse: pre-stage events, dequeue in order, hit closed.
+
+fn test_sse_stub() {
+    let s = sse::SseStream { };
+
+    sse::stub_enqueue_event(s, "content_block_delta", "{\"text\":\"hi\"}");
+    sse::stub_enqueue_event(s, "content_block_delta", "{\"text\":\" there\"}");
+    sse::stub_close(s);
+
+    let e1 = sse::next(s) or raise;
+    std::test::assert_eq_str(e1.event, "content_block_delta", "first event type");
+
+    let e2 = sse::next(s) or raise;
+    std::test::assert_eq_str(e2.event, "content_block_delta", "second event type");
+
+    // Queue empty + closed → kind="closed".
+    let e3 = sse::next(s) or fallback_closed(err);
+    std::test::assert_eq_str(e3.event, "__closed__", "drained stream signals close");
+}
+
+fn fallback_closed(e: sse::IoError) -> sse::SseEvent {
+    std::test::assert_eq_str(e.kind, "closed", "expected closed kind");
+    return sse::SseEvent { event: "__closed__", data: "", id: "" };
+}

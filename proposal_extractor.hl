@@ -1,0 +1,175 @@
+// ProposalExtractor — streaming scanner for iris.proposal{} blocks
+// in agent response text.
+//
+// Subscribes to AgentChunk events; accumulates the full response
+// into a BytesBuilder. After each chunk, scans forward from a
+// cursor for `iris.proposal { ... }` blocks. When a complete
+// block is found (matching brace at depth 0, respecting JSON
+// string boundaries), parses the body's JSON and publishes a
+// Proposal on ProposalIn.
+//
+// The scanner is greedy-streaming: proposals dispatch as soon as
+// they complete, mid-turn. AgentTurnDone triggers a final scan
+// pass (catches any block that completed in the last chunk).
+
+locus ProposalExtractor {
+    params {
+        accum:       std::bytes::BytesBuilder
+                   = std::bytes::BytesBuilder { initial_cap: 16384 };
+        scan_cursor: Int = 0;
+        emitted:     Int = 0;
+    }
+
+    bus {
+        subscribe AgentChunk    as on_chunk;
+        subscribe AgentTurnDone as on_turn_done;
+        publish   ProposalIn;
+    }
+
+    fn on_chunk(c: Chunk) {
+        self.accum.append(std::bytes::from_string(c.text));
+        self.scan();
+    }
+
+    fn on_turn_done(t: TurnComplete) {
+        let _ = t;
+        self.scan();
+        // We intentionally do NOT clear accum here — keeping the
+        // running transcript lets future turns reference prior
+        // context. Tests inspect via .text().
+    }
+
+    fn scan() {
+        // Materialize a String snapshot once (used for index_of /
+        // substring); a Bytes view of the same memory drives the
+        // byte-level brace matching (avoids per-access realloc).
+        let view = self.accum.view();
+        let text = std::str::from_bytes(view);
+        let mut keep_going = true;
+        while keep_going {
+            keep_going = self.try_extract_one(text, view);
+        }
+    }
+
+    // Find the next iris.proposal{...} starting at self.scan_cursor.
+    // Returns true if a proposal was emitted OR the cursor was
+    // advanced past a non-proposal tag (so caller keeps scanning);
+    // false if there's nothing more complete in the current accum.
+    fn try_extract_one(text: String, text_bytes: Bytes) -> Bool {
+        let tag = "iris.proposal";
+        let from = self.scan_cursor;
+        if from >= len(text) { return false; }
+
+        // Substring + index_of to find the tag at or after `from`.
+        let sub = std::str::substring(text, from, len(text));
+        let rel = std::str::index_of(sub, tag);
+        if rel < 0 { return false; }
+        let prefix_start = from + rel;
+        let open_search_from = prefix_start + len(tag);
+
+        let brace_at = find_open_brace_after(text_bytes, open_search_from);
+        if brace_at < 0 {
+            // No `{` after this tag — wasn't a real proposal. Skip
+            // past the tag and keep scanning.
+            self.scan_cursor = open_search_from;
+            return true;
+        }
+
+        let close_at = find_matching_brace(text_bytes, brace_at);
+        if close_at < 0 {
+            // Block is incomplete; wait for more chunks. Park the
+            // cursor at the prefix start so we re-find this block.
+            self.scan_cursor = prefix_start;
+            return false;
+        }
+
+        // body: text[brace_at .. close_at + 1] is the JSON object.
+        let body = std::str::substring(text, brace_at, close_at + 1);
+        let p = parse_proposal_body(body, self.emitted);
+        ProposalIn <- p;
+        self.emitted = self.emitted + 1;
+        self.scan_cursor = close_at + 1;
+        return true;
+    }
+
+    // ---- Inspection (test-time only).
+
+    fn text() -> String {
+        return std::str::from_bytes(self.accum.view());
+    }
+
+    fn emitted_count() -> Int {
+        return self.emitted;
+    }
+}
+
+// ---- Free fn helpers ----
+
+// Find the first '{' starting at `from`, skipping ASCII
+// whitespace only. Returns -1 if a non-whitespace, non-'{' byte
+// is found first (meaning this wasn't actually a proposal tag).
+fn find_open_brace_after(b: Bytes, from: Int) -> Int {
+    let n = len(b);
+    let mut i = from;
+    while i < n {
+        let by = std::bytes::at(b, i);
+        if by == 123 { return i; }                  // '{'
+        if !is_ws_byte(by) { return -1; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// Find the index of the matching '}' for the '{' at `open_at`.
+// Respects JSON string boundaries and backslash escapes inside
+// strings. Returns -1 if no match found in the buffer.
+fn find_matching_brace(b: Bytes, open_at: Int) -> Int {
+    let n = len(b);
+    let mut i = open_at + 1;
+    let mut depth = 1;
+    let mut in_str = false;
+    let mut esc = false;
+    while i < n {
+        let by = std::bytes::at(b, i);
+        if in_str {
+            if esc {
+                esc = false;
+            } else if by == 92 {                     // '\'
+                esc = true;
+            } else if by == 34 {                     // '"'
+                in_str = false;
+            }
+        } else {
+            if by == 34 {                            // '"'
+                in_str = true;
+            } else if by == 123 {                    // '{'
+                depth = depth + 1;
+            } else if by == 125 {                    // '}'
+                depth = depth - 1;
+                if depth == 0 { return i; }
+            }
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn is_ws_byte(b: Int) -> Bool {
+    return b == 32 || b == 9 || b == 10 || b == 13;     // sp, ht, lf, cr
+}
+
+// Parse a complete proposal body `{...}` (strict JSON) into a
+// Proposal payload.
+fn parse_proposal_body(body: String, seq: Int) -> Proposal {
+    let channel = std::json::find_string_field(body, "channel");
+    let payload = std::json::find_field_raw(body, "payload");
+    let reason  = std::json::find_string_field(body, "reason");
+    let id      = std::json::find_string_field(body, "id");
+    let id_final = if len(id) > 0 { id } else { to_string(seq) };
+    return Proposal {
+        id:      id_final,
+        channel: channel,
+        payload: payload,
+        reason:  reason,
+    };
+}

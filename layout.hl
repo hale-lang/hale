@@ -1,0 +1,80 @@
+// Layout — computes per-pane render rectangles.
+//
+// Phase 1: hardcoded 2x2 tiled layout sized from the current
+// screen. Pane assignment:
+//
+//   ┌──────────┬──────────┐
+//   │  shell   │  source  │
+//   ├──────────┼──────────┤
+//   │   viz    │  agent   │
+//   └──────────┴──────────┘
+//
+// Future phases: config-driven layouts, dynamic resize handling,
+// floating panes, splits. Layout becomes a locus tower of its
+// own once those land.
+
+import "lib/raylib" as ray;
+
+locus Layout {
+    params {
+        margin: Float       = 4.0;
+        status_height: Float = 24.0;   // reserved for the status strip
+    }
+    fn rect_for(pane_name: String) -> ray::Rect {
+        let sw = ray::get_screen_width();
+        let sh = ray::get_screen_height();
+        // Reserve the bottom strip for the status line. Panes
+        // live in the rectangle above; status line draws below.
+        let usable_h = sh - self.status_height;
+        let half_w = (sw - self.margin * 3.0) / 2.0;
+        let half_h = (usable_h - self.margin * 3.0) / 2.0;
+        let left_x = self.margin;
+        let right_x = self.margin * 2.0 + half_w;
+        let top_y = self.margin;
+        let bot_y = self.margin * 2.0 + half_h;
+
+        if pane_name == "shell" {
+            return ray::Rect { x: left_x,  y: top_y, width: half_w, height: half_h };
+        }
+        if pane_name == "source" {
+            return ray::Rect { x: right_x, y: top_y, width: half_w, height: half_h };
+        }
+        if pane_name == "viz" {
+            return ray::Rect { x: left_x,  y: bot_y, width: half_w, height: half_h };
+        }
+        if pane_name == "agent" {
+            return ray::Rect { x: right_x, y: bot_y, width: half_w, height: half_h };
+        }
+        return ray::Rect { };
+    }
+
+    fn status_rect() -> ray::Rect {
+        let sw = ray::get_screen_width();
+        let sh = ray::get_screen_height();
+        return ray::Rect {
+            x: 0.0,
+            y: sh - self.status_height,
+            width: sw,
+            height: self.status_height,
+        };
+    }
+}
+
+// Tab order for Ctrl+Tab cycling. Matches the layout reading
+// order: top-left, top-right, bottom-left, bottom-right.
+
+fn next_pane(current: String) -> String {
+    if current == "shell"  { return "source"; }
+    if current == "source" { return "viz"; }
+    if current == "viz"    { return "agent"; }
+    if current == "agent"  { return "shell"; }
+    return "agent";
+}
+
+fn prev_pane(current: String) -> String {
+    if current == "shell"  { return "agent"; }
+    if current == "source" { return "shell"; }
+    if current == "viz"    { return "source"; }
+    if current == "agent"  { return "viz"; }
+    return "agent";
+}

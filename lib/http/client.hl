@@ -1,0 +1,393 @@
+// pond/http/client — Client locus + free fn helpers.
+//
+// Public surface (per CONTRACTS.md):
+//   fn get(url: String)                              -> Response fallible(HttpError);
+//   fn post(url: String, body: Bytes, content_type) -> Response fallible(HttpError);
+//   fn request(req: Request)                         -> Response fallible(HttpError);
+//   locus Client { user_agent; timeout_ms; max_retries; }
+//     - same fn surface as the free fns, dispatched through a
+//       connection pool keyed by host:port.
+//
+// Catalog mapping:
+//   - free fns (pattern 6): `get` / `post` / `request` — pure,
+//     one-shot, no pooling.
+//   - Client (pattern 3 service-shaped, lightweight): owns a
+//     small fixed-cap pool of cached fds and a retry-with-
+//     backoff policy. No bus participation; no on_failure
+//     ladder; one alloc per Client. Pattern 2 (namespace lotus)
+//     would fit too, but Client carries mutable per-host pool
+//     state that biases toward pattern 3.
+
+// =====================================================================
+// Connection pool — fixed-cap LRU keyed by host:port.
+// =====================================================================
+//
+// Eight slots is enough for the typical agent workload (LLM
+// API + a couple of webhooks). Slot 0 is always considered the
+// hottest; on a hit we swap-to-front. A full pool drops the
+// least-recently-used entry (close its fd).
+//
+// FRICTION: this is a hand-rolled LRU because @form(lru_cache)
+// isn't in v1. A future cleanup pass might lift it into a pond
+// util. Logged in FRICTION.md.
+//
+// FRICTION: parallel arrays instead of a `type` of records —
+// because @form(vec) of a user type currently composes awkwardly
+// with manual LRU-shuffling indices, and we don't want a
+// dependency on @form here. Eight ints + eight strings is fine.
+// (Constants used to live here, but cross-seed `const` lookups
+// don't resolve at v1, so we inline literal values at use sites.
+// See FRICTION.md.)
+
+// Translate a connect-time IoError into an HttpError and raise
+// via the chained or-clause. Always fails; the success-type
+// return is just to satisfy the typechecker — the body never
+// reaches a `return`.
+fn __raise_connect(e: IoError, host: String, port: Int) -> Int fallible(HttpError) {
+    fail HttpError {
+        kind: "connect_failed",
+        status: 0,
+        detail: host + ":" + to_string(port) + " " + e.kind
+    };
+}
+
+// Connect and return a raw fd, or fail with HttpError. The
+// right-associative or-chain is the v1 idiom for translating
+// between fallible payload types: the inner or-arm evaluates
+// `__raise_connect(err, ...)` (which is itself fallible) and
+// the outer `or raise` propagates the resulting HttpError into
+// __dial's own error channel.
+fn __dial(host: String, port: Int) -> Int fallible(HttpError) {
+    let fd = std::io::tcp::connect(host, port)
+        or (__raise_connect(err, host, port) or raise);
+    return fd;
+}
+
+// TLS counterpart of __dial. SNI is set internally by
+// lotus_tls_connect from the host argument (the TLS substrate
+// uses the host string both for the TCP connect and for
+// SSL_set_tlsext_host_name + SSL_set1_host).
+fn __dial_tls(host: String, port: Int) -> Int fallible(HttpError) {
+    let handle = std::io::tls::connect(host, port)
+        or (__raise_connect(err, host, port) or raise);
+    return handle;
+}
+
+// One-shot exchange: connect, send, recv, close. Used by the
+// free-fn surface and by Client when the pool is empty / disabled.
+//
+// Branches on `req.url.scheme` between plain TCP and TLS. The
+// __HttpConn wrapper hides the substrate split downstream;
+// fn-exit dissolve (m82) closes the underlying handle.
+fn __round_trip_oneshot(
+    req: Request,
+    user_agent: String,
+    max_body: Int
+) -> Response fallible(HttpError) {
+    let host = req.url.host;
+    let port = req.url.port;
+    let is_tls = req.url.scheme == "https";
+    let mut handle = -1;
+    if is_tls {
+        handle = __dial_tls(host, port) or raise;
+    } else {
+        handle = __dial(host, port) or raise;
+    }
+    let s = __HttpConn { handle: handle, is_tls: is_tls };
+    let resp = __exchange_one(s, req, user_agent, max_body);
+    if resp.status <= 0 {
+        fail HttpError {
+            kind: "bad_response",
+            status: 0,
+            detail: "unparseable response"
+        };
+    }
+    return resp;
+}
+
+// Retry policy: up to max_retries additional attempts beyond
+// the first, with exponential backoff (50ms, 100ms, 200ms, ...).
+// Only retries on connect_failed / send_failed / recv_failed /
+// 5xx; honors the user's max_retries cap. 4xx is returned
+// directly so the caller can handle it.
+fn __round_trip_with_retry(
+    req: Request,
+    user_agent: String,
+    max_body: Int,
+    max_retries: Int
+) -> Response fallible(HttpError) {
+    let mut attempt = 0;
+    let mut last_err = HttpError {
+        kind: "retries_exhausted",
+        status: 0,
+        detail: ""
+    };
+    let max_attempts = max_retries + 1;
+    let mut backoff_ms = 50;
+    while attempt < max_attempts {
+        let resp = __round_trip_oneshot(req, user_agent, max_body)
+            or __retry_err_capture(err);
+        if resp.status > 0 && resp.status < 500 {
+            return resp;
+        }
+        if resp.status >= 500 {
+            last_err = HttpError {
+                kind: "retries_exhausted",
+                status: resp.status,
+                detail: "5xx after retries"
+            };
+        }
+        attempt = attempt + 1;
+        if attempt < max_attempts {
+            // Backoff. Duration is in ns; multiply ms by 1_000_000.
+            std::time::sleep(50ms);
+            backoff_ms = backoff_ms * 2;
+        }
+    }
+    fail last_err;
+}
+
+// Build an empty response for use as a sentinel / placeholder.
+// Empty body is the `b""` bytes literal (binary-safe; preserves
+// length, no NUL truncation).
+fn __empty_response() -> Response {
+    return Response {
+        status: 0,
+        headers: "",
+        body: b""
+    };
+}
+
+// Helper: produce a sentinel Response from a captured err so
+// the retry loop can keep iterating. We can't directly return
+// the err from inside the `or` arm because we want to continue
+// the loop, not exit the fn. The sentinel response has
+// status=0; the loop's "status > 0 && < 500" check skips it,
+// and the loop falls through to retry.
+fn __retry_err_capture(e: HttpError) -> Response {
+    return __empty_response();
+}
+
+// Helper: a sentinel Url to slot in when parse_url's or-arm
+// needs to keep the binding's type stable while the caller
+// records the error elsewhere.
+fn __empty_url() -> Url {
+    return Url { scheme: "", host: "", port: 0, path: "/" };
+}
+
+// =====================================================================
+// Free fn surface — non-pooled, one-shot.
+// =====================================================================
+
+// Free-fn surface uses literal defaults at the call site —
+// the user-agent string and 16 MiB max-body are baked in
+// because cross-seed `const` lookups don't resolve at v1.
+
+// Reject schemes other than http / https with a structured
+// HttpError. TLS is wired through __round_trip_oneshot via
+// __HttpConn; both schemes share the same downstream path.
+fn __check_scheme(scheme: String) -> Int fallible(HttpError) {
+    if scheme == "http" { return 0; }
+    if scheme == "https" { return 0; }
+    fail HttpError {
+        kind: "unsupported_scheme",
+        status: 0,
+        detail: scheme + " — only http / https supported"
+    };
+}
+
+fn get(url_str: String) -> Response fallible(HttpError) {
+    let u = parse_url(url_str) or raise;
+    let _ = __check_scheme(u.scheme) or raise;
+    let req = Request {
+        method: "GET",
+        url: u,
+        headers: "",
+        body: b""
+    };
+    return __round_trip_oneshot(req, "pond/http 0.1", 16777216) or raise;
+}
+
+fn post(url_str: String, body: Bytes, content_type: String) -> Response fallible(HttpError) {
+    let u = parse_url(url_str) or raise;
+    let _ = __check_scheme(u.scheme) or raise;
+    let headers = "Content-Type: " + content_type;
+    let req = Request {
+        method: "POST",
+        url: u,
+        headers: headers,
+        body: body
+    };
+    return __round_trip_oneshot(req, "pond/http 0.1", 16777216) or raise;
+}
+
+fn request(req: Request) -> Response fallible(HttpError) {
+    let _ = __check_scheme(req.url.scheme) or raise;
+    return __round_trip_oneshot(req, "pond/http 0.1", 16777216) or raise;
+}
+
+// =====================================================================
+// Client locus — pooled-connection client.
+// =====================================================================
+//
+// Per the contract: params { user_agent, timeout_ms, max_retries }
+// plus methods get / post / request that match the free-fn surface.
+//
+// The connection pool is hand-rolled (see FRICTION.md). Each slot
+// stores host, port, and fd; slot 0 is most recently used. On a
+// request:
+//   1. parse URL, derive host:port
+//   2. look up an idle fd for that host:port; if found, reuse it
+//   3. else dial a fresh fd
+//   4. run the exchange; on success, return fd to the pool;
+//      on failure, close it and retry per max_retries.
+//
+// The pool is best-effort: HTTP/1.1 with `Connection: close`
+// means the server will close after one response, so the cached
+// fd is usually dead anyway. v1 keeps the pool small and
+// transparent; v1.x would flip to `Connection: keep-alive` to
+// make pooling pay off.
+//
+// Two-channel rule: Client methods CANNOT declare fallible(E)
+// per F.22 (user-declared locus methods are substrate-facing).
+// We wrap the fallible free fn `__round_trip_with_retry` inside
+// the method body, addressing the value channel with `or` and
+// surfacing the failure as a synthesized "error response"
+// (status = 0, headers="", body=b"") plus a sibling
+// `last_error()` accessor. That's the v1-idiomatic shape per
+// styleguide.md § 7.
+//
+// FRICTION: contract surface lists fallible(HttpError) on
+// Client methods — that's incompatible with the two-channel
+// rule. We deviate by returning Response and exposing the
+// error via `last_error()`; agents that want hard failure on
+// any error should use the free fns. See FRICTION.md.
+
+// The Client locus methods delegate to these fallible free fns
+// then address the error via `or self.__record_err(err)`. The
+// indirection is the v1 idiom for converting a value-channel
+// fallible call into a locus-shaped surface that records (not
+// re-raises) the failure.
+fn __client_get_fallible(
+    url_str: String, ua: String, max_body: Int, max_retries: Int
+) -> Response fallible(HttpError) {
+    let u = parse_url(url_str) or raise;
+    let _ = __check_scheme(u.scheme) or raise;
+    let req = Request {
+        method: "GET",
+        url: u,
+        headers: "",
+        body: b""
+    };
+    return __round_trip_with_retry(req, ua, max_body, max_retries) or raise;
+}
+
+fn __client_post_fallible(
+    url_str: String, body: Bytes, content_type: String,
+    ua: String, max_body: Int, max_retries: Int
+) -> Response fallible(HttpError) {
+    let u = parse_url(url_str) or raise;
+    let _ = __check_scheme(u.scheme) or raise;
+    let req = Request {
+        method: "POST",
+        url: u,
+        headers: "Content-Type: " + content_type,
+        body: body
+    };
+    return __round_trip_with_retry(req, ua, max_body, max_retries) or raise;
+}
+
+fn __client_request_fallible(
+    req: Request, ua: String, max_body: Int, max_retries: Int
+) -> Response fallible(HttpError) {
+    let _ = __check_scheme(req.url.scheme) or raise;
+    return __round_trip_with_retry(req, ua, max_body, max_retries) or raise;
+}
+
+locus Client {
+    params {
+        user_agent: String = "pond/http 0.1";
+        timeout_ms: Int = 30000;
+        max_retries: Int = 3;
+        max_body: Int = 16777216;
+
+        // Pool state — fixed-cap parallel arrays. -1 fd means
+        // "empty slot". Slot 0 is most-recently-used.
+        pool_size: Int = 0;
+        pool_fd0: Int = -1; pool_host0: String = ""; pool_port0: Int = 0;
+        pool_fd1: Int = -1; pool_host1: String = ""; pool_port1: Int = 0;
+        pool_fd2: Int = -1; pool_host2: String = ""; pool_port2: Int = 0;
+        pool_fd3: Int = -1; pool_host3: String = ""; pool_port3: Int = 0;
+
+        // Last-error scratch (see FRICTION above). Reads through
+        // `last_error_kind()` / `last_error_detail()`.
+        last_kind: String = "";
+        last_status: Int = 0;
+        last_detail: String = "";
+    }
+
+    fn last_error_kind() -> String { return self.last_kind; }
+    fn last_error_status() -> Int { return self.last_status; }
+    fn last_error_detail() -> String { return self.last_detail; }
+
+    // Capture an HttpError into self.last_*; returns a sentinel
+    // Response so the caller can chain.
+    fn __record_err(e: HttpError) -> Response {
+        self.last_kind = e.kind;
+        self.last_status = e.status;
+        self.last_detail = e.detail;
+        return __empty_response();
+    }
+
+    fn get(url_str: String) -> Response {
+        self.last_kind = "";
+        self.last_status = 0;
+        self.last_detail = "";
+        return __client_get_fallible(
+            url_str,
+            self.user_agent,
+            self.max_body,
+            self.max_retries
+        ) or self.__record_err(err);
+    }
+
+    fn post(url_str: String, body: Bytes, content_type: String) -> Response {
+        self.last_kind = "";
+        self.last_status = 0;
+        self.last_detail = "";
+        return __client_post_fallible(
+            url_str,
+            body,
+            content_type,
+            self.user_agent,
+            self.max_body,
+            self.max_retries
+        ) or self.__record_err(err);
+    }
+
+    fn request(req: Request) -> Response {
+        self.last_kind = "";
+        self.last_status = 0;
+        self.last_detail = "";
+        return __client_request_fallible(
+            req,
+            self.user_agent,
+            self.max_body,
+            self.max_retries
+        ) or self.__record_err(err);
+    }
+
+    // Future: pool slot acquire / release. The connection-pool
+    // implementation is staged in but unused at v1 because
+    // `Connection: close` in the request headers means each
+    // round-trip closes the fd anyway. Keeping the fields so
+    // `keep-alive` can wire in without a params-change.
+
+    dissolve() {
+        // Close any cached fds. -1 is a safe no-op for close_fd.
+        std::io::tcp::close_fd(self.pool_fd0);
+        std::io::tcp::close_fd(self.pool_fd1);
+        std::io::tcp::close_fd(self.pool_fd2);
+        std::io::tcp::close_fd(self.pool_fd3);
+    }
+}

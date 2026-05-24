@@ -1,0 +1,43 @@
+// Renderer — owns the window (via lib/raylib::Window field, F.29
+// cascade does birth/dissolve) and provides per-frame
+// begin/end + clear helpers. Iris drives this from its tick
+// path; the actual run-loop wrapper lands when real raylib FFI
+// is up and we can rely on raylib's `WindowShouldClose`.
+
+import "lib/raylib" as ray;
+
+// Background color. const struct-literal initializers now land
+// per hale commit e75d2ef (F.1 resolved); restored from
+// the fn-returning-struct workaround.
+const BG: ray::Color = ray::Color { r: 26, g: 26, b: 26 };
+
+locus Renderer {
+    params {
+        window:     ray::Window = ray::Window { };
+        target_fps: Int = 60;
+    }
+
+    fn open_window() {
+        // Explicit GUI activation. Iris.interactive_loop invokes
+        // this once before the frame loop; --mcp / headless modes
+        // skip it and never touch raylib_init_window.
+        self.window.open();
+    }
+
+    fn window_is_open() -> Bool {
+        return self.window.opened;
+    }
+
+    fn should_close() -> Bool {
+        return ray::should_close();
+    }
+
+    fn frame_open() {
+        ray::begin_frame();
+        ray::clear_background(BG);
+    }
+
+    fn frame_close() {
+        ray::end_frame();
+    }
+}

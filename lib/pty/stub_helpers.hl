@@ -1,0 +1,18 @@
+// PTY stub — test injection helpers.
+// DELETE THIS FILE when real std::pty bindings ship; tests need to
+// be rewritten against a real subprocess fixture.
+//
+// Why a separate file: scans for "is this stub-only?" become easy
+// — just look for the stub_helpers.hl file.
+
+fn stub_inject_output(p: Pty, b: Bytes) {
+    p._inject_output(b);
+}
+
+fn stub_drain_input(p: Pty) -> Bytes {
+    return p._drain_input();
+}
+
+fn stub_set_alive(p: Pty, alive: Bool) {
+    p._set_alive(alive);
+}

@@ -1,0 +1,127 @@
+// SourcePane — file readout pane.
+//
+// Phase 1 wiring: subscribes to SrcOpenCmd, reads file on
+// open, publishes content on SrcChangedEvt.
+//
+// Phase 3 (this layer): parses the open file via heron and
+// computes syntax-highlight runs against
+// queries/highlights.scm. Highlight runs persist as a
+// String on self (newline-separated "start:end:capture\n"
+// rows produced by heron::Query.apply). Visual rendering
+// of the highlighted text waits for Phase 5's viewport work;
+// this layer wires the data flow.
+//
+// Block spotlighting (given cursor line → enclosing AST
+// node → tint background) lands alongside the viewport
+// work — once we have a render with character positions,
+// the heron tree we hold here makes the enclosing-node
+// lookup trivial.
+//
+// Source pane is readout-only by design (PLAN §3.4) — no
+// editing keystrokes ever.
+
+import "lib/heron" as heron;
+
+locus SourcePane {
+    params {
+        focused:      Bool   = false;
+        current_path: String = "";
+        current_line: Int    = 0;
+
+        // heron Parser owns the current parse. parse_into_self
+        // replaces on each open — no leak on re-parse (see
+        // lib/heron/STATUS.md M90 issue + the parse_into_self
+        // workaround).
+        parser: heron::Parser = heron::Parser { };
+
+        // Compiled syntax-highlight query. Loaded from
+        // lib/heron/queries/highlights.scm at instantiation.
+        // If the file isn't reachable (workspace not run from
+        // iris root, etc.), Query.is_valid() returns false
+        // and we skip highlighting gracefully.
+        query: heron::Query = heron::Query {
+            source: std::io::fs::read_file(
+                "lib/heron/queries/highlights.scm") or "",
+        };
+
+        // Most recent highlight runs as "start:end:capture\n"
+        // rows. Parsed by the future viewport-render code.
+        highlight_runs: String = "";
+
+        // Diagnostic counter — how many capture rows came
+        // back from the most recent query. Surfaces in
+        // status_json for MCP / debugging.
+        highlight_capture_count: Int = 0;
+    }
+
+    bus {
+        subscribe SrcOpenCmd as on_open;
+        publish   SrcChangedEvt;
+    }
+
+    fn focus_gain() { self.focused = true; }
+    fn focus_lose() { self.focused = false; }
+    fn name() -> String { return "source"; }
+    fn render(s: RenderSurface) {
+        render_frame(s, "source");
+    }
+    fn on_key(k: KeyEvent) {
+        // Phase 3 wires viewport navigation. SourcePane is
+        // readout-only by design — no editing keystrokes ever.
+        let _ = k;
+    }
+
+    fn on_open(o: SourceOpen) {
+        self.current_path = o.path;
+        self.current_line = o.line;
+        // Read the file synchronously. Failure surfaces as
+        // empty content (the consumer — VizPane /
+        // LotusFlowerScene — handles empty input gracefully).
+        let content = std::io::fs::read_file(o.path) or "";
+
+        // Parse + compute highlights. parse_into_self
+        // replaces the parser's owned tree so re-opens don't
+        // leak (M90 workaround). Highlights only computed if
+        // both parser and query are ready.
+        self.highlight_runs = "";
+        self.highlight_capture_count = 0;
+        if self.parser.is_ready() && self.query.is_valid() {
+            if self.parser.parse_into_self(content) {
+                let root = self.parser.current_root();
+                self.highlight_runs = self.query.apply(root);
+                self.highlight_capture_count =
+                    count_lines(self.highlight_runs);
+                heron::node_delete(root);
+            }
+        }
+
+        // Publish a SourceChanged event so subscribers
+        // (LotusFlowerScene, future LSP hooks, session
+        // store) can react. Content flows through; the
+        // flower's own heron parse extracts its locus tree
+        // independently (different concern from highlight
+        // tokens).
+        SrcChangedEvt <- SourceChanged {
+            path:    o.path,
+            content: content,
+        };
+    }
+}
+
+// Count newline-separated rows in a highlight-runs string.
+// Empty string → 0. Last row may or may not have trailing
+// newline — both handled.
+fn count_lines(s: String) -> Int {
+    if s == "" { return 0; }
+    let n = len(s);
+    let mut count = 0;
+    let mut i = 0;
+    while i < n {
+        let c = s[i..i+1];
+        if c == "\n" { count = count + 1; }
+        i = i + 1;
+    }
+    // If content doesn't end with \n, count the final unterminated row.
+    if s[n-1..n] != "\n" { count = count + 1; }
+    return count;
+}

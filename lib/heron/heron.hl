@@ -1,0 +1,308 @@
+// heron.hl — Hale-side wrapper for the tree-sitter Hale
+// grammar.
+//
+// Consumer surface:
+//
+//   import "vendor/pond/heron" as heron;
+//
+//   let parser = heron::Parser { };
+//   let tree   = parser.parse(source_code);
+//   let root   = tree.root();
+//   println(heron::node_kind(root));
+//
+// Build picks up `[ffi]` from hale.toml — libtree-sitter
+// link + glue.c + src/parser.c — automatically.
+//
+// See README.md for the broader story and STATUS.md for the
+// grammar's current coverage.
+
+// ---- @ffi externs ----
+//
+// All Hale types map to opaque `Int` handles (tree-sitter
+// node/parser/tree pointers). The glue.c shim handles the
+// TSNode-by-value translation that doesn't fit Hale's
+// pointer-based binding shape.
+
+@ffi("c") fn tsa_parser_new() -> Int;
+@ffi("c") fn tsa_parser_delete(parser: Int);
+@ffi("c") fn tsa_parser_parse(parser: Int, source: String, length: Int) -> Int;
+
+@ffi("c") fn tsa_tree_delete(tree: Int);
+@ffi("c") fn tsa_tree_root(tree: Int) -> Int;
+
+@ffi("c") fn tsa_node_kind(node: Int) -> String;
+@ffi("c") fn tsa_node_start_byte(node: Int) -> Int;
+@ffi("c") fn tsa_node_end_byte(node: Int) -> Int;
+@ffi("c") fn tsa_node_start_row(node: Int) -> Int;
+@ffi("c") fn tsa_node_start_col(node: Int) -> Int;
+@ffi("c") fn tsa_node_child_count(node: Int) -> Int;
+@ffi("c") fn tsa_node_named_child_count(node: Int) -> Int;
+@ffi("c") fn tsa_node_child(node: Int, index: Int) -> Int;
+@ffi("c") fn tsa_node_named_child(node: Int, index: Int) -> Int;
+@ffi("c") fn tsa_node_field(node: Int, field_name: String) -> Int;
+@ffi("c") fn tsa_node_text(node: Int) -> String;
+@ffi("c") fn tsa_node_is_null(node: Int) -> Int;
+@ffi("c") fn tsa_node_has_error(node: Int) -> Int;
+@ffi("c") fn tsa_node_delete(node: Int);
+
+// Query API — compile a .scm query document once, apply
+// against many trees. Output of apply is a malloc'd
+// newline-separated "start:end:capture_name" string the
+// Hale caller parses inline.
+@ffi("c") fn tsa_query_new(source: String, length: Int) -> Int;
+@ffi("c") fn tsa_query_delete(query: Int);
+@ffi("c") fn tsa_query_apply(query: Int, root: Int) -> String;
+
+// ---- Parser locus ----
+//
+// Birth allocates a tree-sitter parser configured with the
+// Hale grammar; dissolve releases it.
+//
+// Two parse APIs:
+//
+// 1. parse(source) -> Tree — returns an externally-managed
+//    Tree locus. Caller binds the result and lets it
+//    dissolve at scope. **Hits the M90 issue** (see
+//    STATUS.md): returned-locus is program-lifetime
+//    allocated; every parse() call leaks the previous
+//    Tree. Acceptable for one-shot uses; not safe for
+//    long-running re-parse loops.
+//
+// 2. parse_into_self(source) -> Bool — parses and stores
+//    the resulting tree handle on the parser itself. The
+//    next call frees the previous tree first; dissolve
+//    frees the final one. No leak. Use this for hot-path
+//    re-parse loops (SourcePane on every SourceChanged,
+//    flower scene on every source update).
+
+locus Parser {
+    params {
+        handle: Int = 0;
+        // Internal-tree slot for parse_into_self. Manages
+        // lifecycle so consumers don't have to.
+        current_tree: Int = 0;
+    }
+    birth() {
+        self.handle = tsa_parser_new();
+        // handle == 0 means tree-sitter alloc failed. Caller
+        // sees it via is_ready() and can react.
+    }
+    dissolve() {
+        if self.current_tree != 0 {
+            tsa_tree_delete(self.current_tree);
+        }
+        if self.handle != 0 {
+            tsa_parser_delete(self.handle);
+        }
+    }
+    fn is_ready() -> Bool { return self.handle != 0; }
+
+    // External-Tree parse. Hits M90 — see locus header.
+    fn parse(source: String) -> Tree {
+        if self.handle == 0 {
+            return Tree { handle: 0 };
+        }
+        let h = tsa_parser_parse(self.handle, source, len(source));
+        return Tree { handle: h };
+    }
+
+    // Parser-owned parse. Replaces any previously-owned tree.
+    // Returns true on success; false if parser isn't ready or
+    // the parse failed (current_tree stays unchanged on failure).
+    fn parse_into_self(source: String) -> Bool {
+        if self.handle == 0 { return false; }
+        let new_handle = tsa_parser_parse(self.handle, source, len(source));
+        if new_handle == 0 { return false; }
+        // Replace + free previous.
+        if self.current_tree != 0 {
+            tsa_tree_delete(self.current_tree);
+        }
+        self.current_tree = new_handle;
+        return true;
+    }
+
+    fn has_tree() -> Bool { return self.current_tree != 0; }
+
+    // Root of the parser-owned tree. Returns a node with
+    // handle = 0 if no parse has been done yet.
+    fn current_root() -> Node {
+        if self.current_tree == 0 {
+            return Node { handle: 0 };
+        }
+        return Node { handle: tsa_tree_root(self.current_tree) };
+    }
+}
+
+// ---- Tree locus ----
+//
+// Owns the parsed TSTree + a copy of the source. Dissolve
+// frees both.
+
+locus Tree {
+    params {
+        handle: Int = 0;
+    }
+    dissolve() {
+        if self.handle != 0 {
+            tsa_tree_delete(self.handle);
+        }
+    }
+    fn is_valid() -> Bool { return self.handle != 0; }
+
+    // Root node. Returns a Node carrying a heap pointer that
+    // must be freed via `node_delete(n)` when done. Walking
+    // helpers (node_child, node_field) likewise return owned
+    // nodes that the caller must release.
+    fn root() -> Node {
+        return Node { handle: tsa_tree_root(self.handle) };
+    }
+}
+
+// ---- Node type ----
+//
+// Wraps a heap-allocated TSNode pointer. Each call that
+// returns a Node hands out a new heap allocation; the caller
+// owns it and should release via `node_delete(n)` when done.
+// (Hale doesn't have RAII for types, only for loci — so
+// Node-as-type means manual lifecycle for now. A Node-as-locus
+// alternative was considered but loci can't be returned by
+// value naturally without the m90 leak; v0 trades manual
+// release for clean call shape.)
+
+type Node {
+    handle: Int = 0;
+}
+
+// ---- Node free fns (the "namespace" for Node operations) ----
+
+fn node_is_null(n: Node) -> Bool {
+    return tsa_node_is_null(n.handle) != 0;
+}
+
+fn node_has_error(n: Node) -> Bool {
+    return tsa_node_has_error(n.handle) != 0;
+}
+
+fn node_kind(n: Node) -> String {
+    if n.handle == 0 { return ""; }
+    return tsa_node_kind(n.handle);
+}
+
+fn node_start_byte(n: Node) -> Int {
+    if n.handle == 0 { return -1; }
+    return tsa_node_start_byte(n.handle);
+}
+
+fn node_end_byte(n: Node) -> Int {
+    if n.handle == 0 { return -1; }
+    return tsa_node_end_byte(n.handle);
+}
+
+// 0-indexed source row (line - 1).
+fn node_start_row(n: Node) -> Int {
+    if n.handle == 0 { return -1; }
+    return tsa_node_start_row(n.handle);
+}
+
+// 0-indexed source column.
+fn node_start_col(n: Node) -> Int {
+    if n.handle == 0 { return -1; }
+    return tsa_node_start_col(n.handle);
+}
+
+// Count of all children (including anonymous tokens).
+fn node_child_count(n: Node) -> Int {
+    if n.handle == 0 { return 0; }
+    return tsa_node_child_count(n.handle);
+}
+
+// Count of NAMED children (rule-level nodes only, no anonymous
+// tokens). Usually what you want when walking a tree.
+fn node_named_child_count(n: Node) -> Int {
+    if n.handle == 0 { return 0; }
+    return tsa_node_named_child_count(n.handle);
+}
+
+fn node_child(n: Node, i: Int) -> Node {
+    if n.handle == 0 { return Node { handle: 0 }; }
+    return Node { handle: tsa_node_child(n.handle, i) };
+}
+
+fn node_named_child(n: Node, i: Int) -> Node {
+    if n.handle == 0 { return Node { handle: 0 }; }
+    return Node { handle: tsa_node_named_child(n.handle, i) };
+}
+
+// Find a named field on this node (e.g. "name", "type",
+// "kind"). Returns a node with handle = 0 if no such field.
+fn node_field(n: Node, name: String) -> Node {
+    if n.handle == 0 { return Node { handle: 0 }; }
+    return Node { handle: tsa_node_field(n.handle, name) };
+}
+
+// Source text covered by this node.
+fn node_text(n: Node) -> String {
+    if n.handle == 0 { return ""; }
+    return tsa_node_text(n.handle);
+}
+
+// Release a heap-allocated node. Idempotent on null handles.
+fn node_delete(n: Node) {
+    if n.handle != 0 {
+        tsa_node_delete(n.handle);
+    }
+}
+
+// ---- Query locus ----
+//
+// A compiled tree-sitter query (e.g. the contents of
+// queries/highlights.scm). Build once at consumer birth;
+// apply against many trees over the life of the consumer.
+// Dissolve releases the compiled query.
+//
+// Required param `source`: the .scm document body. Caller
+// reads it however they want (std::io::fs::read_file usually).
+//
+// Usage:
+//
+//   let scm = std::io::fs::read_file(
+//       "lib/heron/queries/highlights.scm") or "";
+//   let q = heron::Query { source: scm };
+//   if q.is_valid() {
+//       let runs = q.apply(tree.root());
+//       // runs is "start:end:capture_name\n..." — parse and
+//       // render per consumer's discipline.
+//   }
+
+locus Query {
+    params {
+        source: String;       // required
+        handle: Int = 0;
+    }
+    birth() {
+        self.handle = tsa_query_new(self.source, len(self.source));
+        // handle == 0 means query compilation failed (e.g.
+        // malformed .scm). Consumer should check is_valid()
+        // before apply.
+    }
+    dissolve() {
+        if self.handle != 0 {
+            tsa_query_delete(self.handle);
+        }
+    }
+    fn is_valid() -> Bool { return self.handle != 0; }
+
+    // Apply this query against the given root node. Returns
+    // a newline-separated string of "start_byte:end_byte:
+    // capture_name" rows — one per matched capture.
+    //
+    // Caller parses the string inline (typically: split on
+    // '\n', then split each row on ':' twice to peel
+    // start/end/name).
+    fn apply(root: Node) -> String {
+        if self.handle == 0 || root.handle == 0 {
+            return "";
+        }
+        return tsa_query_apply(self.handle, root.handle);
+    }
+}

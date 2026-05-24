@@ -1,0 +1,376 @@
+// McpServer — hosts iris's read-tool surface (per AGENT_PROTOCOL.md
+// § "MCP read tools").
+//
+// Phase 2.a: in-process JSON-RPC dispatch. Tests + scenario code
+// call `mcp.dispatch(iris, request_json)` and get a response
+// string back. The stdio I/O loop (Phase 2.b) is a thin wrapper
+// around this dispatch fn; lands when std::io::stdin is wired up
+// alongside the real-raylib visible-window work.
+//
+// Shape note: McpServer takes the Iris reference as a method arg
+// rather than a field-held LocusRef, for the same reason
+// ProposalDispatcher does (FRICTION F.4 — no forward refs between
+// sibling field defaults). McpServer is held as a state-free
+// field on Iris; callers pass `self` (the parent Iris) to
+// `dispatch`.
+
+locus McpServer {
+    params { }
+
+    // Handle one JSON-RPC request. Returns the JSON-RPC response
+    // string. Method routing dispatches by `method` field. Unknown
+    // methods return a JSON-RPC error -32601 "Method not found".
+    // Handle one JSON-RPC request. Returns the JSON-RPC response
+    // string. Method routing dispatches by `method` field. Unknown
+    // methods return a JSON-RPC error -32601 "Method not found".
+    fn dispatch(iris: Iris, req_json: String) -> String {
+        let method = std::json::find_string_field(req_json, "method");
+        let id     = std::json::find_int_field(req_json, "id");
+        let req_params = std::json::find_field_raw(req_json, "params");
+
+        // MCP lifecycle.
+        if method == "initialize"                  { return self.h_initialize(id); }
+        if method == "notifications/initialized"   { return ""; }     // notification — no response
+        if method == "notifications/cancelled"     { return ""; }
+        if mcp_starts_with(method, "notifications/") { return ""; }
+        if method == "ping"                        { return self.h_ping(id); }
+
+        // MCP tool catalog + invocation.
+        if method == "tools/list"                  { return self.h_tools_list(id); }
+        if method == "tools/call"                  { return self.h_tools_call(iris, id, req_params); }
+
+        // Direct routes (legacy / in-process callers like main's scenario).
+        if method == "pane.read"        { return self.h_pane_read(iris, id, req_params); }
+        if method == "pane.focus_state" { return self.h_focus_state(iris, id); }
+        if method == "permission.state" { return self.h_permission(iris, id); }
+        if method == "viz.scene_info"   { return self.h_scene_info(iris, id); }
+        if method == "iris.launch"      { return self.h_launch(iris, id, req_params); }
+        if method == "iris.demos.list"  { return self.h_demos_list(iris, id); }
+        if method == "iris.demos.run"   { return self.h_demos_run(iris, id, req_params); }
+        return error_response(id, 32601, "Method not found");
+    }
+
+    // ---- MCP lifecycle handlers ----
+
+    fn h_initialize(id: Int) -> String {
+        // Negotiate protocol version + advertise tool capability.
+        // protocolVersion matches what Claude Code is shipping
+        // today; for v0 we always respond with a known-good version.
+        return success_response(id, "{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"iris\",\"version\":\"0.1.0\"}}");
+    }
+
+    fn h_ping(id: Int) -> String {
+        return success_response(id, "{}");
+    }
+
+    // ---- tools/list ----
+
+    fn h_tools_list(id: Int) -> String {
+        // Each tool: { name, description, inputSchema }. inputSchema
+        // is a JSON schema; minimal shapes here, can be richer later.
+        let b = std::str::builder_new();
+        std::str::builder_append(b, "{\"tools\":[");
+        std::str::builder_append(b, tool_spec(
+            "iris.demos.list",
+            "List the catalog of interactive iris demos available to drive.",
+            "{\"type\":\"object\",\"properties\":{}}"
+        ));
+        std::str::builder_append(b, ",");
+        std::str::builder_append(b, tool_spec(
+            "iris.demos.run",
+            "Execute one iris demo by name. Returns a steps array narrating each substrate change so the agent can present them to the user with pacing.",
+            "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Demo name from iris.demos.list (hello, permission_gate, viz_modes, scene_info, concurrent_work).\"}},\"required\":[\"name\"]}"
+        ));
+        std::str::builder_append(b, ",");
+        std::str::builder_append(b, tool_spec(
+            "pane.read",
+            "Read the current state of an iris pane (shell / source / viz / agent).",
+            "{\"type\":\"object\",\"properties\":{\"pane_id\":{\"type\":\"string\",\"enum\":[\"shell\",\"source\",\"viz\",\"agent\"]}},\"required\":[\"pane_id\"]}"
+        ));
+        std::str::builder_append(b, ",");
+        std::str::builder_append(b, tool_spec(
+            "pane.focus_state",
+            "Get which iris pane currently has focus, plus the list of visible panes.",
+            "{\"type\":\"object\",\"properties\":{}}"
+        ));
+        std::str::builder_append(b, ",");
+        std::str::builder_append(b, tool_spec(
+            "permission.state",
+            "Get iris's permission-gate matrix — which panes the agent can read/write.",
+            "{\"type\":\"object\",\"properties\":{}}"
+        ));
+        std::str::builder_append(b, ",");
+        std::str::builder_append(b, tool_spec(
+            "viz.scene_info",
+            "Inspect the active VizScene's identity, channels, and current state.",
+            "{\"type\":\"object\",\"properties\":{}}"
+        ));
+        std::str::builder_append(b, ",");
+        std::str::builder_append(b, tool_spec(
+            "iris.launch",
+            "Summon an iris session against a workspace. (Phase 5: placeholder — iris is already running if you got here.)",
+            "{\"type\":\"object\",\"properties\":{\"workspace\":{\"type\":\"string\"}}}"
+        ));
+        std::str::builder_append(b, "]}");
+        return success_response(id, std::str::builder_finish(b));
+    }
+
+    // ---- tools/call ----
+
+    fn h_tools_call(iris: Iris, id: Int, req_params: String) -> String {
+        let name = std::json::find_string_field(req_params, "name");
+        let args = std::json::find_field_raw(req_params, "arguments");
+        // Re-dispatch to the underlying handler, then wrap the
+        // result in MCP's content-array shape.
+        let inner = self.tool_inner(iris, name, args);
+        return self.wrap_tool_result(id, inner);
+    }
+
+    fn tool_inner(iris: Iris, name: String, args: String) -> String {
+        if name == "iris.demos.list"  { return iris.demos.list_json(); }
+        if name == "iris.demos.run"   {
+            let demo_name = std::json::find_string_field(args, "name");
+            if demo_name == "permission_gate" {
+                iris.gate.stub_lock_source_write();
+                let r = iris.demos.run_demo(demo_name);
+                iris.gate.stub_unlock_source_write();
+                return r;
+            }
+            return iris.demos.run_demo(demo_name);
+        }
+        if name == "pane.read"        {
+            let pane_id = std::json::find_string_field(args, "pane_id");
+            return self.read_pane_body(iris, pane_id);
+        }
+        if name == "pane.focus_state" {
+            let b = std::str::builder_new();
+            std::str::builder_append(b, "{\"focused_pane\":\"");
+            std::str::builder_append(b, iris.focused);
+            std::str::builder_append(b, "\",\"visible_panes\":[\"shell\",\"source\",\"viz\",\"agent\"]}");
+            return std::str::builder_finish(b);
+        }
+        if name == "permission.state" { return permission_state_body(iris); }
+        if name == "viz.scene_info"   { return scene_info_body(iris); }
+        if name == "iris.launch"      { return "{\"handle\":\"iris-session-stub\",\"status\":\"already_running\"}"; }
+        return "{\"error\":\"unknown_tool\"}";
+    }
+
+    fn wrap_tool_result(id: Int, inner_json: String) -> String {
+        // MCP tools/call response wraps the tool's output in a
+        // content array — each element has {type, text}. We pack
+        // the inner JSON as a single text block. std::json::escape_string
+        // returns the escaped body WITHOUT surrounding quotes, so
+        // we add them here.
+        let b = std::str::builder_new();
+        std::str::builder_append(b, "{\"content\":[{\"type\":\"text\",\"text\":\"");
+        std::str::builder_append(b, std::json::escape_string(inner_json));
+        std::str::builder_append(b, "\"}]}");
+        return success_response(id, std::str::builder_finish(b));
+    }
+
+    // ---- Handlers ---------------------------------------------
+
+    fn h_pane_read(iris: Iris, id: Int, req_params: String) -> String {
+        let pane_id = std::json::find_string_field(req_params, "pane_id");
+        let body = self.read_pane_body(iris, pane_id);
+        return success_response(id, body);
+    }
+
+    fn read_pane_body(iris: Iris, pane_id: String) -> String {
+        if pane_id == "source" {
+            let b = std::str::builder_new();
+            std::str::builder_append(b, "{\"pane_id\":\"source\",\"path\":\"");
+            std::str::builder_append(b, iris.source.current_path);
+            std::str::builder_append(b, "\",\"line\":");
+            std::str::builder_append(b, to_string(iris.source.current_line));
+            std::str::builder_append(b, "}");
+            return std::str::builder_finish(b);
+        }
+        if pane_id == "agent" {
+            let b = std::str::builder_new();
+            std::str::builder_append(b, "{\"pane_id\":\"agent\",\"turns\":");
+            std::str::builder_append(b, to_string(iris.agent.turn_count()));
+            std::str::builder_append(b, ",\"applied\":");
+            std::str::builder_append(b, to_string(iris.agent.applied_count()));
+            std::str::builder_append(b, ",\"denied\":");
+            std::str::builder_append(b, to_string(iris.agent.denied_count()));
+            std::str::builder_append(b, "}");
+            return std::str::builder_finish(b);
+        }
+        if pane_id == "shell" {
+            // Phase 4 wires real PTY content; for now report no shell yet.
+            return "{\"pane_id\":\"shell\",\"status\":\"not_implemented_until_phase_4\"}";
+        }
+        if pane_id == "viz" {
+            // Delegates to viz.scene_info shape, but trimmed.
+            return "{\"pane_id\":\"viz\",\"scene\":\"hale.locus_tower\",\"status\":\"scene_host_pending_phase_3\"}";
+        }
+        return "{\"error\":\"unknown_pane_id\"}";
+    }
+
+    fn h_focus_state(iris: Iris, id: Int) -> String {
+        let b = std::str::builder_new();
+        std::str::builder_append(b, "{\"focused_pane\":\"");
+        std::str::builder_append(b, iris.focused);
+        std::str::builder_append(b, "\",\"visible_panes\":[\"shell\",\"source\",\"viz\",\"agent\"]}");
+        return success_response(id, std::str::builder_finish(b));
+    }
+
+    fn h_permission(iris: Iris, id: Int) -> String {
+        return success_response(id, permission_state_body(iris));
+    }
+
+    fn h_scene_info(iris: Iris, id: Int) -> String {
+        return success_response(id, scene_info_body(iris));
+    }
+
+    fn h_demos_list(iris: Iris, id: Int) -> String {
+        return success_response(id, iris.demos.list_json());
+    }
+
+    fn h_demos_run(iris: Iris, id: Int, req_params: String) -> String {
+        let name = std::json::find_string_field(req_params, "name");
+        // Permission_gate demo touches the gate (lock + unlock);
+        // dispatch handles those steps that need iris context
+        // before/after the catalog's narration.
+        if name == "permission_gate" {
+            iris.gate.stub_lock_source_write();
+            let r = iris.demos.run_demo(name);
+            iris.gate.stub_unlock_source_write();
+            return success_response(id, r);
+        }
+        let result = iris.demos.run_demo(name);
+        return success_response(id, result);
+    }
+
+    fn h_launch(iris: Iris, id: Int, req_params: String) -> String {
+        let workspace = std::json::find_string_field(req_params, "workspace");
+        let _ = iris;
+        let _ = workspace;
+        // Phase 5 wires the actual window-open path. For now the
+        // launch is a no-op acknowledgement — iris is already
+        // running if you got here.
+        return success_response(id, "{\"handle\":\"iris-session-stub\",\"status\":\"already_running\"}");
+    }
+
+    // Phase 2.b — stdio loop. Reads JSON-RPC requests from
+    // stdin (one per line), dispatches, writes responses to
+    // stdout. Blocks on stdin; intended for `iris --mcp` mode
+    // (no GUI).
+    //
+    // read_line_status semantics (from lotus_arena.c):
+    //   0  = success (line read; may be empty if just "\n")
+    //  -1  = EOF
+    //  -2  = IO error
+    //  -3  = OOM in payload arena
+    // Any non-zero status exits the loop.
+    fn run_mcp_loop(iris: Iris) {
+        while true {
+            let line   = std::io::stdin::read_line();
+            let status = std::io::stdin::read_line_status();
+            if status != 0 { break; }
+            let trimmed = std::str::trim(line);
+            if len(trimmed) == 0 { continue; }
+            let resp = self.dispatch(iris, trimmed);
+            // Notifications return "" — JSON-RPC requires no
+            // response for them. println would output a blank
+            // line that confuses the MCP client's framer.
+            if len(resp) == 0 { continue; }
+            println(resp);
+        }
+    }
+}
+
+// ---- Body helpers shared between legacy direct dispatch and tools/call.
+
+fn permission_state_body(iris: Iris) -> String {
+    let b = std::str::builder_new();
+    std::str::builder_append(b, "{\"panes\":{\"shell\":");
+    std::str::builder_append(b, format_pane_policy(iris.gate.allows("shell", "read"),
+                                                   iris.gate.allows("shell", "write")));
+    std::str::builder_append(b, ",\"source\":");
+    std::str::builder_append(b, format_pane_policy(iris.gate.allows("source", "read"),
+                                                   iris.gate.allows("source", "write")));
+    std::str::builder_append(b, ",\"viz\":");
+    std::str::builder_append(b, format_pane_policy(iris.gate.allows("viz", "read"),
+                                                   iris.gate.allows("viz", "write")));
+    std::str::builder_append(b, ",\"agent\":");
+    std::str::builder_append(b, format_pane_policy(iris.gate.allows("agent", "read"),
+                                                   iris.gate.allows("agent", "write")));
+    std::str::builder_append(b, "}}");
+    return std::str::builder_finish(b);
+}
+
+fn scene_info_body(iris: Iris) -> String {
+    let b = std::str::builder_new();
+    std::str::builder_append(b, "{\"name\":\"");
+    std::str::builder_append(b, iris.viz.scene_name());
+    std::str::builder_append(b, "\",\"domain\":\"");
+    std::str::builder_append(b, iris.viz.scene_domain());
+    std::str::builder_append(b, "\",\"mode\":\"");
+    std::str::builder_append(b, iris.viz.current_mode());
+    std::str::builder_append(b, "\",\"channels\":");
+    std::str::builder_append(b, iris.viz.scene_channels());
+    std::str::builder_append(b, ",\"state\":");
+    std::str::builder_append(b, iris.viz.scene_state());
+    std::str::builder_append(b, "}");
+    return std::str::builder_finish(b);
+}
+
+fn tool_spec(name: String, description: String, input_schema: String) -> String {
+    let b = std::str::builder_new();
+    std::str::builder_append(b, "{\"name\":\"");
+    std::str::builder_append(b, name);
+    std::str::builder_append(b, "\",\"description\":\"");
+    std::str::builder_append(b, description);
+    std::str::builder_append(b, "\",\"inputSchema\":");
+    std::str::builder_append(b, input_schema);
+    std::str::builder_append(b, "}");
+    return std::str::builder_finish(b);
+}
+
+fn mcp_starts_with(s: String, prefix: String) -> Bool {
+    let n = len(prefix);
+    if len(s) < n { return false; }
+    let head = std::str::substring(s, 0, n);
+    return head == prefix;
+}
+
+// ---- Free-fn helpers --------------------------------------------
+
+fn success_response(id: Int, result_json: String) -> String {
+    let b = std::str::builder_new();
+    std::str::builder_append(b, "{\"jsonrpc\":\"2.0\",\"id\":");
+    std::str::builder_append(b, to_string(id));
+    std::str::builder_append(b, ",\"result\":");
+    std::str::builder_append(b, result_json);
+    std::str::builder_append(b, "}");
+    return std::str::builder_finish(b);
+}
+
+fn error_response(id: Int, code: Int, msg: String) -> String {
+    let b = std::str::builder_new();
+    std::str::builder_append(b, "{\"jsonrpc\":\"2.0\",\"id\":");
+    std::str::builder_append(b, to_string(id));
+    std::str::builder_append(b, ",\"error\":{\"code\":");
+    std::str::builder_append(b, to_string(code));
+    std::str::builder_append(b, ",\"message\":\"");
+    std::str::builder_append(b, msg);
+    std::str::builder_append(b, "\"}}");
+    return std::str::builder_finish(b);
+}
+
+fn format_pane_policy(read: Bool, write: Bool) -> String {
+    let b = std::str::builder_new();
+    std::str::builder_append(b, "{\"read\":");
+    std::str::builder_append(b, bool_to_str(read));
+    std::str::builder_append(b, ",\"write\":");
+    std::str::builder_append(b, bool_to_str(write));
+    std::str::builder_append(b, "}");
+    return std::str::builder_finish(b);
+}
+
+fn bool_to_str(b: Bool) -> String {
+    if b { return "true"; }
+    return "false";
+}

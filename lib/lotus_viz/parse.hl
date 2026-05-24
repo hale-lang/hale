@@ -1,0 +1,60 @@
+// parse.hl — LocusTreeProvider interface + fallback stub.
+//
+// Per DESIGN.md § "Parser strategy" (pivoted 2026-05-23):
+// lotus_viz's concrete LocusTreeProvider impl lives in
+// `pond/heron` (vendored at iris/lib/heron/) — a real
+// tree-sitter grammar for Hale. scene.hl instantiates
+// heron::TreeSitterHaleParser as the active provider.
+//
+// EmptyProvider stays here as a fallback shape — useful in
+// tests that want to exercise the scene without the heron
+// parser allocated (e.g. a headless test that doesn't link
+// libtree-sitter). Not used in the default scene config.
+
+// ---- The contract ----
+
+interface LocusTreeProvider {
+    // Parse one .hl file. Repeated calls accumulate into the
+    // provider's internal tree state. clear() resets.
+    //
+    // path is the file's workspace-relative path (used for
+    // petal id construction and source navigation). content
+    // is the raw .hl source.
+    fn parse_file(path: String, content: String);
+
+    // Drop all parsed state. Called when the workspace
+    // changes or when the source pane swaps files.
+    fn clear();
+
+    // Read the parsed locus tree. The provider populates
+    // LocusTree by pushing Petals; the scene reads via the
+    // standard @form(vec) accessors. Same instance returned
+    // across calls (the provider owns the tree, the scene
+    // borrows it for rendering).
+    fn tree() -> LocusTree;
+}
+
+// ---- Fallback / test provider ----
+//
+// EmptyProvider satisfies the interface and returns an empty
+// tree — the flower renders to "blank canvas with stage
+// lighting." Used in tests that exercise the scene without
+// linking libtree-sitter. The default scene uses
+// heron::TreeSitterHaleParser instead.
+
+locus EmptyProvider {
+    params {
+        empty_tree: LocusTree = LocusTree { };
+    }
+    fn parse_file(path: String, content: String) {
+        // No-op until a real provider lands.
+        let _ = path;
+        let _ = content;
+    }
+    fn clear() {
+        let _ = 0;
+    }
+    fn tree() -> LocusTree {
+        return self.empty_tree;
+    }
+}

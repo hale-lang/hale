@@ -1,0 +1,257 @@
+// pond/http/client — wire-format helpers (request build, response
+// parse, recv loop) + the __HttpConn wrapper that hides the
+// http-vs-https branch behind a single send/recv surface.
+//
+// Free fns; the body parser is the load-bearing piece. Uses
+// `recv_bytes` (length-prefixed, NUL-safe) to keep binary
+// bodies intact. Header parsing reads the same Bytes as String
+// because HTTP/1.1 headers are guaranteed 7-bit ASCII — the
+// only NULs that could appear live in the body, after the
+// blank-line separator.
+//
+// Free fn (catalog pattern 6). Coupled to the wire format,
+// not a coherent vocabulary big enough to warrant a namespace
+// lotus.
+
+// __HttpConn: scheme-agnostic wrapper over either a TCP fd or a
+// TLS handle. send_bytes / recv_bytes dispatch on `is_tls`.
+// Dissolve closes the right substrate. Both substrates address
+// connections by Int (TCP fd vs TLS handle index), so a single
+// `handle` field is enough.
+locus __HttpConn {
+    params {
+        handle: Int = -1;
+        is_tls: Bool = false;
+    }
+
+    fn send_bytes(b: Bytes) -> Int {
+        if self.is_tls {
+            return std::io::tls::send_bytes(self.handle, b);
+        }
+        return std::io::tcp::__send_bytes(self.handle, b);
+    }
+
+    fn recv_bytes(max_bytes: Int) -> Bytes {
+        if self.is_tls {
+            return std::io::tls::recv_bytes(self.handle, max_bytes);
+        }
+        return std::io::tcp::__recv_bytes(self.handle, max_bytes);
+    }
+
+    dissolve() {
+        if self.is_tls {
+            std::io::tls::close(self.handle);
+        } else {
+            std::io::tcp::__close_fd(self.handle);
+        }
+    }
+}
+
+// Build the HTTP/1.1 request bytes for a Request record + a
+// user-agent string + a "host:port" Host header. Body is sent
+// as a separate trailing chunk by __exchange_one; header section
+// is plain ASCII so the String concat path is fine for it.
+//
+// Returns the assembled bytes as String. Caller converts to
+// Bytes (via from_string, lossless for ASCII) and ships through
+// __HttpConn.send_bytes so the same path serves both TCP and
+// TLS modes.
+fn __build_request_headers(req: Request, user_agent: String) -> String {
+    let host = req.url.host;
+    let port = req.url.port;
+    let path = req.url.path;
+    let method = req.method;
+    let body_len = len(req.body);
+
+    let host_header = "Host: " + host + ":" + to_string(port) + "\r\n";
+    let ua_header   = "User-Agent: " + user_agent + "\r\n";
+    let cl_header   = "Content-Length: " + to_string(body_len) + "\r\n";
+    let conn_header = "Connection: close\r\n";
+
+    let request_line = method + " " + path + " HTTP/1.1\r\n";
+
+    // User-supplied headers (CRLF-joined, no trailing CRLF).
+    // Append with a trailing CRLF when non-empty so the final
+    // CRLF-CRLF separator lands cleanly.
+    let mut user_headers = "";
+    if len(req.headers) > 0 {
+        user_headers = req.headers + "\r\n";
+    }
+
+    return request_line
+        + host_header
+        + ua_header
+        + cl_header
+        + conn_header
+        + user_headers
+        + "\r\n";
+}
+
+// Drain a Stream into a single Bytes blob. Loops `recv_bytes`
+// until either the peer closes (recv returns 0 bytes) or
+// `max_total` is hit. Caller has already sent the request; this
+// reads the whole response in one go.
+//
+// Accumulates via std::bytes::BytesBuilder (binary-safe; the
+// post-F.28 locus-shape). Previous
+// v1 shape round-tripped through the str-builder, which strlen-
+// truncates at the first embedded NUL — fatal for binary response
+// bodies (images, gRPC frames, etc). The bytes-builder primitive
+// (C10, upstream 894f393) preserves embedded NULs end-to-end.
+fn __recv_response_bytes(s: __HttpConn, max_total: Int) -> Bytes {
+    let chunk_size = 8192;
+    let mut total = 0;
+    let buf = std::bytes::BytesBuilder { initial_cap: 8192 };
+
+    while total < max_total {
+        let want = max_total - total;
+        let mut take = chunk_size;
+        if want < take { take = want; }
+        let piece = s.recv_bytes(take);
+        let n = len(piece);
+        if n <= 0 {
+            // Peer closed (or error). Done.
+            return buf.snapshot();
+        }
+        // Append the raw Bytes chunk; embedded NULs preserved.
+        buf.append(piece);
+        total = total + n;
+    }
+    return buf.snapshot();
+}
+
+// Parse status line "HTTP/1.1 NNN PHRASE\r\n" — returns the
+// numeric status code, or -1 if malformed.
+fn __parse_status(line: String) -> Int {
+    let line_len = len(line);
+    if line_len < 12 {
+        return -1;
+    }
+    // Skip "HTTP/x.y " prefix — first space marks the boundary.
+    let sp1 = std::str::index_of(line, " ");
+    if sp1 < 0 { return -1; }
+    let after = line[(sp1 + 1)..line_len];
+    let after_len = len(after);
+    let sp2 = std::str::index_of(after, " ");
+    let mut code_str = after;
+    if sp2 >= 0 {
+        code_str = after[0..sp2];
+    }
+    let code = std::str::parse_int(code_str) or -1;
+    return code;
+}
+
+// Find a header value in the packed CRLF-joined block. Case-
+// insensitive per RFC 7230 §3.2. Returns "" if absent.
+//
+// FRICTION: this duplicates stdlib's __http_request_header
+// shape (with "headers" stored as plain String, no trailing
+// CRLF). May belong in a shared http-header util.
+fn __find_header(headers: String, name: String) -> String {
+    let total = len(headers);
+    if total <= 0 { return ""; }
+    let needle = std::str::lower(name) + ":";
+    let needle_len = len(needle);
+    let mut cursor = 0;
+    while cursor < total {
+        let rel = std::str::index_of(headers[cursor..total], "\r\n");
+        let mut line_end = total;
+        if rel >= 0 { line_end = cursor + rel; }
+        let line = headers[cursor..line_end];
+        let line_len = len(line);
+        if line_len >= needle_len {
+            let head = std::str::lower(line[0..needle_len]);
+            if head == needle {
+                let mut vstart = needle_len;
+                while vstart < line_len {
+                    let ch = line[vstart..(vstart + 1)];
+                    if ch == " " {
+                        vstart = vstart + 1;
+                    } else {
+                        return std::str::trim(line[vstart..line_len]);
+                    }
+                }
+                return "";
+            }
+        }
+        if rel < 0 { return ""; }
+        cursor = line_end + 2;
+    }
+    return "";
+}
+
+// Split a received response blob into status line + headers +
+// body, populating a Response. Returns a Response with status=0
+// on parse failure (caller treats that as bad_response).
+//
+// The blob is read as String for header parsing (ASCII-safe)
+// then the body is carved out using Content-Length so binary
+// content survives the NUL-truncation risk. Path: convert to
+// Bytes via from_string first to anchor the length-prefixed
+// view, then slice on the byte boundary.
+fn __parse_response(raw: Bytes) -> Response {
+    let raw_len = len(raw);
+    if raw_len <= 0 {
+        return __empty_response();
+    }
+
+    // For header parsing we lean on the String view. HTTP/1.1
+    // headers are ASCII so the strlen view aligns with the byte
+    // view up to the body. The body is then sliced from `raw`
+    // directly by byte offset for binary safety.
+    let raw_str = std::str::from_bytes(raw);
+    let header_end = std::str::index_of(raw_str, "\r\n\r\n");
+    if header_end < 0 {
+        return __empty_response();
+    }
+
+    let line_end = std::str::index_of(raw_str, "\r\n");
+    if line_end < 0 || line_end > header_end {
+        return __empty_response();
+    }
+    let status_line = raw_str[0..line_end];
+    let status = __parse_status(status_line);
+    if status < 0 {
+        return __empty_response();
+    }
+
+    let mut headers = "";
+    let headers_start = line_end + 2;
+    if headers_start < header_end {
+        headers = raw_str[headers_start..header_end];
+    }
+
+    let body_start = header_end + 4;
+    let mut body = b"";
+    if body_start < raw_len {
+        body = std::bytes::slice(raw, body_start, raw_len);
+    }
+
+    return Response {
+        status: status,
+        headers: headers,
+        body: body
+    };
+}
+
+// One round-trip on an already-connected __HttpConn. Sends the
+// request, drains the response, parses it. `max_body` caps the
+// total response size (headers + body) read off the wire.
+//
+// Headers are sent as Bytes (via from_string) so we ride the
+// single send_bytes path through the wrapper regardless of TLS
+// mode. HTTP/1.1 headers are ASCII, so from_string is lossless.
+fn __exchange_one(
+    s: __HttpConn,
+    req: Request,
+    user_agent: String,
+    max_body: Int
+) -> Response {
+    let header_block = __build_request_headers(req, user_agent);
+    s.send_bytes(std::bytes::from_string(header_block));
+    if len(req.body) > 0 {
+        s.send_bytes(req.body);
+    }
+    let raw = __recv_response_bytes(s, max_body);
+    return __parse_response(raw);
+}

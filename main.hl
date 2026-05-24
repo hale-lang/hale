@@ -1,0 +1,535 @@
+// iris — entry point and root locus.
+//
+// Phase 1: Iris owns the four pane fields (F.29 cascade owns
+// their lifecycle), a Layout for computing per-pane rects, and
+// the focus dispatch logic. tick() walks the panes and calls
+// each one's render() with a RenderSurface (carries bounds +
+// focus state). handle_key() routes global keystrokes (Ctrl+Tab,
+// Ctrl+1..4, Ctrl+Q); a future InputCapture locus will pump
+// keys into it.
+//
+// No frame loop yet — Renderer / InputCapture / Keymap land in
+// subsequent steps. fn main() drives a small scenario manually
+// (instantiate, simulate a few keys, tick a few frames) so we
+// can verify the dispatch end-to-end against stub raylib.
+
+import "lib/raylib" as ray;
+
+locus Iris {
+    params {
+        workspace_root: String = ".";
+        shell:    ShellPane       = ShellPane       { };
+        source:   SourcePane      = SourcePane      { };
+        viz:      VizPane         = VizPane         { };
+        agent:    AgentPane       = AgentPane       { };
+        panes:    PaneList        = PaneList        { };
+        layout:   Layout          = Layout          { };
+        renderer:   Renderer           = Renderer           { };
+        input:      InputCapture       = InputCapture       { };
+        gate:       PermissionGate     = PermissionGate     { };
+        harness:    AgentHarness       = AgentHarness       { };
+        extractor:  ProposalExtractor  = ProposalExtractor  { };
+        dispatcher: ProposalDispatcher = ProposalDispatcher { };
+        mcp:        McpServer          = McpServer          { };
+        session:    SessionStore       = SessionStore       { };
+        demos:      DemoCatalog        = DemoCatalog        { };
+        status_bar: StatusBar          = StatusBar          { };
+        focused:    String             = "agent";
+        quit_requested: Bool           = false;
+    }
+
+    bus {
+        // The proposal pipeline routes through Iris because the
+        // dispatcher needs the gate, and Iris is the locus that
+        // owns gate as a field. ProposalExtractor publishes here;
+        // we forward into the dispatcher with self.gate.
+        subscribe ProposalIn as on_proposal;
+    }
+
+    fn on_proposal(p: Proposal) {
+        self.dispatcher.handle(self, p);
+    }
+
+    birth() {
+        // Push fat-pointer aliases of each pane field into the
+        // PaneList. F.20 → F.29 → @form(vec) composition: the
+        // vec doesn't own the panes, the fields do.
+        self.panes.push(self.shell);
+        self.panes.push(self.source);
+        self.panes.push(self.viz);
+        self.panes.push(self.agent);
+
+        // Notify the initially-focused pane.
+        self.refresh_focus();
+    }
+
+    // ---- Focus dispatch.
+
+    fn refresh_focus() {
+        // Tell each pane its current focus state. Cheaper than
+        // tracking previous focus separately — losers get a
+        // no-op focus_lose; the gainer flips to true.
+        self.shell.focus_lose();
+        self.source.focus_lose();
+        self.viz.focus_lose();
+        self.agent.focus_lose();
+        if self.focused == "shell"  { self.shell.focus_gain();  }
+        if self.focused == "source" { self.source.focus_gain(); }
+        if self.focused == "viz"    { self.viz.focus_gain();    }
+        if self.focused == "agent"  { self.agent.focus_gain();  }
+    }
+
+    fn cycle_focus_forward() {
+        self.focused = next_pane(self.focused);
+        self.refresh_focus();
+    }
+
+    fn cycle_focus_backward() {
+        self.focused = prev_pane(self.focused);
+        self.refresh_focus();
+    }
+
+    fn jump_focus(target: String) {
+        self.focused = target;
+        self.refresh_focus();
+    }
+
+    // ---- Input dispatch.
+
+    fn handle_key(k: KeyEvent) {
+        // Global keymap layer. Ctrl-prefixed keys go here first;
+        // un-handled keys fall through to the focused pane in a
+        // later phase (when panes consume raw KeyEvents).
+        if k.ctrl && k.code == ray::KEY_Q {
+            self.quit_requested = true;
+            return;
+        }
+        if k.ctrl && k.code == ray::KEY_TAB {
+            if k.shift {
+                self.cycle_focus_backward();
+            } else {
+                self.cycle_focus_forward();
+            }
+            return;
+        }
+        if k.ctrl && k.code == ray::KEY_ONE   { self.jump_focus("shell");  return; }
+        if k.ctrl && k.code == ray::KEY_TWO   { self.jump_focus("source"); return; }
+        if k.ctrl && k.code == ray::KEY_THREE { self.jump_focus("viz");    return; }
+        if k.ctrl && k.code == ray::KEY_FOUR  { self.jump_focus("agent");  return; }
+        // Un-handled — route to focused pane.
+        self.route_to_focused(k);
+    }
+
+    fn route_to_focused(k: KeyEvent) {
+        if self.focused == "shell"  { self.shell.on_key(k);  return; }
+        if self.focused == "source" { self.source.on_key(k); return; }
+        if self.focused == "viz"    { self.viz.on_key(k);    return; }
+        if self.focused == "agent"  { self.agent.on_key(k);  return; }
+    }
+
+    // ---- Render dispatch.
+
+    fn tick() {
+        // One frame's work. Drain queued keys, handle each;
+        // open the frame, render every pane, close the frame.
+        while true {
+            let k = self.input.poll();
+            if k.code == 0 { break; }
+            self.handle_key(k);
+        }
+        // Skip rendering when the window isn't open (scenario /
+        // --mcp modes). Bus-driven state still updated via the
+        // key handling above; without an open window the render
+        // primitives (begin_frame, get_screen_width) would return
+        // uninitialized state.
+        if !self.renderer.window_is_open() { return; }
+        // Mouse click → focus change. Clicking inside a pane's
+        // rect both moves keyboard focus to that pane AND forwards
+        // the click (in pane-local coords) to the pane's
+        // scene/click handler. Phase 5.c: only viz forwards; the
+        // other panes ignore mouse clicks for now beyond the
+        // focus-shift.
+        if ray::is_mouse_button_pressed(ray::MOUSE_BUTTON_LEFT) {
+            self.dispatch_click();
+        }
+        self.renderer.frame_open();
+        self.shell.render(surface_for(self.layout, "shell", self.focused));
+        self.source.render(surface_for(self.layout, "source", self.focused));
+        self.viz.render(surface_for(self.layout, "viz", self.focused));
+        self.agent.render(surface_for(self.layout, "agent", self.focused));
+        self.status_bar.render(self);
+        self.renderer.frame_close();
+    }
+
+    fn interactive_loop() {
+        // Phase 5.b/c: cooperative frame loop. Opens the GUI
+        // surface, then stays in tick() until the user quits
+        // (Ctrl+Q sets quit_requested; raylib's WindowShouldClose
+        // catches ESC + window close button). yield between frames
+        // so other cooperative work (background polls, etc.) gets
+        // cycles.
+        //
+        // Named `interactive_loop`, not `run`, because `run` is
+        // the Hale lifecycle keyword (would conflict with
+        // future auto-fire semantics if we ever ship Iris as a
+        // child locus).
+        self.renderer.open_window();
+        while !self.should_quit() {
+            self.tick();
+            yield;
+        }
+    }
+
+    fn should_quit() -> Bool {
+        return self.quit_requested || self.renderer.should_close();
+    }
+
+    fn dispatch_click() {
+        let pos = ray::get_mouse_position();
+        let pane = self.pane_at(pos.x, pos.y);
+        if len(pane) == 0 { return; }
+        if pane != self.focused {
+            self.refresh_focus_to(pane);
+        }
+        // Viz scene gets pane-local coords for hit-testing.
+        if pane == "viz" {
+            let rect = self.layout.rect_for("viz");
+            let local_x = Int(pos.x - rect.x);
+            let local_y = Int(pos.y - rect.y);
+            self.viz.active_scene.on_click(local_x, local_y);
+        }
+    }
+
+    fn pane_at(x: Float, y: Float) -> String {
+        if hit("shell",  self.layout, x, y) { return "shell"; }
+        if hit("source", self.layout, x, y) { return "source"; }
+        if hit("viz",    self.layout, x, y) { return "viz"; }
+        if hit("agent",  self.layout, x, y) { return "agent"; }
+        return "";
+    }
+
+    fn refresh_focus_to(pane: String) {
+        // Mirrors the existing refresh_focus path; centralized so
+        // click + keyboard share the focus-change rules.
+        self.shell.focus_lose();
+        self.source.focus_lose();
+        self.viz.focus_lose();
+        self.agent.focus_lose();
+        self.focused = pane;
+        if pane == "shell"  { self.shell.focus_gain();  return; }
+        if pane == "source" { self.source.focus_gain(); return; }
+        if pane == "viz"    { self.viz.focus_gain();    return; }
+        if pane == "agent"  { self.agent.focus_gain();  return; }
+    }
+}
+
+fn hit(name: String, layout: Layout, x: Float, y: Float) -> Bool {
+    let r = layout.rect_for(name);
+    if x < r.x { return false; }
+    if y < r.y { return false; }
+    if x > r.x + r.width { return false; }
+    if y > r.y + r.height { return false; }
+    return true;
+}
+
+fn surface_for(layout: Layout, name: String, focused_name: String) -> RenderSurface {
+    return RenderSurface {
+        bounds:  layout.rect_for(name),
+        focused: name == focused_name,
+    };
+}
+
+fn main() {
+    let app = Iris { workspace_root: "." };
+
+    // --mcp: MCP-only mode. No GUI; JSON-RPC stdio loop. Used by
+    // external agents (Claude Code etc.) summoning iris over MCP.
+    if cli_has_mcp_flag() {
+        app.mcp.run_mcp_loop(app);
+        return;
+    }
+
+    // Phase 7: restore prior session state unless --no-restore.
+    if !cli_has_no_restore_flag() {
+        app.session.try_restore();
+    }
+
+    // --scenario: run the multi-phase test walkthrough that was
+    // the default before Phase 5.b. Useful for regression testing.
+    // Default (no flag) runs the interactive frame loop instead.
+    if cli_has_scenario_flag() {
+        run_scenario(app);
+        return;
+    }
+
+    // Default: interactive. Window opens (via Renderer's Window
+    // field birth, already fired during Iris construction), frame
+    // loop drives until quit. Ctrl+Q or window-close exits.
+    app.interactive_loop();
+}
+
+fn run_scenario(app: Iris) {
+    println("--- post-restore source path ---");
+    println(app.source.current_path);
+    println("");
+
+    // Scenario: tick → simulate keys → tick again. Against stub
+    // raylib this produces no visible output, but exercises every
+    // path (focus dispatch, layout computation, per-pane render
+    // with F.20 interface calls). A real run-loop wires this
+    // into raylib's begin/end_frame + poll_key in a later phase.
+
+    app.tick();
+
+    // Ctrl+Tab → cycle forward (agent → shell)
+    app.handle_key(KeyEvent { code: ray::KEY_TAB, ctrl: true });
+    app.tick();
+
+    // Ctrl+3 → jump to viz
+    app.handle_key(KeyEvent { code: ray::KEY_THREE, ctrl: true });
+    app.tick();
+
+    // Ctrl+Shift+Tab → cycle backward (viz → source)
+    app.handle_key(KeyEvent { code: ray::KEY_TAB, ctrl: true, shift: true });
+    app.tick();
+
+    // Ctrl+Q → quit signal (just flips a flag at Phase 1; the
+    // run loop reads it later)
+    app.handle_key(KeyEvent { code: ray::KEY_Q, ctrl: true });
+
+    // Exercise the agent loop. The harness calls into
+    // EchoBackend which publishes AgentChunk * 2 + AgentTurnDone.
+    // AgentPane subscribes and accumulates into its scrollback.
+    app.harness.submit_user_input("hello, iris");
+
+    // Also exercise the input-routing path: focus the agent,
+    // stub-fill its input buffer, fire an Enter key.
+    app.jump_focus("agent");
+    app.agent.stub_fill_input("via the input path");
+    app.handle_key(KeyEvent { code: ray::KEY_ENTER });
+
+    // Diagnostic: print whatever the AgentPane saw.
+    println("--- agent scrollback after submit ---");
+    print(app.agent.scrollback_text());
+    println("--- turns: ");
+    print_int(app.agent.turn_count());
+    println("");
+
+    // ---- Phase 1: exercise the proposal pipeline end-to-end.
+    //
+    // The chain:
+    //   submit("open foo.hl")
+    //     → EchoBackend emits an iris.proposal{} block in chunks
+    //     → ProposalExtractor scans, parses, publishes ProposalIn
+    //     → Iris.on_proposal forwards to dispatcher.handle(gate, p)
+    //     → gate.allows("source", "write") returns true (default)
+    //     → dispatcher publishes SrcOpenCmd
+    //     → SourcePane.on_open sets current_path / current_line
+    //
+    // All synchronous (sync bus delivery — FRICTION.md). After
+    // the submit returns, SourcePane's state should reflect the
+    // open.
+    app.harness.submit_user_input("open foo.hl");
+    println("--- source pane state after open-proposal ---");
+    println("path: ");
+    println(app.source.current_path);
+    println("line: ");
+    print_int(app.source.current_line);
+    println("");
+
+    // Lock source pane writes; submit another open proposal.
+    // SourcePane's state should NOT advance — the gate refuses
+    // at the dispatcher and a Denial fires instead.
+    app.gate.stub_lock_source_write();
+    app.harness.submit_user_input("open bar.hl");
+    println("--- source pane state after locked open-proposal ---");
+    println("path (should still be foo.hl): ");
+    println(app.source.current_path);
+    println("");
+
+    println("--- extractor stats ---");
+    println("emitted: ");
+    print_int(app.extractor.emitted_count());
+    println("");
+    println("applied: ");
+    print_int(app.agent.applied_count());
+    println("");
+    println("denied: ");
+    print_int(app.agent.denied_count());
+    println("");
+    println("last denial reason: ");
+    println(app.agent.last_denial_reason());
+
+    // ---- Phase 1 stress: 100 submissions, deterministic outcomes.
+    //
+    // Unlock the gate (the earlier denied test left source
+    // write-locked), then submit 100 "open stress.hl" prompts.
+    // Each should produce exactly one Proposal → SrcOpenCmd
+    // → SourcePane.on_open. Counts the diff in extractor +
+    // applied counters to confirm 100/100 dispatched cleanly.
+    app.gate.stub_unlock_source_write();
+    let stress_start_emitted = app.extractor.emitted_count();
+    let stress_start_applied = app.agent.applied_count();
+    let mut i = 0;
+    let n = 100;
+    while i < n {
+        app.harness.submit_user_input("open stress.hl");
+        i = i + 1;
+    }
+    let emitted_diff = app.extractor.emitted_count() - stress_start_emitted;
+    let applied_diff = app.agent.applied_count() - stress_start_applied;
+    println("--- stress: 100 submissions ---");
+    println("emitted diff (expect 100): ");
+    print_int(emitted_diff);
+    println("");
+    println("applied diff (expect 100): ");
+    print_int(applied_diff);
+    println("");
+    println("final source path (expect stress.hl): ");
+    println(app.source.current_path);
+
+    // ---- Phase 2.a: exercise the MCP read-tool surface.
+    //
+    // Hand-craft JSON-RPC requests against app.mcp.dispatch.
+    // No stdio yet (that's Phase 2.b); this is the in-process
+    // dispatch test.
+
+    println("--- mcp: pane.read source ---");
+    println(app.mcp.dispatch(app, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"pane.read\",\"params\":{\"pane_id\":\"source\"}}"));
+    println("");
+
+    println("--- mcp: pane.focus_state ---");
+    println(app.mcp.dispatch(app, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"pane.focus_state\",\"params\":{}}"));
+    println("");
+
+    println("--- mcp: permission.state ---");
+    println(app.mcp.dispatch(app, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"permission.state\",\"params\":{}}"));
+    println("");
+
+    println("--- mcp: pane.read agent ---");
+    println(app.mcp.dispatch(app, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"pane.read\",\"params\":{\"pane_id\":\"agent\"}}"));
+    println("");
+
+    println("--- mcp: unknown method ---");
+    println(app.mcp.dispatch(app, "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"nonexistent.tool\",\"params\":{}}"));
+    println("");
+
+    println("--- mcp: iris.launch ---");
+    println(app.mcp.dispatch(app, "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"iris.launch\",\"params\":{\"workspace\":\".\"}}"));
+    println("");
+
+    // ---- Phase 3: VizPane scene host end-to-end.
+    //
+    // After the open-foo.hl proposal earlier in the scenario,
+    // SourcePane published SourceChanged → VizPane.on_source_change
+    // → active_scene.on_source_changed → LotusFlowerScene parsed
+    // the content via heron + updated its locus tree. MCP
+    // viz.scene_info should now report current_file + petal_count.
+    println("--- mcp: viz.scene_info (post-source-change) ---");
+    println(app.mcp.dispatch(app, "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"viz.scene_info\",\"params\":{}}"));
+    println("");
+
+    // Drive the viz mode primitive via a proposal — agent
+    // emits "switch to harmonic", dispatcher routes through
+    // VizModeCmd → VizPane.on_mode_cmd → self.mode updates.
+    // (Backed by direct method calls here since EchoBackend
+    // doesn't emit viz.mode proposals organically.)
+    app.dispatcher.handle(app, Proposal {
+        id: "phase3-1",
+        channel: "ide.cmd.viz.mode",
+        payload: "{\"mode\":\"harmonic\"}",
+        reason: "phase 3 mode switch test",
+    });
+    println("--- viz mode after harmonic proposal ---");
+    println(app.viz.current_mode());
+
+    // Re-fetch scene_info to confirm mode flipped.
+    println("--- mcp: viz.scene_info (post-mode-switch) ---");
+    println(app.mcp.dispatch(app, "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"viz.scene_info\",\"params\":{}}"));
+    println("");
+
+    // ---- Phase 7: session persistence inspection.
+    //
+    // The scenario opened several files via proposals; the
+    // SessionStore should have captured each one. Final state
+    // is whatever the LAST open hit — that's also what's now
+    // on disk in .iris/session.json.
+    println("--- session snapshot ---");
+    println("path: ");
+    println(app.session.snapshot_path());
+    println("line: ");
+    print_int(app.session.snapshot_line());
+    println("");
+    println("(restart iris to verify .iris/session.json reload;");
+    println(" use --no-restore to skip the restore step.)");
+    println("");
+
+    // ---- Phase 4: AnthropicBackend live demo.
+    //
+    // Hits api.anthropic.com — burns real quota. Only runs when
+    // both --anthropic-demo flag AND ANTHROPIC_API_KEY env var
+    // are set. Without the flag iris stays on EchoBackend for
+    // every test path.
+    //
+    // The demo prompt asks the model to emit an iris.proposal{}
+    // block; if the model complies, the response round-trips
+    // through ProposalExtractor → ProposalDispatcher → SourcePane,
+    // demonstrating the full agent loop against a non-deterministic
+    // LLM (VISION §11.4 with real nondeterminism).
+    if cli_has_anthropic_demo_flag() && std::env::var_exists("ANTHROPIC_API_KEY") {
+        println("--- phase 4 anthropic demo ---");
+        let claude = AnthropicBackend {
+            api_key: std::env::var("ANTHROPIC_API_KEY"),
+        };
+        claude.submit_user_input("Respond with exactly one iris.proposal block that opens main.hl at line 1, plus a one-sentence rationale. Use this exact format:\n\niris.proposal {\n  \"channel\": \"ide.cmd.source.open\",\n  \"payload\": {\"path\": \"main.hl\", \"line\": 1},\n  \"reason\": \"...\"\n}");
+        println("--- agent scrollback after Claude turn ---");
+        print(app.agent.scrollback_text());
+        println("");
+        println("--- source path after Claude turn (expect main.hl) ---");
+        println(app.source.current_path);
+    }
+}
+
+fn cli_has_mcp_flag() -> Bool {
+    let mut i = 0;
+    let n = std::env::args_count();
+    while i < n {
+        if std::env::arg(i) == "--mcp" { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn cli_has_anthropic_demo_flag() -> Bool {
+    let mut i = 0;
+    let n = std::env::args_count();
+    while i < n {
+        if std::env::arg(i) == "--anthropic-demo" { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn cli_has_no_restore_flag() -> Bool {
+    let mut i = 0;
+    let n = std::env::args_count();
+    while i < n {
+        if std::env::arg(i) == "--no-restore" { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn cli_has_scenario_flag() -> Bool {
+    let mut i = 0;
+    let n = std::env::args_count();
+    while i < n {
+        if std::env::arg(i) == "--scenario" { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn print_int(n: Int) {
+    println(to_string(n));
+}

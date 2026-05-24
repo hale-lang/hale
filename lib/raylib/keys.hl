@@ -1,0 +1,124 @@
+// raylib stub — key + mouse-button constants.
+// Values match GLFW3 keycodes that raylib uses upstream.
+// Surface contract: ../../COMPILER_FFI.md § `std::raylib::*`.
+//
+// Subset for v0 — covers what Iris's keymap dispatcher needs
+// (alphanumerics, arrows, modifiers, common function keys, mouse
+// buttons). The full set lands in std::raylib::keys once the
+// compiler work is up.
+
+const KEY_NULL: Int          = 0;
+
+// Punctuation
+const KEY_APOSTROPHE: Int    = 39;
+const KEY_COMMA: Int         = 44;
+const KEY_MINUS: Int         = 45;
+const KEY_PERIOD: Int        = 46;
+const KEY_SLASH: Int         = 47;
+const KEY_SEMICOLON: Int     = 59;
+const KEY_EQUAL: Int         = 61;
+const KEY_LEFT_BRACKET: Int  = 91;
+const KEY_BACKSLASH: Int     = 92;
+const KEY_RIGHT_BRACKET: Int = 93;
+const KEY_GRAVE: Int         = 96;
+const KEY_SPACE: Int         = 32;
+
+// Digits
+const KEY_ZERO: Int  = 48;
+const KEY_ONE: Int   = 49;
+const KEY_TWO: Int   = 50;
+const KEY_THREE: Int = 51;
+const KEY_FOUR: Int  = 52;
+const KEY_FIVE: Int  = 53;
+const KEY_SIX: Int   = 54;
+const KEY_SEVEN: Int = 55;
+const KEY_EIGHT: Int = 56;
+const KEY_NINE: Int  = 57;
+
+// Letters
+const KEY_A: Int = 65;
+const KEY_B: Int = 66;
+const KEY_C: Int = 67;
+const KEY_D: Int = 68;
+const KEY_E: Int = 69;
+const KEY_F: Int = 70;
+const KEY_G: Int = 71;
+const KEY_H: Int = 72;
+const KEY_I: Int = 73;
+const KEY_J: Int = 74;
+const KEY_K: Int = 75;
+const KEY_L: Int = 76;
+const KEY_M: Int = 77;
+const KEY_N: Int = 78;
+const KEY_O: Int = 79;
+const KEY_P: Int = 80;
+const KEY_Q: Int = 81;
+const KEY_R: Int = 82;
+const KEY_S: Int = 83;
+const KEY_T: Int = 84;
+const KEY_U: Int = 85;
+const KEY_V: Int = 86;
+const KEY_W: Int = 87;
+const KEY_X: Int = 88;
+const KEY_Y: Int = 89;
+const KEY_Z: Int = 90;
+
+// Control keys
+const KEY_ESCAPE: Int    = 256;
+const KEY_ENTER: Int     = 257;
+const KEY_TAB: Int       = 258;
+const KEY_BACKSPACE: Int = 259;
+const KEY_INSERT: Int    = 260;
+const KEY_DELETE: Int    = 261;
+
+// Arrows
+const KEY_RIGHT: Int = 262;
+const KEY_LEFT: Int  = 263;
+const KEY_DOWN: Int  = 264;
+const KEY_UP: Int    = 265;
+
+// Page / home / end
+const KEY_PAGE_UP: Int   = 266;
+const KEY_PAGE_DOWN: Int = 267;
+const KEY_HOME: Int      = 268;
+const KEY_END: Int       = 269;
+
+// Function row
+const KEY_F1: Int  = 290;
+const KEY_F2: Int  = 291;
+const KEY_F3: Int  = 292;
+const KEY_F4: Int  = 293;
+const KEY_F5: Int  = 294;
+const KEY_F6: Int  = 295;
+const KEY_F7: Int  = 296;
+const KEY_F8: Int  = 297;
+const KEY_F9: Int  = 298;
+const KEY_F10: Int = 299;
+const KEY_F11: Int = 300;
+const KEY_F12: Int = 301;
+
+// Modifiers
+const KEY_LEFT_SHIFT: Int    = 340;
+const KEY_LEFT_CONTROL: Int  = 341;
+const KEY_LEFT_ALT: Int      = 342;
+const KEY_LEFT_SUPER: Int    = 343;
+const KEY_RIGHT_SHIFT: Int   = 344;
+const KEY_RIGHT_CONTROL: Int = 345;
+const KEY_RIGHT_ALT: Int     = 346;
+const KEY_RIGHT_SUPER: Int   = 347;
+
+// Mouse buttons
+const MOUSE_BUTTON_LEFT: Int    = 0;
+const MOUSE_BUTTON_RIGHT: Int   = 1;
+const MOUSE_BUTTON_MIDDLE: Int  = 2;
+const MOUSE_BUTTON_SIDE: Int    = 3;
+const MOUSE_BUTTON_EXTRA: Int   = 4;
+const MOUSE_BUTTON_FORWARD: Int = 5;
+const MOUSE_BUTTON_BACK: Int    = 6;
+
+// Camera modes (for update_camera)
+const CAMERA_CUSTOM: Int        = 0;
+const CAMERA_FREE: Int          = 1;
+const CAMERA_ORBITAL: Int       = 2;
+const CAMERA_FIRST_PERSON: Int  = 3;
+const CAMERA_THIRD_PERSON: Int  = 4;

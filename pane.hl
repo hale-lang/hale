@@ -1,0 +1,50 @@
+// Pane interface (F.20) + a small render helper shared by every
+// pane stub. Each of the four built-in panes (shell, source, viz,
+// agent) implements Pane structurally.
+
+import "lib/raylib" as ray;
+
+interface Pane {
+    fn focus_gain();
+    fn focus_lose();
+    fn render(s: RenderSurface);
+    fn name() -> String;
+    fn on_key(k: KeyEvent);     // pane-specific input — fires for
+                                // un-handled keys when this pane
+                                // is focused
+}
+
+// Aliased iteration surface: holds fat-pointer references to the
+// pane fields on Iris (F.20 LocusRef → Interface coercion at
+// push sites). Lifecycle stays with the fields (F.29 cascade);
+// PaneList just lets Renderer / focus dispatch walk uniformly.
+@form(vec)
+locus PaneList {
+    capacity { heap panes of Pane; }
+}
+
+// ---- Theme colors (Phase 1 — hardcoded; later: read from config).
+
+fn focused_color() -> ray::Color {
+    return ray::Color { r: 200, g: 200, b: 100 };
+}
+
+fn unfocused_color() -> ray::Color {
+    return ray::Color { r: 80, g: 80, b: 80 };
+}
+
+fn text_color() -> ray::Color {
+    return ray::Color { r: 234, g: 234, b: 234 };
+}
+
+// Common render helper. Each pane calls this from its render()
+// body. Phase 1: border + centered name. Real pane content lands
+// in later phases.
+fn render_frame(s: RenderSurface, label: String) {
+    let border = if s.focused { focused_color() } else { unfocused_color() };
+    ray::draw_rect_lines(s.bounds, border);
+    let label_w = ray::measure_text(label, 14);
+    let cx = Int(s.bounds.x + s.bounds.width / 2.0) - label_w / 2;
+    let cy = Int(s.bounds.y + s.bounds.height / 2.0) - 7;
+    ray::draw_text(label, cx, cy, 14, text_color());
+}

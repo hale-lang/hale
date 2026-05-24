@@ -1,0 +1,64 @@
+// pond/http/client — public types.
+//
+// Pure-data records (`type`, not `locus`): no lifecycle, no
+// flow. Constructed via struct literal at use sites; returnable
+// by value through the m49 calling convention.
+//
+// Surface contract: CONTRACTS.md § pond/http/client/. Field
+// shapes match the contract verbatim. Defaults mirror what
+// most call-sites want so a literal can omit them.
+
+// A parsed URL. `parse_url` produces one; users may also build
+// one by hand and feed it to `request`. `port` of 0 lets the
+// scheme default fill it in (80 for http, 443 for https).
+type Url {
+    scheme: String = "http";
+    host: String = "";
+    port: Int = 80;
+    path: String = "/";
+}
+
+// One HTTP request. Headers stay packed as a CRLF-joined block
+// (no trailing CRLF) so concatenation onto the wire is a single
+// String append. Body is Bytes for binary-safety; conversions
+// happen at the wire boundary.
+type Request {
+    method: String = "GET";
+    url: Url;
+    headers: String = "";
+    body: Bytes;
+}
+
+// One HTTP response. `status` is the parsed integer code;
+// `headers` is the same CRLF-joined packed block shape as
+// Request.headers; `body` is binary-safe Bytes containing
+// exactly Content-Length bytes (or what we managed to read
+// before the peer closed).
+type Response {
+    status: Int = 0;
+    headers: String = "";
+    body: Bytes;
+}
+
+// The single error payload for every fallible surface in this
+// lib. Per the cross-cutting contract: one type per lib, kinds
+// disambiguate.
+//
+// kind values:
+//   "bad_url"          — parse_url couldn't decompose the input
+//   "unsupported_scheme" — scheme is neither http nor https
+//   "connect_failed"   — TCP connect failed
+//   "send_failed"      — Stream.send returned a failure sentinel
+//   "recv_failed"      — Stream.recv_bytes returned 0 before any data
+//   "bad_response"     — couldn't parse the status line / headers
+//   "too_large"        — response declared a body bigger than max_body
+//   "retries_exhausted" — Client gave up after max_retries attempts
+//
+// `status` carries the parsed HTTP status code when the failure
+// happened post-parse (e.g. a 5xx that the caller may wish to
+// observe through the err arm). Zero otherwise.
+type HttpError {
+    kind: String = "";
+    status: Int = 0;
+    detail: String = "";
+}

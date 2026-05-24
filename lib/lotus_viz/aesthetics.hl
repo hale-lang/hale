@@ -1,0 +1,158 @@
+// aesthetics.hl — palette + animation timing for lotus.flower.
+//
+// Pinned by DESIGN.md § "Color palette" and § "Animations".
+// Centralizing here so a future theme system can override
+// without touching layout / animator / scene logic.
+
+import "../raylib" as ray;
+
+// ---- Background ----
+
+// Window background color. Matches iris's renderer.hl BG so
+// the flower stage blends with the rest of the cockpit.
+fn bg_color() -> ray::Color {
+    return ray::Color { r: 26, g: 26, b: 26 };
+}
+
+// Stage "center" — used for the subtle radial dim from edges
+// to the flower's center. Lighter than bg_color, so the
+// origin of the dome reads as slightly lit.
+fn stage_center_color() -> ray::Color {
+    return ray::Color { r: 34, g: 34, b: 34 };
+}
+
+// ---- Per-kind palettes ----
+//
+// Each petal renders with a radial gradient: pale inner color
+// at the center transitioning to saturated outer color at the
+// rim. Lookup is (LocusKind, ProjectionClass) → (inner, outer).
+//
+// For Type and Interface kinds, projection is ignored
+// (types are inert, interfaces are abstract — neither carries
+// projection-class semantics).
+
+// Plain locus (no projection annotation).
+fn locus_plain_inner() -> ray::Color {
+    return ray::Color { r: 248, g: 241, b: 224 };  // #F8F1E0 cream
+}
+fn locus_plain_outer() -> ray::Color {
+    return ray::Color { r: 245, g: 197, b: 110 };  // #F5C56E warm gold
+}
+
+// Rich projection — warm rose, "few children, observed in detail."
+fn locus_rich_inner() -> ray::Color {
+    return ray::Color { r: 251, g: 224, b: 218 };  // #FBE0DA blush
+}
+fn locus_rich_outer() -> ray::Color {
+    return ray::Color { r: 232, g: 128, b: 110 };  // #E8806E warm rose
+}
+
+// Chunked projection — cool teal, "moderate population, chunk view."
+fn locus_chunked_inner() -> ray::Color {
+    return ray::Color { r: 215, g: 235, b: 235 };  // #D7EBEB pale teal
+}
+fn locus_chunked_outer() -> ray::Color {
+    return ray::Color { r: 91, g: 174, b: 174 };   // #5BAEAE cool teal
+}
+
+// Recognition projection — sage green, "population, aggregate."
+fn locus_recognition_inner() -> ray::Color {
+    return ray::Color { r: 221, g: 237, b: 219 };  // #DDEDDB sage mist
+}
+fn locus_recognition_outer() -> ray::Color {
+    return ray::Color { r: 141, g: 188, b: 139 };  // #8DBC8B sage
+}
+
+// Type (shape) — pale lavender, inert.
+fn type_inner() -> ray::Color {
+    return ray::Color { r: 237, g: 229, b: 245 };  // #EDE5F5 pale lavender
+}
+fn type_outer() -> ray::Color {
+    return ray::Color { r: 200, g: 182, b: 226 };  // #C8B6E2 lavender
+}
+
+// Interface (F.20) — silver-blue, metallic.
+fn iface_inner() -> ray::Color {
+    return ray::Color { r: 220, g: 227, b: 235 };  // #DCE3EB pale silver
+}
+fn iface_outer() -> ray::Color {
+    return ray::Color { r: 168, g: 185, b: 204 };  // #A8B9CC silver-blue
+}
+
+// ---- Spotlight / dim states ----
+
+// Additive glow for a spotlit petal. Added on top of the
+// outer color at 8% alpha, extending ~0.3 petal-radii outward.
+fn spotlight_glow_color() -> ray::Color {
+    return ray::Color { r: 255, g: 255, b: 255, a: 20 };  // ~8% alpha
+}
+
+// Saturation scale applied to a petal's outer color when
+// spotlit (multiplicative, so > 1 boosts saturation).
+const SPOTLIGHT_SATURATION_BOOST: Float = 1.2;
+
+// Saturation scale applied to all NON-spotlit petals when
+// any petal is spotlit (de-emphasizes the rest).
+const SPOTLIGHT_OTHERS_SATURATION: Float = 0.3;
+
+// In resolution mode, the focused petal renders at full
+// opacity; all others drop to this opacity.
+const RESOLUTION_OTHERS_OPACITY: Float = 0.5;
+const RESOLUTION_OTHERS_SATURATION: Float = 0.3;
+
+// In harmonic mode, petals NOT in the current
+// projection-class group drop to this saturation.
+const HARMONIC_OFF_GROUP_SATURATION: Float = 0.4;
+
+// ---- Animation timing ----
+
+// Born — new petal joins the tree. Scale 0 → 1.0 with
+// ease-out-cubic; alpha 0 → 1.
+const BORN_DURATION_MS:  Int = 600;
+
+// Dying — petal removed from tree. Scale 1.0 → 0.7,
+// alpha 1 → 0, downward droop (z += 0.5).
+const DYING_DURATION_MS: Int = 800;
+
+// Pulse — single pulse cycle (one full color tint loop).
+// Default repeats = 3 (configurable via scene channel).
+const PULSE_CYCLE_MS:    Int = 1200;
+const PULSE_DEFAULT_REPEATS: Int = 3;
+
+// Camera focus (click → focus, or viz.focus proposal).
+const CAMERA_FOCUS_DURATION_MS: Int = 400;
+
+// Agent-drawn edge fade.
+const EDGE_DEFAULT_FADE_MS: Int = 3000;
+
+// Caption (narrate channel) default duration.
+const NARRATE_DEFAULT_MS: Int = 4000;
+
+// ---- Ambient sway ----
+
+// All petals gently rotate ±sway angle around their stem axis
+// with this period (ms). Phase is per-petal (seeded by index)
+// so the flower doesn't sway in lockstep.
+const SWAY_MAX_DEGREES: Float = 2.0;
+const SWAY_PERIOD_MS:   Int   = 4000;
+
+// ---- Layout knobs (drive geometry math in layout.hl) ----
+
+// Ring radii: r(d) = R0 + R1 * d^1.3
+const RING_R0: Float = 1.5;
+const RING_R1: Float = 1.8;
+const RING_EXPONENT: Float = 1.3;
+
+// Petal size shrinks with depth: size = SIZE_BASE / (1 + SIZE_DECAY * d)
+const SIZE_BASE:  Float = 0.5;
+const SIZE_DECAY: Float = 0.15;
+
+// Maximum angular span allocated to one parent's children.
+// Beyond this, children's children start to crowd siblings'
+// children — visual confusion.
+const MAX_CHILD_ARC_DEGREES: Float = 120.0;
+
+// Dome curvature — petals dip below z=0 the further they are
+// from the origin. z = DOME_CURVE * radius (negative since
+// dome curves down).
+const DOME_CURVE: Float = -0.15;
