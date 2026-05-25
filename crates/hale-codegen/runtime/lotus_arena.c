@@ -1113,6 +1113,46 @@ lotus_arena_t *lotus_arena_create_labeled(const char *label) {
     return a;
 }
 
+/* F.32-3 (2026-05-25): codegen-aware sized arena creation.
+ * Same shape as lotus_arena_create_labeled but consults the
+ * caller's chunk-size hint. Codegen emits this variant for
+ * loci instantiated on a non-`main` cooperative pool, passing
+ * a hint computed at compile time from loci-per-pool count so
+ * each locus's hot chunk fits within its share of the worker
+ * thread's L2 slice.
+ *
+ * The hint is advisory:
+ *
+ *  - Out-of-range values (< 4096, larger than env-default,
+ *    non-power-of-2) silently fall back to the env-default
+ *    that `lotus_arena_alloc_struct` already stamped. The
+ *    codegen side emits clean values; this is defense.
+ *
+ *  - The env override (LOTUS_ARENA_CHUNK_BYTES_OVERRIDE) wins
+ *    via the upper bound: if the operator picked a default
+ *    smaller than the codegen hint, the hint is rejected and
+ *    the env value stands. The codegen hint can only shrink
+ *    chunks below the env default, never enlarge them.
+ *
+ * Net effect: for small N (loci-per-pool <= 8) the codegen
+ * hint equals the default and this is a no-op call. For
+ * N >= 16 the hint is materially smaller (32K / 16K / 8K)
+ * and the per-locus working set drops into the L2-per-core
+ * envelope. */
+lotus_arena_t *lotus_arena_create_labeled_sized(
+    const char *label, size_t initial_chunk_bytes)
+{
+    lotus_arena_t *a = lotus_arena_alloc_struct();
+    if (!a) return NULL;
+    size_t def = a->default_chunk_size;  /* env-resolved */
+    size_t hint = initial_chunk_bytes;
+    if (hint >= 4096 && hint <= def && (hint & (hint - 1)) == 0) {
+        a->default_chunk_size = hint;
+    }
+    lotus_arena_residency_register(a, label);
+    return a;
+}
+
 /* Carve a sub-region of `parent`. The sub-region holds its own
  * chunk list (independent allocation lifetime is *bounded* by
  * the parent's, but the chunks themselves are separate from the

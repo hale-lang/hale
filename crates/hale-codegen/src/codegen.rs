@@ -1991,6 +1991,41 @@ fn count_self_fields_in_expr(
     }
 }
 
+/// F.32-3 (2026-05-25): compute per-pool chunk-size hint for
+/// loci instantiated on a non-`main` cooperative pool. The C
+/// runtime's `lotus_arena_create_labeled_sized` consumes this
+/// hint to size each locus's first chunk so the pool worker's
+/// rotating resident set stays inside its L2 slice rather than
+/// blowing past it on each rotation.
+///
+/// Formula: `target_L2_per_core (1 MB) / loci_on(P) /
+/// typical_chunks_per_locus (2)` = `524288 / N`, rounded
+/// DOWN to a power of 2, then clamped to `[4096, 65536]`.
+/// The 65536 cap means N <= 8 produces the default 64K (a
+/// no-op call — runtime clamps to the env default anyway).
+/// N=16 → 32K, N=32 → 16K, N=64 → 8K, N=128 → 4K.
+///
+/// `main_cooperative_pools` is the map populated in
+/// `collect_main_placement`: main-locus param field name →
+/// pool name. Values matching `pool_name` are the loci on
+/// that pool.
+fn chunk_hint_for_coop_pool(
+    main_cooperative_pools: &BTreeMap<String, String>,
+    pool_name: &str,
+) -> u64 {
+    let n = main_cooperative_pools
+        .values()
+        .filter(|p| *p == pool_name)
+        .count()
+        .max(1) as u64;
+    let raw = 524_288u64 / n;
+    let mut p2 = 1u64;
+    while p2.checked_mul(2).is_some_and(|q| q <= raw) {
+        p2 *= 2;
+    }
+    p2.clamp(4096, 65536)
+}
+
 fn locus_reads_self_children(l: &LocusDecl) -> bool {
     l.members.iter().any(|m| match m {
         LocusMember::Lifecycle(lc) => block_reads_self_children(&lc.body),
@@ -2775,6 +2810,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function(
             "lotus_arena_create_labeled",
             arena_create_labeled_ty,
+            None,
+        );
+        // F.32-3 (2026-05-25): sized variant. Emitted at the
+        // Fresh-strategy locus instantiation when the locus is
+        // placed on a non-`main` cooperative pool — codegen
+        // computes a per-pool chunk-size hint from the loci-per-
+        // pool count and passes it as the second arg. C side
+        // clamps to [4096, env-default] and rounds; out-of-range
+        // hints fall back to the env default silently.
+        let arena_create_labeled_sized_ty =
+            ptr_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
+        self.module.add_function(
+            "lotus_arena_create_labeled_sized",
+            arena_create_labeled_sized_ty,
             None,
         );
         // m22: chunked-class parent calls this when accepting a
@@ -32252,10 +32301,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // string literal — same lifetime as the
                     // binary, satisfies the residency-entry
                     // pointer-outlives-arena contract.
-                    let arena_create_labeled = self
-                        .module
-                        .get_function("lotus_arena_create_labeled")
-                        .expect("lotus_arena_create_labeled declared");
+                    //
+                    // F.32-3 (2026-05-25): when this locus is
+                    // being instantiated on a non-`main`
+                    // cooperative pool, swap to the `_sized`
+                    // variant and pass a per-pool chunk-size
+                    // hint computed from the loci-per-pool
+                    // count. Keeps the pool worker's resident
+                    // set inside its L2 slice as it rotates
+                    // through subscribers. Main-pool / no-pool-
+                    // override paths keep the existing
+                    // `_labeled` call — the main thread isn't
+                    // rotating through many loci per drain.
                     let label_ptr = self
                         .builder
                         .build_global_string_ptr(
@@ -32264,16 +32321,49 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                         .as_pointer_value();
-                    self.builder
-                        .build_call(
-                            arena_create_labeled,
-                            &[label_ptr.into()],
-                            &format!("{}.arena", locus_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    let coop_pool_for_hint = self
+                        .current_cooperative_pool
+                        .as_deref()
+                        .filter(|p| *p != "main");
+                    let call_site = if let Some(pool_name) =
+                        coop_pool_for_hint
+                    {
+                        let hint = chunk_hint_for_coop_pool(
+                            &self.main_cooperative_pools,
+                            pool_name,
+                        );
+                        let sized_fn = self
+                            .module
+                            .get_function("lotus_arena_create_labeled_sized")
+                            .expect("lotus_arena_create_labeled_sized declared");
+                        let hint_val = self
+                            .context
+                            .i64_type()
+                            .const_int(hint, false);
+                        self.builder
+                            .build_call(
+                                sized_fn,
+                                &[label_ptr.into(), hint_val.into()],
+                                &format!("{}.arena", locus_name),
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    } else {
+                        let arena_create_labeled = self
+                            .module
+                            .get_function("lotus_arena_create_labeled")
+                            .expect("lotus_arena_create_labeled declared");
+                        self.builder
+                            .build_call(
+                                arena_create_labeled,
+                                &[label_ptr.into()],
+                                &format!("{}.arena", locus_name),
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    };
+                    call_site
                         .try_as_basic_value()
                         .left()
-                        .expect("arena_create_labeled returns ptr")
+                        .expect("arena_create returns ptr")
                 }
             }
             AcquireStrategy::Subregion => {
@@ -42242,4 +42332,45 @@ fn infer_accumulator_inner_type(
 /// to override for cross-compilation tests later.
 pub fn host_triple() -> TargetTriple {
     TargetMachine::get_default_triple()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F.32-3: the chunk-hint formula. Pins the table referenced
+    /// in `chunk_hint_for_coop_pool`'s docstring. The runtime
+    /// clamps the hint into the [4096, env-default] window, but
+    /// the codegen-side number is what flows through the IR, so
+    /// regressions in the rounding / clamping logic show up here.
+    #[test]
+    fn chunk_hint_formula_table() {
+        fn pool(n: usize) -> BTreeMap<String, String> {
+            (0..n)
+                .map(|i| (format!("f{}", i), "io".to_string()))
+                .collect()
+        }
+        // N <= 8: hint saturates at the 64K cap.
+        assert_eq!(chunk_hint_for_coop_pool(&pool(1), "io"), 65536);
+        assert_eq!(chunk_hint_for_coop_pool(&pool(2), "io"), 65536);
+        assert_eq!(chunk_hint_for_coop_pool(&pool(4), "io"), 65536);
+        assert_eq!(chunk_hint_for_coop_pool(&pool(8), "io"), 65536);
+        // N >= 16: hint drops by powers of 2.
+        assert_eq!(chunk_hint_for_coop_pool(&pool(16), "io"), 32768);
+        assert_eq!(chunk_hint_for_coop_pool(&pool(32), "io"), 16384);
+        assert_eq!(chunk_hint_for_coop_pool(&pool(64), "io"), 8192);
+        assert_eq!(chunk_hint_for_coop_pool(&pool(128), "io"), 4096);
+        // N very large: hint floors at the 4K bottom of the clamp.
+        assert_eq!(chunk_hint_for_coop_pool(&pool(1024), "io"), 4096);
+        // Unknown pool name: count is 0 → max(1) → behaves like N=1.
+        assert_eq!(chunk_hint_for_coop_pool(&pool(4), "missing"), 65536);
+        // Pool-name filter: only matching values count.
+        let mut mixed: BTreeMap<String, String> = BTreeMap::new();
+        mixed.insert("a".to_string(), "io".to_string());
+        mixed.insert("b".to_string(), "compute".to_string());
+        mixed.insert("c".to_string(), "io".to_string());
+        // io has 2; compute has 1 — both clamp to 64K.
+        assert_eq!(chunk_hint_for_coop_pool(&mixed, "io"), 65536);
+        assert_eq!(chunk_hint_for_coop_pool(&mixed, "compute"), 65536);
+    }
 }
