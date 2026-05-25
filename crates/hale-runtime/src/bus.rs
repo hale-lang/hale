@@ -426,6 +426,7 @@ mod tests {
             generics: Vec::new(),
             annotations: Vec::new(),
             form: None,
+            locality: None,
             members: Vec::new(),
             span: hale_syntax::Span {
                 start: hale_syntax::Pos(0),
