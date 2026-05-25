@@ -221,3 +221,41 @@ fn is_flat_shapeable_inner(
         | Ty::Unknown => false,
     }
 }
+
+/// Phase-3 routing-key eligibility (2026-05-25). A topic's
+/// `keyed_by FIELD` field must resolve to an int-shaped scalar
+/// the bus router can compare in one or two i64 ops — see
+/// `spec/semantics.md` § "Phase 3: routing keys" for the table.
+/// Accepted: `Int`, `Decimal`, `Time`, `Duration`, `Bool`, and
+/// no-payload `enum`. Everything else (String / Bytes / Array /
+/// nested struct / has-payload enum / fallible / function /
+/// unknown) is rejected.
+pub fn is_key_eligible(ty: &Ty, scope: &crate::resolve::TopScope) -> bool {
+    match ty {
+        Ty::Prim(p) => matches!(
+            p,
+            PrimType::Int
+                | PrimType::Decimal
+                | PrimType::Time
+                | PrimType::Duration
+                | PrimType::Bool
+        ),
+        Ty::Named(name) => match scope.lookup(name) {
+            Some(crate::symbol::TopSymbol::Type(info)) => match &info.kind {
+                crate::symbol::TypeKind::Alias(inner) => {
+                    is_key_eligible(inner, scope)
+                }
+                crate::symbol::TypeKind::Enum(variants) => {
+                    // No-payload enum only — every variant must
+                    // be a bare discriminant (no associated
+                    // fields). Has-payload enums lower to a
+                    // pointer + tag union; not int-shaped.
+                    variants.iter().all(|v| v.fields.is_empty())
+                }
+                _ => false,
+            },
+            _ => false,
+        },
+        _ => false,
+    }
+}

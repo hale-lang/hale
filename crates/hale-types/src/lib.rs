@@ -2761,4 +2761,150 @@ mod tests {
             form.args
         );
     }
+
+    // === Phase 3 routing-key static checks ===============
+
+    #[test]
+    fn keyed_by_field_must_exist_on_payload() {
+        let src = r#"
+            type T { n: Int; }
+            topic K { payload: T; subject: "k"; keyed_by missing; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| {
+                d.message.contains("`keyed_by`")
+                    && d.message.contains("missing")
+                    && d.message.contains("does not exist")
+            }),
+            "expected missing-field diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn keyed_by_field_must_be_key_eligible() {
+        let src = r#"
+            type T { name: String; }
+            topic K { payload: T; subject: "k"; keyed_by name; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| {
+                d.message.contains("int-shaped")
+                    || d.message.contains("routing-key fields")
+            }),
+            "expected key-eligibility diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn keyed_by_accepts_int_decimal_time_duration_bool() {
+        let src = r#"
+            type T {
+                a: Int;
+                b: Decimal;
+                c: Time;
+                d: Duration;
+                e: Bool;
+            }
+            topic A { payload: T; subject: "a"; keyed_by a; }
+            topic B { payload: T; subject: "b"; keyed_by b; }
+            topic C { payload: T; subject: "c"; keyed_by c; }
+            topic D { payload: T; subject: "d"; keyed_by d; }
+            topic E { payload: T; subject: "e"; keyed_by e; }
+        "#;
+        let diags = check(src);
+        assert!(
+            !diags.iter().any(|d| {
+                d.message.contains("routing-key fields")
+                    || d.message.contains("does not exist")
+            }),
+            "expected no key-eligibility diag for valid types; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn on_unmatched_fail_pending_impl_diag() {
+        let src = r#"
+            type T { id: Int; }
+            topic K {
+                payload: T; subject: "k"; keyed_by id;
+                on_unmatched: fail;
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| {
+                d.message.contains("on_unmatched: fail")
+                    && d.message.contains("not yet implemented")
+            }),
+            "expected fail-pending-impl diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn on_unmatched_fallback_pending_impl_diag() {
+        let src = r#"
+            type T { id: Int; }
+            topic K {
+                payload: T; subject: "k"; keyed_by id;
+                on_unmatched: fallback;
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| {
+                d.message.contains("on_unmatched: fallback")
+                    && d.message.contains("not yet implemented")
+            }),
+            "expected fallback-pending-impl diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn on_unmatched_without_keyed_by_rejected() {
+        let src = r#"
+            type T { n: Int; }
+            topic K {
+                payload: T; subject: "k";
+                on_unmatched: swallow;
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| {
+                d.message.contains("on_unmatched")
+                    && d.message.contains("no `keyed_by`")
+            }),
+            "expected on_unmatched-without-keyed_by diag, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn keyed_by_with_swallow_is_clean() {
+        let src = r#"
+            type T { id: Int; }
+            topic K {
+                payload: T; subject: "k"; keyed_by id;
+                on_unmatched: swallow;
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            !diags.iter().any(|d| {
+                d.message.contains("not yet implemented")
+                    || d.message.contains("does not exist")
+                    || d.message.contains("routing-key fields")
+                    || d.message.contains("no `keyed_by`")
+            }),
+            "expected no Phase-3 diags for valid swallow topic; got: {:?}",
+            diags
+        );
+    }
 }

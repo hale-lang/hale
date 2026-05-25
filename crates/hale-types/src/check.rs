@@ -27,7 +27,7 @@ use hale_syntax::{Diag, Span};
 
 use crate::resolve::{resolve_type_expr, TopScope};
 use crate::symbol::*;
-use crate::ty::{is_flat_shapeable, Ty};
+use crate::ty::{is_flat_shapeable, is_key_eligible, Ty};
 
 fn method_to_fn_ty(m: &MethodInfo) -> Ty {
     Ty::Function {
@@ -1526,12 +1526,119 @@ impl<'a> Checker<'a> {
                 // at the use site (call expression where the
                 // expected type is an interface).
             }
-            TopDecl::Topic(_) => {
-                // Topic declarations carry only `payload: T;`. The
+            TopDecl::Topic(t) => {
+                // Topic declarations carry `payload: T; subject:
+                // "...";` and now (Phase 3, 2026-05-25) optional
+                // `keyed_by FIELD;` + `on_unmatched: V;`. The
                 // resolver validated the payload type expression
-                // already; per-use-site checks (handler-sig match,
-                // send-payload match) happen in the bus blocks and
-                // send sites that reference the topic.
+                // already; per-use-site handler/send checks happen
+                // at bus-block and send sites that reference the
+                // topic. Below: Phase-3 specific static checks.
+
+                // (5) / (6): on_unmatched: fail | fallback land in
+                // a follow-up impl slice. Today's impl ships
+                // `swallow` only — match the spec surface but
+                // diagnose pending support so users know what's
+                // wired vs. what's still on the to-do.
+                match t.on_unmatched {
+                    Some(UnmatchedPolicy::Fail) => {
+                        self.diags.push(Diag::ty(
+                            t.span,
+                            "`on_unmatched: fail` is in the v0.1 \
+                             spec but not yet implemented; the \
+                             impl ships `swallow` first",
+                        ));
+                    }
+                    Some(UnmatchedPolicy::Fallback) => {
+                        self.diags.push(Diag::ty(
+                            t.span,
+                            "`on_unmatched: fallback` is in the \
+                             v0.1 spec but not yet implemented; \
+                             the impl ships `swallow` first",
+                        ));
+                    }
+                    Some(UnmatchedPolicy::Swallow) | None => {}
+                }
+
+                // (1) keyed_by field must exist on the payload
+                // type and resolve to an int-shaped scalar
+                // (Int, Decimal, Time, Duration, Bool, or
+                // no-payload enum). For payloads that don't
+                // resolve to a user-declared struct (Ty::Unknown
+                // / external type / primitive), skip the check —
+                // the resolver will already have flagged the
+                // payload as unresolvable.
+                if let Some(field_ident) = &t.keyed_by {
+                    let payload_ty_name = match &t.payload {
+                        TypeExpr::Named { path, .. }
+                            if path.segments.len() == 1 =>
+                        {
+                            Some(path.segments[0].name.clone())
+                        }
+                        _ => None,
+                    };
+                    let mut found_field_ty: Option<Ty> = None;
+                    if let Some(name) = &payload_ty_name {
+                        if let Some(TopSymbol::Type(info)) =
+                            self.top.lookup(name)
+                        {
+                            if let TypeKind::Struct(fields) = &info.kind {
+                                if let Some(f) = fields
+                                    .iter()
+                                    .find(|f| f.name == field_ident.name)
+                                {
+                                    found_field_ty = Some(f.ty.clone());
+                                }
+                            }
+                        }
+                    }
+                    if payload_ty_name.is_some() && found_field_ty.is_none() {
+                        self.diags.push(Diag::ty(
+                            field_ident.span,
+                            format!(
+                                "topic `{}`'s `keyed_by` references \
+                                 field `{}`, which does not exist on \
+                                 payload type `{}`",
+                                t.name.name,
+                                field_ident.name,
+                                payload_ty_name.as_deref().unwrap_or("?"),
+                            ),
+                        ));
+                    }
+                    if let Some(fty) = found_field_ty {
+                        if !is_key_eligible(&fty, &self.top) {
+                            self.diags.push(Diag::ty(
+                                field_ident.span,
+                                format!(
+                                    "topic `{}`'s `keyed_by` field \
+                                     `{}` has type `{}`; routing-key \
+                                     fields must be int-shaped (Int, \
+                                     Decimal, Time, Duration, Bool, \
+                                     or a no-payload enum)",
+                                    t.name.name,
+                                    field_ident.name,
+                                    fty.display(),
+                                ),
+                            ));
+                        }
+                    }
+                }
+
+                // (also covers the case where) `on_unmatched` was
+                // specified on a topic that doesn't declare
+                // `keyed_by`: it has no meaning and is rejected
+                // (catches typos / leftover from earlier drafts).
+                if t.on_unmatched.is_some() && t.keyed_by.is_none() {
+                    self.diags.push(Diag::ty(
+                        t.span,
+                        format!(
+                            "topic `{}` sets `on_unmatched` but has \
+                             no `keyed_by` — `on_unmatched` is only \
+                             meaningful on keyed topics",
+                            t.name.name
+                        ),
+                    ));
+                }
             }
             TopDecl::Target(_) => {
                 // FUv0.8.2 #7 (2026-05-25): target capability
