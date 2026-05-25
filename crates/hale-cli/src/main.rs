@@ -1042,6 +1042,25 @@ fn run_build(target: &Path) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // F.32-2 (2026-05-25): operator-facing per-locus working-set
+    // report. Opted in via `hale build . --locality-report`;
+    // emits a textual table on stderr listing each user-declared
+    // locus's estimated bytes, the smallest cache tier it fits
+    // in (L1 ≤32K, L2 ≤512K, L3 ≤8M), and a struct/capacity/
+    // children byte decomposition. Estimator is approximate
+    // (alignment padding elided; method scratch heuristic-only)
+    // — see `hale_types::working_set` module docs. Build itself
+    // proceeds normally; this is report-only in v0.1, no
+    // `--strict` gate yet.
+    if std::env::args().any(|a| a == "--locality-report") {
+        let map =
+            hale_types::working_set::compute_program_working_set(
+                &program.items,
+            );
+        let report =
+            hale_types::working_set::render_locality_report(&map);
+        eprint!("{}", report);
+    }
     // Stage-2 FFI: append the FFI surface declared by each
     // imported lib's hale.toml [ffi] section. CLI flags from
     // parse_build_options come first (preserves the manual
@@ -1161,6 +1180,13 @@ fn parse_build_options() -> Result<hale_codegen::BuildOptions, String> {
                 })?;
                 opts.csrc_files.push(std::path::PathBuf::from(v));
                 i += 2;
+            }
+            // F.32-2 (2026-05-25): operator-facing per-locus
+            // working-set report. Consumed in main.rs before
+            // codegen; recognized here so parse_build_options
+            // doesn't error out on an unknown flag.
+            "--locality-report" => {
+                i += 1;
             }
             other => {
                 return Err(format!(

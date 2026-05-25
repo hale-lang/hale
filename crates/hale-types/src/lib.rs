@@ -25,6 +25,7 @@ pub mod check;
 pub mod resolve;
 pub mod symbol;
 pub mod ty;
+pub mod working_set;
 
 /// m94: subject wildcard matching used by the type checker
 /// (publish-side authorization for computed subjects) and
