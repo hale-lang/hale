@@ -11555,7 +11555,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // copy is needed — the sret stores write
                     // primitive bytes directly into caller-owned
                     // slots.
-                    let ret_codegen_ty: Option<CodegenTy> = match &fd.ret {
+                    // A2 (G2): normalize `-> ()` (empty tuple) to
+                    // Unit — same shape `declare_user_fn` uses. The
+                    // tuple-type lowerer rejects 0-element tuples;
+                    // treating `-> ()` as "no return type" matches
+                    // the downstream sret-slot logic that gates on
+                    // `ret_codegen_ty.is_some()`.
+                    let ret_te_normalized: Option<&TypeExpr> = match &fd.ret {
+                        Some(TypeExpr::Tuple(parts, _)) if parts.is_empty() => None,
+                        other => other.as_ref(),
+                    };
+                    let ret_codegen_ty: Option<CodegenTy> = match ret_te_normalized {
                         None => None,
                         Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
                     };
@@ -12881,7 +12891,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .expect("self_ptr param")
             .into_pointer_value();
         self.current_fn = Some(func);
-        let ret_ty: Option<CodegenTy> = match &fd.ret {
+        // A2 (G2): normalize `-> ()` to None — same shape the
+        // declare path uses for fallible signatures.
+        let ret_te_normalized: Option<&TypeExpr> = match &fd.ret {
+            Some(TypeExpr::Tuple(parts, _)) if parts.is_empty() => None,
+            other => other.as_ref(),
+        };
+        let ret_ty: Option<CodegenTy> = match ret_te_normalized {
             None => None,
             Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
         };
@@ -18984,7 +19000,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
 
         let payload_ty = self.type_expr_to_codegen_ty(payload_te)?;
-        let success_ty: Option<CodegenTy> = match &fd.ret {
+        // A2 (G2): normalize `-> ()` to None — same Unit-success
+        // shape the declare and body paths use.
+        let ret_te_normalized: Option<&TypeExpr> = match &fd.ret {
+            Some(TypeExpr::Tuple(parts, _)) if parts.is_empty() => None,
+            other => other.as_ref(),
+        };
+        let success_ty: Option<CodegenTy> = match ret_te_normalized {
             None => None,
             Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
         };
