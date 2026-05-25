@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdatomic.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <malloc.h>
 #include <string.h>
@@ -4047,6 +4048,17 @@ typedef struct lotus_bus_entry {
      * still). Mutually exclusive with mailbox by construction;
      * dispatch checks mailbox first, then coop_pool. */
     lotus_coop_pool_t    *coop_pool;
+    /* Phase 3 (2026-05-25): routing-key filter. See
+     * `spec/semantics.md` § "Phase 3: routing keys". 0 = no
+     * filter (today's default; behaves as before); 1 = specific-
+     * key filter, only fire when published key equals (key_lo,
+     * key_hi); 2 = catch-unmatched fallback (reserved for
+     * v0.2 of the impl when the fallback policy lands). u128 key
+     * stored uniformly as two u64 halves; narrower scalar types
+     * zero-extend at register time. */
+    uint8_t               key_filter_kind;
+    uint64_t              key_lo;
+    uint64_t              key_hi;
 } lotus_bus_entry_t;
 
 static lotus_bus_entry_t *g_bus_entries = NULL;
@@ -4160,6 +4172,17 @@ void lotus_bus_register_with_pool(const char *subject,
                                   lotus_deserialize_fn deserialize,
                                   lotus_coop_pool_t *coop_pool);
 
+/* Phase 3 forward decl (2026-05-25). */
+void lotus_bus_register_keyed(const char *subject,
+                              void *self_ptr,
+                              void *handler,
+                              lotus_mailbox_t *mailbox,
+                              lotus_deserialize_fn deserialize,
+                              lotus_coop_pool_t *coop_pool,
+                              uint8_t key_filter_kind,
+                              uint64_t key_lo,
+                              uint64_t key_hi);
+
 void lotus_bus_register(const char *subject,
                         void *self_ptr,
                         void *handler,
@@ -4181,6 +4204,31 @@ void lotus_bus_register_with_pool(const char *subject,
                                   lotus_mailbox_t *mailbox,
                                   lotus_deserialize_fn deserialize,
                                   lotus_coop_pool_t *coop_pool) {
+    lotus_bus_register_keyed(subject, self_ptr, handler, mailbox,
+                              deserialize, coop_pool,
+                              /* key_filter_kind */ 0,
+                              /* key_lo */ 0,
+                              /* key_hi */ 0);
+}
+
+/* Phase 3 (2026-05-25, spec/semantics.md § "Phase 3: routing
+ * keys"). Codegen-side: for any locus-bus `subscribe TOPIC ...
+ * where key == EXPR;`, the locus's birth lifecycle calls this
+ * with the evaluated EXPR value (zero-extended to u128) and
+ * filter kind 1. Unkeyed subscribes still route through
+ * lotus_bus_register_with_pool, which delegates here with
+ * key_filter_kind = 0 (no filter, receive every message on
+ * the subject — today's pre-Phase-3 behavior). The dispatch
+ * walk in lotus_bus_local_dispatch_keyed honors the filter. */
+void lotus_bus_register_keyed(const char *subject,
+                              void *self_ptr,
+                              void *handler,
+                              lotus_mailbox_t *mailbox,
+                              lotus_deserialize_fn deserialize,
+                              lotus_coop_pool_t *coop_pool,
+                              uint8_t key_filter_kind,
+                              uint64_t key_lo,
+                              uint64_t key_hi) {
     if (g_bus_count == g_bus_cap) {
         size_t new_cap = g_bus_cap == 0
             ? LOTUS_BUS_ROUTER_INITIAL_CAP
@@ -4198,6 +4246,9 @@ void lotus_bus_register_with_pool(const char *subject,
     e->mailbox     = mailbox;
     e->deserialize = deserialize;
     e->coop_pool   = coop_pool;
+    e->key_filter_kind = key_filter_kind;
+    e->key_lo      = key_lo;
+    e->key_hi      = key_hi;
 }
 
 /* Dispatch a published message to every subscriber of `subject`.
@@ -4222,6 +4273,13 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
          * wildcard subject (e.g. "log.**"). The fast path —
          * pattern with no '**' — costs one strcmp. */
         if (!lotus_subject_match(e->subject, subject)) continue;
+        /* Phase 3 (2026-05-25): a subscriber with a specific-key
+         * filter (kind=1) silently skips the unkeyed-publish path.
+         * Unkeyed publishes should only land on receive-all
+         * subscribers (kind=0). Otherwise an unkeyed `<- value`
+         * would deliver to filtered subscribers regardless of the
+         * filter — bypassing the routing-key contract. */
+        if (e->key_filter_kind != 0) continue;
         if (e->mailbox) {
             lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
                                payload, payload_size);
@@ -4235,6 +4293,108 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
         } else if (queue) {
             lotus_bus_queue_enqueue(queue, e->handler, e->self_ptr,
                                     payload, payload_size);
+        }
+    }
+}
+
+/* Phase 3 (2026-05-25): the keyed-dispatch core. Walks the same
+ * g_bus_entries array but applies the routing-key filter at each
+ * entry: specific-key subscribers (kind=1) fire only when the
+ * stored (key_lo, key_hi) matches the published key; receive-all
+ * subscribers (kind=0) fire on every keyed publish too (an
+ * "audit-all" sink can subscribe without a key filter and still
+ * see keyed traffic).
+ *
+ * v0.1 ships the swallow policy: when no specific-key match
+ * fires, the message is dropped silently. The `fail` and
+ * `fallback` policies (typecheck-rejected at v0.1 of the impl)
+ * will land in a follow-up — the tri-state structure of
+ * key_filter_kind already reserves kind=2 for catch-unmatched
+ * fallback subscribers when that policy ships.
+ *
+ * Set `LOTUS_BUS_LOG_UNMATCHED=1` in the env for development-
+ * time visibility into no-match keyed publishes. The diag walks
+ * once more if no specific match fired and reports subscriber
+ * counts on stderr. Off by default. */
+static int lotus_bus_log_unmatched_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *s = getenv("LOTUS_BUS_LOG_UNMATCHED");
+        cached = (s && s[0] == '1') ? 1 : 0;
+    }
+    return cached;
+}
+
+void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
+                                     const char *subject,
+                                     const void *payload,
+                                     size_t payload_size,
+                                     uint64_t key_lo,
+                                     uint64_t key_hi) {
+    if (!subject) return;
+    int matched_specific = 0;
+    size_t specific_subs_on_subject = 0;
+    size_t unkeyed_subs_on_subject = 0;
+    for (size_t i = 0; i < g_bus_count; i++) {
+        lotus_bus_entry_t *e = &g_bus_entries[i];
+        if (!e->subject) continue;
+        if (!lotus_subject_match(e->subject, subject)) continue;
+        if (e->key_filter_kind == 1) {
+            specific_subs_on_subject++;
+            if (e->key_lo != key_lo || e->key_hi != key_hi) continue;
+            matched_specific = 1;
+        } else if (e->key_filter_kind == 0) {
+            unkeyed_subs_on_subject++;
+        } else {
+            /* kind == 2: catch-unmatched fallback subscriber.
+             * Reserved for v0.2 of the impl; today's typecheck
+             * rejects `on_unmatched: fallback` so kind=2 should
+             * never appear at v0.1. Skip in the specific-match
+             * pass; the fallback pass below would dispatch it. */
+            continue;
+        }
+        if (e->mailbox) {
+            lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
+                               payload, payload_size);
+        } else if (e->coop_pool) {
+            lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
+                                 payload, payload_size);
+        } else if (queue) {
+            lotus_bus_queue_enqueue(queue, e->handler, e->self_ptr,
+                                    payload, payload_size);
+        }
+    }
+    /* Phase 3 v0.2 hook: when no specific-key match fired AND
+     * any fallback subscribers exist for this subject, fire
+     * them. The typecheck currently rejects `on_unmatched:
+     * fallback` at v0.1 so kind=2 never appears, but the
+     * dispatch shape is here for the v0.2 wiring. */
+    if (!matched_specific) {
+        for (size_t i = 0; i < g_bus_count; i++) {
+            lotus_bus_entry_t *e = &g_bus_entries[i];
+            if (!e->subject) continue;
+            if (!lotus_subject_match(e->subject, subject)) continue;
+            if (e->key_filter_kind != 2) continue;
+            if (e->mailbox) {
+                lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
+                                   payload, payload_size);
+            } else if (e->coop_pool) {
+                lotus_coop_pool_post(e->coop_pool, e->handler,
+                                     e->self_ptr, payload, payload_size);
+            } else if (queue) {
+                lotus_bus_queue_enqueue(queue, e->handler, e->self_ptr,
+                                        payload, payload_size);
+            }
+        }
+        if (lotus_bus_log_unmatched_enabled()) {
+            fprintf(stderr,
+                    "[bus] subject=\"%s\" key_lo=%" PRIu64
+                    " key_hi=%" PRIu64
+                    " no_specific_match (%zu specific subs on subject; "
+                    "%zu unkeyed)\n",
+                    subject, key_lo, key_hi,
+                    specific_subs_on_subject,
+                    unkeyed_subs_on_subject);
         }
     }
 }
@@ -4292,6 +4452,54 @@ typedef ssize_t (*lotus_serialize_fn)(const void *src,
  * down in this file. `lotus_bus_dispatch` checks this to skip
  * the serialize+fanout work when no remote subscribers exist. */
 static inline int lotus_bus_has_remote_entries(void);
+
+/* Phase 3 (2026-05-25): keyed-publish entry point. Codegen
+ * routes `Topic <- value` here when the topic declares
+ * `keyed_by FIELD` (key already extracted from value at the
+ * publish call site by GEP-and-load). Mirrors
+ * `lotus_bus_dispatch`'s wire-then-local fanout shape; the only
+ * extra cost is the runtime per-entry (key_lo, key_hi) compare
+ * in the local-dispatch walk. v0.1 only fanouts to intra-
+ * process subscribers; remote subscribers receive an unkeyed
+ * cross-process publish and filter on their own side after
+ * deserialize. */
+void lotus_bus_dispatch_wire_keyed(const char *subject,
+                                    const void *wire_bytes,
+                                    size_t wire_size,
+                                    uint64_t key_lo,
+                                    uint64_t key_hi);
+
+void lotus_bus_dispatch_keyed(lotus_bus_queue_t *queue,
+                              const char *subject,
+                              const void *struct_payload,
+                              size_t struct_size,
+                              lotus_serialize_fn serialize_fn,
+                              uint64_t key_lo,
+                              uint64_t key_hi) {
+    if (serialize_fn) {
+        char wire_buf[LOTUS_PAYLOAD_MAX];
+        ssize_t wire_size = serialize_fn(struct_payload, wire_buf,
+                                         sizeof(wire_buf));
+        if (wire_size > 0) {
+            lotus_bus_dispatch_wire_keyed(
+                subject, wire_buf, (size_t)wire_size, key_lo, key_hi);
+            if (lotus_bus_has_remote_entries()) {
+                /* Remote fanout: v0.1 sends the wire bytes
+                 * unkeyed to remote subscribers; remote-side bus
+                 * routers filter on their end (route metadata is
+                 * carried in the payload's keyed_by field, so
+                 * the remote bus has what it needs to dispatch). */
+                lotus_bus_remote_fanout(subject, wire_buf,
+                                         (size_t)wire_size);
+            }
+            return;
+        }
+        return;
+    }
+    /* No serialize codec: dispatch verbatim with key filter. */
+    lotus_bus_local_dispatch_keyed(
+        queue, subject, struct_payload, struct_size, key_lo, key_hi);
+}
 
 void lotus_bus_dispatch(lotus_bus_queue_t *queue,
                         const char *subject,
@@ -7344,6 +7552,96 @@ void lotus_bus_remote_fanout(const char *subject,
  * here because the function body references g_bus_queue_for_remote
  * (declared just above) and the per-subject deserialize_fn from
  * g_bus_entries. */
+/* Phase 3 keyed variant (2026-05-25). Mirrors
+ * lotus_bus_dispatch_wire's per-subscriber-arena routing but
+ * applies the routing-key filter at each entry. Same Task-9
+ * arena-correctness story: deserialize INTO each subscriber's
+ * own __arena via the TLS-routed allocator, so payload pointers
+ * are bounded by the subscriber's lifecycle.
+ *
+ * v0.1: kind=1 entries fire on key match; kind=0 entries fire
+ * on every keyed publish (audit-all sinks); kind=2 (catch-
+ * unmatched fallback) is reserved for v0.2 and dispatched in
+ * the no-specific-match pass at the end. */
+void lotus_bus_dispatch_wire_keyed(const char *subject,
+                                    const void *wire_bytes,
+                                    size_t wire_size,
+                                    uint64_t key_lo,
+                                    uint64_t key_hi) {
+    if (!subject || !wire_bytes || wire_size == 0) return;
+    char struct_buf[LOTUS_PAYLOAD_MAX];
+    lotus_arena_t *prev_tls = lotus_current_caller_arena;
+    int matched_specific = 0;
+    size_t specific_subs_on_subject = 0;
+    size_t unkeyed_subs_on_subject = 0;
+    for (size_t i = 0; i < g_bus_count; i++) {
+        lotus_bus_entry_t *e = &g_bus_entries[i];
+        if (!e->subject) continue;
+        if (!lotus_subject_match(e->subject, subject)) continue;
+        if (!e->deserialize) continue;
+        if (e->key_filter_kind == 1) {
+            specific_subs_on_subject++;
+            if (e->key_lo != key_lo || e->key_hi != key_hi) continue;
+            matched_specific = 1;
+        } else if (e->key_filter_kind == 0) {
+            unkeyed_subs_on_subject++;
+        } else {
+            /* kind == 2: skip in the specific pass. */
+            continue;
+        }
+        lotus_arena_t *sub_arena =
+            e->self_ptr ? *(lotus_arena_t **)e->self_ptr : NULL;
+        lotus_current_caller_arena = sub_arena;
+        ssize_t struct_size = e->deserialize(
+            wire_bytes, wire_size, struct_buf, sizeof(struct_buf));
+        if (struct_size <= 0) continue;
+        if (e->mailbox) {
+            lotus_mailbox_post(
+                e->mailbox, e->handler, e->self_ptr,
+                struct_buf, (size_t)struct_size);
+        } else if (g_bus_queue_for_remote) {
+            lotus_bus_queue_enqueue(
+                g_bus_queue_for_remote, e->handler, e->self_ptr,
+                struct_buf, (size_t)struct_size);
+        }
+    }
+    if (!matched_specific) {
+        for (size_t i = 0; i < g_bus_count; i++) {
+            lotus_bus_entry_t *e = &g_bus_entries[i];
+            if (!e->subject) continue;
+            if (!lotus_subject_match(e->subject, subject)) continue;
+            if (!e->deserialize) continue;
+            if (e->key_filter_kind != 2) continue;
+            lotus_arena_t *sub_arena =
+                e->self_ptr ? *(lotus_arena_t **)e->self_ptr : NULL;
+            lotus_current_caller_arena = sub_arena;
+            ssize_t struct_size = e->deserialize(
+                wire_bytes, wire_size, struct_buf, sizeof(struct_buf));
+            if (struct_size <= 0) continue;
+            if (e->mailbox) {
+                lotus_mailbox_post(
+                    e->mailbox, e->handler, e->self_ptr,
+                    struct_buf, (size_t)struct_size);
+            } else if (g_bus_queue_for_remote) {
+                lotus_bus_queue_enqueue(
+                    g_bus_queue_for_remote, e->handler, e->self_ptr,
+                    struct_buf, (size_t)struct_size);
+            }
+        }
+        if (lotus_bus_log_unmatched_enabled()) {
+            fprintf(stderr,
+                    "[bus] subject=\"%s\" key_lo=%" PRIu64
+                    " key_hi=%" PRIu64
+                    " no_specific_match (%zu specific subs on subject; "
+                    "%zu unkeyed)\n",
+                    subject, key_lo, key_hi,
+                    specific_subs_on_subject,
+                    unkeyed_subs_on_subject);
+        }
+    }
+    lotus_current_caller_arena = prev_tls;
+}
+
 void lotus_bus_dispatch_wire(const char *subject,
                              const void *wire_bytes,
                              size_t wire_size) {

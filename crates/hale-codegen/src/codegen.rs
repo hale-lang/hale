@@ -3623,6 +3623,55 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             bus_register_with_pool_ty,
             None,
         );
+        // Phase 3 (2026-05-25, spec/semantics.md § "Phase 3:
+        // routing keys"). Register a subscriber with a routing-
+        // key filter. Same signature as
+        // lotus_bus_register_with_pool plus three trailing args:
+        //   key_filter_kind: i8 (0 = no filter, 1 = specific key,
+        //                        2 = catch-unmatched fallback)
+        //   key_lo: i64
+        //   key_hi: i64
+        // declare void @lotus_bus_register_keyed(ptr, ptr, ptr, ptr,
+        //     ptr, ptr, i8, i64, i64)
+        let i8_t = self.context.i8_type();
+        let bus_register_keyed_ty = void_t.fn_type(
+            &[
+                ptr_t.into(),     // subject
+                ptr_t.into(),     // self_ptr
+                ptr_t.into(),     // handler
+                ptr_t.into(),     // mailbox
+                ptr_t.into(),     // deserialize
+                ptr_t.into(),     // coop_pool
+                i8_t.into(),      // key_filter_kind
+                i64_t.into(),     // key_lo
+                i64_t.into(),     // key_hi
+            ],
+            false,
+        );
+        self.module.add_function(
+            "lotus_bus_register_keyed",
+            bus_register_keyed_ty,
+            None,
+        );
+        // Phase 3 keyed dispatch entry point. Same first 5 args as
+        // lotus_bus_dispatch plus (key_lo, key_hi).
+        let bus_dispatch_keyed_ty = void_t.fn_type(
+            &[
+                ptr_t.into(),     // queue
+                ptr_t.into(),     // subject
+                ptr_t.into(),     // struct_payload
+                i64_t.into(),     // struct_size
+                ptr_t.into(),     // serialize_fn
+                i64_t.into(),     // key_lo
+                i64_t.into(),     // key_hi
+            ],
+            false,
+        );
+        self.module.add_function(
+            "lotus_bus_dispatch_keyed",
+            bus_dispatch_keyed_ty,
+            None,
+        );
         // F.31 Phase 4: cooperative-pool worker surface.
         // declare ptr  @lotus_coop_pool_register(ptr name)
         // declare ptr  @lotus_coop_pool_lookup(ptr name)
