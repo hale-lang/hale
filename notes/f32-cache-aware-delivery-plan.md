@@ -662,18 +662,65 @@ detect regressions.
 
 ## F.32-1b — Locus struct field reordering by access frequency
 
-**Status (2026-05-24): deferred.** The regression-risk surface
-is broad — every composite struct-literal initialization site
-(`MyLocus { f1: ..., f2: ..., f3: ... }`) and every codegen
-path that GEPs by field name through `info.fields` needs to
-keep working post-reorder. The BTreeMap-by-name lookup
-suggests this is safe in principle, but validation requires
-running the full codegen test sweep against several
-reordered fixtures. Defer until F.32-2 ships first (its
-working-set analysis pass establishes the field-access-
-counting infrastructure this would build on).
+**Status (2026-05-25): SHIPPED.**
 
-The design below is preserved for the eventual implementer.
+The shipped implementation walks each locus's method bodies
+(lifecycle / mode / fn / failure handler) once at codegen
+time, counting LEXICAL `self.<field>` occurrences. Then in
+`declare_locus_struct` the user-param portion of `llvm_field_tys`
+is sorted by (access_count desc, declaration_order asc) and
+the `fields` lookup map's indices are updated to match.
+
+**What stays put:**
+- Synthetic `__arena` at idx 0 (fixed offset; bus dispatch
+  relies on it for cross-locus arena routing).
+- Capacity slot fields (their indices are stored in
+  `CapacitySlotLayout.struct_field_idx` and used directly
+  during instantiation).
+- All synthetic flags (`__restart_count`, `__quarantined`,
+  `__drain_requested`, `__slot_borrowed_mask`,
+  `__locus_ref_owned_mask`, `__recpool` / `_release_pool` /
+  `_release_kind`, `__parent_self`, `__parent_on_failure`,
+  `__duration_last_fire_*`, `__mailbox`).
+
+Only the [1, user_fields_end) slice of `llvm_field_tys` is
+permuted. `defaults` Vec stays in declaration order (defaults
+evaluate in source order at instantiation, independent of
+struct layout). `fields` BTreeMap iterates by name regardless.
+
+**What's NOT in v1:**
+- Loop-weighted access counts. A `self.x` inside `while ...`
+  counts as 1 occurrence, not N runtime invocations. Hot-
+  loop weighting is a follow-up (probably worth N=10×
+  multiplier per nesting level).
+- `@layout(declaration_order)` opt-out annotation. The
+  reorder is unconditional; if a workload needs ABI-stable
+  layout (e.g., cross-binary serialization), add the
+  annotation surface then.
+- Cross-binary ABI guarantees. Loci aren't serialized
+  cross-process today (the bus serializes `type` payloads
+  per-field, not whole loci), so the reorder is purely
+  local to the binary's codegen.
+
+**Tests:**
+- `crates/hale-codegen/tests/locus_field_reorder.rs`
+  covers value-read, field-override-at-instantiation, and
+  write-then-read round-trip post-reorder. All pass.
+- The broader hale-codegen suite was sampled (build_hello,
+  locus_field_cascade, closed_world_nested_struct,
+  cross_locus_from_method, coop_pool_basic,
+  form_hashmap_serialized, form_hashmap_lockfree) — 61
+  tests, all pass. CI runs the full sweep.
+
+**Bench impact:** the reorder is a per-locus optimization;
+no microbench specifically measures it. The win shows up
+indirectly in any bench where the substrate touches `self`
+many times per method call (most of them). Sustained
+benefit on the canopy of a deep locus tower where
+high-fanout cache-line pressure compounds.
+
+The design below is preserved for the eventual loop-
+weighted / annotation-aware follow-up.
 
 ---
 

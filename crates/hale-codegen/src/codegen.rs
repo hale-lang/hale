@@ -1789,6 +1789,158 @@ fn locus_arena_elidable(l: &LocusDecl) -> bool {
 /// Conservative on the "yes" side: any `self.children` field
 /// reference anywhere counts. Only loci whose entire method
 /// surface is `self.children`-free elide the array.
+/// F.32-1b (2026-05-25): walk every method body in a locus and
+/// count `self.<field>` accesses per field name. Used by
+/// `declare_locus_struct` to reorder user-declared param fields
+/// by access frequency — high-access fields move to the front
+/// of the struct so they land on the first cache line of `self`,
+/// reducing per-method L1 miss rate.
+///
+/// Counts LEXICAL occurrences, not runtime invocations: a
+/// `self.x` inside `while i < n { ... }` counts as 1, not N.
+/// Hot-loop weighting is a follow-up; v1's heuristic is "more
+/// places where the code touches the field = more likely it's
+/// hot at runtime."
+///
+/// Includes reads (`self.x`) and writes (`self.x = ...`),
+/// counted equally — both touch the cache line. Self-field
+/// accesses on the assignment LHS (`self.x = ...` and
+/// `self.x.y = ...`) count the head field once each.
+fn count_self_field_accesses_in_locus(l: &LocusDecl) -> std::collections::BTreeMap<String, u32> {
+    let mut counts: std::collections::BTreeMap<String, u32> =
+        std::collections::BTreeMap::new();
+    for member in &l.members {
+        let body_opt: Option<&Block> = match member {
+            LocusMember::Lifecycle(lc) => Some(&lc.body),
+            LocusMember::Mode(md) => Some(&md.body),
+            LocusMember::Fn(fd) => Some(&fd.body),
+            LocusMember::Failure(fl) => Some(&fl.body),
+            _ => None,
+        };
+        if let Some(body) = body_opt {
+            count_self_fields_in_block(body, &mut counts);
+        }
+    }
+    counts
+}
+
+fn count_self_fields_in_block(b: &Block, counts: &mut std::collections::BTreeMap<String, u32>) {
+    for s in &b.stmts {
+        count_self_fields_in_stmt(s, counts);
+    }
+}
+
+fn count_self_fields_in_stmt(s: &Stmt, counts: &mut std::collections::BTreeMap<String, u32>) {
+    match s {
+        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+            count_self_fields_in_expr(value, counts);
+        }
+        Stmt::Assign { value, target, .. } => {
+            count_self_fields_in_expr(value, counts);
+            // Count the LHS head field if the target is `self.field...`.
+            // LValue.head is an Ident — check by name.
+            if target.head.name == "self" {
+                if let Some(LValueSeg::Field(name)) = target.tail.first() {
+                    *counts.entry(name.name.clone()).or_insert(0) += 1;
+                }
+            }
+            for seg in &target.tail {
+                if let LValueSeg::Index(e) = seg {
+                    count_self_fields_in_expr(e, counts);
+                }
+            }
+        }
+        Stmt::If(s) => count_self_fields_in_if(s, counts),
+        Stmt::Match(m) => count_self_fields_in_match(m, counts),
+        Stmt::For { iter, body, .. } => {
+            count_self_fields_in_expr(iter, counts);
+            count_self_fields_in_block(body, counts);
+        }
+        Stmt::While { cond, body, .. } => {
+            count_self_fields_in_expr(cond, counts);
+            count_self_fields_in_block(body, counts);
+        }
+        Stmt::Return(Some(e), _) => count_self_fields_in_expr(e, counts),
+        Stmt::Fail { value, .. } => count_self_fields_in_expr(value, counts),
+        Stmt::Block(b) => count_self_fields_in_block(b, counts),
+        Stmt::Recovery { args, .. } => {
+            for a in args { count_self_fields_in_expr(a, counts); }
+        }
+        Stmt::Violate { payload, .. } => {
+            if let Some(p) = payload { count_self_fields_in_expr(p, counts); }
+        }
+        Stmt::Send { subject, value, .. } => {
+            count_self_fields_in_expr(subject, counts);
+            count_self_fields_in_expr(value, counts);
+        }
+        Stmt::Expr(e) => count_self_fields_in_expr(e, counts),
+        Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) => {}
+    }
+}
+
+fn count_self_fields_in_if(s: &IfStmt, counts: &mut std::collections::BTreeMap<String, u32>) {
+    count_self_fields_in_expr(&s.cond, counts);
+    count_self_fields_in_block(&s.then_block, counts);
+    match s.else_block.as_deref() {
+        None => {}
+        Some(ElseBranch::Else(b)) => count_self_fields_in_block(b, counts),
+        Some(ElseBranch::ElseIf(inner)) => count_self_fields_in_if(inner, counts),
+    }
+}
+
+fn count_self_fields_in_match(m: &MatchStmt, counts: &mut std::collections::BTreeMap<String, u32>) {
+    count_self_fields_in_expr(&m.scrutinee, counts);
+    for a in &m.arms {
+        if let Some(g) = &a.guard {
+            count_self_fields_in_expr(g, counts);
+        }
+        match &a.body {
+            MatchArmBody::Expr(e) => count_self_fields_in_expr(e, counts),
+            MatchArmBody::Block(b) => count_self_fields_in_block(b, counts),
+        }
+    }
+}
+
+fn count_self_fields_in_expr(e: &Expr, counts: &mut std::collections::BTreeMap<String, u32>) {
+    match e {
+        Expr::Field { receiver, name, .. } => {
+            if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
+                *counts.entry(name.name.clone()).or_insert(0) += 1;
+            }
+            count_self_fields_in_expr(receiver, counts);
+        }
+        Expr::Literal(_, _) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
+        Expr::Binary { left, right, .. } => {
+            count_self_fields_in_expr(left, counts);
+            count_self_fields_in_expr(right, counts);
+        }
+        Expr::Unary { operand, .. } => count_self_fields_in_expr(operand, counts),
+        Expr::Call { callee, args, .. } => {
+            count_self_fields_in_expr(callee, counts);
+            for a in args { count_self_fields_in_expr(a, counts); }
+        }
+        Expr::Index { receiver, index, .. } => {
+            count_self_fields_in_expr(receiver, counts);
+            count_self_fields_in_expr(index, counts);
+        }
+        Expr::Path2 { receiver, .. } => count_self_fields_in_expr(receiver, counts),
+        Expr::Tuple(parts, _) | Expr::Array(parts, _) => {
+            for p in parts { count_self_fields_in_expr(p, counts); }
+        }
+        Expr::Struct { inits, .. } => {
+            for i in inits { count_self_fields_in_expr(&i.value, counts); }
+        }
+        Expr::Block(b) => count_self_fields_in_block(b, counts),
+        Expr::If(s) => count_self_fields_in_if(s, counts),
+        Expr::Match(m) => count_self_fields_in_match(m, counts),
+        // Other expression shapes (closures-as-asserts, Range, Sum/Prod
+        // accumulators, Approx, etc.) are uncommon and don't typically
+        // appear in hot-path bodies — skipping their interior is a
+        // conservative undercount, not a correctness issue.
+        _ => {}
+    }
+}
+
 fn locus_reads_self_children(l: &LocusDecl) -> bool {
     l.members.iter().any(|m| match m {
         LocusMember::Lifecycle(lc) => block_reads_self_children(&lc.body),
@@ -10301,6 +10453,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
 
+        // F.32-1b (2026-05-25): snapshot the half-open range of
+        // user-param fields in llvm_field_tys. [1, user_fields_end)
+        // is the slice we may permute later by method-body access
+        // frequency. arena lives at idx 0; capacity slots +
+        // synthetic flags get pushed after this point and aren't
+        // candidates for reorder.
+        let user_fields_start_idx: u32 = 1;
+        let user_fields_end_idx: u32 = idx;
+
         // If this locus declares accept AND any method body
         // iterates `for child in self.children`, append a
         // synthetic children array + counter at the end of the
@@ -10850,6 +11011,72 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
         let _ = idx;
+
+        // F.32-1b (2026-05-25): reorder user-param fields by
+        // method-body access frequency so high-access fields
+        // land near the front of the struct (first cache line
+        // after the synthetic header). Capacity slots, accept-
+        // children buffer, mailbox slot, synthetic flags
+        // (restart_count / quarantined / drain_requested / ...)
+        // all stay put — they have ABI-significant fixed
+        // positions and are touched per-substrate-call, not
+        // per-method-call.
+        //
+        // Only the half-open slice [user_fields_start_idx,
+        // user_fields_end_idx) of llvm_field_tys is permuted.
+        // The `fields` lookup map is updated to match; `defaults`
+        // stays in declaration order (defaults evaluate in source
+        // order at instantiation, independent of struct layout).
+        if user_fields_end_idx > user_fields_start_idx + 1 {
+            let user_count = (user_fields_end_idx - user_fields_start_idx) as usize;
+            // Build list of (name, old_idx, decl_order) for user fields.
+            let decl_order_by_name: BTreeMap<String, u32> = defaults
+                .iter()
+                .enumerate()
+                .map(|(i, (n, _))| (n.clone(), i as u32))
+                .collect();
+            let mut user_field_names: Vec<(String, u32)> = fields
+                .iter()
+                .filter(|(_, (i, _))| {
+                    *i >= user_fields_start_idx && *i < user_fields_end_idx
+                })
+                .map(|(n, (i, _))| (n.clone(), *i))
+                .collect();
+            // Sort by (access_count desc, decl_order asc). Stable
+            // ordering across builds is critical — two compiles of
+            // the same source must produce the same struct layout.
+            let access_counts = count_self_field_accesses_in_locus(l);
+            user_field_names.sort_by(|(a_n, _), (b_n, _)| {
+                let a_count = access_counts.get(a_n).copied().unwrap_or(0);
+                let b_count = access_counts.get(b_n).copied().unwrap_or(0);
+                let a_decl = decl_order_by_name.get(a_n).copied().unwrap_or(u32::MAX);
+                let b_decl = decl_order_by_name.get(b_n).copied().unwrap_or(u32::MAX);
+                b_count.cmp(&a_count).then(a_decl.cmp(&b_decl))
+            });
+            // Apply permutation. We need:
+            //   - a copy of the user portion of llvm_field_tys for source
+            //   - a map from old_idx → new_idx so we can update fields
+            let old_user_portion: Vec<inkwell::types::BasicTypeEnum> =
+                llvm_field_tys[(user_fields_start_idx as usize)
+                    ..(user_fields_end_idx as usize)]
+                    .to_vec();
+            let mut old_idx_to_new_idx: Vec<u32> = vec![0u32; user_count];
+            for (new_local, (_, old_idx)) in user_field_names.iter().enumerate() {
+                let old_local = *old_idx - user_fields_start_idx;
+                let new_global = user_fields_start_idx + new_local as u32;
+                old_idx_to_new_idx[old_local as usize] = new_global;
+                // Place this field's LLVM type at its new global index.
+                llvm_field_tys[new_global as usize] =
+                    old_user_portion[old_local as usize];
+            }
+            // Update the `fields` lookup map's indices for user-field entries.
+            for (_, (idx_ref, _)) in fields.iter_mut() {
+                if *idx_ref >= user_fields_start_idx && *idx_ref < user_fields_end_idx {
+                    let old_local = (*idx_ref - user_fields_start_idx) as usize;
+                    *idx_ref = old_idx_to_new_idx[old_local];
+                }
+            }
+        }
 
         let struct_ty = self
             .context
