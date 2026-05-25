@@ -1983,11 +1983,45 @@ fn count_self_fields_in_expr(
         Expr::Block(b) => count_self_fields_in_block(b, counts, depth),
         Expr::If(s) => count_self_fields_in_if(s, counts, depth),
         Expr::Match(m) => count_self_fields_in_match(m, counts, depth),
-        // Other expression shapes (closures-as-asserts, Range, Sum/Prod
-        // accumulators, Approx, etc.) are uncommon and don't typically
-        // appear in hot-path bodies — skipping their interior is a
-        // conservative undercount, not a correctness issue.
-        _ => {}
+        // F.32-1b v2 (2026-05-25): closing the conservative-
+        // undercount gaps from v1. None of these are common
+        // on hot paths today, but a `self.<field>` reference
+        // inside them used to count as 0 — now it counts
+        // honestly with the prevailing depth weight.
+        Expr::Sum(inner, _) | Expr::Prod(inner, _) => {
+            count_self_fields_in_expr(inner, counts, depth);
+        }
+        Expr::Approx { left, right, tolerance, .. } => {
+            // Closure-assertion shape — appears inside closure
+            // bodies which evaluate at substrate epoch
+            // boundaries, not per-method-call. Treat as the
+            // same depth as the enclosing expression; if the
+            // closure sits at depth 0, this stays at depth 0.
+            count_self_fields_in_expr(left, counts, depth);
+            count_self_fields_in_expr(right, counts, depth);
+            count_self_fields_in_expr(tolerance, counts, depth);
+        }
+        Expr::Range { lo, hi, .. } => {
+            count_self_fields_in_expr(lo, counts, depth);
+            count_self_fields_in_expr(hi, counts, depth);
+        }
+        Expr::ArrayRepeat { val, .. } => {
+            // `[expr; N]` evaluates `expr` once at allocation
+            // time, not N times — keep depth as-is.
+            count_self_fields_in_expr(val, counts, depth);
+        }
+        Expr::Or { inner, disposition, .. } => {
+            count_self_fields_in_expr(inner, counts, depth);
+            match disposition {
+                OrDisposition::Substitute(rhs) => {
+                    count_self_fields_in_expr(rhs, counts, depth);
+                }
+                OrDisposition::Fail(payload, _) => {
+                    count_self_fields_in_expr(payload, counts, depth);
+                }
+                OrDisposition::Raise(_) | OrDisposition::Discard(_) => {}
+            }
+        }
     }
 }
 
