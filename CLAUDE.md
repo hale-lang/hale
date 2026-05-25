@@ -21,7 +21,32 @@ cargo test --release --workspace -- --test-threads=1
 ```
 
 The serial flag avoids "text file busy" flakes from parallel
-test binaries racing each other on the same temp path.
+test binaries racing each other on the same temp path. Keep it
+on single-crate runs too:
+
+```sh
+# one integration test in hale-codegen
+cargo test --release -p hale-codegen --test topic_phase2 -- --test-threads=1
+```
+
+Codegen requires **LLVM 18** dev libs with `llvm-config-18` on
+PATH (or `LLVM_SYS_180_PREFIX` set); `inkwell` is pinned to
+`llvm18-0`. LLVM 17 / 19 / 20 will not link.
+
+To spot-check a compiler change against a real `.hl` program
+without installing:
+
+```sh
+cargo run -p hale-cli --bin hale -- run path/to/prog.hl
+cargo run -p hale-cli --bin hale -- build path/to/prog.hl
+```
+
+The in-tree `.hl` corpus lives at
+`crates/hale-codegen/tests/fixtures/examples/` (the broadest
+acceptance surface — `crates/hale-syntax/tests/examples.rs`
+parses all of them). Note: `AGENTS.md` and `README.md` mention
+an `apps/` directory of working programs; that directory is not
+present in this repo — use the fixture corpus instead.
 
 ## Repo conventions
 
