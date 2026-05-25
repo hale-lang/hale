@@ -105,9 +105,22 @@ doesn't change — only the `bindings { }` block in `main` does.
 
 ### Where the structure goes
 
-The locus is unusually substrate-invariant. Anywhere computation
-happens in isolated units that communicate via messages and have
-bounded resources, the structure fits:
+The locus is unusually substrate-invariant — and that's a
+property of the *shape*, not of any particular runtime. A
+locus's commitments — bounded capacity, message-typed bus,
+explicit capability profile, deterministic dissolve, vertical
+failure flow — are the same constraints every substrate
+already enforces under different names. Server runtimes call
+them threads + queues + allowed syscalls. Browsers call them
+isolates + postMessage + Permissions API. Mobile platforms
+call them activities / view controllers + intents +
+entitlements. Embedded systems call them real-time loops +
+IPC + watchdogs. The locus isn't *abstracting over* those
+things — it's the shape they all converge to. Substrate
+variation lives in the capability profile and the transport
+adapter; the program above doesn't change.
+
+Two substrates ship:
 
 | Substrate | What the locus maps to | Status |
 |---|---|---|
@@ -115,20 +128,33 @@ bounded resources, the structure fits:
 | **Browser** | Loci over GC arenas + RAF/microtask scheduling, WebSocket transport bridge | ✓ shipped (hale-js) |
 
 The same triple — locus + bus + capability-profile — suggests
-clean fits for **mobile** (lifecycle objects ↔ loci; intents/XPC ↔ bus),
-**embedded / IoT** (real-time loops + watchdogs ↔ pinned loci + parent
-supervisors), **GPU** (kernels lowered via `mode bulk/harmonic/resolution`),
-**robotics** (ROS nodes ↔ loci; ROS topics ↔ hale topics — the
-naming overlap isn't accidental), and **edge / Wasm** (short-lived
-loci with capability profiles ≈ WASI imports). None of those lotuses
-are built yet; the two shipped substrates are the proof that the
-locus survives substrate divergence at all, and the bet that follows.
+clean fits for **mobile** (lifecycle objects ↔ loci;
+intents/XPC ↔ bus), **embedded / IoT** (real-time loops +
+watchdogs ↔ pinned loci + parent supervisors), **GPU**
+(kernels lowered via `mode bulk/harmonic/resolution`),
+**robotics** (ROS nodes ↔ loci; ROS topics ↔ hale topics —
+the naming overlap isn't accidental), and **edge / Wasm**
+(short-lived loci with capability profiles ≈ WASI imports).
+The structural fit is concrete in each case — the table
+column "what the locus maps to" already exists for them; only
+the runtime doesn't.
 
-What's shipped is the two-lotus proof. The bet is that the locus +
-bus + capability-profile triple is a coherent solution to substrate
-variation: **one design idiom, N substrates, honest about
-divergences**. No nine-language polyglot stack; no impedance mismatch
-at substrate boundaries; one `AGENTS.md` across the stack.
+These aren't roadmap promises. Building a new lotus is real
+engineering: a runtime, a capability profile, a transport
+adapter, codegen if the substrate's execution model differs
+from the C-runtime's. That work happens **when a downstream
+workload pulls for it** — when "the same `.hl` on this
+substrate too" is the load-bearing reason someone picks Hale
+over the local alternative. The two-lotus proof shows the
+design idiom survives the move from native to browser; the
+rest follows demand, not a roadmap.
+
+What's shipped is the two-lotus proof. The bet is that the
+locus + bus + capability-profile triple is a coherent
+solution to substrate variation: **one design idiom, N
+substrates, honest about divergences**. No nine-language
+polyglot stack; no impedance mismatch at substrate
+boundaries; one `AGENTS.md` across the stack.
 
 ## Try it on code you already have
 
