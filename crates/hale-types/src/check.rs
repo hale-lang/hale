@@ -1533,6 +1533,15 @@ impl<'a> Checker<'a> {
                 // send-payload match) happen in the bus blocks and
                 // send sites that reference the topic.
             }
+            TopDecl::Target(_) => {
+                // FUv0.8.2 #7 (2026-05-25): target capability
+                // block. v0.2 lands the parser + AST surface;
+                // the capability-enforcement pass (rejecting
+                // programs that reach beyond the declared
+                // capability set) is v0.3. Today's check is
+                // structural only — the resolver registered
+                // the target name; no use-site checks here yet.
+            }
         }
     }
 

@@ -9963,6 +9963,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         requests,
                     )?;
                 }
+                TopDecl::Target(_) => {
+                    // FUv0.8.2 #7: target capability blocks
+                    // carry no type-bearing positions; nothing
+                    // to collect for generic monomorph.
+                }
             }
         }
         Ok(())

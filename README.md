@@ -84,7 +84,7 @@ with substrate-specific capability profiles declared at the build
 target:
 
 ```hale
-target browser-js {
+target browser_js {
     arenas.epoch_view,
     time.monotonic, time.wallclock,
     random.csprng,

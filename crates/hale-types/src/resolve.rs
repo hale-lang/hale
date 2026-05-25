@@ -356,6 +356,16 @@ fn register_top_decls(
             }
             TopDecl::Interface(i) => register_interface(i, known, scope, diags),
             TopDecl::Topic(t) => register_topic(t, topics, scope, diags),
+            TopDecl::Target(_) => {
+                // FUv0.8.2 #7 (2026-05-25): target capability
+                // declarations don't introduce a scope entry —
+                // they're metadata for codegen / the v0.3
+                // capability gate, not first-class symbols
+                // users reference by name. Parser registered
+                // them on `program.items`; downstream passes
+                // walk that list when they need the target
+                // info.
+            }
         }
     }
 }

@@ -210,6 +210,13 @@ impl Interpreter {
                 // so the interpreter sees no topic-specific
                 // semantics at this stage.
             }
+            TopDecl::Target(_) => {
+                // FUv0.8.2 #7: target capability blocks are
+                // metadata for codegen / the v0.3 capability
+                // gate. The interpreter loads + runs against
+                // a single implicit "native" target; nothing
+                // to wire up here yet.
+            }
         }
     }
 

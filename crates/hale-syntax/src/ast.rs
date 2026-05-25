@@ -31,6 +31,14 @@ pub enum TopDecl {
     Module(ModuleDecl),
     Interface(InterfaceDecl),
     Topic(TopicDecl),
+    /// FUv0.8.2 #7 (2026-05-25): `target <name> { cap.path,
+    /// cap.path, ... }` — names a substrate (e.g.
+    /// `browser-js`, `native`) plus its capability profile.
+    /// A program reaches only what its target offers; reaching
+    /// further fails at the translation boundary with
+    /// CAP-MISSING. v0.2 surface lands here as a parser /
+    /// AST commit; the capability-enforcement pass is v0.3.
+    Target(TargetDecl),
 }
 
 impl TopDecl {
@@ -44,6 +52,7 @@ impl TopDecl {
             TopDecl::Module(m) => m.span,
             TopDecl::Interface(i) => i.span,
             TopDecl::Topic(t) => t.span,
+            TopDecl::Target(t) => t.span,
         }
     }
 }
@@ -78,6 +87,35 @@ pub struct TopicDecl {
     /// the topic's local name (joined with parent's subject path
     /// at desugar time).
     pub subject: Option<String>,
+    pub span: Span,
+}
+
+/// FUv0.8.2 #7 (2026-05-25): `target <name> { <cap>, ... }`.
+///
+/// `name` is a substrate identifier — `browser-js`, `native`,
+/// `wasm`, `embedded`, etc. The compiler doesn't enforce a
+/// closed set; downstream tooling (codegen, the LSP) maps
+/// recognized names to runtime backends.
+///
+/// `capabilities` is a list of dotted-path capability names:
+/// `time.monotonic`, `gfx.canvas2d`, `arenas.epoch_view`. The
+/// dot-separated form is structural — the resolver can map
+/// each capability to a set of stdlib paths it gates
+/// (e.g. `time.monotonic` → `std::time::monotonic`). v0.2
+/// ships the AST + parser surface; the actual gate
+/// (rejecting programs that reach beyond the target's
+/// capability profile) is a v0.3 typecheck pass.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TargetDecl {
+    pub name: Ident,
+    pub capabilities: Vec<Capability>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Capability {
+    /// Dot-separated path segments, e.g. `["time", "monotonic"]`.
+    pub segments: Vec<Ident>,
     pub span: Span,
 }
 

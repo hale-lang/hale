@@ -37,6 +37,7 @@ top_decl          = locus_decl
                   | module_decl
                   | interface_decl
                   | topic_decl
+                  | target_decl
                   ;
 
 module_decl       = "module" , IDENTIFIER , "{" , { top_decl } , "}" ;
@@ -77,6 +78,22 @@ topic_decl        = "topic" , IDENTIFIER ,
 topic_field       = "payload" , ":" , type_expr , ";"
                   | "subject" , ":" , STRING_LIT , ";"
                   ;
+
+(* FUv0.8.2 #7 (2026-05-25): `target <name> { cap, cap, ... }`
+   declares a substrate the program runs on plus its capability
+   profile. `target` is a contextual keyword recognized only at
+   top-level decl position. v0.2 lands the surface; the
+   capability-enforcement pass (rejecting programs that reach
+   beyond the declared set with `CAP-MISSING`) is v0.3.
+
+   Capability paths are dot-separated identifiers — `time.monotonic`,
+   `gfx.canvas2d`, `arenas.epoch_view`, etc. A bare single-
+   segment ident (`wasi`) also parses; semantics are per-
+   capability convention, not enforced at the grammar layer. *)
+target_decl       = "target" , IDENTIFIER , "{" ,
+                    [ capability , { "," , capability } , [ "," ] ] ,
+                    "}" ;
+capability        = IDENTIFIER , { "." , IDENTIFIER } ;
 
 
 (* === 2. Locus declaration ====================================== *)

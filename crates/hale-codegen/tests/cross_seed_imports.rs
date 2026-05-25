@@ -45,6 +45,7 @@ fn top_name(d: &TopDecl) -> Option<&str> {
         TopDecl::Interface(i) => Some(&i.name.name),
         TopDecl::Topic(t) => Some(&t.name.name),
         TopDecl::Module(_) => None,
+        TopDecl::Target(t) => Some(&t.name.name),
     }
 }
 

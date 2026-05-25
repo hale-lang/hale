@@ -296,6 +296,11 @@ impl<'a> QualifiedRenameApplier<'a> {
                 }
             }
             TopDecl::Module(_) => {}
+            TopDecl::Target(_) => {
+                // FUv0.8.2 #7: target capability blocks carry
+                // no TypeExprs the import-rename pass needs
+                // to rewrite.
+            }
         }
     }
 
@@ -395,6 +400,7 @@ fn top_decl_name(d: &TopDecl) -> Option<&str> {
         TopDecl::Interface(i) => Some(&i.name.name),
         TopDecl::Topic(t) => Some(&t.name.name),
         TopDecl::Module(_) => None,
+        TopDecl::Target(t) => Some(&t.name.name),
     }
 }
 
@@ -450,6 +456,13 @@ impl<'a> Mangler<'a> {
                 self.rewrite_ident(&mut t.name.name);
             }
             TopDecl::Module(_) => {}
+            TopDecl::Target(t) => {
+                // FUv0.8.2 #7: rewrite the target name only —
+                // capability paths are structural identifiers,
+                // not user-namespace names, so they don't
+                // participate in the import rename table.
+                self.rewrite_ident(&mut t.name.name);
+            }
         }
         self.pop_scope();
     }

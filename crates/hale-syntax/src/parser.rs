@@ -436,6 +436,13 @@ impl Parser {
             TokenKind::Ident(s) if s == "topic" => {
                 self.parse_topic_decl().map(TopDecl::Topic)
             }
+            // FUv0.8.2 #7 (2026-05-25): `target <name> { ... }` —
+            // names the substrate + its capability profile.
+            // Contextual keyword recognized only at top-level decl
+            // position.
+            TokenKind::Ident(s) if s == "target" => {
+                self.parse_target_decl().map(TopDecl::Target)
+            }
             // `main locus Foo { ... }` — Phase 2 entry-point
             // marker. Same contextual-keyword pattern. The
             // following token must be `locus`.
@@ -447,6 +454,64 @@ impl Parser {
                 format!("expected top-level declaration, got {:?}", other),
             )),
         }
+    }
+
+    /// FUv0.8.2 #7: parse `target <name> { cap.path, ... }`.
+    ///
+    /// Grammar:
+    ///   target_decl       = 'target' , IDENT , '{' ,
+    ///                       [ capability { ',' capability } [ ',' ] ] , '}'
+    ///   capability        = IDENT { '.' IDENT }
+    ///
+    /// `target` is a contextual keyword recognized only at top-
+    /// level decl position (same as `topic` / `main`).
+    fn parse_target_decl(&mut self) -> Result<TargetDecl, Diag> {
+        let kw_tok = self.peek_token().clone();
+        let kw = match &kw_tok.kind {
+            TokenKind::Ident(s) if s == "target" => {
+                self.bump();
+                kw_tok
+            }
+            _ => {
+                return Err(Diag::parse(
+                    kw_tok.span,
+                    "expected `target` keyword",
+                ));
+            }
+        };
+        let name = self.expect_ident("target name")?;
+        self.expect(TokenKind::LBrace, "{")?;
+        let mut capabilities: Vec<Capability> = Vec::new();
+        while !matches!(self.peek(), TokenKind::RBrace) {
+            let cap = self.parse_capability()?;
+            capabilities.push(cap);
+            // Trailing comma optional; comma separator required
+            // between caps. `}` ends the list.
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        let close = self.expect(TokenKind::RBrace, "}")?;
+        Ok(TargetDecl {
+            name,
+            capabilities,
+            span: kw.span.merge(close.span),
+        })
+    }
+
+    fn parse_capability(&mut self) -> Result<Capability, Diag> {
+        let head = self.expect_ident("capability name segment")?;
+        let mut segments = vec![head.clone()];
+        let mut end_span = head.span;
+        while self.eat(&TokenKind::Dot) {
+            let seg = self.expect_ident("capability path segment after `.`")?;
+            end_span = seg.span;
+            segments.push(seg);
+        }
+        Ok(Capability {
+            segments,
+            span: head.span.merge(end_span),
+        })
     }
 
     /// `topic Foo { payload: T; }` — Phase 1 carries only the
@@ -5452,5 +5517,96 @@ locus Old : schedule pinned {
             "expected diag to mention placement / F.31 migration; got: {}",
             msg
         );
+    }
+
+    // === FUv0.8.2 #7 target capability-block tests =========
+
+    #[test]
+    fn parse_target_decl_with_capabilities() {
+        let src = r#"
+target browser_js {
+    arenas.epoch_view,
+    time.monotonic,
+    time.wallclock,
+    random.csprng,
+    gfx.canvas2d,
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        assert_eq!(prog.items.len(), 1);
+        match &prog.items[0] {
+            TopDecl::Target(t) => {
+                assert_eq!(t.name.name, "browser_js");
+                assert_eq!(t.capabilities.len(), 5);
+                // First cap is `arenas.epoch_view` — 2 segments.
+                assert_eq!(t.capabilities[0].segments.len(), 2);
+                assert_eq!(t.capabilities[0].segments[0].name, "arenas");
+                assert_eq!(t.capabilities[0].segments[1].name, "epoch_view");
+                // Last cap is `gfx.canvas2d`.
+                assert_eq!(t.capabilities[4].segments[0].name, "gfx");
+                assert_eq!(t.capabilities[4].segments[1].name, "canvas2d");
+            }
+            other => panic!("expected Target decl, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_target_decl_with_no_capabilities() {
+        // Empty body is legal — a target with no capabilities
+        // is a target the program can only do pure computation
+        // on (no I/O, no time, no anything). Useful for
+        // sandbox-target builds.
+        let src = "target empty { }";
+        let prog = parse_str(src).expect("parse failed");
+        match &prog.items[0] {
+            TopDecl::Target(t) => {
+                assert_eq!(t.name.name, "empty");
+                assert!(t.capabilities.is_empty());
+            }
+            _ => panic!("expected Target"),
+        }
+    }
+
+    #[test]
+    fn parse_target_decl_trailing_comma_allowed() {
+        let src = "target native { time.monotonic, io.fs, }";
+        let prog = parse_str(src).expect("parse failed");
+        match &prog.items[0] {
+            TopDecl::Target(t) => {
+                assert_eq!(t.capabilities.len(), 2);
+            }
+            _ => panic!("expected Target"),
+        }
+    }
+
+    #[test]
+    fn parse_target_decl_single_segment_capability() {
+        // A bare identifier (no dot) is also a valid capability
+        // — useful for top-level "the whole subsystem" gates
+        // like `target wasm { wasi }`.
+        let src = "target wasm { wasi, time.monotonic }";
+        let prog = parse_str(src).expect("parse failed");
+        match &prog.items[0] {
+            TopDecl::Target(t) => {
+                assert_eq!(t.capabilities[0].segments.len(), 1);
+                assert_eq!(t.capabilities[0].segments[0].name, "wasi");
+                assert_eq!(t.capabilities[1].segments.len(), 2);
+            }
+            _ => panic!("expected Target"),
+        }
+    }
+
+    #[test]
+    fn parse_target_decl_alongside_other_top_decls() {
+        let src = r#"
+target native { time.monotonic }
+locus L { run() { } }
+fn main() { L { }; }
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        assert_eq!(prog.items.len(), 3);
+        assert!(matches!(prog.items[0], TopDecl::Target(_)));
+        assert!(matches!(prog.items[1], TopDecl::Locus(_)));
+        assert!(matches!(prog.items[2], TopDecl::Fn(_)));
     }
 }
