@@ -1504,13 +1504,43 @@ impl<'a> Checker<'a> {
                         sub.subject, sub.handler, info.name
                     ),
                 ));
+                continue;
             }
-            // Note: handler-must-not-be-fallible check is implicit
-            // (the LocusMember::Fn check above rejects ANY fallible
-            // member fn). When open-questions.md #24 narrows the
-            // member-fn rule to permit fallible non-bus-subscribed
-            // fns, this loop gains an explicit fallible-handler
-            // check.
+            // Open-question #24 MVP (2026-05-25): fallible-handler
+            // check. Bus dispatch has no caller frame to address
+            // a value return — a fallible handler would have
+            // nowhere to send `out_err` to. So a fn that's
+            // fallible-by-decl can't also be subscribed; the
+            // subscription site is rejected, not the fn (one
+            // fn may be referenced by zero or more handlers,
+            // but each subscription points at one fn).
+            if let Some(handler_fn) = fn_members.get(&sub.handler) {
+                if let Some(payload_te) = &handler_fn.fallible {
+                    self.diags.push(Diag::ty(
+                        sub.span,
+                        format!(
+                            "bus subscribe `{}` references fn `{}` which \
+                             declares `fallible({})` — bus-subscribed \
+                             handlers can't be fallible because bus \
+                             dispatch has no caller frame to address the \
+                             error channel. Drop `fallible(E)` from the \
+                             handler and route value-error structurally \
+                             via an inline closure (a closure assertion \
+                             firing into `on_failure`), or do the work in \
+                             a separate fallible fn the handler calls and \
+                             address the error inside the handler body \
+                             with `or <disposition>`.",
+                            sub.subject,
+                            sub.handler,
+                            crate::resolve::resolve_type_expr(
+                                payload_te,
+                                self.known,
+                            )
+                            .display(),
+                        ),
+                    ));
+                }
+            }
         }
 
         // F.8: contract compatibility. If this locus consumes
@@ -2399,52 +2429,30 @@ impl<'a> Checker<'a> {
                 self.in_closure = false;
             }
             LocusMember::Fn(f) => {
-                // v1.x-FORM-2 design rule (two-channel
-                // separation): locus methods can't declare
-                // `fallible(E)`. Substrate-facing methods
-                // communicate failure structurally via closure
-                // assertions + `on_failure` routing; value-level
-                // `fallible(E)` lives on free fns and stdlib-
-                // synthesized methods over `@form(...)`
-                // containers (application-layer storage
-                // substrate). The channels meet only at the
-                // implicit main locus root via
-                // `lotus_root_panic`. See `spec/semantics.md`
-                // § "Fallible call semantics".
+                // Open-question #24 MVP (2026-05-25): user-
+                // declared locus member fns may now carry
+                // `fallible(E)` (the value-level error channel).
+                // Substrate-facing surfaces still can't —
+                // lifecycle methods (Lifecycle decls), mode
+                // methods (Mode decls), and bus-subscribed
+                // handlers stay non-fallible because the
+                // substrate orchestrates them and has no caller
+                // frame to address a value return. Lifecycle /
+                // Mode are physically incapable (their AST
+                // structs don't carry a `fallible` field); the
+                // bus-subscribed check lives at the subscribe-
+                // site loop above (search for "fallible-handler
+                // check").
                 //
-                // Narrowing proposal: open-questions.md #24.
-                // Codegen-side plumbing (locus method call
-                // dispatch tracking fallibility per-method,
-                // call-site disposition lowering) is ~500 LOC
-                // — a focused future session. Until then, the
-                // rejection stays.
-                if let Some(payload_te) = &f.fallible {
-                    self.diags.push(Diag::ty(
-                        payload_te.span(),
-                        format!(
-                            "locus method `{}`: locus methods can't declare \
-                             `fallible(E)`. Substrate-facing methods \
-                             communicate failure structurally via closure \
-                             assertions + `on_failure` routing; value-level \
-                             `fallible(E)` lives on free fns and stdlib-\
-                             synthesized methods over `@form(...)` \
-                             containers. Three workarounds (styleguide § 7): \
-                             (1) wrap as a free fn — write `fn op() -> T \
-                             fallible(E)` outside the locus and call it \
-                             from the method with `or <fallback>` / `or \
-                             raise`; (2) error-check fn + `violate NAME;` \
-                             — keep the method infallible and route \
-                             structural failure through an inline closure \
-                             so on_failure can pick it up; (3) sentinel-\
-                             predicate — return a Bool / Option-like shape \
-                             from the method and let the caller branch. \
-                             (Narrowing this rule is tracked as open-\
-                             questions.md #24 — needs ~500 LOC codegen \
-                             plumbing for method-call fallibility tracking.)",
-                            f.name.name
-                        ),
-                    ));
-                }
+                // Closure assertions can't *call* fallible
+                // member fns inside the assertion expression —
+                // `or <disposition>` is statement-position and
+                // doesn't compose inside expression-shaped
+                // assertion bodies; factor the value-error path
+                // into a separate fn and have the closure assert
+                // over pre-computed locus state instead. Not
+                // checked here for v0.1 — the assertion grammar
+                // already rejects most call shapes.
                 self.in_lifecycle = true;
                 self.check_fn(f, self.current_locus);
                 self.in_lifecycle = false;

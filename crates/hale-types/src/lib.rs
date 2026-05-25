@@ -2261,15 +2261,17 @@ mod tests {
         );
     }
 
-    // === v1.x-FORM-2 two-channel separation =============
-    // Locus methods can't declare `fallible(E)`. The
-    // substrate-facing channel is closures + on_failure;
-    // value-level `fallible(E)` lives on free fns and stdlib-
-    // synthesized methods over `@form(...)` containers.
-    // Spec: `spec/semantics.md` § "Fallible call semantics".
+    // === Open-question #24 (2026-05-25) =================
+    // The blanket "no fallible on locus methods" rule is
+    // narrowed: user-declared `fn` members may carry
+    // `fallible(E)`. Substrate-facing surfaces still can't —
+    // lifecycle methods (physically by AST shape), mode
+    // methods (same), and bus-subscribed handlers (by an
+    // explicit rejection at the subscribe site).
+    // Spec narrowing: open-questions.md #24.
 
     #[test]
-    fn err_locus_method_declared_fallible() {
+    fn ok_locus_method_declared_fallible_post_24() {
         let src = r#"
             type E { code: Int; }
             locus L {
@@ -2281,10 +2283,36 @@ mod tests {
         "#;
         let diags = check(src);
         assert!(
+            diags.is_empty(),
+            "expected clean check on user-declared fallible locus method \
+             post-#24; got: {:?}",
             diags
-                .iter()
-                .any(|d| d.message.contains("can't declare `fallible(E)`")),
-            "expected locus-method-fallible diag, got: {:?}",
+        );
+    }
+
+    #[test]
+    fn err_bus_subscribed_handler_cant_be_fallible() {
+        // Bus dispatch has no caller frame to address a value
+        // error; subscribing a fallible fn is the kind of
+        // construct #24 explicitly preserves a rejection for.
+        let src = r#"
+            type Tick { n: Int; }
+            type E { code: Int; }
+            locus L {
+                bus { subscribe "tick" as on_tick of type Tick; }
+                fn on_tick(t: Tick) -> Int fallible(E) {
+                    return 1;
+                }
+            }
+            fn main() { L { }; }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| {
+                d.message.contains("bus-subscribed")
+                    && d.message.contains("can't be fallible")
+            }),
+            "expected bus-subscribed-fallible rejection, got: {:?}",
             diags
         );
     }

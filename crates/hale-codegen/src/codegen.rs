@@ -2026,6 +2026,58 @@ fn chunk_hint_for_coop_pool(
     p2.clamp(4096, 65536)
 }
 
+/// Open-question #24 MVP (2026-05-25): predicate gating which
+/// types are admissible as success / err payload on a fallible
+/// locus method. The free-fn fallible ABI uses
+/// `__caller_arena` plus deep-copy to land heap-bearing
+/// payloads in caller-owned storage. Locus methods don't yet
+/// have that plumbing, so v0.1 restricts to flat (no heap
+/// pointer in the payload bytes) types.
+///
+/// Allowed: Int, Float, Bool, Decimal, Duration, Time
+/// (representation-flat in v0), no-payload Enum, and TypeRef
+/// structs all of whose fields recursively pass this
+/// predicate. Rejected: String, Bytes, *View, LocusRef,
+/// Array, Tuple, FnPtr, Interface, Cell, has-payload Enum.
+fn is_value_only_codegen_ty(
+    ty: &CodegenTy,
+    user_types: &BTreeMap<String, TypeInfo<'_>>,
+) -> bool {
+    match ty {
+        CodegenTy::Int
+        | CodegenTy::Float
+        | CodegenTy::Bool
+        | CodegenTy::Decimal
+        | CodegenTy::Duration
+        | CodegenTy::Time => true,
+        CodegenTy::Enum(_) => {
+            // No-payload-only enums are flat (i32 tag); has-
+            // payload variants land in v0.2 along with heap
+            // returns.
+            true
+        }
+        CodegenTy::TypeRef(name) => {
+            let Some(info) = user_types.get(name.as_str()) else {
+                // Unknown user type: conservative reject.
+                return false;
+            };
+            info.fields
+                .values()
+                .all(|(_, ft)| is_value_only_codegen_ty(ft, user_types))
+        }
+        CodegenTy::String
+        | CodegenTy::Bytes
+        | CodegenTy::BytesView
+        | CodegenTy::StringView
+        | CodegenTy::LocusRef(_)
+        | CodegenTy::Array(_, _)
+        | CodegenTy::Tuple(_)
+        | CodegenTy::FnPtr { .. }
+        | CodegenTy::Interface(_)
+        | CodegenTy::Cell(_, _) => false,
+    }
+}
+
 fn locus_reads_self_children(l: &LocusDecl) -> bool {
     l.members.iter().any(|m| match m {
         LocusMember::Lifecycle(lc) => block_reads_self_children(&lc.body),
@@ -11471,37 +11523,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             l.name.name, fd.name.name
                         )));
                     }
-                    // v1.x-FORM-2 design rule (two-channel
-                    // separation): user-declared locus methods
-                    // can't be `fallible(E)`. Substrate-facing
-                    // methods communicate failure structurally
-                    // via closure assertions + on_failure
-                    // routing; value-level `fallible(E)` is an
-                    // application-layer protocol that lives on
-                    // free fns and stdlib-synthesized methods
-                    // over `@form(...)` containers (which are
-                    // application-layer storage substrate). The
-                    // channels meet only at the implicit main
-                    // locus root via `lotus_root_panic`. See
-                    // `spec/semantics.md` § "Fallible call
-                    // semantics" for the canonical statement.
-                    if fd.fallible.is_some() {
-                        return Err(CodegenError::Unsupported(format!(
-                            "locus `{}` method `{}`: locus methods can't \
-                             declare `fallible(E)`. Substrate-facing \
-                             methods communicate failure structurally via \
-                             closure assertions + `on_failure` routing; \
-                             value-level `fallible(E)` lives on free fns \
-                             and stdlib-synthesized methods over \
-                             `@form(...)` containers. Wrap a fallible free \
-                             fn if you need value-level error semantics: \
-                             write `fn op() -> T fallible(E)` outside the \
-                             locus and call it from the method with \
-                             `or <fallback>`. See spec/semantics.md \
-                             § \"Fallible call semantics\".",
-                            l.name.name, fd.name.name
-                        )));
-                    }
+                    // Open-question #24 MVP (2026-05-25): user-
+                    // declared `fn` members may now declare
+                    // `fallible(E)`. Typecheck already gated bus-
+                    // subscribed handlers + closure assertions
+                    // (which can't be fallible because the
+                    // substrate has no caller frame to address
+                    // a value error). Here we enforce the v0.1
+                    // codegen scope-cut: success type (if non-
+                    // Unit) and err payload type must both be
+                    // value-only — no heap-bearing fields. Free
+                    // fns rely on `__caller_arena` plumbing to
+                    // deep-copy the return / err payload into
+                    // the caller's arena; locus methods don't
+                    // have that param, so v0.1 sidesteps deep-
+                    // copy by restricting the success / err
+                    // types. Heap-bearing returns land in v0.2.
                     let mut llvm_param_tys: Vec<inkwell::types::BasicMetadataTypeEnum> =
                         Vec::with_capacity(fd.params.len() + 1);
                     llvm_param_tys.push(ptr_t.into());
@@ -11530,11 +11567,70 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         let lt = self.type_expr_to_codegen_ty(&p.ty)?;
                         llvm_param_tys.push(self.llvm_basic_type(&lt).into());
                     }
-                    let fn_ty = match &fd.ret {
-                        None => void_t.fn_type(&llvm_param_tys, false),
-                        Some(t) => {
-                            let rt = self.type_expr_to_codegen_ty(t)?;
-                            match rt {
+                    // Open-question #24 MVP: fallible-method ABI
+                    // mirrors the free-fn fallible ABI minus the
+                    // `__caller_arena` plumbing. For value-only
+                    // success/err types (the MVP scope), no deep-
+                    // copy is needed — the sret stores write
+                    // primitive bytes directly into caller-owned
+                    // slots.
+                    let ret_codegen_ty: Option<CodegenTy> = match &fd.ret {
+                        None => None,
+                        Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
+                    };
+                    let err_payload_ty: Option<CodegenTy> = match &fd.fallible {
+                        None => None,
+                        Some(payload_te) => {
+                            let pt = self.type_expr_to_codegen_ty(payload_te)?;
+                            if !is_value_only_codegen_ty(&pt, &self.user_types) {
+                                return Err(CodegenError::Unsupported(format!(
+                                    "locus `{}` method `{}`: fallible payload \
+                                     type `{:?}` is heap-bearing; v0.1 \
+                                     supports value-type payloads only \
+                                     (Int / Float / Bool / Decimal / Time / \
+                                     Duration / no-payload Enum / flat \
+                                     struct). Heap-bearing fallible payloads \
+                                     on locus methods land in v0.2 once the \
+                                     `__caller_arena` plumbing is wired \
+                                     through method calls. Workaround: wrap \
+                                     the body as a free fn (which has the \
+                                     plumbing) and call it from the method.",
+                                    l.name.name, fd.name.name, pt,
+                                )));
+                            }
+                            if let Some(rt) = &ret_codegen_ty {
+                                if !is_value_only_codegen_ty(rt, &self.user_types) {
+                                    return Err(CodegenError::Unsupported(format!(
+                                        "locus `{}` method `{}`: fallible \
+                                         method return type `{:?}` is heap-\
+                                         bearing; v0.1 supports value-type \
+                                         returns only on fallible methods. \
+                                         Same v0.1 scope-cut as the payload \
+                                         constraint above.",
+                                        l.name.name, fd.name.name, rt,
+                                    )));
+                                }
+                            }
+                            // Add sret slot params: out_val if
+                            // success is non-Unit, then out_err.
+                            // Mirrors the free-fn ABI ordering.
+                            if ret_codegen_ty.is_some() {
+                                llvm_param_tys.push(ptr_t.into());
+                            }
+                            llvm_param_tys.push(ptr_t.into());
+                            Some(pt)
+                        }
+                    };
+                    let fn_ty = if err_payload_ty.is_some() {
+                        // Fallible: LLVM-level return is i1 (path
+                        // indicator). Caller branches.
+                        self.context
+                            .bool_type()
+                            .fn_type(&llvm_param_tys, false)
+                    } else {
+                        match &ret_codegen_ty {
+                            None => void_t.fn_type(&llvm_param_tys, false),
+                            Some(rt) => match rt {
                                 CodegenTy::Int | CodegenTy::Duration => self
                                     .context
                                     .i64_type()
@@ -11584,7 +11680,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     .context
                                     .ptr_type(AddressSpace::default())
                                     .fn_type(&llvm_param_tys, false),
-                            }
+                            },
                         }
                     };
                     let func = self.module.add_function(
@@ -12453,6 +12549,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // return type tracked.
         for member in &l.members {
             if let LocusMember::Fn(fd) = member {
+                // Open-question #24 MVP: fallible locus methods
+                // take a separate body-lowering path that wires
+                // a unified exit block + sret epilogue, parallel
+                // to the free-fn fallible shape but minus the
+                // `__caller_arena` plumbing (v0.1 value-only
+                // scope-cut: see `is_value_only_codegen_ty`).
+                if fd.fallible.is_some() {
+                    let info_ref = info.clone();
+                    self.lower_fallible_locus_method_body(l, &info_ref, fd)?;
+                    continue;
+                }
                 let func = *info
                     .user_methods
                     .get(&fd.name.name)
@@ -12770,6 +12877,265 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.current_self = None;
             }
         }
+        Ok(())
+    }
+
+    /// Open-question #24 MVP (2026-05-25): lower a fallible
+    /// locus member fn's body. Parallel to `lower_user_fn_body`'s
+    /// fallible path but slimmed for the value-only scope-cut:
+    /// no `__caller_arena` plumbing, no per-call subregion, no
+    /// deep-copy in the exit epilogue. The runtime ABI is:
+    ///
+    ///     <Locus>.<method>(self_ptr,
+    ///                      <user_params...>,
+    ///                      [out_val: T* if T != Unit],
+    ///                      out_err: E*) -> i1
+    ///
+    /// `Stmt::Return e;` stores `e` into a local `ret_alloca`,
+    /// keeps the path indicator at 0, and br's to the unified
+    /// exit. `Stmt::Fail e;` stores `e` into `err_alloca`, flips
+    /// the path indicator to 1, and br's to exit. The exit
+    /// epilogue branches on the path indicator and stores the
+    /// matching local into the caller-provided sret slot.
+    /// Value-only payload types (Int / Bool / Decimal / no-
+    /// payload Enum / flat struct) survive the sret store
+    /// without a deep-copy step. Heap-bearing payloads were
+    /// rejected at declare-time by `is_value_only_codegen_ty`.
+    fn lower_fallible_locus_method_body(
+        &mut self,
+        l: &LocusDecl,
+        info: &LocusInfo<'ctx>,
+        fd: &FnDecl,
+    ) -> Result<(), CodegenError> {
+        let func = *info
+            .user_methods
+            .get(&fd.name.name)
+            .expect("fallible locus fn declared in pass A2");
+        let entry = self.context.append_basic_block(func, "entry");
+        self.builder.position_at_end(entry);
+        let self_ptr = func
+            .get_nth_param(0)
+            .expect("self_ptr param")
+            .into_pointer_value();
+        self.current_fn = Some(func);
+        let ret_ty: Option<CodegenTy> = match &fd.ret {
+            None => None,
+            Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
+        };
+        let payload_ty: CodegenTy = self.type_expr_to_codegen_ty(
+            fd.fallible.as_ref().expect("called only when fallible"),
+        )?;
+        self.current_user_fn_ret = Some(ret_ty.clone());
+        self.current_self = Some(SelfCx {
+            locus_name: l.name.name.clone(),
+            struct_ty: info.struct_ty,
+            self_ptr,
+            fields: info.fields.clone(),
+        });
+        self.loops.clear();
+        self.push_dissolve_frame();
+
+        // ret_alloca + err_alloca + path_alloca. Value-only
+        // types (the MVP scope) — `alloca_for` picks the right
+        // LLVM type for each.
+        let ret_alloca = match &ret_ty {
+            None => None,
+            Some(rt) => Some(self.alloca_for(rt, "fn.ret.slot")?),
+        };
+        let err_alloca = self.alloca_for(&payload_ty, "fn.err.slot")?;
+        let bool_t = self.context.bool_type();
+        let path_alloca = self
+            .builder
+            .build_alloca(bool_t, "fn.fail.path")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(path_alloca, bool_t.const_int(0, false))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Find the sret slot params on the LLVM function. Slot
+        // 0 is self_ptr; slots 1..=n are the user params; the
+        // tail two (or one, for Unit success) are out_val /
+        // out_err. Mirrors `declare_locus_methods`'s fallible
+        // signature build above.
+        let n_user_params = fd.params.len() as u32;
+        let out_val_param = if ret_ty.is_some() {
+            Some(
+                func.get_nth_param(n_user_params + 1)
+                    .expect("out_val sret param")
+                    .into_pointer_value(),
+            )
+        } else {
+            None
+        };
+        let out_err_slot_idx = if ret_ty.is_some() {
+            n_user_params + 2
+        } else {
+            n_user_params + 1
+        };
+        let out_err_param = func
+            .get_nth_param(out_err_slot_idx)
+            .expect("out_err sret param")
+            .into_pointer_value();
+
+        let exit_bb = self.context.append_basic_block(func, "fn.exit");
+        self.current_user_fn_exit_bb = Some(exit_bb);
+        self.current_user_fn_ret_alloca = ret_alloca;
+        self.current_user_fn_fallible = Some(FallibleCtx {
+            err_alloca,
+            path_alloca,
+            out_val_param,
+            out_err_param,
+            payload_ty: payload_ty.clone(),
+        });
+
+        // Bind user params under their source-level names.
+        let mut scope = Scope::default();
+        for (i, p) in fd.params.iter().enumerate() {
+            let lt = self.type_expr_to_codegen_ty(&p.ty)?;
+            let alloca = self.alloca_for(&lt, &p.name.name)?;
+            let v = func
+                .get_nth_param((i + 1) as u32)
+                .expect("locus method arg index in range");
+            self.builder
+                .build_store(alloca, v)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            scope.locals.insert(p.name.name.clone(), (alloca, lt));
+        }
+
+        let end = self.lower_block(&fd.body, &mut scope)?;
+        if end == BlockEnd::Open {
+            // Fall-through. For Unit success (`() fallible(E)`)
+            // this is the natural shape: the body fires `fail`
+            // on the error paths and otherwise runs to the
+            // closing brace. path_alloca defaults to 0, so we
+            // just br to exit and the ok arm of the epilogue
+            // (which is a no-op store for Unit) takes us out.
+            // For typed-return methods the user owes us an
+            // explicit `return`.
+            if ret_ty.is_some() {
+                return Err(CodegenError::Unsupported(format!(
+                    "locus `{}` method `{}`: fallible body falls through \
+                     without `return` or `fail`",
+                    l.name.name, fd.name.name
+                )));
+            }
+            self.builder
+                .build_unconditional_branch(exit_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+
+        // Emit the epilogue at exit_bb. Both `return` and
+        // `fail` paths br to exit_bb (Stmt::Return / Stmt::Fail
+        // detect `current_user_fn_exit_bb.is_some()` and route
+        // through it). The epilogue branches on path_alloca.
+        self.emit_fallible_locus_method_exit_epilogue(
+            ret_ty.as_ref(),
+            &payload_ty,
+            path_alloca,
+            ret_alloca,
+            err_alloca,
+            out_val_param,
+            out_err_param,
+        )?;
+
+        self.current_user_fn_exit_bb = None;
+        self.current_user_fn_ret_alloca = None;
+        self.current_user_fn_fallible = None;
+        self.current_fn = None;
+        self.current_user_fn_ret = None;
+        self.current_self = None;
+        Ok(())
+    }
+
+    /// MVP epilogue for fallible locus methods: branch on
+    /// `path_alloca`. ok → load ret_alloca → store into
+    /// out_val. fail → load err_alloca → store into out_err.
+    /// Both converge on a cleanup block that flushes the
+    /// dissolve frame and `ret i1 path`. No deep-copy: the
+    /// declare-time `is_value_only_codegen_ty` check confirms
+    /// the success / err types are flat, so the sret store
+    /// writes self-contained bytes (no embedded heap pointers
+    /// to dangle when the callee's frame unwinds).
+    #[allow(clippy::too_many_arguments)]
+    fn emit_fallible_locus_method_exit_epilogue(
+        &mut self,
+        ret_ty: Option<&CodegenTy>,
+        payload_ty: &CodegenTy,
+        path_alloca: PointerValue<'ctx>,
+        ret_alloca: Option<PointerValue<'ctx>>,
+        err_alloca: PointerValue<'ctx>,
+        out_val_param: Option<PointerValue<'ctx>>,
+        out_err_param: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let bool_t = self.context.bool_type();
+        let func = self
+            .current_fn
+            .expect("current_fn set during fallible method body");
+        let exit_bb = self
+            .current_user_fn_exit_bb
+            .expect("exit_bb set during fallible method body");
+        self.builder.position_at_end(exit_bb);
+
+        let ok_bb =
+            self.context.append_basic_block(func, "fn.exit.ok");
+        let fail_bb =
+            self.context.append_basic_block(func, "fn.exit.fail");
+        let cleanup_bb =
+            self.context.append_basic_block(func, "fn.exit.cleanup");
+
+        let path_v = self
+            .builder
+            .build_load(bool_t, path_alloca, "fn.fail.path.load")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        self.builder
+            .build_conditional_branch(path_v, fail_bb, ok_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // OK branch: load ret_alloca → store into out_val. For
+        // Unit success (ret_ty None, out_val_param None) the
+        // branch falls through with no store.
+        self.builder.position_at_end(ok_bb);
+        if let (Some(rt), Some(ret_slot), Some(out_val)) =
+            (ret_ty, ret_alloca, out_val_param)
+        {
+            let llvm_ret_ty = self.llvm_basic_type(rt);
+            let v = self
+                .builder
+                .build_load(llvm_ret_ty, ret_slot, "fn.ret.load")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(out_val, v)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        self.builder
+            .build_unconditional_branch(cleanup_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // FAIL branch: load err_alloca → store into out_err.
+        self.builder.position_at_end(fail_bb);
+        {
+            let llvm_err_ty = self.llvm_basic_type(payload_ty);
+            let v = self
+                .builder
+                .build_load(llvm_err_ty, err_alloca, "fn.err.load")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(out_err_param, v)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        self.builder
+            .build_unconditional_branch(cleanup_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // CLEANUP: shared flush + `ret i1 path`. flush runs
+        // exactly once. `path_v` dominates cleanup (only one
+        // predecessor chain reaches it).
+        self.builder.position_at_end(cleanup_bb);
+        self.flush_dissolve_frame()?;
+        self.builder
+            .build_return(Some(&path_v))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
 
@@ -18560,13 +18926,160 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         {
             return Ok(result);
         }
+        // Open-question #24 MVP (2026-05-25): user-declared
+        // fallible locus member fns. The declare-time path
+        // emitted the LLVM fn with the fallible ABI (i1 ret +
+        // sret slots); we look it up here, build the call with
+        // the same shape, and return a FallibleCallResult so
+        // the surrounding `or` machinery dispatches the same
+        // way it does for free-fn fallibles.
+        if let Some(result) = self.try_lower_user_locus_fallible_method(
+            &info,
+            self_ptr,
+            &locus_name,
+            method_name,
+            args,
+            scope,
+        )? {
+            return Ok(result);
+        }
         Err(CodegenError::Unsupported(format!(
             "fallible method `{}.{}` — not a synthesized @form(vec) \
-             get/pop, @form(hashmap) get/remove, or @form(ring_buffer) \
-             pop; user-declared fallible methods on loci are not yet \
-             wired",
+             get/pop, @form(hashmap) get/remove/key_at/entry_at, \
+             @form(ring_buffer) pop, or a user-declared `fn` member \
+             with `fallible(E)`",
             locus_name, method_name
         )))
+    }
+
+    /// Open-question #24 MVP (2026-05-25): the user-declared
+    /// fallible method dispatch. Resolves `method_name` on
+    /// `locus_name`'s AST, validates the FnDecl is marked
+    /// fallible, then emits the call with the same sret-slot
+    /// shape free-fn fallible calls use minus the
+    /// `__caller_arena` prefix. Returns `Ok(None)` (caller
+    /// falls through to the unsupported diagnostic) if the
+    /// method is not declared or not fallible — preserves the
+    /// existing surrounding error path for stale-name shapes
+    /// rather than masking them.
+    fn try_lower_user_locus_fallible_method(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        method_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
+        let Some(func) = info.user_methods.get(method_name).copied() else {
+            return Ok(None);
+        };
+        // Find the FnDecl so we can consult its fallible
+        // declaration + param list. Mode-method decls also live
+        // in user_methods, but mode methods don't carry
+        // `fallible` (the parser doesn't accept it on modes),
+        // so we'd miss them naturally.
+        let fd_opt: Option<FnDecl> =
+            self.program.items.iter().find_map(|item| match item {
+                TopDecl::Locus(l) if l.name.name == locus_name => l
+                    .members
+                    .iter()
+                    .find_map(|m| match m {
+                        LocusMember::Fn(fd) if fd.name.name == method_name => {
+                            Some(fd.clone())
+                        }
+                        _ => None,
+                    }),
+                _ => None,
+            });
+        let Some(fd) = fd_opt else { return Ok(None) };
+        let Some(payload_te) = &fd.fallible else {
+            return Ok(None);
+        };
+
+        let payload_ty = self.type_expr_to_codegen_ty(payload_te)?;
+        let success_ty: Option<CodegenTy> = match &fd.ret {
+            None => None,
+            Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
+        };
+
+        // Arg count check. Default-value omission is supported
+        // for fallible locus methods on the same suffix-only
+        // basis as non-fallible ones — but for MVP we require
+        // exact-arg count to keep the dispatch simple. The
+        // typechecker already validates argument arity; this
+        // is defense.
+        if args.len() != fd.params.len() {
+            return Err(CodegenError::Unsupported(format!(
+                "locus `{}` method `{}`: fallible call expects {} args, \
+                 got {}",
+                locus_name,
+                method_name,
+                fd.params.len(),
+                args.len()
+            )));
+        }
+
+        // Allocate sret slots before lowering args, so the
+        // alloca lands in the entry block (LLVM mem2reg
+        // discipline) and slot pointers stay stable across arg
+        // lowering.
+        let out_val_slot: Option<PointerValue<'ctx>> = match &success_ty {
+            Some(st) => Some(self.alloca_for(st, "method.or.out_val.slot")?),
+            None => None,
+        };
+        let out_err_slot =
+            self.alloca_for(&payload_ty, "method.or.out_err.slot")?;
+
+        // Lower args + assemble call args. Slot 0 = self_ptr;
+        // slots 1..=n = user params; tail sret slots.
+        let mut llvm_args: Vec<BasicMetadataValueEnum<'ctx>> =
+            Vec::with_capacity(args.len() + 3);
+        llvm_args.push(self_ptr.into());
+        for (i, a) in args.iter().enumerate() {
+            let want = self.type_expr_to_codegen_ty(&fd.params[i].ty)?;
+            let (v, got) = self.lower_expr(a, scope)?;
+            let v = if got != want {
+                if view_coerces_to(&got, &want) {
+                    self.unpack_view_if_needed(v, &got)?
+                } else {
+                    return Err(CodegenError::Unsupported(format!(
+                        "locus `{}` method `{}`: arg {} type mismatch: \
+                         expected {:?}, got {:?}",
+                        locus_name, method_name, i, want, got
+                    )));
+                }
+            } else {
+                v
+            };
+            llvm_args.push(v.into());
+        }
+        if let Some(slot) = &out_val_slot {
+            llvm_args.push((*slot).into());
+        }
+        llvm_args.push(out_err_slot.into());
+
+        let call = self
+            .builder
+            .build_call(
+                func,
+                &llvm_args,
+                &format!("{}.{}.fallible.call", locus_name, method_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let i1_path = call
+            .try_as_basic_value()
+            .left()
+            .expect("fallible method returns i1")
+            .into_int_value();
+
+        Ok(Some(FallibleCallResult {
+            i1_path,
+            out_val_slot,
+            out_err_slot,
+            success_ty,
+            payload_ty,
+        }))
     }
 
     /// v1.x-FORM-2 PR6 (PR5 finale): inline-lower a synthesized
