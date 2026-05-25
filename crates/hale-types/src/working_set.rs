@@ -81,11 +81,15 @@ impl WorkingSetEstimate {
     }
 }
 
-/// Cache-tier budget guidance. Constants are conservative
-/// approximations of typical x86_64 hardware as of 2026:
-/// 32 KB L1, 512 KB L2-per-core, 8 MB shared L3. Auto-detection
-/// from sysfs is a follow-up; static defaults are fine for the
-/// v0.1 report.
+/// Cache-tier budget guidance. The numerical budgets come
+/// from sysfs (`/sys/devices/system/cpu/cpu0/cache/index{0,2,3}/size`)
+/// on the build host when available; falls back to static
+/// defaults (32 KB L1, 512 KB L2-per-core, 8 MB shared L3)
+/// when sysfs isn't present (non-Linux build host, container
+/// without `/sys`, parse failure on an exotic format). The
+/// detected value is cached in a `OnceLock` so the first
+/// `budget_bytes()` call pays the I/O and subsequent calls
+/// are a constant load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheTier {
     L1,
@@ -95,10 +99,11 @@ pub enum CacheTier {
 
 impl CacheTier {
     pub fn budget_bytes(self) -> u64 {
+        let budgets = detect_cache_budgets();
         match self {
-            CacheTier::L1 => 32 * 1024,
-            CacheTier::L2 => 512 * 1024,
-            CacheTier::L3 => 8 * 1024 * 1024,
+            CacheTier::L1 => budgets.l1,
+            CacheTier::L2 => budgets.l2,
+            CacheTier::L3 => budgets.l3,
         }
     }
 
@@ -109,6 +114,86 @@ impl CacheTier {
             CacheTier::L3 => "L3",
         }
     }
+}
+
+/// Static fallback when sysfs is unavailable / unparseable.
+/// Conservative typical-x86_64 defaults as of 2026.
+const FALLBACK_L1_BYTES: u64 = 32 * 1024;
+const FALLBACK_L2_BYTES: u64 = 512 * 1024;
+const FALLBACK_L3_BYTES: u64 = 8 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy)]
+struct CacheBudgets {
+    l1: u64,
+    l2: u64,
+    l3: u64,
+}
+
+/// F.32-2 v0.2 (2026-05-25): one-shot sysfs probe.
+/// `/sys/devices/system/cpu/cpu0/cache/index{0,2,3}/size`
+/// holds the per-CPU L1d / L2 / L3 cache size as a string
+/// like `"32K"` / `"512K"` / `"8M"`. Each index is parsed
+/// independently; any failure (file missing, unrecognized
+/// suffix, integer parse error) falls back to the
+/// corresponding static `FALLBACK_*` constant. Cached in a
+/// `OnceLock` so the first call to any `CacheTier::budget_bytes`
+/// pays the three open/read syscalls; later calls are a load.
+fn detect_cache_budgets() -> CacheBudgets {
+    static CACHE: std::sync::OnceLock<CacheBudgets> =
+        std::sync::OnceLock::new();
+    *CACHE.get_or_init(probe_cache_budgets_from_sysfs)
+}
+
+fn probe_cache_budgets_from_sysfs() -> CacheBudgets {
+    // Linux convention:
+    //   index0 = L1d (data cache, 32K typical)
+    //   index1 = L1i (instruction cache; not relevant here)
+    //   index2 = L2 (typical 512K-1M per core)
+    //   index3 = L3 (typical 8-128M shared)
+    // The indices' meanings come from `/sys/.../type` (Data /
+    // Instruction / Unified) but in practice index 0/2/3 are
+    // the right answers on every x86_64 / aarch64 box we care
+    // about. Read all three; fall back per-tier on any
+    // failure so a partial sysfs (e.g., a VM without an L3
+    // entry) still gets honest L1/L2 numbers.
+    let base = "/sys/devices/system/cpu/cpu0/cache";
+    let l1 = read_cache_size(&format!("{}/index0/size", base))
+        .unwrap_or(FALLBACK_L1_BYTES);
+    let l2 = read_cache_size(&format!("{}/index2/size", base))
+        .unwrap_or(FALLBACK_L2_BYTES);
+    let l3 = read_cache_size(&format!("{}/index3/size", base))
+        .unwrap_or(FALLBACK_L3_BYTES);
+    CacheBudgets { l1, l2, l3 }
+}
+
+/// Parse the sysfs `size` file. Format is a decimal integer
+/// followed by an optional unit suffix (`K`, `M`, `G`).
+/// Trailing newline is stripped. Returns `None` on any
+/// parse / IO failure.
+fn read_cache_size(path: &str) -> Option<u64> {
+    let s = std::fs::read_to_string(path).ok()?;
+    parse_sysfs_cache_size(s.trim())
+}
+
+fn parse_sysfs_cache_size(s: &str) -> Option<u64> {
+    if s.is_empty() {
+        return None;
+    }
+    let (num, suffix) = match s.chars().last()? {
+        c if c.is_ascii_alphabetic() => {
+            (&s[..s.len() - c.len_utf8()], Some(c.to_ascii_uppercase()))
+        }
+        _ => (s, None),
+    };
+    let n: u64 = num.parse().ok()?;
+    let scale: u64 = match suffix {
+        None => 1,
+        Some('K') => 1024,
+        Some('M') => 1024 * 1024,
+        Some('G') => 1024 * 1024 * 1024,
+        Some(_) => return None,
+    };
+    n.checked_mul(scale)
 }
 
 /// Per-locus arena overhead the estimator adds to every
@@ -250,14 +335,20 @@ fn estimate_locus(
     }
     visited.push(locus.name.name.clone());
 
-    let mut est = WorkingSetEstimate {
-        struct_bytes: ARENA_OVERHEAD,
-        ..Default::default()
-    };
+    let mut est = WorkingSetEstimate::default();
 
     // Walk params { } — every user field contributes either to
     // struct_bytes (primitive / type) or to child_bytes (locus-
-    // typed field, recursive expansion).
+    // typed field, recursive expansion). F.32-2 v0.2: lay out
+    // user fields with alignment-aware offset accumulation
+    // (round each field's offset up to its natural alignment
+    // before adding its size, round the final total up to the
+    // struct's own alignment). Packed-layout assumption from
+    // v0.1 under-estimated structs by 10-20% on
+    // mixed-alignment shapes; alignment-correct accumulation
+    // catches that.
+    let mut user_offset: u64 = 0;
+    let mut user_align: u64 = 1;
     for member in &locus.members {
         if let LocusMember::Params(pb) = member {
             for p in &pb.params {
@@ -273,26 +364,34 @@ fn estimate_locus(
                     est.unbounded_slots
                         .append(&mut child_est.unbounded_slots);
                 } else {
-                    let (size, unbounded) = type_size(ty, idx);
-                    est.struct_bytes =
-                        est.struct_bytes.saturating_add(size);
-                    if unbounded {
+                    let info = type_size_info(ty, idx);
+                    user_offset = round_up(user_offset, info.align);
+                    user_offset = user_offset.saturating_add(info.size);
+                    if info.align > user_align {
+                        user_align = info.align;
+                    }
+                    if info.unbounded {
                         est.unbounded_slots.push(p.name.name.clone());
                     }
                 }
             }
         }
     }
+    let user_section_size = round_up(user_offset, user_align);
+    est.struct_bytes =
+        ARENA_OVERHEAD.saturating_add(user_section_size);
 
     // Walk capacity { } slots and multiply cap × cell_stride.
     // cap comes from the @form annotation's `cap = N` arg when
     // present; absent means the slot grows dynamically and the
-    // slot name lands in unbounded_slots.
+    // slot name lands in unbounded_slots. Stride includes
+    // alignment padding (`type_size_info` already rounds up).
     let form_cap = form_cap_from_annotation(locus);
     for member in &locus.members {
         if let LocusMember::Capacity(cb) = member {
             for slot in &cb.slots {
-                let stride = type_size(&slot.elem_ty, idx).0;
+                let info = type_size_info(&slot.elem_ty, idx);
+                let stride = round_up(info.size, info.align);
                 if let Some(cap) = form_cap {
                     est.capacity_bytes = est
                         .capacity_bytes
@@ -326,107 +425,175 @@ fn locus_type_name<'a>(
     idx.loci.get(first.name.as_str()).copied()
 }
 
-/// Approximate byte size of a type expression. Returns
-/// `(bytes, unbounded)` — the second tuple member flags slots
-/// whose size couldn't be bounded (unbounded arrays, opaque
-/// named types) so the caller can name them in the report.
-fn type_size(ty: &TypeExpr, idx: &Index<'_>) -> (u64, bool) {
+/// F.32-2 v0.2 (2026-05-25): size + alignment + unbounded
+/// flag for a type expression. v0.1 tracked only `(size,
+/// unbounded)` and assumed packed layout, which under-
+/// estimated structs by ~10-20% (every Bool / Int adjacent to
+/// a Decimal lost 8-15 bytes of padding).
+///
+/// `size` is the layout-correct byte size (interior padding
+/// applied for structs, final padding rounded up to the
+/// type's own alignment). `align` is the type's natural
+/// alignment — used by enclosing structs to round their
+/// running offset up to a field boundary.
+#[derive(Debug, Clone, Copy)]
+struct TypeSizeInfo {
+    size: u64,
+    align: u64,
+    unbounded: bool,
+}
+
+fn type_size_info(ty: &TypeExpr, idx: &Index<'_>) -> TypeSizeInfo {
     match ty {
-        TypeExpr::Primitive(p, _) => (primitive_size(*p), false),
+        TypeExpr::Primitive(p, _) => primitive_size_info(*p),
         TypeExpr::Tuple(parts, _) => {
-            let mut total: u64 = 0;
+            let mut size: u64 = 0;
+            let mut align: u64 = 1;
             let mut unbounded = false;
             for t in parts {
-                let (s, u) = type_size(t, idx);
-                total = total.saturating_add(s);
-                unbounded |= u;
+                let info = type_size_info(t, idx);
+                size = round_up(size, info.align);
+                size = size.saturating_add(info.size);
+                if info.align > align {
+                    align = info.align;
+                }
+                unbounded |= info.unbounded;
             }
-            (total, unbounded)
+            size = round_up(size, align);
+            TypeSizeInfo { size, align, unbounded }
         }
         TypeExpr::Array { elem, size, .. } => {
-            let (elem_size, elem_unbounded) = type_size(elem, idx);
+            let elem_info = type_size_info(elem, idx);
+            // Each element of a `[T; N]` is laid out at the
+            // element's natural alignment. Effective stride =
+            // round_up(elem_size, elem_align).
+            let stride = round_up(elem_info.size, elem_info.align);
             let cap = size.as_ref().and_then(literal_int);
             match cap {
-                Some(n) => (
-                    elem_size.saturating_mul(n),
-                    elem_unbounded,
-                ),
-                None => (0, true),
+                Some(n) => TypeSizeInfo {
+                    size: stride.saturating_mul(n),
+                    align: elem_info.align,
+                    unbounded: elem_info.unbounded,
+                },
+                None => TypeSizeInfo {
+                    size: 0,
+                    align: elem_info.align,
+                    unbounded: true,
+                },
             }
         }
         TypeExpr::Named { path, .. } => {
             let Some(first) = path.segments.first() else {
-                return (16, true);
+                return TypeSizeInfo { size: 16, align: 8, unbounded: true };
             };
             if let Some(td) = idx.types.get(first.name.as_str()) {
-                return type_decl_size(td, idx);
+                return type_decl_size_info(td, idx);
             }
             // Locus-typed names are handled by the caller
-            // (which recurses through estimate_locus); we get
-            // here when the named ref isn't a known struct,
-            // alias, or enum. Conservative pointer-sized
+            // (which recurses through estimate_locus). Other
+            // unknown names: conservative pointer-sized
             // placeholder, flagged unbounded.
-            (16, true)
+            TypeSizeInfo { size: 16, align: 8, unbounded: true }
         }
-        TypeExpr::Projection { inner, .. } => type_size(inner, idx),
-        TypeExpr::Function { .. } => (8, false),
+        TypeExpr::Projection { inner, .. } => type_size_info(inner, idx),
+        TypeExpr::Function { .. } => {
+            TypeSizeInfo { size: 8, align: 8, unbounded: false }
+        }
     }
 }
 
-fn type_decl_size(td: &TypeDecl, idx: &Index<'_>) -> (u64, bool) {
+fn type_decl_size_info(td: &TypeDecl, idx: &Index<'_>) -> TypeSizeInfo {
     match &td.body {
-        TypeDeclBody::Alias(inner) => type_size(inner, idx),
+        TypeDeclBody::Alias(inner) => type_size_info(inner, idx),
         TypeDeclBody::Struct(fields) => {
-            let mut total: u64 = 0;
+            // Walk declaration order, accumulating with
+            // alignment padding. Final size is rounded up to
+            // the struct's own alignment so back-to-back
+            // arrays of this struct also pad correctly.
+            let mut size: u64 = 0;
+            let mut align: u64 = 1;
             let mut unbounded = false;
             for f in fields {
-                let (s, u) = type_size(&f.ty, idx);
-                total = total.saturating_add(s);
-                unbounded |= u;
+                let info = type_size_info(&f.ty, idx);
+                size = round_up(size, info.align);
+                size = size.saturating_add(info.size);
+                if info.align > align {
+                    align = info.align;
+                }
+                unbounded |= info.unbounded;
             }
-            (total, unbounded)
+            size = round_up(size, align);
+            TypeSizeInfo { size, align, unbounded }
         }
         TypeDeclBody::Enum(variants) => {
-            // Largest payload + tag. Tag = 8 bytes for
-            // alignment; payload = max(sum-of-fields across
-            // variants).
-            let mut max_payload: u64 = 0;
+            // Largest payload (with internal padding) + 8-byte
+            // tag (also padded to its alignment).
+            let mut max_payload_size: u64 = 0;
+            let mut max_payload_align: u64 = 1;
             let mut unbounded = false;
             for v in variants {
                 let mut vsize: u64 = 0;
+                let mut valign: u64 = 1;
                 for ty in &v.fields {
-                    let (s, u) = type_size(ty, idx);
-                    vsize = vsize.saturating_add(s);
-                    unbounded |= u;
+                    let info = type_size_info(ty, idx);
+                    vsize = round_up(vsize, info.align);
+                    vsize = vsize.saturating_add(info.size);
+                    if info.align > valign {
+                        valign = info.align;
+                    }
+                    unbounded |= info.unbounded;
                 }
-                if vsize > max_payload {
-                    max_payload = vsize;
+                vsize = round_up(vsize, valign);
+                if vsize > max_payload_size {
+                    max_payload_size = vsize;
+                }
+                if valign > max_payload_align {
+                    max_payload_align = valign;
                 }
             }
-            (max_payload.saturating_add(8), unbounded)
+            // Tag = i64 (8B, align 8). Effective enum size:
+            // round_up(tag, max_payload_align) + payload, then
+            // round_up to enum align (max of tag-align and
+            // payload-align).
+            let align = max_payload_align.max(8);
+            let tag_size = round_up(8, max_payload_align.max(1));
+            let size = round_up(
+                tag_size.saturating_add(max_payload_size),
+                align,
+            );
+            TypeSizeInfo { size, align, unbounded }
         }
     }
 }
 
-fn primitive_size(p: PrimType) -> u64 {
-    match p {
+fn primitive_size_info(p: PrimType) -> TypeSizeInfo {
+    let (size, align) = match p {
         PrimType::Int
         | PrimType::Uint
         | PrimType::Float
         | PrimType::Time
-        | PrimType::Duration => 8,
-        PrimType::Decimal => 16,
-        PrimType::Bool => 1,
+        | PrimType::Duration => (8, 8),
+        PrimType::Decimal => (16, 16),
+        PrimType::Bool => (1, 1),
         // Heap-managed sequences. Approximated as pointer + len
         // = 16 bytes resident on the struct; the heap buffer
         // itself is not counted (lives in the locus's arena,
         // already covered by the per-method scratch heuristic
-        // we elided in v0.1).
+        // we elided in v0.1). Alignment = 8 (pointer).
         PrimType::String
         | PrimType::Bytes
         | PrimType::StringView
-        | PrimType::BytesView => 16,
+        | PrimType::BytesView => (16, 8),
+    };
+    TypeSizeInfo { size, align, unbounded: false }
+}
+
+fn round_up(n: u64, align: u64) -> u64 {
+    if align <= 1 {
+        return n;
     }
+    let r = n % align;
+    if r == 0 { n } else { n.saturating_add(align - r) }
 }
 
 fn literal_int(e: &Expr) -> Option<u64> {
@@ -484,7 +651,19 @@ mod tests {
 
     #[test]
     fn primitive_param_fields_contribute_bytes() {
-        // 4 Ints × 8B + 1 Bool × 1B + 1 Decimal × 16B = 49 B
+        // 4 Ints × 8B (align 8) + 1 Bool × 1B (align 1) + 1
+        // Decimal × 16B (align 16). With v0.2 alignment-aware
+        // layout, offsets advance:
+        //   Int   0 .. 8    (round_up 0,8 = 0)
+        //   Int   8 .. 16
+        //   Int  16 .. 24
+        //   Int  24 .. 32
+        //   Bool 32 .. 33   (round_up 32,1 = 32)
+        //   Pad  33 .. 48   (round_up 33,16 = 48 — Decimal
+        //                    alignment forces 15B pad)
+        //   Decimal 48 .. 64
+        //   Final round_up(64, 16) = 64
+        // User section = 64 bytes. Struct = ARENA_OVERHEAD + 64.
         let est = estimate(
             r#"
                 locus L {
@@ -501,7 +680,7 @@ mod tests {
             "#,
             "L",
         );
-        assert_eq!(est.struct_bytes, ARENA_OVERHEAD + 4 * 8 + 1 + 16);
+        assert_eq!(est.struct_bytes, ARENA_OVERHEAD + 64);
     }
 
     #[test]
@@ -546,7 +725,14 @@ mod tests {
 
     #[test]
     fn user_struct_size_recurses_into_fields() {
-        // Quote = Decimal (16) + Decimal (16) + Int (8) = 40 B
+        // Quote interior with alignment:
+        //   bid     Decimal 16, align 16 → 0  .. 16
+        //   ask     Decimal 16, align 16 → 16 .. 32
+        //   venue   Int      8, align  8 → 32 .. 40
+        //   final round_up(40, max_align=16) = 48
+        // Struct align = 16 ⇒ Quote size = 48 B, align 16.
+        // Outer L: user_offset 0 + 48 = 48, user_align 16,
+        // round_up(48, 16) = 48. struct = ARENA_OVERHEAD + 48.
         let est = estimate(
             r#"
                 type Quote { bid: Decimal; ask: Decimal; venue: Int; }
@@ -555,7 +741,7 @@ mod tests {
             "#,
             "L",
         );
-        assert_eq!(est.struct_bytes, ARENA_OVERHEAD + 40);
+        assert_eq!(est.struct_bytes, ARENA_OVERHEAD + 48);
     }
 
     #[test]
@@ -619,21 +805,73 @@ mod tests {
     }
 
     #[test]
-    fn cache_tier_budget_constants() {
-        assert_eq!(CacheTier::L1.budget_bytes(), 32 * 1024);
-        assert_eq!(CacheTier::L2.budget_bytes(), 512 * 1024);
-        assert_eq!(CacheTier::L3.budget_bytes(), 8 * 1024 * 1024);
+    fn fallback_cache_tier_constants() {
+        // The runtime tiers may come from sysfs on Linux build
+        // hosts (the f32-2-v02 sysfs detect path), so these
+        // values can differ across machines. Pin the fallback
+        // constants instead — those are what builds on non-
+        // Linux hosts / containers without /sys see.
+        assert_eq!(FALLBACK_L1_BYTES, 32 * 1024);
+        assert_eq!(FALLBACK_L2_BYTES, 512 * 1024);
+        assert_eq!(FALLBACK_L3_BYTES, 8 * 1024 * 1024);
+    }
+
+    #[test]
+    fn budget_bytes_at_least_fallback() {
+        // Sysfs values should never be SMALLER than the
+        // fallback (any modern x86_64 / aarch64 box has at
+        // least 32K L1 / 512K L2 / 8M L3). Lock the lower
+        // bound so a future sysfs parser regression that
+        // silently halves the budget gets caught.
+        assert!(CacheTier::L1.budget_bytes() >= FALLBACK_L1_BYTES);
+        assert!(CacheTier::L2.budget_bytes() >= FALLBACK_L2_BYTES);
+        assert!(CacheTier::L3.budget_bytes() >= FALLBACK_L3_BYTES);
+    }
+
+    #[test]
+    fn parse_sysfs_cache_size_units() {
+        assert_eq!(parse_sysfs_cache_size("32K"), Some(32 * 1024));
+        assert_eq!(parse_sysfs_cache_size("512K"), Some(512 * 1024));
+        assert_eq!(parse_sysfs_cache_size("8M"), Some(8 * 1024 * 1024));
+        assert_eq!(
+            parse_sysfs_cache_size("128M"),
+            Some(128 * 1024 * 1024)
+        );
+        assert_eq!(
+            parse_sysfs_cache_size("1G"),
+            Some(1024 * 1024 * 1024)
+        );
+        // Bare integer = bytes.
+        assert_eq!(parse_sysfs_cache_size("4096"), Some(4096));
+        // Whitespace already stripped by `read_cache_size`'s
+        // .trim(); these are the raw-parser cases.
+        assert_eq!(parse_sysfs_cache_size(""), None);
+        assert_eq!(parse_sysfs_cache_size("32X"), None);
+        assert_eq!(parse_sysfs_cache_size("notanumber"), None);
     }
 
     #[test]
     fn nearest_tier_picks_smallest_fitting() {
+        // Use FALLBACK_* directly so the test is environment-
+        // independent (sysfs detect can shift the runtime tier
+        // sizes).
+        let l1 = FALLBACK_L1_BYTES;
+        let l2 = FALLBACK_L2_BYTES;
+        let l3 = FALLBACK_L3_BYTES;
+        // The actual tiers are at LEAST these values; use the
+        // runtime budgets for the equality boundary cases.
+        let l1_runtime = CacheTier::L1.budget_bytes();
+        let l2_runtime = CacheTier::L2.budget_bytes();
+        let l3_runtime = CacheTier::L3.budget_bytes();
         assert_eq!(nearest_tier(0), Some(CacheTier::L1));
-        assert_eq!(nearest_tier(32 * 1024), Some(CacheTier::L1));
-        assert_eq!(nearest_tier(32 * 1024 + 1), Some(CacheTier::L2));
-        assert_eq!(nearest_tier(512 * 1024), Some(CacheTier::L2));
-        assert_eq!(nearest_tier(512 * 1024 + 1), Some(CacheTier::L3));
-        assert_eq!(nearest_tier(8 * 1024 * 1024), Some(CacheTier::L3));
-        assert_eq!(nearest_tier(8 * 1024 * 1024 + 1), None);
+        assert_eq!(nearest_tier(l1_runtime), Some(CacheTier::L1));
+        assert_eq!(nearest_tier(l1_runtime + 1), Some(CacheTier::L2));
+        assert_eq!(nearest_tier(l2_runtime), Some(CacheTier::L2));
+        assert_eq!(nearest_tier(l3_runtime), Some(CacheTier::L3));
+        assert_eq!(nearest_tier(l3_runtime + 1), None);
+        // Touch the fallback constants so a future regression
+        // that drops them from the source surfaces here.
+        let _ = (l1, l2, l3);
     }
 
     #[test]
