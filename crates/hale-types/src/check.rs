@@ -194,8 +194,8 @@ pub fn check_bundle(bundle: &Bundle<'_>, top: &TopScope) -> Vec<Diag> {
 /// (each pinned locus spawns its own pthread, so two pinned
 /// siblings — even of the same locus type — live on different
 /// threads).
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum PoolId {
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum PoolId {
     Cooperative(String),
     /// Field-path string of the pinned locus's instantiation
     /// site, e.g. `"heartbeat"` for `main.heartbeat: pinned`.
@@ -205,7 +205,7 @@ enum PoolId {
 }
 
 impl PoolId {
-    fn display(&self) -> String {
+    pub(crate) fn display(&self) -> String {
         match self {
             PoolId::Cooperative(name) => {
                 format!("cooperative(pool = {})", name)
@@ -348,6 +348,17 @@ fn check_placement_single_thread(
         }
     }
 
+    // F.32-1∞ (2026-05-25): pre-compute sync inference for
+    // every `@form(hashmap)` locus without explicit `sync = `.
+    // The F.32-0 diagnostic below consults this map to name
+    // the specific discipline the rule would pick, instead of
+    // suggesting a generic "choose one of serialized/striped".
+    let inferred_sync = crate::sync_inference::infer_sync_for_bundle(
+        bundle,
+        top,
+        &pool_of_locus_type,
+    );
+
     for program in bundle.programs.values() {
         for item in &program.items {
             if let TopDecl::Locus(l) = item {
@@ -360,6 +371,7 @@ fn check_placement_single_thread(
                             pool_of_locus_type: &pool_of_locus_type,
                             cross_pool_safe_loci: &cross_pool_safe_loci,
                             form_bearing_loci: &form_bearing_loci,
+                            inferred_sync: &inferred_sync,
                             top,
                             diags,
                         };
@@ -514,6 +526,16 @@ struct PoolCheckCx<'a> {
     /// cross-pool diagnostic — receivers in this set get a
     /// "declare `sync = ...` to opt in" upgrade hint.
     form_bearing_loci: &'a BTreeSet<String>,
+    /// F.32-1∞ (2026-05-25): sync-inference results keyed by
+    /// locus type name. Present only for `@form(hashmap)`
+    /// loci without explicit `sync = `. The cross-pool
+    /// diagnostic reads this to name the specific discipline
+    /// the rule picks (so the upgrade hint is actionable, not
+    /// generic).
+    inferred_sync: &'a BTreeMap<
+        String,
+        crate::sync_inference::InferredSync,
+    >,
     top: &'a TopScope,
     diags: &'a mut Vec<Diag>,
 }
@@ -620,21 +642,46 @@ fn walk_expr_pool(expr: &Expr, cx: &mut PoolCheckCx) {
                     if cx.cross_pool_safe_loci.contains(&field_locus) {
                         // skip the diagnostic
                     } else if callee_pool != caller_pool_val {
-                        let upgrade_hint = if cx.form_bearing_loci.contains(&field_locus) {
-                            format!(
-                                "\n  hint: receiver `{}` is `@form(...)`. \
-                                 Cross-pool access requires an explicit sync \
-                                 discipline:\n    \
-                                 `@form(hashmap, sync = serialized)` — per-map \
-                                 mutex (simplest, lowest throughput)\n    \
-                                 `@form(hashmap, sync = striped)` — parallel \
-                                 writers, cache-padded cells (F.32-1β)\n  \
-                                 See `notes/f32-cache-aware-delivery-plan.md` \
-                                 § F.32-0 / F.32-1.",
-                                field_locus,
-                            )
-                        } else {
-                            String::new()
+                        // F.32-1∞: prefer the inference-specific
+                        // hint when it yields a non-None
+                        // discipline (names the picked sync + the
+                        // observed writer/reader pools). Fall
+                        // back to the generic F.32-0 upgrade
+                        // hint when the inference returns None
+                        // (single-pool, or the offending call
+                        // shape isn't one of the recognized
+                        // `@form(hashmap)` methods so the walker
+                        // observed no signal) or when the
+                        // receiver isn't a hashmap (e.g. plain
+                        // `@form(vec)`).
+                        let inferred_hint = cx
+                            .inferred_sync
+                            .get(&field_locus)
+                            .and_then(|inf| {
+                                crate::sync_inference::render_inference_hint(
+                                    &field_locus, inf,
+                                )
+                            });
+                        let upgrade_hint = match inferred_hint {
+                            Some(h) => h,
+                            None => {
+                                if cx.form_bearing_loci.contains(&field_locus) {
+                                    format!(
+                                        "\n  hint: receiver `{}` is `@form(...)`. \
+                                         Cross-pool access requires an explicit sync \
+                                         discipline:\n    \
+                                         `@form(hashmap, sync = serialized)` — per-map \
+                                         mutex (simplest, lowest throughput)\n    \
+                                         `@form(hashmap, sync = striped)` — parallel \
+                                         writers, cache-padded cells (F.32-1β)\n  \
+                                         See `notes/f32-cache-aware-delivery-plan.md` \
+                                         § F.32-0 / F.32-1.",
+                                        field_locus,
+                                    )
+                                } else {
+                                    String::new()
+                                }
+                            }
                         };
                         cx.diags.push(Diag::ty(
                             *span,
