@@ -233,20 +233,42 @@ when the type-system / operational-semantics docs are drafted.
     - Cross-arena transfer reuses the existing
       `lotus_current_caller_arena` TLS routing free fns use.
 
-    **Implementation scope estimate:**
+    **Implementation scope estimate (revised 2026-05-25 after
+    a scoping attempt):**
 
-    - Typecheck: `crates/hale-types/src/check.rs` — relax the
-      "no fallible on locus methods" check; add a "bus-subscribed
-      handler must not be fallible" check at the subscribe site.
-    - Codegen: `crates/hale-codegen/src/codegen.rs` — locus
-      method call lowering emits the existing `{ error_tag,
-      value }` fallible-return shape for fallible-decl members;
-      reuse free fn arena routing.
-    - Tests: positive case (member fn returns fallible, caller
-      addresses with `or raise`); negative case (subscribed
-      handler with fallible return — rejected at subscribe).
+    - Typecheck: ~30 LOC — relax the rejection at the
+      `LocusMember::Fn` arm; add a fallible-handler check at
+      the bus-subscribe site (`info.bus_subscribes` loop in
+      `check.rs`).
+    - **Codegen: ~500 LOC** (much bigger than initially
+      estimated). The locus-method declaration codepath
+      (~line 11400 in `codegen.rs`) needs the same fallible-
+      shape extension as free fns (sret slots, i1 return);
+      `LocusInfo.user_methods` needs to grow from
+      `BTreeMap<String, FunctionValue>` to a richer
+      `MethodSig` that tracks fallibility per method (~6-10
+      read sites across codegen need updating);
+      `lower_self_method_call` + the cross-locus method call
+      paths need to dispatch fallible-return shape and route
+      through `or raise` / `or default` / `or handler`
+      disposition lowering (the existing free-fn dispositions
+      need to be parameterized over method-call vs free-fn-
+      call). Tests: ~100 LOC.
     - Spec: `spec/types.md` two-channel rule section narrows
       to substrate-orchestrated paths.
+
+    **Why the revised estimate:** the initial estimate
+    (~150 LOC) was based on "reuse the free-fn fallible
+    return shape." That's right for the LLVM ABI, but the
+    plumbing to make the call-site dispatch KNOW a method
+    is fallible (and emit the right disposition) is the
+    bulk of the work — call sites currently look up
+    `user_methods[name] → FunctionValue` and have no
+    fallibility metadata to consult. Partial-shipping
+    (typecheck-yes, codegen-error) would let users declare
+    fallible member fns that crash at build time — worse
+    UX than the current rule. Hold the rule until codegen
+    plumbing lands as a coherent unit.
 
     **Open sub-questions before drafting:**
 

@@ -1505,6 +1505,12 @@ impl<'a> Checker<'a> {
                     ),
                 ));
             }
+            // Note: handler-must-not-be-fallible check is implicit
+            // (the LocusMember::Fn check above rejects ANY fallible
+            // member fn). When open-questions.md #24 narrows the
+            // member-fn rule to permit fallible non-bus-subscribed
+            // fns, this loop gains an explicit fallible-handler
+            // check.
         }
 
         // F.8: contract compatibility. If this locus consumes
@@ -2405,6 +2411,13 @@ impl<'a> Checker<'a> {
                 // implicit main locus root via
                 // `lotus_root_panic`. See `spec/semantics.md`
                 // § "Fallible call semantics".
+                //
+                // Narrowing proposal: open-questions.md #24.
+                // Codegen-side plumbing (locus method call
+                // dispatch tracking fallibility per-method,
+                // call-site disposition lowering) is ~500 LOC
+                // — a focused future session. Until then, the
+                // rejection stays.
                 if let Some(payload_te) = &f.fallible {
                     self.diags.push(Diag::ty(
                         payload_te.span(),
@@ -2424,7 +2437,10 @@ impl<'a> Checker<'a> {
                              structural failure through an inline closure \
                              so on_failure can pick it up; (3) sentinel-\
                              predicate — return a Bool / Option-like shape \
-                             from the method and let the caller branch.",
+                             from the method and let the caller branch. \
+                             (Narrowing this rule is tracked as open-\
+                             questions.md #24 — needs ~500 LOC codegen \
+                             plumbing for method-call fallibility tracking.)",
                             f.name.name
                         ),
                     ));
