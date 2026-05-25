@@ -1,0 +1,84 @@
+// 59-locality-budget — per-locus cache-tier budget via
+// @locality(L1|L2|L3|any).
+//
+// Three loci with different cache-residency intent. The
+// compile-time working-set estimator (F.32-2) checks each
+// locus's projected bytes against the declared tier when
+// the build runs with `--target-cache lN` or
+// `--locality-report`.
+//
+// Build expectations on this host (Ryzen 9800X3D, L1=48K,
+// L2=1024K, L3=96M):
+//
+//   $ hale build 59-locality-budget --locality-report
+//   locality report (F.32-2 working-set estimator):
+//     Counter   ~      80 B  (fits L1)  ...
+//     Cache     ~   32832 B  (fits L1)  ...
+//     Registry  ~  786496 B  (fits L2)  ...
+//
+//   $ hale build 59-locality-budget --target-cache l1 --strict
+//   error: 2 locus(es) exceed their working-set budget:
+//     Registry: estimated 786496 B (+ 737344 B over L1 = 49152 B; from @locality)
+//
+// Counter's @locality(L1) succeeds; Registry's @locality(L2)
+// fits L2 (= 1MB) but exceeds L1; Cache's @locality(any)
+// opts out of any global gate.
+
+type Entry { k: Int; v: Int; }
+
+// L1-budgeted: hot counter that wants single-cache-line
+// residency. The struct is ~80 B total (arena overhead +
+// two Ints + small alignment), well within L1.
+@locality(L1)
+locus Counter {
+    params {
+        ticks:  Int = 0;
+        scaled: Int = 0;
+    }
+    fn bump(n: Int) {
+        self.ticks  = self.ticks + 1;
+        self.scaled = self.scaled + n;
+    }
+}
+
+// L2-budgeted: registry with 48k Entry cells (~768K). Fits
+// L2's 512K-1M envelope on typical x86_64; would exceed L1
+// (32-48K) by a wide margin.
+@form(hashmap, sync = lockfree, cap = 49152)
+@locality(L2)
+locus Registry {
+    capacity { pool entries of Entry indexed_by k; }
+}
+
+// Opt-out: this locus is intentionally unbudgeted. Useful
+// for caches whose size is policy-driven and shouldn't
+// fail a `--target-cache l1 --strict` build.
+@form(hashmap, sync = lockfree, cap = 2048)
+@locality(any)
+locus Cache {
+    capacity { pool entries of Entry indexed_by k; }
+}
+
+main locus App {
+    params {
+        counter:  Counter  = Counter  { };
+        registry: Registry = Registry { };
+        cache:    Cache    = Cache    { };
+    }
+    placement {
+        // Counter on the main pool; Registry + Cache opted
+        // onto separate cooperative pools so the chunk-hint
+        // (F.32-3) sees a non-main placement and the budget
+        // analysis runs against the right pool's L2 slice.
+        registry: cooperative(pool = io);
+        cache:    cooperative(pool = compute);
+    }
+    run() {
+        self.counter.bump(1);
+        self.counter.bump(2);
+        println("ticks=",  self.counter.ticks);
+        println("scaled=", self.counter.scaled);
+    }
+}
+
+fn main() { App { }; }
