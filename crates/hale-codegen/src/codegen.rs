@@ -2026,58 +2026,6 @@ fn chunk_hint_for_coop_pool(
     p2.clamp(4096, 65536)
 }
 
-/// Open-question #24 MVP (2026-05-25): predicate gating which
-/// types are admissible as success / err payload on a fallible
-/// locus method. The free-fn fallible ABI uses
-/// `__caller_arena` plus deep-copy to land heap-bearing
-/// payloads in caller-owned storage. Locus methods don't yet
-/// have that plumbing, so v0.1 restricts to flat (no heap
-/// pointer in the payload bytes) types.
-///
-/// Allowed: Int, Float, Bool, Decimal, Duration, Time
-/// (representation-flat in v0), no-payload Enum, and TypeRef
-/// structs all of whose fields recursively pass this
-/// predicate. Rejected: String, Bytes, *View, LocusRef,
-/// Array, Tuple, FnPtr, Interface, Cell, has-payload Enum.
-fn is_value_only_codegen_ty(
-    ty: &CodegenTy,
-    user_types: &BTreeMap<String, TypeInfo<'_>>,
-) -> bool {
-    match ty {
-        CodegenTy::Int
-        | CodegenTy::Float
-        | CodegenTy::Bool
-        | CodegenTy::Decimal
-        | CodegenTy::Duration
-        | CodegenTy::Time => true,
-        CodegenTy::Enum(_) => {
-            // No-payload-only enums are flat (i32 tag); has-
-            // payload variants land in v0.2 along with heap
-            // returns.
-            true
-        }
-        CodegenTy::TypeRef(name) => {
-            let Some(info) = user_types.get(name.as_str()) else {
-                // Unknown user type: conservative reject.
-                return false;
-            };
-            info.fields
-                .values()
-                .all(|(_, ft)| is_value_only_codegen_ty(ft, user_types))
-        }
-        CodegenTy::String
-        | CodegenTy::Bytes
-        | CodegenTy::BytesView
-        | CodegenTy::StringView
-        | CodegenTy::LocusRef(_)
-        | CodegenTy::Array(_, _)
-        | CodegenTy::Tuple(_)
-        | CodegenTy::FnPtr { .. }
-        | CodegenTy::Interface(_)
-        | CodegenTy::Cell(_, _) => false,
-    }
-}
-
 fn locus_reads_self_children(l: &LocusDecl) -> bool {
     l.members.iter().any(|m| match m {
         LocusMember::Lifecycle(lc) => block_reads_self_children(&lc.body),
@@ -11523,22 +11471,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             l.name.name, fd.name.name
                         )));
                     }
-                    // Open-question #24 MVP (2026-05-25): user-
-                    // declared `fn` members may now declare
-                    // `fallible(E)`. Typecheck already gated bus-
-                    // subscribed handlers + closure assertions
-                    // (which can't be fallible because the
-                    // substrate has no caller frame to address
-                    // a value error). Here we enforce the v0.1
-                    // codegen scope-cut: success type (if non-
-                    // Unit) and err payload type must both be
-                    // value-only — no heap-bearing fields. Free
-                    // fns rely on `__caller_arena` plumbing to
-                    // deep-copy the return / err payload into
-                    // the caller's arena; locus methods don't
-                    // have that param, so v0.1 sidesteps deep-
-                    // copy by restricting the success / err
-                    // types. Heap-bearing returns land in v0.2.
+                    // Open-question #24 v0.2 (2026-05-25): user-
+                    // declared `fn` members may carry
+                    // `fallible(E)` with arbitrary success / err
+                    // payload types — heap-bearing payloads
+                    // (`String`, `Bytes`, struct fields with
+                    // heap content) now ride through the same
+                    // TLS-based caller-arena snapshot that non-
+                    // fallible heap-returning locus methods
+                    // already use (`open_method_scratch` +
+                    // `emit_method_return_deep_copy`). Typecheck
+                    // still gates bus-subscribed handlers and
+                    // closure assertions — those can't be
+                    // fallible because the substrate has no
+                    // caller frame to address a value error.
                     let mut llvm_param_tys: Vec<inkwell::types::BasicMetadataTypeEnum> =
                         Vec::with_capacity(fd.params.len() + 1);
                     llvm_param_tys.push(ptr_t.into());
@@ -11582,35 +11528,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         None => None,
                         Some(payload_te) => {
                             let pt = self.type_expr_to_codegen_ty(payload_te)?;
-                            if !is_value_only_codegen_ty(&pt, &self.user_types) {
-                                return Err(CodegenError::Unsupported(format!(
-                                    "locus `{}` method `{}`: fallible payload \
-                                     type `{:?}` is heap-bearing; v0.1 \
-                                     supports value-type payloads only \
-                                     (Int / Float / Bool / Decimal / Time / \
-                                     Duration / no-payload Enum / flat \
-                                     struct). Heap-bearing fallible payloads \
-                                     on locus methods land in v0.2 once the \
-                                     `__caller_arena` plumbing is wired \
-                                     through method calls. Workaround: wrap \
-                                     the body as a free fn (which has the \
-                                     plumbing) and call it from the method.",
-                                    l.name.name, fd.name.name, pt,
-                                )));
-                            }
-                            if let Some(rt) = &ret_codegen_ty {
-                                if !is_value_only_codegen_ty(rt, &self.user_types) {
-                                    return Err(CodegenError::Unsupported(format!(
-                                        "locus `{}` method `{}`: fallible \
-                                         method return type `{:?}` is heap-\
-                                         bearing; v0.1 supports value-type \
-                                         returns only on fallible methods. \
-                                         Same v0.1 scope-cut as the payload \
-                                         constraint above.",
-                                        l.name.name, fd.name.name, rt,
-                                    )));
-                                }
-                            }
+                            // Open-question #24 v0.2 (2026-05-25):
+                            // heap-bearing payloads now flow through
+                            // the same TLS caller-arena snapshot +
+                            // `emit_method_return_deep_copy` machinery
+                            // that non-fallible heap-returning locus
+                            // methods use. No type-shape gate here
+                            // anymore; the epilogue routes both ok
+                            // and fail branches through the deep-copy
+                            // (scalars pass through unchanged via
+                            // `ty_needs_self_field_deep_copy`).
+                            //
                             // Add sret slot params: out_val if
                             // success is non-Unit, then out_err.
                             // Mirrors the free-fn ABI ordering.
@@ -12934,10 +12862,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         });
         self.loops.clear();
         self.push_dissolve_frame();
+        // Open-question #24 v0.2: open a per-call scratch
+        // subregion + snapshot caller_arena via TLS. The body
+        // allocates transients into the scratch; the epilogue
+        // deep-copies the ok/fail payload out into caller_arena
+        // before destroying the scratch. Same shape as non-
+        // fallible heap-returning locus methods.
+        self.open_method_scratch()?;
 
-        // ret_alloca + err_alloca + path_alloca. Value-only
-        // types (the MVP scope) — `alloca_for` picks the right
-        // LLVM type for each.
+        // ret_alloca + err_alloca + path_alloca. `alloca_for`
+        // picks the right LLVM type for each.
         let ret_alloca = match &ret_ty {
             None => None,
             Some(rt) => Some(self.alloca_for(rt, "fn.ret.slot")?),
@@ -13047,15 +12981,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
-    /// MVP epilogue for fallible locus methods: branch on
-    /// `path_alloca`. ok → load ret_alloca → store into
-    /// out_val. fail → load err_alloca → store into out_err.
-    /// Both converge on a cleanup block that flushes the
-    /// dissolve frame and `ret i1 path`. No deep-copy: the
-    /// declare-time `is_value_only_codegen_ty` check confirms
-    /// the success / err types are flat, so the sret store
-    /// writes self-contained bytes (no embedded heap pointers
-    /// to dangle when the callee's frame unwinds).
+    /// Open-question #24 v0.2 epilogue. Branch on `path_alloca`.
+    /// On the ok path, load `ret_alloca` and (for heap-bearing
+    /// success types) deep-copy through `emit_method_return_deep_copy`
+    /// into the TLS-snapshot'd caller_arena, then store into
+    /// `out_val`. On the fail path, same shape with
+    /// `err_alloca` → `out_err`. Both branches converge on a
+    /// cleanup block that destroys the per-call scratch (set
+    /// up in `lower_fallible_locus_method_body` via
+    /// `open_method_scratch`), flushes the dissolve frame, and
+    /// `ret i1 path`.
+    ///
+    /// `emit_method_return_deep_copy` no-ops for scalar / view
+    /// / Cell types (`ty_needs_self_field_deep_copy` returns
+    /// false) — the value passes through unchanged and the
+    /// sret store writes its bytes directly. So this epilogue
+    /// works the same as the v0.1 value-only epilogue did for
+    /// flat payloads; the heap-bearing case is the new path.
     #[allow(clippy::too_many_arguments)]
     fn emit_fallible_locus_method_exit_epilogue(
         &mut self,
@@ -13092,46 +13034,55 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_conditional_branch(path_v, fail_bb, ok_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // OK branch: load ret_alloca → store into out_val. For
-        // Unit success (ret_ty None, out_val_param None) the
-        // branch falls through with no store.
+        // OK branch. Load ret_alloca → (deep-copy into caller
+        // arena for heap-bearing types) → store into out_val.
+        // For Unit success (ret_ty None, out_val_param None)
+        // the branch falls through with no store.
         self.builder.position_at_end(ok_bb);
         if let (Some(rt), Some(ret_slot), Some(out_val)) =
             (ret_ty, ret_alloca, out_val_param)
         {
             let llvm_ret_ty = self.llvm_basic_type(rt);
-            let v = self
+            let raw = self
                 .builder
                 .build_load(llvm_ret_ty, ret_slot, "fn.ret.load")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let copied = self.emit_method_return_deep_copy(raw, rt)?;
             self.builder
-                .build_store(out_val, v)
+                .build_store(out_val, copied)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         self.builder
             .build_unconditional_branch(cleanup_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // FAIL branch: load err_alloca → store into out_err.
+        // FAIL branch. Same deep-copy treatment for the err
+        // payload — for value-only err types this is a no-op
+        // pass-through (scalars / Cells), for heap-bearing
+        // payloads it anchors the bytes in caller_arena before
+        // the scratch goes away.
         self.builder.position_at_end(fail_bb);
         {
             let llvm_err_ty = self.llvm_basic_type(payload_ty);
-            let v = self
+            let raw = self
                 .builder
                 .build_load(llvm_err_ty, err_alloca, "fn.err.load")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let copied = self.emit_method_return_deep_copy(raw, payload_ty)?;
             self.builder
-                .build_store(out_err_param, v)
+                .build_store(out_err_param, copied)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         self.builder
             .build_unconditional_branch(cleanup_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // CLEANUP: shared flush + `ret i1 path`. flush runs
-        // exactly once. `path_v` dominates cleanup (only one
-        // predecessor chain reaches it).
+        // CLEANUP: shared scratch-destroy + flush + `ret i1
+        // path`. Order matters: deep-copy already happened
+        // above, so destroying the scratch here only frees
+        // bytes the caller is no longer reading.
         self.builder.position_at_end(cleanup_bb);
+        self.close_method_scratch()?;
         self.flush_dissolve_frame()?;
         self.builder
             .build_return(Some(&path_v))
@@ -19059,6 +19010,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         llvm_args.push(out_err_slot.into());
 
+        // Open-question #24 v0.2: publish the caller's current
+        // arena via TLS before invoking the fallible method.
+        // The callee's `open_method_scratch` snapshots it at
+        // body entry, and the epilogue's deep-copy lands the
+        // ok/fail payload back in this arena before the
+        // callee's scratch is destroyed. Mirrors the non-
+        // fallible heap-returning method call discipline.
+        self.emit_set_caller_arena()?;
         let call = self
             .builder
             .build_call(

@@ -1,9 +1,15 @@
-//! Open-question #24 MVP rejection tests. The v0.1 ship
-//! restricts fallible success / err types to value-only (no
-//! heap pointer in the payload bytes); this file pins the
-//! rejection diagnostics so the constraint is visible to
-//! callers and a future v0.2 widening of the rule can find +
-//! retire these tests cleanly.
+//! Open-question #24 v0.2 (2026-05-25) — heap-bearing
+//! fallible payloads on user-declared locus member fns. The
+//! v0.1 ship gated `String` / `Bytes` / struct-with-heap-fields
+//! types at codegen; v0.2 lifts that gate by wiring the same
+//! TLS-snapshot caller_arena + `emit_method_return_deep_copy`
+//! plumbing that non-fallible heap-returning locus methods
+//! already use.
+//!
+//! These tests were the v0.1 rejection cases; v0.2 turns them
+//! into positive cases — they should build cleanly + roundtrip
+//! the heap-bearing payload correctly. The file name is kept
+//! for git-blame continuity (the test bodies tell the story).
 
 use hale_codegen::build_executable;
 use std::path::PathBuf;
@@ -17,7 +23,7 @@ fn unique_path(tag: &str) -> PathBuf {
         .unwrap_or(0);
     let mut p = std::env::temp_dir();
     p.push(format!(
-        "lt-locus-fallible-reject-{}-{}-{}.bin",
+        "lt-locus-fallible-heap-{}-{}-{}.bin",
         tag,
         std::process::id(),
         nanos,
@@ -25,27 +31,9 @@ fn unique_path(tag: &str) -> PathBuf {
     p
 }
 
-fn build_err(src: &str) -> String {
+fn build_and_run(tag: &str, src: &str) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let bin = unique_path("reject");
-    let err = build_executable(&program, &bin)
-        .err()
-        .map(|e| format!("{:?}", e))
-        .unwrap_or_else(|| "expected build to fail".to_string());
-    let _ = std::fs::remove_file(&bin);
-    err
-}
-
-fn build_ok(src: &str) {
-    let program = hale_syntax::parse_source(src).expect("parse");
-    let bin = unique_path("ok");
-    build_executable(&program, &bin).expect("build");
-    let _ = std::fs::remove_file(&bin);
-}
-
-fn build_and_run(src: &str) -> (String, std::process::ExitStatus) {
-    let program = hale_syntax::parse_source(src).expect("parse");
-    let bin = unique_path("run");
+    let bin = unique_path(tag);
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -56,72 +44,113 @@ fn build_and_run(src: &str) -> (String, std::process::ExitStatus) {
 }
 
 #[test]
-fn rejects_string_in_err_payload() {
+fn string_in_err_payload_now_works() {
+    // v0.1 rejected this at codegen. v0.2 deep-copies the
+    // String payload into caller_arena on the fail branch;
+    // `err.msg` reads through the survived bytes.
     let src = r#"
         type E { msg: String; }
         locus L {
-            fn check() -> Int fallible(E) {
-                fail E { msg: "boom" };
+            fn check(x: Int) -> Int fallible(E) {
+                if x < 0 { fail E { msg: "neg" }; }
+                return x;
             }
-            run() { let v = self.check() or 0; println(v); }
+            run() {
+                let v = self.check(5) or 0;
+                println("v=", v);
+                let w = self.check(-1) or 99;
+                println("w=", w);
+                // Round-trip the heap-bearing payload through
+                // a substitute that captures err and reads
+                // err.msg — proves the String survived the
+                // scratch-destroy + lands in caller_arena.
+                let _ = self.check(-2) or self.echo(err.msg);
+            }
+            fn echo(s: String) -> Int {
+                println("echo:", s);
+                return 0;
+            }
         }
         fn main() { L { }; }
     "#;
-    let err = build_err(src);
-    assert!(
-        err.contains("heap-bearing") && err.contains("v0.1"),
-        "expected v0.1 heap-payload rejection; got: {}",
-        err
-    );
+    let (stdout, status) = build_and_run("str_err", src);
+    assert!(status.success(), "non-zero: {:?}\n{}", status, stdout);
+    assert!(stdout.contains("v=5"), "got: {}", stdout);
+    assert!(stdout.contains("w=99"), "got: {}", stdout);
+    assert!(stdout.contains("echo:neg"), "got: {}", stdout);
 }
 
 #[test]
-fn rejects_string_success_type() {
+fn string_success_type_now_works() {
+    // v0.1 rejected String returns from fallible methods.
+    // v0.2 deep-copies the String into caller_arena on the
+    // ok branch.
     let src = r#"
         type E { code: Int; }
         locus L {
-            fn name() -> String fallible(E) {
-                return "hi";
+            fn name(id: Int) -> String fallible(E) {
+                if id < 0 { fail E { code: 1 }; }
+                return "ok-name";
             }
-            run() { let v = self.name() or "?"; println(v); }
+            run() {
+                let v = self.name(7) or "?";
+                println("v=", v);
+                let w = self.name(-1) or "fallback";
+                println("w=", w);
+            }
         }
         fn main() { L { }; }
     "#;
-    let err = build_err(src);
-    assert!(
-        err.contains("heap-bearing") && err.contains("v0.1"),
-        "expected v0.1 heap-return rejection; got: {}",
-        err
-    );
+    let (stdout, status) = build_and_run("str_succ", src);
+    assert!(status.success(), "non-zero: {:?}\n{}", status, stdout);
+    assert!(stdout.contains("v=ok-name"), "got: {}", stdout);
+    assert!(stdout.contains("w=fallback"), "got: {}", stdout);
 }
 
 #[test]
-fn rejects_nested_string_field_in_err_struct() {
-    // Recursive flat check: an err struct with an inner struct
-    // whose field is String is still heap-bearing.
+fn nested_string_field_in_err_struct_now_works() {
+    // Recursive struct-with-String case. The err payload type
+    // `E { code: Int; inner: Inner { tag: String; } }` carries
+    // a heap pointer one nesting level deep; the deep-copy
+    // recurses through TypeRef fields and anchors the String
+    // in caller_arena.
     let src = r#"
         type Inner { tag: String; }
         type E { code: Int; inner: Inner; }
         locus L {
-            fn check() -> Int fallible(E) {
-                fail E { code: 1, inner: Inner { tag: "x" } };
+            fn check(x: Int) -> Int fallible(E) {
+                if x < 0 {
+                    fail E { code: 7, inner: Inner { tag: "nested" } };
+                }
+                return x;
             }
-            run() { let v = self.check() or 0; println(v); }
+            run() {
+                let v = self.check(5) or 0;
+                println("v=", v);
+                let w = self.check(-1) or 99;
+                println("w=", w);
+                let _ = self.check(-2) or self.echo(err.inner.tag);
+            }
+            fn echo(s: String) -> Int {
+                println("echo:", s);
+                return 0;
+            }
         }
         fn main() { L { }; }
     "#;
-    let err = build_err(src);
-    assert!(
-        err.contains("heap-bearing"),
-        "expected recursive heap-check to fire; got: {}",
-        err
-    );
+    let (stdout, status) = build_and_run("nested_str", src);
+    assert!(status.success(), "non-zero: {:?}\n{}", status, stdout);
+    assert!(stdout.contains("v=5"), "got: {}", stdout);
+    assert!(stdout.contains("w=99"), "got: {}", stdout);
+    assert!(stdout.contains("echo:nested"), "got: {}", stdout);
 }
 
 #[test]
-fn accepts_nested_flat_struct_in_err_payload() {
-    // Recursive flat check should pass for an all-flat nested
-    // shape. Verify it actually builds + runs.
+fn flat_struct_payload_still_works_post_v02() {
+    // Regression guard. The v0.1-allowed flat-struct path
+    // shouldn't have regressed under the v0.2 deep-copy
+    // change. Scalars / no-heap fields pass through the
+    // copy as identity stores.
     let src = r#"
         type Inner { tag: Int; flag: Bool; }
         type E { code: Int; inner: Inner; }
@@ -141,9 +170,35 @@ fn accepts_nested_flat_struct_in_err_payload() {
         }
         fn main() { L { }; }
     "#;
-    build_ok(src);
-    let (stdout, status) = build_and_run(src);
+    let (stdout, status) = build_and_run("flat", src);
     assert!(status.success(), "non-zero: {:?}\n{}", status, stdout);
     assert!(stdout.contains("v=7"), "got: {}", stdout);
     assert!(stdout.contains("w=42"), "got: {}", stdout);
+}
+
+#[test]
+fn struct_success_type_with_string_field_now_works() {
+    // Heap-bearing struct as the success type. The ok-branch
+    // deep-copy anchors the inner String in caller_arena
+    // before the callee's scratch goes away.
+    let src = r#"
+        type Reply { tag: String; n: Int; }
+        type E { code: Int; }
+        locus L {
+            fn build(n: Int) -> Reply fallible(E) {
+                if n < 0 { fail E { code: 1 }; }
+                return Reply { tag: "built", n: n };
+            }
+            run() {
+                let r = self.build(3) or Reply { tag: "fallback", n: 0 };
+                println("tag=", r.tag);
+                println("n=", r.n);
+            }
+        }
+        fn main() { L { }; }
+    "#;
+    let (stdout, status) = build_and_run("struct_succ", src);
+    assert!(status.success(), "non-zero: {:?}\n{}", status, stdout);
+    assert!(stdout.contains("tag=built"), "got: {}", stdout);
+    assert!(stdout.contains("n=3"), "got: {}", stdout);
 }
