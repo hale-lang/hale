@@ -402,3 +402,159 @@ fn main() { App { }; }
         msg
     );
 }
+
+// F.32-1∞ (2026-05-25): when the offending cross-pool call IS
+// one of the synthesized hashmap methods, the diagnostic should
+// substitute the inference-specific hint (naming the picked
+// discipline + the observed writer/reader pools) for the
+// generic "choose serialized or striped" hint.
+
+#[test]
+fn cross_pool_set_call_carries_inferred_sync_hint() {
+    // Two pools (io + compute) each fire `self.reg.set(...)`
+    // inside a bus handler (`on_tick`). Inference: 2 writer
+    // pools, hot-path (in `on_*` handlers) → striped.
+    let src = r#"
+type Entry { k: Int; v: Int; }
+type Tick { n: Int; }
+
+@form(hashmap)
+locus Registry {
+    capacity { pool entries of Entry indexed_by k; }
+}
+
+locus IoWorker {
+    params { reg: Registry = Registry { }; }
+    bus { subscribe "tick" as on_tick of type Tick; }
+    fn on_tick(t: Tick) {
+        self.reg.set(Entry { k: t.n, v: 1 });
+    }
+}
+
+locus CompWorker {
+    params { reg: Registry = Registry { }; }
+    bus { subscribe "tick" as on_tick of type Tick; }
+    fn on_tick(t: Tick) {
+        self.reg.set(Entry { k: t.n, v: 2 });
+    }
+}
+
+main locus App {
+    params {
+        io: IoWorker = IoWorker { };
+        cpu: CompWorker = CompWorker { };
+    }
+    placement {
+        io: cooperative(pool = io);
+        cpu: cooperative(pool = compute);
+    }
+    bus { publish "tick" of type Tick; }
+    run() { }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    let cross_pool: Vec<_> =
+        msgs.iter().filter(|m| m.contains("cross-pool")).collect();
+    assert!(
+        !cross_pool.is_empty(),
+        "expected cross-pool diagnostic; got: {:?}",
+        msgs
+    );
+    let msg = cross_pool[0];
+    assert!(
+        msg.contains("inferred sync (F.32-1∞)"),
+        "diagnostic should carry the inferred-sync banner: {}",
+        msg
+    );
+    assert!(
+        msg.contains("sync = striped"),
+        "inference should pick striped (2 writer pools, hot-path): {}",
+        msg
+    );
+    assert!(
+        msg.contains("hot-path: yes"),
+        "hot-path detection should fire (call inside on_tick): {}",
+        msg
+    );
+    // Should NOT carry the generic "choose serialized or striped"
+    // fallback hint — the inference picked one, the diagnostic
+    // names it specifically.
+    assert!(
+        !msg.contains("sync = serialized")
+            || msg.contains("`sync = striped` for `Registry`"),
+        "diagnostic should not fall back to the generic both-options hint: {}",
+        msg
+    );
+}
+
+#[test]
+fn cross_pool_set_call_one_writer_picks_serialized() {
+    // 1 writer pool (io), 2 reader pools (io, compute) → the
+    // 2-vs-1 rule fires `serialized`. Concrete shape: each
+    // worker holds its own `reg` field; pool propagation
+    // first-wins puts Registry on `io` (from IoWriter).
+    // CompReader on `compute` calling `self.reg.has(...)` is
+    // the cross-pool call site; the diagnostic includes the
+    // inference banner.
+    let src = r#"
+type Entry { k: Int; v: Int; }
+type Tick { n: Int; }
+
+@form(hashmap)
+locus Registry {
+    capacity { pool entries of Entry indexed_by k; }
+}
+
+locus IoWriter {
+    params { reg: Registry = Registry { }; }
+    bus { subscribe "tick" as on_tick of type Tick; }
+    fn on_tick(t: Tick) {
+        self.reg.set(Entry { k: t.n, v: 1 });
+        let _ = self.reg.has(t.n);
+    }
+}
+
+locus CompReader {
+    params { reg: Registry = Registry { }; }
+    bus { subscribe "tick" as on_tick of type Tick; }
+    fn on_tick(t: Tick) {
+        let _ = self.reg.has(t.n);
+    }
+}
+
+main locus App {
+    params {
+        io: IoWriter = IoWriter { };
+        cpu: CompReader = CompReader { };
+    }
+    placement {
+        io: cooperative(pool = io);
+        cpu: cooperative(pool = compute);
+    }
+    bus { publish "tick" of type Tick; }
+    run() { }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    let cross_pool: Vec<_> =
+        msgs.iter().filter(|m| m.contains("cross-pool")).collect();
+    assert!(
+        !cross_pool.is_empty(),
+        "expected cross-pool diagnostic; got: {:?}",
+        msgs
+    );
+    let combined = cross_pool
+        .iter()
+        .map(|m| m.as_str())
+        .collect::<Vec<&str>>()
+        .join("\n");
+    assert!(
+        combined.contains("sync = serialized"),
+        "inference should pick serialized (1 writer, multi reader): {}",
+        combined
+    );
+}

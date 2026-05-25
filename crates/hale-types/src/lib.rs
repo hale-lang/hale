@@ -24,6 +24,7 @@
 pub mod check;
 pub mod resolve;
 pub mod symbol;
+pub mod sync_inference;
 pub mod ty;
 pub mod working_set;
 
