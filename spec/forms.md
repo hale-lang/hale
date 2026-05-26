@@ -685,7 +685,7 @@ into a plain `@form(hashmap)` receiver are typecheck-rejected
 | `@form(hashmap)` | single-pool only | shipped |
 | `@form(hashmap, sync = serialized)` | per-map `pthread_mutex_t` (F.32-1α) | shipped |
 | `@form(hashmap, sync = striped)` | cell-level CAS + per-map `pthread_rwlock_t` for grow + cache-padded cells (F.32-1β2-v2) | shipped |
-| `@form(hashmap, sync = lockfree, cap = N)` | fixed-cap, cell-level CAS, no rwlock or mutex (F.32-1γ-v1) | shipped |
+| `@form(hashmap, sync = lockfree, cap = N)` | fixed-cap, cell-level CAS, no rwlock or mutex (F.32-1γ-v1); + `remove` via tombstones (F.32-1γ-v2 session 1) | shipped |
 
 **Discipline picker by workload:**
 
@@ -704,8 +704,11 @@ into a plain `@form(hashmap)` receiver are typecheck-rejected
   `sync = lockfree, cap = N`. Pure CAS — no kernel-mediated
   sync anywhere. Fastest of the four on the
   `form_hashmap_false_sharing` bench (~1.3× faster than α
-  serialized at 2 cores). Trade-off: fixed cap, no `remove`
-  in v1.
+  serialized at 2 cores). Trade-off: fixed cap (no grow path
+  until F.32-1γ-v2 session 3). `remove` is supported via
+  tombstones (γ-v2 session 1), but tombstones accumulate until
+  grow ships — churn-heavy workloads at fixed cap can saturate
+  via tombstones before live entries fill the table.
 
 The `serialized` discipline wraps every public entry point in
 a per-map mutex. Throughput is bounded by lock contention
@@ -726,17 +729,31 @@ by more than the 2-core parallelism gain compensates.
 Striped's win materializes on 4+ cores or with heavier per-op
 work where the rwlock overhead amortizes.
 
-The `lockfree` discipline (F.32-1γ-v1) drops the rwlock
-entirely. It requires `cap = N` upfront (no grow path);
-`remove` is a no-op in v1 (tombstones + compaction land in
-γ-v2). Pure CAS on the same 3-state occupancy machine; no
-kernel-mediated synchronization on the hot path. The
-`form_hashmap_false_sharing` bench measures lockfree at
-~1.30× faster than serialized and ~2.54× faster than striped
-on the 2-pool concurrent-write workload. Cap should be sized
-to 2-4× the peak expected entry count to keep linear-probe
-latency bounded; the runtime rounds the user's `cap = N` up
-to the next power of 2 (needed for the `& mask` probe).
+The `lockfree` discipline (F.32-1γ) drops the rwlock
+entirely. It requires `cap = N` upfront (grow is deferred to
+γ-v2 session 3); under γ-v1 `remove` was a no-op, under γ-v2
+session 1 (2026-05-26) `remove` is supported via tombstones
+(4-state cell machine: EMPTY → CLAIMED → COMMITTED → TOMBSTONE).
+Pure CAS on the occupancy byte; no kernel-mediated
+synchronization on the hot path. The `form_hashmap_false_sharing`
+bench measures lockfree at ~1.30× faster than serialized and
+~2.54× faster than striped on the 2-pool concurrent-write
+workload. Cap should be sized to 2-4× the peak expected entry
+count to keep linear-probe latency bounded; the runtime rounds
+the user's `cap = N` up to the next power of 2 (needed for the
+`& mask` probe).
+
+Tombstones in γ-v2 session 1 are *not* reclaimed in place —
+the probe advances past them, but inserts always land in the
+next EMPTY slot rather than reusing a TOMBSTONE. Reuse arrives
+naturally with the γ-v2 session 3 grow path, which rebuilds
+the table without tombstones at each grow boundary. Until grow
+ships, a workload that churns the same keys at a fixed cap can
+exhaust the table via accumulating tombstones; size `cap = N`
+accordingly. Consistency on remove follows the lockfree model:
+a reader that observed COMMITTED before a concurrent CAS to
+TOMBSTONE returns the (now-stale) value — "the key was present
+at the moment we read."
 
 Cross-pool method calls into a `@form(hashmap, sync = ...)`
 receiver are accepted without diagnostic — the chosen

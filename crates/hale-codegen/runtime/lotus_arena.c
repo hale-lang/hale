@@ -2039,7 +2039,8 @@ void lotus_vec_destroy(void *vec_ptr) {
 #define LOTUS_HASHMAP_SYNC_NONE       0  /* plain @form(hashmap); single-pool */
 #define LOTUS_HASHMAP_SYNC_SERIALIZED 1  /* α: per-map pthread_mutex_t */
 #define LOTUS_HASHMAP_SYNC_STRIPED    2  /* β2: cell CAS + rwlock-on-grow */
-#define LOTUS_HASHMAP_SYNC_LOCKFREE   3  /* γ-v1: fixed-cap, pure CAS, no rwlock, no remove */
+#define LOTUS_HASHMAP_SYNC_LOCKFREE   3  /* γ-v1: fixed-cap, pure CAS, no rwlock, no remove
+                                          * γ-v2 session 1: + tombstones + remove */
 
 /* 3-state occupancy byte for striped cells. Plain / serialized
  * cells use just 0 (empty) / 1 (occupied) since serial access
@@ -2047,6 +2048,16 @@ void lotus_vec_destroy(void *vec_ptr) {
 #define LOTUS_CELL_EMPTY     0
 #define LOTUS_CELL_CLAIMED   1  /* striped: writer holds slot, not yet published */
 #define LOTUS_CELL_COMMITTED 2  /* striped: writer released; key + value valid */
+/* F.32-1γ-v2 (session 1): tombstone marker for removed lockfree
+ * entries. Probes continue past TOMBSTONE (an entry with this key
+ * may live further along the probe chain, placed before the
+ * tombstone was created); only EMPTY terminates the probe. EMPTY
+ * is the probe boundary. Striped / serialized / none never produce
+ * TOMBSTONE — they use backward-shift compaction in
+ * remove_unlocked, so the TOMBSTONE path is dead code for those
+ * disciplines but the shared probe helpers still handle the state
+ * gracefully. */
+#define LOTUS_CELL_TOMBSTONE 3
 
 /* Cache line for the striped cell-stride padding (matches the
  * value used in experiments/f32-false-sharing/bench.c). The
@@ -2145,6 +2156,21 @@ typedef struct {
      * iteration. */
     int64_t cursor_i;
     size_t  cursor_slot;
+    /* F.32-1γ-v2 (session 1): tombstone counter, lockfree only.
+     * `m->len` continues to mean live entries; `tombstone_count`
+     * tracks slots in TOMBSTONE state. Saturation is reached
+     * when `len + tombstone_count >= cap`. NONE/SERIALIZED/STRIPED
+     * use backward-shift remove (no tombstones) so this counter
+     * stays 0 for them. Atomic load/store under lockfree; relaxed
+     * ordering is sufficient (the value is advisory for
+     * monitoring, not load-bearing for correctness).
+     *
+     * Session 3 / NBHM-style grow will rebuild the table without
+     * tombstones at grow boundaries, naturally compacting the
+     * counter back to 0. Until grow ships, tombstones accumulate
+     * — workloads with heavy churn against a fixed cap will hit
+     * saturation faster than v1 expected. */
+    size_t tombstone_count;
 } lotus_hashmap_t;
 
 static size_t lotus_hashmap_entry_size(const lotus_hashmap_t *m) {
@@ -2229,6 +2255,11 @@ void lotus_hashmap_init(void *map_ptr,
      * the cursor. */
     m->cursor_i = -1;
     m->cursor_slot = 0;
+    /* F.32-1γ-v2 (session 1): tombstone counter, only mutated on
+     * the lockfree remove / set-on-tombstone paths but
+     * initialized here so it has a defined value for any
+     * discipline. */
+    m->tombstone_count = 0;
 }
 
 /* F.32-1α (2026-05-24): sync = serialized variant. Same init
@@ -2618,7 +2649,15 @@ probe_restart:;
 /* F.32-1γ-v1 (2026-05-25): lockfree set. Same 3-state CAS
  * machine as β2's set_striped, minus the rwlock and the
  * grow path. Probe bounded by m->cap; silent drop on
- * exhaustion. */
+ * exhaustion.
+ *
+ * F.32-1γ-v2 (session 1): TOMBSTONE-aware. Probes advance
+ * past TOMBSTONE slots without reuse — same-key updates land
+ * in the new EMPTY slot ahead of the tombstone, fresh inserts
+ * find the next EMPTY past the tombstone chain. Reuse-on-
+ * tombstone is intentionally deferred to session 3, where the
+ * grow path's natural compaction (NEW table built without
+ * tombstones) removes the need. */
 static void lotus_hashmap_set_lockfree(lotus_hashmap_t *m,
                                         const void *key,
                                         const void *value) {
@@ -2631,7 +2670,10 @@ static void lotus_hashmap_set_lockfree(lotus_hashmap_t *m,
             /* Cap exhausted. Silent drop per the γ-v1 contract
              * — caller should have sized the map to 2-4x peak
              * expected entries. len() reports the saturation
-             * for monitoring. */
+             * for monitoring. v2 session 1: tombstones consume
+             * slots until grow ships (session 3); a churn-heavy
+             * workload at fixed cap can saturate via tombstones
+             * before live entries fill the table. */
             return;
         }
         char *slot = m->slots + i * es;
@@ -2655,6 +2697,17 @@ static void lotus_hashmap_set_lockfree(lotus_hashmap_t *m,
             continue;  /* CAS lost; re-read */
         }
         if (state == LOTUS_CELL_CLAIMED) continue;  /* spin */
+        /* F.32-1γ-v2 (session 1): TOMBSTONE — slot's previous
+         * key was removed. Advance probe; the residual key
+         * bytes are NOT valid for comparison (they may match
+         * coincidentally, which would silently corrupt the
+         * update path via a TOMBSTONE → CLAIMED CAS that
+         * shouldn't fire). */
+        if (state == LOTUS_CELL_TOMBSTONE) {
+            i = (i + 1) & mask;
+            probes++;
+            continue;
+        }
         /* COMMITTED — compare keys. */
         if (lotus_hashmap_key_eq(m, slot + 1, key)) {
             /* Update path. Same CAS COMMITTED → CLAIMED →
@@ -2711,7 +2764,16 @@ static size_t lotus_hashmap_find_slot_striped(lotus_hashmap_t *m,
     size_t es = lotus_hashmap_entry_size(m);
     size_t mask = m->cap - 1;
     size_t i = lotus_hashmap_hash(m, key) & mask;
+    /* Probe-bound: a fully tombstoned-or-committed table would
+     * never expose an EMPTY terminator. Walk at most `cap`
+     * positions before declaring "not present". For non-lockfree
+     * disciplines this is unreachable (tombstones don't exist
+     * there, and the load-factor invariant guarantees at least
+     * one EMPTY); for lockfree v2 it's a safety net against
+     * adversarial probe chains. */
+    size_t probes = 0;
     for (;;) {
+        if (probes >= m->cap) return m->cap;  /* not present */
         char *slot = m->slots + i * es;
         uint8_t state;
         for (;;) {
@@ -2723,12 +2785,23 @@ static size_t lotus_hashmap_find_slot_striped(lotus_hashmap_t *m,
         if (state == LOTUS_CELL_EMPTY) {
             return m->cap;  /* probe boundary: not found */
         }
+        /* F.32-1γ-v2 (session 1): TOMBSTONE — slot's key was
+         * removed but the key bytes may still match
+         * coincidentally. Advance the probe; the key (if still
+         * present) lives further down the chain since session-1
+         * doesn't reuse tombstoned slots on insert. */
+        if (state == LOTUS_CELL_TOMBSTONE) {
+            i = (i + 1) & mask;
+            probes++;
+            continue;
+        }
         /* COMMITTED — key bytes valid (release-store paired
          * with our acquire-load above). */
         if (lotus_hashmap_key_eq(m, slot + 1, key)) {
             return i;
         }
         i = (i + 1) & mask;
+        probes++;
     }
 }
 
@@ -2845,15 +2918,56 @@ static int lotus_hashmap_remove_unlocked(lotus_hashmap_t *m,
     return 1;
 }
 
+/* F.32-1γ-v2 (session 1): lockfree remove. CAS the slot's
+ * occupancy byte COMMITTED → TOMBSTONE; concurrent readers
+ * that observed COMMITTED before the CAS continue to read the
+ * (now-stale) value, which is the documented lockfree
+ * consistency model ("key was present at the moment we read").
+ *
+ * Returns 1 on a successful remove, 0 on miss (key not present,
+ * or concurrent double-remove won the race). A racing concurrent
+ * update may push the slot to CLAIMED briefly; find_slot_striped
+ * already spins past CLAIMED so the retry loop converges. */
+static int lotus_hashmap_remove_lockfree(lotus_hashmap_t *m,
+                                          const void *key) {
+    if (__atomic_load_n(&m->len, __ATOMIC_RELAXED) == 0) return 0;
+    size_t es = lotus_hashmap_entry_size(m);
+    for (;;) {
+        size_t i = lotus_hashmap_find_slot_striped(m, key);
+        if (i >= m->cap) return 0;  /* not present */
+        char *slot = m->slots + i * es;
+        uint8_t expected = LOTUS_CELL_COMMITTED;
+        if (__atomic_compare_exchange_n(
+                (uint8_t *)&slot[0],
+                &expected, LOTUS_CELL_TOMBSTONE,
+                0, /* strong CAS */
+                __ATOMIC_ACQ_REL,
+                __ATOMIC_RELAXED))
+        {
+            __atomic_fetch_add(&m->tombstone_count, 1, __ATOMIC_RELAXED);
+            __atomic_fetch_sub(&m->len, 1, __ATOMIC_RELAXED);
+            return 1;
+        }
+        /* CAS failed. The slot's state moved out from under us:
+         *   - CLAIMED: a concurrent update is in flight; loop
+         *     and find_slot's CLAIMED-spin will re-stabilize.
+         *   - TOMBSTONE: a concurrent remove already won; the
+         *     next find_slot iteration won't see the key →
+         *     return 0 via the "not present" branch.
+         * The loop terminates because each iteration either
+         * converges (CAS succeeds) or progresses the state
+         * machine toward a terminal state (TOMBSTONE). */
+    }
+}
+
 int lotus_hashmap_remove(void *map_ptr, const void *key) {
     if (!map_ptr || !key) return 0;
     lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
     if (m->sync_mode == LOTUS_HASHMAP_SYNC_LOCKFREE) {
-        /* F.32-1γ-v1: remove is not supported. Tombstones +
-         * periodic compaction land in γ-v2 if a workload
-         * needs them. For v1 the contract is "fixed cap,
-         * grow-only" — `remove` is a no-op. */
-        return 0;
+        /* F.32-1γ-v2 (session 1): tombstone-based remove.
+         * No rwlock — pure CAS on the slot's occupancy byte.
+         * Grow + compaction still pending (session 3). */
+        return lotus_hashmap_remove_lockfree(m, key);
     }
     if (m->sync_mode == LOTUS_HASHMAP_SYNC_STRIPED) {
         /* Striped: take wrlock so shifts can't race with rdlock'd
@@ -3045,6 +3159,11 @@ static size_t lotus_hashmap_resolve_index_slot_striped(lotus_hashmap_t *m,
             /* Spin: writer mid-publish on this slot. */
         }
         if (state == LOTUS_CELL_EMPTY) continue;
+        /* F.32-1γ-v2 (session 1): tombstones don't count toward
+         * iteration order — they're removed entries. m->len
+         * tracks live entries only, so the i-th live entry skips
+         * past TOMBSTONE slots the same way it skips EMPTY. */
+        if (state == LOTUS_CELL_TOMBSTONE) continue;
         if (seen == (size_t)i) {
             m->cursor_i = i;
             m->cursor_slot = s;

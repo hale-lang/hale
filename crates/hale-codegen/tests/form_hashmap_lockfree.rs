@@ -1,7 +1,7 @@
 //! F.32-1γ-v1 (2026-05-25) — `@form(hashmap, sync = lockfree,
 //! cap = N)` end-to-end coverage.
 //!
-//! Three scenarios:
+//! Three γ-v1 scenarios:
 //!
 //!   1. `lockfree_basic_single_pool` — sanity check that the
 //!      lockfree opt-in compiles and the standard get/has/len
@@ -16,6 +16,26 @@
 //!   3. `lockfree_update_existing_key` — same-key write twice
 //!      must update (not double-count). Verifies the CAS
 //!      COMMITTED → CLAIMED → write → COMMITTED update path.
+//!
+//! F.32-1γ-v2 (session 1, 2026-05-26) — tombstones + remove.
+//! Four scenarios:
+//!
+//!   4. `lockfree_remove_present_key` — set / remove / get-miss /
+//!      len. Confirms COMMITTED → TOMBSTONE CAS lands and the
+//!      key is no longer visible.
+//!
+//!   5. `lockfree_remove_missing_key` — remove of a never-inserted
+//!      key returns 0 (raises KeyError handled by the call site).
+//!      Differs from γ-v1 where ALL removes were 0.
+//!
+//!   6. `lockfree_set_remove_set_same_key` — the headline session-1
+//!      shape. After remove, re-set must succeed (lands in the
+//!      EMPTY slot ahead of the tombstone, since v2 session 1
+//!      doesn't reuse tombstoned slots).
+//!
+//!   7. `lockfree_iter_skips_tombstones` — iteration via
+//!      `key_at` / `value_at` skips tombstoned entries; `len()`
+//!      reflects live count, not live+tombstone.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -184,4 +204,190 @@ fn lockfree_update_existing_key() {
     );
     assert!(stdout.contains("len=1"), "update should not double-count; got: {:?}", stdout);
     assert!(stdout.contains("v=200"), "update should overwrite; got: {:?}", stdout);
+}
+
+#[test]
+fn lockfree_remove_present_key() {
+    // γ-v2 session 1 entry point: `remove` is no longer a no-op
+    // on lockfree maps. The CAS COMMITTED → TOMBSTONE must
+    // succeed; subsequent get / has must report the key absent.
+    let src = r#"
+        type Counter { id: Int; v: Int; }
+
+        @form(hashmap, sync = lockfree, cap = 64)
+        locus Registry {
+            capacity { pool entries of Counter indexed_by id; }
+        }
+
+        main locus App {
+            params { reg: Registry = Registry { }; }
+            run() {
+                self.reg.set(Counter { id: 7, v: 100 });
+                self.reg.set(Counter { id: 8, v: 200 });
+                print("len_before="); println(self.reg.len());
+                self.reg.remove(7) or raise;
+                print("len_after="); println(self.reg.len());
+                print("has7="); println(self.reg.has(7));
+                print("has8="); println(self.reg.has(8));
+                if !self.reg.has(7) { println("get7_missing"); }
+                let e8 = self.reg.get(8) or raise;
+                print("get8.v="); println(e8.v);
+            }
+        }
+
+        fn main() { App { }; }
+    "#;
+    let (stdout, status) = build_and_run("remove_present", src);
+    assert!(
+        status.success(),
+        "binary exited non-zero: {:?}\nstdout: {}",
+        status, stdout,
+    );
+    assert!(stdout.contains("len_before=2"), "got: {:?}", stdout);
+    assert!(stdout.contains("len_after=1"), "len should drop on remove; got: {:?}", stdout);
+    assert!(stdout.contains("has7=false"), "removed key should be absent; got: {:?}", stdout);
+    assert!(stdout.contains("has8=true"), "other key must remain; got: {:?}", stdout);
+    assert!(stdout.contains("get7_missing"), "get of removed key should raise; got: {:?}", stdout);
+    assert!(stdout.contains("get8.v=200"), "other key must still be reachable; got: {:?}", stdout);
+}
+
+#[test]
+fn lockfree_remove_missing_key() {
+    // Differential from γ-v1: under v1, every `remove` call
+    // returned 0 (always KeyError). Under v2, `remove` reports
+    // success on present keys and KeyError on missing ones.
+    // This test exercises only the missing-key path on an
+    // otherwise non-empty map to confirm the "miss" diagnostic
+    // still surfaces.
+    let src = r#"
+        type Counter { id: Int; v: Int; }
+
+        @form(hashmap, sync = lockfree, cap = 64)
+        locus Registry {
+            capacity { pool entries of Counter indexed_by id; }
+        }
+
+        fn handle(_e: KeyError) { println("caught_miss"); }
+
+        main locus App {
+            params { reg: Registry = Registry { }; }
+            run() {
+                self.reg.set(Counter { id: 1, v: 1 });
+                self.reg.remove(99) or handle(err);
+                print("len="); println(self.reg.len());
+                print("has1="); println(self.reg.has(1));
+            }
+        }
+
+        fn main() { App { }; }
+    "#;
+    let (stdout, status) = build_and_run("remove_missing", src);
+    assert!(
+        status.success(),
+        "binary exited non-zero: {:?}\nstdout: {}",
+        status, stdout,
+    );
+    assert!(stdout.contains("caught_miss"), "missing-key remove should surface KeyError; got: {:?}", stdout);
+    assert!(stdout.contains("len=1"), "live entry must not be disturbed; got: {:?}", stdout);
+    assert!(stdout.contains("has1=true"), "live key must remain; got: {:?}", stdout);
+}
+
+#[test]
+fn lockfree_set_remove_set_same_key() {
+    // The session-1 headline scenario from the handoff doc:
+    // set / remove / set on the same key must work. Probe lands
+    // on the TOMBSTONE, advances past it (v2 session 1 doesn't
+    // reuse tombstoned slots), and inserts in the next EMPTY
+    // slot. `get` then walks past the TOMBSTONE to find the
+    // fresh COMMITTED entry.
+    let src = r#"
+        type Counter { id: Int; v: Int; }
+
+        @form(hashmap, sync = lockfree, cap = 64)
+        locus Registry {
+            capacity { pool entries of Counter indexed_by id; }
+        }
+
+        main locus App {
+            params { reg: Registry = Registry { }; }
+            run() {
+                self.reg.set(Counter { id: 42, v: 1 });
+                let e1 = self.reg.get(42) or raise;
+                print("first="); println(e1.v);
+                self.reg.remove(42) or raise;
+                print("len_mid="); println(self.reg.len());
+                print("has_mid="); println(self.reg.has(42));
+                self.reg.set(Counter { id: 42, v: 999 });
+                let e2 = self.reg.get(42) or raise;
+                print("second="); println(e2.v);
+                print("len_after="); println(self.reg.len());
+                print("has_after="); println(self.reg.has(42));
+            }
+        }
+
+        fn main() { App { }; }
+    "#;
+    let (stdout, status) = build_and_run("set_remove_set", src);
+    assert!(
+        status.success(),
+        "binary exited non-zero: {:?}\nstdout: {}",
+        status, stdout,
+    );
+    assert!(stdout.contains("first=1"), "initial set/get; got: {:?}", stdout);
+    assert!(stdout.contains("len_mid=0"), "len must go to 0 after remove; got: {:?}", stdout);
+    assert!(stdout.contains("has_mid=false"), "key must be absent after remove; got: {:?}", stdout);
+    assert!(stdout.contains("second=999"), "re-set must replace; got: {:?}", stdout);
+    assert!(stdout.contains("len_after=1"), "len back to 1 after re-set; got: {:?}", stdout);
+    assert!(stdout.contains("has_after=true"), "key present after re-set; got: {:?}", stdout);
+}
+
+#[test]
+fn lockfree_iter_skips_tombstones() {
+    // Iteration (key_at / entry_at) must skip tombstoned slots.
+    // m->len tracks live entries; the i-th live entry is the
+    // i-th non-EMPTY / non-TOMBSTONE slot in scan order. After
+    // removing a subset of keys, the iteration sum must equal
+    // the sum of remaining values, not include removed values.
+    let src = r#"
+        type Counter { id: Int; v: Int; }
+
+        @form(hashmap, sync = lockfree, cap = 64)
+        locus Registry {
+            capacity { pool entries of Counter indexed_by id; }
+        }
+
+        main locus App {
+            params { reg: Registry = Registry { }; }
+            run() {
+                self.reg.set(Counter { id: 1, v: 10 });
+                self.reg.set(Counter { id: 2, v: 20 });
+                self.reg.set(Counter { id: 3, v: 30 });
+                self.reg.set(Counter { id: 4, v: 40 });
+                self.reg.set(Counter { id: 5, v: 50 });
+                self.reg.remove(2) or raise;
+                self.reg.remove(4) or raise;
+                print("len="); println(self.reg.len());
+                let n = self.reg.len();
+                let mut i = 0;
+                let mut total = 0;
+                while i < n {
+                    let e = self.reg.entry_at(i) or raise;
+                    total = total + e.v;
+                    i = i + 1;
+                }
+                print("total="); println(total);
+            }
+        }
+
+        fn main() { App { }; }
+    "#;
+    let (stdout, status) = build_and_run("iter_skip_tomb", src);
+    assert!(
+        status.success(),
+        "binary exited non-zero: {:?}\nstdout: {}",
+        status, stdout,
+    );
+    assert!(stdout.contains("len=3"), "len should reflect live entries only; got: {:?}", stdout);
+    // Live entries are id=1 (v=10), id=3 (v=30), id=5 (v=50). Sum = 90.
+    assert!(stdout.contains("total=90"), "iteration must skip tombstoned entries; got: {:?}", stdout);
 }

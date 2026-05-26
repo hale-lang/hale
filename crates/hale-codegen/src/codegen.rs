@@ -11359,6 +11359,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     //   cell_stride: i64   — padded cell size (β2: round up to LOTUS_CACHE_LINE)
                     //   cursor_i: i64      — monotonic-iteration cursor (2026-05-25 fix)
                     //   cursor_slot: i64   — cursor's slot index
+                    //   tombstone_count: i64 — lockfree tombstones (F.32-1γ-v2 session 1)
                     //
                     // Plain @form(hashmap) zeros sync_mode / mu /
                     // mu_grow at init; sets cell_stride to the
@@ -11379,6 +11380,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             i64_t.into(),  // cell_stride (F.32-1β2)
                             i64_t.into(),  // cursor_i (2026-05-25)
                             i64_t.into(),  // cursor_slot (2026-05-25)
+                            i64_t.into(),  // tombstone_count (F.32-1γ-v2 session 1)
                         ],
                         false,
                     );

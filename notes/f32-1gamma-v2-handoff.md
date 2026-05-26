@@ -1,12 +1,14 @@
 # F.32-1γ-v2 handoff — lockfree `@form(hashmap)` grow + tombstones
 
 **Date**: 2026-05-26
-**Status**: design + impl deferred. γ-v1 (fixed-cap, no remove) is
-shipped; γ-v2 adds `remove` (tombstones + compaction) and `grow`
-(no upfront `cap = N` requirement) on the lockfree CAS path.
-**Estimated effort**: 3-5 sessions; the long tail is concurrency
-validation infrastructure (tsan + relacy), not the state machine
-itself.
+**Status**: session 1 shipped (tombstones + `remove`). Sessions
+2-4 still open. γ-v1 (fixed-cap, no remove) is shipped; γ-v2
+session 1 (2026-05-26) adds `remove` via the 4-state cell
+machine. Sessions 2-4 remain: tsan/relacy harness, lockfree
+`grow`, epoch reclamation.
+**Estimated effort**: 2-4 sessions remaining; the long tail is
+concurrency validation infrastructure (tsan + relacy), not the
+state machine itself.
 
 ---
 
@@ -143,28 +145,59 @@ infrastructure is worse than not shipping it.
 
 ## Suggested impl plan (4 sessions)
 
-### Session 1: Tombstones + remove + load factor
+### Session 1: Tombstones + remove + load factor — SHIPPED 2026-05-26
 
-Scope:
-- 4-state cell machine (extend `LOTUS_CELL_*` enum).
-- `lotus_hashmap_remove_lockfree` — CAS COMMITTED → TOMBSTONE.
-- `lotus_hashmap_set_lockfree` — accept TOMBSTONE as a claim
-  candidate.
-- `lotus_hashmap_get_striped` (reused for lockfree probe) —
-  continue past TOMBSTONE instead of terminating.
-- New `tombstone_count` field on `lotus_hashmap_t`; update at
-  set (decrement on tombstone-claim) and remove (increment).
-- `len()` returns `m->len - m->tombstone_count`.
-- Probe-bound check: `m->len + m->tombstone_count >= m->cap` →
-  silent drop (same as v1's "cap exhausted" path, just with
-  the tombstone count rolled in).
+Final scope (deviates from initial plan; see notes below):
+- 4-state cell machine: added `LOTUS_CELL_TOMBSTONE = 3`
+  alongside EMPTY/CLAIMED/COMMITTED.
+- `lotus_hashmap_remove_lockfree` — CAS COMMITTED → TOMBSTONE
+  with retry loop for the CLAIMED-race case (concurrent
+  update mid-publish).
+- `lotus_hashmap_set_lockfree` — explicit TOMBSTONE handling:
+  advance probe past TOMBSTONE, do NOT enter the COMMITTED
+  key_eq branch (residual key bytes could coincidentally
+  match and silently corrupt the update path).
+- `lotus_hashmap_find_slot_striped` (the shared probe helper):
+  same TOMBSTONE-skip logic. Probe-bound check `probes >= cap`
+  added as a defense against fully-tombstoned tables.
+- `lotus_hashmap_resolve_index_slot_striped` (iterator):
+  TOMBSTONE slots skipped in iteration order (same as EMPTY).
+- New `tombstone_count` field on `lotus_hashmap_t` (atomic,
+  relaxed ordering — advisory for monitoring, not load-
+  bearing for correctness).
+- `m->len` continues to mean "live entries" across all
+  disciplines; saturated when `probes >= m->cap`.
 
-Tests: regression suite on form_hashmap_lockfree's existing
-shape, plus a new `form_hashmap_lockfree_remove` test that
-exercises a set/remove/set cycle on the same key.
+**Deviation: no tombstone reuse on insert.** The initial plan
+had `set_lockfree` accept TOMBSTONE as an insert candidate
+(decrementing `tombstone_count`), but the CAS-race window
+between "spot tombstone during probe" and "CAS to claim
+tombstone" required restart-probe semantics to avoid duplicate
+keys. Punting tombstone reuse to session 3 is cleaner — the
+grow path naturally compacts tombstones away when rebuilding
+NEW from OLD. Until grow ships, tombstones consume slots
+permanently; churn-heavy workloads at fixed cap need to size
+`cap = N` accordingly.
+
+Tests added in `crates/hale-codegen/tests/form_hashmap_lockfree.rs`:
+- `lockfree_remove_present_key` — set / remove / has + get
+  miss path.
+- `lockfree_remove_missing_key` — distinguishes v2 (returns
+  KeyError on missing) from v1 (always returned 0).
+- `lockfree_set_remove_set_same_key` — the headline shape.
+  Verifies probe advances past tombstone and finds the
+  fresh COMMITTED entry in a later slot.
+- `lockfree_iter_skips_tombstones` — `len()` and `entry_at`
+  iteration agree on the live-count semantics after a
+  removal.
+
+Spec: `spec/forms.md` § "Sync disciplines" updated — the
+"v1: no remove" caveat is now a "v2 session 1 ships remove
+via tombstones; reuse arrives with session 3 grow"
+clarification.
 
 End-of-session state: removes work; grow still needs upfront
-cap; load factor enforced via silent drop.
+cap; tombstones accumulate until grow lands.
 
 ### Session 2: tsan + relacy harness
 
