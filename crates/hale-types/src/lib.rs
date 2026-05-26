@@ -2826,45 +2826,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn on_unmatched_fail_pending_impl_diag() {
-        let src = r#"
-            type T { id: Int; }
-            topic K {
-                payload: T; subject: "k"; keyed_by id;
-                on_unmatched: fail;
-            }
-        "#;
-        let diags = check(src);
-        assert!(
-            diags.iter().any(|d| {
-                d.message.contains("on_unmatched: fail")
-                    && d.message.contains("not yet implemented")
-            }),
-            "expected fail-pending-impl diag, got: {:?}",
-            diags
-        );
-    }
-
-    #[test]
-    fn on_unmatched_fallback_pending_impl_diag() {
-        let src = r#"
-            type T { id: Int; }
-            topic K {
-                payload: T; subject: "k"; keyed_by id;
-                on_unmatched: fallback;
-            }
-        "#;
-        let diags = check(src);
-        assert!(
-            diags.iter().any(|d| {
-                d.message.contains("on_unmatched: fallback")
-                    && d.message.contains("not yet implemented")
-            }),
-            "expected fallback-pending-impl diag, got: {:?}",
-            diags
-        );
-    }
+    // (`on_unmatched_fail_pending_impl_diag` and
+    // `on_unmatched_fallback_pending_impl_diag` were authored in
+    // typecheck slice 2 when both policies still emitted "v0.1
+    // ships swallow first" diags. fail + fallback shipped in
+    // later slices; the diags are gone. Positive coverage for
+    // both policies now lives in
+    // crates/hale-codegen/tests/bus_routing_keys.rs end-to-end.)
 
     #[test]
     fn on_unmatched_without_keyed_by_rejected() {
