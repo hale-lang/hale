@@ -866,7 +866,7 @@ semantics on unkeyed topics).
 | `on_unmatched:` | Behavior |
 |---|---|
 | `swallow` *(default)* | Drop the message silently. Diag visible only with `LOTUS_BUS_LOG_UNMATCHED=1` env var (per-publish stderr line citing subject + key + subscriber counts). |
-| `fail` | Publish becomes a fallible expression. Caller must use `or raise` / `or handler(err)` / `or discard` / `or fallback` (same vocabulary as `@form(hashmap).get(missing)`). Err payload: `BusUnmatchedKey { subject: String, key_lo: Int, key_hi: Int }`. |
+| `fail` | Publish becomes a fallible expression. Caller must attach an `or` disposition: `K <- value or raise` panics via `lotus_root_panic` with a `BusUnmatchedKey` marker; `K <- value or discard` silently swallows on no-match. The err-payload-carrying dispositions (`or handler(err)` / `or fail <p>`) are reserved for v0.2 — they require synthesizing `BusUnmatchedKey { subject: String, key_lo: Int, key_hi: Int }` as a stdlib type, which is a small follow-up. `or <substitute>` is permanently rejected: Send produces no value, nothing to substitute. |
 | `fallback` | A catch-unmatched subscriber on the subject — `subscribe T as h where key == _` — receives the message. At least one such subscriber is required; cross-module resolve-time check rejects the topic otherwise. The `_` sentinel is legal only on `fallback` topics. |
 
 Static checks at typecheck:
@@ -882,9 +882,14 @@ Static checks at typecheck:
    typo'd filters.
 4. `where key == _` is forbidden except on topics with
    `on_unmatched: fallback`.
-5. `fail` topics: every `Topic <- value` send site must be in a
-   fallible-disposition position (the same machinery already
-   used for `@form(hashmap).get`).
+5. `fail` topics: every `Topic <- value` send site must carry an
+   `or` disposition clause (`or raise` / `or discard` at v0.1
+   of the impl; `or handler(err)` / `or fail <p>` reserved for
+   v0.2). The `or` clause attaches to the Send statement, not
+   the value expression — the parser strips it off the value's
+   `Expr::Or` wrapping into `Stmt::Send.or_disposition`.
+   Conversely, an `or` clause on a Send to a non-`fail` topic
+   is rejected.
 6. `fallback` topics: at least one program-wide `where key == _`
    subscriber must exist; checked at resolve after import
    merging.
@@ -969,6 +974,16 @@ and the dispatch dispatches uniformly. Existing programs need
 no source change to keep working; new programs opt in
 per-topic.
 
+**Deferred to v0.2 of the impl (spec stays as-is, surface lands later):**
+
+- Err-payload Send dispositions on `fail` topics:
+  `or handler(err)` / `or fail <payload>`. v0.1 ships `or raise`
+  + `or discard` only. v0.2 synthesizes `BusUnmatchedKey {
+  subject: String, key_lo: Int, key_hi: Int }` as a stdlib
+  type (mirror of `KeyError` / `IndexError`) and plumbs it
+  through the existing fallible-disposition machinery —
+  mechanical work once the err type is wired.
+
 **Out of scope at v0.1 (explicit non-goals):**
 
 - Multi-field / tuple `keyed_by` (`keyed_by (sym_id, side)`).
@@ -991,6 +1006,8 @@ per-topic.
   v0.1 ships keyed dispatch for the intra-process bus only;
   remote subscribers still fanout per-subject and filter in
   their own bus router after deserialize.
+- `or <substitute>` on Send. Send produces no value; substitution
+  has no target. Permanently rejected (not v0.2-deferred).
 
 ## Placement block (F.31)
 
