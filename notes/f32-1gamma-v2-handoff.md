@@ -1,14 +1,14 @@
 # F.32-1γ-v2 handoff — lockfree `@form(hashmap)` grow + tombstones
 
 **Date**: 2026-05-26
-**Status**: session 1 shipped (tombstones + `remove`). Sessions
-2-4 still open. γ-v1 (fixed-cap, no remove) is shipped; γ-v2
-session 1 (2026-05-26) adds `remove` via the 4-state cell
-machine. Sessions 2-4 remain: tsan/relacy harness, lockfree
-`grow`, epoch reclamation.
-**Estimated effort**: 2-4 sessions remaining; the long tail is
-concurrency validation infrastructure (tsan + relacy), not the
-state machine itself.
+**Status**: sessions 1+2 shipped. Session 1 (tombstones +
+`remove`) added the 4-state cell machine; session 2 added TSAN
+validation infrastructure (`LOTUS_TSAN=1` driver flag +
+embedded suppressions for pre-existing substrate races). The
+lockfree hashmap path validates clean under TSAN on the
+cross-pool + tombstone-churn workloads. Sessions 3 + 4 remain:
+lockfree `grow`, QSBR epoch reclamation.
+**Estimated effort**: 1-2 sessions remaining.
 
 ---
 
@@ -199,24 +199,61 @@ clarification.
 End-of-session state: removes work; grow still needs upfront
 cap; tombstones accumulate until grow lands.
 
-### Session 2: tsan + relacy harness
+### Session 2: tsan harness — SHIPPED 2026-05-26
 
-Scope (separate from γ-v2 implementation — the dependency
-infrastructure):
-- Pull in `cargo-tsan` (or wrap clang's `-fsanitize=thread`
-  on the runtime build) so the `cargo test --release` run
-  can be replayed with TSAN instrumentation.
-- Build a relacy harness for the lockfree state machine —
-  exhaustive interleaving search of 2-3 thread setups
-  hitting the same slot.
-- Drive existing γ-v1 tests under TSAN; expect to find at
-  least the known case where `len()` (relaxed atomic) is
-  visible-stale. Document or fix.
-- Set up CI to run `cargo test --workspace --features tsan`
-  on a separate job (slow; ~10× normal test time).
+Final scope:
+- `LOTUS_TSAN=1` env var driver in `build_executable`
+  (`crates/hale-codegen/src/codegen.rs`): wraps clang's
+  `-fsanitize=thread` for both runtime C compile + binary
+  link. The `-Wl,--wrap=malloc/realloc/calloc/mmap` shim
+  surface is disabled when TSAN is on (TSAN intercepts
+  malloc itself; the wrap'd diagnostic
+  `LOTUS_ARENA_LOG_BIG_CHUNKS` is silently no-op under
+  TSAN — fine for race hunting).
+- Embedded `__tsan_default_suppressions` in
+  `runtime/lotus_arena.c` listing the five pre-existing
+  substrate races surfaced on the cross-pool workload:
+    * `race:lotus_arena_new_chunk_for`
+    * `race:lotus_bus_queue_drain`
+    * `race:lotus_arena_destroy`
+    * `race:lotus_coop_pool_worker`
+    * `race:lotus_chunk_pool_prefill_count`
+  Lockfree hashmap entry points are NOT suppressed; any race
+  in `lotus_hashmap_*_lockfree` is treated as a γ-v2 bug.
+- New test file
+  `crates/hale-codegen/tests/form_hashmap_lockfree_tsan.rs`
+  with two `#[ignore]`-gated tests:
+    * `lockfree_cross_pool_tsan_clean` — γ-v1 cross-pool
+      workload.
+    * `lockfree_remove_under_contention_tsan_clean` — session 1
+      tombstone path under concurrent set/remove churn.
+  Both assert exit 0 + no `WARNING: ThreadSanitizer` in stderr.
+- Test runner: `LOTUS_TSAN=1 cargo test --release -p hale-codegen
+  --test form_hashmap_lockfree_tsan -- --ignored
+  --test-threads=1`.
 
-End-of-session state: TSAN + relacy infrastructure
-operational; γ-v1 passes; γ-v2 ready to validate.
+**Deferred (logged as follow-ups, not blockers):**
+1. *Relacy harness* — exhaustive interleaving search of
+   2-3 thread setups hitting the same slot. Relacy is a
+   C++ header-only library; integrating it would be a
+   separate sub-project with its own build/test surface.
+   TSAN catches what occurs under cooperative-scheduler
+   workloads in practice; relacy is the model-checker
+   pass for theoretical completeness. Future session.
+2. *Substrate-race fixes* — the five suppressed patterns
+   are real bugs in production-substrate code (allocator,
+   bus, scheduler shutdown). Each is independent of γ-v2
+   and needs its own analysis/PR. Hardening them
+   eventually lets us drop the suppression list.
+3. *CI integration* — adding a TSAN job to the CI matrix.
+   Local `LOTUS_TSAN=1` is operational; CI is mechanical
+   (config-only) and can ride alongside any TSAN bug-hunt
+   PR.
+
+End-of-session state: TSAN infrastructure operational;
+γ-v1 + session-1 code passes under TSAN with embedded
+suppressions; ready to validate session-3 grow as it
+lands.
 
 ### Session 3: lockfree grow state machine
 

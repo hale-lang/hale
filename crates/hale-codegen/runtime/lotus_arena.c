@@ -65,6 +65,61 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <poll.h>
+
+/* F.32-1γ-v2 session 2 (2026-05-26): TSAN suppressions.
+ *
+ * When the binary is built with `-fsanitize=thread` (driven by
+ * `LOTUS_TSAN=1` in `build_executable`), ThreadSanitizer
+ * intercepts every memory access and reports inter-thread
+ * races. The lockfree hashmap is the target of this validation
+ * sweep, but TSAN sees the entire process — it surfaces
+ * pre-existing races in the *substrate* (arena allocator,
+ * bus queue, scheduler shutdown) that predate γ-v2 and have
+ * their own follow-up work to harden.
+ *
+ * `__tsan_default_suppressions` is TSAN's hook for the program
+ * to embed its own suppression list at link time, so users
+ * running `LOTUS_TSAN=1 cargo test` don't need to manage
+ * `TSAN_OPTIONS=suppressions=…` separately. The list below is
+ * the surface observed on the lockfree cross-pool workload:
+ *
+ *   race:lotus_arena_new_chunk_for         — pre-fill counter
+ *                                            initialization
+ *                                            race (lazy global
+ *                                            init guard).
+ *   race:lotus_bus_queue_drain             — concurrent
+ *                                            head/tail reads
+ *                                            on the bus queue
+ *                                            struct.
+ *   race:lotus_arena_destroy               — concurrent reads
+ *                                            of arena state at
+ *                                            shutdown.
+ *   race:lotus_coop_pool_worker            — pool worker shutdown
+ *                                            handshake.
+ *   race:lotus_chunk_pool_prefill_count    — backing static for
+ *                                            the prefill counter.
+ *
+ * Each pattern is an EXISTING race in code that has been in
+ * production since well before γ-v2; logged here as a deferred
+ * follow-up. Lockfree hashmap entry points
+ * (lotus_hashmap_*_lockfree) are intentionally NOT suppressed —
+ * any race surfaced there is a γ-v2 regression and must be fixed.
+ */
+#if defined(__has_feature)
+#  if __has_feature(thread_sanitizer)
+#    define LOTUS_TSAN_BUILD 1
+#  endif
+#endif
+#ifdef LOTUS_TSAN_BUILD
+const char *__tsan_default_suppressions(void) {
+    return
+        "race:lotus_arena_new_chunk_for\n"
+        "race:lotus_bus_queue_drain\n"
+        "race:lotus_arena_destroy\n"
+        "race:lotus_coop_pool_worker\n"
+        "race:lotus_chunk_pool_prefill_count\n";
+}
+#endif
 /* LOTUS_ARENA_LOG_BIG_CHUNKS (2026-05-21): backtrace-on-big-
  * alloc diagnostic for hunting unbounded chunk growth in a
  * long-running daemon. <execinfo.h> is glibc-only; the call

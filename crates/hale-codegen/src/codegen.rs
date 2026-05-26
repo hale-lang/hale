@@ -500,11 +500,36 @@ pub fn build_executable_with_options(
         // resolvable at link time — sidecar test drivers that
         // compile lotus_arena.c without the wrap flags skip
         // the wrapper definitions entirely.
-        .arg("-DLOTUS_ENABLE_WRAP_MALLOC")
-        .arg("-Wl,--wrap=malloc")
-        .arg("-Wl,--wrap=realloc")
-        .arg("-Wl,--wrap=calloc")
-        .arg("-Wl,--wrap=mmap");
+        ;
+    // F.32-1γ-v2 session 2 (2026-05-26): TSAN validation build.
+    // Set `LOTUS_TSAN=1` to compile the runtime C + emitted
+    // binary with `-fsanitize=thread`. Used by the lockfree
+    // hashmap test suite under `--ignored` (TSAN slows execution
+    // ~5-15× so opt-in only). TSAN's own malloc interceptor
+    // collides with our `-Wl,--wrap=malloc` shim, so the wrap
+    // surface is disabled when TSAN is on — the
+    // LOTUS_ARENA_LOG_BIG_CHUNKS diagnostic is silently no-op
+    // under TSAN, which is fine since we're hunting data races,
+    // not allocator pressure.
+    let lotus_tsan = std::env::var("LOTUS_TSAN")
+        .map(|v| v == "1" || v == "true" || v == "TRUE")
+        .unwrap_or(false);
+    if lotus_tsan {
+        clang.arg("-fsanitize=thread");
+        // Conservative: -O1 keeps TSAN reports readable while
+        // avoiding the long compile time of -O0 + the missing
+        // race coverage at -O0 from skipped optimizer paths.
+        // (Existing -O2 above stacks with this; clang accepts
+        // the last `-O` on the command line.)
+        clang.arg("-O1");
+    } else {
+        clang
+            .arg("-DLOTUS_ENABLE_WRAP_MALLOC")
+            .arg("-Wl,--wrap=malloc")
+            .arg("-Wl,--wrap=realloc")
+            .arg("-Wl,--wrap=calloc")
+            .arg("-Wl,--wrap=mmap");
+    }
     // F.32-4-prefetch A/B build flag (2026-05-25): set
     // LOTUS_DISABLE_PREFETCH=1 at build time to compile the C
     // runtime with the bus-dispatch prefetch hint stubbed out.
