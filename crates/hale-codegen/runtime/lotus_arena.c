@@ -80,42 +80,36 @@
  * `__tsan_default_suppressions` is TSAN's hook for the program
  * to embed its own suppression list at link time, so users
  * running `LOTUS_TSAN=1 cargo test` don't need to manage
- * `TSAN_OPTIONS=suppressions=…` separately. The list below is
- * the surface observed on the lockfree cross-pool workload:
+ * `TSAN_OPTIONS=suppressions=…` separately.
  *
- *   race:lotus_arena_new_chunk_for         — pre-fill counter
- *                                            initialization
- *                                            race (lazy global
- *                                            init guard).
- *   race:lotus_arena_destroy               — concurrent reads
- *                                            of arena state at
- *                                            shutdown.
- *   race:lotus_coop_pool_worker            — pool worker shutdown
- *                                            handshake.
- *   race:lotus_chunk_pool_prefill_count    — backing static for
- *                                            the prefill counter.
+ * History (2026-05-26):
+ * The original session-2 commit shipped with five suppressed
+ * substrate-race patterns:
+ *   - race:lotus_bus_queue_drain
+ *   - race:lotus_arena_new_chunk_for
+ *   - race:lotus_arena_destroy
+ *   - race:lotus_coop_pool_worker
+ *   - race:lotus_chunk_pool_prefill_count
+ * All five have since been fixed:
+ *   1. `lotus_bus_queue_drain` — `g_bus_has_pinned` extended to
+ *      fire when cooperative pool workers are spawned (atomic
+ *      load/store).
+ *   2. `lotus_arena_destroy` + `lotus_coop_pool_worker` —
+ *      per-arena `pthread_mutex_t subregion_lock` protects the
+ *      parent's child-slot freelist across concurrent
+ *      create_subregion / destroy; codegen-side shutdown_all
+ *      hoisted to run before main's arena_destroy.
+ *   3. `lotus_arena_new_chunk_for` + `lotus_chunk_pool_prefill_count`
+ *      — the env-var-driven lazy-init helpers all moved to
+ *      `pthread_once`. No more `static int initialized` data
+ *      races.
  *
- * `race:lotus_bus_queue_drain` was suppressed in the original
- * session-2 commit; that race was fixed (2026-05-26) by
- * extending `g_bus_has_pinned` to also fire when cooperative
- * pool workers are spawned. Removed from the suppression list
- * so any regression resurfaces.
- *
- * `race:lotus_arena_destroy` + `race:lotus_coop_pool_worker`
- * were suppressed in F.32-1γ-v2 session 2 + the first
- * substrate-race-fixes pass; both fixed (2026-05-26) by
- * adding a `pthread_mutex_t subregion_lock` to the arena
- * struct that protects the parent's child-slot freelist
- * across concurrent create_subregion / destroy. The mutex
- * is also taken at destroy-time around the freelist free()
- * to synchronize-with any final concurrent push from a worker
- * thread. Both suppressions removed.
- *
- * Each pattern is an EXISTING race in code that has been in
- * production since well before γ-v2; logged here as a deferred
- * follow-up. Lockfree hashmap entry points
- * (lotus_hashmap_*_lockfree) are intentionally NOT suppressed —
- * any race surfaced there is a γ-v2 regression and must be fixed.
+ * The hook below returns an empty suppression list. If a new
+ * race appears in code we choose not to fix immediately, add
+ * its `race:<symbol>` line in the function body. Lockfree
+ * hashmap entry points (lotus_hashmap_*_lockfree) are
+ * intentionally NEVER suppressed — any race surfaced there is
+ * a γ-v2 regression and must be fixed.
  */
 #if defined(__has_feature)
 #  if __has_feature(thread_sanitizer)
@@ -124,9 +118,13 @@
 #endif
 #ifdef LOTUS_TSAN_BUILD
 const char *__tsan_default_suppressions(void) {
-    return
-        "race:lotus_arena_new_chunk_for\n"
-        "race:lotus_chunk_pool_prefill_count\n";
+    /* All originally-suppressed substrate races have been fixed
+     * as of 2026-05-26 (bus queue multi-thread flag, arena
+     * subregion mutex, lazy-init env helpers via pthread_once).
+     * Empty string keeps the hook in place for future use — if
+     * a workload surfaces a new race in code we choose not to
+     * fix immediately, add its `race:<symbol>` line here. */
+    return "";
 }
 #endif
 /* LOTUS_ARENA_LOG_BIG_CHUNKS (2026-05-21): backtrace-on-big-
@@ -181,26 +179,36 @@ const char *__tsan_default_suppressions(void) {
  * not the pool. That's acceptable — overriding means the
  * operator picked a non-default and we treat those chunks as
  * "non-pooled" anyway. */
-static size_t lotus_arena_default_chunk_bytes(void) {
-    static size_t cached = 0;
-    static int initialized = 0;
-    if (!initialized) {
-        const char *env = getenv("LOTUS_ARENA_CHUNK_BYTES_OVERRIDE");
-        if (env) {
-            char *endp = NULL;
-            unsigned long v = strtoul(env, &endp, 10);
-            /* Validate: power of 2, in [4K, 16M]. */
-            if (endp && *endp == '\0'
-                && v >= 4096 && v <= (16ul * 1024 * 1024)
-                && (v & (v - 1)) == 0)
-            {
-                cached = (size_t)v;
-            }
+/* 2026-05-26 substrate-race fix: all of these env-var-driven
+ * lazy-init helpers used a non-atomic `static int initialized`
+ * gate that was a data race under concurrent first-callers.
+ * Each one is now wrapped in `pthread_once`, which provides
+ * the standard one-shot init primitive with proper happens-
+ * before edges. The cost is one pthread_once_t per helper
+ * (~8 B); first call pays the mutex pair, subsequent calls
+ * are a single atomic load. */
+static size_t g_default_chunk_bytes_cached = 0;
+static void lotus_arena_default_chunk_bytes_init(void) {
+    const char *env = getenv("LOTUS_ARENA_CHUNK_BYTES_OVERRIDE");
+    if (env) {
+        char *endp = NULL;
+        unsigned long v = strtoul(env, &endp, 10);
+        /* Validate: power of 2, in [4K, 16M]. */
+        if (endp && *endp == '\0'
+            && v >= 4096 && v <= (16ul * 1024 * 1024)
+            && (v & (v - 1)) == 0)
+        {
+            g_default_chunk_bytes_cached = (size_t)v;
         }
-        if (cached == 0) cached = LOTUS_ARENA_CHUNK_BYTES;
-        initialized = 1;
     }
-    return cached;
+    if (g_default_chunk_bytes_cached == 0) {
+        g_default_chunk_bytes_cached = LOTUS_ARENA_CHUNK_BYTES;
+    }
+}
+static size_t lotus_arena_default_chunk_bytes(void) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, lotus_arena_default_chunk_bytes_init);
+    return g_default_chunk_bytes_cached;
 }
 
 typedef struct lotus_arena_chunk {
@@ -343,15 +351,16 @@ static __thread uint64_t g_chunk_pool_misses = 0;
 static __thread uint64_t g_chunk_pool_stores = 0;
 static __thread uint64_t g_chunk_pool_overflows = 0;
 
+static int g_chunk_pool_stats_enabled_cached = 0;
+static void lotus_chunk_pool_stats_init(void) {
+    const char *env = getenv("LOTUS_CHUNK_POOL_STATS");
+    g_chunk_pool_stats_enabled_cached =
+        env && env[0] && env[0] != '0';
+}
 static int lotus_chunk_pool_stats_enabled(void) {
-    static int initialized = 0;
-    static int enabled = 0;
-    if (!initialized) {
-        initialized = 1;
-        const char *env = getenv("LOTUS_CHUNK_POOL_STATS");
-        enabled = env && env[0] && env[0] != '0';
-    }
-    return enabled;
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, lotus_chunk_pool_stats_init);
+    return g_chunk_pool_stats_enabled_cached;
 }
 
 static void lotus_chunk_pool_stats_emit(const char *label) {
@@ -467,15 +476,16 @@ static lotus_arena_residency_entry_t *g_arena_residency_head = NULL;
 static pthread_mutex_t g_arena_residency_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int g_arena_residency_seq = 0;
 
+static int g_arena_residency_enabled_cached = 0;
+static void lotus_arena_residency_enabled_init(void) {
+    const char *env = getenv("LOTUS_ARENA_RESIDENCY");
+    g_arena_residency_enabled_cached =
+        env && env[0] && env[0] != '0';
+}
 static int lotus_arena_residency_enabled(void) {
-    static int initialized = 0;
-    static int enabled = 0;
-    if (!initialized) {
-        initialized = 1;
-        const char *env = getenv("LOTUS_ARENA_RESIDENCY");
-        enabled = env && env[0] && env[0] != '0';
-    }
-    return enabled;
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, lotus_arena_residency_enabled_init);
+    return g_arena_residency_enabled_cached;
 }
 
 static void lotus_arena_residency_register(struct lotus_arena *a,
@@ -656,54 +666,55 @@ static void lotus_arena_residency_install(void) {
  * parsed as decimal bytes; e.g. LOTUS_ARENA_LOG_BIG_CHUNKS=1048576
  * logs every chunk >= 1 MiB. A bare "1" / "on" / "true" defaults
  * to 1 MiB. */
-static size_t lotus_arena_big_chunk_threshold(void) {
-    static int initialized = 0;
-    static size_t threshold = 0;
-    if (!initialized) {
-        initialized = 1;
-        const char *env = getenv("LOTUS_ARENA_LOG_BIG_CHUNKS");
-        if (env && env[0]) {
-            if (strcmp(env, "1") == 0
-                || strcmp(env, "on") == 0
-                || strcmp(env, "true") == 0
-                || strcmp(env, "yes") == 0)
-            {
-                threshold = 1024 * 1024;
-            } else {
-                char *end = NULL;
-                unsigned long long v = strtoull(env, &end, 10);
-                if (end != env && v > 0) {
-                    threshold = (size_t)v;
-                }
+static size_t g_arena_big_chunk_threshold_cached = 0;
+static void lotus_arena_big_chunk_threshold_init(void) {
+    const char *env = getenv("LOTUS_ARENA_LOG_BIG_CHUNKS");
+    if (env && env[0]) {
+        if (strcmp(env, "1") == 0
+            || strcmp(env, "on") == 0
+            || strcmp(env, "true") == 0
+            || strcmp(env, "yes") == 0)
+        {
+            g_arena_big_chunk_threshold_cached = 1024 * 1024;
+        } else {
+            char *end = NULL;
+            unsigned long long v = strtoull(env, &end, 10);
+            if (end != env && v > 0) {
+                g_arena_big_chunk_threshold_cached = (size_t)v;
             }
         }
     }
-    return threshold;
+}
+static size_t lotus_arena_big_chunk_threshold(void) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, lotus_arena_big_chunk_threshold_init);
+    return g_arena_big_chunk_threshold_cached;
 }
 
 /* Per-process event cap. Default 200 keeps stderr survivable on
  * a tight-loop workload; the pattern is usually obvious in the
  * first 200 events. Override via LOTUS_ARENA_LOG_BIG_MAX_EVENTS=N
  * (set 0 for unlimited). Parsed once on first use; cached. */
-static int lotus_arena_big_max_events(void) {
-    static int initialized = 0;
-    static int cap = 200;
-    if (!initialized) {
-        initialized = 1;
-        const char *env = getenv("LOTUS_ARENA_LOG_BIG_MAX_EVENTS");
-        if (env && env[0]) {
-            char *end = NULL;
-            long v = strtol(env, &end, 10);
-            if (end != env) {
-                /* Negative or 0 → unlimited (INT_MAX); positive →
-                 * exact cap. The "0 = unlimited" convention matches
-                 * /dev/-style "no limit" sentinels and is what the
-                 * downstream consumer asked for. */
-                cap = (v <= 0) ? INT_MAX : (int)v;
-            }
+static int g_arena_big_max_events_cached = 200;
+static void lotus_arena_big_max_events_init(void) {
+    const char *env = getenv("LOTUS_ARENA_LOG_BIG_MAX_EVENTS");
+    if (env && env[0]) {
+        char *end = NULL;
+        long v = strtol(env, &end, 10);
+        if (end != env) {
+            /* Negative or 0 → unlimited (INT_MAX); positive →
+             * exact cap. The "0 = unlimited" convention matches
+             * /dev/-style "no limit" sentinels and is what the
+             * downstream consumer asked for. */
+            g_arena_big_max_events_cached =
+                (v <= 0) ? INT_MAX : (int)v;
         }
     }
-    return cap;
+}
+static int lotus_arena_big_max_events(void) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, lotus_arena_big_max_events_init);
+    return g_arena_big_max_events_cached;
 }
 
 /* Emit a one-line diagnostic with size, monotonic seqno, and a
@@ -850,25 +861,27 @@ static void lotus_init_glibc_malloc_tuning(void) {
 
 static __thread int g_chunk_pool_prefilled = 0;
 
-static int lotus_chunk_pool_prefill_count(void) {
-    static int initialized = 0;
-    static int count = LOTUS_CHUNK_POOL_PREFILL_DEFAULT;
-    if (!initialized) {
-        initialized = 1;
-        const char *env = getenv("LOTUS_CHUNK_POOL_PREFILL");
-        if (env && env[0]) {
-            char *end = NULL;
-            long v = strtol(env, &end, 10);
-            if (end != env && v >= 0) {
-                /* 0 disables; otherwise clamped to pool cap. */
-                count = (int)v;
-                if (count > LOTUS_CHUNK_POOL_CAP) {
-                    count = LOTUS_CHUNK_POOL_CAP;
-                }
+static int g_chunk_pool_prefill_count_cached =
+    LOTUS_CHUNK_POOL_PREFILL_DEFAULT;
+static void lotus_chunk_pool_prefill_count_init(void) {
+    const char *env = getenv("LOTUS_CHUNK_POOL_PREFILL");
+    if (env && env[0]) {
+        char *end = NULL;
+        long v = strtol(env, &end, 10);
+        if (end != env && v >= 0) {
+            /* 0 disables; otherwise clamped to pool cap. */
+            int count = (int)v;
+            if (count > LOTUS_CHUNK_POOL_CAP) {
+                count = LOTUS_CHUNK_POOL_CAP;
             }
+            g_chunk_pool_prefill_count_cached = count;
         }
     }
-    return count;
+}
+static int lotus_chunk_pool_prefill_count(void) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, lotus_chunk_pool_prefill_count_init);
+    return g_chunk_pool_prefill_count_cached;
 }
 
 static void lotus_chunk_pool_prefill_if_needed(void) {
@@ -897,29 +910,30 @@ static void lotus_chunk_pool_prefill_if_needed(void) {
  * to a byte threshold (e.g., 4096) and every chunk >= that size
  * gets a backtrace line. Shares the LOTUS_ARENA_LOG_BIG_MAX_EVENTS
  * cap with the big-chunk logger. */
-static size_t lotus_arena_chunk_attach_threshold(void) {
-    static int initialized = 0;
-    static size_t threshold = 0;
-    if (!initialized) {
-        initialized = 1;
-        const char *env = getenv("LOTUS_ARENA_LOG_CHUNK_ATTACH");
-        if (env && env[0]) {
-            if (strcmp(env, "1") == 0
-                || strcmp(env, "on") == 0
-                || strcmp(env, "true") == 0
-                || strcmp(env, "yes") == 0)
-            {
-                threshold = 1;  /* log every chunk attachment */
-            } else {
-                char *end = NULL;
-                unsigned long long v = strtoull(env, &end, 10);
-                if (end != env && v > 0) {
-                    threshold = (size_t)v;
-                }
+static size_t g_arena_chunk_attach_threshold_cached = 0;
+static void lotus_arena_chunk_attach_threshold_init(void) {
+    const char *env = getenv("LOTUS_ARENA_LOG_CHUNK_ATTACH");
+    if (env && env[0]) {
+        if (strcmp(env, "1") == 0
+            || strcmp(env, "on") == 0
+            || strcmp(env, "true") == 0
+            || strcmp(env, "yes") == 0)
+        {
+            /* log every chunk attachment */
+            g_arena_chunk_attach_threshold_cached = 1;
+        } else {
+            char *end = NULL;
+            unsigned long long v = strtoull(env, &end, 10);
+            if (end != env && v > 0) {
+                g_arena_chunk_attach_threshold_cached = (size_t)v;
             }
         }
     }
-    return threshold;
+}
+static size_t lotus_arena_chunk_attach_threshold(void) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, lotus_arena_chunk_attach_threshold_init);
+    return g_arena_chunk_attach_threshold_cached;
 }
 
 /* Resolve a human-readable label for an arena — walks the parent
@@ -1004,6 +1018,23 @@ static void lotus_log_chunk_attach_event(struct lotus_arena *a,
     fflush(stderr);
 }
 
+/* 2026-05-26 substrate-race fix: huge-pages env check used to
+ * live inline inside `lotus_arena_new_chunk_for` with the same
+ * static-int data-race pattern as the other env helpers. Lifted
+ * to a pthread_once-wrapped helper here. */
+static int g_hugepages_enabled_cached = 0;
+static void lotus_hugepages_enabled_init(void) {
+    const char *env = getenv("LOTUS_HUGE_PAGES");
+    if (env && (env[0] == '1' || env[0] == 't' || env[0] == 'T')) {
+        g_hugepages_enabled_cached = 1;
+    }
+}
+static int lotus_hugepages_enabled(void) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, lotus_hugepages_enabled_init);
+    return g_hugepages_enabled_cached;
+}
+
 static lotus_arena_chunk_t *lotus_arena_new_chunk_for(
     struct lotus_arena *target, size_t cap)
 {
@@ -1059,16 +1090,7 @@ static lotus_arena_chunk_t *lotus_arena_new_chunk_for(
      * call returns MAP_FAILED with errno=ENOMEM and we fall
      * back to regular malloc — the program still works, just
      * without the TLB-pressure win. */
-    static int hugepages_env_checked = 0;
-    static int hugepages_enabled = 0;
-    if (!hugepages_env_checked) {
-        const char *env = getenv("LOTUS_HUGE_PAGES");
-        if (env && (env[0] == '1' || env[0] == 't' || env[0] == 'T')) {
-            hugepages_enabled = 1;
-        }
-        hugepages_env_checked = 1;
-    }
-    if (hugepages_enabled && cap >= (2 * 1024 * 1024)) {
+    if (lotus_hugepages_enabled() && cap >= (2 * 1024 * 1024)) {
         size_t total = sizeof(lotus_arena_chunk_t) + cap;
         /* Round up to 2 MB for the mmap call — huge-page
          * allocations must be page-multiples. */
