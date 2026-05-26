@@ -1891,8 +1891,11 @@ mod tests {
     }
 
     #[test]
-    fn err_form_hashmap_lockfree_without_cap() {
-        // F.32-1γ-v1: lockfree without cap is rejected.
+    fn ok_form_hashmap_lockfree_without_cap() {
+        // F.32-1γ-v2 (2026-05-26): lockfree no longer requires
+        // `cap = N`. Once grow shipped, cap became an
+        // initial-size hint; omitting it starts at
+        // LOTUS_HASHMAP_INITIAL_CAP and grows on demand.
         let src = r#"
             type Entry { name: String; v: Int; }
             @form(hashmap, sync = lockfree)
@@ -1902,14 +1905,14 @@ mod tests {
             fn main() { L { }; }
         "#;
         let diags = check(src);
+        let lockfree_diags: Vec<&_> = diags
+            .iter()
+            .filter(|d| d.message.contains("lockfree"))
+            .collect();
         assert!(
-            diags
-                .iter()
-                .any(|d| d.message.contains("sync = lockfree")
-                      && d.message.contains("requires")
-                      && d.message.contains("cap")),
-            "expected lockfree-requires-cap diag, got: {:?}",
-            diags
+            lockfree_diags.is_empty(),
+            "expected clean typecheck on cap-less lockfree; got: {:?}",
+            lockfree_diags
         );
     }
 

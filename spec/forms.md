@@ -685,7 +685,7 @@ into a plain `@form(hashmap)` receiver are typecheck-rejected
 | `@form(hashmap)` | single-pool only | shipped |
 | `@form(hashmap, sync = serialized)` | per-map `pthread_mutex_t` (F.32-1α) | shipped |
 | `@form(hashmap, sync = striped)` | cell-level CAS + per-map `pthread_rwlock_t` for grow + cache-padded cells (F.32-1β2-v2) | shipped |
-| `@form(hashmap, sync = lockfree, cap = N)` | cell-level CAS, no rwlock or mutex on the steady-state path (F.32-1γ-v1); + `remove` via tombstones (F.32-1γ-v2 session 1); + lazy grow with brief writer/reader stall during migration (F.32-1γ-v2 session 3) | shipped |
+| `@form(hashmap, sync = lockfree)` (optional `cap = N` initial-size hint) | cell-level CAS, no rwlock or mutex on the steady-state path (F.32-1γ-v1); + `remove` via tombstones (F.32-1γ-v2 session 1); + lazy grow with brief writer/reader stall during migration (F.32-1γ-v2 session 3) | shipped |
 
 **Discipline picker by workload:**
 
@@ -701,15 +701,16 @@ into a plain `@form(hashmap)` receiver are typecheck-rejected
   reader and writer cells. Slower than serialized on 2-core
   / cheap-payload writes (rwlock overhead > parallelism gain).
 - **Cross-pool, write-heavy, cap known approximately**:
-  `sync = lockfree, cap = N`. Pure CAS on the steady-state
-  hot path — no kernel-mediated sync. Fastest of the four on
-  the `form_hashmap_false_sharing` bench (~1.3× faster than α
-  serialized at 2 cores). Trade-off: when the load factor
-  exceeds 0.6, a grow event briefly stalls all lockfree ops
-  (~ms for typical caps) while the migration runs. Steady
-  state outside of grow remains fully lockfree. `cap = N` is
-  treated as an initial-size hint; supply 2-4× the expected
-  peak so grows are rare.
+  `sync = lockfree` (optional `cap = N`). Pure CAS on the
+  steady-state hot path — no kernel-mediated sync. Fastest of
+  the four on the `form_hashmap_false_sharing` bench (~1.3×
+  faster than α serialized at 2 cores). Trade-off: when the
+  load factor exceeds 0.6, a grow event briefly stalls all
+  lockfree ops (~ms for typical caps) while the migration
+  runs. Steady state outside of grow remains fully lockfree.
+  `cap = N` is an optional initial-size hint (omitting it
+  starts at `LOTUS_HASHMAP_INITIAL_CAP = 8` and grows on
+  demand); supply 2-4× the expected peak so grows are rare.
 
 The `serialized` discipline wraps every public entry point in
 a per-map mutex. Throughput is bounded by lock contention
@@ -731,18 +732,21 @@ Striped's win materializes on 4+ cores or with heavier per-op
 work where the rwlock overhead amortizes.
 
 The `lockfree` discipline (F.32-1γ) drops the rwlock
-entirely. It requires `cap = N` upfront (grow is deferred to
-γ-v2 session 3); under γ-v1 `remove` was a no-op, under γ-v2
-session 1 (2026-05-26) `remove` is supported via tombstones
-(4-state cell machine: EMPTY → CLAIMED → COMMITTED → TOMBSTONE).
-Pure CAS on the occupancy byte; no kernel-mediated
-synchronization on the hot path. The `form_hashmap_false_sharing`
-bench measures lockfree at ~1.30× faster than serialized and
-~2.54× faster than striped on the 2-pool concurrent-write
-workload. Cap should be sized to 2-4× the peak expected entry
-count to keep linear-probe latency bounded; the runtime rounds
-the user's `cap = N` up to the next power of 2 (needed for the
-`& mask` probe).
+entirely. `cap = N` is an optional initial-size hint (was
+required pre-γ-v2 session 3 before grow shipped; now grows
+transparently when load factor crosses 0.6). Under γ-v1
+`remove` was a no-op; under γ-v2 session 1 (2026-05-26)
+`remove` is supported via tombstones (4-state cell machine:
+EMPTY → CLAIMED → COMMITTED → TOMBSTONE). Pure CAS on the
+occupancy byte; no kernel-mediated synchronization on the
+hot path. The `form_hashmap_false_sharing` bench measures
+lockfree at ~1.30× faster than serialized and ~2.54× faster
+than striped on the 2-pool concurrent-write workload. Cap
+should be sized to 2-4× the peak expected entry count to keep
+linear-probe latency bounded and avoid early grows; the
+runtime rounds the user's `cap = N` up to the next power of 2
+(needed for the `& mask` probe). Omitting `cap` starts at
+`LOTUS_HASHMAP_INITIAL_CAP = 8` and grows on demand.
 
 Tombstones in γ-v2 session 1 are *not* reclaimed in place —
 the probe advances past them, but inserts always land in the

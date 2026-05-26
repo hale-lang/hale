@@ -2216,22 +2216,14 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        // F.32-1γ-v1: lockfree REQUIRES cap = N (positive int
-        // literal); other sync modes REJECT cap (they grow
-        // dynamically). The asymmetry tracks the runtime
-        // contract: lockfree has no grow path, so the user has
-        // to size the map at decl time.
+        // F.32-1γ-v1/v2: lockfree accepts `cap = N` as an
+        // initial-size hint. Pre-v2 (no grow path) the cap was
+        // required because the table couldn't grow; v2 ships
+        // grow (2026-05-26) so cap is now optional — omitting it
+        // starts the table at LOTUS_HASHMAP_INITIAL_CAP and
+        // grows on demand. Other sync modes still reject cap
+        // (they have their own initial size + grow policy).
         match (sync_value, cap_arg) {
-            (Some("lockfree"), None) => {
-                self.diags.push(Diag::ty(
-                    form.span,
-                    "@form(hashmap, sync = lockfree) requires a `cap = N` \
-                     arg (positive int literal). Lockfree maps are fixed-cap; \
-                     there's no grow path. Size to 2-4x peak expected \
-                     entries to keep linear-probe latency bounded."
-                        .to_string(),
-                ));
-            }
             (Some("lockfree"), Some(arg)) => {
                 match &arg.value {
                     Expr::Literal(Literal::Int(n), _) if *n > 0 => {

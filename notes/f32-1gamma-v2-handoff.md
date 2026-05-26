@@ -373,11 +373,11 @@ session 3):
    no-ops on missing, re-set works (session 1).
 2. ✅ `len()` reflects live count under concurrent set/remove
    (session 1).
-3. ✅ `cap = N` is an initial-size hint; grow happens
-   transparently when load factor crosses 0.6 (session 3).
-   *Note:* `cap = N` remains REQUIRED at the API surface to
-   preserve backward compatibility with existing programs;
-   making it optional is a v0.3 cosmetic follow-up.
+3. ✅ `cap = N` is an optional initial-size hint; grow
+   happens transparently when load factor crosses 0.6
+   (session 3). The typecheck-side "lockfree requires cap"
+   gate was dropped 2026-05-26 — omitting `cap` starts at
+   `LOTUS_HASHMAP_INITIAL_CAP = 8` and grows on demand.
 4. ✅ TSAN reports zero data races on routing-keys +
    form_hashmap_lockfree test suites under embedded
    suppressions for pre-existing substrate races (session 2).

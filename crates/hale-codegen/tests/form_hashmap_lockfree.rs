@@ -506,6 +506,46 @@ fn lockfree_grow_drops_tombstones() {
 }
 
 #[test]
+fn lockfree_without_cap_uses_default_initial_size() {
+    // F.32-1γ-v2 (2026-05-26): `cap = N` is now optional on
+    // lockfree. Omitting it starts the table at
+    // LOTUS_HASHMAP_INITIAL_CAP (8) and grows on demand.
+    let src = r#"
+        type Counter { id: Int; v: Int; }
+
+        // No `cap` arg — relies on the default + grow.
+        @form(hashmap, sync = lockfree)
+        locus Registry {
+            capacity { pool entries of Counter indexed_by id; }
+        }
+
+        main locus App {
+            params { reg: Registry = Registry { }; }
+            run() {
+                let mut i = 0;
+                while i < 200 {
+                    self.reg.set(Counter { id: i, v: i * 3 });
+                    i = i + 1;
+                }
+                print("len="); println(self.reg.len());
+                let e = self.reg.get(42) or raise;
+                print("v42="); println(e.v);
+            }
+        }
+
+        fn main() { App { }; }
+    "#;
+    let (stdout, status) = build_and_run("no_cap", src);
+    assert!(
+        status.success(),
+        "binary exited non-zero: {:?}\nstdout: {}",
+        status, stdout,
+    );
+    assert!(stdout.contains("len=200"), "all entries should land via grow; got: {:?}", stdout);
+    assert!(stdout.contains("v42=126"), "spot-check at mid-range; got: {:?}", stdout);
+}
+
+#[test]
 fn lockfree_many_grow_cycles_no_use_after_free() {
     // γ-v2 session 4: with the simplified grow design (OLD freed
     // eagerly after migration), a sustained-write workload that
