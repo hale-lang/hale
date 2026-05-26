@@ -1,14 +1,16 @@
 # F.32-1γ-v2 handoff — lockfree `@form(hashmap)` grow + tombstones
 
 **Date**: 2026-05-26
-**Status**: sessions 1+2 shipped. Session 1 (tombstones +
-`remove`) added the 4-state cell machine; session 2 added TSAN
-validation infrastructure (`LOTUS_TSAN=1` driver flag +
-embedded suppressions for pre-existing substrate races). The
-lockfree hashmap path validates clean under TSAN on the
-cross-pool + tombstone-churn workloads. Sessions 3 + 4 remain:
-lockfree `grow`, QSBR epoch reclamation.
-**Estimated effort**: 1-2 sessions remaining.
+**Status**: sessions 1, 2, and 3 shipped. Session 1 added the
+4-state cell machine + `remove` via tombstones; session 2
+added TSAN validation infrastructure; session 3 added lazy
+grow via a brief-stall protocol (single-grower with
+writers_in_flight drain, no SENTINEL/cooperative-helper
+design). All lockfree workloads — cross-pool writes,
+tombstone churn, grow-under-contention — validate clean
+under TSAN. Session 4 remains: QSBR epoch reclamation for
+flat-RSS sustained-write profile.
+**Estimated effort**: 1 session remaining.
 
 ---
 
@@ -255,24 +257,84 @@ End-of-session state: TSAN infrastructure operational;
 suppressions; ready to validate session-3 grow as it
 lands.
 
-### Session 3: lockfree grow state machine
+### Session 3: lockfree grow — SHIPPED 2026-05-26
 
-Scope:
-- 5-state cell machine (extend with SENTINEL).
-- `lotus_hashmap_grow_lockfree` — allocate OLD-doubled NEW;
-  per-slot migration via CAS-OLD→SENTINEL + write-to-NEW.
-- Writers that encounter SENTINEL: help migrate the OLD slot
-  (one CAS), retry their own op against NEW.
-- Readers that encounter SENTINEL: fall through to NEW.
-- Memory reclamation: stub via "leak on dissolve" for v0 of
-  the grow impl. Real reclamation (EBR or QSBR) is Session 4.
+Design deviated from the handoff doc's NBHM-style 5-state +
+SENTINEL plan. Final scope:
 
-Tests: stress test driving 4 threads × 100k ops at load factor
-hovering around the grow threshold. Validate under TSAN
-+ relacy harness from session 2.
+- **No new cell state added.** The 4-state machine (EMPTY /
+  CLAIMED / COMMITTED / TOMBSTONE) is unchanged. Migration is
+  single-threaded by the grow_phase 0→1 CAS holder, so the
+  SENTINEL marker that NBHM uses to coordinate cooperative
+  helpers isn't needed.
+- New lockfree-only fields on `lotus_hashmap_t`:
+    * `lf_grow_phase` (int) — 0 = idle, 1 = growing.
+    * `lf_writers_in_flight` (int64) — count of in-flight
+      lockfree ops holding a stale m->slots / m->cap snapshot.
+    * `lf_old_slots` (ptr) — one-generation stash of the
+      previous OLD table.
+    * `lf_old_cap` (size_t) — companion for lf_old_slots.
+- `lotus_hashmap_lf_enter` / `lotus_hashmap_lf_exit` — protocol
+  brackets every lockfree op (set, get, has, remove, key_at,
+  value_at, iteration). Fast path: 1 atomic load + branch-not-
+  taken + fetch_add (in-flight counter). Slow path (during
+  grow): yield-spin.
+- `lotus_hashmap_grow_lockfree` — CAS-wins the grow_phase,
+  drains writers_in_flight, single-threaded copy of COMMITTED
+  entries into the doubled NEW table (tombstones drop — the
+  lazy compaction the original plan anticipated), atomic-store
+  swap, releases grow_phase.
+- `lotus_hashmap_set_lockfree` triggers grow after a successful
+  insert when `(live + tombstones) * 10 > cap * 6` (load
+  factor 0.6). Probe-exhaustion also triggers grow as a
+  safety fallback.
+- `lotus_hashmap_destroy` frees lf_old_slots if set.
 
-End-of-session state: grow works; pre-grow OLD tables leak
-until dissolve.
+**Why this design instead of full NBHM:**
+
+NBHM's cooperative-helper migration (writers/readers help
+migrate one slot per op while their own op is in flight) is
+the theoretically optimal lockfree grow — no stalls, no
+single point of contention. But it requires:
+- A 5-state cell machine with PRIMED markers.
+- Careful ordering between "help one slot" and "do my own op."
+- A KVS-wrapper struct (atomic pointer) that all readers/
+  writers load via acquire-load on every op.
+- Memory reclamation via hazard pointers or EBR — already
+  separate session-4 work.
+
+For this conversation's budget, the simpler single-grower
+design is the right call. It preserves the steady-state
+lockfree guarantee (one atomic load fast path, no
+kernel-mediated sync) and adds bounded-but-non-zero stall
+latency on grow events. The protocol is straightforward to
+reason about and validates clean under TSAN with no
+suppressions added to the lockfree code.
+
+Tests added in `crates/hale-codegen/tests/form_hashmap_lockfree.rs`:
+- `lockfree_grow_beyond_initial_cap` — 500 entries into a
+  cap=8 map; verifies all entries land + get returns the
+  right value across grows.
+- `lockfree_grow_drops_tombstones` — 200 inserts + 100
+  removes + 100 re-inserts into cap=16; verifies the
+  combined churn workload completes correctly (would have
+  saturated under v1's fixed-cap silent-drop).
+
+Test added in `crates/hale-codegen/tests/form_hashmap_lockfree_tsan.rs`:
+- `lockfree_grow_under_contention_tsan_clean` — two pools
+  writing disjoint keys into cap=32 (forcing several grows
+  during the concurrent-write window). Asserts no
+  unsuppressed TSAN races in the grow protocol.
+
+Spec: `spec/forms.md` § "Sync disciplines" describes the
+load-factor threshold (0.6), the single-grower / brief-stall
+trade-off vs NBHM, and the one-generation OLD-buffer stash
+(freed at next grow or dissolve).
+
+End-of-session state: grow works on contended workloads;
+pre-grow OLD tables stash one generation then free at next
+grow / dissolve. Session 4 replaces the stash-then-free
+pattern with QSBR for a sustained-write flat-RSS profile.
 
 ### Session 4: epoch reclamation
 

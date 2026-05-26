@@ -217,3 +217,75 @@ fn lockfree_remove_under_contention_tsan_clean() {
         stderr,
     );
 }
+
+/// γ-v2 session 3 grow path under TSAN. Two pools insert disjoint
+/// keys past the initial cap, forcing several grows during the
+/// concurrent-write window. The lf_enter/lf_exit + grow_phase
+/// protocol must serialize the migration cleanly with no
+/// unsuppressed race reports.
+#[test]
+#[ignore]
+fn lockfree_grow_under_contention_tsan_clean() {
+    if std::env::var("LOTUS_TSAN").ok().as_deref() != Some("1") {
+        panic!(
+            "lockfree_grow_under_contention_tsan_clean requires LOTUS_TSAN=1"
+        );
+    }
+    let src = r#"
+        type Counter { id: Int; v: Int; }
+
+        // Small initial cap so the cross-pool writers force
+        // several grows during execution.
+        @form(hashmap, sync = lockfree, cap = 32)
+        locus Registry {
+            capacity { pool entries of Counter indexed_by id; }
+        }
+
+        locus PoolHost {
+            params { reg: Registry = Registry { }; }
+            run() {
+                let mut i = 0;
+                while i < 1000 {
+                    self.reg.set(Counter { id: i * 2 + 1, v: i });
+                    i = i + 1;
+                }
+            }
+        }
+
+        main locus App {
+            params { host: PoolHost = PoolHost { }; }
+            placement { host: cooperative(pool = io); }
+            run() {
+                let mut i = 0;
+                while i < 1000 {
+                    self.host.reg.set(Counter { id: i * 2, v: i });
+                    i = i + 1;
+                }
+                while self.host.reg.len() < 2000 {
+                    std::time::sleep(1ms);
+                }
+                print("len="); println(self.host.reg.len());
+            }
+        }
+
+        fn main() { App { }; }
+    "#;
+    let (stdout, stderr, status) = build_and_run("grow_under_contention", src);
+    assert!(
+        status.success(),
+        "TSAN flagged a race during the grow path \
+         (exit={:?}). stdout: {}\n--- TSAN stderr ---\n{}",
+        status, stdout, stderr,
+    );
+    assert!(
+        stdout.contains("len=2000"),
+        "writer correctness regressed under grow + TSAN: {:?}",
+        stdout
+    );
+    assert!(
+        !stderr.contains("WARNING: ThreadSanitizer"),
+        "ThreadSanitizer surfaced an unsuppressed race in the grow \
+         protocol:\n{}",
+        stderr,
+    );
+}

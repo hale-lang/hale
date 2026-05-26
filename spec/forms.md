@@ -685,7 +685,7 @@ into a plain `@form(hashmap)` receiver are typecheck-rejected
 | `@form(hashmap)` | single-pool only | shipped |
 | `@form(hashmap, sync = serialized)` | per-map `pthread_mutex_t` (F.32-1α) | shipped |
 | `@form(hashmap, sync = striped)` | cell-level CAS + per-map `pthread_rwlock_t` for grow + cache-padded cells (F.32-1β2-v2) | shipped |
-| `@form(hashmap, sync = lockfree, cap = N)` | fixed-cap, cell-level CAS, no rwlock or mutex (F.32-1γ-v1); + `remove` via tombstones (F.32-1γ-v2 session 1) | shipped |
+| `@form(hashmap, sync = lockfree, cap = N)` | cell-level CAS, no rwlock or mutex on the steady-state path (F.32-1γ-v1); + `remove` via tombstones (F.32-1γ-v2 session 1); + lazy grow with brief writer/reader stall during migration (F.32-1γ-v2 session 3) | shipped |
 
 **Discipline picker by workload:**
 
@@ -700,15 +700,16 @@ into a plain `@form(hashmap)` receiver are typecheck-rejected
   parallel; cache-padded cells avoid false-sharing between
   reader and writer cells. Slower than serialized on 2-core
   / cheap-payload writes (rwlock overhead > parallelism gain).
-- **Cross-pool, write-heavy, cap known at deploy time**:
-  `sync = lockfree, cap = N`. Pure CAS — no kernel-mediated
-  sync anywhere. Fastest of the four on the
-  `form_hashmap_false_sharing` bench (~1.3× faster than α
-  serialized at 2 cores). Trade-off: fixed cap (no grow path
-  until F.32-1γ-v2 session 3). `remove` is supported via
-  tombstones (γ-v2 session 1), but tombstones accumulate until
-  grow ships — churn-heavy workloads at fixed cap can saturate
-  via tombstones before live entries fill the table.
+- **Cross-pool, write-heavy, cap known approximately**:
+  `sync = lockfree, cap = N`. Pure CAS on the steady-state
+  hot path — no kernel-mediated sync. Fastest of the four on
+  the `form_hashmap_false_sharing` bench (~1.3× faster than α
+  serialized at 2 cores). Trade-off: when the load factor
+  exceeds 0.6, a grow event briefly stalls all lockfree ops
+  (~ms for typical caps) while the migration runs. Steady
+  state outside of grow remains fully lockfree. `cap = N` is
+  treated as an initial-size hint; supply 2-4× the expected
+  peak so grows are rare.
 
 The `serialized` discipline wraps every public entry point in
 a per-map mutex. Throughput is bounded by lock contention
@@ -745,15 +746,31 @@ the user's `cap = N` up to the next power of 2 (needed for the
 
 Tombstones in γ-v2 session 1 are *not* reclaimed in place —
 the probe advances past them, but inserts always land in the
-next EMPTY slot rather than reusing a TOMBSTONE. Reuse arrives
-naturally with the γ-v2 session 3 grow path, which rebuilds
-the table without tombstones at each grow boundary. Until grow
-ships, a workload that churns the same keys at a fixed cap can
-exhaust the table via accumulating tombstones; size `cap = N`
-accordingly. Consistency on remove follows the lockfree model:
-a reader that observed COMMITTED before a concurrent CAS to
-TOMBSTONE returns the (now-stale) value — "the key was present
-at the moment we read."
+next EMPTY slot rather than reusing a TOMBSTONE. Session 3's
+grow path is where tombstones get compacted out: when the
+load factor (`live + tombstones / cap`) crosses 0.6, the
+table is rebuilt at double size and the new table omits
+tombstones entirely. Consistency on remove follows the
+lockfree model: a reader that observed COMMITTED before a
+concurrent CAS to TOMBSTONE returns the (now-stale) value —
+"the key was present at the moment we read."
+
+Grow under γ-v2 session 3 uses a simpler design than the full
+NBHM cooperative-helper migration: one writer wins a
+grow_phase CAS, spin-waits for in-flight ops to drain via a
+writers_in_flight counter, then runs the migration single-
+threaded (no SENTINEL state, no cooperative helping). All
+concurrent set/get/remove ops yield-spin during the migration
+window. The hot-path cost in steady state is one atomic
+load + branch-not-taken — measurably cheaper than the
+NBHM-style 5-state CAS-on-every-probe. The trade-off is
+tail latency on the writer that triggers grow (bounded by
+the migration's O(cap) walk, ~ms for caps up to ~100k) and
+brief stalls on all concurrent ops during that window. The
+old slots buffer is held one generation and freed at the
+next grow or at locus dissolve (session 4 will replace this
+with QSBR epoch reclamation for a flat-RSS sustained-write
+profile).
 
 Cross-pool method calls into a `@form(hashmap, sync = ...)`
 receiver are accepted without diagnostic — the chosen

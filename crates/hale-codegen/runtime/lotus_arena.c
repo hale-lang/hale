@@ -2089,6 +2089,14 @@ void lotus_vec_destroy(void *vec_ptr) {
 #define LOTUS_HASHMAP_LOAD_NUM 7
 #define LOTUS_HASHMAP_LOAD_DEN 10
 
+/* F.32-1γ-v2 (session 3, 2026-05-26): lockfree's load-factor
+ * threshold is tighter than the other disciplines (6/10 vs
+ * 7/10) because tombstones accumulate between grows — keeping
+ * the probe distance bounded under churn requires triggering
+ * grow sooner. The check is `(live + tombstones) * LOAD_DEN
+ * > cap * LF_LOAD_NUM`. */
+#define LOTUS_HASHMAP_LF_LOAD_NUM 6
+
 /* F.32-1β2 (2026-05-25) — cell-level CAS striped discipline:
  * sync_mode + occupancy state encoding + cache-line constant. */
 #define LOTUS_HASHMAP_SYNC_NONE       0  /* plain @form(hashmap); single-pool */
@@ -2213,19 +2221,62 @@ typedef struct {
     size_t  cursor_slot;
     /* F.32-1γ-v2 (session 1): tombstone counter, lockfree only.
      * `m->len` continues to mean live entries; `tombstone_count`
-     * tracks slots in TOMBSTONE state. Saturation is reached
-     * when `len + tombstone_count >= cap`. NONE/SERIALIZED/STRIPED
+     * tracks slots in TOMBSTONE state. NONE/SERIALIZED/STRIPED
      * use backward-shift remove (no tombstones) so this counter
-     * stays 0 for them. Atomic load/store under lockfree; relaxed
-     * ordering is sufficient (the value is advisory for
-     * monitoring, not load-bearing for correctness).
-     *
-     * Session 3 / NBHM-style grow will rebuild the table without
-     * tombstones at grow boundaries, naturally compacting the
-     * counter back to 0. Until grow ships, tombstones accumulate
-     * — workloads with heavy churn against a fixed cap will hit
-     * saturation faster than v1 expected. */
+     * stays 0 for them. Session 3 grow now uses
+     * `live + tombstone_count` for the load-factor check, and
+     * the migration rebuilds the table WITHOUT tombstones
+     * (lazy compaction) — `tombstone_count` resets to 0 on
+     * every grow. */
     size_t tombstone_count;
+    /* F.32-1γ-v2 (session 3, 2026-05-26): lockfree grow state.
+     *
+     * Design choice (deviates from NBHM in the handoff doc): use
+     * a single grower with a brief writers/readers stall instead
+     * of cooperative migration via SENTINEL. Steady-state ops
+     * stay fully lockfree (one atomic load on the fast path);
+     * during the rare grow event (~ms for typical caps) all
+     * ops yield-spin. Trade-off: simpler implementation; tail
+     * latency on the op that triggered grow is bounded by the
+     * migration time, not amortized across helpers.
+     *
+     * Protocol:
+     *   - Fast path: ALL lockfree ops load `lf_grow_phase`. If 0
+     *     (idle), increment `lf_writers_in_flight` and proceed.
+     *     If non-0, sched_yield and retry.
+     *   - Grow path: ONE writer CAS-claims grow_phase 0→1, then
+     *     spin-waits for `lf_writers_in_flight` to drain. Once
+     *     drained, it owns the table exclusively: allocates NEW,
+     *     copies COMMITTED entries (tombstones drop), swaps
+     *     m->slots/cap, stores grow_phase = 0.
+     *   - The old slots buffer is held on `lf_old_slots` and
+     *     freed on the NEXT grow (by which point all readers
+     *     from before THAT grow have drained) or at dissolve.
+     *     Session 4 replaces this stash-then-free with QSBR
+     *     epoch-based reclamation.
+     *
+     * Fields:
+     *   lf_grow_phase: 0 = idle (hot path lockfree), 1 = grow
+     *                  in progress (all lockfree ops stall).
+     *   lf_writers_in_flight: count of in-flight lockfree ops
+     *                  that hold a stale m->slots / m->cap
+     *                  snapshot. Grower waits for this to reach
+     *                  zero before swapping.
+     *   lf_old_slots:  previous slots buffer (post-swap). Held
+     *                  one generation so concurrent ops with a
+     *                  stale snapshot don't read freed memory.
+     *                  Freed on next grow or dissolve.
+     *   lf_old_cap:    cap companion for lf_old_slots
+     *                  (informational; freeing only needs the
+     *                  pointer).
+     *
+     * NONE/SERIALIZED/STRIPED disciplines never touch these
+     * fields — they use their own grow paths
+     * (`lotus_hashmap_grow` via the lock pair). */
+    int lf_grow_phase;
+    int64_t lf_writers_in_flight;
+    char *lf_old_slots;
+    size_t lf_old_cap;
 } lotus_hashmap_t;
 
 static size_t lotus_hashmap_entry_size(const lotus_hashmap_t *m) {
@@ -2315,6 +2366,12 @@ void lotus_hashmap_init(void *map_ptr,
      * initialized here so it has a defined value for any
      * discipline. */
     m->tombstone_count = 0;
+    /* F.32-1γ-v2 (session 3): lockfree grow state. Idle by
+     * default; only the lockfree discipline mutates these. */
+    m->lf_grow_phase = 0;
+    m->lf_writers_in_flight = 0;
+    m->lf_old_slots = NULL;
+    m->lf_old_cap = 0;
 }
 
 /* F.32-1α (2026-05-24): sync = serialized variant. Same init
@@ -2335,27 +2392,28 @@ void lotus_hashmap_init_serialized(void *map_ptr,
 }
 
 /* F.32-1γ-v1 (2026-05-25): sync = lockfree variant.
- * Fixed-cap (user-declared via `cap = N` on the form
- * annotation; no grow). Cache-padded cells like β2. Pure CAS
- * on slot[0] for the 3-state occupancy machine; no rwlock,
- * no mutex.
+ * Cache-padded cells like β2. Pure CAS on slot[0] for the
+ * 4-state occupancy machine (EMPTY → CLAIMED → COMMITTED →
+ * TOMBSTONE after γ-v2 session 1); no rwlock, no mutex on
+ * the steady-state hot path.
  *
- * Trades grow + remove (v1 doesn't support either) for the
- * cheapest possible per-op cost: load_acquire + CAS +
- * memcpy + release_store, no kernel-mediated synchronization
- * primitives anywhere on the hot path. Suited for:
+ * Per-op cost on the fast path: 1 atomic load of
+ * `lf_grow_phase` (branch-not-taken) + load_acquire + CAS +
+ * memcpy + release_store. No kernel-mediated synchronization
+ * primitives in steady state. Suited for:
  *   - Workloads where the entry count is bounded + known at
  *     deploy time (Prometheus registries with a fixed metric
  *     list, route tables, config caches).
  *   - High-core-count writes (8+ cores) where the rwlock
  *     overhead in β2 dominates.
  *
- * Behavior on cap exhaustion: `set` silently drops (the probe
- * walks `cap` cells and returns no-op). The caller is
- * responsible for sizing — `cap = N` should be 2-4× the
- * peak expected entry count to keep linear-probe latency
- * bounded. `len()` reports the current count so monitoring
- * can detect approaching saturation. */
+ * F.32-1γ-v2 session 3 (2026-05-26): `cap = N` is now an
+ * initial-size hint rather than a hard ceiling. When the
+ * load factor (live + tombstones / cap) exceeds the
+ * threshold, the table grows by doubling. Grow briefly
+ * stalls in-flight lockfree ops (~ms typical) but steady
+ * state remains lockfree. Tombstones are dropped during
+ * migration (lazy compaction). */
 void lotus_hashmap_init_lockfree(void *map_ptr,
                                   size_t key_size,
                                   size_t value_size,
@@ -2701,10 +2759,151 @@ probe_restart:;
     pthread_rwlock_unlock(m->mu_grow);
 }
 
+/* F.32-1γ-v2 session 3 (2026-05-26): enter/exit protocol for
+ * lockfree ops. Fast path: 1 atomic load. Slow path (when grow
+ * is in progress): yield-spin until grow completes, then take
+ * the writer-in-flight counter.
+ *
+ * The pair must bracket every access to m->slots / m->cap on
+ * the lockfree path — set, get, has, remove, iteration. */
+static inline void lotus_hashmap_lf_enter(lotus_hashmap_t *m) {
+    for (;;) {
+        int phase = __atomic_load_n(&m->lf_grow_phase, __ATOMIC_ACQUIRE);
+        if (phase != 0) {
+            sched_yield();
+            continue;
+        }
+        __atomic_fetch_add(&m->lf_writers_in_flight, 1, __ATOMIC_ACQUIRE);
+        /* Re-check: a grower could have CAS'd phase 0→1 between
+         * our load and our fetch_add. If so, back out and retry
+         * — the grower's `wait for writers_in_flight == 0`
+         * spin would otherwise deadlock with our presence. */
+        phase = __atomic_load_n(&m->lf_grow_phase, __ATOMIC_ACQUIRE);
+        if (phase != 0) {
+            __atomic_fetch_sub(&m->lf_writers_in_flight, 1, __ATOMIC_RELEASE);
+            sched_yield();
+            continue;
+        }
+        return;
+    }
+}
+
+static inline void lotus_hashmap_lf_exit(lotus_hashmap_t *m) {
+    __atomic_fetch_sub(&m->lf_writers_in_flight, 1, __ATOMIC_RELEASE);
+}
+
+/* Single-threaded migration. Caller (lotus_hashmap_grow_lockfree)
+ * holds lf_grow_phase == 1 and has spin-waited for
+ * lf_writers_in_flight to drain. No concurrent ops touch
+ * m->slots / m->cap. Tombstones are silently dropped (the lazy
+ * compaction the handoff doc anticipated). */
+static void lotus_hashmap_lf_migrate(lotus_hashmap_t *m,
+                                      char *old_slots,
+                                      size_t old_cap,
+                                      char *new_slots,
+                                      size_t new_cap) {
+    size_t es = m->cell_stride;
+    size_t mask = new_cap - 1;
+    size_t live = 0;
+    for (size_t s = 0; s < old_cap; s++) {
+        char *slot = old_slots + s * es;
+        /* Migration sees only COMMITTED + EMPTY + TOMBSTONE in
+         * steady state; CLAIMED is transient (writer
+         * mid-publish) and our drain-wait guaranteed no
+         * writers are in flight. */
+        if (slot[0] != LOTUS_CELL_COMMITTED) continue;
+        const char *key = slot + 1;
+        const char *value = slot + 1 + m->key_size;
+        /* Insert into NEW. NEW is fresh (calloc) so all slots
+         * are EMPTY; probing terminates at the first EMPTY. */
+        size_t i = lotus_hashmap_hash(m, key) & mask;
+        for (;;) {
+            char *nslot = new_slots + i * es;
+            if (nslot[0] == LOTUS_CELL_EMPTY) {
+                memcpy(nslot + 1, key, m->key_size);
+                memcpy(nslot + 1 + m->key_size, value, m->value_size);
+                nslot[0] = LOTUS_CELL_COMMITTED;
+                live++;
+                break;
+            }
+            i = (i + 1) & mask;
+        }
+    }
+    /* Update accounting under the single-threaded migration
+     * lock. m->len is rebuilt precisely; tombstones drop to
+     * zero. */
+    __atomic_store_n(&m->len, live, __ATOMIC_RELAXED);
+    __atomic_store_n(&m->tombstone_count, 0, __ATOMIC_RELAXED);
+}
+
+/* F.32-1γ-v2 session 3: grow path. ONE writer wins the CAS to
+ * lf_grow_phase 0→1; spin-waits for in-flight ops to drain;
+ * allocates the doubled NEW table; copies live entries (drops
+ * tombstones); installs NEW as m->slots/cap; stashes OLD on
+ * lf_old_slots (one-generation hold) and frees the previous
+ * stash if any. Session 4 replaces the stash-then-free pattern
+ * with QSBR epoch reclamation. */
+static void lotus_hashmap_grow_lockfree(lotus_hashmap_t *m) {
+    int expected = 0;
+    if (!__atomic_compare_exchange_n(
+            &m->lf_grow_phase, &expected, 1,
+            0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
+    {
+        /* Another writer already started the grow. Don't
+         * wait here — our caller will retry the op via the
+         * lf_enter spin on the next iteration. */
+        return;
+    }
+    /* Spin until every in-flight lockfree op has exited.
+     * The 0→1 store on lf_grow_phase makes new ops back off
+     * via the lf_enter re-check; existing ops drain quickly
+     * (they hold the counter across a few CAS / memcpy). */
+    while (__atomic_load_n(&m->lf_writers_in_flight, __ATOMIC_ACQUIRE) > 0) {
+        sched_yield();
+    }
+    size_t old_cap = m->cap;
+    char *old_slots = m->slots;
+    size_t new_cap = old_cap * 2;
+    if (new_cap < LOTUS_HASHMAP_INITIAL_CAP) {
+        new_cap = LOTUS_HASHMAP_INITIAL_CAP;
+    }
+    size_t es = m->cell_stride;
+    char *new_slots = (char *)calloc(new_cap, es);
+    if (!new_slots) {
+        /* Allocation failure: bail out without growing. Set
+         * paths will continue to insert into OLD until the
+         * next grow attempt. The probe will eventually
+         * saturate, but the caller's program has bigger
+         * problems if calloc returned NULL. */
+        __atomic_store_n(&m->lf_grow_phase, 0, __ATOMIC_RELEASE);
+        return;
+    }
+    lotus_hashmap_lf_migrate(m, old_slots, old_cap, new_slots, new_cap);
+    /* Atomic-store the new slots/cap so any future reader
+     * loading via __atomic_load_n sees a consistent pair.
+     * (No in-flight reader exists right now; the stores are
+     * just for memory-ordering correctness on later loads.) */
+    __atomic_store_n(&m->slots, new_slots, __ATOMIC_RELEASE);
+    __atomic_store_n(&m->cap, new_cap, __ATOMIC_RELEASE);
+    /* Iterator cursor is invalidated by the rebuild — its
+     * cached slot index no longer maps onto m->slots. */
+    m->cursor_i = -1;
+    m->cursor_slot = 0;
+    /* One-generation hold on OLD: free the PREVIOUS stash (no
+     * op from before THAT grow can still be in flight, since
+     * its drain-wait completed before THIS grow even started).
+     * Stash the current OLD for the next grow / dissolve. */
+    if (m->lf_old_slots) {
+        free(m->lf_old_slots);
+    }
+    m->lf_old_slots = old_slots;
+    m->lf_old_cap = old_cap;
+    __atomic_store_n(&m->lf_grow_phase, 0, __ATOMIC_RELEASE);
+}
+
 /* F.32-1γ-v1 (2026-05-25): lockfree set. Same 3-state CAS
  * machine as β2's set_striped, minus the rwlock and the
- * grow path. Probe bounded by m->cap; silent drop on
- * exhaustion.
+ * grow path. Probe bounded by m->cap.
  *
  * F.32-1γ-v2 (session 1): TOMBSTONE-aware. Probes advance
  * past TOMBSTONE slots without reuse — same-key updates land
@@ -2712,24 +2911,32 @@ probe_restart:;
  * find the next EMPTY past the tombstone chain. Reuse-on-
  * tombstone is intentionally deferred to session 3, where the
  * grow path's natural compaction (NEW table built without
- * tombstones) removes the need. */
+ * tombstones) removes the need.
+ *
+ * F.32-1γ-v2 (session 3): bracketed by lf_enter / lf_exit so
+ * grow can safely swap m->slots / m->cap. Triggers grow after
+ * a successful insert when load factor exceeds
+ * LF_LOAD_NUM/LOAD_DEN. */
 static void lotus_hashmap_set_lockfree(lotus_hashmap_t *m,
                                         const void *key,
                                         const void *value) {
+    int did_grow_check = 0;
+set_retry:
+    lotus_hashmap_lf_enter(m);
     size_t es = lotus_hashmap_entry_size(m);
     size_t mask = m->cap - 1;
     size_t i = lotus_hashmap_hash(m, key) & mask;
     size_t probes = 0;
     for (;;) {
         if (probes >= m->cap) {
-            /* Cap exhausted. Silent drop per the γ-v1 contract
-             * — caller should have sized the map to 2-4x peak
-             * expected entries. len() reports the saturation
-             * for monitoring. v2 session 1: tombstones consume
-             * slots until grow ships (session 3); a churn-heavy
-             * workload at fixed cap can saturate via tombstones
-             * before live entries fill the table. */
-            return;
+            /* Probe exhausted under the current cap. Exit the
+             * critical region, trigger grow (the load-factor
+             * check below will succeed), and retry the set
+             * against the doubled table. */
+            lotus_hashmap_lf_exit(m);
+            lotus_hashmap_grow_lockfree(m);
+            did_grow_check = 1;
+            goto set_retry;
         }
         char *slot = m->slots + i * es;
         uint8_t state =
@@ -2747,7 +2954,7 @@ static void lotus_hashmap_set_lockfree(lotus_hashmap_t *m,
                                  LOTUS_CELL_COMMITTED,
                                  __ATOMIC_RELEASE);
                 __atomic_fetch_add(&m->len, 1, __ATOMIC_RELAXED);
-                return;
+                goto set_done_insert;
             }
             continue;  /* CAS lost; re-read */
         }
@@ -2777,12 +2984,36 @@ static void lotus_hashmap_set_lockfree(lotus_hashmap_t *m,
                 __atomic_store_n((uint8_t *)&slot[0],
                                  LOTUS_CELL_COMMITTED,
                                  __ATOMIC_RELEASE);
+                /* Update path: no len change, no grow trigger. */
+                lotus_hashmap_lf_exit(m);
                 return;
             }
             continue;  /* lost update race; retry */
         }
         i = (i + 1) & mask;
         probes++;
+    }
+set_done_insert:
+    /* Successful insert. Exit the critical region, then check
+     * the load factor and trigger grow if exceeded. Grow runs
+     * its own enter-spin so racing growers serialize on the
+     * grow_phase CAS.
+     *
+     * Cap snapshot is taken AFTER exit so we don't hold the
+     * writer-in-flight token while spinning on grow. The race
+     * is benign: a concurrent writer may grow first; we'll
+     * find lf_grow_phase != 0 on the CAS and skip our grow. */
+    {
+        size_t cap_now = m->cap;
+        size_t live = __atomic_load_n(&m->len, __ATOMIC_RELAXED);
+        size_t tomb = __atomic_load_n(&m->tombstone_count, __ATOMIC_RELAXED);
+        lotus_hashmap_lf_exit(m);
+        if (!did_grow_check
+            && (live + tomb) * LOTUS_HASHMAP_LOAD_DEN
+                > cap_now * LOTUS_HASHMAP_LF_LOAD_NUM)
+        {
+            lotus_hashmap_grow_lockfree(m);
+        }
     }
 }
 
@@ -2864,14 +3095,20 @@ int lotus_hashmap_get(void *map_ptr, const void *key, void *out_value) {
     if (!map_ptr || !key || !out_value) return 0;
     lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
     if (m->sync_mode == LOTUS_HASHMAP_SYNC_LOCKFREE) {
-        /* Lockfree get: no rwlock, just atomic probe. Uses the
-         * same find_slot_striped helper (spins past CLAIMED). */
-        if (__atomic_load_n(&m->len, __ATOMIC_RELAXED) == 0) return 0;
-        size_t i = lotus_hashmap_find_slot_striped(m, key);
-        if (i >= m->cap) return 0;
-        char *slot = m->slots + i * lotus_hashmap_entry_size(m);
-        memcpy(out_value, slot + 1 + m->key_size, m->value_size);
-        return 1;
+        /* Lockfree get: no rwlock; bracket with lf_enter/exit so
+         * grow can swap m->slots / m->cap underneath us safely. */
+        lotus_hashmap_lf_enter(m);
+        int r = 0;
+        if (__atomic_load_n(&m->len, __ATOMIC_RELAXED) > 0) {
+            size_t i = lotus_hashmap_find_slot_striped(m, key);
+            if (i < m->cap) {
+                char *slot = m->slots + i * lotus_hashmap_entry_size(m);
+                memcpy(out_value, slot + 1 + m->key_size, m->value_size);
+                r = 1;
+            }
+        }
+        lotus_hashmap_lf_exit(m);
+        return r;
     }
     if (m->sync_mode == LOTUS_HASHMAP_SYNC_STRIPED) {
         pthread_rwlock_rdlock(m->mu_grow);
@@ -2910,9 +3147,14 @@ int lotus_hashmap_has(void *map_ptr, const void *key) {
     if (!map_ptr || !key) return 0;
     lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
     if (m->sync_mode == LOTUS_HASHMAP_SYNC_LOCKFREE) {
-        if (__atomic_load_n(&m->len, __ATOMIC_RELAXED) == 0) return 0;
-        size_t i = lotus_hashmap_find_slot_striped(m, key);
-        return (i < m->cap) ? 1 : 0;
+        lotus_hashmap_lf_enter(m);
+        int r = 0;
+        if (__atomic_load_n(&m->len, __ATOMIC_RELAXED) > 0) {
+            size_t i = lotus_hashmap_find_slot_striped(m, key);
+            r = (i < m->cap) ? 1 : 0;
+        }
+        lotus_hashmap_lf_exit(m);
+        return r;
     }
     if (m->sync_mode == LOTUS_HASHMAP_SYNC_STRIPED) {
         pthread_rwlock_rdlock(m->mu_grow);
@@ -2985,34 +3227,42 @@ static int lotus_hashmap_remove_unlocked(lotus_hashmap_t *m,
  * already spins past CLAIMED so the retry loop converges. */
 static int lotus_hashmap_remove_lockfree(lotus_hashmap_t *m,
                                           const void *key) {
-    if (__atomic_load_n(&m->len, __ATOMIC_RELAXED) == 0) return 0;
-    size_t es = lotus_hashmap_entry_size(m);
-    for (;;) {
-        size_t i = lotus_hashmap_find_slot_striped(m, key);
-        if (i >= m->cap) return 0;  /* not present */
-        char *slot = m->slots + i * es;
-        uint8_t expected = LOTUS_CELL_COMMITTED;
-        if (__atomic_compare_exchange_n(
-                (uint8_t *)&slot[0],
-                &expected, LOTUS_CELL_TOMBSTONE,
-                0, /* strong CAS */
-                __ATOMIC_ACQ_REL,
-                __ATOMIC_RELAXED))
-        {
-            __atomic_fetch_add(&m->tombstone_count, 1, __ATOMIC_RELAXED);
-            __atomic_fetch_sub(&m->len, 1, __ATOMIC_RELAXED);
-            return 1;
+    lotus_hashmap_lf_enter(m);
+    int r = 0;
+    if (__atomic_load_n(&m->len, __ATOMIC_RELAXED) > 0) {
+        size_t es = lotus_hashmap_entry_size(m);
+        for (;;) {
+            size_t i = lotus_hashmap_find_slot_striped(m, key);
+            if (i >= m->cap) { r = 0; break; }  /* not present */
+            char *slot = m->slots + i * es;
+            uint8_t expected = LOTUS_CELL_COMMITTED;
+            if (__atomic_compare_exchange_n(
+                    (uint8_t *)&slot[0],
+                    &expected, LOTUS_CELL_TOMBSTONE,
+                    0, /* strong CAS */
+                    __ATOMIC_ACQ_REL,
+                    __ATOMIC_RELAXED))
+            {
+                __atomic_fetch_add(&m->tombstone_count, 1, __ATOMIC_RELAXED);
+                __atomic_fetch_sub(&m->len, 1, __ATOMIC_RELAXED);
+                r = 1;
+                break;
+            }
+            /* CAS failed. The slot's state moved out from
+             * under us:
+             *   - CLAIMED: a concurrent update is in flight;
+             *     loop and find_slot's CLAIMED-spin will
+             *     re-stabilize.
+             *   - TOMBSTONE: a concurrent remove already won;
+             *     the next find_slot iteration won't see the
+             *     key → r = 0 via "not present" branch.
+             * The loop terminates because each iteration
+             * either converges (CAS succeeds) or progresses
+             * the state machine toward a terminal state. */
         }
-        /* CAS failed. The slot's state moved out from under us:
-         *   - CLAIMED: a concurrent update is in flight; loop
-         *     and find_slot's CLAIMED-spin will re-stabilize.
-         *   - TOMBSTONE: a concurrent remove already won; the
-         *     next find_slot iteration won't see the key →
-         *     return 0 via the "not present" branch.
-         * The loop terminates because each iteration either
-         * converges (CAS succeeds) or progresses the state
-         * machine toward a terminal state (TOMBSTONE). */
     }
+    lotus_hashmap_lf_exit(m);
+    return r;
 }
 
 int lotus_hashmap_remove(void *map_ptr, const void *key) {
@@ -3233,6 +3483,7 @@ int lotus_hashmap_key_at(void *map_ptr, int64_t i, void *out_key) {
     if (!map_ptr || !out_key || i < 0) return 0;
     lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
     if (m->sync_mode == LOTUS_HASHMAP_SYNC_LOCKFREE) {
+        lotus_hashmap_lf_enter(m);
         int r = 0;
         size_t cur_len = __atomic_load_n(&m->len, __ATOMIC_RELAXED);
         if ((size_t)i < cur_len) {
@@ -3244,6 +3495,7 @@ int lotus_hashmap_key_at(void *map_ptr, int64_t i, void *out_key) {
                 r = 1;
             }
         }
+        lotus_hashmap_lf_exit(m);
         return r;
     }
     if (m->sync_mode == LOTUS_HASHMAP_SYNC_STRIPED) {
@@ -3281,6 +3533,7 @@ int lotus_hashmap_value_at(void *map_ptr, int64_t i, void *out_value) {
     if (!map_ptr || !out_value || i < 0) return 0;
     lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
     if (m->sync_mode == LOTUS_HASHMAP_SYNC_LOCKFREE) {
+        lotus_hashmap_lf_enter(m);
         int r = 0;
         size_t cur_len = __atomic_load_n(&m->len, __ATOMIC_RELAXED);
         if ((size_t)i < cur_len) {
@@ -3292,6 +3545,7 @@ int lotus_hashmap_value_at(void *map_ptr, int64_t i, void *out_value) {
                 r = 1;
             }
         }
+        lotus_hashmap_lf_exit(m);
         return r;
     }
     if (m->sync_mode == LOTUS_HASHMAP_SYNC_STRIPED) {
@@ -3344,6 +3598,20 @@ void lotus_hashmap_destroy(void *map_ptr) {
             break;
         default:
             break;
+    }
+    /* F.32-1γ-v2 session 3 (2026-05-26): free the stashed OLD
+     * slots buffer held one generation by the grow path. Safe
+     * to free here unconditionally — by dissolve time no
+     * lockfree op can be in flight (the locus owns the map and
+     * dissolve happens after all locus methods return). For
+     * non-lockfree disciplines lf_old_slots stays NULL and
+     * the free is a no-op. Session 4 replaces this with QSBR
+     * epoch-based reclamation across grow boundaries; the
+     * dissolve-time free of the most-recent OLD remains. */
+    if (m->lf_old_slots) {
+        free(m->lf_old_slots);
+        m->lf_old_slots = NULL;
+        m->lf_old_cap = 0;
     }
     m->sync_mode = LOTUS_HASHMAP_SYNC_NONE;
     free(m->slots);

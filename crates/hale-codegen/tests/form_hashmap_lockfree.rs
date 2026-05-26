@@ -391,3 +391,116 @@ fn lockfree_iter_skips_tombstones() {
     // Live entries are id=1 (v=10), id=3 (v=30), id=5 (v=50). Sum = 90.
     assert!(stdout.contains("total=90"), "iteration must skip tombstoned entries; got: {:?}", stdout);
 }
+
+#[test]
+fn lockfree_grow_beyond_initial_cap() {
+    // γ-v2 session 3: insert beyond the user-declared `cap = N`.
+    // Under v1 this would silently drop entries; under v2 the
+    // table grows transparently. Verify ALL entries land and
+    // remain reachable.
+    let src = r#"
+        type Counter { id: Int; v: Int; }
+
+        // Small initial cap (8) to force several grows.
+        @form(hashmap, sync = lockfree, cap = 8)
+        locus Registry {
+            capacity { pool entries of Counter indexed_by id; }
+        }
+
+        main locus App {
+            params { reg: Registry = Registry { }; }
+            run() {
+                let mut i = 0;
+                while i < 500 {
+                    self.reg.set(Counter { id: i, v: i * 10 });
+                    i = i + 1;
+                }
+                print("len="); println(self.reg.len());
+                // Spot-check entries at low / mid / high.
+                let e0 = self.reg.get(0) or raise;
+                let e250 = self.reg.get(250) or raise;
+                let e499 = self.reg.get(499) or raise;
+                print("v0="); println(e0.v);
+                print("v250="); println(e250.v);
+                print("v499="); println(e499.v);
+            }
+        }
+
+        fn main() { App { }; }
+    "#;
+    let (stdout, status) = build_and_run("grow", src);
+    assert!(
+        status.success(),
+        "binary exited non-zero: {:?}\nstdout: {}",
+        status, stdout,
+    );
+    assert!(stdout.contains("len=500"), "grow must preserve all entries; got: {:?}", stdout);
+    assert!(stdout.contains("v0=0"), "low-id entry must survive grow; got: {:?}", stdout);
+    assert!(stdout.contains("v250=2500"), "mid-id entry must survive grow; got: {:?}", stdout);
+    assert!(stdout.contains("v499=4990"), "high-id entry must survive grow; got: {:?}", stdout);
+}
+
+#[test]
+fn lockfree_grow_drops_tombstones() {
+    // γ-v2 session 3: migration rebuilds the table without
+    // tombstones (lazy compaction). After heavy churn that
+    // accumulates tombstones, a grow should reset
+    // tombstone_count to 0 while preserving live entries.
+    // We can't read tombstone_count directly from .hl code,
+    // so the indirect test is: insert + remove churn that
+    // would saturate a fixed-cap v1 table; with grow shipping,
+    // the workload completes cleanly.
+    let src = r#"
+        type Counter { id: Int; v: Int; }
+
+        @form(hashmap, sync = lockfree, cap = 16)
+        locus Registry {
+            capacity { pool entries of Counter indexed_by id; }
+        }
+
+        main locus App {
+            params { reg: Registry = Registry { }; }
+            run() {
+                // Insert 200, remove 100, insert another 100 with
+                // re-used ids. v1 with cap=16 would saturate
+                // immediately. v2 grows + compacts.
+                let mut i = 0;
+                while i < 200 {
+                    self.reg.set(Counter { id: i, v: i });
+                    i = i + 1;
+                }
+                let mut j = 0;
+                while j < 100 {
+                    self.reg.remove(j) or raise;
+                    j = j + 1;
+                }
+                let mut k = 0;
+                while k < 100 {
+                    self.reg.set(Counter { id: k, v: k + 1000 });
+                    k = k + 1;
+                }
+                print("len="); println(self.reg.len());
+                // Verify the re-inserted entries are reachable
+                // (and got the new value).
+                let e0 = self.reg.get(0) or raise;
+                let e99 = self.reg.get(99) or raise;
+                let e150 = self.reg.get(150) or raise;
+                print("v0="); println(e0.v);
+                print("v99="); println(e99.v);
+                print("v150="); println(e150.v);
+            }
+        }
+
+        fn main() { App { }; }
+    "#;
+    let (stdout, status) = build_and_run("grow_compaction", src);
+    assert!(
+        status.success(),
+        "binary exited non-zero: {:?}\nstdout: {}",
+        status, stdout,
+    );
+    assert!(stdout.contains("len=200"), "live entries after churn+grow; got: {:?}", stdout);
+    assert!(stdout.contains("v0=1000"), "re-inserted entry must take new value; got: {:?}", stdout);
+    assert!(stdout.contains("v99=1099"), "re-inserted entry must take new value; got: {:?}", stdout);
+    assert!(stdout.contains("v150=150"), "preserved entry from initial insert; got: {:?}", stdout);
+}
