@@ -190,6 +190,47 @@ contract is "deliver one whole message" regardless of
 transport). You don't see the frames — the substrate handles
 them.
 
+## UDP transport (unicast + multicast)
+
+The substrate also ships a `udp://host:port` transport for the
+**runtime** side (the `LOTUS_BUS_CONFIG` env-var path; the
+source-level `bindings { Topic: udp(...); }` syntax is a
+separate follow-up). Both unicast and multicast IPv4 ride the
+same scheme — the address class picks the mode:
+
+```ini
+# LOTUS_BUS_CONFIG file format
+Tick = udp://127.0.0.1:5000:listen        # unicast subscribe
+Tick = udp://192.168.1.5:5000:connect     # unicast publish
+Book = udp://239.255.77.77:5000:listen    # multicast subscribe
+Book = udp://239.255.77.77:5000:connect   # multicast publish
+```
+
+Multicast addresses (`224.0.0.0/4` — `224.0.0.0` through
+`239.255.255.255`) trigger `IP_ADD_MEMBERSHIP` on the listen
+side and rely on the kernel's multicast routing tree on the
+connect side. Unicast addresses just `bind` + `sendto`.
+Publishers use `sendto` identically in both modes; the
+distinction lives entirely in the subscriber-side setup.
+
+**Lossy delivery.** UDP transports give publishers the same
+"sendto returned" durability the other transports do — the
+substrate's contract to the publisher is "I have your
+message, you're done." Subscriber-side gap recovery is a
+deployment concern, not a runtime one: apps that need
+gap-free multicast wire a repeater between the feed and
+the subscription (the MoldUDP shape NASDAQ ITCH uses).
+Workloads where occasional loss is acceptable (telemetry
+fan-out, level-2 book streams) skip the repeater.
+
+The UDP transport spawns the same per-subject reader-thread
+shape as `unix://` — recvfrom loop → deserialize → local
+dispatch. At program exit, `shutdown(SHUT_RDWR)` unblocks the
+reader thread, then `pthread_join`, then `close` releases
+the fd. The Linux 3.9+ `SO_REUSEPORT` is set on the
+subscriber socket so multiple processes on the same host can
+receive the same multicast group.
+
 ## When the topic is also bound, the closed-world opt is skipped
 
 The compiler normally rewrites a topic that's used only
