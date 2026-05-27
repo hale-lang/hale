@@ -531,6 +531,108 @@ fn udp_multi_listener_same_port_different_groups() {
 }
 
 #[test]
+fn udp_mixed_listen_connect_survives_realloc() {
+    // 2026-05-27 — fathom priceview hit a silent SIGSEGV when
+    // LOTUS_BUS_CONFIG mixed udp:// listen and udp:// connect
+    // roles. Root cause: `g_bus_remote_entries` was an
+    // array-of-structs with initial cap = 4. The udp listen
+    // reader threads each captured `args->entry = &entries[N]`
+    // at spawn time. When a subsequent register_remote call
+    // grew the array (>4 entries), realloc could move the
+    // storage, and the previously-spawned reader threads'
+    // entry pointers became dangling. Matrix: 4 listens alone
+    // = stable (fits in cap); 2 connects alone = stable;
+    // 4 listens + 2 connects (6 → realloc) = silent SIGSEGV.
+    //
+    // Fix shipped 2026-05-27: g_bus_remote_entries is an
+    // array of POINTERS to individually-malloc'd entries.
+    // The array can realloc freely; per-entry addresses stay
+    // stable.
+    //
+    // This test reproduces the priceview shape: more than 4
+    // total entries with at least one listen and at least one
+    // connect. Without the fix, the subscriber binary
+    // segfaults on the first inbound datagram. With the fix,
+    // the listen handlers fire normally.
+    let sub_bin = compile("mixed_sub", r#"
+        type Evt { sym: String = ""; }
+        locus Sub {
+            bus {
+                subscribe "evt.a" as on_a of type Evt;
+                subscribe "evt.b" as on_b of type Evt;
+                subscribe "evt.c" as on_c of type Evt;
+                subscribe "evt.d" as on_d of type Evt;
+            }
+            fn on_a(e: Evt) { println("a sym=", e.sym); }
+            fn on_b(e: Evt) { println("b sym=", e.sym); }
+            fn on_c(e: Evt) { println("c sym=", e.sym); }
+            fn on_d(e: Evt) { println("d sym=", e.sym); }
+        }
+        fn main() {
+            Sub { };
+            println("READY");
+            std::time::sleep(800ms);
+            println("SURVIVED");
+        }
+    "#);
+    let pub_bin = compile("mixed_pub", r#"
+        type Evt { sym: String = ""; }
+        locus Pub {
+            bus {
+                publish "evt.a" of type Evt;
+            }
+            birth() {
+                "evt.a" <- Evt { sym: "FROM-A" };
+            }
+        }
+        fn main() {
+            Pub { };
+        }
+    "#);
+
+    // Subscriber config: 4 udp listens + 2 udp connects = 6
+    // remote entries, which forces a realloc past the initial
+    // cap of 4. The connects don't actually need to be
+    // reachable — just registered, to provoke the realloc.
+    let port_a   = 57870;
+    let port_b   = 57871;
+    let port_c   = 57872;
+    let port_d   = 57873;
+    let port_out = 57874;
+    let sub_cfg = unique_path("mixed_sub", "conf");
+    let pub_cfg = unique_path("mixed_pub", "conf");
+    std::fs::write(&sub_cfg, format!(
+        "evt.a   = udp://127.0.0.1:{}:listen\n\
+         evt.b   = udp://127.0.0.1:{}:listen\n\
+         evt.c   = udp://127.0.0.1:{}:listen\n\
+         evt.d   = udp://127.0.0.1:{}:listen\n\
+         out.x   = udp://127.0.0.1:{}:connect\n\
+         out.y   = udp://127.0.0.1:{}:connect\n",
+        port_a, port_b, port_c, port_d, port_out, port_out + 1,
+    )).expect("write sub cfg");
+    std::fs::write(&pub_cfg, format!(
+        "evt.a = udp://127.0.0.1:{}:connect\n",
+        port_a,
+    )).expect("write pub cfg");
+
+    let out = run_pair(&sub_bin, &pub_bin, &sub_cfg, &pub_cfg);
+
+    let _ = std::fs::remove_file(&sub_bin);
+    let _ = std::fs::remove_file(&pub_bin);
+    let _ = std::fs::remove_file(&sub_cfg);
+    let _ = std::fs::remove_file(&pub_cfg);
+
+    assert!(out.contains("READY"),    "stdout: {}", out);
+    assert!(out.contains("a sym=FROM-A"),
+        "the kraken-shaped listen handler must fire — \
+         entry-pointer should survive the realloc that the \
+         2 connect entries trigger; stdout:\n{}", out);
+    assert!(out.contains("SURVIVED"),
+        "subscriber must not segfault after dispatch; \
+         stdout:\n{}", out);
+}
+
+#[test]
 fn udp_corrupt_length_prefix_rejected_cleanly() {
     // 2026-05-27 — proves the deserialize bound-check (added
     // alongside the fathom priceview crash report) actually

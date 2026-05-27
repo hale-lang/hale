@@ -8366,7 +8366,29 @@ typedef struct lotus_bus_remote_entry {
     int                udp_is_multicast;
 } lotus_bus_remote_entry_t;
 
-static lotus_bus_remote_entry_t *g_bus_remote_entries = NULL;
+/* 2026-05-27 — array-of-pointers shape (was array-of-structs).
+ * Each entry is its own malloc'd allocation; the global array
+ * holds pointers to them and may realloc freely without
+ * invalidating the per-entry addresses.
+ *
+ * Why this shape: the udp listen-side reader threads hold a
+ * stable `entry` pointer captured at spawn time (see
+ * lotus_bus_udp_reader_args_t.entry). With the array-of-structs
+ * shape, a subsequent register_remote call that grew the array
+ * could realloc-move the storage and dangle every previously-
+ * spawned reader thread's `entry` pointer. Fathom hit this when
+ * priceview's LOTUS_BUS_CONFIG mixed 4 listens + 2 connects:
+ * the 5th entry's realloc invalidated the first 4 reader
+ * threads' entry pointers, segfaulting silently on the first
+ * inbound datagram. Single-role configs (listen-only or
+ * connect-only) that fit in the initial cap (=4) never tripped
+ * the realloc, which is why the crash matrix appeared
+ * "listen+connect specific" rather than "more than 4 entries."
+ *
+ * Cost: one extra pointer dereference per fanout step; one
+ * extra malloc per registration. Both are noise in the
+ * shapes that touch this code (startup + low-rate publishes). */
+static lotus_bus_remote_entry_t **g_bus_remote_entries = NULL;
 static size_t g_bus_remote_count = 0;
 static size_t g_bus_remote_cap   = 0;
 
@@ -8762,16 +8784,19 @@ void lotus_bus_register_remote(const char *subject,
         return;
     }
 
-    /* Grow the table BEFORE doing any side effects so the
-     * realloc-relocation can't invalidate a pointer we already
-     * handed out (e.g., to a reader thread via reader_args). */
+    /* Grow the slot-array (of pointers, post-2026-05-27) so we
+     * have room to stash the new entry's pointer. The
+     * realloc here can move the array of pointers, but the
+     * individual entries it points to are stable malloc'd
+     * allocations — no dangling reader-thread `args->entry`
+     * pointers from prior registrations. */
     if (g_bus_remote_count == g_bus_remote_cap) {
         size_t new_cap = g_bus_remote_cap == 0
             ? LOTUS_BUS_REMOTE_INITIAL_CAP
             : g_bus_remote_cap * 2;
-        lotus_bus_remote_entry_t *grown = (lotus_bus_remote_entry_t *)
+        lotus_bus_remote_entry_t **grown = (lotus_bus_remote_entry_t **)
             realloc(g_bus_remote_entries,
-                    new_cap * sizeof(lotus_bus_remote_entry_t));
+                    new_cap * sizeof(lotus_bus_remote_entry_t *));
         if (!grown) return;
         g_bus_remote_entries = grown;
         g_bus_remote_cap     = new_cap;
@@ -8780,8 +8805,10 @@ void lotus_bus_register_remote(const char *subject,
     char *subject_copy = strdup(subject);
     if (!subject_copy) return;
 
-    lotus_bus_remote_entry_t *e =
-        &g_bus_remote_entries[g_bus_remote_count++];
+    lotus_bus_remote_entry_t *e = (lotus_bus_remote_entry_t *)
+        malloc(sizeof(lotus_bus_remote_entry_t));
+    if (!e) { free(subject_copy); return; }
+    g_bus_remote_entries[g_bus_remote_count++] = e;
     e->subject           = subject_copy;
     e->kind              = is_udp
         ? LOTUS_BUS_REMOTE_KIND_UDP
@@ -8916,17 +8943,19 @@ void lotus_bus_register_remote_adapter(
         size_t new_cap = g_bus_remote_cap == 0
             ? LOTUS_BUS_REMOTE_INITIAL_CAP
             : g_bus_remote_cap * 2;
-        lotus_bus_remote_entry_t *grown = (lotus_bus_remote_entry_t *)
+        lotus_bus_remote_entry_t **grown = (lotus_bus_remote_entry_t **)
             realloc(g_bus_remote_entries,
-                    new_cap * sizeof(lotus_bus_remote_entry_t));
+                    new_cap * sizeof(lotus_bus_remote_entry_t *));
         if (!grown) return;
         g_bus_remote_entries = grown;
         g_bus_remote_cap     = new_cap;
     }
     char *subject_copy = strdup(subject);
     if (!subject_copy) return;
-    lotus_bus_remote_entry_t *e =
-        &g_bus_remote_entries[g_bus_remote_count++];
+    lotus_bus_remote_entry_t *e = (lotus_bus_remote_entry_t *)
+        malloc(sizeof(lotus_bus_remote_entry_t));
+    if (!e) { free(subject_copy); return; }
+    g_bus_remote_entries[g_bus_remote_count++] = e;
     e->subject           = subject_copy;
     e->kind              = LOTUS_BUS_REMOTE_KIND_ADAPTER;
     e->transport         = NULL;
@@ -9024,7 +9053,7 @@ void lotus_bus_remote_fanout(const char *subject,
                              size_t payload_size) {
     if (!subject) return;
     for (size_t i = 0; i < g_bus_remote_count; i++) {
-        lotus_bus_remote_entry_t *e = &g_bus_remote_entries[i];
+        lotus_bus_remote_entry_t *e = g_bus_remote_entries[i];
         if (!e->subject) continue;
         if (strcmp(e->subject, subject) != 0) continue;
         if (e->kind == LOTUS_BUS_REMOTE_KIND_ADAPTER) {
@@ -10982,7 +11011,7 @@ const char *lotus_fs_mktemp(const char *prefix, const char *suffix) {
 
 void lotus_bus_remote_destroy_all(void) {
     for (size_t i = 0; i < g_bus_remote_count; i++) {
-        lotus_bus_remote_entry_t *e = &g_bus_remote_entries[i];
+        lotus_bus_remote_entry_t *e = g_bus_remote_entries[i];
 
         /* Wave B: adapter entries own their protocol lifecycle
          * through the adapter locus's own dissolve method, which
@@ -10991,6 +11020,7 @@ void lotus_bus_remote_destroy_all(void) {
          * here — only the strdup'd subject string to free. */
         if (e->kind == LOTUS_BUS_REMOTE_KIND_ADAPTER) {
             if (e->subject) free(e->subject);
+            free(e);
             continue;
         }
 
@@ -11017,6 +11047,7 @@ void lotus_bus_remote_destroy_all(void) {
                 e->udp_fd = -1;
             }
             if (e->subject) free(e->subject);
+            free(e);
             continue;
         }
 
@@ -11046,6 +11077,7 @@ void lotus_bus_remote_destroy_all(void) {
         if (e->subject) {
             free(e->subject);
         }
+        free(e);
     }
     if (g_bus_remote_entries) free(g_bus_remote_entries);
     g_bus_remote_entries = NULL;
