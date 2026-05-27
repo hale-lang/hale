@@ -223,8 +223,15 @@ jobs:
             llvm-18-dev libpolly-18-dev libzstd-dev \
             clang-18 libclang-18-dev zlib1g-dev
 
-      - name: cargo build --release -p hale-codegen
-        run: cargo build --release -p hale-codegen
+      - name: cargo build --release --workspace
+        # Build the whole workspace so `libhale_ts_shim.a` lands
+        # at target/release/ before the test binaries try to
+        # link against it — codegen tests invoke clang to link
+        # compiled .hl programs, and the link surface includes
+        # the ts-shim by path-probe (no cargo dep edge forces
+        # it, so `-p hale-codegen` alone misses the staticlib
+        # and clang errors with `undefined reference to lotus_ts_*`).
+        run: cargo build --release --workspace
 
       - name: LOTUS_TSAN=1 cargo test (form_hashmap_lockfree_tsan)
         # The TSAN tests are #[ignore]'d so the normal suite
