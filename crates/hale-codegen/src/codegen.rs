@@ -4356,6 +4356,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             udp_set_timeout_ty,
             None,
         );
+        // 2026-05-27 — TCP siblings of the udp timeout
+        // primitives. Same C-side helper (sock_set_timeout_ns)
+        // under the hood; the udp_set_timeout_ty fn signature
+        // (`i32 (i32 fd, i64 ns) -> i32`) is identical.
+        self.module.add_function(
+            "lotus_tcp_set_recv_timeout_ns",
+            udp_set_timeout_ty,
+            None,
+        );
+        self.module.add_function(
+            "lotus_tcp_set_send_timeout_ns",
+            udp_set_timeout_ty,
+            None,
+        );
 
         // Held-open file substrate (std::io::file::File). Mirrors
         // the lotus_tcp_* split shape — primitives hand a raw fd
@@ -16818,6 +16832,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.lower_std_io_udp_set_timeout_fallible(
                     args, scope,
                     "lotus_udp_set_send_timeout_ns",
+                    "set_send_timeout",
+                )?,
+            )),
+            // 2026-05-27 — TCP send/recv timeouts. Same helper
+            // as udp; the C side shares the underlying
+            // sock_set_timeout_ns. Sole reason for a separate
+            // path-call site (vs. one shared `std::io::sock`
+            // namespace) is the typecheck-level fd-type
+            // discrimination: a tcp fd shouldn't accept a udp-
+            // shaped op.
+            ["std", "io", "tcp", "set_recv_timeout"] => Ok(Some(
+                self.lower_std_io_udp_set_timeout_fallible(
+                    args, scope,
+                    "lotus_tcp_set_recv_timeout_ns",
+                    "set_recv_timeout",
+                )?,
+            )),
+            ["std", "io", "tcp", "set_send_timeout"] => Ok(Some(
+                self.lower_std_io_udp_set_timeout_fallible(
+                    args, scope,
+                    "lotus_tcp_set_send_timeout_ns",
                     "set_send_timeout",
                 )?,
             )),

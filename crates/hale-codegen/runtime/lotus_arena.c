@@ -6923,8 +6923,14 @@ int64_t lotus_udp_last_source_port(void) {
  * SO_SNDTIMEO. These take a struct timeval (not a plain int)
  * so they can't ride the set_option_int pass-through.
  * Accepts a Hale Duration (i64 nanoseconds); 0 means "no
- * timeout" (the default; blocking). */
-static int udp_set_timeout(int fd, int name, int64_t ns) {
+ * timeout" (the default; blocking).
+ *
+ * 2026-05-27 — the helper is fd-generic, so the TCP siblings
+ * (`lotus_tcp_set_*_timeout_ns` below) share it. setsockopt
+ * with SO_RCVTIMEO / SO_SNDTIMEO works the same way on
+ * SOCK_STREAM and SOCK_DGRAM sockets — both gate `recv` /
+ * `send` blocking with the same timeval shape. */
+static int sock_set_timeout_ns(int fd, int name, int64_t ns) {
     if (fd < 0) { errno = EINVAL; return -1; }
     if (ns < 0) { errno = EINVAL; return -1; }
     struct timeval tv;
@@ -6934,11 +6940,27 @@ static int udp_set_timeout(int fd, int name, int64_t ns) {
 }
 
 int lotus_udp_set_recv_timeout_ns(int fd, int64_t ns) {
-    return udp_set_timeout(fd, SO_RCVTIMEO, ns);
+    return sock_set_timeout_ns(fd, SO_RCVTIMEO, ns);
 }
 
 int lotus_udp_set_send_timeout_ns(int fd, int64_t ns) {
-    return udp_set_timeout(fd, SO_SNDTIMEO, ns);
+    return sock_set_timeout_ns(fd, SO_SNDTIMEO, ns);
+}
+
+/* 2026-05-27 — TCP send/recv timeouts via the same
+ * SO_RCVTIMEO / SO_SNDTIMEO mechanism. Unblocks recv loops
+ * that need to do periodic work (silence detection,
+ * heartbeats, watchdog timers) — previously a `recv_bytes`
+ * would block indefinitely waiting for the next byte and
+ * the surrounding loop had no way to wake up on a quiet
+ * connection. Closes the gap with std::io::udp (P4,
+ * 2026-05-26) where the same surface already shipped. */
+int lotus_tcp_set_recv_timeout_ns(int fd, int64_t ns) {
+    return sock_set_timeout_ns(fd, SO_RCVTIMEO, ns);
+}
+
+int lotus_tcp_set_send_timeout_ns(int fd, int64_t ns) {
+    return sock_set_timeout_ns(fd, SO_SNDTIMEO, ns);
 }
 
 /* Hale-side wrappers that adapt the raw primitives to the
