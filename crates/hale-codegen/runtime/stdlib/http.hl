@@ -367,6 +367,26 @@ locus __StdHttpServer {
         // not-yet-bound sentinel so dissolve() on a
         // partially-constructed Server skips the close.
         listen_fd: Int = -1;
+        // 2026-05-27 — bus-routed observability (closes #10).
+        // When non-empty, every accept / listen-start /
+        // listen-close on this Server publishes a
+        // std::io::tcp::LogEvent on the configured subject.
+        // Empty (default) gates the publish with a single
+        // len-check branch per op, zero hot-path cost. The
+        // subject must lie under the "io.http.**" wildcard
+        // declared on this locus's bus block. Users wire any
+        // subscriber locus they want via standard bus
+        // subscribe — same shape as std::io::tcp::Stream's
+        // log_subject param. The Server reuses the
+        // std::io::tcp::LogEvent type rather than minting a
+        // new HTTP-shaped one so a single subscriber can see
+        // both TCP-layer and HTTP-layer events; HTTP-specific
+        // detail (request path, response status) rides the
+        // `detail` String field when callers want it.
+        log_subject: String = "";
+    }
+    bus {
+        publish "io.http.**" of type std::io::tcp::LogEvent;
     }
     // v1.x polish (2026-05-20): violate at birth() when the
     // listen socket can't bind. Previously birth() proceeded
@@ -390,6 +410,11 @@ locus __StdHttpServer {
         if len(self.ready_signal) > 0 {
             println(self.ready_signal);
         }
+        if len(self.log_subject) > 0 {
+            self.log_subject <- std::io::tcp::LogEvent {
+                phase: "listen_start", fd: self.listen_fd,
+            };
+        }
     }
     run() {
         let mut accepted = 0;
@@ -409,6 +434,11 @@ locus __StdHttpServer {
             // unblock this accept from any thread.
             if conn < 0 {
                 break;
+            }
+            if len(self.log_subject) > 0 {
+                self.log_subject <- std::io::tcp::LogEvent {
+                    phase: "accept", fd: conn,
+                };
             }
             __http_handle_one_conn(conn, self.handler);
             accepted = accepted + 1;
@@ -432,6 +462,11 @@ locus __StdHttpServer {
         std::io::tcp::__shutdown_listen_socket(self.listen_fd);
     }
     dissolve() {
+        if len(self.log_subject) > 0 {
+            self.log_subject <- std::io::tcp::LogEvent {
+                phase: "listen_close", fd: self.listen_fd,
+            };
+        }
         std::io::tcp::__close_fd(self.listen_fd);
     }
 }
