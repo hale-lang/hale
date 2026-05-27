@@ -5890,17 +5890,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
         let de_entry = self.context.append_basic_block(de_fn, "entry");
+        // 2026-05-27 — error block for length-prefix bound-check
+        // failures inside variable-length field paths
+        // (`String` / `Bytes`). The reader-thread caller
+        // observes the -1 return as "drop this datagram" via the
+        // existing `if (struct_size <= 0) continue;` guard. The
+        // String/Bytes paths in `emit_per_field_deserialize{,_size}`
+        // branch here when a decoded length is negative or
+        // exceeds the remaining wire bytes — closes a real fault
+        // mode (corrupt or cross-routed datagram) that would
+        // otherwise hand a giant `size` straight to
+        // `lotus_bus_payload_arena_alloc`, triggering the arena
+        // cap-hit / NULL-deref symptom fathom reported.
+        let de_fail = self.context.append_basic_block(de_fn, "wire.fail");
+        self.builder.position_at_end(de_fail);
+        let neg_one = i64_t.const_int((-1i64) as u64, true);
+        self.builder
+            .build_return(Some(&neg_one))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder.position_at_end(de_entry);
         let de_src = de_fn
             .get_nth_param(0)
             .expect("de src arg")
             .into_pointer_value();
-        let _ = de_fn.get_nth_param(1); // n, ignored
+        let de_n = de_fn
+            .get_nth_param(1)
+            .expect("de n arg")
+            .into_int_value();
         let de_dst = de_fn
             .get_nth_param(2)
             .expect("de dst arg")
             .into_pointer_value();
-        let _ = de_fn.get_nth_param(3); // cap, ignored
+        let _ = de_fn.get_nth_param(3); // cap, reserved
 
         let de_struct_size: inkwell::values::IntValue<'ctx> =
             if let Some((struct_ty, field_order, fields)) = &struct_layout
@@ -5911,6 +5932,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     *struct_ty,
                     field_order,
                     fields,
+                    de_n,
+                    de_fail,
                 )?
             } else {
                 let size_iv = enum_size.expect("enum size present");
@@ -6126,6 +6149,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         elem_ty: &CodegenTy,
         n: u64,
         fname: &str,
+        wire_n: inkwell::values::IntValue<'ctx>,
+        fail_block: inkwell::basic_block::BasicBlock<'ctx>,
     ) -> Result<(), CodegenError> {
         let i64_t = self.context.i64_type();
         let i8_t = self.context.i8_type();
@@ -6276,6 +6301,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         nested_info.struct_ty,
                         &nested_info.field_order,
                         &nested_info.fields,
+                        wire_n,
+                        fail_block,
                     )?;
                     let after = self
                         .builder
@@ -6585,6 +6612,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         struct_ty: StructType<'ctx>,
         field_order: &[String],
         fields: &BTreeMap<String, (u32, CodegenTy)>,
+        wire_n: inkwell::values::IntValue<'ctx>,
+        fail_block: inkwell::basic_block::BasicBlock<'ctx>,
     ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
         let i64_t = self.context.i64_type();
         let i8_t = self.context.i8_type();
@@ -6634,6 +6663,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_load(i64_t, len_alloca, "de.str.len")
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                         .into_int_value();
+                    // Bound-check (2026-05-27): decoded length must
+                    // be in [0, wire_n]. An unsigned > catches both
+                    // negative-as-i64 (would be huge unsigned) and
+                    // larger-than-the-wire-buffer cases — either
+                    // implies a corrupt or cross-routed datagram.
+                    // Fail-block returns -1; reader-thread drops
+                    // the packet via the existing
+                    // `if (struct_size <= 0) continue;` guard.
+                    let str_too_big = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::UGT,
+                            str_len,
+                            wire_n,
+                            "de.str.len.bad",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let ok_block = self.context.append_basic_block(
+                        self.builder
+                            .get_insert_block()
+                            .expect("insert block set")
+                            .get_parent()
+                            .expect("block has parent fn"),
+                        "de.str.len.ok",
+                    );
+                    self.builder
+                        .build_conditional_branch(str_too_big, fail_block, ok_block)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(ok_block);
                     let after_len = self
                         .builder
                         .build_int_add(
@@ -6771,6 +6829,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_load(i64_t, len_alloca, "de.bytes.len")
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                         .into_int_value();
+                    // Bound-check (2026-05-27): see matching note
+                    // on the String path.
+                    let bytes_too_big = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::UGT,
+                            bytes_len,
+                            wire_n,
+                            "de.bytes.len.bad",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let ok_block = self.context.append_basic_block(
+                        self.builder
+                            .get_insert_block()
+                            .expect("insert block set")
+                            .get_parent()
+                            .expect("block has parent fn"),
+                        "de.bytes.len.ok",
+                    );
+                    self.builder
+                        .build_conditional_branch(
+                            bytes_too_big,
+                            fail_block,
+                            ok_block,
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(ok_block);
                     let total = self
                         .builder
                         .build_int_add(
@@ -6864,6 +6949,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         nested_info.struct_ty,
                         &nested_info.field_order,
                         &nested_info.fields,
+                        wire_n,
+                        fail_block,
                     )?;
                     self.builder
                         .build_store(dst_field_ptr, nested_dst)
@@ -6890,6 +6977,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         elem_ty,
                         *n,
                         fname,
+                        wire_n,
+                        fail_block,
                     )?;
                 }
                 other => {
@@ -6923,6 +7012,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         struct_ty: StructType<'ctx>,
         field_order: &[String],
         fields: &BTreeMap<String, (u32, CodegenTy)>,
+        wire_n: inkwell::values::IntValue<'ctx>,
+        fail_block: inkwell::basic_block::BasicBlock<'ctx>,
     ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
         let i64_t = self.context.i64_type();
         let i8_t = self.context.i8_type();
@@ -6971,6 +7062,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_load(i64_t, len_alloca, "de.nested.str.len")
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                         .into_int_value();
+                    // Bound-check (2026-05-27): see matching note on
+                    // emit_per_field_deserialize's String path.
+                    let str_too_big = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::UGT,
+                            str_len,
+                            wire_n,
+                            "de.nested.str.len.bad",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let ok_block = self.context.append_basic_block(
+                        self.builder
+                            .get_insert_block()
+                            .expect("insert block set")
+                            .get_parent()
+                            .expect("block has parent fn"),
+                        "de.nested.str.len.ok",
+                    );
+                    self.builder
+                        .build_conditional_branch(str_too_big, fail_block, ok_block)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(ok_block);
                     let after_len = self
                         .builder
                         .build_int_add(
@@ -7096,6 +7210,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_load(i64_t, len_alloca, "de.nested.bytes.len")
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                         .into_int_value();
+                    // Bound-check (2026-05-27): see matching note on
+                    // the top-level Bytes path.
+                    let bytes_too_big = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::UGT,
+                            bytes_len,
+                            wire_n,
+                            "de.nested.bytes.len.bad",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let ok_block = self.context.append_basic_block(
+                        self.builder
+                            .get_insert_block()
+                            .expect("insert block set")
+                            .get_parent()
+                            .expect("block has parent fn"),
+                        "de.nested.bytes.len.ok",
+                    );
+                    self.builder
+                        .build_conditional_branch(
+                            bytes_too_big,
+                            fail_block,
+                            ok_block,
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(ok_block);
                     let total = self
                         .builder
                         .build_int_add(
@@ -7185,6 +7326,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         nested_info.struct_ty,
                         &nested_info.field_order,
                         &nested_info.fields,
+                        wire_n,
+                        fail_block,
                     )?;
                     self.builder
                         .build_store(dst_field_ptr, nested_dst)
@@ -7211,6 +7354,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         elem_ty,
                         *n,
                         fname,
+                        wire_n,
+                        fail_block,
                     )?;
                 }
                 other => {

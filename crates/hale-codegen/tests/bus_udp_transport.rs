@@ -11,6 +11,7 @@
 //! local handler), then run a publisher binary that fires once
 //! and exits. The subscriber's stdout is checked for the payload.
 
+use std::net::UdpSocket;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -227,6 +228,132 @@ fn large_publisher_src() -> &'static str {
     "#
 }
 
+fn book_snapshot_subscriber_src() -> &'static str {
+    // BookSignalSnapshot-shaped: two Strings (variable-length
+    // length-prefixed on the wire) ahead of a long tail of
+    // fixed-size Decimals and Decimal arrays. The fathom
+    // priceview crash report (2026-05-27) said inbound udp
+    // datagrams trigger `g_bus_payload_arena` cap-hit on the
+    // first message, with the diagnostic numbers matching a
+    // single ~64 MB alloc from inside the deserializer.
+    // Theory A in the handoff: a length-prefix misread
+    // (decoded length taken as garbage from the wire) handed
+    // unchecked to `lotus_bus_payload_arena_alloc`.
+    //
+    // This shape exercises the multi-variable-length-field
+    // case that the existing single-Int / single-array UDP
+    // tests don't cover.
+    r#"
+        type Book {
+            symbol:        String  = "";
+            venue_ts:      String  = "";
+            best_bid:      Decimal = 0.0d;
+            best_ask:      Decimal = 0.0d;
+            bid_qty:       Decimal = 0.0d;
+            ask_qty:       Decimal = 0.0d;
+            mid:           Decimal = 0.0d;
+            spread:        Decimal = 0.0d;
+            probe_sizes:   [Decimal; 4] = [0.0d, 0.0d, 0.0d, 0.0d];
+            buy_costs:     [Decimal; 4] = [0.0d, 0.0d, 0.0d, 0.0d];
+            buy_filled:    [Decimal; 4] = [0.0d, 0.0d, 0.0d, 0.0d];
+            sell_proceeds: [Decimal; 4] = [0.0d, 0.0d, 0.0d, 0.0d];
+            sell_filled:   [Decimal; 4] = [0.0d, 0.0d, 0.0d, 0.0d];
+            vol_proxy:     Int = 0;
+            snap_count:    Int = 0;
+            delta_count:   Int = 0;
+            checksum_ok:   Int = 1;
+        }
+        locus Sub {
+            bus {
+                subscribe "book" as on_book of type Book;
+            }
+            fn on_book(b: Book) {
+                println("sym=", b.symbol);
+                println("ts=", b.venue_ts);
+                println("bid=", b.best_bid);
+                println("ask=", b.best_ask);
+                println("checksum_ok=", b.checksum_ok);
+            }
+        }
+        fn main() {
+            Sub { };
+            std::time::sleep(800ms);
+        }
+    "#
+}
+
+fn book_snapshot_publisher_src() -> &'static str {
+    r#"
+        type Book {
+            symbol:        String  = "";
+            venue_ts:      String  = "";
+            best_bid:      Decimal = 0.0d;
+            best_ask:      Decimal = 0.0d;
+            bid_qty:       Decimal = 0.0d;
+            ask_qty:       Decimal = 0.0d;
+            mid:           Decimal = 0.0d;
+            spread:        Decimal = 0.0d;
+            probe_sizes:   [Decimal; 4] = [0.0d, 0.0d, 0.0d, 0.0d];
+            buy_costs:     [Decimal; 4] = [0.0d, 0.0d, 0.0d, 0.0d];
+            buy_filled:    [Decimal; 4] = [0.0d, 0.0d, 0.0d, 0.0d];
+            sell_proceeds: [Decimal; 4] = [0.0d, 0.0d, 0.0d, 0.0d];
+            sell_filled:   [Decimal; 4] = [0.0d, 0.0d, 0.0d, 0.0d];
+            vol_proxy:     Int = 0;
+            snap_count:    Int = 0;
+            delta_count:   Int = 0;
+            checksum_ok:   Int = 1;
+        }
+        locus Pub {
+            bus {
+                publish "book" of type Book;
+            }
+            birth() {
+                "book" <- Book {
+                    symbol:   "BTC-USD",
+                    venue_ts: "2026-05-27T10:00:00Z",
+                    best_bid: 42000.5d,
+                    best_ask: 42001.0d,
+                    mid:      42000.75d,
+                    spread:   0.5d,
+                    checksum_ok: 1,
+                };
+            }
+        }
+        fn main() {
+            Pub { };
+        }
+    "#
+}
+
+#[test]
+fn udp_unicast_delivers_multi_string_payload() {
+    // Reproduces the fathom priceview crash shape: a payload
+    // with two variable-length Strings followed by a tail of
+    // fixed-size fields. Without the deserializer length
+    // bound-check, the first udp datagram would trigger the
+    // g_bus_payload_arena cap-hit and SIGSEGV.
+    let sub_bin = compile("book_sub", book_snapshot_subscriber_src());
+    let pub_bin = compile("book_pub", book_snapshot_publisher_src());
+    let port = 57787;
+    let sub_cfg = unique_path("book_sub", "conf");
+    let pub_cfg = unique_path("book_pub", "conf");
+    std::fs::write(&sub_cfg, format!("book = udp://127.0.0.1:{}:listen\n", port))
+        .expect("write sub cfg");
+    std::fs::write(&pub_cfg, format!("book = udp://127.0.0.1:{}:connect\n", port))
+        .expect("write pub cfg");
+
+    let out = run_pair(&sub_bin, &pub_bin, &sub_cfg, &pub_cfg);
+
+    let _ = std::fs::remove_file(&sub_bin);
+    let _ = std::fs::remove_file(&pub_bin);
+    let _ = std::fs::remove_file(&sub_cfg);
+    let _ = std::fs::remove_file(&pub_cfg);
+
+    assert!(out.contains("sym=BTC-USD"),  "got: {:?}", out);
+    assert!(out.contains("ts=2026-05-27T10:00:00Z"), "got: {:?}", out);
+    assert!(out.contains("checksum_ok=1"), "got: {:?}", out);
+}
+
 #[test]
 fn udp_unicast_delivers_payload_over_inline_threshold() {
     // [Int; 100] + Int = 808 bytes, well above
@@ -255,4 +382,219 @@ fn udp_unicast_delivers_payload_over_inline_threshold() {
     assert!(out.contains("big_tag=77"),     "got: {:?}", out);
     assert!(out.contains("big_first=1234567"), "got: {:?}", out);
     assert!(out.contains("big_last=7654321"),  "got: {:?}", out);
+}
+
+fn multi_listener_subscriber_src() -> &'static str {
+    // 2026-05-27 — mirrors the fathom priceview shape: a
+    // single subscriber binary with FOUR multicast listeners
+    // on the same port, different groups, different payload
+    // types. The reader threads each call into a different
+    // deserialize_fn looked up by subject. If SO_REUSEPORT
+    // cross-routes (a multicast packet for group A arrives
+    // on the socket that joined group B), the lookup picks
+    // the wrong deserializer and tries to interpret the
+    // arriving bytes as the wrong type. With multi-String
+    // payloads, this manifests as a giant decoded length
+    // prefix → the 2026-05-27 deserialize bound-check now
+    // rejects this cleanly via the `wire.fail` block.
+    r#"
+        type BookSnap {
+            symbol:   String  = "";
+            venue_ts: String  = "";
+            mid:      Decimal = 0.0d;
+        }
+        type TickMsg {
+            symbol:   String  = "";
+            qty:      Decimal = 0.0d;
+        }
+        locus Sub {
+            bus {
+                subscribe "md.book.kraken"   as on_kraken_book   of type BookSnap;
+                subscribe "md.book.coinbase" as on_coinbase_book of type BookSnap;
+                subscribe "md.tick.kraken"   as on_kraken_tick   of type TickMsg;
+                subscribe "md.tick.coinbase" as on_coinbase_tick of type TickMsg;
+            }
+            fn on_kraken_book(b: BookSnap) {
+                println("kraken_book sym=", b.symbol);
+            }
+            fn on_coinbase_book(b: BookSnap) {
+                println("coinbase_book sym=", b.symbol);
+            }
+            fn on_kraken_tick(t: TickMsg) {
+                println("kraken_tick sym=", t.symbol);
+            }
+            fn on_coinbase_tick(t: TickMsg) {
+                println("coinbase_tick sym=", t.symbol);
+            }
+        }
+        fn main() {
+            Sub { };
+            std::time::sleep(1200ms);
+        }
+    "#
+}
+
+fn multi_listener_publisher_src() -> &'static str {
+    r#"
+        type BookSnap {
+            symbol:   String  = "";
+            venue_ts: String  = "";
+            mid:      Decimal = 0.0d;
+        }
+        locus Pub {
+            bus {
+                publish "md.book.kraken" of type BookSnap;
+            }
+            birth() {
+                "md.book.kraken" <- BookSnap {
+                    symbol:   "BTC-USD",
+                    venue_ts: "2026-05-27T10:00:00Z",
+                    mid:      42000.5d,
+                };
+            }
+        }
+        fn main() {
+            Pub { };
+        }
+    "#
+}
+
+#[test]
+fn udp_multi_listener_same_port_different_groups() {
+    // Stress the SO_REUSEPORT + multicast-group-membership
+    // case that priceview uses in production. Four reader
+    // threads, each bound to the same port and joined to a
+    // distinct multicast group. A single publisher fires one
+    // payload at the kraken-book group; the subscriber should
+    // dispatch exactly one handler (on_kraken_book) and not
+    // crash even if SO_REUSEPORT delivers the packet to a
+    // socket that hadn't joined that group (which would mean
+    // the deserialize lookup picks a deserialize_fn for a
+    // different payload type and the bound-check is the only
+    // thing standing between us and the 64 MB alloc).
+    let sub_bin = compile("multi_sub", multi_listener_subscriber_src());
+    let pub_bin = compile("multi_pub", multi_listener_publisher_src());
+    let port = 57795;
+    let sub_cfg = unique_path("multi_sub", "conf");
+    let pub_cfg = unique_path("multi_pub", "conf");
+    std::fs::write(&sub_cfg, format!(
+        "md.book.kraken   = udp://239.42.1.1:{}:listen\n\
+         md.book.coinbase = udp://239.42.1.2:{}:listen\n\
+         md.tick.kraken   = udp://239.42.2.1:{}:listen\n\
+         md.tick.coinbase = udp://239.42.2.2:{}:listen\n",
+        port, port, port, port,
+    )).expect("write sub cfg");
+    std::fs::write(&pub_cfg, format!(
+        "md.book.kraken = udp://239.42.1.1:{}:connect\n",
+        port,
+    )).expect("write pub cfg");
+
+    let out = run_pair(&sub_bin, &pub_bin, &sub_cfg, &pub_cfg);
+
+    let _ = std::fs::remove_file(&sub_bin);
+    let _ = std::fs::remove_file(&pub_bin);
+    let _ = std::fs::remove_file(&sub_cfg);
+    let _ = std::fs::remove_file(&pub_cfg);
+
+    // Only the kraken_book handler should fire; the other 3
+    // listeners didn't join group 239.42.1.1, so they
+    // shouldn't receive this datagram. Critically: the
+    // subscriber MUST NOT crash, even if SO_REUSEPORT cross-
+    // routes.
+    assert!(
+        out.contains("kraken_book sym=BTC-USD"),
+        "kraken_book handler should fire; stdout:\n{}",
+        out
+    );
+}
+
+#[test]
+fn udp_corrupt_length_prefix_rejected_cleanly() {
+    // 2026-05-27 — proves the deserialize bound-check (added
+    // alongside the fathom priceview crash report) actually
+    // engages. We bypass the publisher binary entirely and
+    // send a malformed datagram straight from the test
+    // harness: 8 bytes encoding length-prefix = 0x04000000
+    // (= 64 MB, exactly the value that triggered priceview's
+    // `g_bus_payload_arena` cap-hit symptom).
+    //
+    // Without the bound-check, the subscriber's deserialize
+    // would hand 64 MB to `lotus_bus_payload_arena_alloc`,
+    // hit the arena cap, return NULL, then dereference NULL
+    // in the subsequent memcpy → SIGSEGV in seconds.
+    //
+    // With the check, the deserialize compares the decoded
+    // length against the wire size (8 bytes), the UGT
+    // comparison fires (67108864 > 8), and the deserialize
+    // returns -1. The reader thread's `if (struct_size <= 0)
+    // continue;` drops the datagram silently. Subscriber
+    // stays alive.
+    let sub_bin = compile("corrupt_sub", r#"
+        type Msg {
+            symbol: String  = "";
+            mid:    Decimal = 0.0d;
+        }
+        locus Sub {
+            bus {
+                subscribe "corrupt" as on_msg of type Msg;
+            }
+            fn on_msg(m: Msg) {
+                // Should NEVER fire — the malformed wire bytes
+                // are rejected at deserialize time, before any
+                // dispatch happens.
+                println("FIRED sym=", m.symbol);
+            }
+        }
+        fn main() {
+            Sub { };
+            println("READY");
+            std::time::sleep(800ms);
+            println("SURVIVED");
+        }
+    "#);
+
+    let port = 57799;
+    let sub_cfg = unique_path("corrupt_sub", "conf");
+    std::fs::write(&sub_cfg, format!("corrupt = udp://127.0.0.1:{}:listen\n", port))
+        .expect("write sub cfg");
+
+    let sub = Command::new(&sub_bin)
+        .env("LOTUS_BUS_CONFIG", &sub_cfg)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn subscriber");
+
+    // Give the reader thread time to bind.
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Send the malformed datagram. The 8 bytes are the LE
+    // encoding of i64=67108864 — what priceview observed in
+    // the wild.
+    let sock = UdpSocket::bind("127.0.0.1:0").expect("test sock");
+    let bad = [0x00u8, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00];
+    sock.send_to(&bad, format!("127.0.0.1:{}", port))
+        .expect("send corrupt datagram");
+
+    let sub_out = sub.wait_with_output().expect("wait subscriber");
+
+    let _ = std::fs::remove_file(&sub_bin);
+    let _ = std::fs::remove_file(&sub_cfg);
+
+    assert!(
+        sub_out.status.success(),
+        "subscriber should survive the malformed datagram; \
+         status: {:?}\nstdout: {}\nstderr: {}",
+        sub_out.status,
+        String::from_utf8_lossy(&sub_out.stdout),
+        String::from_utf8_lossy(&sub_out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&sub_out.stdout);
+    assert!(stdout.contains("READY"),    "stdout: {}", stdout);
+    assert!(stdout.contains("SURVIVED"), "stdout: {}", stdout);
+    assert!(
+        !stdout.contains("FIRED"),
+        "handler must not fire on a malformed payload; stdout: {}",
+        stdout,
+    );
 }
