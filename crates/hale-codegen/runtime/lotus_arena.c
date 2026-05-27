@@ -8612,16 +8612,28 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
     memset(&bind_addr, 0, sizeof(bind_addr));
     bind_addr.sin_family = AF_INET;
     bind_addr.sin_port   = dest.sin_port;
-    if (lotus_addr_is_multicast(&dest.sin_addr)) {
-        /* Multicast: bind INADDR_ANY so the socket receives
-         * datagrams sent to the group from any source. */
-        bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    } else {
-        /* Unicast: bind the configured address so we receive
-         * only datagrams addressed to us (and not to other IPs
-         * on this host). */
-        bind_addr.sin_addr = dest.sin_addr;
-    }
+    /* Bind to the configured address regardless of unicast /
+     * multicast. The bind tuple is what Linux uses to filter
+     * which incoming datagrams reach this socket; the
+     * IP_ADD_MEMBERSHIP call below (multicast case) is a
+     * separate concern controlling whether the kernel
+     * forwards the group's traffic up the IP stack at all.
+     *
+     * Pre-2026-05-27 the multicast branch bound INADDR_ANY,
+     * which works for a single receiver but crosstalks with
+     * any other socket bound to the same port: every joined-
+     * group packet on that port lands on every wildcard-bound
+     * socket. Surfaced by fathom's priceview, which subscribes
+     * to four distinct multicast groups sharing port 5000 —
+     * each (group, port) is logically a distinct endpoint
+     * carrying its own payload type, but the wildcard bind
+     * collapsed them into a single delivery set so every
+     * datagram fanned to all four handlers (kraken+coinbase
+     * gauges converged to whichever venue's snapshot arrived
+     * last). Matches the reference multicast-receiver shape
+     * in Boost.Asio's `multicast::join_group` example and
+     * NASDAQ ITCH-Recovery client samples. */
+    bind_addr.sin_addr = dest.sin_addr;
     if (bind(fd, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
         perror("lotus_bus udp reader: bind");
         close(fd);

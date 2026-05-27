@@ -496,14 +496,36 @@ fn udp_multi_listener_same_port_different_groups() {
     let _ = std::fs::remove_file(&sub_cfg);
     let _ = std::fs::remove_file(&pub_cfg);
 
-    // Only the kraken_book handler should fire; the other 3
-    // listeners didn't join group 239.42.1.1, so they
-    // shouldn't receive this datagram. Critically: the
-    // subscriber MUST NOT crash, even if SO_REUSEPORT cross-
-    // routes.
+    // Only the kraken_book handler should fire. The other 3
+    // listeners are on distinct multicast groups; with the
+    // bind-to-group fix (2026-05-27) per-(group, port)
+    // endpoints are honored and each socket only receives
+    // its own group's datagrams. Pre-fix the
+    // bind-to-INADDR_ANY shape would fan this single
+    // datagram to all 4 handlers — the crosstalk that
+    // fathom's priceview reported.
     assert!(
         out.contains("kraken_book sym=BTC-USD"),
         "kraken_book handler should fire; stdout:\n{}",
+        out
+    );
+    assert!(
+        !out.contains("coinbase_book"),
+        "coinbase_book must NOT fire (different group; \
+         firing would indicate INADDR_ANY-bind crosstalk); \
+         stdout:\n{}",
+        out
+    );
+    assert!(
+        !out.contains("kraken_tick"),
+        "kraken_tick must NOT fire (different group); \
+         stdout:\n{}",
+        out
+    );
+    assert!(
+        !out.contains("coinbase_tick"),
+        "coinbase_tick must NOT fire (different group); \
+         stdout:\n{}",
         out
     );
 }
