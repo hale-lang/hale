@@ -128,18 +128,47 @@ The spec is **not aspirational**. If it's in
 shipped behavior. If a feature has been removed, the spec
 entry must be removed too.
 
-## Two-channel rule (locked design)
+## Two-channel rule (narrowed 2026-05-25)
 
-Locus methods cannot declare `fallible(E)`. The two surfaces
-that *can* are free fns and `@form(...)`-synthesized methods.
-This is permanent design, not a temporary limit — see
-`spec/design-rationale.md` F-numbered commitment on the
-two-channel rule.
+`fallible(E)` is rejected on **substrate-facing surfaces**:
+lifecycle methods (`birth` / `run` / `dissolve`), mode bodies
+(`bulk` / `harmonic` / `resolution`), closure-assertion
+bodies, and bus-subscribed handlers. The substrate
+orchestrates those — there's no caller frame to address
+the error channel, so a `fallible(E)` declaration would
+describe a contract that can't be satisfied. Surface failure
+there through `↑` (closure-test + `on_failure`).
 
-If you need a stdlib operation to be fallible, add it as a
-free fn (`std::io::fs::read_to_string(path) -> fallible(String,
-IoError)`) or surface it through an `@form` whose synthesis
-produces fallible accessors.
+`fallible(E)` IS allowed on user-declared `fn` members and
+on free fns — both have a real caller that can `or raise` /
+`or default` / `or handler(err)` the result. Library code
+that wants to expose a fallible operation as a method on a
+locus type can declare it as a user `fn` member:
+
+```hale
+locus Reader {
+    fn parse(b: Bytes) -> Message fallible(ParseError) {
+        if bad { fail ParseError { msg: "bad header" }; }
+        return Message { ... };
+    }
+    run() {
+        let m = self.parse(b) or default_message();
+    }
+}
+```
+
+The earlier blanket rule ("locus methods can't be fallible
+at all") was narrowed because the friction signal across
+multiple libraries showed devs extracting free fns just to
+get a value-error channel back — losing `self` ergonomics
+and splitting closely-related code across two top-level
+decls. See `spec/semantics.md § fallible-on-locus` for the
+canonical statement and `notes/open-questions.md § #24` for
+the rationale + rejected alternatives.
+
+`@form(...)`-synthesized accessors (`get` / `set` /
+`array_at`) remain fallible like before — that's
+orthogonal to the narrowing.
 
 ## Naming aliases for libraries
 

@@ -296,12 +296,15 @@ loci, so the value channel fits.
 
 ## Bridging the channels: structural failure from value-error context
 
-The two-channel rule keeps locus methods off the value channel —
-but real systems regularly need to *cross from one to the other*.
-A locus method catches a value error in an `or` clause, decides
-the error is unrecoverable, and wants to immediately escalate
-into the structural channel so the parent's `on_failure` policy
-takes over.
+The two-channel rule (narrowed 2026-05-25) keeps **substrate-facing
+surfaces** — lifecycle / mode / closure-assertion / bus-handler
+bodies — off the value channel. User-declared `fn` member fns
+on a locus and free fns DO carry `fallible(E)` and live on the
+value channel like normal. Real systems regularly need to *cross
+from value to structural* — a method catches a value error in an
+`or` clause, decides the error is unrecoverable, and wants to
+immediately escalate into the structural channel so the parent's
+`on_failure` policy takes over.
 
 Hale's primitive for this is **inline closure violation**: a
 locus declares a *named structural-failure type* as an

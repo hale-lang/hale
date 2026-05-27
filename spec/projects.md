@@ -154,9 +154,11 @@ import "<path>" as <alias>;
 The alias-required rule is the same forcing-function discipline
 v1.x-3 enforces for `: projection recognition` (no default
 sub-mode) and v1.x-FORM-2 enforces for the two-channel rule
-(locus methods can't declare `fallible(E)`): the user names the
-commitment at the surface so a downstream reader doesn't have
-to reconstruct the namespace from the path.
+(substrate-facing surfaces — lifecycle, mode, closure assertions,
+bus handlers — can't declare `fallible(E)`; user-declared `fn`
+members and free fns can): the user names the commitment at the
+surface so a downstream reader doesn't have to reconstruct the
+namespace from the path.
 
 Imports appear at the top of a file, before any top-level
 declaration. Multi-file seeds may declare imports in any file;

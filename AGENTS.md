@@ -146,11 +146,17 @@ Filter these reflexes before they cost you time.
   concatenates its args. F-strings `f"hello {name}"` interpolate.
 - **No `return` inside `birth` / `run` / `dissolve` bodies.**
   Factor short-circuit logic into helper free fns.
-- **No `fallible(E)` on locus methods.** Free fns and
-  `@form(...)`-synthesized methods are the only fallible
-  surfaces. Locus methods communicate failure structurally via
-  the `↑` channel (closures + `on_failure`). Two-channel rule,
-  locked.
+- **`fallible(E)` is rejected on substrate-facing surfaces:**
+  lifecycle methods (`birth` / `run` / `dissolve`), mode bodies
+  (`bulk` / `harmonic` / `resolution`), closure-assertion
+  bodies, and bus-subscribed handlers. Those have no caller
+  frame to address the error channel, so a `fallible(E)`
+  declaration would describe a contract that can't be
+  satisfied. User-declared `fn` members on a locus and free
+  fns DO carry `fallible(E)` — they have a real caller. The
+  narrowed two-channel rule (2026-05-25) keeps `↑` and `fallible`
+  separate at the substrate boundary; everywhere else they
+  compose. See `spec/semantics.md § fallible-on-locus`.
 - **No `panic(msg)` / `assert(cond)`.** Failure is structural,
   routed through closure-tests + `on_failure` (the `↑` channel)
   or value-level via `fallible(E)`.
@@ -197,8 +203,13 @@ surprises:
   they address bus channels only.
 - `self` outside a method body → you're in a free fn or top
   level; no enclosing Σ.
-- Lifecycle method declared `fallible(E)` → see "no fallible on
-  locus methods" above. Convert to free fn.
+- Lifecycle / mode / closure-assertion / bus-handler method
+  declared `fallible(E)` → the substrate orchestrates these,
+  so the error channel has no caller to address. Drop the
+  `fallible(E)` and route failure through `↑` (closure-test
+  + `on_failure`), OR factor the body into a user-declared
+  `fn` member that the lifecycle method calls with `or` to
+  bridge the channels.
 - "Error not addressed" on a `fallible` call → add `or raise` /
   `or default` / `or handler(err)`.
 
