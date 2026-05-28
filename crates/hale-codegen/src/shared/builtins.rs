@@ -1090,6 +1090,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
+        // F.36 Slice 3 (2026-05-28): codec-binding registration.
+        // declare void @lotus_bus_register_codec(ptr subject, ptr self,
+        //   ptr encode_fn, ptr decode_fn)
+        let bus_register_codec_ty = void_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_bus_register_codec",
+            bus_register_codec_ty,
+            None,
+        );
+
         // Form K4c + K7 (2026-05-20): shm_ring binding registration +
         // publish-side dispatch. K7 adds the overflow_policy i32
         // discriminator (matches ast::ShmRingOverflow::runtime_tag).

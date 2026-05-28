@@ -4754,6 +4754,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         "lotus.binding.register",
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // F.36 Slice 3a (2026-05-28): codec attachment.
+                // When the binding entry carries a `codec(L { ... })`
+                // clause, instantiate L into program-lifetime memory
+                // (same m90-routed shape as the adapter path) and
+                // call `lotus_bus_register_codec` so the runtime
+                // entry knows which method ptrs to invoke at
+                // publish / receive. Slice 3b will wire the actual
+                // publish + receive dispatch through these ptrs;
+                // today the registration completes but dispatch
+                // falls through to m70.
+                if let Some(codec) = &entry.codec {
+                    self.emit_codec_binding_register(
+                        &subject,
+                        &entry.topic.name,
+                        &codec.locus,
+                        &codec.inits,
+                    )?;
+                }
             }
         }
         Ok(())
@@ -4863,6 +4881,114 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     send_fn_ptr.into(),
                 ],
                 &format!("lotus.adapter.register.{}", topic_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// F.36 Slice 3a: instantiate a codec locus into program-
+    /// lifetime memory (m90 routing through payload arena) +
+    /// resolve its `encode` / `decode` method ptrs + emit a
+    /// `lotus_bus_register_codec(subject, self, encode, decode)`
+    /// call. Mirrors `emit_adapter_binding_register` but for a
+    /// stateless locus (no pinned placement — codec methods are
+    /// pure, dispatched from arbitrary threads).
+    ///
+    /// Slice 3a: the registration completes, the codec instance
+    /// outlives main, and its method ptrs are stored on the
+    /// remote entry. The publish-side `Topic <- value` and the
+    /// receive-side reader thread don't yet consult these ptrs;
+    /// that's Slice 3b — which also lands the synthesized thunks
+    /// that bridge the user-method ABI (Hale calling convention)
+    /// to the runtime's `void* (*)(void*, void*)` shape.
+    fn emit_codec_binding_register(
+        &mut self,
+        subject: &str,
+        topic_name: &str,
+        locus: &Ident,
+        inits: &[StructInit],
+    ) -> Result<(), CodegenError> {
+        let locus_path = QualifiedName {
+            segments: vec![locus.clone()],
+            span: locus.span,
+        };
+        let locus_lit = Expr::Struct {
+            path: locus_path,
+            inits: inits.to_vec(),
+            span: locus.span,
+        };
+
+        // m90 routing for program-lifetime allocation. Codec is
+        // NOT pinned — its methods are pure and dispatched from
+        // arbitrary threads (the substrate enforces purity at
+        // typecheck per F.36 Slice 2). Default cooperative
+        // placement keeps the instance on `main`'s arena
+        // discipline without spawning a worker.
+        let saved_ret = self.current_user_fn_ret.clone();
+        self.current_user_fn_ret =
+            Some(Some(CodegenTy::LocusRef(locus.name.clone())));
+        let mut scope = Scope::default();
+        let (self_val, _) = self.lower_expr(&locus_lit, &mut scope)?;
+        self.current_user_fn_ret = saved_ret;
+
+        // Resolve encode / decode method ptrs. Typecheck has
+        // already verified both exist with the right signatures
+        // and are pure (F.36 Slice 2).
+        let info = self.user_loci.get(&locus.name).cloned().ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "codec binding for `{}`: codegen has no record of \
+                 locus `{}`",
+                topic_name, locus.name
+            ))
+        })?;
+        let encode_fn = info
+            .user_methods
+            .get("encode")
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "codec binding for `{}`: locus `{}` has no \
+                     `encode` method",
+                    topic_name, locus.name
+                ))
+            })?;
+        let decode_fn = info
+            .user_methods
+            .get("decode")
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "codec binding for `{}`: locus `{}` has no \
+                     `decode` method",
+                    topic_name, locus.name
+                ))
+            })?;
+        let encode_fn_ptr = encode_fn.as_global_value().as_pointer_value();
+        let decode_fn_ptr = decode_fn.as_global_value().as_pointer_value();
+
+        let subj_ptr = self
+            .builder
+            .build_global_string_ptr(
+                subject,
+                &format!("lotus.codec.subject.{}", topic_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .as_pointer_value();
+
+        let register_fn = self
+            .module
+            .get_function("lotus_bus_register_codec")
+            .expect("lotus_bus_register_codec declared");
+        self.builder
+            .build_call(
+                register_fn,
+                &[
+                    subj_ptr.into(),
+                    self_val.into_pointer_value().into(),
+                    encode_fn_ptr.into(),
+                    decode_fn_ptr.into(),
+                ],
+                &format!("lotus.codec.register.{}", topic_name),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())

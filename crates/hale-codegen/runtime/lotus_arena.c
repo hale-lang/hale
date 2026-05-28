@@ -8835,6 +8835,24 @@ typedef struct lotus_bus_remote_entry {
     int                udp_fd;
     struct sockaddr_in udp_dest;
     int                udp_is_multicast;
+    /* F.36 Slice 3 (2026-05-28): pluggable codec hooks. Set by
+     * `lotus_bus_register_codec` when the binding entry carried
+     * a `codec(L { ... })` clause. The encode hook converts a
+     * value pointer (T's struct layout) to a Bytes blob; the
+     * decode hook converts wire-bytes back to T. Both run on
+     * whatever thread invokes them — the codec's purity is
+     * enforced at typecheck (F.36 Slice 2), so no coordination
+     * is in scope here.
+     *
+     * Encode/decode signatures match the codegen-emitted method
+     * shape: encode takes (codec_self, value_ptr) returning a
+     * Bytes-blob ptr; decode takes (codec_self, bytes_ptr)
+     * returning a freshly-allocated value-of-T (heap-bearing
+     * via the payload arena). When NULL, dispatch falls back to
+     * the m70 default serializer / deserializer. */
+    void              *codec_self;
+    void             *(*codec_encode_fn)(void *self, void *value);
+    void             *(*codec_decode_fn)(void *self, void *bytes);
 } lotus_bus_remote_entry_t;
 
 /* 2026-05-27 — array-of-pointers shape (was array-of-structs).
@@ -9315,6 +9333,11 @@ void lotus_bus_register_remote(const char *subject,
     e->udp_fd            = -1;
     memset(&e->udp_dest, 0, sizeof(e->udp_dest));
     e->udp_is_multicast  = 0;
+    /* F.36 Slice 3: codec fields default NULL (m70 path). The
+     * register_codec call below zero-or-overwrites them. */
+    e->codec_self        = NULL;
+    e->codec_encode_fn   = NULL;
+    e->codec_decode_fn   = NULL;
 
     if (is_udp) {
         if (role == LOTUS_TRANSPORT_LISTEN) {
@@ -9460,6 +9483,47 @@ void lotus_bus_register_remote_adapter(
     e->udp_fd            = -1;
     memset(&e->udp_dest, 0, sizeof(e->udp_dest));
     e->udp_is_multicast  = 0;
+    e->codec_self        = NULL;
+    e->codec_encode_fn   = NULL;
+    e->codec_decode_fn   = NULL;
+}
+
+/* F.36 Slice 3 (2026-05-28): attach a pluggable codec to an
+ * already-registered remote binding. Looks up the entry by
+ * subject + patches the codec fields. The codec's encode is
+ * called on the publish-side dispatch path (before transport
+ * send); decode is called on the receive-side reader thread
+ * (instead of the m70 __deserialize_T). Both run on whatever
+ * thread invokes them; the codec's purity is enforced at
+ * typecheck (F.36 Slice 2), so no coordination is in scope.
+ *
+ * Idempotent on re-register; the codegen emits one call per
+ * binding entry that carries a codec clause. */
+void lotus_bus_register_codec(
+    const char *subject,
+    void *codec_self,
+    void *(*encode_fn)(void *self, void *value),
+    void *(*decode_fn)(void *self, void *bytes))
+{
+    if (!subject || !codec_self || !encode_fn || !decode_fn) {
+        fprintf(stderr,
+                "lotus_bus_register_codec: null subject, codec_self, "
+                "or method pointer\n");
+        return;
+    }
+    for (size_t i = 0; i < g_bus_remote_count; i++) {
+        lotus_bus_remote_entry_t *e = g_bus_remote_entries[i];
+        if (!e->subject) continue;
+        if (strcmp(e->subject, subject) != 0) continue;
+        e->codec_self      = codec_self;
+        e->codec_encode_fn = encode_fn;
+        e->codec_decode_fn = decode_fn;
+        return;
+    }
+    fprintf(stderr,
+            "lotus_bus_register_codec: no remote binding for `%s` — "
+            "codec attachment ignored\n",
+            subject);
 }
 
 /* Trim leading + trailing whitespace in-place. Returns a pointer
