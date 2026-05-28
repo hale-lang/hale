@@ -4964,6 +4964,24 @@ static int lotus_bus_log_unmatched_enabled(void) {
     return cached;
 }
 
+/* 2026-05-28: LOTUS_BUS_LOG_DESERIALIZE_DROP=1 surfaces silent
+ * drops in the udp:// reader thread when (a) no deserializer
+ * is registered for the inbound subject, or (b) the deserialize
+ * function returns <= 0 (size mismatch, bounded-read failure,
+ * etc.). Off by default — the silent-skip is correct for
+ * cross-topic noise on shared multicast groups, but during
+ * bring-up the lack of any signal is load-bearing on debug
+ * cycles. Three udp:// handoffs this week traced back to
+ * silent-skip-on-deserialize. */
+static int lotus_bus_log_deserialize_drop_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *s = getenv("LOTUS_BUS_LOG_DESERIALIZE_DROP");
+        cached = (s && s[0] == '1') ? 1 : 0;
+    }
+    return cached;
+}
+
 void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
                                      const char *subject,
                                      const void *payload,
@@ -8732,10 +8750,33 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
             deserialize = e->deserialize;
             break;
         }
-        if (!deserialize) continue;
+        if (!deserialize) {
+            /* 2026-05-28: the silent-skip-on-no-deserializer path.
+             * If LOTUS_BUS_LOG_DESERIALIZE_DROP=1, emit one line
+             * naming the subject + payload size so bring-up bisects
+             * have something to grep for instead of "no log
+             * messages at all". Three udp:// bring-ups this week
+             * burned hours on this drop class. See the
+             * `handoff-compiler-refdata-dispatch-silent-...` brief. */
+            if (lotus_bus_log_deserialize_drop_enabled()) {
+                dprintf(2,
+                        "lotus_bus udp reader: drop on `%s` "
+                        "(no deserializer registered) — %zd-byte payload\n",
+                        args->entry->subject, n);
+            }
+            continue;
+        }
         ssize_t struct_size = deserialize(
             wire_buf, (size_t)n, struct_buf, sizeof(struct_buf));
-        if (struct_size <= 0) continue;
+        if (struct_size <= 0) {
+            if (lotus_bus_log_deserialize_drop_enabled()) {
+                dprintf(2,
+                        "lotus_bus udp reader: drop on `%s` "
+                        "(deserialize returned %zd) — %zd-byte wire payload\n",
+                        args->entry->subject, struct_size, n);
+            }
+            continue;
+        }
         lotus_bus_local_dispatch(g_bus_queue_for_remote,
                                  args->entry->subject,
                                  struct_buf, (size_t)struct_size);
