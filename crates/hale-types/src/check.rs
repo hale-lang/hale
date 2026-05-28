@@ -2492,9 +2492,25 @@ impl<'a> Checker<'a> {
                 self.diags.push(Diag::ty(
                     slot.elem_ty.span(),
                     format!(
-                        "@form(hashmap) cell type `{}` is a locus; cells must \
-                         be value-shape types (struct), not loci with lifecycle",
-                        cell_name
+                        "@form(hashmap) cell type `{}` is a locus. Cells \
+                         are data; loci are managed entities. Storing an \
+                         entity in a hashmap means the synthesized `.get \
+                         (key)` returns a stranger to the caller, which \
+                         violates the rule in `spec/semantics.md § Locus \
+                         method dispatch` (same shape as a method returning \
+                         a locus).\n\n\
+                         Canonical alternatives for keyed-children patterns:\n\
+                         1. Parent-child: declare `accept(c: {})` on the \
+                            parent. Pair with a `@form(hashmap)` of cell \
+                            type `type Index {{ key: String; child_idx: \
+                            Int; }}` if name-based lookup is needed.\n\
+                         2. Bus topic: publish commands keyed by name; \
+                            subscriber dispatches into the right child.\n\
+                         3. Delegation: collapse the per-child operation \
+                            onto the parent (`parent.inc_named(name)`).\n\n\
+                         See spec/forms.md § @form(hashmap) cell type and \
+                         spec/semantics.md § Locus method dispatch.",
+                        cell_name, cell_name
                     ),
                 ));
                 return;
@@ -2909,11 +2925,17 @@ impl<'a> Checker<'a> {
                                 slot.span,
                                 format!(
                                     "capacity slot `{} {} of {}`: cell \
-                                     type cannot be a locus (locus \
-                                     recycling/free would orphan the \
-                                     locus — route locus membership \
-                                     through `accept(c: {})` instead; \
-                                     see spec §F.22 restriction 1)",
+                                     type cannot be a locus. Cells are \
+                                     data; loci are managed entities. \
+                                     Locus recycling/free would orphan \
+                                     the locus's lifecycle. Route locus \
+                                     membership through `accept(c: {})` \
+                                     instead, and pair with a parallel \
+                                     index slot (e.g. `@form(hashmap)` \
+                                     keyed by name) if name-based lookup \
+                                     is needed. See spec/semantics.md § \
+                                     Locus method dispatch and spec/forms.md \
+                                     § Cell type restrictions.",
                                     kind_word, slot.name.name, n, n
                                 ),
                             ));

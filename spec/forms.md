@@ -658,10 +658,25 @@ Rules verified at typecheck:
 - The slot MUST declare `indexed_by <field>`. The named field
   must exist on the cell type.
 - The cell type MUST be a user-declared `type` struct.
-  Primitives, enums, type aliases, locus references, and
-  qualified paths are rejected — the substrate needs the cell's
-  field layout to GEP the key out at insert time, which only
-  resolves cleanly for struct cells.
+  Primitives, enums, type aliases, and qualified paths are
+  rejected — the substrate needs the cell's field layout to
+  GEP the key out at insert time, which only resolves cleanly
+  for struct cells.
+- The cell type MAY NOT be a locus reference. Cells are data;
+  loci are managed entities. Storing an entity in a hashmap
+  means the synthesized `.get(key)` materializes a stranger
+  in the caller's scope — the same antipattern that
+  `spec/semantics.md § Locus method dispatch` rejects at the
+  user-declared layer. For keyed-children patterns, use the
+  canonical alternatives:
+  - **Parent-child**: declare `accept(c: ChildL)` on the
+    parent locus. If name-based lookup is needed, pair with
+    a parallel `@form(hashmap)` of cell type
+    `type Index { key: String; child_idx: Int; }`.
+  - **Bus topic**: publish commands keyed by name; the parent
+    subscribes and dispatches to the right child.
+  - **Delegation**: collapse the per-child operation onto the
+    parent (`parent.inc_named(name)`).
 - The slot name is user-chosen and is not part of the contract.
   The compiler finds the form's pool slot by *position*, not by
   name. Idiomatic spellings: `entries`, `bindings`, `routes`.
