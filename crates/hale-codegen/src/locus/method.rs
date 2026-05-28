@@ -9,6 +9,7 @@ use hale_syntax::ast::{
 use inkwell::AddressSpace;
 
 use crate::codegen::{BlockEnd, CodegenError, CodegenTy, Cx, Scope, SelfCx};
+use crate::locus::closure::LocusClosure;
 use crate::stdlib::time::TimeStdlib;
 
 pub(crate) trait LocusMethodBodies<'ctx> {
