@@ -38,10 +38,25 @@ runtime install.
   `hale run`. Parity with codegen is a soft goal; some
   features ship in codegen first.
 - **`hale-codegen/`** — LLVM codegen via inkwell. Owns the C
-  runtime + the bundled stdlib seed. The main file
-  (`codegen.rs`) is intentionally large (~18kLOC); don't split
-  it without a strong reason. `CodegenTy` is the codegen-side
-  type rep (carries layout / repr info that `Ty` doesn't).
+  runtime + the bundled stdlib seed. `CodegenTy` is the
+  codegen-side type rep (carries layout / repr info that `Ty`
+  doesn't). The crate is being moved to a model-organized
+  layout (see `notes/refactor-codegen-model-org.md`):
+  - `src/codegen.rs` holds `Cx<'ctx, 'p>` (the shared-state
+    struct), the top-level entry points (`build_executable` /
+    `build_program`), and the cross-cutting orchestration that
+    doesn't naturally fit a single subsystem.
+  - `src/stdlib/<ns>.rs` holds the `lower_std_<ns>_*` path-call
+    lowerings as `pub(crate) trait <Ns>Stdlib<'ctx>` extensions
+    on `Cx`. One file per `std::*` namespace
+    (`bytes`, `crypto`, `decimal`, `env`, `io_fs`, `io_file`,
+    `io_stdin`, `io_tcp`, `io_tls`, `io_udp`, `math`, `process`,
+    `rand`, `sockopt`, `str`, `text`, `time`, `bus`). The trait
+    is imported at the top of `codegen.rs` so call sites keep
+    the `self.lower_std_*(...)` shape.
+  - Future rounds will pull `locus/`, `bus/`, `form/`, `types/`,
+    `channels/`, `shared/` out of `codegen.rs` along the same
+    pattern.
 - **`hale-cli/`** — the `hale` binary. Owns the
   parse-with-imports flow for cross-seed imports.
 - **`hale-ts-shim/`** — tree-sitter staticlib bridge backing
