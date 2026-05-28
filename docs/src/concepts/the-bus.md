@@ -340,28 +340,37 @@ A topic can declare a **routing key** — a field on the payload
 type that selects which subscriber receives each message:
 
 ```hale
-type CmdMsg { sym: String; qty: Int; }
+type CmdMsg { sym_id: Int; qty: Int; }
 
 topic Cmd {
     payload: CmdMsg;
     subject: "cmd";
-    keyed_by sym;
+    keyed_by sym_id;
     on_unmatched: fail;
 }
 
 locus AaplWorker {
-    params { my_sym: String = "AAPL"; }
-    bus { subscribe Cmd as on_cmd where key == self.my_sym; }
+    params { my_sym_id: Int = 1; }   // 1 = AAPL by convention
+    bus { subscribe Cmd as on_cmd where key == self.my_sym_id; }
     fn on_cmd(c: CmdMsg) { /* AAPL-only */ }
 }
 ```
 
-The `keyed_by sym` clause names the payload field the bus
+The `keyed_by sym_id` clause names the payload field the bus
 inspects at dispatch time. Each subscriber adds a `where key
 == EXPR` predicate; only the subscriber whose predicate
 matches the message's key field receives the call. This is
 the canonical alternative to *N* sibling subscribers each
 filtering inside their handler body.
+
+**Acceptable key types** at v0.1: `Bool`, `Int`, `Time`,
+`Duration`, no-payload `enum`, and `Decimal`. All store as a
+u64 (or u128 for `Decimal`) on the bus and compare in one or
+two `i64` ops at dispatch. `String` and `Bytes` are not
+admitted — variable-width keys don't fit the fixed-cost
+dispatch model. Convention for string-keyed shapes: hash the
+string to an `Int` at publish time, or assign sequential
+integer ids at registration.
 
 The `on_unmatched` clause picks what happens when no
 subscriber's `where` predicate matches:
