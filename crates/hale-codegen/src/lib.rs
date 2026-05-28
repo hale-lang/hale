@@ -31,6 +31,7 @@
 
 pub mod codegen;
 pub mod mangle;
+pub(crate) mod stdlib;
 
 pub use codegen::{
     build_executable, build_executable_with_imports,

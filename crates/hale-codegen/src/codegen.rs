@@ -20,6 +20,12 @@ use inkwell::{AddressSpace, OptimizationLevel};
 
 use hale_syntax::ast::*;
 
+// Trait extensions per `std::*` namespace, lifted out of this file
+// during the codegen model-organization refactor (Round 1). Bringing
+// them into scope here makes `self.lower_std_<ns>_*(...)` calls
+// resolve to the trait method implemented on `Cx`.
+use crate::stdlib::decimal::DecimalStdlib;
+
 /// Compile-time tag for a value's type. Mirrors a small subset
 /// of `hale_types::Ty`; we don't pull the full type system in
 /// because codegen only needs to discriminate the lowered
@@ -32,7 +38,7 @@ use hale_syntax::ast::*;
 /// `Int` so type-driven dispatch (e.g. `time::sleep` accepts only
 /// Duration) stays correct at the codegen layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum CodegenTy {
+pub(crate) enum CodegenTy {
     Int,
     Float,
     Bool,
@@ -1030,10 +1036,10 @@ fn resolve_qualified_bus_subjects(
 }
 
 
-struct Cx<'ctx, 'p> {
-    context: &'ctx Context,
-    module: Module<'ctx>,
-    builder: inkwell::builder::Builder<'ctx>,
+pub(crate) struct Cx<'ctx, 'p> {
+    pub(crate) context: &'ctx Context,
+    pub(crate) module: Module<'ctx>,
+    pub(crate) builder: inkwell::builder::Builder<'ctx>,
     program: &'p Program,
     /// Set while lowering a function's body so that `if` / `while`
     /// can `append_basic_block` onto it.
@@ -25775,7 +25781,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(slot)
     }
 
-    fn lower_expr(
+    pub(crate) fn lower_expr(
         &mut self,
         e: &Expr,
         scope: &Scope<'ctx>,
@@ -28236,62 +28242,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// &ts)` followed by `ts.tv_sec * 1_000_000_000 + ts.tv_nsec`.
     /// Result is a `Duration` (i64 nanoseconds since an
     /// unspecified reference).
-    /// `std::decimal::to_float(d: Decimal) -> Float` (2026-05-21).
-    /// Direct i128 → f64 conversion at scale 9 via the new
-    /// `lotus_decimal_to_float` C primitive. Replaces the
-    /// `to_string(d)` → strip "ns"-like-suffix → `parse_float`
-    /// ASCII round-trip downstream consumers were doing in
-    /// hot paths (e.g. metrics gauges setting Float values
-    /// from Decimal book prices). The i128 splits into hi/lo
-    /// at the call boundary to match the codebase's existing
-    /// Decimal C ABI convention.
-    fn lower_std_decimal_to_float(
-        &mut self,
-        args: &[Expr],
-        scope: &Scope<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 1 {
-            return Err(CodegenError::Unsupported(format!(
-                "std::decimal::to_float takes 1 arg (Decimal), got {}",
-                args.len()
-            )));
-        }
-        let (v, ty) = self.lower_expr(&args[0], scope)?;
-        if ty != CodegenTy::Decimal {
-            return Err(CodegenError::Unsupported(format!(
-                "std::decimal::to_float: arg must be Decimal, got {:?}",
-                ty
-            )));
-        }
-        let i64_t = self.context.i64_type();
-        let i128_v = v.into_int_value();
-        let lo = self
-            .builder
-            .build_int_truncate(i128_v, i64_t, "dec.to_f.lo")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let shift = self.context.i128_type().const_int(64, false);
-        let hi_wide = self
-            .builder
-            .build_right_shift(i128_v, shift, true, "dec.to_f.hi_w")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let hi = self
-            .builder
-            .build_int_truncate(hi_wide, i64_t, "dec.to_f.hi")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let f = self
-            .module
-            .get_function("lotus_decimal_to_float")
-            .expect("lotus_decimal_to_float declared");
-        let res = self
-            .builder
-            .build_call(f, &[hi.into(), lo.into()], "dec.to_float.call")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("lotus_decimal_to_float returns double");
-        Ok((res, CodegenTy::Float))
-    }
-
     /// `std::time::monotonic_ns() -> Int` (2026-05-21). Same
     /// clock_gettime(CLOCK_MONOTONIC) shape as `monotonic()` but
     /// types the result as `Int` (i64 ns) instead of `Duration`.
@@ -45146,7 +45096,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 }
 
 #[derive(Default)]
-struct Scope<'ctx> {
+pub(crate) struct Scope<'ctx> {
     locals: BTreeMap<String, (PointerValue<'ctx>, CodegenTy)>,
 }
 
