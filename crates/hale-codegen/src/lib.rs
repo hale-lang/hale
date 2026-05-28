@@ -29,6 +29,7 @@
 //! interpreter remains the reference for everything not yet
 //! lowered.
 
+pub(crate) mod bus;
 pub mod codegen;
 pub mod mangle;
 pub(crate) mod stdlib;
