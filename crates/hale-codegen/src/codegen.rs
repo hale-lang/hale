@@ -30,6 +30,7 @@ use crate::stdlib::env::EnvStdlib;
 use crate::stdlib::math::MathStdlib;
 use crate::stdlib::process::ProcessStdlib;
 use crate::stdlib::rand::RandStdlib;
+use crate::stdlib::sockopt::SockoptStdlib;
 use crate::stdlib::text::TextStdlib;
 use crate::stdlib::time::TimeStdlib;
 
@@ -17565,42 +17566,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Some((value_i128.into(), CodegenTy::Decimal)),
             "str.parse_decimal",
         )
-    }
-
-    /// 2026-05-26 — `std::io::sockopt::<NAME>() -> Int`. Each
-    /// named constant resolves to a zero-arg call into the
-    /// matching C getter (`lotus_sockopt_<NAME>`) which returns
-    /// the platform's numeric value. Used as the level / name
-    /// args to `std::io::udp::set_option_int` / friends.
-    fn lower_std_io_sockopt_getter(
-        &mut self,
-        name: &str,
-        args: &[Expr],
-    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if !args.is_empty() {
-            return Err(CodegenError::Unsupported(format!(
-                "std::io::sockopt::{} takes 0 args, got {}",
-                name,
-                args.len()
-            )));
-        }
-        let f = self
-            .module
-            .get_function(&format!("lotus_sockopt_{}", name))
-            .expect("sockopt getter declared");
-        let v = self
-            .builder
-            .build_call(f, &[], &format!("sockopt.{}.ret", name))
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("returns i32")
-            .into_int_value();
-        let v_i64 = self
-            .builder
-            .build_int_s_extend(v, self.context.i64_type(), "sockopt.i64")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((v_i64.into(), CodegenTy::Int))
     }
 
     /// 2026-05-26 — `std::str::byte_at_unchecked(s: String, i: Int)
