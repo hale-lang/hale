@@ -58,7 +58,7 @@ surface without touching the compiler.
 
 | Namespace | Surface | Source |
 |---|---|---|
-| `std::process` | `pid() -> Int`, `exit(code: Int)`, `rss_bytes() -> Int`, `dump_arena_residency() -> Int` (no-op unless `LOTUS_ARENA_RESIDENCY=1`; writes per-arena residency snapshot to stderr), `run(argv) -> ProcessOutput fallible(IoError)`, `spawn` / `wait` / `kill` / `write_stdin` / `read_stdout` / `read_stderr` over `Child` | path-call dispatch + C primitives |
+| `std::process` | `pid() -> Int`, `exit(code: Int)`, `rss_bytes() -> Int`, `dump_arena_residency() -> Int` (no-op unless `LOTUS_ARENA_RESIDENCY=1`; writes per-arena residency snapshot to stderr), `dump_pool_residency() -> Int` (F.35, 2026-05-28; writes one stderr line per cooperative pool — name, async_io vs blocking mode, parked-coro count, pending cell-queue depth — for ops embedding in heartbeat ticks), `run(argv) -> ProcessOutput fallible(IoError)`, `spawn` / `wait` / `kill` / `write_stdin` / `read_stdout` / `read_stderr` over `Child` | path-call dispatch + C primitives |
 | `std::env` | `args_count()`, `arg(i)`, `arg_or(i, default)`, `var(name)`, `var_exists(name)` | path-call dispatch + main-prelude argv stash |
 | `std::time` | `monotonic() -> Duration`, `monotonic_ns() -> Int`, `sleep(d: Duration)`, `now() -> Int`, `time_from_unix(n: Int) -> Time` | `clock_gettime` + EINTR-retrying `clock_nanosleep`; `sleep` folds in a cooperative bus drain after `clock_nanosleep` returns (see `spec/runtime.md` § "`time::sleep` drain semantics"); `now()` is `CLOCK_REALTIME`; `time_from_unix` formats `gmtime_r` + `strftime` ISO 8601 UTC |
 | `std::decimal` | `to_float(d: Decimal) -> Float` | Direct i128 → f64 conversion at scale 9 (`mantissa × 10^-9`) — skips an ASCII round-trip |

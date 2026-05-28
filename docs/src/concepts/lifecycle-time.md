@@ -164,6 +164,24 @@ block. The runtime spawns one OS worker per inferred pool name
 beyond `main`. No `threads { }` declaration block at v1 —
 pools are named purely by use site.
 
+**Green-I/O via `where async_io` (F.35).** A cooperative pool
+that handles many concurrent I/O-bound connections can opt into
+a green-I/O drain loop by tagging the placement entry:
+
+```hale
+placement {
+    worker: cooperative(pool = ws_workers) where async_io;
+}
+```
+
+The pool's worker integrates an epoll instance, and blocking
+I/O syscalls inside locus methods on this pool (`recv_bytes`,
+`accept_one`, `send_bytes`, ...) park-and-resume instead of
+holding the OS thread. User code stays synchronous-shaped —
+`stream.recv_bytes(N)` is the same line of source either way.
+Detailed treatment in [How to: threading § Green-I/O cooperative
+pools](../how-tos/threading.md#green-io-cooperative-pools-where-async_io).
+
 The rule of thumb: cooperative-on-main is the default for
 almost everything; pinned is for latency-critical work that
 genuinely shouldn't share a pool thread (real-time data
