@@ -4,6 +4,7 @@
 use hale_syntax::ast::Expr;
 use inkwell::values::BasicValueEnum;
 
+use crate::bus::runtime::BusRuntime;
 use crate::codegen::{CodegenError, CodegenTy, Cx, Scope};
 
 pub(crate) trait TimeStdlib<'ctx> {
