@@ -8,12 +8,10 @@
 //! Lifted as inherent `impl<'ctx, 'p> Cx<'ctx, 'p>` blocks — call
 //! sites need no `use` import.
 
-use hale_syntax::ast::Expr;
-use inkwell::types::BasicType;
 use inkwell::values::{BasicValueEnum, PointerValue};
 use inkwell::AddressSpace;
 
-use crate::codegen::{CodegenError, CodegenTy, Cx, EnumInfo, Scope, TypeInfo};
+use crate::codegen::{CodegenError, CodegenTy, Cx, EnumInfo};
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Cross-arena store deep-copy for **pointer-storage**

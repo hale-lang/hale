@@ -27,7 +27,6 @@ use hale_syntax::ast::*;
 use crate::bus::dispatch::BusDispatch;
 use crate::bus::runtime::BusRuntime;
 use crate::bus::wire::BusWire;
-use crate::locus::closure::LocusClosure;
 use crate::locus::decl::LocusDeclare;
 use crate::locus::dissolve::LocusDissolve;
 use crate::locus::instantiation::LocusInstantiate;

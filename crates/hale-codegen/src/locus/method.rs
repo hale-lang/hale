@@ -4,7 +4,7 @@
 //! model-org refactor.
 
 use hale_syntax::ast::{
-    Block, EpochSpec, LifecycleKind, LocusDecl, LocusMember, ModeKind,
+    EpochSpec, LifecycleKind, LocusDecl, LocusMember, ModeKind,
 };
 use inkwell::AddressSpace;
 

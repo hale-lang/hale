@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use hale_syntax::ast::{
-    BirthCheckDecl, CapacitySlotKind, Expr, ProjectionClass,
+    BirthCheckDecl, CapacitySlotKind, ProjectionClass,
     RecognitionSubMode, ScheduleClass,
 };
 use inkwell::types::StructType;

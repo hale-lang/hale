@@ -9,21 +9,19 @@ use std::collections::BTreeMap;
 
 use hale_syntax::ast::{
     BirthCheckDecl, CapacitySlotKind, Expr, Literal, LocusMember,
-    ProjectionClass, RecognitionSubMode, ScheduleClass, Stmt,
+    ProjectionClass, RecognitionSubMode, ScheduleClass,
     StructInit, TopDecl,
 };
 use inkwell::types::BasicType;
 use inkwell::values::PointerValue;
 use inkwell::AddressSpace;
 
-use crate::bus::dispatch::BusDispatch;
 use crate::bus::runtime::BusRuntime;
 use crate::codegen::{
-    chunk_hint_for_coop_pool, BlockEnd, CodegenError, CodegenTy, Cx,
+    chunk_hint_for_coop_pool, CodegenError, CodegenTy, Cx,
     DefaultInit, ParamValue, Scope, SelfCx, SlotForm, SyncMode,
     CHILDREN_CAP,
 };
-use crate::locus::decl::LocusDeclare;
 use crate::locus::dissolve::LocusDissolve;
 use crate::stdlib::time::TimeStdlib;
 

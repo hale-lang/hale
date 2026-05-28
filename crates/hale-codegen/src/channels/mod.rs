@@ -12,7 +12,6 @@ use inkwell::types::BasicType;
 use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, IntValue, PointerValue};
 use inkwell::AddressSpace;
 
-use crate::bus::dispatch::BusDispatch;
 use crate::locus::dissolve::LocusDissolve;
 use crate::codegen::{
     view_coerces_to, BlockEnd, CodegenError, CodegenTy, Cx,

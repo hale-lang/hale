@@ -5,13 +5,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
-    BirthCheckDecl, BusMember, CapacitySlotKind, ClosureAssertion,
+    BusMember, CapacitySlotKind, ClosureAssertion,
     ClosureClause, EpochSpec, Expr, KeyFilter, LifecycleKind,
     Literal, LocusAnnotation, LocusDecl, LocusMember, ModeKind,
-    ParamInit, ProjectionClass, RecognitionSubMode, ScheduleClass,
+    ParamInit, ProjectionClass, ScheduleClass,
     TypeExpr,
 };
-use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, StructType};
 use inkwell::values::FunctionValue;
 use inkwell::AddressSpace;
 

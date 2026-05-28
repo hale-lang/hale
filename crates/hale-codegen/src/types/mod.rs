@@ -12,7 +12,6 @@ use hale_syntax::ast::{
     Expr, Ident, Literal, PrimType, QualifiedName, StructInit, TopDecl,
     TypeDecl, TypeDeclBody, TypeExpr,
 };
-use inkwell::types::{BasicType, BasicTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, PointerValue};
 use inkwell::AddressSpace;
 
