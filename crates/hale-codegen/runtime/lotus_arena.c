@@ -6788,18 +6788,61 @@ int lotus_tcp_listen_socket(const char *host, uint16_t port) {
     return sock;
 }
 
+/* F.35 Slice 3 (2026-05-28): "am I on an async_io pool?" check
+ * that the blocking-I/O syscall wrappers use to decide whether to
+ * park-on-EAGAIN or block the OS thread. The TLS pool ptr is set
+ * by the cooperative pool worker before invoking each handler
+ * coro; outside a worker context (e.g. fn main() prelude, pinned
+ * thread bodies) the pointer is NULL and the check returns 0,
+ * preserving the classic blocking semantics. */
+static int lotus_io_on_async_io_pool(void) {
+    lotus_coop_pool_t *p = g_current_pool_tls;
+    return p && p->async_io_enabled;
+}
+
+/* F.35 Slice 3: idempotent O_NONBLOCK toggle. Called by the
+ * I/O wrappers on async_io pools before the first syscall on
+ * each fd. The fcntl(F_GETFL) round-trip costs ~1us; we do it
+ * each call rather than tracking a per-fd "already set" bit
+ * because fds can cross pool boundaries (listener creates a fd
+ * on its pinned thread, publishes it via the bus, worker reads
+ * on the async_io pool) and the worker can't know if the
+ * upstream already set the flag. */
+static void lotus_io_set_nonblock(int fd) {
+    if (fd < 0) return;
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) return;
+    if (flags & O_NONBLOCK) return;
+    (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
 int lotus_tcp_accept_one(int listen_fd) {
-    int conn = accept(listen_fd, NULL, NULL);
-    if (conn < 0) {
-        if (errno != EINTR) {
-            perror("lotus_tcp_accept_one: accept");
+    /* F.35 Slice 3: on async_io pools, accept(2) is non-blocking +
+     * park on EAGAIN. Classic blocking accept on every other path. */
+    int async = lotus_io_on_async_io_pool();
+    if (async) {
+        lotus_io_set_nonblock(listen_fd);
+    }
+    for (;;) {
+        int conn = accept(listen_fd, NULL, NULL);
+        if (conn >= 0) {
+            int nodelay = 1;
+            (void)setsockopt(conn, IPPROTO_TCP, TCP_NODELAY,
+                             &nodelay, sizeof(nodelay));
+            return conn;
         }
+        if (errno == EINTR) continue;
+        if (async && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            /* Park the calling coro on `listen_fd`-readable. When
+             * a connection arrives, epoll fires and the worker
+             * resumes us; retry the accept. */
+            if (lotus_coop_park_on_fd(listen_fd, EPOLLIN) == 0) {
+                continue;
+            }
+        }
+        perror("lotus_tcp_accept_one: accept");
         return -1;
     }
-    int nodelay = 1;
-    (void)setsockopt(conn, IPPROTO_TCP, TCP_NODELAY,
-                     &nodelay, sizeof(nodelay));
-    return conn;
 }
 
 int lotus_tcp_connect(const char *host, uint16_t port) {
@@ -7397,6 +7440,11 @@ int lotus_tcp_send_str(int fd, const char *msg) {
         errno = EINVAL;
         return -1;
     }
+    /* F.35 Slice 3: park on EPOLLOUT for async_io pools. */
+    int async = lotus_io_on_async_io_pool();
+    if (async) {
+        lotus_io_set_nonblock(fd);
+    }
     size_t len = strlen(msg);
     const char *p = msg;
     size_t      left = len;
@@ -7408,6 +7456,9 @@ int lotus_tcp_send_str(int fd, const char *msg) {
             continue;
         }
         if (w < 0 && errno == EINTR) continue;
+        if (w < 0 && async && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (lotus_coop_park_on_fd(fd, EPOLLOUT) == 0) continue;
+        }
         perror("lotus_tcp_send_str: write");
         return -1;
     }
@@ -7434,6 +7485,13 @@ int lotus_tcp_send_bytes(int fd, const void *bytes_ptr) {
         errno = EINVAL;
         return -1;
     }
+    /* F.35 Slice 3: on async_io pools, park on EPOLLOUT when the
+     * send buffer fills (EAGAIN). The fd is set non-blocking once
+     * here; subsequent writes inherit the flag. */
+    int async = lotus_io_on_async_io_pool();
+    if (async) {
+        lotus_io_set_nonblock(fd);
+    }
     const char *p = (const char *)bytes_ptr + sizeof(int64_t);
     size_t left = (size_t)total;
     while (left > 0) {
@@ -7444,6 +7502,9 @@ int lotus_tcp_send_bytes(int fd, const void *bytes_ptr) {
             continue;
         }
         if (w < 0 && errno == EINTR) continue;
+        if (w < 0 && async && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (lotus_coop_park_on_fd(fd, EPOLLOUT) == 0) continue;
+        }
         perror("lotus_tcp_send_bytes: write");
         return -1;
     }
@@ -7458,19 +7519,29 @@ const char *lotus_tcp_recv_str(int fd, int max_bytes) {
     if (fd < 0 || max_bytes <= 0) {
         return empty;
     }
+    /* F.35 Slice 3: park on EAGAIN for async_io pools, classic
+     * blocking read otherwise. */
+    int async = lotus_io_on_async_io_pool();
+    if (async) {
+        lotus_io_set_nonblock(fd);
+    }
     size_t cap = (size_t)max_bytes;
     char *buf = (char *)lotus_bus_payload_arena_alloc(cap + 1, 1);
     if (!buf) {
         return empty;
     }
-    ssize_t n = read(fd, buf, cap);
-    if (n < 0) {
-        if (errno != EINTR) {
-            /* Treat read errors as "got nothing" at this level —
-             * the buffer is in the lazy arena so it persists; the
-             * stable empty-string sentinel signals "no data" to
-             * the caller. */
+    ssize_t n;
+    for (;;) {
+        n = read(fd, buf, cap);
+        if (n >= 0) break;
+        if (errno == EINTR) continue;
+        if (async && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (lotus_coop_park_on_fd(fd, EPOLLIN) == 0) continue;
         }
+        /* Treat read errors as "got nothing" at this level —
+         * the buffer is in the lazy arena so it persists; the
+         * stable empty-string sentinel signals "no data" to
+         * the caller. */
         return empty;
     }
     /* NUL-terminate at the actual bytes-read offset; a zero-byte
@@ -10610,6 +10681,13 @@ void *lotus_tcp_recv_bytes(int fd, int max_bytes) {
     if (fd < 0 || max_bytes <= 0) {
         return lotus_bytes_empty_global();
     }
+    /* F.35 Slice 3: same async_io park-on-EAGAIN dance as
+     * accept_one. Off-pool callers (pinned threads, main) keep
+     * the classic blocking read. */
+    int async = lotus_io_on_async_io_pool();
+    if (async) {
+        lotus_io_set_nonblock(fd);
+    }
     /* Allocate the body at the cap, read into it, then patch the
      * length prefix down to the actual bytes read. lotus_bytes_create
      * sets prefix=cap initially; partial reads (the common case)
@@ -10624,6 +10702,9 @@ void *lotus_tcp_recv_bytes(int fd, int max_bytes) {
         n = read(fd, body, (size_t)max_bytes);
         if (n >= 0) break;
         if (errno == EINTR) continue;
+        if (async && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (lotus_coop_park_on_fd(fd, EPOLLIN) == 0) continue;
+        }
         /* read error: hand back an empty Bytes so downstream code
          * sees length=0 and can detect "nothing read". The reserved
          * arena memory leaks until program exit (matches recv_str's
