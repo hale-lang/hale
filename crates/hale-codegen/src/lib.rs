@@ -31,6 +31,7 @@
 
 pub(crate) mod bus;
 pub mod codegen;
+pub(crate) mod locus;
 pub mod mangle;
 pub(crate) mod stdlib;
 
