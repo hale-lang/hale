@@ -10,4 +10,5 @@
 //! `notes/refactor-codegen-model-org.md`.
 
 pub(crate) mod decimal;
+pub(crate) mod env;
 pub(crate) mod process;
