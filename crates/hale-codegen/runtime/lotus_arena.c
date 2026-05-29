@@ -4642,6 +4642,20 @@ static int lotus_coop_pool_drain_one(lotus_coop_pool_t *p) {
 static __thread lotus_coro_t      *g_current_coro_tls = NULL;
 static __thread lotus_coop_pool_t *g_current_pool_tls = NULL;
 
+/* Pool-inheritance fix (2026-05-29): the cooperative pool whose
+ * worker thread is currently on-CPU, or NULL if called from the
+ * main thread (or any non-pool-worker thread). Codegen uses this
+ * to route a child locus instantiated INSIDE a method/handler
+ * body that is itself running on a pool worker — the child's
+ * run() posts to, and its bus subscriptions register against,
+ * the pool the parent is actually executing on. Compile-time
+ * placement (main-locus params fields) still wins where it's
+ * known; this is the fallback for the in-method-body case where
+ * the codegen has no static pool name. */
+lotus_coop_pool_t *lotus_coop_pool_current(void) {
+    return g_current_pool_tls;
+}
+
 /* Enable async_io mode for a pool: opens an epoll fd. Idempotent;
  * safe to call before or after the worker thread starts (the worker
  * checks `async_io_enabled` on each loop iteration). Called from

@@ -3322,9 +3322,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let saved_block = self.builder.get_insert_block();
         let void_t = self.context.void_type();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
-        // Collect locus names first to avoid borrowing self twice.
+        // Pool-inheritance fix (2026-05-29): synthesize a run
+        // wrapper for EVERY run-bearing user locus, not just the
+        // main-pool-placed types in `coop_pool_locus_types`. A
+        // child instantiated inside a method body running on a
+        // pool worker inherits that pool at runtime (via
+        // `lotus_coop_pool_current`) and posts its run() — but the
+        // child's type need not appear in any `placement { }`
+        // entry, so its wrapper would otherwise be missing and the
+        // run-posting site would fall back to a synchronous call
+        // (the bug: the child's run() captures the parent's worker
+        // coro). Unused wrappers are dead code the linker drops.
         let types: Vec<String> =
-            self.coop_pool_locus_types.iter().cloned().collect();
+            self.user_loci.keys().cloned().collect();
         for locus_name in &types {
             // Find the locus's run() function — declared in Pass A2.
             let info = match self.user_loci.get(locus_name) {

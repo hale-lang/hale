@@ -654,6 +654,47 @@ Allocation routing inside codegen has three tiers, in order:
    which have no enclosing locus. Initialized in main's prelude;
    destroyed at every `ret` from main.
 
+The three tiers above route *value* allocations (composite
+literals, strings, payload copies). The **locus-struct**
+allocation (where a freshly-instantiated locus's own struct
+lives) is a separate dispatch in `lower_locus_instantiation`,
+ordered: returned/payload-routed → lazy global payload arena;
+`parent_accepts_us` → the accepting parent's arena;
+**`parent_owns_via_field`** → the owning locus's arena (see
+below); otherwise → entry-block stack alloca.
+
+#### Owned param-field child allocation (2026-05-29)
+
+An F.29 owned param-field child (`parent_owns_via_field` — e.g.
+`locus PerConn { params { reader: ConnReader = ConnReader { }; } }`)
+allocates its struct in the **owner locus's arena**, taken from
+`current_arena_override` (which the owner's instantiation set to
+its own arena before running params-init, where the field
+default is constructed). The alignment passed is **16** (the
+widest scalar — i128 / `Decimal`), per the Arena alignment
+contract above.
+
+Before this, such children fell through to a stack alloca in the
+instantiating method's frame. That was a latent dangle on any
+cross-lifecycle read of `self.children[i].<field>` (owner
+birthed in one method, the field read in another) and became a
+hard crash once an owner's `run()` is posted to a cooperative
+pool (`spec/runtime.md` § "Runtime pool inheritance"): the
+posted `run()` executes after the instantiating frame returns,
+so the field-child's stack slot is gone — garbage field reads,
+or a segfault on the first parking `recv` in a field-child
+method one locus-boundary deep. Allocating in the owner's arena
+makes the whole owned subtree share the owner's lifetime
+(wholesale-freed with the owner's arena), fixing the dangle
+without leaking into a longer-lived parent arena.
+
+(Known pre-existing limitation, not addressed here: an
+`accept`'d child on a long-lived parent skips its own `dissolve`
+per the v1 trade-off, so its `__arena` — and now its
+field-children's structs that live in it — is reclaimed only
+when the parent dissolves. A daemon accepting many children
+leaks per-instance until process exit.)
+
 Bus dispatch implements the spec's copy-not-pointer semantic:
 
 ```

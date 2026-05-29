@@ -463,6 +463,37 @@ moves lifecycle dispatch onto the pool worker via the same
 queue mechanism (post "run_init" / "drain_exit" cells at
 instantiation / scope-exit boundaries).
 
+**Runtime pool inheritance for in-method-body instantiation
+(2026-05-29).** A locus instantiated *inside a method or
+bus-handler body that is itself executing on a pool worker*
+inherits that pool **at runtime**. Codegen has no static
+placement name for such a locus (placement keys on main-locus
+`params` fields only), so the run-posting site and the
+subscription-registration site resolve the pool as: the
+compile-time-known pool when the locus IS a placed main-locus
+field, else the pool whose worker is currently on-CPU
+(`lotus_coop_pool_current()`, which reads the per-thread
+`g_current_pool_tls`; NULL on the main thread). When the
+resolved pool is non-NULL the child's `run()` is posted to it
+(its own cell — and, on an `async_io` pool, its own parkable
+coro, so a blocking `recv` in the child's `run()` parks that
+child's coro rather than the spawning handler's) and its bus
+subscriptions are tagged with that pool so dispatch routes to
+the right worker. This is **gated on the child being owned
+beyond the spawning scope** — `accept`'d, an owned param
+field, or returned. A handler-local `let`-bound long-lived
+locus is *not* owned (its deferred dissolve fires at the
+handler's scope exit), so posting its `run()` would execute
+after it's dissolved; those keep the prior behavior
+(synchronous `run()`, global-queue subscription). The
+canonical N-dynamic-children shape (per-connection handlers,
+per-tenant workers) is therefore an `accept`'d child whose
+`run()` holds the recv loop — it multiplexes on an `async_io`
+pool by construction. See `spec/memory.md` § "Owned
+param-field child allocation" for the companion arena rule
+that makes the owned child's full subtree outlive the
+spawning frame.
+
 **Adapter loci instantiated inline in `bindings { Topic:
 AdapterLocus { ... }; }` are NOT main-locus `params` fields**
 and so receive no `placement { }` entry. Their `run()` recv-

@@ -184,6 +184,20 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         let routed_by_parent =
             std::mem::take(&mut self.instantiating_into_payload_arena);
         let go_to_payload_arena = returns_this_locus || routed_by_parent;
+        // Pool-inheritance fix (2026-05-29): is this locus owned
+        // beyond the enclosing scope? Only owned loci may inherit
+        // the current pool at runtime (post run() / pool-tag their
+        // subscriptions). A handler-local `let`-bound long-lived
+        // locus is dissolved at the enclosing fn's scope exit, so
+        // posting its run() (which would execute AFTER that
+        // dissolve) is a use-after-free, and pool-tagging its
+        // subscription would route to a worker that drains it only
+        // after the locus is gone. For those, preserve the prior
+        // behavior: synchronous run + global-queue subscription.
+        // The canonical N-dynamic-children pattern is accept'd /
+        // field-owned children, which ARE owned beyond scope.
+        let owned_beyond_scope =
+            parent_accepts_us || parent_owns_via_field || returns_this_locus;
         let self_ptr = if go_to_payload_arena {
             let alloc_fn = self
                 .module
@@ -204,6 +218,60 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                 .try_as_basic_value()
                 .left()
                 .expect("lotus_bus_payload_arena_alloc returns ptr")
+                .into_pointer_value()
+        } else if parent_owns_via_field && self.current_arena_override.is_some()
+        {
+            // Pool-inheritance follow-up (2026-05-29): a param-field
+            // child (F.29 owned) must live in its OWNER's arena, not
+            // a stack alloca in the instantiating method frame.
+            // Previously this case fell through to the stack-alloca
+            // branch below; that was a latent dangle on any cross-
+            // lifecycle read of `self.children[i].<field>` (owner
+            // birthed in one method, field read in another), and it
+            // became a hard crash once an owner's `run()` is posted
+            // to a pool — the posted run() executes AFTER the
+            // instantiating frame returns, so the field-child's
+            // stack slot is gone (garbage reads / segfault on the
+            // first method call into the field-child). Allocate in
+            // `current_arena_override`, which the owning locus's
+            // instantiation set to its own arena before running its
+            // params-init (where this field default is constructed),
+            // so the field-child shares the owner's lifetime and is
+            // wholesale-freed with the owner's arena — no dangle, no
+            // per-instance leak into a longer-lived parent arena.
+            let owner_arena = self
+                .current_arena_override
+                .expect("parent_owns_via_field guard checked is_some");
+            let alloc_fn = self
+                .module
+                .get_function("lotus_arena_alloc")
+                .expect("lotus_arena_alloc declared");
+            let i64_t = self.context.i64_type();
+            let size = info
+                .struct_ty
+                .size_of()
+                .expect("locus struct ty has known size");
+            self.builder
+                .build_call(
+                    alloc_fn,
+                    &[
+                        owner_arena.into(),
+                        size.into(),
+                        // align=16 (widest scalar — i128 / Decimal),
+                        // per memory.md "Arena alignment contract".
+                        // The stack-alloca path this replaces got
+                        // 16-byte alignment for free from LLVM; an
+                        // 8-byte arena alloc misaligns a Decimal
+                        // field's i128 store (movaps). Over-aligning
+                        // is always safe.
+                        i64_t.const_int(16, false).into(),
+                    ],
+                    &format!("{}.self.in_owner_arena", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_arena_alloc returns ptr")
                 .into_pointer_value()
         } else if parent_accepts_us {
             // 3d+3e fix: allocate the child struct in parent's arena.
@@ -1897,6 +1965,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                         None,
                         payload_type,
                         key_filter.as_ref(),
+                        owned_beyond_scope,
                     )?;
                 }
             }
@@ -2034,6 +2103,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                             Some(mb_ptr),
                             payload_type,
                             key_filter.as_ref(),
+                            owned_beyond_scope,
                         )?;
                     }
                     self.current_self = prev_self_pinned;
@@ -2440,33 +2510,46 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(run_bb);
             if !info.empty_lifecycle.contains("run") {
-                // F.31 Phase 4b: if this locus is placed on a
-                // non-main cooperative pool, post run() to the
-                // pool's worker queue instead of calling it
-                // synchronously on the parent's thread. This is
-                // how a long-running cooperative subscriber
-                // stops blocking its parent's params-init flow
-                // — the parent continues immediately while the
-                // child's run() lands on the pool worker for
-                // execution. Bus handlers already route to the
-                // same pool via Phase 4a, so FIFO ordering
-                // means birth (synchronous, just above) → run →
-                // subsequent handler cells.
-                if let Some(pool_name) =
-                    self.current_cooperative_pool.clone()
-                {
-                    if let Some(wrapper) = self
-                        .coop_pool_run_wrappers
-                        .get(locus_name)
-                        .copied()
+                // F.31 Phase 4b + pool-inheritance fix (2026-05-29):
+                // a non-empty run() either runs synchronously here
+                // (main thread / non-pool context) or is posted to
+                // a cooperative pool's worker so it executes as its
+                // own schedulable cell (and, on an async_io pool,
+                // its own parkable coro) rather than capturing the
+                // caller's thread/coro. Which pool:
+                //   - compile-time-known when this locus is a
+                //     main-locus params field placed on a pool
+                //     (`current_cooperative_pool`), OR
+                //   - the pool we are *currently running on* at
+                //     runtime (`lotus_coop_pool_current`) when this
+                //     instantiation sits inside a method/handler
+                //     body executing on a pool worker — the case a
+                //     dynamically-instantiated or accept'd child
+                //     hits, where codegen has no static placement
+                //     name. Without this, such a child's run() ran
+                //     synchronously and, on an async_io pool, a
+                //     parking recv in it parked the PARENT's coro
+                //     (the 1-connection-cap bug).
+                // Post-vs-sync is a runtime branch on whether the
+                // resolved pool ptr is null, so one emission covers
+                // main-thread loci (null → sync) and pool-worker
+                // children (non-null → post).
+                let wrapper_opt = self
+                    .coop_pool_run_wrappers
+                    .get(locus_name)
+                    .copied();
+                if let Some(wrapper) = wrapper_opt {
+                    let ptr_t =
+                        self.context.ptr_type(AddressSpace::default());
+                    let pool_ptr = if let Some(pool_name) =
+                        self.current_cooperative_pool.clone()
                     {
                         let pool_name_str = self.global_string(&pool_name);
                         let lookup_fn = self
                             .module
                             .get_function("lotus_coop_pool_lookup")
                             .expect("lotus_coop_pool_lookup declared");
-                        let pool_ptr = self
-                            .builder
+                        self.builder
                             .build_call(
                                 lookup_fn,
                                 &[pool_name_str.into()],
@@ -2476,46 +2559,87 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                             .try_as_basic_value()
                             .left()
                             .expect("lotus_coop_pool_lookup returns ptr")
-                            .into_pointer_value();
-                        let post_fn = self
+                            .into_pointer_value()
+                    } else if owned_beyond_scope {
+                        let current_fn = self
                             .module
-                            .get_function("lotus_coop_pool_post")
-                            .expect("lotus_coop_pool_post declared");
-                        let wrapper_ptr =
-                            wrapper.as_global_value().as_pointer_value();
-                        let null_ptr = self
-                            .context
-                            .ptr_type(AddressSpace::default())
-                            .const_null();
-                        let zero = self.context.i64_type().const_int(0, false);
+                            .get_function("lotus_coop_pool_current")
+                            .expect("lotus_coop_pool_current declared");
                         self.builder
                             .build_call(
-                                post_fn,
-                                &[
-                                    pool_ptr.into(),
-                                    wrapper_ptr.into(),
-                                    self_ptr.into(),
-                                    null_ptr.into(),
-                                    zero.into(),
-                                ],
-                                "coop_pool.post_run",
+                                current_fn,
+                                &[],
+                                "coop_pool.current.for_run",
                             )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .try_as_basic_value()
+                            .left()
+                            .expect("lotus_coop_pool_current returns ptr")
+                            .into_pointer_value()
                     } else {
-                        // Defensive fallback: wrapper missing
-                        // (synthesis pass didn't see this type
-                        // for some reason). Run synchronously to
-                        // preserve correctness; the locus blocks
-                        // on main but at least it executes.
-                        self.builder
-                            .build_call(
-                                *run_fn,
-                                &[self_ptr.into()],
-                                &format!("{}.run.call", locus_name),
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    }
+                        // Handler-local / not owned beyond scope:
+                        // null ptr → the runtime branch below takes
+                        // the synchronous path (prior behavior; no
+                        // post that would outlive the binding).
+                        ptr_t.const_null()
+                    };
+                    let is_null = self
+                        .builder
+                        .build_is_null(pool_ptr, "run.pool.is_null")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let post_bb =
+                        self.context.append_basic_block(func, "run.post");
+                    let sync_bb =
+                        self.context.append_basic_block(func, "run.sync");
+                    let cont_bb = self
+                        .context
+                        .append_basic_block(func, "run.post.cont");
+                    self.builder
+                        .build_conditional_branch(is_null, sync_bb, post_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // Post path: hand run() to the resolved pool.
+                    self.builder.position_at_end(post_bb);
+                    let post_fn = self
+                        .module
+                        .get_function("lotus_coop_pool_post")
+                        .expect("lotus_coop_pool_post declared");
+                    let wrapper_ptr =
+                        wrapper.as_global_value().as_pointer_value();
+                    let null_ptr = ptr_t.const_null();
+                    let zero =
+                        self.context.i64_type().const_int(0, false);
+                    self.builder
+                        .build_call(
+                            post_fn,
+                            &[
+                                pool_ptr.into(),
+                                wrapper_ptr.into(),
+                                self_ptr.into(),
+                                null_ptr.into(),
+                                zero.into(),
+                            ],
+                            "coop_pool.post_run",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_unconditional_branch(cont_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // Sync path: no pool in scope — run inline.
+                    self.builder.position_at_end(sync_bb);
+                    self.builder
+                        .build_call(
+                            *run_fn,
+                            &[self_ptr.into()],
+                            &format!("{}.run.call", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_unconditional_branch(cont_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(cont_bb);
                 } else {
+                    // No wrapper synthesized (run-less locus or a
+                    // synthesis gap) — run synchronously.
                     self.builder
                         .build_call(
                             *run_fn,

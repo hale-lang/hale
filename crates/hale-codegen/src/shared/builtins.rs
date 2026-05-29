@@ -970,6 +970,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             coop_pool_lookup_ty,
             None,
         );
+        // Pool-inheritance fix (2026-05-29): the pool whose worker
+        // thread is currently on-CPU (NULL on main). Lets codegen
+        // route a child instantiated inside a method body running
+        // on a pool worker to that pool, when no static placement
+        // name is known.
+        // declare ptr @lotus_coop_pool_current()
+        let coop_pool_current_ty = ptr_t.fn_type(&[], false);
+        self.module.add_function(
+            "lotus_coop_pool_current",
+            coop_pool_current_ty,
+            None,
+        );
         // declare void @lotus_coop_pool_post(ptr pool, ptr handler,
         //     ptr self_ptr, ptr payload_src, i64 payload_size)
         let coop_pool_post_ty = void_t.fn_type(

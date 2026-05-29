@@ -26,6 +26,7 @@ pub(crate) trait BusRuntime<'ctx> {
         mailbox_or_null: Option<PointerValue<'ctx>>,
         payload_type: &str,
         key_filter: Option<&KeyFilter>,
+        owned_beyond_scope: bool,
     ) -> Result<(), CodegenError>;
 }
 
@@ -213,6 +214,7 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
         mailbox_or_null: Option<PointerValue<'ctx>>,
         payload_type: &str,
         key_filter: Option<&KeyFilter>,
+        owned_beyond_scope: bool,
     ) -> Result<(), CodegenError> {
         let _ = self
             .bus_state
@@ -263,6 +265,35 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
                 .try_as_basic_value()
                 .left()
                 .expect("lotus_coop_pool_lookup returns ptr")
+                .into_pointer_value()
+        } else if owned_beyond_scope {
+            // Pool-inheritance fix (2026-05-29): no compile-time
+            // placement name (this subscribe registers from inside
+            // a method/handler body, not a main-locus params
+            // field), but the locus is owned beyond this scope
+            // (accept'd / field-owned / returned), so it outlives
+            // the handler. Tag the subscription with the pool whose
+            // worker is currently on-CPU — for a child instantiated
+            // inside a pool worker, that's the parent's pool, so
+            // dispatch routes to the right worker instead of
+            // silently falling to the global queue (which only
+            // fires if main happens to drain it). Returns null on
+            // the main thread → unchanged for genuine main-pool
+            // subscribers. Gated on ownership: a handler-local
+            // `let`-bound subscriber is deregistered at scope exit,
+            // so pool-tagging it would route to a worker that
+            // drains it only after it's gone — keep those on the
+            // global queue (prior behavior).
+            let current_fn = self
+                .module
+                .get_function("lotus_coop_pool_current")
+                .expect("lotus_coop_pool_current declared in declare_builtins");
+            self.builder
+                .build_call(current_fn, &[], "coop_pool.current")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_coop_pool_current returns ptr")
                 .into_pointer_value()
         } else {
             ptr_t.const_null()
