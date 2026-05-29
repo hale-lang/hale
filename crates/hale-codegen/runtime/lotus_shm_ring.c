@@ -50,6 +50,13 @@
 #include <unistd.h>
 #include <errno.h>
 
+/* Defined in lotus_arena.c — latches off the single-thread
+ * fast-path for the subregion-freelist lock once a second thread
+ * exists. The shm_ring reader thread dispatches handlers (which
+ * open scratch subregions) concurrently with main, so it must
+ * latch before spawning. */
+extern void lotus_mark_multithreaded(void);
+
 /* Magic bumped at K7 (2026-05-20) when the header layout grew
  * the consumer_seqno cache line. Attaches against a different
  * magic value are rejected by lotus_shm_ring_open's validation
@@ -607,6 +614,7 @@ void lotus_bus_register_subscriber_shm_ring(const char *subject,
     sub->self_ptr = self_ptr;
     atomic_store_explicit(&sub->should_stop, 0, memory_order_relaxed);
 
+    lotus_mark_multithreaded();
     int rc = pthread_create(&sub->thread, NULL, shm_ring_reader_thread, sub);
     if (rc != 0) {
         fprintf(stderr,

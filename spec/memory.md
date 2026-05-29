@@ -1152,7 +1152,21 @@ locus accepts coordinatees:
   indices, lost pushes. The lock window is O(1) per
   create/destroy (a counter increment or a freelist push);
   steady-state allocations within a sub-region remain
-  lock-free.
+  lock-free. **Single-thread fast-path (2026-05-29):** the
+  lock/unlock and `pthread_mutex_destroy` are skipped — and
+  init is a const `PTHREAD_MUTEX_INITIALIZER` copy rather than
+  a `pthread_mutex_init` call — until the program spawns a
+  second thread. A monotonic `g_runtime_multithreaded` latch
+  (`lotus_mark_multithreaded`, set before every `pthread_create`:
+  coop-pool workers, pinned-locus spawns via `lotus_bus_mark_pinned`,
+  and unix/udp/shm transport reader threads) flips the lock sites
+  on. The first transition happens while only the main thread
+  exists and is inside spawn code (not an arena op), so no
+  in-flight op observes it mid-op; thereafter all threads lock as
+  before. Single-threaded programs pay zero mutex cost on the
+  arena hot path (recovers the bulk of the +91% `locus_instantiation`
+  regression the mutex introduced); the residual is the const-copy
+  init, removable only by a lock-free freelist (deferred).
 - **Recognition** parents (v1.x-3): the sub-mode commitment
   spelled at the declaration site picks the allocator family.
   `fixed_cell` routes children through

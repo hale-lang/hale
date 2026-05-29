@@ -1173,6 +1173,13 @@ static inline size_t lotus_align_up(size_t n, size_t a) {
     return (n + a - 1) & ~(a - 1);
 }
 
+/* Const template for cheap, call-free initialization of a per-arena
+ * subregion_lock (see lotus_arena_alloc_struct). A statically-
+ * initialized default mutex is lockable and destroyable like one
+ * from pthread_mutex_init(NULL). */
+static const pthread_mutex_t LOTUS_SUBREGION_MUTEX_INIT =
+    PTHREAD_MUTEX_INITIALIZER;
+
 static lotus_arena_t *lotus_arena_alloc_struct(void) {
     lotus_arena_t *a = (lotus_arena_t *)malloc(sizeof(lotus_arena_t));
     if (!a) return NULL;
@@ -1201,9 +1208,14 @@ static lotus_arena_t *lotus_arena_alloc_struct(void) {
     a->cap_diag_name    = NULL;
     /* 2026-05-26 substrate-race fix: subregion freelist mutex.
      * Used by create_subregion / destroy via the PARENT arena's
-     * pointer; arenas with no children never acquire the lock,
-     * so the init overhead is the only cost in that case. */
-    pthread_mutex_init(&a->subregion_lock, NULL);
+     * pointer; arenas with no children never acquire the lock.
+     * Init via a const PTHREAD_MUTEX_INITIALIZER copy rather than
+     * pthread_mutex_init() — a plain store of a constant, no libc
+     * call — since arena create is a hot-path op (every method
+     * scratch + every locus). The result is a usable default
+     * mutex, lockable later if the program goes multithreaded.
+     * (perf opt, 2026-05-29.) */
+    a->subregion_lock = LOTUS_SUBREGION_MUTEX_INIT;
     return a;
 }
 
@@ -1273,6 +1285,37 @@ lotus_arena_t *lotus_arena_create_labeled_sized(
     return a;
 }
 
+/* Single-thread fast-path latch for the subregion freelist lock
+ * (perf opt, 2026-05-29). The `subregion_lock` mutex exists only
+ * to serialize concurrent subregion create/destroy on the SAME
+ * parent across threads (the 2026-05-26 race fix). A program that
+ * never spawns a second thread can never hit that race, so the
+ * uncontended lock/unlock is pure overhead — measurable on hot
+ * instantiation loops (locus_instantiation regressed ~91% when
+ * the mutex landed). This latch lets the lock sites skip the
+ * mutex until the program goes multithreaded.
+ *
+ * Correctness: the flag only ever transitions 0 -> 1, and
+ * `lotus_mark_multithreaded` is called BEFORE every `pthread_create`
+ * (coop-pool workers, transport reader threads, pinned-locus
+ * spawns). The FIRST such transition therefore happens while only
+ * the main thread exists and is inside spawn code (not an arena
+ * op) — so no in-flight arena op on any thread observes the
+ * transition mid-op. Every subsequent spawn finds the flag already
+ * latched, so all threads are already taking the lock. Each lock
+ * site reads the flag once into a local and uses that one value
+ * for both the lock and the unlock, so a create/destroy op is
+ * internally consistent. */
+static int g_runtime_multithreaded = 0;
+
+void lotus_mark_multithreaded(void) {
+    __atomic_store_n(&g_runtime_multithreaded, 1, __ATOMIC_RELEASE);
+}
+
+static inline int lotus_runtime_multithreaded(void) {
+    return __atomic_load_n(&g_runtime_multithreaded, __ATOMIC_ACQUIRE);
+}
+
 /* Carve a sub-region of `parent`. The sub-region holds its own
  * chunk list (independent allocation lifetime is *bounded* by
  * the parent's, but the chunks themselves are separate from the
@@ -1297,13 +1340,14 @@ lotus_arena_t *lotus_arena_create_subregion(lotus_arena_t *parent) {
      * children. The lock window is O(1) — a freelist pop or
      * an int increment — so contention is bounded even with
      * many concurrent producers. */
-    pthread_mutex_lock(&parent->subregion_lock);
+    int mt = lotus_runtime_multithreaded();
+    if (mt) pthread_mutex_lock(&parent->subregion_lock);
     if (parent->free_count > 0) {
         a->slot = parent->free_list[--parent->free_count];
     } else {
         a->slot = parent->next_slot++;
     }
-    pthread_mutex_unlock(&parent->subregion_lock);
+    if (mt) pthread_mutex_unlock(&parent->subregion_lock);
     return a;
 }
 
@@ -1431,7 +1475,8 @@ void lotus_arena_destroy(lotus_arena_t *a) {
      * realloc happens at most every 2^N grows). */
     if (a->parent) {
         lotus_arena_t *p = a->parent;
-        pthread_mutex_lock(&p->subregion_lock);
+        int mt = lotus_runtime_multithreaded();
+        if (mt) pthread_mutex_lock(&p->subregion_lock);
         if (p->free_count == p->free_cap) {
             size_t new_cap = p->free_cap == 0 ? 8 : p->free_cap * 2;
             int *new_list  = (int *)realloc(p->free_list,
@@ -1448,7 +1493,7 @@ void lotus_arena_destroy(lotus_arena_t *a) {
         if (p->free_count < p->free_cap) {
             p->free_list[p->free_count++] = a->slot;
         }
-        pthread_mutex_unlock(&p->subregion_lock);
+        if (mt) pthread_mutex_unlock(&p->subregion_lock);
     }
 
     /* LOTUS_ARENA_RESIDENCY: drop the registry entry (if any)
@@ -1474,17 +1519,21 @@ void lotus_arena_destroy(lotus_arena_t *a) {
      * caller is responsible for that ordering via
      * lotus_coop_pool_shutdown_all), but it ensures we see the
      * final committed value of free_list. */
-    pthread_mutex_lock(&a->subregion_lock);
+    int mt_barrier = lotus_runtime_multithreaded();
+    if (mt_barrier) pthread_mutex_lock(&a->subregion_lock);
     int *fl = a->free_list;
     a->free_list = NULL;
-    pthread_mutex_unlock(&a->subregion_lock);
+    if (mt_barrier) pthread_mutex_unlock(&a->subregion_lock);
     if (fl) free(fl);
     /* Tear down the per-arena subregion lock. By the time we
      * reach here the parent's lock (if any) has already been
      * released and no future caller can reach this arena's
      * lock — the destroying thread is exclusive on its own
-     * arena struct. */
-    pthread_mutex_destroy(&a->subregion_lock);
+     * arena struct. Skip when single-threaded: the mutex was
+     * statically initialized and never locked, so a default
+     * mutex holds no resources to release (perf opt, 2026-05-29;
+     * reuses mt_barrier read above). */
+    if (mt_barrier) pthread_mutex_destroy(&a->subregion_lock);
     free(a);
 }
 
@@ -3930,6 +3979,12 @@ static int g_bus_has_pinned = 0;
 
 void lotus_bus_mark_pinned(void) {
     __atomic_store_n(&g_bus_has_pinned, 1, __ATOMIC_RELEASE);
+    /* Going multithreaded for the subregion-freelist lock too: a
+     * pinned locus runs its lifecycle on its own thread, so it can
+     * concurrently create/destroy subregions of a shared parent
+     * arena. (perf opt, 2026-05-29 — codegen already emits this
+     * call at pinned spawns, so the subregion latch comes free.) */
+    lotus_mark_multithreaded();
 }
 
 lotus_bus_queue_t *lotus_bus_queue_create(void) {
@@ -4937,6 +4992,11 @@ void lotus_coop_pool_start_all(void) {
      * (2026-05-26 substrate-race fix.) */
     if (g_coop_pool_count > 0) {
         __atomic_store_n(&g_bus_has_pinned, 1, __ATOMIC_RELEASE);
+        /* Subregion-freelist latch: pool workers create/destroy
+         * handler-scratch subregions of shared parent arenas
+         * concurrently with main. Set before the spawn loop so
+         * the first transition happens single-threaded. */
+        lotus_mark_multithreaded();
     }
     for (size_t i = 0; i < g_coop_pool_count; i++) {
         lotus_coop_pool_t *p = g_coop_pools[i];
@@ -9414,6 +9474,9 @@ void lotus_bus_register_remote(const char *subject,
                 free(args);
                 return;
             }
+            /* Reader thread dispatches handlers (which open scratch
+             * subregions) concurrently with main → subregion latch. */
+            lotus_mark_multithreaded();
             if (pthread_create(&e->reader_thread, NULL,
                                lotus_bus_udp_reader_thread_main, args) != 0)
             {
@@ -9472,6 +9535,9 @@ void lotus_bus_register_remote(const char *subject,
             free(args);
             return;
         }
+        /* Reader thread dispatches handlers (which open scratch
+         * subregions) concurrently with main → subregion latch. */
+        lotus_mark_multithreaded();
         if (pthread_create(&e->reader_thread, NULL,
                            lotus_bus_reader_thread_main, args) != 0) {
             perror("lotus_bus_register_remote: pthread_create");
