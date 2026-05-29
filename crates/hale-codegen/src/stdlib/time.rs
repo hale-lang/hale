@@ -226,18 +226,25 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
         let ts_t = self.timespec_type();
         let ns = val.into_int_value();
         let billion = i64_t.const_int(1_000_000_000, false);
-
-        let sec = self
-            .builder
-            .build_int_signed_div(ns, billion, "ts.sec")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let nsec = self
-            .builder
-            .build_int_signed_rem(ns, billion, "ts.nsec")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // 2026-05-29: chunk a long sleep into ≤100ms slices and drain
+        // the cooperative bus queue after EACH slice. Previously the
+        // drain happened only AFTER the whole sleep returned, so a
+        // keep-alive `while true { sleep(60s); }` on the main thread
+        // starved every main-pool bus handler (whose cells land on the
+        // global cooperative queue that only main drains) for 60s at a
+        // time — the dashboard's `on_data`-never-fires symptom. Slices
+        // ≤100ms keep the queue serviced ~10×/s; short sleeps (≤100ms)
+        // take exactly one slice, so the common case is unchanged.
+        let chunk_max = i64_t.const_int(100_000_000, false); // 100ms
+        let zero64 = i64_t.const_int(0, false);
 
         let req = self.alloca_in_entry(ts_t.into(), "req")?;
         let rem = self.alloca_in_entry(ts_t.into(), "rem")?;
+        let remaining = self.alloca_in_entry(i64_t.into(), "sleep.remaining")?;
+        let chunk_slot = self.alloca_in_entry(i64_t.into(), "sleep.chunk")?;
+        self.builder
+            .build_store(remaining, ns)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         let req_sec_ptr = self
             .builder
@@ -247,25 +254,78 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
             .builder
             .build_struct_gep(ts_t, req, 1, "req.nsec.ptr")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let func = self
+            .current_fn
+            .expect("current_fn set while lowering time::sleep");
+        let chunk_bb = self.context.append_basic_block(func, "sleep.chunk");
+        let loop_bb = self.context.append_basic_block(func, "sleep.loop");
+        let retry_bb = self.context.append_basic_block(func, "sleep.retry");
+        let drain_bb = self.context.append_basic_block(func, "sleep.drain");
+        let done_bb = self.context.append_basic_block(func, "sleep.done");
+
+        self.builder
+            .build_unconditional_branch(chunk_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // chunk_bb (loop header): chunk = clamp(min(remaining, 100ms), 0);
+        // store req from chunk; branch into the EINTR sleep loop.
+        self.builder.position_at_end(chunk_bb);
+        let rem_val = self
+            .builder
+            .build_load(i64_t, remaining, "sleep.rem.cur")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let lt_max = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                rem_val,
+                chunk_max,
+                "sleep.lt.max",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let capped = self
+            .builder
+            .build_select(lt_max, rem_val, chunk_max, "sleep.capped")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let neg = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                capped,
+                zero64,
+                "sleep.neg",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let chunk = self
+            .builder
+            .build_select(neg, zero64, capped, "sleep.chunk.val")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        self.builder
+            .build_store(chunk_slot, chunk)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let sec = self
+            .builder
+            .build_int_signed_div(chunk, billion, "ts.sec")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let nsec = self
+            .builder
+            .build_int_signed_rem(chunk, billion, "ts.nsec")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
             .build_store(req_sec_ptr, sec)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
             .build_store(req_nsec_ptr, nsec)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        let func = self
-            .current_fn
-            .expect("current_fn set while lowering time::sleep");
-        let loop_bb = self.context.append_basic_block(func, "sleep.loop");
-        let retry_bb = self.context.append_basic_block(func, "sleep.retry");
-        let done_bb = self.context.append_basic_block(func, "sleep.done");
-
         self.builder
             .build_unconditional_branch(loop_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // loop_bb: call clock_nanosleep, branch on EINTR vs done
+        // loop_bb: call clock_nanosleep, branch on EINTR vs drain
         self.builder.position_at_end(loop_bb);
         let cns = self
             .module
@@ -293,14 +353,14 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
             .expect("clock_nanosleep returns i32")
             .into_int_value();
         // EINTR == 4 on Linux. Everything else (including success=0)
-        // exits the loop.
+        // exits the EINTR loop into the slice's drain.
         let eintr = i32_t.const_int(4, false);
         let is_eintr = self
             .builder
             .build_int_compare(inkwell::IntPredicate::EQ, ret_int, eintr, "is.eintr")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
-            .build_conditional_branch(is_eintr, retry_bb, done_bb)
+            .build_conditional_branch(is_eintr, retry_bb, drain_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         // retry_bb: copy rem → req, jump back into the loop
@@ -331,23 +391,50 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
             .build_unconditional_branch(loop_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        self.builder.position_at_end(done_bb);
-        // Drain the cooperative bus queue after sleep returns so a
-        // long-running `while { time::sleep(...); ... }` loop in a
-        // cooperative subscriber delivers cells posted by other
-        // threads during the sleep (unix-bound reader threads,
-        // pinned publishers, etc.). Without this the cells sit in
-        // g_bus_queue until the body's next natural drain point —
-        // the documented workaround was `sleep; yield;`. The drain
-        // is folded in so the canonical pattern just works.
+        // drain_bb: this slice elapsed. Drain the cooperative bus
+        // queue so a long-running `while { time::sleep(...); ... }`
+        // loop in a cooperative subscriber delivers cells posted by
+        // other threads during the sleep (unix-bound reader threads,
+        // pinned publishers, etc.) — without this the cells sat in
+        // g_bus_queue until the body's next natural drain point (the
+        // old workaround was `sleep; yield;`). 2026-05-23 mirror: if
+        // this is a pinned locus's own thread, drain its mailbox too;
+        // on a cooperative thread get_current is NULL → no-op. Then
+        // subtract the slice from `remaining` and loop or finish.
+        self.builder.position_at_end(drain_bb);
         self.emit_bus_drain()?;
-        // 2026-05-23: pinned-mailbox drain mirror. If
-        // this sleep ran on a pinned locus's own thread, drain its
-        // mailbox so cells posted by cooperative publishers
-        // during the sleep window fire mid-program rather than at
-        // dissolve. On a cooperative thread, get_current returns
-        // NULL and drain_pending is a no-op.
         self.emit_pinned_mailbox_drain_pending()?;
+        let chunk_done = self
+            .builder
+            .build_load(i64_t, chunk_slot, "sleep.chunk.done")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let rem_after = self
+            .builder
+            .build_load(i64_t, remaining, "sleep.rem.after")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let new_rem = self
+            .builder
+            .build_int_sub(rem_after, chunk_done, "sleep.rem.next")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(remaining, new_rem)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let more = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SGT,
+                new_rem,
+                zero64,
+                "sleep.more",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(more, chunk_bb, done_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(done_bb);
         Ok(())
     }
 }

@@ -211,7 +211,7 @@ loop) or it owns its own OS thread. There is no third position.
 
 | Class | Yield discipline | Resource |
 |---|---|---|
-| **`cooperative(pool = X)`** (default for unspecified main-locus params, with `X = main`) | Yields between substrate cells (handler exit, lifecycle transition, bus dispatch, `time::sleep`, explicit `yield`). `time::sleep` folds in `lotus_bus_queue_drain` for the locus's pool after `clock_nanosleep` returns so cells posted by other threads deliver mid-loop. Handler bodies are atomic. | Shares pool `X`'s OS thread with other cooperative loci placed on the same pool. |
+| **`cooperative(pool = X)`** (default for unspecified main-locus params, with `X = main`) | Yields between substrate cells (handler exit, lifecycle transition, bus dispatch, `time::sleep`, explicit `yield`). `time::sleep` slices into ≤100ms intervals and folds in `lotus_bus_queue_drain` for the locus's pool after each slice, so cells posted by other threads deliver mid-loop even during a long keep-alive sleep. Handler bodies are atomic. | Shares pool `X`'s OS thread with other cooperative loci placed on the same pool. |
 | **`pinned`** / **`pinned(core = N)`** | No yield to siblings; owns its OS thread. Bus events to/from cross-thread boundaries via formal mailbox post. | Dedicated OS thread, optionally pinned to CPU core `N`. |
 
 **Pool inference rule.** The cooperative pool set is inferred
@@ -268,10 +268,13 @@ holds.
 
 #### `time::sleep` drain semantics
 
-The codegen lowering of `std::time::sleep(d)` ends its
+The codegen lowering of `std::time::sleep(d)` slices the request
+into intervals of at most **100ms** and ends each slice's
 EINTR-retry loop with an inline call to `lotus_bus_queue_drain`
-against the program-wide cooperative queue. A cooperative
-subscriber looping
+against the program-wide cooperative queue (plus a pinned-mailbox
+drain). The total wall-clock sleep is preserved (the slices sum to
+`d`); sleeps of 100ms or less take exactly one slice, so the common
+case is unchanged. A cooperative subscriber looping
 
 ```hale
 run() {
@@ -287,6 +290,26 @@ threads, pinned publishers via `lotus_bus_local_dispatch`, etc.
 — right when each sleep returns, without an explicit `yield;`.
 The drain is idempotent, so existing code with `sleep; yield;`
 stays correct.
+
+**Long sleeps no longer starve main-pool handlers (2026-05-29).**
+Before the slicing, the drain happened only *after the whole sleep
+returned*, so the natural keep-alive idiom
+
+```hale
+run() { while true { std::time::sleep(60s); } }   // on the main thread
+```
+
+starved every `pool = main` bus handler for 60s at a time: a
+main-pool subscriber registers with `coop_pool == NULL`, so the
+wire/reader-thread dispatch path lands its cells on the global
+cooperative queue (`g_bus_queue_for_remote`, the same object only
+`main` drains). A 60s blocking sleep on `main` left those cells
+unserviced for the full 60s — indistinguishable from "the handler
+never fires." Slicing keeps the queue serviced ~10×/s during any
+sleep, so a main-pool handler that republishes onto a topic an
+async-pool subscriber listens to (e.g. a udp-reader-fed producer
+forwarding to per-connection writers) now flows promptly regardless
+of how long `main` is asleep.
 
 The pinned-mailbox path is unchanged: pinned subscribers wake
 on `lotus_mailbox_post`'s condvar broadcast regardless of what

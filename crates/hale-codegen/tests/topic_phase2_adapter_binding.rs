@@ -214,7 +214,7 @@ fn typecheck_rejects_non_locus_adapter_head() {
     programs.insert("test.hl".to_string(), &program);
     let bundle = Bundle { programs };
     let (scope, mut diags) = build_top_scope(&bundle);
-    diags.extend(check_bundle(&bundle, &scope));
+    diags.extend(check_bundle(&bundle, &scope, true));
     let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
     assert!(
         msgs.iter().any(|m| m.contains("not a locus")),

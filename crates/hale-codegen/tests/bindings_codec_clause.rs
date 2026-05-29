@@ -14,7 +14,7 @@ fn typecheck_diags(source: &str) -> Vec<String> {
     programs.insert("main".to_string(), &program);
     let bundle = hale_types::Bundle { programs };
     let (scope, _) = hale_types::resolve::build_top_scope(&bundle);
-    let diags = hale_types::check::check_bundle(&bundle, &scope);
+    let diags = hale_types::check::check_bundle(&bundle, &scope, true);
     diags.into_iter().map(|d| d.message).collect()
 }
 

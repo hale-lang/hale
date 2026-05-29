@@ -383,7 +383,7 @@ fn fallback_sentinel_rejected_on_non_fallback_topic() {
     programs.insert("main".to_string(), &program);
     let bundle = hale_types::Bundle { programs };
     let (scope, _) = hale_types::resolve::build_top_scope(&bundle);
-    let diags = hale_types::check::check_bundle(&bundle, &scope);
+    let diags = hale_types::check::check_bundle(&bundle, &scope, true);
     assert!(
         diags.iter().any(|d| {
             d.message.contains("where key == _")
@@ -416,7 +416,7 @@ fn fallback_topic_without_catchall_rejected() {
     programs.insert("main".to_string(), &program);
     let bundle = hale_types::Bundle { programs };
     let (scope, _) = hale_types::resolve::build_top_scope(&bundle);
-    let diags = hale_types::check::check_bundle(&bundle, &scope);
+    let diags = hale_types::check::check_bundle(&bundle, &scope, true);
     assert!(
         diags.iter().any(|d| {
             d.message.contains("on_unmatched: fallback")
@@ -545,7 +545,7 @@ fn fail_topic_requires_or_disposition() {
     programs.insert("main".to_string(), &program);
     let bundle = hale_types::Bundle { programs };
     let (scope, _) = hale_types::resolve::build_top_scope(&bundle);
-    let diags = hale_types::check::check_bundle(&bundle, &scope);
+    let diags = hale_types::check::check_bundle(&bundle, &scope, true);
     assert!(
         diags.iter().any(|d| {
             d.message.contains("on_unmatched: fail")
@@ -573,7 +573,7 @@ fn or_disposition_rejected_on_non_fail_topic() {
     programs.insert("main".to_string(), &program);
     let bundle = hale_types::Bundle { programs };
     let (scope, _) = hale_types::resolve::build_top_scope(&bundle);
-    let diags = hale_types::check::check_bundle(&bundle, &scope);
+    let diags = hale_types::check::check_bundle(&bundle, &scope, true);
     assert!(
         diags.iter().any(|d| {
             d.message.contains("only legal when the target topic \
