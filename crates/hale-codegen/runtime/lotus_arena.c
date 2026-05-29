@@ -5272,6 +5272,11 @@ void lotus_bus_register_keyed(const char *subject,
     e->key_hi      = key_hi;
 }
 
+/* Forward decl: defined alongside the other LOTUS_BUS_LOG_*
+ * helpers below. The dispatch fns use it to gate the broad
+ * silent-drop diagnostic. */
+static int lotus_bus_log_drop_enabled(void);
+
 /* Dispatch a published message to every subscriber of `subject`.
  * `queue` is the program-wide cooperative queue (passed in by
  * codegen rather than C-runtime-owned because the queue's
@@ -5287,6 +5292,7 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
                               const void *payload,
                               size_t payload_size) {
     if (!subject) return;
+    size_t delivered = 0;
     for (size_t i = 0; i < g_bus_count; i++) {
         lotus_bus_entry_t *e = &g_bus_entries[i];
         if (!e->subject) continue;          /* deregistered */
@@ -5304,6 +5310,7 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
         if (e->mailbox) {
             lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
                                payload, payload_size);
+            delivered++;
         } else if (e->coop_pool) {
             /* F.31 Phase 4: subscriber's locus is on a named
              * non-main cooperative pool. Route to that pool's
@@ -5311,10 +5318,18 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
              * thread (single-threaded-method invariant). */
             lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
                                  payload, payload_size);
+            delivered++;
         } else if (queue) {
             lotus_bus_queue_enqueue(queue, e->handler, e->self_ptr,
                                     payload, payload_size);
+            delivered++;
         }
+    }
+    if (delivered == 0 && lotus_bus_log_drop_enabled()) {
+        fprintf(stderr,
+                "[bus] publish dropped: no local subscribers for "
+                "subject=\"%s\" (g_bus_count=%zu)\n",
+                subject, g_bus_count);
     }
 }
 
@@ -5343,6 +5358,31 @@ static int lotus_bus_log_unmatched_enabled(void) {
         const char *s = getenv("LOTUS_BUS_LOG_UNMATCHED");
         cached = (s && s[0] == '1') ? 1 : 0;
     }
+    return cached || lotus_bus_log_drop_enabled();
+}
+
+/* 2026-05-28: LOTUS_BUS_LOG_DROP=1 is the broad superset env
+ * var — it implies UNMATCHED + DESERIALIZE_DROP AND covers
+ * additional silent-drop sites the narrower vars miss:
+ *
+ *   - publish dispatch with serialize_fn returning <= 0
+ *   - publish dispatch via lotus_bus_local_dispatch /
+ *     _dispatch_wire that matches zero subscribers
+ *   - per-entry deserialize <= 0 on the LOCAL-fanout path
+ *     (DESERIALIZE_DROP only covers the udp:// reader path)
+ *   - remote-fanout send errors
+ *
+ * Reach for LOG_DROP first when investigating a "publish
+ * appears to succeed but handler doesn't fire" symptom. The
+ * narrower vars stay supported for their specific bring-up
+ * scenarios (cross-topic multicast noise on udp reader,
+ * routing-key miss accounting). */
+static int lotus_bus_log_drop_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *s = getenv("LOTUS_BUS_LOG_DROP");
+        cached = (s && s[0] == '1') ? 1 : 0;
+    }
     return cached;
 }
 
@@ -5361,7 +5401,7 @@ static int lotus_bus_log_deserialize_drop_enabled(void) {
         const char *s = getenv("LOTUS_BUS_LOG_DESERIALIZE_DROP");
         cached = (s && s[0] == '1') ? 1 : 0;
     }
-    return cached;
+    return cached || lotus_bus_log_drop_enabled();
 }
 
 void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
@@ -5652,6 +5692,13 @@ void lotus_bus_dispatch(lotus_bus_queue_t *queue,
         /* serialize failure → drop the publish. The cooperative
          * surface treats this as a no-op (matches the prior
          * remote-only failure mode). */
+        if (lotus_bus_log_drop_enabled()) {
+            fprintf(stderr,
+                    "[bus] publish dropped: serialize_fn returned %zd "
+                    "for subject=\"%s\" (struct_size=%zu, "
+                    "buf_cap=%d)\n",
+                    wire_size, subject, struct_size, LOTUS_PAYLOAD_MAX);
+        }
         return;
     }
     /* Legacy verbatim local fanout (no wire codec). */
@@ -9715,6 +9762,15 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
             lotus_mailbox_post(
                 e->mailbox, e->handler, e->self_ptr,
                 struct_buf, (size_t)struct_size);
+        } else if (e->coop_pool) {
+            /* F.31 Phase 4 (2026-05-28): mirror lotus_bus_local_dispatch's
+             * coop_pool branch. Without this, subscribers on non-main
+             * cooperative pools (e.g. cooperative(pool=ws_workers))
+             * receive via the global queue and run on the publisher's
+             * drain thread instead of their pool's worker, silently
+             * violating the single-threaded-method invariant. */
+            lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
+                                 struct_buf, (size_t)struct_size);
         } else if (g_bus_queue_for_remote) {
             lotus_bus_queue_enqueue(
                 g_bus_queue_for_remote, e->handler, e->self_ptr,
@@ -9738,6 +9794,10 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
                 lotus_mailbox_post(
                     e->mailbox, e->handler, e->self_ptr,
                     struct_buf, (size_t)struct_size);
+            } else if (e->coop_pool) {
+                lotus_coop_pool_post(e->coop_pool, e->handler,
+                                     e->self_ptr, struct_buf,
+                                     (size_t)struct_size);
             } else if (g_bus_queue_for_remote) {
                 lotus_bus_queue_enqueue(
                     g_bus_queue_for_remote, e->handler, e->self_ptr,
@@ -9783,11 +9843,21 @@ void lotus_bus_dispatch_wire(const char *subject,
      * program-lifetime deposit. */
     char struct_buf[LOTUS_PAYLOAD_MAX];
     lotus_arena_t *prev_tls = lotus_current_caller_arena;
+    size_t matched = 0;
+    size_t delivered = 0;
     for (size_t i = 0; i < g_bus_count; i++) {
         lotus_bus_entry_t *e = &g_bus_entries[i];
         if (!e->subject) continue;
         if (!lotus_subject_match(e->subject, subject)) continue;
-        if (!e->deserialize) continue;
+        if (!e->deserialize) {
+            if (lotus_bus_log_drop_enabled()) {
+                fprintf(stderr,
+                        "[bus] publish dropped at entry %zu: subject=\"%s\" "
+                        "matched but deserialize_fn is NULL\n",
+                        i, subject);
+            }
+            continue;
+        }
         /* Phase 3 (2026-05-25): mirror lotus_bus_local_dispatch —
          * unkeyed publishes (which is what this entry point
          * services; the keyed variant is lotus_bus_dispatch_wire_keyed)
@@ -9796,6 +9866,7 @@ void lotus_bus_dispatch_wire(const char *subject,
          * deliver to every kind=1 subscriber regardless of key,
          * bypassing the routing-key contract. */
         if (e->key_filter_kind != 0) continue;
+        matched++;
         /* Load the subscriber's __arena via the m20 fixed-offset
          * GEP: slot 0 of every locus struct is `__arena: ptr`. */
         lotus_arena_t *sub_arena =
@@ -9805,17 +9876,49 @@ void lotus_bus_dispatch_wire(const char *subject,
         lotus_current_caller_arena = sub_arena;
         ssize_t struct_size = e->deserialize(
             wire_bytes, wire_size, struct_buf, sizeof(struct_buf));
-        if (struct_size <= 0) continue;
+        if (struct_size <= 0) {
+            if (lotus_bus_log_drop_enabled()) {
+                fprintf(stderr,
+                        "[bus] publish dropped at entry %zu: subject=\"%s\" "
+                        "deserialize returned %zd (wire_size=%zu)\n",
+                        i, subject, struct_size, wire_size);
+            }
+            continue;
+        }
         if (e->mailbox) {
             lotus_mailbox_post(
                 e->mailbox, e->handler, e->self_ptr,
                 struct_buf, (size_t)struct_size);
+            delivered++;
+        } else if (e->coop_pool) {
+            /* F.31 Phase 4 (2026-05-28): same fix as the keyed
+             * variant above — wire-dispatch was missing the
+             * coop_pool branch that lotus_bus_local_dispatch ships
+             * with, so subscribers on non-main cooperative pools
+             * silently routed to the global queue. */
+            lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
+                                 struct_buf, (size_t)struct_size);
+            delivered++;
         } else if (g_bus_queue_for_remote) {
             lotus_bus_queue_enqueue(
                 g_bus_queue_for_remote, e->handler, e->self_ptr,
                 struct_buf, (size_t)struct_size);
+            delivered++;
+        } else if (lotus_bus_log_drop_enabled()) {
+            fprintf(stderr,
+                    "[bus] publish dropped at entry %zu: subject=\"%s\" "
+                    "no post target (mailbox/coop_pool/queue all NULL)\n",
+                    i, subject);
         }
     }
+    if (matched == 0 && lotus_bus_log_drop_enabled()) {
+        fprintf(stderr,
+                "[bus] publish dropped: no local subscribers for "
+                "subject=\"%s\" via wire path (g_bus_count=%zu, "
+                "wire_size=%zu)\n",
+                subject, g_bus_count, wire_size);
+    }
+    (void)delivered;
     lotus_current_caller_arena = prev_tls;
 }
 
