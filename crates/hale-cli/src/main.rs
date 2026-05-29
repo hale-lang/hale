@@ -798,7 +798,9 @@ fn run_check(target: &Path) -> ExitCode {
     let bundle = hale_types::Bundle {
         programs: bundle_programs,
     };
-    let diags = hale_types::check_bundle(&bundle);
+    let allow_unowned =
+        std::env::args().any(|a| a == "--allow-unowned-subscriber");
+    let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
     if !diags.is_empty() {
         let any_source = sources.values().next().map(|s| s.as_str()).unwrap_or("");
         for d in &diags {
@@ -835,7 +837,9 @@ fn run_program(target: &Path) -> ExitCode {
         let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
         bundle_programs.insert(target.display().to_string(), &program);
         let bundle = hale_types::Bundle { programs: bundle_programs };
-        let diags = hale_types::check_bundle(&bundle);
+        let allow_unowned =
+            std::env::args().any(|a| a == "--allow-unowned-subscriber");
+        let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
         if !diags.is_empty() {
             let any_source = sources.values().next().map(|s| s.as_str()).unwrap_or("");
             for d in &diags {
@@ -872,7 +876,9 @@ fn run_program(target: &Path) -> ExitCode {
     let bundle = hale_types::Bundle {
         programs: bundle_programs,
     };
-    let diags = hale_types::check_bundle(&bundle);
+    let allow_unowned =
+        std::env::args().any(|a| a == "--allow-unowned-subscriber");
+    let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
     if !diags.is_empty() {
         let any_source = sources.values().next().map(|s| s.as_str()).unwrap_or("");
         for d in &diags {
@@ -1060,7 +1066,9 @@ fn run_build(target: &Path) -> ExitCode {
     let bundle = hale_types::Bundle {
         programs: bundle_programs,
     };
-    let diags = hale_types::check_bundle(&bundle);
+    let allow_unowned =
+        std::env::args().any(|a| a == "--allow-unowned-subscriber");
+    let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
     if !diags.is_empty() {
         let any_source = sources.values().next().map(|s| s.as_str()).unwrap_or("");
         for d in &diags {

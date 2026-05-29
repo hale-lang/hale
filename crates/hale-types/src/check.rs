@@ -149,7 +149,11 @@ fn is_pure_literal(e: &Expr) -> bool {
     }
 }
 
-pub fn check_bundle(bundle: &Bundle<'_>, top: &TopScope) -> Vec<Diag> {
+pub fn check_bundle(
+    bundle: &Bundle<'_>,
+    top: &TopScope,
+    allow_unowned_subscriber: bool,
+) -> Vec<Diag> {
     let mut diags = Vec::new();
     let known = collect_known_names(top);
     for program in bundle.programs.values() {
@@ -193,7 +197,267 @@ pub fn check_bundle(bundle: &Bundle<'_>, top: &TopScope) -> Vec<Diag> {
     // sibling-in-main + placement fix. See `spec/runtime.md §
     // Long-running cooperative children`.
     check_nested_long_running_child(bundle, &mut diags);
+    // 2026-05-29: a bus-subscribing locus instantiated non-owned
+    // inside another locus's method/handler body dissolves at that
+    // method's scope exit, so its subscription can never fire.
+    // Hard error unless `--allow-unowned-subscriber` is set.
+    check_unowned_subscriber_locus(bundle, allow_unowned_subscriber, &mut diags);
     diags
+}
+
+/// True if the locus declares at least one `bus { subscribe ... }`.
+fn locus_has_bus_subscribe(l: &LocusDecl) -> bool {
+    l.members.iter().any(|m| match m {
+        LocusMember::Bus(b) => b
+            .members
+            .iter()
+            .any(|bm| matches!(bm, BusMember::Subscribe { .. })),
+        _ => false,
+    })
+}
+
+/// True if `parent` declares `accept(c: <child_name>)` — i.e. it
+/// owns instantiations of that locus type as children (accept
+/// fires by type, regardless of let-vs-statement binding).
+fn locus_accepts(parent: &LocusDecl, child_name: &str) -> bool {
+    parent.members.iter().any(|m| match m {
+        LocusMember::Lifecycle(lc)
+            if lc.kind == LifecycleKind::Accept =>
+        {
+            lc.params.first().is_some_and(|p| {
+                matches!(&p.ty, TypeExpr::Named { path, .. }
+                    if path.segments.last()
+                        .is_some_and(|s| s.name == child_name))
+            })
+        }
+        _ => false,
+    })
+}
+
+/// Collect single-segment locus-instantiation sites
+/// (`L { ... }`) reachable in a method body, as
+/// (locus_name, span). Filtered to actual loci by the caller.
+fn collect_locus_instantiations(
+    block: &Block,
+    out: &mut Vec<(String, Span)>,
+) {
+    for stmt in &block.stmts {
+        collect_in_stmt(stmt, out);
+    }
+}
+
+fn collect_in_stmt(stmt: &Stmt, out: &mut Vec<(String, Span)>) {
+    match stmt {
+        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+            collect_in_expr(value, out)
+        }
+        Stmt::Assign { value, .. } => collect_in_expr(value, out),
+        Stmt::Send { subject, value, .. } => {
+            collect_in_expr(subject, out);
+            collect_in_expr(value, out);
+        }
+        Stmt::If(i) => collect_in_if(i, out),
+        Stmt::Match(m) => collect_in_match(m, out),
+        Stmt::For { iter, body, .. } => {
+            collect_in_expr(iter, out);
+            collect_locus_instantiations(body, out);
+        }
+        Stmt::While { cond, body, .. } => {
+            collect_in_expr(cond, out);
+            collect_locus_instantiations(body, out);
+        }
+        Stmt::Return(Some(e), _) => collect_in_expr(e, out),
+        Stmt::Fail { value, .. } => collect_in_expr(value, out),
+        Stmt::Violate { payload: Some(e), .. } => collect_in_expr(e, out),
+        Stmt::Recovery { args, .. } => {
+            for a in args {
+                collect_in_expr(a, out);
+            }
+        }
+        Stmt::Block(b) => collect_locus_instantiations(b, out),
+        Stmt::Expr(e) => collect_in_expr(e, out),
+        _ => {}
+    }
+}
+
+fn collect_in_if(stmt: &IfStmt, out: &mut Vec<(String, Span)>) {
+    collect_in_expr(&stmt.cond, out);
+    collect_locus_instantiations(&stmt.then_block, out);
+    if let Some(eb) = &stmt.else_block {
+        match eb.as_ref() {
+            ElseBranch::Else(b) => collect_locus_instantiations(b, out),
+            ElseBranch::ElseIf(nested) => collect_in_if(nested, out),
+        }
+    }
+}
+
+fn collect_in_match(stmt: &MatchStmt, out: &mut Vec<(String, Span)>) {
+    collect_in_expr(&stmt.scrutinee, out);
+    for arm in &stmt.arms {
+        if let Some(g) = &arm.guard {
+            collect_in_expr(g, out);
+        }
+        match &arm.body {
+            MatchArmBody::Expr(e) => collect_in_expr(e, out),
+            MatchArmBody::Block(b) => collect_locus_instantiations(b, out),
+        }
+    }
+}
+
+fn collect_in_expr(expr: &Expr, out: &mut Vec<(String, Span)>) {
+    match expr {
+        Expr::Struct { path, inits, span } => {
+            if path.segments.len() == 1 {
+                out.push((path.segments[0].name.clone(), *span));
+            }
+            for init in inits {
+                collect_in_expr(&init.value, out);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_in_expr(left, out);
+            collect_in_expr(right, out);
+        }
+        Expr::Unary { operand, .. } => collect_in_expr(operand, out),
+        Expr::Call { callee, args, .. } => {
+            collect_in_expr(callee, out);
+            for a in args {
+                collect_in_expr(a, out);
+            }
+        }
+        Expr::Field { receiver, .. }
+        | Expr::Path2 { receiver, .. } => collect_in_expr(receiver, out),
+        Expr::Index { receiver, index, .. } => {
+            collect_in_expr(receiver, out);
+            collect_in_expr(index, out);
+        }
+        Expr::Tuple(es, _) | Expr::Array(es, _) => {
+            for e in es {
+                collect_in_expr(e, out);
+            }
+        }
+        Expr::Block(b) => collect_locus_instantiations(b, out),
+        Expr::If(i) => collect_in_if(i, out),
+        Expr::Match(m) => collect_in_match(m, out),
+        Expr::Sum(e, _) | Expr::Prod(e, _) => collect_in_expr(e, out),
+        Expr::Approx { left, right, tolerance, .. } => {
+            collect_in_expr(left, out);
+            collect_in_expr(right, out);
+            collect_in_expr(tolerance, out);
+        }
+        Expr::Range { lo, hi, .. } => {
+            collect_in_expr(lo, out);
+            collect_in_expr(hi, out);
+        }
+        Expr::ArrayRepeat { val, .. } => collect_in_expr(val, out),
+        Expr::Or { inner, disposition, .. } => {
+            collect_in_expr(inner, out);
+            match disposition {
+                OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
+                    collect_in_expr(e, out)
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+fn check_unowned_subscriber_locus(
+    bundle: &Bundle<'_>,
+    allow: bool,
+    diags: &mut Vec<Diag>,
+) {
+    if allow {
+        return;
+    }
+    let mut local_loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
+    for program in bundle.programs.values() {
+        for item in &program.items {
+            if let TopDecl::Locus(l) = item {
+                local_loci.insert(l.name.name.as_str(), l);
+            }
+        }
+    }
+
+    for program in bundle.programs.values() {
+        for item in &program.items {
+            let TopDecl::Locus(p) = item else {
+                continue;
+            };
+            // Collect this locus's bus-handler fn names. The
+            // antipattern is narrow on purpose: a subscriber
+            // spawned in a BUS HANDLER body is unambiguously
+            // broken — a handler returns after each message, so
+            // the spawned subscriber dissolves before it could
+            // receive the next one. A subscriber spawned in
+            // `run()` / `birth()` / a plain method is NOT flagged:
+            // it lives for that scope and can legitimately receive
+            // messages published during it (the canonical
+            // `run()` spawns N watchers then publishes` pattern).
+            let mut handler_names: std::collections::BTreeSet<&str> =
+                std::collections::BTreeSet::new();
+            for member in &p.members {
+                if let LocusMember::Bus(b) = member {
+                    for bm in &b.members {
+                        if let BusMember::Subscribe { handler, .. } = bm {
+                            handler_names.insert(handler.name.as_str());
+                        }
+                    }
+                }
+            }
+            if handler_names.is_empty() {
+                continue;
+            }
+            for member in &p.members {
+                let LocusMember::Fn(fd) = member else {
+                    continue;
+                };
+                if !handler_names.contains(fd.name.name.as_str()) {
+                    continue;
+                }
+                let mut hits: Vec<(String, Span)> = Vec::new();
+                collect_locus_instantiations(&fd.body, &mut hits);
+                for (name, span) in hits {
+                    let Some(child) = local_loci.get(name.as_str()) else {
+                        continue;
+                    };
+                    if !locus_has_bus_subscribe(child) {
+                        continue;
+                    }
+                    if locus_accepts(p, &name) {
+                        continue; // owned as a child — fine
+                    }
+                    diags.push(Diag::ty(
+                        span,
+                        format!(
+                            "locus `{}` declares `bus subscribe` but is \
+                             instantiated unowned inside `{}`'s bus handler \
+                             `{}`. A bus handler returns after each message, \
+                             so the locals it binds dissolve immediately — \
+                             `{}`'s subscription would never fire for a later \
+                             message.\n\n\
+                             Own it so it shares the parent's lifetime \
+                             instead of the handler's:\n\
+                             - `accept(c: {})` on `{}` (child membership; the \
+                             canonical N-dynamic-children shape), or\n\
+                             - a capacity pool / params field of `{}`.\n\n\
+                             If you manage its lifetime another way, pass \
+                             `--allow-unowned-subscriber` to downgrade this \
+                             to allowed.",
+                            name,
+                            p.name.name,
+                            fd.name.name,
+                            name,
+                            name,
+                            p.name.name,
+                            p.name.name,
+                        ),
+                    ));
+                }
+            }
+        }
+    }
 }
 
 /// Known stdlib loci whose `run()` body is structurally non-

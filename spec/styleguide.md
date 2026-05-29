@@ -532,6 +532,22 @@ another language smuggled in past the substrate."
   fluent-builder chains that mutate self, decorators, singletons
   in disguise. The right move is almost always to find the
   existing seed shape that fits.
+- **Spawning a bus subscriber unowned inside a bus handler.**
+  A `bus subscribe`-declaring locus instantiated as a handler-
+  local `let` (or statement literal) inside another locus's bus
+  handler — e.g. `fn on_conn(c: Conn) { let pc = PerConn { ... }; }`
+  where `PerConn` subscribes — dissolves when the handler returns
+  (a handler runs once per message), so its subscription can
+  never fire for a later message. **The compiler rejects this**
+  (typecheck error naming the handler and the fix). Own the
+  per-connection / per-event subscriber so it shares the parent's
+  lifetime: `accept(c: PerConn)` on the dispatcher (child
+  membership — the canonical N-dynamic-children shape), or a
+  capacity pool / params field. `--allow-unowned-subscriber`
+  downgrades the error to allowed if you manage the lifetime
+  another way. (Spawning a subscriber in `run()` is fine — it
+  lives for `run()`'s scope and receives messages published
+  during it; only the per-message *handler* scope is too short.)
 
 ## When something doesn't match the catalog
 

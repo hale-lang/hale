@@ -76,8 +76,20 @@ pub fn check_program(program: &Program) -> Vec<Diag> {
 /// Check a bundle of programs (one logical compilation unit
 /// spread across multiple `.hl` files, linked by `import`).
 pub fn check_bundle(bundle: &Bundle<'_>) -> Vec<Diag> {
+    check_bundle_opts(bundle, false)
+}
+
+/// Like `check_bundle`, but `allow_unowned_subscriber` downgrades
+/// the "bus-subscribing locus instantiated unowned in a method
+/// body" hard error to allowed — the `--allow-unowned-subscriber`
+/// escape hatch for code that manages the subscriber's lifetime
+/// some other way.
+pub fn check_bundle_opts(
+    bundle: &Bundle<'_>,
+    allow_unowned_subscriber: bool,
+) -> Vec<Diag> {
     let (top, mut diags) = resolve::build_top_scope(bundle);
-    diags.extend(check::check_bundle(bundle, &top));
+    diags.extend(check::check_bundle(bundle, &top, allow_unowned_subscriber));
     diags
 }
 
@@ -2878,5 +2890,114 @@ mod tests {
             "expected no Phase-3 diags for valid swallow topic; got: {:?}",
             diags
         );
+    }
+}
+
+#[cfg(test)]
+mod unowned_subscriber_tests {
+    //! 2026-05-29: a `bus subscribe`-declaring locus instantiated
+    //! unowned inside a bus HANDLER body dissolves at handler
+    //! return, so its subscription can never fire — hard error,
+    //! softenable via `--allow-unowned-subscriber`
+    //! (`check_bundle_opts(_, true)`). Owned (accept'd) and
+    //! `run()`-spawned subscribers are NOT flagged.
+
+    use super::*;
+    use hale_syntax::parse_source;
+    use std::collections::BTreeMap;
+
+    fn flagged(src: &str, allow: bool) -> bool {
+        let p = parse_source(src).expect("parses");
+        let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
+        programs.insert(String::new(), &p);
+        let diags = check_bundle_opts(&Bundle { programs }, allow);
+        diags.iter().any(|d| d.message.contains("instantiated unowned"))
+    }
+
+    const UNOWNED_IN_HANDLER: &str = r#"
+        type Trigger { n: Int; }
+        type Data { v: Int; }
+        locus Child {
+            params { id: Int = 0; }
+            bus { subscribe "data" as on_data of type Data; }
+            fn on_data(d: Data) { println("got"); }
+        }
+        locus Disp {
+            bus { subscribe "trig" as on_trig of type Trigger; }
+            fn on_trig(t: Trigger) { let c = Child { id: 1 }; }
+        }
+        fn main() { Disp { }; }
+    "#;
+
+    #[test]
+    fn unowned_subscriber_in_handler_rejected() {
+        assert!(flagged(UNOWNED_IN_HANDLER, false));
+    }
+
+    #[test]
+    fn allow_flag_silences_it() {
+        assert!(!flagged(UNOWNED_IN_HANDLER, true));
+    }
+
+    #[test]
+    fn accepted_subscriber_in_handler_clean() {
+        // Disp accepts Child -> owned -> not flagged.
+        let src = r#"
+            type Trigger { n: Int; }
+            type Data { v: Int; }
+            locus Child {
+                params { id: Int = 0; }
+                bus { subscribe "data" as on_data of type Data; }
+                fn on_data(d: Data) { println("got"); }
+            }
+            locus Disp {
+                accept(c: Child) { }
+                bus { subscribe "trig" as on_trig of type Trigger; }
+                fn on_trig(t: Trigger) { Child { id: 1 }; }
+            }
+            fn main() { Disp { }; }
+        "#;
+        assert!(!flagged(src, false));
+    }
+
+    #[test]
+    fn subscriber_spawned_in_run_clean() {
+        // Spawned in run() (not a handler) -> lives for run()'s
+        // scope, receives messages published during it -> fine.
+        let src = r#"
+            type Data { v: Int; }
+            locus Watcher {
+                params { id: Int = 0; }
+                bus { subscribe "data" as on_data of type Data; }
+                fn on_data(d: Data) { println("got"); }
+            }
+            locus Producer {
+                bus { publish "data" of type Data; }
+                run() {
+                    Watcher { id: 1 };
+                    "data" <- Data { v: 10 };
+                }
+            }
+            fn main() { Producer { }; }
+        "#;
+        assert!(!flagged(src, false));
+    }
+
+    #[test]
+    fn non_subscriber_in_handler_clean() {
+        // Child has no bus subscribe -> not flagged even unowned.
+        let src = r#"
+            type Trigger { n: Int; }
+            locus Child {
+                params { id: Int = 0; }
+                fn read() -> Int { return self.id; }
+            }
+            locus Disp {
+                bus { subscribe "trig" as on_trig of type Trigger; }
+                fn on_trig(t: Trigger) { let c = Child { id: 1 }; }
+            }
+            fn main() { Disp { }; }
+        "#;
+        assert!(!flagged(src, false));
     }
 }
