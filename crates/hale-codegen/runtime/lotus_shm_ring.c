@@ -50,12 +50,20 @@
 #include <unistd.h>
 #include <errno.h>
 
-/* Defined in lotus_arena.c — latches off the single-thread
- * fast-path for the subregion-freelist lock once a second thread
- * exists. The shm_ring reader thread dispatches handlers (which
- * open scratch subregions) concurrently with main, so it must
- * latch before spawning. */
-extern void lotus_mark_multithreaded(void);
+/* Latches off the single-thread fast-path for the subregion-
+ * freelist lock once a second thread exists. The shm_ring reader
+ * thread dispatches handlers (which open scratch subregions)
+ * concurrently with main, so it must latch before spawning.
+ *
+ * lotus_arena.c provides the STRONG definition that actually flips
+ * the latch; in the real binary (shm_ring.c + lotus_arena.c) the
+ * linker picks it. This WEAK no-op exists only so the standalone
+ * shm_ring test drivers — which compile `lotus_shm_ring.c` without
+ * `lotus_arena.c` (`clang driver.c lotus_shm_ring.c -lrt`) — still
+ * link; those drivers exercise the raw ring primitives directly
+ * and never touch the arena subregion machinery, so the latch is
+ * moot for them. */
+__attribute__((weak)) void lotus_mark_multithreaded(void) {}
 
 /* Magic bumped at K7 (2026-05-20) when the header layout grew
  * the consumer_seqno cache line. Attaches against a different
