@@ -51,6 +51,19 @@ type __StdIoTcpLogEvent {
 locus __StdIoTcpStream {
     params {
         conn_fd: Int = -1;
+        // 2026-05-29 — fd ownership. Default `true` keeps the
+        // historical contract: this Stream OWNS conn_fd and
+        // closes it on dissolve (the accept-loop / http-server
+        // helpers below rely on this for per-connection cleanup).
+        // Set `false` to BORROW an fd owned elsewhere — a
+        // transient `Stream { conn_fd: self.conn_fd, owns_fd:
+        // false }` used only to call send/recv against a
+        // long-lived connection (e.g. a WebSocket conn locus that
+        // wraps its fd per frame). A borrowed Stream's dissolve is
+        // a no-op, so it never closes a connection still in use
+        // elsewhere — the fix for the per-op borrowed-fd double
+        // close.
+        owns_fd: Bool = true;
         // 2026-05-27 — when non-empty, every TCP op publishes
         // a `LogEvent` to this bus subject. Subject must lie
         // under the `io.tcp.**` wildcard (the publish decl
@@ -108,12 +121,17 @@ locus __StdIoTcpStream {
         return b;
     }
     dissolve() {
-        if len(self.log_subject) > 0 {
-            self.log_subject <- __StdIoTcpLogEvent {
-                phase: "close", fd: self.conn_fd,
-            };
+        // Borrowed Streams (owns_fd == false) never close the fd
+        // and emit no `close` event — the fd lives on past this
+        // wrapper, owned by whoever opened it.
+        if self.owns_fd {
+            if len(self.log_subject) > 0 {
+                self.log_subject <- __StdIoTcpLogEvent {
+                    phase: "close", fd: self.conn_fd,
+                };
+            }
+            std::io::tcp::__close_fd(self.conn_fd);
         }
-        std::io::tcp::__close_fd(self.conn_fd);
     }
 }
 

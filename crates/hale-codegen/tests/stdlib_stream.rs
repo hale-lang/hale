@@ -209,6 +209,95 @@ fn stream_let_binding_round_trips_via_send_recv() {
 }
 
 #[test]
+fn borrowed_stream_does_not_close_shared_fd() {
+    // 2026-05-29 (Bug B): a connection-owning locus that wraps its
+    // long-lived fd in a *transient* Stream per operation — the
+    // WsServerConn shape — must not have that wrapper's dissolve
+    // close the shared fd. With `owns_fd: false`, two successive
+    // `ping`s (each building + dropping its own borrowed Stream)
+    // both reach the server. Pre-fix (unconditional __close_fd on
+    // dissolve) the first ping closed the fd and the second send
+    // hit a dead socket, so the server only ever saw "AAA".
+    let port = pick_free_port();
+    let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind");
+    let (got_tx, got_rx) = mpsc::channel::<String>();
+    thread::spawn(move || {
+        let (mut sock, _) = listener.accept().expect("accept");
+        sock.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .expect("set timeout");
+        let mut acc = String::new();
+        let mut buf = [0u8; 64];
+        loop {
+            match sock.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    acc.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if acc.contains("AAA") && acc.contains("BBB") {
+                        let _ = sock.write_all(b"BOTH");
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = got_tx.send(acc);
+    });
+
+    let src = format!(
+        r#"
+        locus Conn {{
+            params {{ fd: Int = -1; }}
+            // each ping wraps the SHARED fd in a borrowed Stream
+            // that dissolves at fn-exit — must not close self.fd.
+            fn ping(tag: String) {{
+                let s = std::io::tcp::Stream {{ conn_fd: self.fd, owns_fd: false }};
+                s.send(tag);
+            }}
+            fn ack() -> String {{
+                let s = std::io::tcp::Stream {{ conn_fd: self.fd, owns_fd: false }};
+                return s.recv(64);
+            }}
+        }}
+        fn main() {{
+            let fd = std::io::tcp::__connect("127.0.0.1", {});
+            let c = Conn {{ fd: fd }};
+            c.ping("AAA");
+            c.ping("BBB");
+            println("ack=", c.ack());
+            std::io::tcp::__close_fd(fd);
+        }}
+        "#,
+        port
+    );
+    let bin = build_hale("borrowed_fd", &src);
+    let out = Command::new(&bin).output().expect("run hale");
+    let _ = std::fs::remove_file(&bin);
+    let server_got = got_rx
+        .recv_timeout(std::time::Duration::from_secs(3))
+        .unwrap_or_default();
+
+    assert!(
+        out.status.success(),
+        "non-zero: {:?}\nstderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The decisive assertion: the SECOND ping arrived, so the first
+    // borrowed Stream's dissolve left the fd open.
+    assert!(
+        server_got.contains("AAA") && server_got.contains("BBB"),
+        "expected both pings over one shared fd; server got: {:?}",
+        server_got
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ack=BOTH"),
+        "expected server ack over the still-open fd; got: {:?}",
+        stdout
+    );
+}
+
+#[test]
 fn stream_locus_is_declared_and_compiles() {
     // The Stream locus itself parses + lowers cleanly. The
     // method-via-let limitation (custom dissolve fires

@@ -278,6 +278,23 @@ the existing stdlib consumers. The same is true of
 `std::io::stdin::read_line` (path-call but pairs with
 `read_line_status` for EOF-vs-error distinction).
 
+**`Stream` fd ownership** (`owns_fd: Bool = true`, 2026-05-29).
+By default a `Stream` *owns* its `conn_fd` and closes it on
+dissolve — the contract the `Listener` / `http::Server`
+accept-loop helpers rely on for per-connection cleanup
+(`__handle_one_connection` wraps the accepted fd in a Stream
+whose scope-exit dissolve closes it). Set `owns_fd: false` to
+*borrow* an fd owned elsewhere: a transient
+`Stream { conn_fd: self.conn_fd, owns_fd: false }` built only to
+call `send`/`recv` against a long-lived connection. A borrowed
+Stream's dissolve is a no-op (no `__close_fd`, no `close`
+LogEvent), so building one per operation against a persistent
+connection — e.g. a WebSocket conn locus that wraps its fd per
+frame — no longer closes the shared fd out from under the next
+operation. Owning a fd from two live Streams at once is still a
+double-close bug; `owns_fd: false` is precisely the opt-out for
+the borrow case.
+
 ### `ParseError`
 
 `std::str::parse_int(s)` / `parse_float(s)` / `parse_decimal(s)`
