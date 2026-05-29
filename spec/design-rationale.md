@@ -3383,6 +3383,24 @@ Rust `async fn` / Go's pre-1.4 model) if per-connection memory
 becomes load-bearing; the user-facing surface (`where
 async_io` + transparent `recv_bytes`) stays unchanged.
 
+The 64 KiB stack is a hard ceiling on what handler code may put
+*on the stack* while running in a coro. The runtime's own hot
+paths must respect it: the bus dispatch functions
+(`lotus_bus_dispatch{,_keyed}` / `lotus_bus_dispatch_wire{,_keyed}`)
+formerly held `LOTUS_PAYLOAD_MAX` (64 KiB) serialize / deserialize
+buffers on the stack, so a serialized publish issued from inside
+a coro handler (e.g. `Topic <- value` in a bus handler on an
+`async_io` pool) overflowed the coro stack — `dispatch ->
+dispatch_wire` alone is 128 KiB — and segfaulted in the
+`dispatch_wire` prologue (2026-05-29 fix). Those buffers are now
+thread-local statics, off the coro stack; this is safe because a
+coro never parks between filling and copying out a dispatch
+buffer (deserialize + enqueue, no I/O) and only one coro runs per
+worker at a time. Transport reader threads keep stack buffers —
+they run on full-size pthreads, not coros. Any future runtime
+addition on a coro-reachable path must keep large scratch off the
+stack the same way.
+
 **Considered and rejected.**
 
 - *Per-fn `@blocking` / `@async` annotation.* Would couple the

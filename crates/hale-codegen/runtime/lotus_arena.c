@@ -5160,6 +5160,27 @@ static lotus_bus_entry_t *g_bus_entries = NULL;
 static size_t             g_bus_count   = 0;
 static size_t             g_bus_cap     = 0;
 
+/* Per-thread scratch for the wire dispatch path (2026-05-29).
+ * These were `char buf[LOTUS_PAYLOAD_MAX]` (64 KiB) stack arrays
+ * inside lotus_bus_dispatch{,_keyed} (the publish-side serialize
+ * buffer) and lotus_bus_dispatch_wire{,_keyed} (the per-subscriber
+ * deserialize buffer). A serialized publish from inside an F.35
+ * async_io coro handler runs `dispatch -> dispatch_wire`, putting
+ * 64 KiB + 64 KiB on the coro's 64 KiB stack
+ * (LOTUS_CORO_STACK_BYTES) — a guaranteed stack overflow (SIGSEGV
+ * in the dispatch_wire prologue, frame under lotus_coro_thunk).
+ * Moving them to thread-local storage takes them off the coro
+ * stack. Coro-safe: only one coro runs per worker at a time, and
+ * neither dispatch nor dispatch_wire parks between filling the
+ * buffer and copying it out (deserialize + enqueue, no I/O), so a
+ * given thread's buffer is never aliased by a second coro
+ * mid-use. `_wire` (publish serialize output) and `_struct`
+ * (per-sub deserialize) are distinct because the dispatch ->
+ * dispatch_wire chain holds both live at once. Reader threads keep
+ * their own stack arrays (they run on full-size pthreads). */
+static __thread char g_tls_bus_wire_buf[LOTUS_PAYLOAD_MAX];
+static __thread char g_tls_bus_struct_buf[LOTUS_PAYLOAD_MAX];
+
 #define LOTUS_BUS_ROUTER_INITIAL_CAP 16
 
 /* m94: subject wildcard matching.
@@ -5688,9 +5709,9 @@ void lotus_bus_dispatch_keyed(lotus_bus_queue_t *queue,
                               uint64_t key_lo,
                               uint64_t key_hi) {
     if (serialize_fn) {
-        char wire_buf[LOTUS_PAYLOAD_MAX];
+        char *wire_buf = g_tls_bus_wire_buf;   /* off the coro stack */
         ssize_t wire_size = serialize_fn(struct_payload, wire_buf,
-                                         sizeof(wire_buf));
+                                         LOTUS_PAYLOAD_MAX);
         if (wire_size > 0) {
             lotus_bus_dispatch_wire_keyed(
                 subject, wire_buf, (size_t)wire_size, key_lo, key_hi);
@@ -5744,9 +5765,9 @@ void lotus_bus_dispatch(lotus_bus_queue_t *queue,
      * the dangling-by-design behavior the pre-Task-11 v1
      * shipped with. */
     if (serialize_fn) {
-        char wire_buf[LOTUS_PAYLOAD_MAX];
+        char *wire_buf = g_tls_bus_wire_buf;   /* off the coro stack */
         ssize_t wire_size = serialize_fn(struct_payload, wire_buf,
-                                         sizeof(wire_buf));
+                                         LOTUS_PAYLOAD_MAX);
         if (wire_size > 0) {
             /* Local fanout via per-sub deserialize-into-sub-arena.
              * Reuses the wire-dispatch path's TLS routing
@@ -9812,7 +9833,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
                                     uint64_t key_lo,
                                     uint64_t key_hi) {
     if (!subject || !wire_bytes || wire_size == 0) return;
-    char struct_buf[LOTUS_PAYLOAD_MAX];
+    char *struct_buf = g_tls_bus_struct_buf;   /* off the coro stack */
     lotus_arena_t *prev_tls = lotus_current_caller_arena;
     int matched_specific = 0;
     size_t specific_subs_on_subject = 0;
@@ -9836,7 +9857,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
             e->self_ptr ? *(lotus_arena_t **)e->self_ptr : NULL;
         lotus_current_caller_arena = sub_arena;
         ssize_t struct_size = e->deserialize(
-            wire_bytes, wire_size, struct_buf, sizeof(struct_buf));
+            wire_bytes, wire_size, struct_buf, LOTUS_PAYLOAD_MAX);
         if (struct_size <= 0) continue;
         if (e->mailbox) {
             lotus_mailbox_post(
@@ -9868,7 +9889,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
                 e->self_ptr ? *(lotus_arena_t **)e->self_ptr : NULL;
             lotus_current_caller_arena = sub_arena;
             ssize_t struct_size = e->deserialize(
-                wire_bytes, wire_size, struct_buf, sizeof(struct_buf));
+                wire_bytes, wire_size, struct_buf, LOTUS_PAYLOAD_MAX);
             if (struct_size <= 0) continue;
             if (e->mailbox) {
                 lotus_mailbox_post(
@@ -9921,7 +9942,7 @@ void lotus_bus_dispatch_wire(const char *subject,
      * allocated in the subscriber's arena to begin with, so it
      * stays valid until the subscriber dissolves. No more
      * program-lifetime deposit. */
-    char struct_buf[LOTUS_PAYLOAD_MAX];
+    char *struct_buf = g_tls_bus_struct_buf;   /* off the coro stack */
     lotus_arena_t *prev_tls = lotus_current_caller_arena;
     size_t matched = 0;
     size_t delivered = 0;
@@ -9955,7 +9976,7 @@ void lotus_bus_dispatch_wire(const char *subject,
                 : NULL;
         lotus_current_caller_arena = sub_arena;
         ssize_t struct_size = e->deserialize(
-            wire_bytes, wire_size, struct_buf, sizeof(struct_buf));
+            wire_bytes, wire_size, struct_buf, LOTUS_PAYLOAD_MAX);
         if (struct_size <= 0) {
             if (lotus_bus_log_drop_enabled()) {
                 fprintf(stderr,
