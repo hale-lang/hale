@@ -1015,7 +1015,7 @@ fn walk_stmt_pool(stmt: &Stmt, cx: &mut PoolCheckCx) {
             walk_expr_pool(value, cx);
         }
         Stmt::Expr(e) => walk_expr_pool(e, cx),
-        Stmt::Yield(_) | Stmt::Break(_) | Stmt::Continue(_) => {}
+        Stmt::Yield(_) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Terminate(_) => {}
     }
 }
 
@@ -4192,7 +4192,7 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) => {}
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) => {}
             Stmt::Fail { value, span } => {
                 // v1.x-FORM-1: `fail <expr>;` must appear inside
                 // a fallible fn body, and its payload type must

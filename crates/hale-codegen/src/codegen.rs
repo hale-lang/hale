@@ -2090,7 +2090,7 @@ fn count_self_fields_in_stmt(
             count_self_fields_in_expr(value, counts, depth);
         }
         Stmt::Expr(e) => count_self_fields_in_expr(e, counts, depth),
-        Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) => {}
+        Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) => {}
     }
 }
 
@@ -2286,9 +2286,11 @@ fn stmt_reads_self_children(s: &Stmt) -> bool {
             expr_reads_self_children(subject) || expr_reads_self_children(value)
         }
         Stmt::Expr(e) => expr_reads_self_children(e),
-        Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) => {
-            false
-        }
+        Stmt::Return(None, _)
+        | Stmt::Break(_)
+        | Stmt::Continue(_)
+        | Stmt::Yield(_)
+        | Stmt::Terminate(_) => false,
     }
 }
 
@@ -2440,6 +2442,15 @@ pub(crate) struct LocusInfo<'ctx> {
     /// lowering and child-instantiation sites (which must call
     /// parent.accept before child.birth, per F.7).
     pub(crate) accept_param: Option<(String, String)>,
+    /// For loci that declare `release(child: ChildLocus)` (2026-05-30,
+    /// the death-side bookend), the child param's (binding name, child
+    /// locus name). None otherwise. Its presence marks `ChildLocus` a
+    /// "flow": a child whose run() completing reclaims it (vs. a
+    /// resident, reclaimed only at parent dissolve). The run-wrapper
+    /// for the child type searches the locus set for the parent that
+    /// declares `release` of it, to fire `parent.release(owner, child)`
+    /// on completion.
+    pub(crate) release_param: Option<(String, String)>,
     /// User-defined `fn` members on the locus (called as bus
     /// handlers, mode dispatchers, etc.). Each entry is
     /// (method name → LLVM function value). Methods take
@@ -2647,6 +2658,12 @@ pub(crate) struct LocusInfo<'ctx> {
     /// route violations to the parent without a static call
     /// site (bus drains don't have one).
     pub(crate) parent_self_field_idx: u32,
+    /// 2026-05-30: index of the synthetic `__owner_self: ptr` field —
+    /// the accept'ing parent's self_ptr, stored unconditionally at
+    /// accept dispatch (cf. `parent_self_field_idx`, which is failure-
+    /// routing-gated). Read by a flow child's run-wrapper to fire
+    /// `parent.release(owner, child)`. Null when never accept'd.
+    pub(crate) owner_self_field_idx: u32,
     /// m42: index of the synthetic `__parent_on_failure: ptr`
     /// field. Paired with `parent_self_field_idx`. Holds the
     /// parent's `on_failure` fn ptr (or null). Read by the
@@ -2993,7 +3010,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// destroying the arena concurrently with still-active
     /// worker threads. Idempotent + no-op when no pools were
     /// registered.
-    fn emit_coop_pool_shutdown_all(&mut self) -> Result<(), CodegenError> {
+    pub(crate) fn emit_coop_pool_shutdown_all(&mut self) -> Result<(), CodegenError> {
         if !self.main_cooperative_pools.is_empty() {
             let shutdown_fn = self
                 .module
@@ -3367,6 +3384,168 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     &format!("{}.run.via_pool", locus_name),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // 2026-05-30: reclaim this locus when run() completes if
+            // EITHER (a) it's a FLOW — some parent declares
+            // `release(c: ThisType)`, so run-completion reclaims it (a
+            // connection child that returns on EOF), OR (b) run() set
+            // the `__drain_requested` latch via `terminate;`. Reclaim
+            // = drain → [parent.release(owner, self), for a flow] →
+            // dissolve → arena reclaim, on the coro's own worker while
+            // the arena is valid (the parent isn't dissolving). The
+            // idempotent arena-destroy latch makes a later
+            // parent-dissolve of the same locus a no-op.
+            //
+            // A locus is a flow iff some declared locus has a
+            // `release(c: T)` whose child type T is this locus —
+            // then `release_fn` is that parent's release method.
+            let release_fn = self.user_loci.values().find_map(|p| {
+                match &p.release_param {
+                    Some((_, child)) if child == locus_name => {
+                        p.methods.get("release").copied()
+                    }
+                    _ => None,
+                }
+            });
+            let i64_t = self.context.i64_type();
+            let terminating = if release_fn.is_some() {
+                // Flow: run-completion always reclaims.
+                self.context.bool_type().const_int(1, false)
+            } else {
+                let dr_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        self_arg,
+                        info.drain_requested_field_idx,
+                        &format!("{}.terminate.dr.ptr", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let dr = self
+                    .builder
+                    .build_load(
+                        i64_t,
+                        dr_ptr,
+                        &format!("{}.terminate.dr", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_int_value();
+                self.builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        dr,
+                        i64_t.const_int(0, false),
+                        &format!("{}.terminate.set", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            };
+            let reclaim_bb =
+                self.context.append_basic_block(wrapper, "terminate.reclaim");
+            let ret_bb =
+                self.context.append_basic_block(wrapper, "terminate.ret");
+            self.builder
+                .build_conditional_branch(terminating, reclaim_bb, ret_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+            self.builder.position_at_end(reclaim_bb);
+            let prev_fn = self.current_fn.take();
+            let prev_self = self.current_self.take();
+            self.current_fn = Some(wrapper);
+            self.current_self = Some(SelfCx {
+                locus_name: locus_name.clone(),
+                struct_ty: info.struct_ty,
+                self_ptr: self_arg,
+                fields: info.fields.clone(),
+            });
+            // drain (children first, then self) → __dissolve_closures
+            // → dissolve → field dissolves → arena reclaim.
+            self.emit_locus_field_drains(&info, self_arg, locus_name)?;
+            if let Some(drain_fn) = info.methods.get("drain") {
+                if !info.empty_lifecycle.contains("drain") {
+                    self.builder
+                        .build_call(
+                            *drain_fn,
+                            &[self_arg.into()],
+                            &format!("{}.terminate.drain", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+            }
+            // The `release(c)` parent bookend fires HERE — after the
+            // child drains, before it dissolves — so the parent reads
+            // the child's final settled state (mirror of accept(c),
+            // which reads it fresh). owner = __owner_self (the
+            // accept'ing parent); guarded against null for a flow-typed
+            // locus instantiated outside an accept context.
+            if let Some(rfn) = release_fn {
+                let owner_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        self_arg,
+                        info.owner_self_field_idx,
+                        &format!("{}.release.owner.ptr", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let owner = self
+                    .builder
+                    .build_load(ptr_t, owner_ptr, &format!("{}.release.owner", locus_name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_pointer_value();
+                let owner_null = self
+                    .builder
+                    .build_is_null(owner, &format!("{}.release.owner.null", locus_name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let fire_bb =
+                    self.context.append_basic_block(wrapper, "release.fire");
+                let after_rel_bb =
+                    self.context.append_basic_block(wrapper, "release.after");
+                self.builder
+                    .build_conditional_branch(owner_null, after_rel_bb, fire_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(fire_bb);
+                self.builder
+                    .build_call(
+                        rfn,
+                        &[owner.into(), self_arg.into()],
+                        &format!("{}.release.call", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_unconditional_branch(after_rel_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(after_rel_bb);
+            }
+            if let Some(closures_fn) = info.dissolve_closures_fn {
+                let (parent_self, handler_ptr) =
+                    self.resolve_failure_route(locus_name);
+                self.builder
+                    .build_call(
+                        closures_fn,
+                        &[self_arg.into(), parent_self.into(), handler_ptr.into()],
+                        &format!("{}.terminate.closures", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            if let Some(dissolve_fn) = info.methods.get("dissolve") {
+                if !info.empty_lifecycle.contains("dissolve") {
+                    self.builder
+                        .build_call(
+                            *dissolve_fn,
+                            &[self_arg.into()],
+                            &format!("{}.terminate.dissolve", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+            }
+            self.emit_locus_field_dissolves(&info, self_arg, locus_name)?;
+            self.emit_locus_arena_destroy(&info, self_arg, locus_name)?;
+            self.current_fn = prev_fn;
+            self.current_self = prev_self;
+            self.builder
+                .build_unconditional_branch(ret_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+            self.builder.position_at_end(ret_bb);
             self.builder
                 .build_return(None)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -4296,14 +4475,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // both `break`/`return`), the trailing block is already
         // closed and writing more IR is unsound.
         if end == BlockEnd::Open {
-            self.flush_dissolve_frame()?;
-            // Join cooperative-pool workers BEFORE arena_destroy.
-            // Workers may still be running locus methods that
-            // touch arena state — racing with main's
-            // arena_destroy was the substrate-level TSAN race
-            // suppressed in F.32-1γ-v2 session 2 and fixed here
-            // (2026-05-26).
+            // Join cooperative-pool workers BEFORE the dissolve
+            // cascade (2026-05-30, wakeable-park prototype). A worker
+            // may have a coro PARKED inside a locus's run() (e.g. a
+            // listener in accept()); shutdown_all now wakes+cancels it
+            // so it unwinds. That must happen while the locus's arena
+            // is still valid — if flush_dissolve_frame dissolved the
+            // locus first, the resuming coro would read its `self`
+            // from freed memory (observed: core dump). Joining first
+            // also preserves the prior invariant (workers joined
+            // before arena_destroy — the F.32-1γ-v2 TSAN fix).
             self.emit_coop_pool_shutdown_all()?;
+            self.flush_dissolve_frame()?;
             // Tear down the arena before exit. exit(0) via `ret`
             // would drop the chunk linked list either way (process
             // exit reclaims everything), but going through
@@ -9815,6 +9998,48 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.emit_pinned_mailbox_drain_pending()?;
                 Ok(BlockEnd::Open)
             }
+            Stmt::Terminate(_) => {
+                // 2026-05-30 per-child terminate: end this locus's
+                // lifecycle. Set the `__drain_requested` latch on the
+                // current self, then exit the method like `return;`.
+                // When the method/run coro completes with the latch
+                // set, the run-wrapper runs the locus's drain →
+                // dissolve → reclaim (see synthesize_coop_pool_run
+                // _wrappers). Reuses the existing drain-requested slot
+                // as the `terminating` latch (per the design); the
+                // idempotent arena-destroy makes a later parent-
+                // dissolve teardown of the same locus a no-op.
+                let cs = self.current_self.as_ref().cloned().ok_or_else(|| {
+                    CodegenError::Unsupported(
+                        "`terminate`: no enclosing locus self".into(),
+                    )
+                })?;
+                let info = self
+                    .user_loci
+                    .get(&cs.locus_name)
+                    .cloned()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "`terminate`: no LocusInfo for `{}`",
+                            cs.locus_name
+                        ))
+                    })?;
+                let i64_t = self.context.i64_type();
+                let dr_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        cs.struct_ty,
+                        cs.self_ptr,
+                        info.drain_requested_field_idx,
+                        "terminate.drain_requested.ptr",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(dr_ptr, i64_t.const_int(1, false))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // Exit the current method, like `return;`.
+                self.lower_return(None, scope)
+            }
             Stmt::Block(b) => self.lower_block(b, scope),
             Stmt::Return(expr_opt, _) => self.lower_return(expr_opt.as_ref(), scope),
             Stmt::Recovery { op, args, modifier, .. } => {
@@ -12025,15 +12250,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // truncates the i64 to i32 to match the declared
             // ABI. main itself returns void at the lotus level
             // OR Int (per spec/runtime.md), but at LLVM we always
-            // emit i32. Flush the dissolve frame first so any
-            // long-lived loci wind down before the process exits,
-            // then tear down the arena.
-            self.flush_dissolve_frame()?;
-            // Join cooperative-pool workers BEFORE arena_destroy —
-            // see the matching block in `lower_program`'s main-
-            // exit path for rationale. (2026-05-26 substrate-race
-            // fix.)
+            // emit i32. Join cooperative-pool workers FIRST so a coro
+            // parked inside a locus's run() is woken+unwound while its
+            // arena is still valid — see the matching block in
+            // `lower_program`'s main-exit path (2026-05-30, extends
+            // the 2026-05-26 substrate-race fix). Then flush the
+            // dissolve frame, then tear down the arena.
             self.emit_coop_pool_shutdown_all()?;
+            self.flush_dissolve_frame()?;
             self.emit_arena_destroy()?;
             self.emit_bus_queue_destroy()?;
             // Re-open an empty frame so the post-flush bookkeeping

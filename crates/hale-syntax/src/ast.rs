@@ -966,6 +966,15 @@ pub struct LifecycleDecl {
 pub enum LifecycleKind {
     Birth,
     Accept,
+    /// 2026-05-30 — death-side bookend, symmetric to `accept`.
+    /// `release(c: Child) { ... }` fires when an accept'd child of
+    /// type `Child` completes (its run() returns), after the child
+    /// drains and before it dissolves, so the parent observes the
+    /// completion and reads the child's final state. Declaring it
+    /// also marks `Child` a "flow": its run() completing reclaims it
+    /// (vs. a "resident" child, which lives until the parent
+    /// dissolves). Same shape as `accept`: one typed child param.
+    Release,
     Run,
     Drain,
     Dissolve,
@@ -1298,6 +1307,16 @@ pub enum Stmt {
     /// most cases; `yield` is for the exceptional long-internal-
     /// loop case where you want pending events to fire mid-body.
     Yield(Span),
+    /// Ends the current locus's lifecycle from inside one of its own
+    /// methods — the locus analogue of `return` (which ends a fn).
+    /// `terminate;` sets the locus's `__drain_requested` latch and
+    /// exits the current method; when the method/run coro completes
+    /// with the latch set, the runtime runs the locus's normal
+    /// drain → dissolve → reclaim. Only valid inside a locus method
+    /// body. The in-grain "I'm done, reclaim me" signal for an
+    /// accept'd child (e.g. a connection that hit EOF) — it INVOKES
+    /// the declarative teardown early, never a manual free.
+    Terminate(Span),
     Block(Block),
     Recovery {
         op: RecoveryOp,

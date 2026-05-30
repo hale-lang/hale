@@ -44,6 +44,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                     LifecycleKind::Birth => "birth",
                     LifecycleKind::Run => "run",
                     LifecycleKind::Accept => "accept",
+                    LifecycleKind::Release => "release",
                     LifecycleKind::Drain => "drain",
                     LifecycleKind::Dissolve => "dissolve",
                 };
@@ -84,14 +85,20 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
 
                 let mut scope = Scope::default();
 
-                // accept gets the child pointer as its second arg;
-                // bind it under the source-level param name as a
-                // LocusRef local so `g.X` lowers to GEP+load.
-                if kind == "accept" {
-                    let (param_name, child_locus) = info
-                        .accept_param
-                        .as_ref()
-                        .expect("accept declared with accept_param");
+                // accept/release get the child pointer as their second
+                // arg; bind it under the source-level param name as a
+                // LocusRef local so `g.X` lowers to GEP+load. (release
+                // is the death-side bookend — same 2-arg shape.)
+                if kind == "accept" || kind == "release" {
+                    let (param_name, child_locus) = if kind == "accept" {
+                        info.accept_param
+                            .as_ref()
+                            .expect("accept declared with accept_param")
+                    } else {
+                        info.release_param
+                            .as_ref()
+                            .expect("release declared with release_param")
+                    };
                     let child_ptr = func
                         .get_nth_param(1)
                         .expect("child_ptr param")

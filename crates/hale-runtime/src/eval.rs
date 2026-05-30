@@ -549,6 +549,24 @@ impl Interpreter {
                 // pending was missed because nothing was deferred).
                 Ok(())
             }
+            Stmt::Terminate(_) => {
+                // 2026-05-30: end the current locus's lifecycle. Set
+                // its draining latch and exit the method via a Return
+                // signal — mirrors `violate`'s draining-set, minus the
+                // failure routing. (The interpreter is synchronous and
+                // doesn't model coro reclamation; setting draining +
+                // returning preserves the observable "this locus is
+                // done" semantics. Codegen does the actual arena
+                // reclaim via the run-wrapper.)
+                let handle = self.self_stack.last().cloned().ok_or_else(|| {
+                    Signal::Error(
+                        "`terminate`: no enclosing locus on self_stack"
+                            .to_string(),
+                    )
+                })?;
+                handle.draining.set(true);
+                Err(Signal::Return(Value::Unit))
+            }
             Stmt::Block(b) => self.exec_block(b),
             Stmt::Recovery { op, args, .. } => {
                 let mut arg_vs = Vec::with_capacity(args.len());

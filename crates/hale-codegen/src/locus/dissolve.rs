@@ -1229,6 +1229,32 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             &format!("{}.arena.destroy.after", locus_name),
         );
 
+        // 2026-05-30 idempotent-teardown latch. `__arena` is NULL'd
+        // in `after_bb` once this locus is reclaimed, so a SECOND
+        // arena-destroy — e.g. a child's run-completion reclaim
+        // racing the parent's dissolve cascade for the same locus —
+        // loads NULL here and branches straight to `after_bb`,
+        // skipping the release (which would double-free). Whichever
+        // teardown reaches the locus first wins; the rest no-op.
+        // (Single-threaded by construction at the call sites that
+        // currently collide: the pool workers are joined before the
+        // parent's dissolve runs, so no atomic is needed yet.)
+        let arena_is_null = self
+            .builder
+            .build_is_null(
+                arena.into_pointer_value(),
+                &format!("{}.arena.already_freed", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let do_destroy_bb = self.context.append_basic_block(
+            destroy_func,
+            &format!("{}.arena.destroy.do", locus_name),
+        );
+        self.builder
+            .build_conditional_branch(arena_is_null, after_bb, do_destroy_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(do_destroy_bb);
+
         let is_zero = self
             .builder
             .build_int_compare(
@@ -1307,6 +1333,15 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         self.builder.position_at_end(after_bb);
+        // Set the latch: mark this locus reclaimed so any later
+        // teardown of the same locus (the skip branch above) no-ops.
+        // Reached from both the post-release path (arena was live →
+        // now freed) and the skip branch (arena already NULL → store
+        // is a harmless no-op).
+        let null_arena = ptr_t.const_null();
+        self.builder
+            .build_store(arena_field_ptr, null_arena)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
 

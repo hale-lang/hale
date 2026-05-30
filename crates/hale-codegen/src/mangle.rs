@@ -747,7 +747,7 @@ impl<'a> Mangler<'a> {
                     self.walk_expr(e);
                 }
             }
-            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) => {}
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) => {}
             Stmt::Fail { value, .. } => self.walk_expr(value),
             Stmt::Block(b) => self.walk_block(b),
             Stmt::Recovery { args, modifier, .. } => {

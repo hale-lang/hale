@@ -1729,7 +1729,7 @@ fn scan_stmt_for_stdlib_usage(s: &Stmt, out: &mut StdlibErrorUsage) {
         Stmt::Return(None, _)
         | Stmt::Break(_)
         | Stmt::Continue(_)
-        | Stmt::Yield(_) => {}
+        | Stmt::Yield(_) | Stmt::Terminate(_) => {}
     }
 }
 

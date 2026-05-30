@@ -701,12 +701,20 @@ makes the whole owned subtree share the owner's lifetime
 (wholesale-freed with the owner's arena), fixing the dangle
 without leaking into a longer-lived parent arena.
 
-(Known pre-existing limitation, not addressed here: an
-`accept`'d child on a long-lived parent skips its own `dissolve`
-per the v1 trade-off, so its `__arena` — and now its
-field-children's structs that live in it — is reclaimed only
-when the parent dissolves. A daemon accepting many children
-leaks per-instance until process exit.)
+(Per-child reclamation, 2026-05-30. An `accept`'d child whose
+type is a **flow** — some parent declares `release(c: Child)` —
+is reclaimed when its `run()` completes (or it calls
+`terminate;`): drain → `release(owner, child)` → dissolve →
+`__arena` reclaim, on the child's own pool worker while the
+parent lives. So a daemon that accepts one flow child per
+connection reclaims each as its connection ends — bounded, no
+per-instance accumulation. A **resident** child — a type no
+parent `release`s — still lives until the parent dissolves (it
+is meant to: e.g. a fixed cohort of subscribers). The earlier
+"a daemon accepting many children leaks until process exit" held
+only when neither reclamation trigger applied; declaring the
+flow's `release` closes it. See spec/semantics.md § "release(c)
+and flow children".)
 
 Bus dispatch implements the spec's copy-not-pointer semantic:
 

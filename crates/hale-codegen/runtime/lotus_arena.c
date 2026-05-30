@@ -71,6 +71,7 @@
  * pool's OS thread. Dormant in this slice — the `async_io_enabled`
  * flag stays 0 until Slice 2 wires placement constraint to set it. */
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <ucontext.h>
 
 /* F.32-1γ-v2 session 2 (2026-05-26): TSAN suppressions.
@@ -4552,6 +4553,13 @@ typedef struct lotus_coop_pool {
      * to resume. */
     int               async_io_enabled;
     int               epoll_fd;
+    /* 2026-05-30 wakeable park: an eventfd registered in this pool's
+     * epoll (with data.ptr == the pool itself, distinguishing it from
+     * any parked coro). shutdown_all pokes it so a worker blocked in
+     * epoll_wait(-1) (parked coros, no cells) wakes, observes
+     * shutdown, and cancels its parked coros instead of hanging the
+     * join. -1 until async_io is enabled. */
+    int               wake_fd;
     ucontext_t        drain_ctx;
     lotus_coro_t     *current_coro;
     lotus_coro_t     *parked_head;
@@ -4611,6 +4619,7 @@ lotus_coop_pool_t *lotus_coop_pool_register(const char *name) {
      * placement entries declare `where async_io`. */
     p->async_io_enabled = 0;
     p->epoll_fd         = -1;
+    p->wake_fd          = -1;
     p->current_coro     = NULL;
     p->parked_head      = NULL;
     /* Truncated copy — the bound is LOTUS_COOP_POOL_MAX-name's-
@@ -4763,6 +4772,24 @@ int lotus_coop_pool_enable_async_io(lotus_coop_pool_t *p) {
         return -1;
     }
     p->epoll_fd = fd;
+    /* 2026-05-30 wakeable park: a shutdown/cancel wake channel. An
+     * eventfd registered in this epoll with data.ptr == p (never a
+     * coro ptr, so the drain loop tells them apart). Lets shutdown
+     * unblock a worker sitting in epoll_wait(-1). Non-fatal if the
+     * eventfd can't be created — the pool just falls back to the
+     * prior leak-parked-coros-at-exit behavior. */
+    int wfd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (wfd >= 0) {
+        struct epoll_event wev;
+        memset(&wev, 0, sizeof(wev));
+        wev.events   = EPOLLIN;
+        wev.data.ptr = p;
+        if (epoll_ctl(fd, EPOLL_CTL_ADD, wfd, &wev) < 0) {
+            close(wfd);
+            wfd = -1;
+        }
+    }
+    p->wake_fd = wfd;
     /* Publish epoll_fd + enable flag together via release fence so
      * the worker thread (which checks the flag without holding the
      * pool lock) sees a consistent pair. */
@@ -4897,10 +4924,31 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
         int shutdown_set = p->shutdown;
         pthread_mutex_unlock(&p->lock);
         if (shutdown_set && !cell_pending) {
-            /* Wake parked coros so they can observe shutdown and
-             * unwind. Not implemented in Slice 1 — for now, just
-             * return and let shutdown_all join the worker; the
-             * parked coros leak their stacks until process exit. */
+            /* 2026-05-30 wakeable park: the pool is shutting down and
+             * has no more cells, but coros are still parked. We do NOT
+             * resume them to unwind: a forever-loop run() (the stdlib
+             * Listener / http Server `while true { accept }`) does not
+             * cooperatively break on a cancel-wake — accept would
+             * return its sentinel, the loop would re-accept, and we'd
+             * spin (cooperative unwind needs the loop to check
+             * `self.draining`, which the stdlib loops don't — a future
+             * refinement). The process is exiting, so ABANDON them:
+             * free each parked coro's stack (its fd/arena are
+             * reclaimed at process exit / by the parent's dissolve).
+             * The wake eventfd — poked by shutdown_all — is what let
+             * this worker return from epoll_wait to reach here; that
+             * alone unblocks the join. */
+            lotus_coro_t *c = p->parked_head;
+            while (c) {
+                lotus_coro_t *next = c->next;
+                if (c->parked_fd >= 0) {
+                    (void)epoll_ctl(p->epoll_fd, EPOLL_CTL_DEL,
+                                    c->parked_fd, NULL);
+                }
+                lotus_coro_free(c);
+                c = next;
+            }
+            p->parked_head = NULL;
             return 0;
         }
         int timeout_ms = cell_pending ? 0 : -1;
@@ -4914,6 +4962,16 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
             n = 0;
         }
         for (int i = 0; i < n; i++) {
+            /* The wake eventfd uses data.ptr == p (never a coro) —
+             * it only exists to unblock epoll_wait so the shutdown
+             * check above runs. Drain it and skip. */
+            if (events[i].data.ptr == p) {
+                if (p->wake_fd >= 0) {
+                    uint64_t v;
+                    (void)read(p->wake_fd, &v, sizeof(v));
+                }
+                continue;
+            }
             lotus_coro_t *c = (lotus_coro_t *)events[i].data.ptr;
             if (!c) continue;
             /* Deregister fd; level-triggered semantics mean we MUST
@@ -5090,6 +5148,17 @@ void lotus_coop_pool_shutdown_all(void) {
         p->shutdown = 1;
         pthread_cond_broadcast(&p->not_empty);
         pthread_mutex_unlock(&p->lock);
+        /* 2026-05-30 wakeable park: the condvar broadcast above wakes
+         * a worker blocked on the cell queue, but NOT one blocked in
+         * epoll_wait(-1) (parked coros, no cells). Poke the wake
+         * eventfd so that worker returns from epoll_wait, sees
+         * shutdown, and cancels its parked coros — otherwise the
+         * join below hangs. */
+        if (__atomic_load_n(&p->async_io_enabled, __ATOMIC_ACQUIRE)
+            && p->wake_fd >= 0) {
+            uint64_t one = 1;
+            (void)write(p->wake_fd, &one, sizeof(one));
+        }
     }
     for (size_t i = 0; i < g_coop_pool_count; i++) {
         lotus_coop_pool_t *p = g_coop_pools[i];
@@ -5111,6 +5180,10 @@ void lotus_coop_pool_destroy_all(void) {
         pthread_cond_destroy(&p->not_empty);
         pthread_mutex_destroy(&p->lock);
         if (p->cells) free(p->cells);
+        if (p->wake_fd >= 0) {
+            close(p->wake_fd);
+            p->wake_fd = -1;
+        }
         if (p->epoll_fd >= 0) {
             close(p->epoll_fd);
             p->epoll_fd = -1;
@@ -7054,7 +7127,9 @@ int lotus_tcp_accept_one(int listen_fd) {
                 continue;
             }
         }
-        perror("lotus_tcp_accept_one: accept");
+        /* Silent on a cancel-wake: park returned -1 because the coro
+         * is unwinding (pool shutdown / parent drain), not an error. */
+            perror("lotus_tcp_accept_one: accept");
         return -1;
     }
 }
@@ -7673,7 +7748,7 @@ int lotus_tcp_send_str(int fd, const char *msg) {
         if (w < 0 && async && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             if (lotus_coop_park_on_fd(fd, EPOLLOUT) == 0) continue;
         }
-        perror("lotus_tcp_send_str: write");
+            perror("lotus_tcp_send_str: write");
         return -1;
     }
     return 0;
@@ -7719,7 +7794,7 @@ int lotus_tcp_send_bytes(int fd, const void *bytes_ptr) {
         if (w < 0 && async && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             if (lotus_coop_park_on_fd(fd, EPOLLOUT) == 0) continue;
         }
-        perror("lotus_tcp_send_bytes: write");
+            perror("lotus_tcp_send_bytes: write");
         return -1;
     }
     return 0;

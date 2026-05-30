@@ -195,6 +195,8 @@ pub enum TokenKind {
     Async,
     Await,
     Yield,
+    Terminate,
+    Release,
     Macro,
     Where,
     // v1.x-VIOLATE (F.27): `with` is no longer reserved at the
@@ -556,6 +558,8 @@ impl<'a> Lexer<'a> {
             "async" => TokenKind::Async,
             "await" => TokenKind::Await,
             "yield" => TokenKind::Yield,
+            "terminate" => TokenKind::Terminate,
+            "release" => TokenKind::Release,
             "macro" => TokenKind::Macro,
             "where" => TokenKind::Where,
             // `with` is NOT in this list — v1.x-VIOLATE (F.27)
