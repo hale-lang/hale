@@ -2769,6 +2769,22 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             || parent_accepts_us
             || parent_owns_via_field;
         if !defer {
+            // 2026-05-30 wakeable park: the main locus owns the
+            // program's cooperative pools (its `placement { }`
+            // spawned them) and its field-children may have run()
+            // coros parked on those pools. Quiesce the pools FIRST —
+            // shutdown_all wakes+cancels every parked coro so it
+            // unwinds through its normal run() exit WHILE the main
+            // locus's arena (and the children's, which nest in it)
+            // is still valid. Without this, a coro parked at exit
+            // resumes after the field cascade below frees its arena
+            // → use-after-free (observed: a listener parked in
+            // accept() segfaults on the Stream it builds when
+            // resumed post-free). Idempotent with the epilogue's
+            // shutdown_all (worker_started latch).
+            if self.main_locus_name.as_deref() == Some(locus_name) {
+                self.emit_coop_pool_shutdown_all()?;
+            }
             // Phase-2 (3): cascade child-field drains depth-first
             // BEFORE outer's drain, per spec/runtime.md "drain()
             // cascades depth-first; children first, then self."

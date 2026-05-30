@@ -2993,7 +2993,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// destroying the arena concurrently with still-active
     /// worker threads. Idempotent + no-op when no pools were
     /// registered.
-    fn emit_coop_pool_shutdown_all(&mut self) -> Result<(), CodegenError> {
+    pub(crate) fn emit_coop_pool_shutdown_all(&mut self) -> Result<(), CodegenError> {
         if !self.main_cooperative_pools.is_empty() {
             let shutdown_fn = self
                 .module
@@ -4296,14 +4296,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // both `break`/`return`), the trailing block is already
         // closed and writing more IR is unsound.
         if end == BlockEnd::Open {
-            self.flush_dissolve_frame()?;
-            // Join cooperative-pool workers BEFORE arena_destroy.
-            // Workers may still be running locus methods that
-            // touch arena state — racing with main's
-            // arena_destroy was the substrate-level TSAN race
-            // suppressed in F.32-1γ-v2 session 2 and fixed here
-            // (2026-05-26).
+            // Join cooperative-pool workers BEFORE the dissolve
+            // cascade (2026-05-30, wakeable-park prototype). A worker
+            // may have a coro PARKED inside a locus's run() (e.g. a
+            // listener in accept()); shutdown_all now wakes+cancels it
+            // so it unwinds. That must happen while the locus's arena
+            // is still valid — if flush_dissolve_frame dissolved the
+            // locus first, the resuming coro would read its `self`
+            // from freed memory (observed: core dump). Joining first
+            // also preserves the prior invariant (workers joined
+            // before arena_destroy — the F.32-1γ-v2 TSAN fix).
             self.emit_coop_pool_shutdown_all()?;
+            self.flush_dissolve_frame()?;
             // Tear down the arena before exit. exit(0) via `ret`
             // would drop the chunk linked list either way (process
             // exit reclaims everything), but going through
@@ -12025,15 +12029,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // truncates the i64 to i32 to match the declared
             // ABI. main itself returns void at the lotus level
             // OR Int (per spec/runtime.md), but at LLVM we always
-            // emit i32. Flush the dissolve frame first so any
-            // long-lived loci wind down before the process exits,
-            // then tear down the arena.
-            self.flush_dissolve_frame()?;
-            // Join cooperative-pool workers BEFORE arena_destroy —
-            // see the matching block in `lower_program`'s main-
-            // exit path for rationale. (2026-05-26 substrate-race
-            // fix.)
+            // emit i32. Join cooperative-pool workers FIRST so a coro
+            // parked inside a locus's run() is woken+unwound while its
+            // arena is still valid — see the matching block in
+            // `lower_program`'s main-exit path (2026-05-30, extends
+            // the 2026-05-26 substrate-race fix). Then flush the
+            // dissolve frame, then tear down the arena.
             self.emit_coop_pool_shutdown_all()?;
+            self.flush_dissolve_frame()?;
             self.emit_arena_destroy()?;
             self.emit_bus_queue_destroy()?;
             // Re-open an empty frame so the post-flush bookkeeping
