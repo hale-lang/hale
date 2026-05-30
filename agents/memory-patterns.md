@@ -276,9 +276,32 @@ residency requires either:
     `hashmap.set(k, v)` on existing keys, and String / Bytes
     reassign with same-or-shorter length.
 
-If you write a hot-path method that fits *neither* category, you'll
-leak. The compiler closes more shapes than you'd expect — but the
-underlying constraint is structural.
+(c) The alloc lives in an `accept`'d child locus that is reclaimed
+    when *it* ends — not when the parent does. This is the
+    connection/per-request shape: a long-lived parent `accept`s one
+    child per connection, each child's state lives in the child's
+    own arena, and the child is reclaimed the moment its flow ends.
+    Make the child a **flow** by declaring `release(c: Child)` on the
+    parent; the child's `run()` is its lifetime (a recv/park loop
+    that returns on close), and run-completion reclaims it. Or end it
+    explicitly with `terminate;`. Without one of these, an accept'd
+    child is a *resident* — it lives until the parent dissolves (a
+    daemon never dissolves → unbounded growth, the May-2026
+    accept-loop leak). See spec/semantics.md § "release(c) and flow
+    children". The canonical daemon shape:
+
+        locus Conn {
+            params { fd: Int = -1; rx: std::bytes::BytesBuilder = ...; }
+            run() { while true { let f = recv(...); if f.closed { return; } ... } }
+        }
+        locus Server {
+            accept(c: Conn) { }
+            release(c: Conn) { }   // ← marks Conn a flow: reclaim on run() return
+        }
+
+If you write a hot-path method that fits *none* of these categories,
+you'll leak. The compiler closes more shapes than you'd expect — but
+the underlying constraint is structural.
 
 ## Cross-references
 

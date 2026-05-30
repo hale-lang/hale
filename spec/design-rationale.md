@@ -2522,11 +2522,11 @@ story.
   tracked paths** — the ephemeral dispatch in
   `lower_locus_instantiation` or the `flush_dissolve_frame`
   deferred path. Both cover normal control flow (statement
-  literals, let-binding scope exits, fn returns). Pinned and
-  `parent_accepts_us` paths inherit the existing "v1 trade-off:
-  child's dissolve body skipped" behavior; the new cascade
-  doesn't extend to those edges yet (matches the comment on
-  line 29183).
+  literals, let-binding scope exits, fn returns). The pinned tail
+  inherits the existing "v1 trade-off: child's dissolve body
+  skipped" behavior. `accept`'d children no longer do: they are
+  reclaimed on their OWN completion — see "Per-child reclamation
+  of accept'd children" below.
 - **Diamond / cycle composition is undefined.** A locus that
   appears in two field slots of the same parent dissolves
   twice. The locus literal model already forbids reuse (each
@@ -2560,6 +2560,80 @@ Tests: `crates/hale-codegen/tests/locus_field_cascade.rs` —
 ordering of the cascade (outer body → inner cascade → outer
 arena_destroy), and a 100k-iteration construct-destroy loop
 exercising the cascade path under load.
+
+### Per-child reclamation of accept'd children (2026-05-30)
+
+**Problem.** An `accept`'d child lives in (a subregion of) its
+parent's arena and, at v1, was reclaimed only when the *parent*
+dissolved. For a daemon — a server whose top locus loops forever
+and never dissolves — that means *never*: a parent that accepts
+one child per connection accumulates one arena per connection for
+the life of the process (measured ~8.7 KB/child, linear; 6000
+connections → ~58 MB and climbing). The leak is in the *primary
+server shape*, not a corner.
+
+**Why not a manual free.** The obvious fix — a `free(child)` /
+`dissolve self` the developer calls when a connection closes — is
+the C trap: imperative lifetime management bolted onto a
+region-and-lifecycle model, easy to forget (releak) or
+double-call (use-after-free). Hale's whole memory story is that
+lifetime is *structural*. So the fix must *invoke* the existing
+declarative teardown early, never bypass it.
+
+**The model: a child is bound by its parent, but ends with its
+own flow.** A child's lifetime is nested in the parent's (it
+cannot outlive the parent — the parent-dissolve cascade is the
+upper-bound backstop), but it should be reclaimed when *its* work
+ends, not deferred to the parent. Two shapes, distinguished by
+the parent's declaration, never guessed:
+
+- **Flow** — the parent declares `release(c: Child)`. The child's
+  `run()` *is* its flow (e.g. a connection's recv/park loop that
+  returns on EOF); when `run()` completes, the child is reclaimed.
+  A plain `return` reclaims a connection — no ceremony.
+- **Resident** — no parent `release`s the type. `run()` returning
+  means "ready"; the child lives as a subscriber until the parent
+  dissolves (a fixed cohort of workers is *meant* to). The same
+  `run()`-returns event means opposite things for the two shapes,
+  which is exactly why the discriminator is explicit.
+
+**The verbs.**
+- `terminate;` — the locus analogue of `return`: a child ends its
+  own lifecycle from inside one of its methods. It sets a latch
+  and exits; the teardown runs at completion. Explicit, works for
+  any child (a resident that decides to end early, a flow closing
+  itself). It *invokes* drain → dissolve → reclaim — never a raw
+  free — so it cannot leak or double-free.
+- `release(c: Child)` — the death-side bookend, symmetric to
+  `accept(c: Child)`. It both *marks the flow* and gives the
+  parent a single place to observe every completion, firing after
+  the child drains and before it dissolves so the parent reads
+  the child's final settled state (mirror of `accept` reading it
+  fresh). The parent decides both ends of a child's life — birth
+  via `accept`, the death model via the presence of `release` —
+  without ever holding a mutable registry of live children: the
+  child flows in on the bookend, the runtime does the teardown.
+
+**Safety.** Reclaim runs on the child's own pool worker after
+`run()` returns, while its arena is valid — the parent isn't
+dissolving. `emit_locus_arena_destroy` is idempotent (NULLs
+`__arena`), so a child reclaimed early and then reached again by
+the parent's eventual dissolve is torn down exactly once. A coro
+*parked* at teardown time (shutdown, a future parent-drain) is
+cancelled cooperatively — the **wakeable park**: a wake `eventfd`
+unblocks the pool worker, a cancel flag makes the parked
+`recv`/`accept` return its EOF sentinel, and `run()` unwinds its
+own stack. The runtime never seizes a suspended frame.
+
+**Known tails (v1).** Completion detected inside a *handler*
+body (vs `run()`); slot removal from an *iterating* parent's
+children buffer; the full latch gating drain+dissolve (only the
+arena free is latched); a typecheck gate confining `terminate` /
+`release` to locus method bodies; and graceful-shutdown reclaim
+of residents.
+
+Tests: `terminate_reclaims_child`, `release_reclaims_flow`,
+`async_io_shutdown_parked`.
 
 ### F.30 BytesView — non-owning view as a distinct type
 

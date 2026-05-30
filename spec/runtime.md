@@ -124,8 +124,35 @@ the model: runtime is automatic; stdlib is explicit.
   outer locus's own drain. The subsequent dissolve cascade
   runs the outer's `closures → dissolve` body next, then per
   child `closures → dissolve → arena_destroy`, then outer's
-  arena_destroy. Pinned-thread tail and `parent_accepts_us`
-  still skip the cascade per the v1 trade-off.
+  arena_destroy. Pinned-thread tail still skips the cascade
+  per the v1 trade-off. An `accept`'d child is reclaimed on its
+  OWN run-completion / `terminate` when it is a flow (see
+  "Per-child reclamation" below) rather than waiting for the
+  parent's cascade.
+- **Per-child reclamation** (2026-05-30). An `accept`'d child's
+  `run()` is posted to its pool as a coro, run through a
+  synthesized `__coop_pool_run_<L>` wrapper. When that run()
+  completes, the wrapper reclaims the child — drain → (for a
+  flow) the parent's `release(owner, self)` → dissolve →
+  arena/recpool release — iff the child is a **flow** (some
+  declared locus has `release(c: ThisType)`) OR it set the
+  `__drain_requested` latch via `terminate;`. A non-flow
+  ("resident") child whose run() merely returns is NOT reclaimed
+  (it lives to parent dissolve). The reclaim runs on the child's
+  own pool worker while its arena is valid; `emit_locus_arena_
+  destroy` is idempotent (NULLs `__arena`), so a later
+  parent-dissolve of the same locus no-ops. Cooperative
+  cancellation of a coro PARKED at the time of teardown (pool
+  shutdown, later a parent drain) is the **wakeable park**: a
+  per-pool wake `eventfd` in the pool's epoll lets `shutdown_all`
+  unblock a worker sitting in `epoll_wait(-1)`; a `cancel`
+  flag makes `lotus_coop_park_on_fd` return -1 so the parking
+  primitive yields its EOF/empty sentinel and `run()` unwinds
+  normally — never seizing a suspended stack.
+- **Recovery primitives.** `restart`, `restart_in_place`,
+  `quarantine`, `reorganize`, `bubble`, `dissolve`, `drain` —
+  all language keywords; runtime implements the actual
+  effects.
 - **Recovery primitives.** `restart`, `restart_in_place`,
   `quarantine`, `reorganize`, `bubble`, `dissolve`, `drain` —
   all language keywords; runtime implements the actual
