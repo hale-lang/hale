@@ -238,10 +238,16 @@ operational constraints.)
 cooperative yield point; lowers to a bus-queue drain in
 codegen. Listed under cooperative-scheduler keywords.
 
+`terminate` (2026-05-30) is a statement keyword — ends the
+current locus's lifecycle from inside one of its own methods
+(the locus analogue of `return`). Only valid inside a locus
+method body. See spec/semantics.md § "terminate".
+
 ### Cooperative-scheduler keywords
 
 ```
 yield
+terminate
 ```
 
 ### Fallible / error-addressing keywords (v1.x-FORM-1)

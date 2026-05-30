@@ -309,6 +309,10 @@ fn scan_stmt(
             fn_name: "yield".to_string(),
             span: *span,
         }),
+        Stmt::Terminate(span) => Some(Impurity::ImpureStdlibCall {
+            fn_name: "terminate".to_string(),
+            span: *span,
+        }),
         Stmt::Return(opt, _) => {
             if let Some(e) = opt {
                 scan_expr(e, all_fns, map, any_unknown)
@@ -664,7 +668,7 @@ fn stmt_span(s: &Stmt) -> Span {
         | Stmt::Violate { span, .. }
         | Stmt::Send { span, .. } => *span,
         Stmt::Return(_, span) => *span,
-        Stmt::Break(span) | Stmt::Continue(span) | Stmt::Yield(span) => *span,
+        Stmt::Break(span) | Stmt::Continue(span) | Stmt::Yield(span) | Stmt::Terminate(span) => *span,
         Stmt::If(if_stmt) => if_stmt.span,
         Stmt::Match(m) => m.span,
         Stmt::Block(b) => b.span,

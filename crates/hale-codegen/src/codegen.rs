@@ -2090,7 +2090,7 @@ fn count_self_fields_in_stmt(
             count_self_fields_in_expr(value, counts, depth);
         }
         Stmt::Expr(e) => count_self_fields_in_expr(e, counts, depth),
-        Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) => {}
+        Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) => {}
     }
 }
 
@@ -2286,9 +2286,11 @@ fn stmt_reads_self_children(s: &Stmt) -> bool {
             expr_reads_self_children(subject) || expr_reads_self_children(value)
         }
         Stmt::Expr(e) => expr_reads_self_children(e),
-        Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) => {
-            false
-        }
+        Stmt::Return(None, _)
+        | Stmt::Break(_)
+        | Stmt::Continue(_)
+        | Stmt::Yield(_)
+        | Stmt::Terminate(_) => false,
     }
 }
 
@@ -3367,6 +3369,105 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     &format!("{}.run.via_pool", locus_name),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // 2026-05-30 per-child terminate: if run() ended with the
+            // `__drain_requested` latch set (via `terminate;`), this
+            // locus asked to end — its run() coro has completed, so
+            // reclaim it NOW (drain → dissolve → arena reclaim)
+            // instead of waiting for the parent to dissolve (which,
+            // for a daemon parent, is never — the leak). The teardown
+            // mirrors the ephemeral if-!defer path in
+            // lower_locus_instantiation; the idempotent arena-destroy
+            // latch makes a later parent-dissolve of the same locus a
+            // no-op. Runs on the pool worker (the coro's own thread)
+            // while the locus's arena is still valid — the parent
+            // isn't dissolving.
+            let i64_t = self.context.i64_type();
+            let dr_ptr = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    self_arg,
+                    info.drain_requested_field_idx,
+                    &format!("{}.terminate.dr.ptr", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let dr = self
+                .builder
+                .build_load(i64_t, dr_ptr, &format!("{}.terminate.dr", locus_name))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_int_value();
+            let terminating = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    dr,
+                    i64_t.const_int(0, false),
+                    &format!("{}.terminate.set", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let reclaim_bb =
+                self.context.append_basic_block(wrapper, "terminate.reclaim");
+            let ret_bb =
+                self.context.append_basic_block(wrapper, "terminate.ret");
+            self.builder
+                .build_conditional_branch(terminating, reclaim_bb, ret_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+            self.builder.position_at_end(reclaim_bb);
+            let prev_fn = self.current_fn.take();
+            let prev_self = self.current_self.take();
+            self.current_fn = Some(wrapper);
+            self.current_self = Some(SelfCx {
+                locus_name: locus_name.clone(),
+                struct_ty: info.struct_ty,
+                self_ptr: self_arg,
+                fields: info.fields.clone(),
+            });
+            // drain (children first, then self) → __dissolve_closures
+            // → dissolve → field dissolves → arena reclaim.
+            self.emit_locus_field_drains(&info, self_arg, locus_name)?;
+            if let Some(drain_fn) = info.methods.get("drain") {
+                if !info.empty_lifecycle.contains("drain") {
+                    self.builder
+                        .build_call(
+                            *drain_fn,
+                            &[self_arg.into()],
+                            &format!("{}.terminate.drain", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+            }
+            if let Some(closures_fn) = info.dissolve_closures_fn {
+                let (parent_self, handler_ptr) =
+                    self.resolve_failure_route(locus_name);
+                self.builder
+                    .build_call(
+                        closures_fn,
+                        &[self_arg.into(), parent_self.into(), handler_ptr.into()],
+                        &format!("{}.terminate.closures", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            if let Some(dissolve_fn) = info.methods.get("dissolve") {
+                if !info.empty_lifecycle.contains("dissolve") {
+                    self.builder
+                        .build_call(
+                            *dissolve_fn,
+                            &[self_arg.into()],
+                            &format!("{}.terminate.dissolve", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+            }
+            self.emit_locus_field_dissolves(&info, self_arg, locus_name)?;
+            self.emit_locus_arena_destroy(&info, self_arg, locus_name)?;
+            self.current_fn = prev_fn;
+            self.current_self = prev_self;
+            self.builder
+                .build_unconditional_branch(ret_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+            self.builder.position_at_end(ret_bb);
             self.builder
                 .build_return(None)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -9818,6 +9919,48 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // threads (TLS is null).
                 self.emit_pinned_mailbox_drain_pending()?;
                 Ok(BlockEnd::Open)
+            }
+            Stmt::Terminate(_) => {
+                // 2026-05-30 per-child terminate: end this locus's
+                // lifecycle. Set the `__drain_requested` latch on the
+                // current self, then exit the method like `return;`.
+                // When the method/run coro completes with the latch
+                // set, the run-wrapper runs the locus's drain →
+                // dissolve → reclaim (see synthesize_coop_pool_run
+                // _wrappers). Reuses the existing drain-requested slot
+                // as the `terminating` latch (per the design); the
+                // idempotent arena-destroy makes a later parent-
+                // dissolve teardown of the same locus a no-op.
+                let cs = self.current_self.as_ref().cloned().ok_or_else(|| {
+                    CodegenError::Unsupported(
+                        "`terminate`: no enclosing locus self".into(),
+                    )
+                })?;
+                let info = self
+                    .user_loci
+                    .get(&cs.locus_name)
+                    .cloned()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "`terminate`: no LocusInfo for `{}`",
+                            cs.locus_name
+                        ))
+                    })?;
+                let i64_t = self.context.i64_type();
+                let dr_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        cs.struct_ty,
+                        cs.self_ptr,
+                        info.drain_requested_field_idx,
+                        "terminate.drain_requested.ptr",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(dr_ptr, i64_t.const_int(1, false))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // Exit the current method, like `return;`.
+                self.lower_return(None, scope)
             }
             Stmt::Block(b) => self.lower_block(b, scope),
             Stmt::Return(expr_opt, _) => self.lower_return(expr_opt.as_ref(), scope),

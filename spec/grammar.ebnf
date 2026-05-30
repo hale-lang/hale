@@ -638,6 +638,7 @@ statement         = let_stmt
                   | break_stmt
                   | continue_stmt
                   | yield_stmt
+                  | terminate_stmt
                   | recovery_stmt
                   | violate_stmt
                   | fail_stmt
@@ -693,6 +694,10 @@ return_stmt       = "return" , [ expression ] , ";" ;
 break_stmt        = "break" , ";" ;
 continue_stmt     = "continue" , ";" ;
 yield_stmt        = "yield" , ";" ;
+(* `terminate;` ends the current locus's lifecycle from inside one
+   of its own methods — the locus analogue of `return`. Only valid
+   inside a locus method body. See spec/semantics.md. *)
+terminate_stmt    = "terminate" , ";" ;
 
 (* v1.x-FORM-1: `fail <expr>;` exits a fallible function via the
    error path, attaching `<expr>` as the payload. Symmetric to

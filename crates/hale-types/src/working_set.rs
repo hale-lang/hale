@@ -906,7 +906,7 @@ fn stmt_scratch_bytes(s: &hale_syntax::ast::Stmt, idx: &Index<'_>) -> u64 {
         Stmt::Return(None, _)
         | Stmt::Break(_)
         | Stmt::Continue(_)
-        | Stmt::Yield(_) => 0,
+        | Stmt::Yield(_) | Stmt::Terminate(_) => 0,
     }
 }
 

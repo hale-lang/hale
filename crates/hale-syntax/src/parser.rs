@@ -2964,6 +2964,7 @@ impl Parser {
             | TokenKind::Break
             | TokenKind::Continue
             | TokenKind::Yield
+            | TokenKind::Terminate
             | TokenKind::LBrace
             | TokenKind::Restart
             | TokenKind::RestartInPlace
@@ -3077,6 +3078,11 @@ impl Parser {
                 let kw = self.bump();
                 let semi = self.expect(TokenKind::Semi, ";")?;
                 Ok(Stmt::Yield(kw.span.merge(semi.span)))
+            }
+            TokenKind::Terminate => {
+                let kw = self.bump();
+                let semi = self.expect(TokenKind::Semi, ";")?;
+                Ok(Stmt::Terminate(kw.span.merge(semi.span)))
             }
             TokenKind::LBrace => Ok(Stmt::Block(self.parse_block()?)),
             // Recovery primitives. m55: per The Design, the

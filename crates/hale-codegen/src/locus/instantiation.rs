@@ -2660,13 +2660,21 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     self.builder
                         .build_unconditional_branch(cont_bb)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    // Sync path: no pool in scope — run inline.
+                    // Sync path: no pool in scope — run inline. Call
+                    // the WRAPPER (not run_fn directly) so a `terminate`
+                    // in a synchronously-run locus still triggers the
+                    // wrapper's reclaim (2026-05-30). The wrapper runs
+                    // run() then reclaims iff __drain_requested is set;
+                    // for a non-terminating run() it's just run() + a
+                    // cheap latch check.
                     self.builder.position_at_end(sync_bb);
+                    let null_payload =
+                        self.context.ptr_type(AddressSpace::default()).const_null();
                     self.builder
                         .build_call(
-                            *run_fn,
-                            &[self_ptr.into()],
-                            &format!("{}.run.call", locus_name),
+                            wrapper,
+                            &[self_ptr.into(), null_payload.into()],
+                            &format!("{}.run.call.via_wrapper", locus_name),
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     self.builder
