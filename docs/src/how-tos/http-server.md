@@ -161,3 +161,12 @@ services, and demos.
   Handler locus's params for per-request audit lines.
 - [The bus](../concepts/the-bus.md) — handlers can publish to
   topics for fanout / metrics, with no extra coordination.
+- [Lifecycle & time](../concepts/lifecycle-time.md) — `std::http::Server`
+  is one request per connection (`Connection: close`). For
+  *stateful, persistent* connections (WebSocket-style, keep-alive),
+  drop below the Handler API: write your own `accept_one` loop with
+  a per-connection **flow** locus (`accept(c: Conn)` + `release(c: Conn)`),
+  whose `run()` is the connection's read loop. The connection's
+  state lives in the child's region and is reclaimed when its
+  `run()` returns on close — see
+  [Keeping memory bounded](./keeping-memory-bounded.md#reclaim-per-connection-state-with-flow-children).

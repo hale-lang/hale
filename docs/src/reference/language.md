@@ -27,7 +27,8 @@ with the spec, the spec wins.
   operational semantics. Program startup, locus
   instantiation, lifecycle method dispatch, bus dispatch,
   closure-test evaluation, recovery primitives, dissolve
-  timing rules, fallible call semantics, topic declarations.
+  timing rules, `terminate` / `release(c)` and flow-vs-resident
+  child reclamation, fallible call semantics, topic declarations.
 - [`spec/runtime.md`](https://github.com/hale-lang/hale/blob/main/spec/runtime.md) —
   what the runtime ships with: region allocator, scheduler,
   bus router, time primitives, schedule classes, perspective

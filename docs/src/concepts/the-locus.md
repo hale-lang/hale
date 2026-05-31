@@ -33,8 +33,9 @@ locus Matchmaker : projection chunked { // optional: annotations
         heap waiting of Player;
     }
 
-    birth()       { /* setup */ }       // lifecycle: 5 methods
+    birth()       { /* setup */ }       // lifecycle methods
     accept(c: T)  { /* on child arrival */ }
+    release(c: T) { /* on child completion (marks T a "flow") */ }
     run()         { /* steady state */ }
     drain()       { /* prepare to dissolve */ }
     dissolve()    { /* teardown */ }
@@ -102,13 +103,19 @@ state-machine transitions the runtime invokes:
 - `birth()` runs once at construction.
 - `accept(c)` runs when a child locus is attached (per parent
   policy; see the next chapter).
+- `release(c)` runs when an accept'd child *completes* — the
+  death-side bookend of `accept`. Declaring it marks the child
+  type a *flow* (reclaimed when its own `run()` ends) rather than
+  a *resident* (lives until the parent dissolves).
 - `run()` is the steady-state loop, if any.
 - `drain()` halts new work but lets in-flight finish.
 - `dissolve()` tears down the locus's region.
 
-Every locus has all five available; the compiler supplies
+Every locus has all of these available; the compiler supplies
 defaults for any you omit (`birth` no-ops, `dissolve` frees the
-region, etc.).
+region, etc.). See [Lifecycle & time](./lifecycle-time.md) for
+the full state machine, plus `terminate;` (a locus ending its
+own life) and the flow/resident distinction.
 
 **`on_failure(c, err)`** is the parent's recovery policy when a
 child fails. The handler chooses among `restart`, `quarantine`,

@@ -15,15 +15,16 @@ schedule classes, the cooperative yield model, drain cascade,
 the rules for when an unbound locus dissolves vs. stays
 alive, and why there's no `async` keyword.
 
-## The five lifecycle methods
+## The lifecycle methods
 
-Every locus type has five available lifecycle methods. None
+Every locus type has six available lifecycle methods. None
 are required; the compiler supplies defaults for any you omit.
 
 ```hale
 locus GameSession {
     birth()           { /* once at construction */ }
     accept(c: Player) { /* per child arrival */ }
+    release(c: Player) { /* per child completion */ }
     run()             { /* steady-state work */ }
     drain()           { /* prepare to dissolve */ }
     dissolve()        { /* teardown */ }
@@ -48,6 +49,16 @@ allocated. It's the parent's gatekeeper: the parent can read
 (return normally) or reject (route through `on_failure`). If
 accept rejects, the child instantiation expression fails and
 no resources are committed.
+
+**`release(c)`** is the death-side bookend, symmetric to
+`accept`. It runs when an accept'd child `c` *completes* —
+after `c` has drained, before it dissolves — so the parent gets
+one consistent place to observe each child finishing and to read
+its final state. Declaring `release(c: T)` also does something
+structural: it marks `T` a **flow** (see [Ending early](#ending-early-terminate-and-flow-children)
+below), so a `T` child is reclaimed the moment its own `run()`
+completes rather than living until the parent dissolves. It's
+policy only — it does not free anything.
 
 **`run()`** is the steady-state body. It may loop, wait for
 bus events, time-sleep, publish, do work. It's a cooperative
@@ -89,6 +100,7 @@ default:
 |---|---|
 | `birth()` | no-op |
 | `accept(c)` | register `c` in `self.children`; no policy |
+| `release(c)` | not supplied — absence means `c`'s type is a *resident*, not a flow (see below) |
 | `run()` | empty steady-state; locus waits for events or signals |
 | `drain()` | refuse new work, wait for in-flight |
 | `dissolve()` | free the region wholesale |
@@ -208,12 +220,17 @@ points:
    the subscriber's handler runs at its scheduler's next
    yield point.
 4. **`time::sleep(d)`.** Yields for at least `d` real time.
-   After the underlying `clock_nanosleep` returns, the
-   substrate drains the cooperative bus queue inline — so a
-   cooperative subscriber whose `run()` loops with
+   The sleep is sliced into intervals of at most 100ms, and the
+   substrate drains the cooperative bus queue after each slice —
+   so a cooperative subscriber whose `run()` loops with
    `time::sleep(...)` delivers cells posted by other threads
    (unix-bound reader threads, pinned publishers) mid-loop
-   without an explicit `yield;`. The drain is idempotent;
+   without an explicit `yield;`. The slicing matters for the
+   keep-alive idiom: a `main`-thread `while true { sleep(60s); }`
+   still services the bus ~10×/s instead of stalling every
+   `main`-pool handler for 60s at a stretch. Total wall-clock is
+   preserved (slices sum to `d`); sleeps ≤100ms are one slice, so
+   the common case is unchanged, and the drain is idempotent —
    existing `sleep; yield;` code stays correct.
 5. **Explicit `yield;`** — a statement-level construct that
    lets you insert a cooperative yield inside a long internal
@@ -300,6 +317,78 @@ fn main() {
 Multiple deferred dissolves in the same scope fire in
 **reverse instantiation order** at scope exit (LIFO),
 matching the depth-first cascade rule.
+
+## Ending early: `terminate` and flow children
+
+The dissolve rules above are about loci bound in a *function*
+scope. The other case is an **`accept`'d child of a long-lived
+parent** — a server that accepts one child per connection. By
+default such a child's region is reclaimed only when the
+*parent* dissolves; for a daemon whose parent never dissolves,
+that means the child's region is never reclaimed, and connections
+accumulate (see
+[Keeping memory bounded](../how-tos/keeping-memory-bounded.md#reclaim-per-connection-state-with-flow-children)).
+Hale gives a child two in-grain ways to end *with its own flow*,
+neither of which is a manual free — both invoke the normal
+`drain → dissolve → region-free` teardown:
+
+**`terminate;`** is the locus analogue of `return`. Inside one
+of a locus's own methods, it ends *that locus's* lifecycle: it
+exits the method immediately (code after it doesn't run, just
+like `return`), and when the method's `run()` completes the
+runtime tears the locus down. Use it when a locus decides it's
+finished — a connection that reads a close frame, a session that
+times out.
+
+```hale
+locus Worker {
+    run() {
+        let job = self.next();
+        if job.poisoned { terminate; }   // end myself now
+        self.process(job);
+    }
+}
+```
+
+**Flow children** make this automatic. A child whose parent
+declares `release(c: Child)` is a *flow*: its `run()` **is** its
+lifetime, and when `run()` returns the runtime reclaims it — no
+explicit `terminate;` needed. A connection child whose `run()`
+is a recv loop that returns on EOF reclaims on that plain
+`return`. The parent's `release(c)` fires on the way out (after
+drain, before dissolve) for a last look at the finished child.
+
+```hale
+locus Conn {
+    params { conn_fd: Int = -1; }
+    run() {
+        let stream = std::io::tcp::Stream { conn_fd: self.conn_fd, owns_fd: false };
+        loop {
+            let chunk = stream.recv(4096);
+            if len(chunk) == 0 { return; }   // client closed → Conn reclaimed
+            // ... handle chunk
+        }
+    }
+}
+
+locus Server {
+    accept(c: Conn)  { }
+    release(c: Conn) { }   // ← marks Conn a flow: reclaim on run() completion
+}
+```
+
+A child whose type **no** parent `release`s is a **resident**:
+its `run()` returning means "ready", and it lives — receiving bus
+events — until the parent dissolves. That's the right shape for a
+fixed cohort of long-lived workers a parent spawns at boot. The
+distinction is always explicit (the presence of `release`), never
+inferred: the same "`run()` returned" event means "reclaim me" for
+a flow and "I'm ready" for a resident.
+
+(At program shutdown, a parent dissolving still reclaims any
+children it hasn't already — the drain cascade is the backstop;
+flow reclamation is the *early* path that keeps a daemon bounded
+while it runs.)
 
 ## Why no async / await
 

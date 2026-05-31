@@ -203,6 +203,59 @@ Same for `Decimal -> Float` (`std::decimal::to_float` vs
 ASCII roundtrip). Always check whether a direct primitive exists
 before reaching for a `to_string` + `parse_X` bridge.
 
+### Reclaim per-connection state with flow children
+
+The patterns above bound a *method's* scratch. The other place
+unbounded growth hides is a **daemon that accepts one child locus
+per connection** (a server). Each accept'd child's state lives in
+the child's own arena — but by default that arena is freed only
+when the *parent* dissolves, and a daemon's parent never does. So
+per-connection arenas pile up for the life of the process: one
+leaked region per connection, forever.
+
+The fix is to make the child a **flow** — its lifetime is its own
+`run()`, not the parent's. Declare `release(c: Conn)` on the
+parent; then when a `Conn`'s `run()` completes (its recv loop
+returns on close), the runtime reclaims it — drains it, hands it
+to the parent's `release` for a last look, dissolves it, frees its
+arena — while the daemon keeps running.
+
+```hale
+locus Conn {
+    params {
+        conn_fd: Int               = -1;
+        rx:      std::bytes::BytesBuilder
+               = std::bytes::BytesBuilder { initial_cap: 4096 };
+    }
+    run() {
+        // run() IS the connection's lifetime. When the client
+        // closes, recv returns empty, this loop ends, run()
+        // returns — and Conn is reclaimed.
+        let stream = std::io::tcp::Stream { conn_fd: self.conn_fd, owns_fd: false };
+        loop {
+            let chunk = stream.recv(4096);
+            if len(chunk) == 0 { return; }   // ← EOF → reclaim
+            // ... handle chunk
+        }
+    }
+}
+
+locus Server {
+    accept(c: Conn)  { }
+    release(c: Conn) { }   // ← declaring this marks Conn a *flow*
+}
+```
+
+Without a `release` declaration (or an explicit `terminate;`), an
+accept'd child is a **resident** — it lives until the parent
+dissolves. That's correct for a fixed cohort of long-lived
+workers, but it's the leak for connections. If you accept a child
+per connection and RSS climbs with connection count, you have a
+resident that should be a flow. See
+[Lifecycle & time](../concepts/lifecycle-time.md) for `terminate`
+and `release`, and [Build an HTTP server](./http-server.md) for
+the full server shape.
+
 ## Operational knobs
 
 When code-level fixes aren't enough or are deferred, glibc
