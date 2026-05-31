@@ -426,6 +426,26 @@ pub fn desugar_intra_locus_topics(program: &mut Program) {
     let (pubs, subs) = collect_pub_sub(&program.items);
     let locus_types = collect_locus_type_names(&program.items);
     let locus_fields = collect_locus_typed_fields(&program.items, &locus_types);
+    // F.31 pool-safety (2026-05-31): the set of (owner_locus,
+    // field) pairs whose `placement { }` puts the field-child on
+    // a thread OTHER than its owner's (a named cooperative pool
+    // that isn't `main`, or a pinned thread). The intra-locus
+    // rewrite below turns a publish into a *direct, synchronous*
+    // method call on the publisher's own thread — correct only
+    // when publisher and subscriber share an execution context.
+    // For an off-thread subscriber that bypasses the bus's
+    // `lotus_coop_pool_post` routing: the handler would run on the
+    // publisher's thread (e.g. main), violating the
+    // single-threaded-pool invariant AND dropping the pool context
+    // that any locus the handler instantiates needs to inherit
+    // (an accept'd child's run() would then go synchronous + its
+    // subscriptions register on the global queue — observed as a
+    // per-connection handler blocking the main thread in accept()).
+    // Such publishes must stay on the bus dispatch path. Same-locus
+    // (case a) and non-main-owner field-children (placement is a
+    // main-locus-only seam, so those share the owner's pool) are
+    // unaffected.
+    let placed_off_owner_thread = collect_off_owner_thread_fields(&program.items);
     // Phase 3 (2026-05-25): collect the set of topic names that
     // declare `keyed_by` (or `on_unmatched`). The intra-locus
     // optimization rewrites publishes to direct method calls,
@@ -504,6 +524,13 @@ pub fn desugar_intra_locus_topics(program: &mut Program) {
             continue;
         }
         let field = fields_of_s[0].clone();
+        // F.31 pool-safety: if this field-child is placed on a
+        // thread other than its owner's, the publish must route
+        // through the bus (which posts to the child's pool), not a
+        // direct same-thread call. See `placed_off_owner_thread`.
+        if placed_off_owner_thread.contains(&(pub_locus.clone(), field.clone())) {
+            continue;
+        }
         eligible.insert(
             topic.clone(),
             EligibleRewrite {
@@ -525,6 +552,56 @@ pub fn desugar_intra_locus_topics(program: &mut Program) {
             _ => {}
         }
     }
+}
+
+/// Set of (owner_locus, field) pairs whose `placement { }` entry
+/// puts the field-child on a thread other than the owner's: a
+/// named cooperative pool that isn't `main`, or a pinned thread.
+/// `cooperative` with no pool (or `pool = main`) keeps the child
+/// on the owner's (main) thread, so a direct same-thread call is
+/// safe and stays eligible for the intra-locus rewrite.
+///
+/// F.31 scopes `placement { }` to the main locus, so in practice
+/// only main-locus fields appear here — but the walk is
+/// locus-agnostic, so a future non-main placement seam is covered
+/// automatically.
+fn collect_off_owner_thread_fields(
+    items: &[TopDecl],
+) -> std::collections::BTreeSet<(String, String)> {
+    let mut out = std::collections::BTreeSet::new();
+    fn walk(
+        items: &[TopDecl],
+        out: &mut std::collections::BTreeSet<(String, String)>,
+    ) {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => {
+                    for member in &l.members {
+                        if let LocusMember::Placement(pb) = member {
+                            for e in &pb.entries {
+                                let off_thread = match &e.spec {
+                                    PlacementSpec::Cooperative { pool } => pool
+                                        .as_ref()
+                                        .is_some_and(|p| p.name != "main"),
+                                    PlacementSpec::Pinned { .. } => true,
+                                };
+                                if off_thread {
+                                    out.insert((
+                                        l.name.name.clone(),
+                                        e.field.name.clone(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                TopDecl::Module(m) => walk(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    walk(items, &mut out);
+    out
 }
 
 /// Set of every declared locus type name in the program (across

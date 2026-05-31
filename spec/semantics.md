@@ -976,7 +976,10 @@ to a synchronous method call. The `subscribe` / `publish`
 entries stay declared (still type-check) but the bus runtime
 never sees traffic on the optimized subject. This is a pure-perf
 rewrite — observable behavior is identical modulo timing
-(synchronous instead of cooperative-deferred).
+(synchronous instead of cooperative-deferred) — *provided
+publisher and subscriber share an execution context* (see the
+placement carve-out below; that condition is what keeps the
+rewrite observably transparent).
 
 Out of scope for v1 (fall through to bus dispatch unchanged):
 
@@ -987,6 +990,19 @@ Out of scope for v1 (fall through to bus dispatch unchanged):
   mechanism that doesn't exist in v1.
 - A parent with multiple direct fields of the subscriber type
   (ambiguous receiver).
+- **Off-thread subscribers (F.31 placement).** When the
+  subscriber is a main-locus field placed on a cooperative pool
+  other than `main`, or on a pinned thread, the direct call would
+  run the handler on the *publisher's* thread instead of the
+  subscriber's pool worker — breaking the single-threaded-pool
+  invariant and dropping the pool context that any locus the
+  handler instantiates must inherit (an accept'd child's `run()`
+  would otherwise go synchronous, and its `subscribe`s would
+  register on the global queue rather than the pool). Such
+  publishes stay on the bus dispatch path, which posts to the
+  subscriber's pool via `lotus_coop_pool_post`. `cooperative` with
+  no pool (or `pool = main`) keeps the subscriber on the
+  publisher's thread, so it remains eligible.
 
 A bound topic is never optimized: the binding may publish to
 remote subscribers that aren't visible at compile time.
