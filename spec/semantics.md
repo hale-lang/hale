@@ -166,6 +166,68 @@ dissolves until fn exit. Per-iteration cleanup uses a helper
 free fn whose return is the per-iteration boundary (see
 `handle_one_connection` in `stdlib/io_tcp.hl`).
 
+### `terminate`
+
+`terminate;` (2026-05-30) ends the current locus's lifecycle
+from inside one of its own methods — the locus analogue of
+`return` (which ends a fn). It is only valid inside a locus
+method body. It does **not** free anything directly: it sets
+the locus's `__drain_requested` latch and exits the current
+method like `return;`. When the method's `run()` coro completes
+with the latch set, the runtime runs the locus's normal
+`drain → dissolve → arena reclaim` — i.e. `terminate` *invokes*
+the declarative teardown early; it is never a manual free.
+
+Its purpose is **per-child reclamation on completion** for an
+`accept`'d child whose lifetime is its own flow rather than its
+parent's. An accept'd child on a daemon parent is otherwise
+reclaimed only when the parent dissolves (never, for a daemon),
+so per-connection children accumulate. A connection child whose
+`run()` is a recv/park loop ending on EOF can `terminate;` (or
+just `return;` once run-completion-reclaim for declared flows
+lands) so its arena is reclaimed the moment its flow ends, while
+the parent and the rest of the program keep running. Reclamation
+is idempotent (the arena-destroy latch), so a `terminate` that
+races the parent's eventual dissolve is torn down exactly once.
+
+The reclaim runs on the coro's own pool worker, after `run()`
+returns, while the locus's arena is still valid — never seizing
+a still-executing frame. (A child that `terminate`s mid-`run()`
+exits `run()` immediately, like `return`; code after `terminate`
+in the same method does not execute.)
+
+### `release(c)` and flow children
+
+`release(c: Child) { ... }` (2026-05-30) is the death-side
+bookend, symmetric to `accept(c: Child)`. Declaring it on a
+parent has two effects:
+
+1. **It marks `Child` a *flow*.** A flow child is reclaimed when
+   its `run()` *completes* — a plain `return` (or running off the
+   end of `run()`), no explicit `terminate;` required. This is
+   the connection model: `run()` is the connection's flow (a
+   recv/park loop that returns on EOF), and the child's arena is
+   reclaimed the moment that flow ends. A child whose type is NOT
+   declared in any parent's `release` is a *resident*: its `run()`
+   returning means "ready" (it lives on as a subscriber), and it
+   is reclaimed only when the parent dissolves. The same
+   `run()`-returns event thus means "reclaim me" for a flow and
+   "ready" for a resident — disambiguated by the parent's
+   declaration, never guessed.
+2. **It fires on each completion.** When a flow child completes
+   (via run-completion OR `terminate;`), the runtime calls
+   `parent.release(owner, child)` — **after** the child drains,
+   **before** it dissolves — so the parent observes the
+   completion and reads the child's final settled state (the
+   mirror of `accept(c)`, which reads it fresh). `release` is
+   policy only: it does not free. The owner is the accept'ing
+   parent, recorded at accept time; `release` does not fire if a
+   flow-typed locus is instantiated outside an accept context
+   (no owner).
+
+`release` has the same shape as `accept` — one typed child
+param — and the same fn signature `(parent_self, child_self)`.
+
 ### Locus method dispatch
 
 **Methods on loci may not return locus values.** This is the

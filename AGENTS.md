@@ -103,6 +103,17 @@ inventing.
    valid for method calls between construction and dissolve.
    Statement-position literals (`SomeLocus { };` with no `let`)
    fire-and-forget at the end of the statement.
+   - **Accept'd flow child** (connection / per-request shape):
+     a long-lived parent `accept(c: Conn)`s one child per
+     connection; the child's `run()` IS its lifetime (a recv
+     loop that returns on close). Declare `release(c: Conn)` on
+     the parent to mark `Conn` a *flow* — then run-completion
+     reclaims the child (its arena freed as the connection ends,
+     not at parent dissolve). Or end it explicitly with
+     `terminate;`. Without `release`/`terminate` an accept'd
+     child is a *resident* and lives until the parent dissolves
+     — on a daemon, forever (unbounded growth). See
+     `spec/semantics.md § release(c)`.
 5. **Shape type** — `type Foo { a: Int; b: String; }`. Pure
    data, no flow. PascalCase, snake_case fields. Construct via
    struct literal.

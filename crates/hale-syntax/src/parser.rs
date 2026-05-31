@@ -1113,7 +1113,12 @@ impl Parser {
             TokenKind::Contract => self.parse_contract_block().map(LocusMember::Contract),
             TokenKind::Bus => self.parse_bus_block().map(LocusMember::Bus),
             TokenKind::Capacity => self.parse_capacity_block().map(LocusMember::Capacity),
-            TokenKind::Birth | TokenKind::Accept | TokenKind::Run | TokenKind::Drain | TokenKind::Dissolve => {
+            TokenKind::Birth
+            | TokenKind::Accept
+            | TokenKind::Release
+            | TokenKind::Run
+            | TokenKind::Drain
+            | TokenKind::Dissolve => {
                 self.parse_lifecycle_decl().map(LocusMember::Lifecycle)
             }
             // `mode` is contextual; recognized as a member-
@@ -2131,6 +2136,7 @@ impl Parser {
         let kind = match kw_tok.kind {
             TokenKind::Birth => LifecycleKind::Birth,
             TokenKind::Accept => LifecycleKind::Accept,
+            TokenKind::Release => LifecycleKind::Release,
             TokenKind::Run => LifecycleKind::Run,
             TokenKind::Drain => LifecycleKind::Drain,
             TokenKind::Dissolve => LifecycleKind::Dissolve,
@@ -2964,6 +2970,7 @@ impl Parser {
             | TokenKind::Break
             | TokenKind::Continue
             | TokenKind::Yield
+            | TokenKind::Terminate
             | TokenKind::LBrace
             | TokenKind::Restart
             | TokenKind::RestartInPlace
@@ -3077,6 +3084,11 @@ impl Parser {
                 let kw = self.bump();
                 let semi = self.expect(TokenKind::Semi, ";")?;
                 Ok(Stmt::Yield(kw.span.merge(semi.span)))
+            }
+            TokenKind::Terminate => {
+                let kw = self.bump();
+                let semi = self.expect(TokenKind::Semi, ";")?;
+                Ok(Stmt::Terminate(kw.span.merge(semi.span)))
             }
             TokenKind::LBrace => Ok(Stmt::Block(self.parse_block()?)),
             // Recovery primitives. m55: per The Design, the
@@ -4157,6 +4169,7 @@ fn try_member_keyword_as_name(k: &TokenKind) -> Option<&'static str> {
         // because `run` lexed as TokenKind::Run.
         TokenKind::Birth => "birth",
         TokenKind::Accept => "accept",
+        TokenKind::Release => "release",
         TokenKind::Run => "run",
         TokenKind::Drain => "drain",
         TokenKind::Dissolve => "dissolve",

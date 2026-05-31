@@ -1786,6 +1786,24 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         self.builder
             .build_store(parent_handler_slot, parent_handler_val)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // 2026-05-30: init __owner_self to null. Overwritten at accept
+        // dispatch (below, for accept'd children) with the accept'ing
+        // parent's self_ptr; stays null for non-accept'd loci.
+        let owner_self_slot = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                info.owner_self_field_idx,
+                &format!("{}.__owner_self.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(
+                owner_self_slot,
+                self.context.ptr_type(AddressSpace::default()).const_null(),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         // m43: init each __duration_last_fire_<i> field to
         // monotonic-now so the first fire happens after the
@@ -1856,6 +1874,21 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                 .expect("current_self points to a declared locus");
             if let Some((_, expected_child)) = &parent_info.accept_param {
                 if expected_child == locus_name {
+                    // 2026-05-30: record the accept'ing parent as this
+                    // child's owner, so a flow child's run-wrapper can
+                    // fire `parent.release(owner, child)` on completion.
+                    let owner_slot = self
+                        .builder
+                        .build_struct_gep(
+                            info.struct_ty,
+                            self_ptr,
+                            info.owner_self_field_idx,
+                            &format!("{}.__owner_self.accept.ptr", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_store(owner_slot, parent_self.self_ptr)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     let accept_fn = parent_info
                         .methods
                         .get("accept")
@@ -2502,13 +2535,22 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         // closure check above, the flag is now set and we skip
         // run() entirely. Drain / dissolve still fire below.
         if let Some(run_fn) = info.methods.get("run") {
+            // 2026-05-30: a FLOW child — some declared locus has a
+            // `release(c: ThisType)` — is reclaimed when its run()
+            // completes, via the run-wrapper. So it must NOT elide the
+            // run block / skip posting even when run() is empty: the
+            // wrapper still has to fire to run the reclaim.
+            let is_flow = self.user_loci.values().any(|p| {
+                matches!(&p.release_param, Some((_, c)) if c == locus_name)
+            });
             // Whole-block elide when run() body is empty AND no
-            // tick/duration closures need to fire after run. The
-            // quarantine guard would otherwise stand around a
-            // single unconditional jump.
+            // tick/duration closures need to fire after run AND it's
+            // not a flow. The quarantine guard would otherwise stand
+            // around a single unconditional jump.
             let skip_run_block = info.empty_lifecycle.contains("run")
                 && info.tick_closures_fn.is_none()
-                && info.duration_closures_fn.is_none();
+                && info.duration_closures_fn.is_none()
+                && !is_flow;
             if skip_run_block {
                 // No-op block elided.
             } else {
@@ -2545,7 +2587,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                 .build_conditional_branch(active, run_bb, after_run_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(run_bb);
-            if !info.empty_lifecycle.contains("run") {
+            if !info.empty_lifecycle.contains("run") || is_flow {
                 // F.31 Phase 4b + pool-inheritance fix (2026-05-29):
                 // a non-empty run() either runs synchronously here
                 // (main thread / non-pool context) or is posted to
@@ -2660,13 +2702,21 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     self.builder
                         .build_unconditional_branch(cont_bb)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    // Sync path: no pool in scope — run inline.
+                    // Sync path: no pool in scope — run inline. Call
+                    // the WRAPPER (not run_fn directly) so a `terminate`
+                    // in a synchronously-run locus still triggers the
+                    // wrapper's reclaim (2026-05-30). The wrapper runs
+                    // run() then reclaims iff __drain_requested is set;
+                    // for a non-terminating run() it's just run() + a
+                    // cheap latch check.
                     self.builder.position_at_end(sync_bb);
+                    let null_payload =
+                        self.context.ptr_type(AddressSpace::default()).const_null();
                     self.builder
                         .build_call(
-                            *run_fn,
-                            &[self_ptr.into()],
-                            &format!("{}.run.call", locus_name),
+                            wrapper,
+                            &[self_ptr.into(), null_payload.into()],
+                            &format!("{}.run.call.via_wrapper", locus_name),
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     self.builder

@@ -499,6 +499,16 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let parent_on_failure_field_idx = idx;
         llvm_field_tys.push(ptr_field_t.into());
         idx += 1;
+        // 2026-05-30: synthetic `__owner_self: ptr` — the self_ptr of
+        // the parent that accept'd this locus, stored UNCONDITIONALLY
+        // at accept dispatch (unlike `__parent_self`, which is set
+        // only when the parent has a matching on_failure handler).
+        // Read by a flow child's run-wrapper to fire `parent.release(
+        // owner, child)` when the child completes. Null for loci that
+        // were never accept'd.
+        let owner_self_field_idx = idx;
+        llvm_field_tys.push(ptr_field_t.into());
+        idx += 1;
         // m43: append one i64 __duration_last_fire field per
         // duration-epoch closure on this locus (in declaration
         // order). Init at instantiation to time::monotonic()
@@ -1001,6 +1011,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 defaults,
                 methods: BTreeMap::new(),
                 accept_param: None,
+                release_param: None,
                 user_methods: BTreeMap::new(),
                 subscriptions: Vec::new(),
                 closures: Vec::new(),
@@ -1031,6 +1042,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 recpool_release_pool_field_idx,
                 recpool_release_kind_field_idx,
                 parent_self_field_idx,
+                owner_self_field_idx,
                 parent_on_failure_field_idx,
                 mailbox_field_idx,
                 projection_class,
@@ -1073,6 +1085,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let mut empty_lifecycle: std::collections::BTreeSet<&'static str> =
             std::collections::BTreeSet::new();
         let mut accept_param: Option<(String, String)> = None;
+        let mut release_param: Option<(String, String)> = None;
         let mut user_methods: BTreeMap<String, FunctionValue<'ctx>> =
             BTreeMap::new();
         let mut subscriptions: Vec<(String, String, String, Option<KeyFilter>)> =
@@ -1191,6 +1204,47 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                 Some((p.name.name.clone(), child_locus));
                             if lc.body.stmts.is_empty() && lc.body.tail.is_none() {
                                 empty_lifecycle.insert("accept");
+                            }
+                        }
+                        LifecycleKind::Release => {
+                            // Death-side bookend, same shape as accept:
+                            // one typed child param, fn(parent, child).
+                            // Declaring it marks the child type a flow
+                            // (run-completion reclaims it).
+                            if lc.params.len() != 1 {
+                                return Err(CodegenError::Unsupported(format!(
+                                    "locus `{}` release() must take exactly \
+                                     one child param, got {}",
+                                    l.name.name,
+                                    lc.params.len()
+                                )));
+                            }
+                            let p = &lc.params[0];
+                            let child_ty = self.type_expr_to_codegen_ty(&p.ty)?;
+                            let child_locus = match &child_ty {
+                                CodegenTy::LocusRef(name) => name.clone(),
+                                other => {
+                                    return Err(CodegenError::Unsupported(
+                                        format!(
+                                            "locus `{}` release() param must \
+                                             be a locus type; got {:?}",
+                                            l.name.name, other
+                                        ),
+                                    ));
+                                }
+                            };
+                            let fn_ty = void_t
+                                .fn_type(&[ptr_t.into(), ptr_t.into()], false);
+                            let func = self.module.add_function(
+                                &format!("{}.release", l.name.name),
+                                fn_ty,
+                                None,
+                            );
+                            methods.insert("release", func);
+                            release_param =
+                                Some((p.name.name.clone(), child_locus));
+                            if lc.body.stmts.is_empty() && lc.body.tail.is_none() {
+                                empty_lifecycle.insert("release");
                             }
                         }
                     }
@@ -1742,6 +1796,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         info.methods = methods;
         info.empty_lifecycle = empty_lifecycle;
         info.accept_param = accept_param;
+        info.release_param = release_param;
         info.user_methods = user_methods;
         info.subscriptions = subscriptions;
         info.closures = closures;
