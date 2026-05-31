@@ -4701,6 +4701,25 @@ void lotus_coop_pool_post(lotus_coop_pool_t *p,
 #endif
     pthread_cond_broadcast(&p->not_empty);
     pthread_mutex_unlock(&p->lock);
+    /* 2026-05-31: if this is an async_io pool, its worker may be
+     * blocked in `epoll_wait(-1)` with a parked coro and no cells
+     * pending (the `timeout_ms = cell_pending ? 0 : -1` path in
+     * drain_one_async). The condvar broadcast above does NOT wake a
+     * worker sitting in epoll_wait — so a cross-pool cell enqueued
+     * here would sit undelivered until some fd event happens to wake
+     * the worker. That starves fanout to a per-connection handler
+     * whose `run()` is parked on recv (a silent client → the push
+     * cell never fires). Poke the wake eventfd — the same one
+     * shutdown_all uses — so the worker returns from epoll_wait,
+     * falls through to the cell-drain step, and dispatches this cell.
+     * Gated on `wake_fd >= 0` (async_io pools only): a classic
+     * blocking pool has wake_fd == -1 and is woken by the condvar,
+     * so it pays nothing. (wake_fd is set once at async-enable and
+     * stable thereafter, so this unlocked read is race-free.) */
+    if (p->wake_fd >= 0) {
+        uint64_t one = 1;
+        (void)write(p->wake_fd, &one, sizeof(one));
+    }
 }
 
 /* Drain a single cell on the pool's worker thread. Blocks on
