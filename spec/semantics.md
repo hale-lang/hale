@@ -196,6 +196,11 @@ a still-executing frame. (A child that `terminate`s mid-`run()`
 exits `run()` immediately, like `return`; code after `terminate`
 in the same method does not execute.)
 
+**Validity (typecheck, 2026-06-01).** `terminate;` in a free
+function is a typecheck error — there is no enclosing locus whose
+lifecycle to end. It is accepted in any locus method body
+(lifecycle method or member `fn`).
+
 ### `release(c)` and flow children
 
 `release(c: Child) { ... }` (2026-05-30) is the death-side
@@ -227,6 +232,12 @@ parent has two effects:
 
 `release` has the same shape as `accept` — one typed child
 param — and the same fn signature `(parent_self, child_self)`.
+
+**Validity (typecheck, 2026-06-01).** A `release(c: T)` with no
+matching `accept(c: T)` on the same locus is a typecheck error: a
+locus that never accepts a `T` child can never release one, so
+the declaration is dead (almost always a wrong child type or a
+forgotten `accept`).
 
 ### Locus method dispatch
 

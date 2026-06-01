@@ -2592,6 +2592,43 @@ impl<'a> Checker<'a> {
             self.check_placement_block(info, pb);
         }
 
+        // 2026-06-01: `release(c: T)` is the death-side bookend of
+        // `accept(c: T)` — it fires when an accept'd child of type
+        // T completes, and declaring it marks T a "flow". Without a
+        // matching `accept(c: T)` the locus never owns a T child, so
+        // the release can never fire: it's a dead declaration and
+        // almost always a mistake (wrong child type, or the author
+        // forgot the `accept`). Reject it with a focused diagnostic.
+        for member in &decl.members {
+            if let LocusMember::Lifecycle(lc) = member {
+                if lc.kind == LifecycleKind::Release {
+                    let child_name = lc.params.first().and_then(|p| {
+                        match &p.ty {
+                            TypeExpr::Named { path, .. } => path
+                                .segments
+                                .last()
+                                .map(|s| s.name.clone()),
+                            _ => None,
+                        }
+                    });
+                    match child_name {
+                        Some(name) if locus_accepts(decl, &name) => {}
+                        Some(name) => self.diags.push(Diag::ty(
+                            lc.span,
+                            format!(
+                                "locus `{}` declares `release(c: {})` but has \
+                                 no matching `accept(c: {})` — release is the \
+                                 death-side bookend of accept and can only \
+                                 fire for an accept'd child type",
+                                info.name, name, name
+                            ),
+                        )),
+                        None => {}
+                    }
+                }
+            }
+        }
+
         for member in &decl.members {
             self.check_locus_member(member);
         }
@@ -4192,7 +4229,26 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) => {}
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) => {}
+            Stmt::Terminate(span) => {
+                // `terminate;` ends the *current locus's* own
+                // lifecycle (the locus analogue of `return`), so it
+                // only has meaning inside a locus method body —
+                // there must be a `self` whose lifecycle to end. In
+                // a free function there is no locus to terminate;
+                // previously this fell through to a codegen
+                // "no self" error with no source location. Gate it
+                // here with a focused diagnostic.
+                if self.current_locus.is_none() {
+                    self.diags.push(Diag::ty(
+                        *span,
+                        "`terminate` is only valid inside a locus method \
+                         — it ends the enclosing locus's own lifecycle, so \
+                         there is nothing to terminate in a free function"
+                            .to_string(),
+                    ));
+                }
+            }
             Stmt::Fail { value, span } => {
                 // v1.x-FORM-1: `fail <expr>;` must appear inside
                 // a fallible fn body, and its payload type must
