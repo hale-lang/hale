@@ -877,6 +877,19 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         if info.arena_elidable {
             return Ok(());
         }
+        // 2026-06-01: reclaim this locus's accept'd children BEFORE
+        // tearing down its arena (their subregions live inside it).
+        // This is the single teardown chokepoint every dissolve path
+        // funnels through — graceful-shutdown frame, parent
+        // field-dissolve, a reclaimed flow/terminated child, and the
+        // ephemeral scope-exit — so the cascade is uniform and
+        // recursive (a reclaimed child reclaims its own grandchildren)
+        // without duplicating the walk at each site. No-op unless this
+        // locus both `accept`s and tracks a children buffer; idempotent
+        // (each child's __reclaim is latched), and flow children that
+        // self-reclaimed mid-life already removed themselves from the
+        // tracker, so they aren't re-touched here.
+        self.emit_accepted_children_reclaim(info, self_ptr, locus_name)?;
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         // Deregister from the bus router BEFORE freeing the arena.
         // Without this step, a stale entry in the C-runtime entries

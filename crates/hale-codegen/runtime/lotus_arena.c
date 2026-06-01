@@ -1355,6 +1355,33 @@ void lotus_children_free(void **buf) {
     free(buf);
 }
 
+/* 2026-06-01: remove `child` from the parent's children tracker
+ * when the child is reclaimed (terminate / run-completion flow /
+ * parent-dissolve cascade) so a subsequent `for child in
+ * self.children` on an iterating parent never dereferences a
+ * freed child. Swap-remove: find the slot holding `child`, move
+ * the last live entry into it, and decrement the count. This
+ * SHRINKS the live set (vs. NUL-tombstoning, which would let
+ * dead slots accumulate unboundedly on a daemon that churns
+ * connections). Children are unordered (F.11), so the reorder is
+ * unobservable. O(live-count) scan; no-op if `buf` is NULL (the
+ * parent never tracked children) or `child` isn't present (already
+ * removed — the reclaim spine is idempotent). Single-threaded by
+ * the same construction as the rest of the teardown: a parent and
+ * its accept'd children share one pool worker, so iteration and
+ * removal never race. */
+void lotus_children_remove(void **buf, int64_t *count, void *child) {
+    if (!buf || !count) return;
+    for (int64_t i = 0; i < *count; i++) {
+        if (buf[i] == child) {
+            buf[i] = buf[*count - 1];
+            buf[*count - 1] = NULL;
+            *count -= 1;
+            return;
+        }
+    }
+}
+
 /* Carve a sub-region of `parent`. The sub-region holds its own
  * chunk list (independent allocation lifetime is *bounded* by
  * the parent's, but the chunks themselves are separate from the

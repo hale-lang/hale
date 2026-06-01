@@ -2027,10 +2027,21 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                         handler_fn,
                     )?;
                 } else {
+                    // 2026-06-01: register the handler-reclaim wrapper
+                    // (handler + post-dispatch `terminate;` check) in
+                    // place of the raw handler, so a cooperative
+                    // subscriber can end its own life from a bus
+                    // handler. Falls back to the raw handler if no
+                    // wrapper was synthesized.
+                    let reg_handler = self
+                        .handler_reclaim_wrappers
+                        .get(&(locus_name.to_string(), handler_name.clone()))
+                        .copied()
+                        .unwrap_or(handler_fn);
                     self.emit_bus_register(
                         subject,
                         self_ptr,
-                        handler_fn,
+                        reg_handler,
                         None,
                         payload_type,
                         key_filter.as_ref(),

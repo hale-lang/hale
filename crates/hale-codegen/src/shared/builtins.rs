@@ -1227,6 +1227,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             children_free_ty,
             None,
         );
+        // 2026-06-01: declare void @lotus_children_remove(ptr buf,
+        // ptr count, ptr child) — swap-removes a reclaimed accept'd
+        // child from its parent's tracker so iterating parents don't
+        // deref a freed child. buf is the LOADED __children value
+        // (void**), count is the ADDRESS of __child_count.
+        let children_remove_ty = void_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_children_remove",
+            children_remove_ty,
+            None,
+        );
 
         // m70: lazy global payload arena for cross-process String
         // byte storage. The synthesized __deserialize_T body calls
