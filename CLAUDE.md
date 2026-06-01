@@ -55,6 +55,11 @@ present in this repo — use the fixture corpus instead.
 - The spec under `spec/` is the canonical contract. It describes
   shipped behavior, not aspirations. If the impl changes
   user-visible behavior, the spec changes in the same commit.
+- The `docs/` mdBook is the pedagogical companion to `spec/`. When
+  a spec change alters user-facing surface or behavior (a new
+  keyword, lifecycle method, sugar, diagnostic, or semantic
+  rule), update the relevant `docs/src/` chapter in the same
+  change — the book is easy to forget and drifts silently.
 - The user owns commit cadence — never commit without an
   explicit ask.
 - Don't generate planning / status / progress markdown files in
