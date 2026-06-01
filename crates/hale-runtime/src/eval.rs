@@ -1692,6 +1692,19 @@ impl Interpreter {
                     handle.name, name
                 )))
             }
+            // F.11 entity-collection sugar: `self.children.count` /
+            // `.is_empty`. self.children evaluates to an Array here;
+            // the typechecker only admits `.count` / `.is_empty` on
+            // the children array, so handling them on any Array is
+            // safe (and keeps interpreter ↔ codegen parity).
+            Value::Array(arr) => match name {
+                "count" => Ok(Value::Int(arr.borrow().len() as i64)),
+                "is_empty" => Ok(Value::Bool(arr.borrow().is_empty())),
+                _ => Err(Signal::Error(format!(
+                    "cannot read field `{}` on Array",
+                    name
+                ))),
+            },
             _ => Err(Signal::Error(format!(
                 "cannot read field on {}",
                 v.type_name()

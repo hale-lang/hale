@@ -90,3 +90,42 @@ fn main() { Parent { }; }
         msgs
     );
 }
+
+#[test]
+fn children_count_typing_and_gate() {
+    // self.children.count : Int, .is_empty : Bool on an accepting
+    // locus → clean. On a non-accepting locus → rejected.
+    let ok = check(
+        r#"
+locus Worker { params { id: Int = 0; } }
+locus Mgr {
+    accept(c: Worker) { }
+    fn n() -> Int { return self.children.count; }
+    fn e() -> Bool { return self.children.is_empty; }
+}
+fn main() { Mgr { }; }
+"#,
+    );
+    assert!(
+        ok.iter().all(|m| !m.contains("children")),
+        "expected self.children.count/is_empty to typecheck on an \
+         accepting locus, got: {:?}",
+        ok
+    );
+
+    let bad = check(
+        r#"
+locus NoAccept {
+    params { x: Int = 0; }
+    fn n() -> Int { return self.children.count; }
+}
+fn main() { NoAccept { }; }
+"#,
+    );
+    assert!(
+        bad.iter().any(|m| m.contains("requires the enclosing locus to `accept`")),
+        "expected self.children.count on a non-accepting locus to be \
+         rejected, got: {:?}",
+        bad
+    );
+}

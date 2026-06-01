@@ -5078,6 +5078,41 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::Field { receiver, name, span } => {
+                // F.11 entity-collection sugar: `self.children.count`
+                // (Int) and `self.children.is_empty` (Bool) read the
+                // accept'd-child tracker's live count. `self.children`
+                // alone is only a `for` iterand (typed `[Child]`); these
+                // two accessors are the summary surface F.11 commits to.
+                if let Expr::Field {
+                    receiver: inner,
+                    name: inner_name,
+                    ..
+                } = receiver.as_ref()
+                {
+                    if matches!(inner.as_ref(), Expr::KwSelf(_))
+                        && inner_name.name == "children"
+                        && (name.name == "count" || name.name == "is_empty")
+                    {
+                        let accepts = self
+                            .current_locus
+                            .map_or(false, |li| li.accept_param.is_some());
+                        if !accepts {
+                            self.diags.push(Diag::ty(
+                                *span,
+                                format!(
+                                    "`self.children.{}` requires the enclosing \
+                                     locus to `accept` a child type",
+                                    name.name
+                                ),
+                            ));
+                        }
+                        return if name.name == "count" {
+                            Ty::Prim(PrimType::Int)
+                        } else {
+                            Ty::Prim(PrimType::Bool)
+                        };
+                    }
+                }
                 let rt = self.check_expr(receiver);
                 match self.field_ty(&rt, &name.name) {
                     Some(t) => t,
