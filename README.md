@@ -1,3 +1,9 @@
+<!--
+  DRAFT README — refreshed lead, focused on the language and the
+  level it operates at. The capacity-bounds model is intentionally
+  not mentioned here. Review against the live ./README.md; promote
+  when you're happy with it.
+-->
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hale-banner-dark.svg">
   <img alt="Hale — hypergraph programming" src="docs/assets/hale-banner-light.svg" width="100%">
@@ -9,12 +15,12 @@
 [![LLVM](https://img.shields.io/badge/LLVM-18-red.svg)](https://llvm.org/)
 [![Status](https://img.shields.io/badge/status-stabilizing-blue.svg)](#status)
 [![lotuses](https://img.shields.io/badge/lotuses-native_%2B_browser-8957e5.svg)](#one-language-every-substrate)
-[![GC](https://img.shields.io/badge/GC-0-brightgreen.svg)](#state-of-the-culture)
-[![async/await](https://img.shields.io/badge/async%2Fawait-0-brightgreen.svg)](#state-of-the-culture)
+[![GC](https://img.shields.io/badge/GC-0-brightgreen.svg)](#what-hale-leaves-out)
+[![async/await](https://img.shields.io/badge/async%2Fawait-0-brightgreen.svg)](#what-hale-leaves-out)
 [![native](https://img.shields.io/badge/native-human_%2B_agent-8957e5.svg)](./AGENTS.md)
 
-A language where the shape of your code matches the shape of your
-thinking — and runs everywhere your stack runs.
+A language whose shape matches the shape of your thinking — from a
+quick script down to a systems program, without changing tools.
 
 You know that feeling when you describe a system out loud —
 *"a matchmaker holds a queue of waiting players, spawns a match when
@@ -33,10 +39,8 @@ type MatchInfo { match_id: String; players: [Player]; }
 topic JoinQueue  { payload: Player; }
 topic MatchReady { payload: MatchInfo; }
 
-@form(vec)
 locus Matchmaker {
-    params   { target_size: Int = 4; }
-    capacity { heap waiting of Player; }
+    params { target_size: Int = 4; }
     bus {
         subscribe JoinQueue as on_join;
         publish   MatchReady;
@@ -52,34 +56,51 @@ locus Matchmaker {
 ```
 
 Every phrase from the description has a syntactic home, in roughly
-the order you thought about them:
+the order you thought them:
 
 - *"a service"* → `locus Matchmaker`
-- *"a queue of waiting players"* → `capacity { heap waiting of Player; }`
-  (the `@form(vec)` annotation gives it `push`, `get`, `len`, and friends)
 - *"receives players wanting matches"* → `subscribe JoinQueue as on_join`
 - *"announces matches"* → `publish MatchReady`
 - *"when enough are queued"* → the `if` inside `on_join`
 
-`@form(vec)` is a real decision, not a syntactic flourish.
-`@form(ring_buffer)` would give the same shape with bounded capacity
-and drop-on-full; `@form(hashmap)` keyed by player id would give
-natural ID-based cancellation. You declare the access discipline; the
-compiler picks the layout — and revises it later as the language
-learns more about how loci interact, without you editing a line.
+No mutex to pick, no channel types, no async ceremony, no lifecycle
+wiring. The code keeps the shape of the sentence.
+
+## What level does Hale operate at?
+
+All of them. Most languages pick an altitude and stay there —
+Python and JavaScript high, Go in the middle, Rust and C++ low.
+Hale is one language you write at any of those levels, moving
+between them without switching tools. The same file can read like a
+script at the top and like a systems program at the bottom, because
+there's a single primitive — the **locus** — and the only thing
+that changes as you descend is how much of it you choose to see.
+
+| Altitude | You write… | Reach for it like… |
+|---|---|---|
+| **The basics** | variables, math, functions, control flow | a clean scripting language |
+| **Everyday programs** | files, JSON, HTTP, loci as objects | Python / Node |
+| **Concurrent services** | a typed bus, lifecycle, supervision | Go |
+| **Systems control** | memory layout, lifetime, zero-copy I/O, C bindings | Rust / C++ |
+
+Each level is self-contained and expands on the one before without
+contradicting it. A function you wrote at the top still works at the
+bottom — you've just learned to see more of what was always there.
+The [docs site](https://hale-lang.github.io/hale/) is organized as
+exactly this descent.
 
 ## One language. Every substrate.
 
 The language is **Hale**. *Lotuses* are the runtime substrates Hale
-programs run on. Today there are two shipped:
+programs run on. Two ship today:
 
 - **Native** — the LLVM-backed C-runtime in this repo. Servers,
   daemons, CLIs, long-running services.
 - **Browser** — [hale-js](https://github.com/hale-lang/hale-js).
-  The same `.hl` source, hosted on a JS lotus with a browser-tier
-  capability profile.
+  The same `.hl` source on a JS lotus with a browser capability
+  profile.
 
-Both host the same `locus`, the same `bus`, the same `capacity` —
+Both host the same `locus`, the same `bus`, the same lifecycle —
 with substrate-specific capability profiles declared at the build
 target:
 
@@ -92,69 +113,73 @@ target browser_js {
 }
 ```
 
-Programs that reach for capabilities a target doesn't offer fail at
-the translation boundary with `CAP-MISSING`. Substrate divergences
-are named and documented, not papered over.
+A program that reaches for a capability its target doesn't offer
+fails at the translation boundary with `CAP-MISSING` — at build,
+not at runtime. Substrate divergences are named, not papered over.
 
-The bus crosses substrates. A browser-tier locus subscribes to topics
-published by a native binary via the `TransportBridge` adapter
-(WebSocket); two native binaries exchange topics via `unix("/path")`;
-a hale binary talks to NATS or MQTT via a user-supplied
-`__StdBusAdapter` locus. The same `subscribe` / `publish` code
-doesn't change — only the `bindings { }` block in `main` does.
+The bus crosses substrates, too. A browser locus subscribes to
+topics a native binary publishes via a WebSocket bridge; two native
+binaries exchange topics over `unix("/path")`; a Hale binary talks
+to NATS or MQTT through a user-supplied adapter locus. The
+`subscribe` / `publish` code never changes — only the `bindings { }`
+block in `main` does.
 
-### Where the structure goes
+The bet: the **locus + bus + capability-profile** triple is a
+coherent answer to substrate variation — one design idiom, N
+substrates, honest about divergences. The shipped two-lotus proof
+(native + browser) shows the idiom survives the move; further
+substrates (mobile, embedded, GPU, edge/Wasm) follow real demand,
+not a roadmap.
 
-The locus is unusually substrate-invariant — and that's a
-property of the *shape*, not of any particular runtime. A
-locus's commitments — bounded capacity, message-typed bus,
-explicit capability profile, deterministic dissolve, vertical
-failure flow — are the same constraints every substrate
-already enforces under different names. Server runtimes call
-them threads + queues + allowed syscalls. Browsers call them
-isolates + postMessage + Permissions API. Mobile platforms
-call them activities / view controllers + intents +
-entitlements. Embedded systems call them real-time loops +
-IPC + watchdogs. The locus isn't *abstracting over* those
-things — it's the shape they all converge to. Substrate
-variation lives in the capability profile and the transport
-adapter; the program above doesn't change.
+## What you declare; what the compiler decides
 
-Two substrates ship:
+A locus declares *intent* on the axes where systems languages
+normally make you hand-pick a mechanism. The compiler picks the
+mechanism — with cross-locus, cross-binary knowledge no single
+author has — and keeps your application code stable:
 
-| Substrate | What the locus maps to | Status |
-|---|---|---|
-| **Servers / backends** | Native loci on OS threads + cooperative pools, region memory, AF_UNIX/TCP bus | ✓ shipped (C-runtime) |
-| **Browser** | Loci over GC arenas + RAF/microtask scheduling, WebSocket transport bridge | ✓ shipped (hale-js) |
+- **`topic` + `bus { subscribe/publish }`** declares what crosses
+  between loci. The binary picks the transport — in-process queue,
+  AF_UNIX, TCP, WebSocket, NATS — without changing the program.
+- **`placement { }` in `main`** declares where loci run — pinned
+  cores, cooperative pools — at the deployment seam, not baked into
+  library code.
+- **`@form(vec / hashmap / ring_buffer)`** declares the access
+  discipline of a collection; the compiler emits a tight,
+  type-specialized implementation.
+- **`mode bulk / harmonic / resolution`** declares an execution
+  regime; the compiler emits vectorized, cache-tiled, or scalar
+  code per mode.
 
-The same triple — locus + bus + capability-profile — suggests
-clean fits for **mobile** (lifecycle objects ↔ loci;
-intents/XPC ↔ bus), **embedded / IoT** (real-time loops +
-watchdogs ↔ pinned loci + parent supervisors), **GPU**
-(kernels lowered via `mode bulk/harmonic/resolution`),
-**robotics** (ROS nodes ↔ loci; ROS topics ↔ hale topics —
-the naming overlap isn't accidental), and **edge / Wasm**
-(short-lived loci with capability profiles ≈ WASI imports).
-The structural fit is concrete in each case — the table
-column "what the locus maps to" already exists for them; only
-the runtime doesn't.
+The organizing principle (`spec/design-rationale.md` F.31): *a
+library author declares what a locus is; a binary author declares
+where it runs; a lotus declares what its substrate offers.* The
+compiler picks how, refuses what won't fit.
 
-These aren't roadmap promises. Building a new lotus is real
-engineering: a runtime, a capability profile, a transport
-adapter, codegen if the substrate's execution model differs
-from the C-runtime's. That work happens **when a downstream
-workload pulls for it** — when "the same `.hl` on this
-substrate too" is the load-bearing reason someone picks Hale
-over the local alternative. The two-lotus proof shows the
-design idiom survives the move from native to browser; the
-rest follows demand, not a roadmap.
+This is also why Hale suits LLM authoring. The choices models
+reliably hallucinate on — which mutex flavour, which transport,
+which thread, which substrate — aren't choices anyone needs to make
+at the call site. The language moved them into the compiler's
+hands.
 
-What's shipped is the two-lotus proof. The bet is that the
-locus + bus + capability-profile triple is a coherent
-solution to substrate variation: **one design idiom, N
-substrates, honest about divergences**. No nine-language
-polyglot stack; no impedance mismatch at substrate
-boundaries; one `AGENTS.md` across the stack.
+## One shape, three minds
+
+There's a structural reason the matchmaker decomposes the same way
+on paper, in Hale, and inside an LLM's plan: it's the same recursive
+shape in each. A Hale program is a structurally-constrained
+hypergraph — loci are vertices, topics are the hyperedges binding
+publishers to subscribers — and that's the same shape your mental
+model takes when you describe the system, and the same shape a
+model's hidden state organizes when it plans one.
+
+So translation across the human → LLM → machine boundary stays
+cheap: each layer uses the same vertices and edges; no
+representation gets rebuilt in a foreign idiom. It's also why the
+locus survives the jump from native to browser to any future
+substrate — the variance lives in the capability profile and the
+transport, never in the shape. The structural-mathematics
+foundation is in
+[hale-lang/papers](https://github.com/hale-lang/papers).
 
 ## Try it on code you already have
 
@@ -165,80 +190,28 @@ agent's context and ask it to re-read a module or service from your
 existing codebase **as loci, contracts, and bus topics**.
 
 What usually comes back is a structural decomposition that matches
-your mental model of the system — because the agent is reasoning in
-the same recursive vocabulary you already use when thinking about
-your code. If the decomposition looks right, you've felt the
-structural fit from the reading side without writing a line of Hale.
-If it doesn't, the thesis fails for your codebase — open an issue,
-that's useful feedback.
-
-## What the language is doing for you
-
-Every block on a locus declares intent on one axis where systems
-languages normally make you pick a mechanism. The compiler picks the
-mechanism with cross-locus, cross-pool, cross-binary knowledge no
-individual author has:
-
-- **`capacity { heap/pool of T }`** declares bounded storage
-  discipline. The compiler picks arena chunk size, slab vs free-list,
-  cache-line padding, huge-pages backing, lock-memory policy.
-- **`@form(vec/hashmap/ring_buffer/…)`** declares access discipline.
-  The compiler picks the physical container *and* the sync strategy.
-  v0.8.0's F.32 swapped cross-pool hashmap sync from a global mutex
-  to cache-line-padded striped CAS across the entire language without
-  users editing a line of `.hl` code.
-- **`topic` + `bus { subscribe/publish }`** declares what crosses
-  between loci. The binary picks transport — in-process queue,
-  AF_UNIX, TCP, WebSocket, NATS, MQTT — without changing the program.
-- **`placement { }` in `main`** declares where loci live. Pinned
-  cores, cooperative pools, migration — chosen at the deployment
-  seam, not baked into library code.
-- **`mode bulk/harmonic/resolution`** declares execution regime. The
-  compiler picks vectorised, cache-tiled, or scalar codegen per mode.
-
-The organizing principle (`spec/design-rationale.md` F.31): *a
-library author declares what a locus is; a binary author declares
-where it runs; a lotus declares what its substrate offers.* The
-compiler picks how, refuses what won't fit, and keeps the
-application code stable across substrates.
-
-This is also why Hale is shaped for LLM authoring. The choices LLMs
-reliably hallucinate on — which mutex flavour, which container
-variant, which transport, which thread, which substrate — aren't
-choices the LLM (or you) needs to make. The language has moved them
-into the compiler's hands.
-
-## Why one shape works across human, LLM, and machine
-
-The locus is substrate-invariant for a structural reason. When K
-things attach to one coordination point, the working state needed
-to hold them together costs K log₂ K bits. The same ceiling,
-k̄ ∈ [4, 10], shows up in human working memory (Miller's 7 ± 2),
-spans of control, surgical teams, mixture-of-experts active counts,
-and multi-agent LLM saturation. A Hale program is the literal shape
-of that bound: loci are vertices, topics are hyperedges, capacity
-declarations bound each vertex's K. The math and cross-substrate
-evidence are in
-[hale-lang/papers](https://github.com/hale-lang/papers).
-
-This is why translation across the human → LLM → machine boundary
-stays cheap: each layer uses the same vertices and edges. No
-representation gets rebuilt in a foreign idiom. And it's the same
-reason the locus survives the transition from a C-runtime to a
-browser to a future embedded/GPU/contract lotus — substrate variance
-doesn't reach into the shape.
+your mental model — because the agent is reasoning in the same
+recursive vocabulary you already use about your code. If it looks
+right, you've felt the structural fit from the reading side without
+writing a line of Hale. If it doesn't, the thesis fails for your
+codebase — open an issue, that's useful feedback.
 
 ## What Hale leaves out
 
 - **No `class`, `module`, `package`** — the **locus** subsumes them.
-  Apps, services, caches, handlers, libraries: all loci, all the way
-  down.
-- **No `Vec<T>`** — see `@form` above. Storage discipline is part of
-  the declaration, not the type.
-- **No `async`/`await`** — concurrency lives on the typed bus.
+  Apps, services, caches, handlers, libraries: all loci.
+- **No `Vec<T>` / `Map<K,V>`** — declare a collection with `@form`
+  on a locus instead.
+- **No `async` / `await`** — concurrency lives on the typed bus and
+  the lifecycle; there's no function-coloring problem because there
+  are no async functions, only loci that yield.
 - **No GC, no borrow checker** — the locus hierarchy is explicit, so
-  dissolve is deterministic. (The browser lotus uses the JS GC as
-  its arena backend; the lifecycle contract still holds.)
+  cleanup is deterministic at dissolve. (The browser lotus uses the
+  JS GC as its backing allocator; the lifecycle contract still
+  holds.)
+- **No exceptions, no `panic`/`assert`** — failure is either a
+  value-level `fallible(E)` addressed at the call site, or a
+  structural violation routed to a parent's recovery policy.
 
 ## The ecosystem
 
@@ -246,18 +219,17 @@ The names mean things, and they fit together:
 
 - **hale** — the language. From the Old English *hāl*, "whole,
   sound, uninjured." Same root as *whole*, *heal*, *health*.
-- **lotus** — a runtime substrate. The C-runtime in this repo is one
-  lotus; [hale-js](https://github.com/hale-lang/hale-js) is another.
+- **lotus** — a runtime substrate. The C-runtime here is one lotus;
+  [hale-js](https://github.com/hale-lang/hale-js) is another.
   C-runtime symbols are prefixed `lotus_*`.
-- **pond** — the contributed library catalog, where loci live.
-  *Many lotus grow in a pond.* HTTP, SQLite, sessions, jobs,
-  supervisors, tracing, metrics, LLM clients, embeddings, neural
-  nets — see [hale-lang/pond](https://github.com/hale-lang/pond).
+- **pond** — the contributed library catalog. *Many lotus grow in a
+  pond.* HTTP, SQLite, sessions, jobs, supervisors, tracing,
+  metrics, LLM clients — see
+  [hale-lang/pond](https://github.com/hale-lang/pond).
 - **heron** — the tree-sitter grammar that watches over the pond.
-  Editors, syntax highlighters, and the future LSP all drink from
-  heron.
+  Editors and the future LSP drink from heron.
 - **iris** — the workbench for designing and visualizing locus
-  structures. Concurrent human + agent work on the shape of a system.
+  structures.
 
 **Hale** is what you write; **lotuses** are what run it.
 
@@ -271,10 +243,8 @@ cargo test --release --workspace
 ```
 
 Requires Rust 1.95+, LLVM 18, `clang`, and `git`. Platform-specific
-install commands for Debian/Ubuntu, macOS Homebrew, and Fedora are in
+install commands are in
 [`docs/src/getting-started/install.md`](./docs/src/getting-started/install.md).
-
-Run a program:
 
 ```sh
 # Interpreted (fast feedback)
@@ -285,12 +255,8 @@ cargo run -p hale-cli --bin hale -- build hello.hl
 ./hello
 ```
 
-For the browser lotus, see
-[hale-js](https://github.com/hale-lang/hale-js) — same `.hl` source,
-different target.
-
-If your project depends on Hale libraries hosted in git repos,
-declare them in `hale.toml`:
+If your project depends on Hale libraries in git repos, declare them
+in `hale.toml`:
 
 ```toml
 [deps]
@@ -299,39 +265,26 @@ helpers = { git = "https://github.com/me/helpers", rev = "abc123" }
 ```
 
 Then `hale fetch` clones each into `vendor/<name>/` and pins the
-resolved commits to `hale.lock`. `import "vendor/pond/router" as router;`
-picks them up — no extra configuration. Pond's "no transitive
-dependencies in v1" rule means every package your program pulls in
-is visible in your lockfile, not hidden behind a chain of imports.
+commits to `hale.lock`; `import "vendor/pond/router" as router;`
+picks them up.
 
 ## Where to go next
 
-- **[Docs site](https://hale-lang.github.io/hale/)** — the friendly
-  tour. Start here if you're new.
-- **[`spec/`](./spec/)** — canonical language reference. The compiler
-  enforces exactly what these documents describe. Start with
-  [`spec/styleguide.md`](./spec/styleguide.md), then
-  [`spec/semantics.md`](./spec/semantics.md) and
-  [`spec/grammar.ebnf`](./spec/grammar.ebnf).
-- **[`CHANGELOG.md`](./CHANGELOG.md)** — historical record of
-  behavior changes.
-- **[`AGENTS.md`](./AGENTS.md)** — load-bearing prompt for AI agents
-  writing `.hl` programs. Role briefs live under
-  [`agents/`](./agents/).
+- **[Docs site](https://hale-lang.github.io/hale/)** — the
+  level-by-level tour. Start here if you're new.
+- **[`spec/`](./spec/)** — the canonical language reference; the
+  compiler enforces exactly what these documents describe. Start
+  with [`spec/styleguide.md`](./spec/styleguide.md), then
+  [`spec/semantics.md`](./spec/semantics.md).
+- **[`AGENTS.md`](./AGENTS.md)** — load-bearing prompt for agents
+  writing `.hl` programs.
 - **[`crates/hale-codegen/tests/fixtures/examples/`](./crates/hale-codegen/tests/fixtures/examples/)**
-  — ~70 working `.hl` programs. Read these to see real shape.
-- **[`hale-lang/pond`](https://github.com/hale-lang/pond)** —
-  contributed libraries (web, observability, supervision, AI/agent).
-  Vendor via `hale.toml` → `hale fetch`.
-- **[`hale-lang/hale-js`](https://github.com/hale-lang/hale-js)** —
-  browser-tier lotus. Same `.hl`, different substrate.
-- **[`hale-lang/papers`](https://github.com/hale-lang/papers)** —
-  the structural-mathematics foundation.
-- **[`hale-lang/bench`](https://github.com/hale-lang/bench)** —
-  comparative benchmarks against Go, Node, and Python.
-- **Sibling repos** —
-  [examples](https://github.com/hale-lang/examples),
-  [iris](https://github.com/hale-lang/iris).
+  — ~70 working `.hl` programs.
+- **[hale-lang/pond](https://github.com/hale-lang/pond)** —
+  contributed libraries. **[hale-js](https://github.com/hale-lang/hale-js)**
+  — the browser lotus. **[papers](https://github.com/hale-lang/papers)**
+  — the structural foundation. **[bench](https://github.com/hale-lang/bench)**
+  — comparative benchmarks.
 
 ## Layout
 
@@ -341,80 +294,60 @@ CHANGELOG.md                historical record (spec/ has current state)
 AGENTS.md                   load-bearing prompt for .hl-authoring agents
 agents/                     role briefs for compiler / stdlib work
 docs/                       narrative documentation
-notes/                      surviving design notes
 crates/
   hale-syntax/            lexer + parser + AST
   hale-types/             symbol resolution + typechecker
   hale-runtime/           tree-walking interpreter
   hale-codegen/           LLVM codegen + bundled C runtime + stdlib
   hale-cli/               the `hale` binary
-  hale-ts-shim/           tree-sitter staticlib (powers std::ts)
 ```
 
 ## State of the culture
 
 Hale commits hard and tells you about it:
 
-- **Three projection classes** (`Rich`, `Chunked`, `Recognition`).
-  No fourth.
-- **Three modes** (`bulk`, `harmonic`, `resolution`). No fourth.
-  These map to real hardware execution regimes — vectorised
-  throughput, cache-tiled per-class, single-decision scalar — not
-  arbitrary minimalism.
+- **Three modes** (`bulk`, `harmonic`, `resolution`). No fourth —
+  they map to real hardware execution regimes, not arbitrary
+  minimalism.
 - **One form per locus.** Compose at the locus level, not the form
   level.
 - **Vertical-only failure flow.** Parent-policy decides recovery.
-- **Region-based memory, deterministic dissolve.** No GC, no ARC,
-  no reference counting on the native lotus; lifecycle contract
+- **Region-based memory, deterministic dissolve.** No GC, no
+  reference counting on the native lotus; the lifecycle contract
   holds across substrates regardless of the underlying allocator.
-- **Closure assertions as language constructs.** Yes, the runtime
-  audits your invariants. Yes, that's the point.
+- **Closure assertions as language constructs.** The runtime audits
+  your invariants. That's the point.
 - **Capability profiles per lotus.** A program reaches only what its
   target offers; reaching further fails at build, not at runtime.
 
-If your problem decomposes cleanly into loci + bus + capacity +
-closure, you'll move fast. If it doesn't, the language will tell you
-so. There is no permissive escape hatch — that's the feature, not
-the bug.
+If your problem decomposes cleanly into loci + bus + closures,
+you'll move fast. If it doesn't, the language tells you so. There's
+no permissive escape hatch — that's the feature.
 
 ## Status
 
-The language surface is **stable**. A few small additions are still
-on the way (tracked in `spec/` and `notes/`), but most work between
-now and v1 is bugs, stability, and performance — not new syntax or
-new semantics. Pin to a commit if you build on it; small additions
-still land, and stability fixes occasionally tighten previously-
-accepted code.
+The language surface is **stable**. Most work between now and v1 is
+bugs, stability, and performance — not new syntax. Pin to a commit
+if you build on it; stability fixes occasionally tighten
+previously-accepted code.
 
 The native compiler self-hosts the topic system, structural
-interfaces, `@form(...)` lowerings (vec, hashmap, ring_buffer),
-`fallible(T)` error model, capacity-tuple memory discipline,
-cooperative + pinned schedulers, and AF_UNIX / TCP cross-process bus
-transports. The browser lotus
+interfaces, the `@form(...)` collections, the `fallible(T)` error
+model, cooperative + pinned schedulers, and AF_UNIX / TCP
+cross-process bus transports. The browser lotus
 ([hale-js](https://github.com/hale-lang/hale-js)) hosts the same
-language surface against a capability-restricted target; codegen
-emits directly to its runtime contract. The reference test suite
-is the ~70 in-tree fixture programs under
-`crates/hale-codegen/tests/fixtures/examples/` plus per-feature
-tests under `crates/hale-codegen/tests/`.
+surface against a capability-restricted target.
 
-**Performance.** Measured at v0.8.0 on AMD Ryzen 7 9800X3D
-(Linux 6.18). On a coordinated workload (`tree_fanout`,
-substrate-flexing): 8.6× faster than Node, 20.5× faster than
-Python. On isolated loop overhead (`loop_only`, no
-coordination): 283× slower than Python. Coordination cost is
-substrate cost, and Hale is shaped to pay it; pure-loop work
-isn't where the language earns its overhead. Methodology +
-current numbers: [hale-lang/bench](https://github.com/hale-lang/bench).
-
-See [`CHANGELOG.md`](./CHANGELOG.md) for what's moved recently.
+**Performance.** Measured at v0.8.0 on AMD Ryzen 7 9800X3D. On a
+coordinated workload (`tree_fanout`): 8.6× faster than Node, 20.5×
+faster than Python. On isolated loop overhead (`loop_only`, no
+coordination): much slower than Python — coordination cost is
+substrate cost, and Hale is shaped to pay it; pure-loop work isn't
+where the language earns its keep. Methodology + current numbers:
+[hale-lang/bench](https://github.com/hale-lang/bench).
 
 ## License
 
 Licensed under the [Apache License, Version 2.0](./LICENSE).
-Attribution and any third-party notices are tracked in
+Attribution and third-party notices are tracked in
 [`NOTICE`](./NOTICE).
-
-Unless you explicitly state otherwise, any contribution intentionally
-submitted for inclusion in Hale shall be licensed as above, without
-additional terms or conditions.
