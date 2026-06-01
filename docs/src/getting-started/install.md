@@ -1,65 +1,42 @@
 # Install
 
-Hale currently builds from source. You'll need:
+> Get the `hale` toolchain built and on your path.
 
-- A Rust toolchain (stable or newer; tested on 1.95+).
-- **LLVM 18** development libraries, with `llvm-config-18`
-  on `PATH` (or `LLVM_SYS_180_PREFIX` pointing at an LLVM 18
-  install). The compiler links against LLVM via
-  [`inkwell`](https://github.com/TheDan64/inkwell) with the
-  `llvm18-0` feature; LLVM 17 / 19 / 20 will *not* work.
-- **`clang`** on `PATH`. The compiler invokes it as the linker
-  when producing native binaries (`hale build`).
-- **`git`** on `PATH`. Used by `hale fetch` to clone declared
-  dependencies.
+Hale builds from source. You need:
 
-## Installing the host dependencies
+- **Rust** 1.95 or newer (the compiler is written in Rust).
+- **LLVM 18** development libraries, with `llvm-config-18` on
+  your `PATH` (or `LLVM_SYS_180_PREFIX` pointing at the install).
+  LLVM 17, 19, and 20 will *not* link — the codegen backend is
+  pinned to 18.
+- **clang** (used to assemble and link emitted native code).
+- **git** (for fetching library dependencies).
+- **OpenSSL** headers (`libssl` + `libcrypto`), for the TLS
+  client in the standard library.
 
-`hale build` links every binary against system OpenSSL
-(`libssl` + `libcrypto`) so `std::io::tls::*` works without
-extra wiring — both the runtime libraries and the development
-headers need to be present.
+## Platform setup
 
-### Debian / Ubuntu
+**Debian / Ubuntu**
 
 ```sh
-sudo apt install llvm-18-dev libclang-18-dev clang-18 libssl-dev git
-# Some apt layouts don't add `llvm-config-18` to PATH by default:
-sudo ln -sf /usr/bin/llvm-config-18 /usr/local/bin/llvm-config
+sudo apt install llvm-18-dev libclang-18-dev clang-18 \
+                 libssl-dev pkg-config git
 ```
 
-If `apt` doesn't have an `llvm-18-dev` package for your release,
-add the official LLVM apt source (`https://apt.llvm.org/`)
-following the instructions there for your distro.
-
-### macOS (Homebrew)
+**macOS (Homebrew)**
 
 ```sh
-brew install llvm@18 openssl@3 git
-# Tell the build where LLVM 18 lives — Homebrew doesn't link
-# llvm@18 into PATH by default to avoid colliding with system clang.
+brew install llvm@18 openssl git
 export LLVM_SYS_180_PREFIX="$(brew --prefix llvm@18)"
-export PATH="$(brew --prefix llvm@18)/bin:$PATH"
 ```
 
-Add the `export` lines to your shell rc file if you want them
-to persist. The Homebrew `openssl@3` formula installs both the
-runtime library and headers.
-
-### Fedora / RHEL
+**Fedora**
 
 ```sh
 sudo dnf install llvm18-devel clang18 openssl-devel git
 ```
 
-### Verifying
-
-```sh
-llvm-config --version    # should print 18.x.x
-clang --version          # should be present
-```
-
-## Build the compiler
+## Build
 
 ```sh
 git clone https://github.com/hale-lang/hale
@@ -67,34 +44,40 @@ cd hale
 cargo build --release
 ```
 
-The `hale` binary lands at `target/release/hale`. You can
-either symlink it onto your `PATH` or always invoke it via cargo:
+The `hale` binary lands at `target/release/hale`. Put it on your
+path, or invoke it through Cargo as shown below.
+
+## Verify
 
 ```sh
-cargo run -p hale-cli --bin hale -- run hello.hl
+cargo run -p hale-cli --bin hale -- --help
 ```
 
-## Run the test suite
+To run the test suite (single-threaded avoids "text file busy"
+flakes from parallel test binaries racing on the same temp
+path):
 
 ```sh
 cargo test --release --workspace -- --test-threads=1
 ```
 
-The `--test-threads=1` flag is load-bearing — parallel test
-binaries can race each other on the same temp paths, surfacing
-flaky "text file busy" failures. Run tests serially.
+## The two ways to run a program
 
-The test suite is the source of truth for what the compiler
-supports today. If a test fails on a clean checkout, that's a
-bug — please file an issue.
+Hale ships two execution paths, and you'll use both:
 
-## Project layout (when you start your own)
+- **Interpreter** — `hale run prog.hl`. A tree-walking
+  interpreter for fast feedback while you write.
+- **Native** — `hale build prog.hl` produces a native ELF binary
+  via LLVM. This is what you ship.
 
-A project is a directory with one or more `.hl` files. There's
-no `src/`, no build directory, no package metadata beyond an
-optional `hale.toml`. The directory *is* the project.
+```sh
+cargo run -p hale-cli --bin hale -- run  prog.hl   # interpret
+cargo run -p hale-cli --bin hale -- build prog.hl  # compile
+./prog
+```
 
-See [Project layout & build commands](../how-tos/project-layout.md)
-for the full treatment — single-file vs seed vs cross-seed
-imports, what `hale run` / `build` / `fetch` / `test` each
-do, and the `hale.toml` + `vendor/` shape.
+Throughout this guide we'll write `hale run` / `hale build` as
+if `hale` is on your path. If it isn't, prefix with
+`cargo run -p hale-cli --bin hale --`.
+
+Next: [Your first run](./first-run.md).

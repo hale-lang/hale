@@ -1,7 +1,7 @@
 [book]
 title = "Hale"
 authors = ["the Hale authors"]
-description = "Hale language documentation."
+description = "Hale language documentation — the level-by-level tour."
 language = "en"
 src = "src"
 
@@ -9,19 +9,9 @@ src = "src"
 default-theme = "light"
 preferred-dark-theme = "navy"
 no-section-label = false
-# Subdirectory the site is served from on GitHub Pages
-# (https://hale-lang.github.io/hale/). If a custom domain
-# is later configured to serve at the root, change this to "/".
 site-url = "/hale/"
 git-repository-url = "https://github.com/hale-lang/hale"
 edit-url-template = "https://github.com/hale-lang/hale/edit/main/docs/{path}"
-# Custom highlight.js mode for ```hale code blocks. Registered
-# before book.js calls hljs.highlightAll(), so all hale fences
-# pick it up. See docs/theme/hale.js.
-additional-js = ["theme/hale.js"]
-# Brand theme: reskins the `light` theme as the brand default and
-# `coal` / `navy` as the brand dark. `rust` / `ayu` left untouched.
-additional-css = ["theme/hale.css"]
 
 [output.html.fold]
 enable = true
