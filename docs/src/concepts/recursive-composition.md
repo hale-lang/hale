@@ -129,6 +129,12 @@ locus Matchmaker {
 }
 ```
 
+A parent can iterate its accept'd children with
+`for child in self.children { ... }`, and read two summary
+accessors without a loop: `self.children.count` (an `Int`) and
+`self.children.is_empty` (a `Bool`). Both are valid only inside a
+method of a locus that `accept`s a child type.
+
 If sibling coordination is *common* enough that routing through
 the parent feels like ceremony, the language is telling you the
 parent is missing logic. The `Matchmaker` should be the place

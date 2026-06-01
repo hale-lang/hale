@@ -3674,6 +3674,66 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// nothing) when there is no such unique iterating accepter — there
     /// is then no tracker slot to free, or the owner type can't be
     /// resolved statically.
+    /// Entity-collection sugar (F.11): lower `self.children.count`
+    /// (→ Int) and `self.children.is_empty` (→ Bool) to a read of the
+    /// current locus's `__child_count` tracker field. Errors if the
+    /// locus has no children tracker (it doesn't `accept` / never
+    /// iterates) — typecheck rejects that case with a friendlier
+    /// message first.
+    fn lower_self_children_count(
+        &mut self,
+        which: &str,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let cs = self.current_self.clone().ok_or_else(|| {
+            CodegenError::Unsupported(
+                "`self.children` is only valid inside a locus method".into(),
+            )
+        })?;
+        let info = self.user_loci.get(&cs.locus_name).cloned().ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "no LocusInfo for `{}`",
+                cs.locus_name
+            ))
+        })?;
+        let cnt_idx = info.child_count_field_idx.ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "locus `{}` has no children tracker — `self.children.{}` \
+                 needs the locus to `accept` a child type",
+                cs.locus_name, which
+            ))
+        })?;
+        let i64_t = self.context.i64_type();
+        let ptr = self
+            .builder
+            .build_struct_gep(
+                cs.struct_ty,
+                cs.self_ptr,
+                cnt_idx,
+                "self.children.count.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let cnt = self
+            .builder
+            .build_load(i64_t, ptr, "self.children.count")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        if which == "is_empty" {
+            let zero = i64_t.const_int(0, false);
+            let z = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    cnt,
+                    zero,
+                    "self.children.is_empty",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            Ok((z.into(), CodegenTy::Bool))
+        } else {
+            Ok((cnt.into(), CodegenTy::Int))
+        }
+    }
+
     fn emit_remove_self_from_owner(
         &mut self,
         info: &LocusInfo<'ctx>,
@@ -13463,6 +13523,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((val, ty))
             }
             Expr::Field { receiver, name, .. } => {
+                // Entity-collection sugar (F.11): `self.children.count`
+                // and `self.children.is_empty` read the accept'd-child
+                // tracker's live count. `self.children` itself isn't a
+                // value (only a `for` iterand), so intercept the whole
+                // `self.children.<count|is_empty>` shape here before the
+                // generic path tries to lower `self.children`. Lowers to
+                // a load of the `__child_count` i64 (count) or `== 0`
+                // (is_empty) — the buffer is already kept live by
+                // `locus_reads_self_children` (which recurses into this
+                // receiver).
+                if let Expr::Field {
+                    receiver: inner,
+                    name: inner_name,
+                    ..
+                } = receiver.as_ref()
+                {
+                    if matches!(inner.as_ref(), Expr::KwSelf(_))
+                        && inner_name.name == "children"
+                        && (name.name == "count" || name.name == "is_empty")
+                    {
+                        return self.lower_self_children_count(&name.name);
+                    }
+                }
                 // Generalized field access: lower the receiver as
                 // an expression. If it's a LocusRef or TypeRef
                 // pointer, GEP+load. This supports `g.X`, `g.x.y`,

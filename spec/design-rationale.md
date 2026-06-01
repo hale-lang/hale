@@ -1091,6 +1091,16 @@ class loci. The cost reflects the projection class:
   favor of summary access (`self.children.count` vs the
   manual count-loop) once a workload exercises the surface.
 
+**Summary access (2026-06-01).** `self.children.count` (Int) and
+`self.children.is_empty` (Bool) are the shipped summary surface —
+they read the accept'd-child tracker's live count directly (a load
+of `__child_count`) instead of a hand-rolled `for c in
+self.children` counter. Valid only inside a method of a locus that
+`accept`s a child type (typecheck-enforced); `self.children`
+itself remains a `for`-iterand only (not a value). Richer entity-
+collection sugar (filter/map/broadcast, `first_where`) would need
+a closure-value surface Hale doesn't yet have — deferred.
+
 **v0 limitation: single-accept-type only.** A locus with
 `accept(c: ChildType)` for a single ChildType has well-typed
 `self.children`. A locus that accepts multiple types
