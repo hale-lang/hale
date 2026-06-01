@@ -400,6 +400,8 @@ pub fn build_executable_with_options(
         current_cooperative_pool: None,
         coop_pool_locus_types: BTreeSet::new(),
         coop_pool_run_wrappers: BTreeMap::new(),
+        reclaim_fns: BTreeMap::new(),
+        handler_reclaim_wrappers: BTreeMap::new(),
         vtables: BTreeMap::new(),
     };
 
@@ -1462,6 +1464,25 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// the pool-handler signature and calls the locus's run()
     /// method. Indexed by locus type name.
     pub(crate) coop_pool_run_wrappers: BTreeMap<String, FunctionValue<'ctx>>,
+    /// 2026-06-01: synthesized `__reclaim_<L>(self_ptr)` fns — the
+    /// single per-child teardown spine. Idempotent (gated on the
+    /// `__arena`-null latch at entry), so the three callers that can
+    /// collide on the same locus all converge here and the spine
+    /// runs exactly once: the run-wrapper (run-completion / flow /
+    /// `terminate;` in run()), the bus-handler wrapper (`terminate;`
+    /// in a handler), and the parent-dissolve children cascade.
+    /// Indexed by locus type name. Absent for arena-elidable loci
+    /// (nothing to reclaim).
+    pub(crate) reclaim_fns: BTreeMap<String, FunctionValue<'ctx>>,
+    /// 2026-06-01: per-(locus, handler) bus-handler wrappers that run
+    /// the user handler then, if `terminate;` set `__drain_requested`
+    /// during dispatch, call `__reclaim_<L>` — so a locus can end its
+    /// own life from inside a bus handler (`on_data` decides it's
+    /// done), not only from `run()` completion. Registered in place of
+    /// the raw handler for cooperative subscribers. Keyed by
+    /// (locus_name, handler_name).
+    pub(crate) handler_reclaim_wrappers:
+        BTreeMap<(String, String), FunctionValue<'ctx>>,
     /// F.20 Phase B: per-(locus, interface) vtable globals.
     /// Synthesized lazily by `ensure_vtable` the first time a
     /// given locus is coerced to a given interface. Layout is
@@ -3267,7 +3288,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Arena released at scope exit, after the pinned thread
             // is joined or after the cooperative drain/dissolve has
             // run. Symmetric with the ephemeral path in
-            // lower_locus_instantiation.
+            // lower_locus_instantiation. (The accept'd-children
+            // reclaim cascade now runs INSIDE emit_locus_arena_destroy
+            // — the single teardown chokepoint — so every dissolve
+            // path picks it up, not just this one.)
             self.emit_locus_arena_destroy(&info, self_ptr, &locus_name)?;
             // m52: drain again after each dissolve. The dissolve
             // method may publish — those cells enqueue for
@@ -3324,6 +3348,579 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Saves and restores the builder position so this can run
     /// between passes that use the builder (notably between A2
     /// and the body-lowering passes C/D).
+    /// 2026-06-01: synthesize `__reclaim_<L>(self_ptr)` — the single
+    /// per-child teardown spine. Idempotent: the `__arena`-null latch
+    /// at entry makes a second reclaim of the same locus a full no-op
+    /// (a flow child reclaimed at run-completion, then walked again by
+    /// the parent's dissolve cascade, runs the spine exactly once).
+    /// The spine: drain (children-first) → `release(owner, self)` for
+    /// a flow → dissolve closures → dissolve → field dissolves →
+    /// remove self from the owner's children tracker → arena reclaim.
+    /// Called by the run-wrapper, the bus-handler wrapper, and the
+    /// parent-dissolve cascade.
+    fn synthesize_reclaim_fns(&mut self) -> Result<(), CodegenError> {
+        let saved_block = self.builder.get_insert_block();
+        let void_t = self.context.void_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        let types: Vec<String> = self.user_loci.keys().cloned().collect();
+        for locus_name in &types {
+            let info = match self.user_loci.get(locus_name) {
+                Some(i) => i.clone(),
+                None => continue,
+            };
+            // Synthesized for every locus (mirrors the run-wrappers;
+            // DCE drops unused). Arena-elidable loci borrow the
+            // caller's arena: emit_locus_arena_destroy bails on them,
+            // so the spine is harmless (and they're never in a
+            // double-reclaim path, so the __arena-null latch being a
+            // no-op for them doesn't matter).
+            let fn_name = format!("__reclaim_{}", locus_name);
+            let fn_ty = void_t.fn_type(&[ptr_t.into()], false);
+            let reclaim = self.module.add_function(&fn_name, fn_ty, None);
+            let entry = self.context.append_basic_block(reclaim, "entry");
+            let do_bb = self.context.append_basic_block(reclaim, "reclaim.do");
+            let ret_bb = self.context.append_basic_block(reclaim, "reclaim.ret");
+            self.builder.position_at_end(entry);
+            let self_arg = reclaim
+                .get_nth_param(0)
+                .expect("reclaim self_ptr param")
+                .into_pointer_value();
+            // Full-spine idempotency latch (2026-06-01). `__arena` is
+            // NULL'd by emit_locus_arena_destroy on the FIRST reclaim,
+            // so a second entry here loads NULL and skips the entire
+            // spine — not just the arena destroy (which had its own
+            // inner latch), but drain / release / dissolve too, which
+            // would otherwise double-run their user bodies. Single-
+            // threaded by construction at the colliding call sites
+            // (pool workers are joined before the dissolve cascade;
+            // a parent and its accept'd children share one worker), so
+            // a plain load/compare suffices — no atomic.
+            let arena_ptr = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    self_arg,
+                    info.arena_field_idx,
+                    &format!("{}.reclaim.arena.ptr", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let arena = self
+                .builder
+                .build_load(ptr_t, arena_ptr, &format!("{}.reclaim.arena", locus_name))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value();
+            let already = self
+                .builder
+                .build_is_null(arena, &format!("{}.reclaim.done", locus_name))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_conditional_branch(already, ret_bb, do_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+            self.builder.position_at_end(do_bb);
+            let prev_fn = self.current_fn.take();
+            let prev_self = self.current_self.take();
+            self.current_fn = Some(reclaim);
+            self.current_self = Some(SelfCx {
+                locus_name: locus_name.clone(),
+                struct_ty: info.struct_ty,
+                self_ptr: self_arg,
+                fields: info.fields.clone(),
+            });
+            // A locus is a flow iff some declared locus has a
+            // `release(c: T)` whose child type T is this locus.
+            let release_fn = self.user_loci.values().find_map(|p| {
+                match &p.release_param {
+                    Some((_, child)) if child == locus_name => {
+                        p.methods.get("release").copied()
+                    }
+                    _ => None,
+                }
+            });
+            // drain (children first, then self).
+            self.emit_locus_field_drains(&info, self_arg, locus_name)?;
+            if let Some(drain_fn) = info.methods.get("drain") {
+                if !info.empty_lifecycle.contains("drain") {
+                    self.builder
+                        .build_call(
+                            *drain_fn,
+                            &[self_arg.into()],
+                            &format!("{}.reclaim.drain", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+            }
+            // `release(c)` parent bookend — after drain, before
+            // dissolve — for a flow with a non-null owner.
+            if let Some(rfn) = release_fn {
+                let owner_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        self_arg,
+                        info.owner_self_field_idx,
+                        &format!("{}.reclaim.owner.ptr", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let owner = self
+                    .builder
+                    .build_load(ptr_t, owner_ptr, &format!("{}.reclaim.owner", locus_name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_pointer_value();
+                let owner_null = self
+                    .builder
+                    .build_is_null(owner, &format!("{}.reclaim.owner.null", locus_name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let fire_bb =
+                    self.context.append_basic_block(reclaim, "release.fire");
+                let after_rel_bb =
+                    self.context.append_basic_block(reclaim, "release.after");
+                self.builder
+                    .build_conditional_branch(owner_null, after_rel_bb, fire_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(fire_bb);
+                self.builder
+                    .build_call(
+                        rfn,
+                        &[owner.into(), self_arg.into()],
+                        &format!("{}.reclaim.release.call", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_unconditional_branch(after_rel_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(after_rel_bb);
+            }
+            if let Some(closures_fn) = info.dissolve_closures_fn {
+                let (parent_self, handler_ptr) =
+                    self.resolve_failure_route(locus_name);
+                self.builder
+                    .build_call(
+                        closures_fn,
+                        &[self_arg.into(), parent_self.into(), handler_ptr.into()],
+                        &format!("{}.reclaim.closures", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            if let Some(dissolve_fn) = info.methods.get("dissolve") {
+                if !info.empty_lifecycle.contains("dissolve") {
+                    self.builder
+                        .build_call(
+                            *dissolve_fn,
+                            &[self_arg.into()],
+                            &format!("{}.reclaim.dissolve", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+            }
+            self.emit_locus_field_dissolves(&info, self_arg, locus_name)?;
+            // NB: removal of self from the owner's children tracker is
+            // NOT done here — it belongs to the *self-reclaim* callers
+            // (run-wrapper, handler-wrapper), which call
+            // `emit_remove_self_from_owner` after this. The
+            // parent-dissolve cascade must NOT have the tracker mutated
+            // mid-iteration (it frees the whole buffer wholesale), so
+            // it skips removal.
+            self.emit_locus_arena_destroy(&info, self_arg, locus_name)?;
+            self.current_fn = prev_fn;
+            self.current_self = prev_self;
+            self.builder
+                .build_unconditional_branch(ret_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+            self.builder.position_at_end(ret_bb);
+            self.builder
+                .build_return(None)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let _ = i64_t;
+            self.reclaim_fns.insert(locus_name.clone(), reclaim);
+        }
+        if let Some(bb) = saved_block {
+            self.builder.position_at_end(bb);
+        }
+        Ok(())
+    }
+
+    /// 2026-06-01: synthesize `__hwrap_<L>_<handler>(self, payload)`
+    /// for each subscribed handler. The wrapper calls the user handler
+    /// then, if the handler set `__drain_requested` via `terminate;`,
+    /// runs `__reclaim_<L>(self)` + removes self from its owner's
+    /// tracker. Registered in place of the raw handler for cooperative
+    /// subscribers (instantiation.rs), so a locus can end its own life
+    /// from inside a bus handler — the dispatch loop has no per-locus
+    /// teardown hook, so the check rides on the handler itself. The
+    /// cost when nothing terminates is one i64 load + branch per
+    /// dispatch. Handler/locus run on one worker serially, so reading
+    /// the latch needs no atomic.
+    fn synthesize_handler_reclaim_wrappers(
+        &mut self,
+    ) -> Result<(), CodegenError> {
+        let saved_block = self.builder.get_insert_block();
+        let void_t = self.context.void_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        let types: Vec<String> = self.user_loci.keys().cloned().collect();
+        for locus_name in &types {
+            let info = match self.user_loci.get(locus_name) {
+                Some(i) => i.clone(),
+                None => continue,
+            };
+            let reclaim_fn = match self.reclaim_fns.get(locus_name).copied() {
+                Some(f) => f,
+                None => continue,
+            };
+            // Distinct handler names (a handler may serve several
+            // subjects; one wrapper per handler suffices).
+            let mut handlers: Vec<String> = info
+                .subscriptions
+                .iter()
+                .map(|(_, h, _, _)| h.clone())
+                .collect();
+            handlers.sort();
+            handlers.dedup();
+            for handler_name in handlers {
+                let handler_fn = match info.user_methods.get(&handler_name) {
+                    Some(f) => *f,
+                    None => continue,
+                };
+                let wname = format!("__hwrap_{}_{}", locus_name, handler_name);
+                let wty = void_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+                let wrap = self.module.add_function(&wname, wty, None);
+                let entry = self.context.append_basic_block(wrap, "entry");
+                self.builder.position_at_end(entry);
+                let self_arg = wrap
+                    .get_nth_param(0)
+                    .expect("hwrap self")
+                    .into_pointer_value();
+                let payload_arg = wrap.get_nth_param(1).expect("hwrap payload");
+                // Run the user handler.
+                self.builder
+                    .build_call(
+                        handler_fn,
+                        &[self_arg.into(), payload_arg.into()],
+                        &format!("{}.hwrap.call", handler_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // if __drain_requested != 0 → reclaim
+                let dr_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        self_arg,
+                        info.drain_requested_field_idx,
+                        &format!("{}.hwrap.dr.ptr", handler_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let dr = self
+                    .builder
+                    .build_load(i64_t, dr_ptr, &format!("{}.hwrap.dr", handler_name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_int_value();
+                let set = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        dr,
+                        i64_t.const_int(0, false),
+                        &format!("{}.hwrap.set", handler_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let do_bb = self.context.append_basic_block(wrap, "hwrap.reclaim");
+                let ret_bb = self.context.append_basic_block(wrap, "hwrap.ret");
+                self.builder
+                    .build_conditional_branch(set, do_bb, ret_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(do_bb);
+                let prev_self = self.current_self.replace(SelfCx {
+                    locus_name: locus_name.clone(),
+                    struct_ty: info.struct_ty,
+                    self_ptr: self_arg,
+                    fields: info.fields.clone(),
+                });
+                let prev_fn = self.current_fn.replace(wrap);
+                self.builder
+                    .build_call(
+                        reclaim_fn,
+                        &[self_arg.into()],
+                        &format!("{}.hwrap.reclaim", handler_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.emit_remove_self_from_owner(&info, self_arg, locus_name)?;
+                self.current_self = prev_self;
+                self.current_fn = prev_fn;
+                self.builder
+                    .build_unconditional_branch(ret_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(ret_bb);
+                self.builder
+                    .build_return(None)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.handler_reclaim_wrappers
+                    .insert((locus_name.clone(), handler_name.clone()), wrap);
+            }
+        }
+        if let Some(bb) = saved_block {
+            self.builder.position_at_end(bb);
+        }
+        Ok(())
+    }
+
+    /// Helper for `synthesize_reclaim_fns` / the dissolve cascade:
+    /// emit `lotus_children_remove(owner.__children, &owner.__child_count,
+    /// self)` when `locus_name` is accept'd by exactly one parent locus
+    /// that iterates its children (has a children buffer). The owner is
+    /// loaded from `self.__owner_self` and null-guarded. No-op (emits
+    /// nothing) when there is no such unique iterating accepter — there
+    /// is then no tracker slot to free, or the owner type can't be
+    /// resolved statically.
+    fn emit_remove_self_from_owner(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+    ) -> Result<(), CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        // Find the parent locus type(s) that accept this locus AND
+        // track children in a buffer.
+        let mut accepters = self.user_loci.values().filter(|p| {
+            p.accept_param.as_ref().map(|(_, c)| c == locus_name).unwrap_or(false)
+                && p.children_field_idx.is_some()
+        });
+        let owner_info = match accepters.next() {
+            Some(p) => p.clone(),
+            None => return Ok(()),
+        };
+        if accepters.next().is_some() {
+            // Ambiguous owner type — can't statically pick the
+            // tracker to update. Skip (rare: two parent types
+            // accepting the same child type and both iterating).
+            return Ok(());
+        }
+        let children_idx = owner_info
+            .children_field_idx
+            .expect("filtered to Some");
+        let count_idx = owner_info
+            .child_count_field_idx
+            .expect("paired with children_field_idx");
+        let fn_for_blocks = self.current_fn.expect("reclaim current fn");
+        // owner = self.__owner_self
+        let owner_field = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                info.owner_self_field_idx,
+                &format!("{}.remove.owner.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let owner = self
+            .builder
+            .build_load(ptr_t, owner_field, &format!("{}.remove.owner", locus_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        let owner_null = self
+            .builder
+            .build_is_null(owner, &format!("{}.remove.owner.null", locus_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let do_bb = self.context.append_basic_block(fn_for_blocks, "remove.do");
+        let after_bb = self.context.append_basic_block(fn_for_blocks, "remove.after");
+        self.builder
+            .build_conditional_branch(owner_null, after_bb, do_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(do_bb);
+        // buf = owner.__children (loaded value, void**)
+        let buf_field = self
+            .builder
+            .build_struct_gep(
+                owner_info.struct_ty,
+                owner,
+                children_idx,
+                &format!("{}.remove.buf.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let buf = self
+            .builder
+            .build_load(ptr_t, buf_field, &format!("{}.remove.buf", locus_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // count_ptr = &owner.__child_count
+        let count_ptr = self
+            .builder
+            .build_struct_gep(
+                owner_info.struct_ty,
+                owner,
+                count_idx,
+                &format!("{}.remove.count.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let remove_fn = self
+            .module
+            .get_function("lotus_children_remove")
+            .expect("lotus_children_remove declared");
+        self.builder
+            .build_call(
+                remove_fn,
+                &[buf.into(), count_ptr.into(), self_ptr.into()],
+                &format!("{}.remove.call", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(after_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(after_bb);
+        Ok(())
+    }
+
+    /// 2026-06-01 (graceful-shutdown resident reclaim): when a parent
+    /// that `accept`s children dissolves, reclaim each live accept'd
+    /// child it still tracks — running each child's `__reclaim_<C>`
+    /// (drain → dissolve → arena), so a bounded program's shutdown
+    /// runs residents' dissolve bodies (fd close, flush) and frees
+    /// their arenas, instead of leaking them until process exit.
+    ///
+    /// Flow children that already reclaimed themselves mid-life were
+    /// swap-removed from the tracker by `emit_remove_self_from_owner`,
+    /// so they aren't in the buffer here; residents (no parent
+    /// `release`) and not-yet-completed flows are. `__reclaim` is
+    /// idempotent regardless. The buffer is NOT mutated here (removal
+    /// is a self-reclaim concern), so the counted loop is stable; the
+    /// parent's own `emit_locus_arena_destroy` frees the buffer
+    /// wholesale afterward via `lotus_children_free`.
+    ///
+    /// No-op unless the parent both declares `accept` and tracks a
+    /// children buffer (`children_field_idx` / `accept_param` set).
+    pub(crate) fn emit_accepted_children_reclaim(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+    ) -> Result<(), CodegenError> {
+        let (children_idx, count_idx) =
+            match (info.children_field_idx, info.child_count_field_idx) {
+                (Some(a), Some(b)) => (a, b),
+                _ => return Ok(()),
+            };
+        let child_type = match &info.accept_param {
+            Some((_, c)) => c.clone(),
+            None => return Ok(()),
+        };
+        let reclaim_fn = match self.reclaim_fns.get(&child_type).copied() {
+            Some(f) => f,
+            None => return Ok(()),
+        };
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        let func = self.current_fn.expect("dissolve frame current fn");
+        // count = self.__child_count
+        let count_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                count_idx,
+                &format!("{}.cascade.count.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let count = self
+            .builder
+            .build_load(i64_t, count_ptr, &format!("{}.cascade.count", locus_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        // buf = self.__children
+        let buf_field = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                children_idx,
+                &format!("{}.cascade.buf.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let buf = self
+            .builder
+            .build_load(ptr_t, buf_field, &format!("{}.cascade.buf", locus_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        let i_slot = self
+            .builder
+            .build_alloca(i64_t, &format!("{}.cascade.i", locus_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(i_slot, i64_t.const_int(0, false))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let header = self.context.append_basic_block(func, "cascade.header");
+        let body = self.context.append_basic_block(func, "cascade.body");
+        let cont = self.context.append_basic_block(func, "cascade.cont");
+        self.builder
+            .build_unconditional_branch(header)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(header);
+        let i_cur = self
+            .builder
+            .build_load(i64_t, i_slot, &format!("{}.cascade.i.cur", locus_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let more = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::ULT,
+                i_cur,
+                count,
+                &format!("{}.cascade.more", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(more, body, cont)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(body);
+        // child = buf[i]
+        let slot_ptr = unsafe {
+            self.builder
+                .build_in_bounds_gep(ptr_t, buf, &[i_cur], &format!("{}.cascade.slot", locus_name))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+        let child = self
+            .builder
+            .build_load(ptr_t, slot_ptr, &format!("{}.cascade.child", locus_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        // Defensive null-skip (swap-remove never leaves holes, but a
+        // never-accepted slot or a future change shouldn't crash).
+        let child_null = self
+            .builder
+            .build_is_null(child, &format!("{}.cascade.child.null", locus_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let do_reclaim = self.context.append_basic_block(func, "cascade.reclaim");
+        let next = self.context.append_basic_block(func, "cascade.next");
+        self.builder
+            .build_conditional_branch(child_null, next, do_reclaim)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(do_reclaim);
+        self.builder
+            .build_call(
+                reclaim_fn,
+                &[child.into()],
+                &format!("{}.cascade.reclaim.call", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(next)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(next);
+        let i_next = self
+            .builder
+            .build_int_add(i_cur, i64_t.const_int(1, false), &format!("{}.cascade.i.next", locus_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(i_slot, i_next)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(header)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(cont);
+        Ok(())
+    }
+
     /// F.31 Phase 4b: synthesize `__coop_pool_run_<L>(self,
     /// payload)` wrappers. One per locus type in
     /// `coop_pool_locus_types`. The body calls
@@ -3447,100 +4044,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
             self.builder.position_at_end(reclaim_bb);
-            let prev_fn = self.current_fn.take();
-            let prev_self = self.current_self.take();
-            self.current_fn = Some(wrapper);
-            self.current_self = Some(SelfCx {
-                locus_name: locus_name.clone(),
-                struct_ty: info.struct_ty,
-                self_ptr: self_arg,
-                fields: info.fields.clone(),
-            });
-            // drain (children first, then self) → __dissolve_closures
-            // → dissolve → field dissolves → arena reclaim.
-            self.emit_locus_field_drains(&info, self_arg, locus_name)?;
-            if let Some(drain_fn) = info.methods.get("drain") {
-                if !info.empty_lifecycle.contains("drain") {
-                    self.builder
-                        .build_call(
-                            *drain_fn,
-                            &[self_arg.into()],
-                            &format!("{}.terminate.drain", locus_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-            }
-            // The `release(c)` parent bookend fires HERE — after the
-            // child drains, before it dissolves — so the parent reads
-            // the child's final settled state (mirror of accept(c),
-            // which reads it fresh). owner = __owner_self (the
-            // accept'ing parent); guarded against null for a flow-typed
-            // locus instantiated outside an accept context.
-            if let Some(rfn) = release_fn {
-                let owner_ptr = self
-                    .builder
-                    .build_struct_gep(
-                        info.struct_ty,
-                        self_arg,
-                        info.owner_self_field_idx,
-                        &format!("{}.release.owner.ptr", locus_name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let owner = self
-                    .builder
-                    .build_load(ptr_t, owner_ptr, &format!("{}.release.owner", locus_name))
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .into_pointer_value();
-                let owner_null = self
-                    .builder
-                    .build_is_null(owner, &format!("{}.release.owner.null", locus_name))
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let fire_bb =
-                    self.context.append_basic_block(wrapper, "release.fire");
-                let after_rel_bb =
-                    self.context.append_basic_block(wrapper, "release.after");
-                self.builder
-                    .build_conditional_branch(owner_null, after_rel_bb, fire_bb)
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                self.builder.position_at_end(fire_bb);
+            // 2026-06-01: the teardown spine moved to the shared,
+            // idempotent `__reclaim_<L>` (drain → release → dissolve →
+            // field dissolves → remove-from-owner → arena reclaim).
+            // The run-wrapper just decides WHETHER to reclaim (flow, or
+            // `__drain_requested` set by `terminate;`) and calls it;
+            // the same fn is reused by the handler wrapper and the
+            // parent-dissolve cascade, so a locus reclaimed twice (e.g.
+            // run-completion then parent cascade) runs the spine once.
+            if let Some(reclaim_fn) = self.reclaim_fns.get(locus_name).copied() {
+                let prev_self = self.current_self.replace(SelfCx {
+                    locus_name: locus_name.clone(),
+                    struct_ty: info.struct_ty,
+                    self_ptr: self_arg,
+                    fields: info.fields.clone(),
+                });
+                let prev_fn = self.current_fn.replace(wrapper);
                 self.builder
                     .build_call(
-                        rfn,
-                        &[owner.into(), self_arg.into()],
-                        &format!("{}.release.call", locus_name),
+                        reclaim_fn,
+                        &[self_arg.into()],
+                        &format!("{}.run.reclaim", locus_name),
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                self.builder
-                    .build_unconditional_branch(after_rel_bb)
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                self.builder.position_at_end(after_rel_bb);
+                // Self-reclaim: drop this child out of its owner's
+                // children tracker so an iterating parent never derefs
+                // the freed child. (pointer-identity scan; safe after
+                // the arena free.)
+                self.emit_remove_self_from_owner(&info, self_arg, locus_name)?;
+                self.current_self = prev_self;
+                self.current_fn = prev_fn;
             }
-            if let Some(closures_fn) = info.dissolve_closures_fn {
-                let (parent_self, handler_ptr) =
-                    self.resolve_failure_route(locus_name);
-                self.builder
-                    .build_call(
-                        closures_fn,
-                        &[self_arg.into(), parent_self.into(), handler_ptr.into()],
-                        &format!("{}.terminate.closures", locus_name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
-            if let Some(dissolve_fn) = info.methods.get("dissolve") {
-                if !info.empty_lifecycle.contains("dissolve") {
-                    self.builder
-                        .build_call(
-                            *dissolve_fn,
-                            &[self_arg.into()],
-                            &format!("{}.terminate.dissolve", locus_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-            }
-            self.emit_locus_field_dissolves(&info, self_arg, locus_name)?;
-            self.emit_locus_arena_destroy(&info, self_arg, locus_name)?;
-            self.current_fn = prev_fn;
-            self.current_self = prev_self;
             self.builder
                 .build_unconditional_branch(ret_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -4095,6 +4629,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the locus's run() body executes on the pool's worker
         // thread (single-threaded-method invariant) rather than
         // blocking the parent's params-init flow on main.
+        // 2026-06-01: synthesize the per-child reclaim spine BEFORE
+        // the run-wrappers + handler-wrappers, which call
+        // `__reclaim_<L>` on run-completion / terminate.
+        self.synthesize_reclaim_fns()?;
+        self.synthesize_handler_reclaim_wrappers()?;
         self.synthesize_coop_pool_run_wrappers()?;
 
         // Pass B: declare every user-defined function so call sites

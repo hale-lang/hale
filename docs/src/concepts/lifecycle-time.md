@@ -350,6 +350,21 @@ locus Worker {
 }
 ```
 
+`terminate;` also works from a **bus handler**, not just `run()`:
+a subscriber that receives a shutdown message can end itself from
+the handler, and it's reclaimed when the handler returns.
+
+```hale
+locus Session {
+    bus { subscribe CloseT as on_close; }
+    fn on_close(c: Close) { terminate; }   // reclaimed after this handler
+    dissolve() { /* flush, close fd */ }
+}
+```
+
+(`terminate;` is only valid inside a locus method — a free
+function has no locus lifecycle to end.)
+
 **Flow children** make this automatic. A child whose parent
 declares `release(c: Child)` is a *flow*: its `run()` **is** its
 lifetime, and when `run()` returns the runtime reclaims it — no

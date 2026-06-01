@@ -201,6 +201,15 @@ function is a typecheck error — there is no enclosing locus whose
 lifecycle to end. It is accepted in any locus method body
 (lifecycle method or member `fn`).
 
+**From a bus handler (2026-06-01).** `terminate;` is no longer
+limited to `run()`. A subscriber can end its own life from inside
+a bus handler (e.g. `on_close` receives a shutdown message and
+calls `terminate;`). The reclaim runs when the handler returns —
+the dispatch path checks the `__drain_requested` latch after each
+handler and runs the spine on the handler's own worker. This is
+the resident-subscriber analogue of the connection child that
+`terminate`s from its `run()` recv loop.
+
 ### `release(c)` and flow children
 
 `release(c: Child) { ... }` (2026-05-30) is the death-side
@@ -238,6 +247,25 @@ matching `accept(c: T)` on the same locus is a typecheck error: a
 locus that never accepts a `T` child can never release one, so
 the declaration is dead (almost always a wrong child type or a
 forgotten `accept`).
+
+**Parent-dissolve reclaim (2026-06-01).** When a parent that
+`accept`s children dissolves, it reclaims each accept'd child it
+still tracks — running the child's full teardown (drain →
+dissolve → arena reclaim) before the parent's own arena (which
+backs the children's subregions) is freed. This is what makes the
+"resident reclaimed only when the parent dissolves" rule above
+*observable*: a resident's `dissolve()` body (fd close, flush)
+runs at the parent's graceful shutdown, rather than the child
+being silently swallowed by the parent's wholesale arena free.
+Flow children that already self-reclaimed mid-life are no longer
+tracked, so they are not torn down twice; the per-child teardown
+is idempotent regardless (an `__arena`-null latch). The cascade is
+single-threaded-safe: cooperative pool workers are joined before
+the dissolve cascade runs at program exit, so no worker can be
+mid-dispatch to a child being reclaimed. (A parent reclaims only
+children it *tracks* — i.e. one whose body iterates
+`self.children`; a dispatcher that accepts but never iterates
+holds no per-child handle and relies on flow/`terminate` reclaim.)
 
 ### Locus method dispatch
 
