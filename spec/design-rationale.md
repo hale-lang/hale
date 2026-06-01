@@ -2963,13 +2963,16 @@ were previously `: schedule` annotations.
 - The "sibling-in-main pattern" workaround becomes the
   canonical shape rather than a friction routing.
 
-**Still open.**
+**Resolved (2026-06-01).**
 
-- Cross-pool mailbox drain for the cooperative-publisher →
-  pinned-subscriber path (`spec/runtime.md` Item B) is
-  orthogonal. The placement substrate doesn't fix
-  the missing condvar drain on that path; that's its own
-  runtime bug.
+- The cooperative-publisher → pinned-subscriber path
+  (`spec/runtime.md` Item B) works: the mailbox condvar wakes a
+  pinned subscriber blocked in `lotus_mailbox_drain_one`. The
+  earlier "missing condvar drain" was a sequencing effect — a
+  *long-running* pinned `run()` never reaches the blocking drain,
+  so it must yield (`time::sleep`/`yield`) or return for its
+  mailbox to be serviced. That's a property of the single pinned
+  thread, not a bug. See `spec/runtime.md` Item B.
 
 **Adapter placement interaction.** Adapter loci instantiated
 inline in a `bindings { Topic: AdapterLocus { ... }; }` entry

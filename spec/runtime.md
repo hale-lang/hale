@@ -365,21 +365,30 @@ The pinned-mailbox path is unchanged: pinned subscribers wake
 on `lotus_mailbox_post`'s condvar broadcast regardless of what
 the cooperative scheduler is doing.
 
-**Item B from the 2026-05-21 friction log** is a separate,
-still-open shape: a cooperative publisher's `<-` cell to a
-pinned subscriber. The publish enqueues on the pinned
-subscriber's mailbox via `lotus_mailbox_post` (correct), and
-the condvar broadcast SHOULD wake the pinned thread blocked
-in `lotus_mailbox_drain_one`. Empirically the cell drains
-only at dissolve in some configurations — root cause not yet
-isolated; the `time::sleep` fix here doesn't address it
-because the mailbox path doesn't touch `g_bus_queue`. The
-documented workaround is direct method invocation on the
-receiver (`self.on_subscribe(req)`) inside the publisher's
-loop, bypassing the bus for the in-binary case. Cross-binary
-flows (unix / shm_ring transport with their own reader
-threads) work fine because their dispatch path lands in
-`g_bus_queue` and benefits from the sleep-folded drain above.
+**Item B from the 2026-05-21 friction log** (a cooperative
+publisher's `<-` to a pinned subscriber) is **resolved as of
+2026-06-01** — the earlier "drains only at dissolve in some
+configurations" was a *sequencing* effect, not a lost wakeup.
+The mailbox condvar path is correct: a pinned subscriber whose
+`run()` **returns** proceeds into the blocking
+`lotus_mailbox_drain_one`, and a cooperative publisher's `<-`
+wakes it via the `not_empty` broadcast — confirmed by
+`coop_to_pinned_mid_program::pinned_returning_run_drains_mailbox`.
+
+The residual constraint is inherent to a single pinned thread:
+a pinned subscriber with a **long-running `run()`** that never
+returns or yields cannot drain its mailbox *during* `run()` —
+the one thread is busy in the loop. Such a `run()` must reach a
+cooperative yield point (`time::sleep` / `yield`) for the
+TLS-cached `lotus_mailbox_drain_pending` to service the mailbox
+(the `coop_to_pinned_mid_program` sleep-loop test), or let
+`run()` return so the post-run blocking drain takes over. This
+is a property of the bimodal model — "pinned owns its thread,
+no yielding between cells" — not a bug; a pinned subscriber that
+must receive bus traffic while busy should yield in its loop.
+Cross-binary flows (unix / shm_ring with their own reader
+threads) land in `g_bus_queue` and benefit from the sleep-folded
+drain above.
 
 #### Long-running cooperative children: placement closes Item D
 
