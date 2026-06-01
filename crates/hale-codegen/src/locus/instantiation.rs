@@ -2819,6 +2819,27 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             || parent_accepts_us
             || parent_owns_via_field;
         if !defer {
+            // 2026-06-01: the MAIN locus dissolves eagerly here, right
+            // after its run() returns — but its `params` fields may be
+            // placed on cooperative pools whose worker threads are
+            // still executing those fields' run() loops (e.g. a
+            // std::http::Server on `cooperative(pool = io)`). Tearing
+            // down a field's arena here while its pool worker is mid-
+            // run() is a use-after-free (the worker's next subregion
+            // op locks the freed parent arena → SIGSEGV; observed in
+            // fathom refstore). Join all pool workers FIRST so no
+            // worker can touch a field arena we're about to free.
+            // This was added then reverted (b35a449) because a classic
+            // pool worker blocked in std::http::Server's accept()
+            // couldn't be woken → the join hung; that's now fixed by
+            // the shutdown-interruptible accept in lotus_tcp_accept_one
+            // (poll + pool-shutdown check). shutdown_all is idempotent
+            // (worker_started gate), so the later main-exit join is a
+            // no-op. Gated to the main locus: a non-main ephemeral
+            // locus dissolving mid-program must not join global pools.
+            if is_main_locus {
+                self.emit_coop_pool_shutdown_all()?;
+            }
             // Phase-2 (3): cascade child-field drains depth-first
             // BEFORE outer's drain, per spec/runtime.md "drain()
             // cascades depth-first; children first, then self."

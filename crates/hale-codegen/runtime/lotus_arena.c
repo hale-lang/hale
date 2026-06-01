@@ -7126,10 +7126,51 @@ int lotus_tcp_accept_one(int listen_fd) {
     /* F.35 Slice 3: on async_io pools, accept(2) is non-blocking +
      * park on EAGAIN. Classic blocking accept on every other path. */
     int async = lotus_io_on_async_io_pool();
+    /* The worker's own pool (NULL on the main thread). */
+    lotus_coop_pool_t *cpool = g_current_pool_tls;
     if (async) {
         lotus_io_set_nonblock(listen_fd);
     }
     for (;;) {
+        /* 2026-06-01: shutdown-interruptible classic accept. A
+         * blocking accept() on a *classic* (non-async_io) pool worker
+         * can't be woken by shutdown_all — the signal + condvar
+         * broadcast reach a worker parked on the cell queue or in
+         * epoll_wait, but NOT one sitting in the accept(2) syscall.
+         * So at program shutdown the join in shutdown_all would hang
+         * (no client ever arrives to return the accept), or — if the
+         * listen fd gets invalidated mid-teardown — the worker returns
+         * and races main's arena free (use-after-free / SIGSEGV).
+         * This bit the std::http::Server accept loop placed on a plain
+         * `cooperative(pool = io)`: its drain() does shutdown(SHUT_RDWR)
+         * to unblock accept, but the PR#23/#24 shutdown reorder now runs
+         * that drain AFTER the worker join, so it can no longer unblock
+         * this syscall. Fix: on a classic pool worker, poll the listen
+         * fd with a short timeout and check the pool's shutdown flag, so
+         * the worker leaves run() cleanly (accept returns -1, the stdlib
+         * loop exits) and the join completes before arenas are freed.
+         * Main-thread accept (cpool == NULL) keeps blocking — main is
+         * the one driving shutdown; there's nothing to interrupt. */
+        if (!async && cpool) {
+            struct pollfd pfd;
+            pfd.fd     = listen_fd;
+            pfd.events = POLLIN;
+            for (;;) {
+                int sd;
+                pthread_mutex_lock(&cpool->lock);
+                sd = cpool->shutdown;
+                pthread_mutex_unlock(&cpool->lock);
+                if (sd) return -1;        /* shutdown → stdlib loop exits */
+                pfd.revents = 0;
+                int pr = poll(&pfd, 1, 100 /* ms tick */);
+                if (pr < 0) {
+                    if (errno == EINTR) continue;
+                    break;                /* poll error → let accept surface it */
+                }
+                if (pr == 0) continue;    /* timeout → re-check shutdown */
+                break;                    /* readable (or POLLNVAL) → accept */
+            }
+        }
         int conn = accept(listen_fd, NULL, NULL);
         if (conn >= 0) {
             int nodelay = 1;
