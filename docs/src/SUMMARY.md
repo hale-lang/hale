@@ -5,79 +5,50 @@
 # Getting started
 
 - [Install](./getting-started/install.md)
-- [Your first locus](./getting-started/first-locus.md)
-- [A small program with shape](./getting-started/a-small-program.md)
+- [Your first run](./getting-started/first-run.md)
 
-# Concepts
+# The basics
 
-- [The locus](./concepts/the-locus.md)
-- [Recursive composition](./concepts/recursive-composition.md)
-- [The bus](./concepts/the-bus.md)
-- [Capacity & storage](./concepts/capacity-storage.md)
-- [Error handling](./concepts/error-handling.md)
-- [Lifecycle & time](./concepts/lifecycle-time.md)
-- [Perspective & observation](./concepts/perspective.md)
-- [Modeling — how to think in Hale](./concepts/modeling.md)
+- [Values & variables](./basics/values.md)
+- [Math, money & time](./basics/math.md)
+- [Functions](./basics/functions.md)
+- [Control flow](./basics/control-flow.md)
+- [Strings & text](./basics/strings.md)
+- [When a call can fail](./basics/fallible.md)
+- [Your first program](./basics/first-program.md)
 
-# How-tos
+# Everyday programs
 
-- [Project layout & build commands](./how-tos/project-layout.md)
-- [Build an HTTP server](./how-tos/http-server.md)
-- [Read CLI args & config](./how-tos/cli-and-config.md)
-- [Read & write files](./how-tos/files-and-fallible.md)
-- [Read & write JSON](./how-tos/json.md)
-- [Write a wire-format parser](./how-tos/wire-format-parsers.md)
-- [Structured logging](./how-tos/logging.md)
-- [Run a topic across binaries](./how-tos/multi-binary-bus.md)
-- [Mix pinned + cooperative threads](./how-tos/threading.md)
-- [Keep memory bounded](./how-tos/keeping-memory-bounded.md)
-- [Bind a C library](./how-tos/ffi-bindings.md)
+- [The locus, gently](./everyday/locus-gently.md)
+- [Lists & maps](./everyday/collections.md)
+- [Records & data](./everyday/records.md)
+- [Files](./everyday/files.md)
+- [JSON](./everyday/json.md)
+- [HTTP](./everyday/http.md)
+- [CLI & config](./everyday/cli-config.md)
+- [Logging](./everyday/logging.md)
 
-# Reference
+# Concurrent services
 
-- [Language reference](./reference/language.md)
-- [Standard library](./reference/stdlib.md)
+- [The lifecycle](./services/lifecycle.md)
+- [The bus](./services/bus.md)
+- [Concurrency & placement](./services/concurrency.md)
+- [Parents & children](./services/parents-children.md)
+- [When things fail](./services/failure.md)
+- [Across binaries](./services/multi-binary.md)
 
-# Libraries (pond)
+# Systems control
 
-- [Overview](./libraries/index.md)
-
-## Convention
-
-- [tower](./libraries/tower.md)
-
-## Tier 0 — Infrastructure
-
-- [http/client](./libraries/http-client.md)
-- [crypto](./libraries/crypto.md)
-- [subprocess](./libraries/subprocess.md)
-- [math/matrix](./libraries/math-matrix.md)
-- [math/stats](./libraries/math-stats.md)
-
-## Tier 1 — Architecture + web stack
-
-- [sqlite](./libraries/sqlite.md)
-- [router](./libraries/router.md)
-- [sessions](./libraries/sessions.md)
-- [jobs](./libraries/jobs.md)
-- [migrations](./libraries/migrations.md)
-
-## Tier 2 — Observability + supervision
-
-- [logfmt](./libraries/logfmt.md)
-- [metrics](./libraries/metrics.md)
-- [supervisor](./libraries/supervisor.md)
-- [tracing](./libraries/tracing.md)
-
-## Tier 3 — AI / agent
-
-- [agent/llm](./libraries/agent-llm.md)
-- [agent/tools](./libraries/agent-tools.md)
-- [agent/conversation](./libraries/agent-conversation.md)
-- [agent/sandbox](./libraries/agent-sandbox.md)
-- [agent/embeddings](./libraries/agent-embeddings.md)
-- [ml/neural](./libraries/ml-neural.md)
+- [Memory & lifetime](./systems/memory.md)
+- [Performance](./systems/performance.md)
+- [Forms under the hood](./systems/forms.md)
+- [Zero-copy & the high-frequency bus](./systems/zero-copy-bus.md)
+- [Binding C](./systems/binding-c.md)
+- [Cross-process & hot-load](./systems/cross-process.md)
+- [Modes](./systems/modes.md)
 
 ---
 
-[Contributing](./contributing.md)
+- [Reference](./reference.md)
+- [Libraries (pond)](./libraries.md)
+- [The design](./the-design.md)

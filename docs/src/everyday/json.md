@@ -1,0 +1,84 @@
+# JSON
+
+> **Coming from Python / Node?** There's no `JSON.parse` that
+> hands you a dynamic object you index freely. Hale's `std::json`
+> is field-oriented: you ask a JSON string for a named field and
+> a type (`find_string_field`, `find_int_field`, …), and you
+> build output with a streaming `Builder`. At v1 it's tuned for
+> flat objects and arrays — the common shapes for config and wire
+> messages.
+
+## Reading
+
+Pull individual fields out of a JSON string by name:
+
+```hale
+let doc = "{\"name\": \"Ada\", \"age\": 36, \"active\": true}";
+
+let name   = std::json::find_string_field(doc, "name");    // "Ada"
+let age    = std::json::find_int_field(doc, "age");        // 36
+let active  = std::json::find_bool_field(doc, "active");    // true
+```
+
+Missing fields come back as the type's zero value (`""`, `0`,
+`false`) rather than failing — so for "is this really present?"
+semantics, check with the raw accessor or validate upstream.
+`find_field_raw` returns the raw substring for a field, which is
+how you reach into a nested object:
+
+```hale
+let inner = std::json::find_field_raw(doc, "address");
+let city  = std::json::find_string_field(inner, "city");
+```
+
+## Arrays
+
+Walk a JSON array with the iterator pair:
+
+```hale
+let arr = "[10, 20, 30]";
+let mut it = std::json::array_first(arr);
+while !it.done {
+    let n = std::str::parse_int(it.element) or 0;
+    println(n);
+    it = std::json::array_next(it);
+}
+```
+
+`array_first` returns an iterator with the first `element` and a
+`done` flag; `array_next` advances it.
+
+## Writing
+
+The `Builder` is a streaming assembler — it tracks open scopes
+and inserts separators for you, so you can't produce malformed
+JSON by forgetting a comma:
+
+```hale
+let b = std::json::Builder { };
+b.begin_object();
+b.field("name", "Ada");
+b.int_field("age", 36);
+b.bool_field("active", true);
+b.end_object();
+let out = b.result();      // {"name":"Ada","age":36,"active":true}
+```
+
+Nest objects and arrays by pairing `begin_*` / `end_*`. String
+values are escaped per the JSON spec automatically; if you need
+to escape or unescape a string by hand, `std::json::escape_string`
+and `unescape_string` are there.
+
+## When the shape is deep
+
+`std::json` at v1 is built for flat objects and top-level arrays
+— the great majority of config files and API messages. For
+deeply-nested documents you walk level by level with
+`find_field_raw`, treating each nested object as its own flat
+document. If you're parsing a genuinely complex or
+performance-critical format, the [wire-format
+techniques](./files.md) and the systems-tier
+[performance](../systems/performance.md) chapter cover building
+your own parser over `Bytes`.
+
+Next: serving and calling over the network — [HTTP](./http.md).
