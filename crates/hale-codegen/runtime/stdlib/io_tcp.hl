@@ -222,6 +222,17 @@ locus __StdIoTcpListener {
         let mut accepted = 0;
         while self.max_accepts < 0 || accepted < self.max_accepts {
             let conn = std::io::tcp::__accept_one(self.listen_fd);
+            // Graceful exit on accept failure, mirroring
+            // std::http::Server.run(). A -1 return means the listen
+            // fd was closed cross-thread, the kernel errored, or the
+            // pool is shutting down (the classic-pool accept now
+            // returns -1 when its worker's shutdown flag is set, so
+            // the forever loop can be joined at program teardown
+            // instead of spinning on a dead fd — the same 1.6M-lines-
+            // in-seconds EBADF spin the http server already guards).
+            if conn < 0 {
+                break;
+            }
             __handle_one_connection(conn, self.on_connection);
             accepted = accepted + 1;
         }

@@ -154,6 +154,24 @@ the model: runtime is automatic; stdlib is explicit.
   refinement), and the process is exiting anyway. Per-child
   reclamation proper (terminate / flow run-completion) never
   needs this: there the coro returns from `run()` on its own.
+- **Classic-pool blocking-accept shutdown (2026-06-01).** A
+  *classic* (non-`async_io`) pool worker blocked in a blocking
+  `accept(2)` inside a locus's `run()` (e.g. `std::http::Server`
+  or `std::io::tcp::Listener` placed on a plain
+  `cooperative(pool = X)`) can't be woken by the wake `eventfd`
+  (there is no epoll on a classic pool) — so two rules keep its
+  teardown clean: (a) the classic `accept` polls the listen fd
+  with a short timeout and checks its pool's shutdown flag, so it
+  returns a sentinel `-1` once `shutdown_all` is signalled and the
+  stdlib accept loops (`Server`/`Listener`) break out of their
+  forever loop; and (b) the **main locus joins all pool workers
+  before dissolving its `params` fields**, so a worker still
+  executing a pool-placed field's `run()` can never touch that
+  field's arena after it's freed (the alternative — freeing first
+  — is a use-after-free; the alternative join-without-(a) is a
+  hang). Together these let a program whose `main` run() returns
+  while a classic-pool server child is live shut down cleanly
+  rather than hanging or segfaulting.
 - **Recovery primitives.** `restart`, `restart_in_place`,
   `quarantine`, `reorganize`, `bubble`, `dissolve`, `drain` —
   all language keywords; runtime implements the actual
