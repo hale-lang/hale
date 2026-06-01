@@ -159,3 +159,52 @@ fn pinned_run_loop_drains_mailbox_via_sleep() {
         );
     }
 }
+
+#[test]
+fn pinned_returning_run_drains_mailbox() {
+    // The other half of the coop→pinned story (2026-06-01): a
+    // pinned subscriber whose run() RETURNS (rather than looping)
+    // proceeds into the blocking mailbox drain, where a cooperative
+    // publisher's `<-` wakes it via the not_empty condvar. This is
+    // the well-behaved case — it confirms the mailbox wake path
+    // itself is correct, so the only residual coop→pinned gap is a
+    // *long-running* pinned run() that never returns/yields (it
+    // can't drain mid-run because the single pinned thread is busy),
+    // which is documented as a constraint, not a bug.
+    let src = r#"
+        type Tick { n: Int = 0; }
+        topic TickT { payload: Tick; subject: "cp.tick"; }
+        locus Sub {
+            bus { subscribe TickT as on_tick; }
+            fn on_tick(t: Tick) { println("PINNED GOT ", t.n); }
+            run() { }
+        }
+        main locus App {
+            params { s: Sub = Sub { }; }
+            placement { s: pinned; }
+            bus { publish TickT; }
+            run() {
+                std::time::sleep(100ms);
+                let mut i: Int = 0;
+                while i < 3 { i = i + 1; TickT <- Tick { n: i }; std::time::sleep(80ms); }
+                std::time::sleep(150ms);
+                println("app done");
+            }
+        }
+        fn main() { App { }; }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bin = unique_path("pinned-returning-run");
+    build_executable(&program, &bin).expect("build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "non-zero exit; stdout: {stdout}");
+    for tag in ["PINNED GOT 1", "PINNED GOT 2", "PINNED GOT 3", "app done"] {
+        assert!(
+            stdout.contains(tag),
+            "expected `{tag}` (a returning-run pinned subscriber should drain \
+             cross-pool publishes via the mailbox condvar); stdout: {stdout}"
+        );
+    }
+}
