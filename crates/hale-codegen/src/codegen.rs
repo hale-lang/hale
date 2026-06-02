@@ -224,6 +224,101 @@ pub struct BuildOptions {
     pub csrc_files: Vec<std::path::PathBuf>,
 }
 
+/// Read a `LOTUS_*` boolean build flag from the environment.
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| v == "1" || v == "true" || v == "TRUE")
+        .unwrap_or(false)
+}
+
+/// Where compiled+cached runtime objects live (per user, persistent).
+fn runtime_cache_dir() -> PathBuf {
+    if let Ok(x) = std::env::var("XDG_CACHE_HOME") {
+        if !x.is_empty() {
+            return PathBuf::from(x).join("hale").join("runtime");
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            return PathBuf::from(home)
+                .join(".cache")
+                .join("hale")
+                .join("runtime");
+        }
+    }
+    std::env::temp_dir().join("hale-runtime-cache")
+}
+
+/// Compile (or reuse a cached) runtime translation unit to a `.o`,
+/// keyed by a content hash of (source, compile flags, cache-format
+/// version). The ~13k-line `lotus_arena.c` at -O2 dominated build
+/// time when recompiled on every `hale build` (~1s+); caching the
+/// object turns that into a one-time-per-flag-set compile, so
+/// repeat builds (and the parallel corpus oracle) just link. Entries
+/// are content-addressed: a source or flag change yields a fresh
+/// object and stale ones are simply never looked up again.
+fn compile_cached_runtime_object(
+    source: &str,
+    stem: &str,
+    cflags: &[String],
+) -> Result<PathBuf, CodegenError> {
+    use std::hash::{Hash, Hasher};
+    // Bump to invalidate every cached object (e.g. if the compile
+    // invocation shape changes in a way the flags don't capture).
+    const RT_CACHE_VERSION: u64 = 1;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    RT_CACHE_VERSION.hash(&mut h);
+    source.hash(&mut h);
+    for f in cflags {
+        f.hash(&mut h);
+    }
+    let key = h.finish();
+
+    let dir = runtime_cache_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let obj = dir.join(format!("lotus-rt-{stem}-{key:016x}.o"));
+    if obj.exists() {
+        return Ok(obj);
+    }
+    // Compile to per-process temp paths, then atomically rename the
+    // object into place — so concurrent `hale build`s (the corpus
+    // oracle runs fixtures in parallel) never see a half-written .o.
+    let pid = std::process::id();
+    let src_tmp = dir.join(format!("lotus-rt-{stem}-{key:016x}.{pid}.c"));
+    std::fs::write(&src_tmp, source).map_err(|e| {
+        CodegenError::Link(format!("write runtime {stem} C: {e}"))
+    })?;
+    let obj_tmp = dir.join(format!("lotus-rt-{stem}-{key:016x}.{pid}.o"));
+    let status = Command::new("clang")
+        .arg("-c")
+        .args(cflags)
+        .arg(&src_tmp)
+        .arg("-o")
+        .arg(&obj_tmp)
+        .status()
+        .map_err(|e| {
+            CodegenError::Link(format!("clang -c runtime {stem}: {e}"))
+        })?;
+    let _ = std::fs::remove_file(&src_tmp);
+    if !status.success() {
+        let _ = std::fs::remove_file(&obj_tmp);
+        return Err(CodegenError::Link(format!(
+            "clang failed compiling runtime {stem}: {status}"
+        )));
+    }
+    // Rename is atomic within one filesystem; if a concurrent build
+    // beat us to it the content is identical, so either object links
+    // correctly. Fall back to the temp object if the rename fails.
+    if std::fs::rename(&obj_tmp, &obj).is_ok() {
+        Ok(obj)
+    } else if obj.exists() {
+        let _ = std::fs::remove_file(&obj_tmp);
+        Ok(obj)
+    } else {
+        Ok(obj_tmp)
+    }
+}
+
 /// Compile `program` to an executable at `output_path`. Uses
 /// `clang` to link the object file produced by LLVM. Equivalent
 /// to `build_executable_with_imports(program, output_path, &[])`;
@@ -455,31 +550,49 @@ pub fn build_executable_with_options(
         .write_to_file(&cx.module, FileType::Object, &obj_path)
         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-    // Drop the lotus runtime C source next to the object file so
-    // clang compiles + links it into the same binary. The C
-    // source is bundled into the codegen crate via include_str!,
-    // so the Hale binary is self-contained — no separate
-    // runtime install needed. Name is keyed off the object path
-    // so parallel `cargo test` invocations don't race on a
-    // shared filename in `/tmp`.
-    let runtime_c_path = obj_path.with_extension("arena.c");
-    std::fs::write(&runtime_c_path, RUNTIME_C_SOURCE)
-        .map_err(|e| CodegenError::Link(format!("write runtime C: {}", e)))?;
-    // TLS substrate lives in its own translation unit so the
-    // libssl/libcrypto link deps only ride along with main Hale
-    // builds — helper test binaries that compile `lotus_arena.c`
-    // standalone (transport.rs, fs.rs, recpool.rs, bus_config.rs)
-    // don't pull TLS in.
-    let runtime_tls_c_path = obj_path.with_extension("tls.c");
-    std::fs::write(&runtime_tls_c_path, RUNTIME_TLS_C_SOURCE)
-        .map_err(|e| CodegenError::Link(format!("write runtime TLS C: {}", e)))?;
-    // Form K5: SHM ring substrate. Separate translation unit so
-    // it stays disentangled from arena / TLS concerns. Compiled
-    // unconditionally; the symbols are dead-stripped by the
-    // linker if no user program references them.
-    let runtime_shm_ring_c_path = obj_path.with_extension("shm_ring.c");
-    std::fs::write(&runtime_shm_ring_c_path, RUNTIME_SHM_RING_C_SOURCE)
-        .map_err(|e| CodegenError::Link(format!("write runtime SHM ring C: {}", e)))?;
+    // The lotus runtime C (lotus_arena.c is ~13k lines) used to be
+    // recompiled by clang on EVERY `hale build` — the dominant build
+    // cost at -O2. Compile each translation unit once per flag-set
+    // and content-address-cache the object; repeat builds just link.
+    // The compile flags are part of the cache key, so a sanitizer /
+    // prefetch / source change yields a fresh object.
+    let lotus_tsan = env_flag("LOTUS_TSAN");
+    let lotus_asan = env_flag("LOTUS_ASAN");
+    let prefetch_disabled = env_flag("LOTUS_DISABLE_PREFETCH");
+    let mut rt_cflags: Vec<String> = Vec::new();
+    if lotus_tsan {
+        // TSAN: -O1 keeps reports readable. The wrap-malloc shim
+        // collides with TSAN's allocator interceptor, so the wrapper
+        // bodies (LOTUS_ENABLE_WRAP_MALLOC) are left out here and the
+        // -Wl,--wrap link flags below are skipped.
+        rt_cflags.push("-fsanitize=thread".into());
+        rt_cflags.push("-O1".into());
+    } else if lotus_asan {
+        // ASAN: same rationale as TSAN re: the wrap shim.
+        rt_cflags.push("-fsanitize=address".into());
+        rt_cflags.push("-fno-omit-frame-pointer".into());
+        rt_cflags.push("-O1".into());
+    } else {
+        // Default build: -O2 + the wrap-malloc wrapper bodies, paired
+        // with the -Wl,--wrap link flags below.
+        rt_cflags.push("-O2".into());
+        rt_cflags.push("-DLOTUS_ENABLE_WRAP_MALLOC".into());
+    }
+    if prefetch_disabled {
+        rt_cflags.push("-DLOTUS_DISABLE_PREFETCH=1".into());
+    }
+    // arena: the substrate core. tls: own TU so libssl/libcrypto only
+    // ride along with main builds. shm_ring (Form K5): own TU, dead-
+    // stripped by the linker when unreferenced.
+    let arena_o =
+        compile_cached_runtime_object(RUNTIME_C_SOURCE, "arena", &rt_cflags)?;
+    let tls_o =
+        compile_cached_runtime_object(RUNTIME_TLS_C_SOURCE, "tls", &rt_cflags)?;
+    let shm_ring_o = compile_cached_runtime_object(
+        RUNTIME_SHM_RING_C_SOURCE,
+        "shm_ring",
+        &rt_cflags,
+    )?;
 
     // m96: locate the tree-sitter shim staticlib produced by the
     // sibling `hale-ts-shim` workspace crate. We don't try to
@@ -496,9 +609,9 @@ pub fn build_executable_with_options(
     let mut clang = Command::new("clang");
     clang
         .arg(&obj_path)
-        .arg(&runtime_c_path)
-        .arg(&runtime_tls_c_path)
-        .arg(&runtime_shm_ring_c_path)
+        .arg(&arena_o)
+        .arg(&tls_o)
+        .arg(&shm_ring_o)
         .arg("-O2")
         // Form K5: SHM ring uses shm_open / shm_unlink which on
         // Linux live in librt. The functions are no-ops on macOS
@@ -547,73 +660,29 @@ pub fn build_executable_with_options(
         // compile lotus_arena.c without the wrap flags skip
         // the wrapper definitions entirely.
         ;
-    // F.32-1γ-v2 session 2 (2026-05-26): TSAN validation build.
-    // Set `LOTUS_TSAN=1` to compile the runtime C + emitted
-    // binary with `-fsanitize=thread`. Used by the lockfree
-    // hashmap test suite under `--ignored` (TSAN slows execution
-    // ~5-15× so opt-in only). TSAN's own malloc interceptor
-    // collides with our `-Wl,--wrap=malloc` shim, so the wrap
-    // surface is disabled when TSAN is on — the
-    // LOTUS_ARENA_LOG_BIG_CHUNKS diagnostic is silently no-op
-    // under TSAN, which is fine since we're hunting data races,
-    // not allocator pressure.
-    let lotus_tsan = std::env::var("LOTUS_TSAN")
-        .map(|v| v == "1" || v == "true" || v == "TRUE")
-        .unwrap_or(false);
-    // 2026-06-02: AddressSanitizer validation build, symmetric to
-    // the TSAN hook above. Set `LOTUS_ASAN=1` to compile the
-    // runtime C + emitted binary with `-fsanitize=address`. Used
-    // by the compiled-corpus oracle harness
-    // (`crates/hale-codegen/tests/corpus_oracle.rs`) under
-    // `--ignored` to catch the bug classes that keep surfacing at
-    // feature intersections — heap-buffer-overflow (e.g. the >16
-    // accept'd-children overflow), use-after-free (e.g. the
-    // classic-pool shutdown UAF), and leaks (LeakSanitizer ships
-    // inside ASAN and reports at exit). Like TSAN, ASAN's malloc
-    // interceptor collides with the `-Wl,--wrap=malloc` shim, so
-    // the wrap surface is disabled when either sanitizer is on.
-    let lotus_asan = std::env::var("LOTUS_ASAN")
-        .map(|v| v == "1" || v == "true" || v == "TRUE")
-        .unwrap_or(false);
+    // LINK-time sanitizer / wrap-malloc flags. The runtime objects
+    // were already compiled above with the matching
+    // -fsanitize / -D{LOTUS_ENABLE_WRAP_MALLOC,LOTUS_DISABLE_PREFETCH}
+    // flags (baked into the cache key); here we only add the
+    // link-side flags. `lotus_tsan` / `lotus_asan` were read once
+    // above and drive both the compile flags and these.
     if lotus_tsan {
+        // Pulls the TSAN runtime; the wrap shim is disabled (TSAN's
+        // own allocator interceptor collides with -Wl,--wrap).
         clang.arg("-fsanitize=thread");
-        // Conservative: -O1 keeps TSAN reports readable while
-        // avoiding the long compile time of -O0 + the missing
-        // race coverage at -O0 from skipped optimizer paths.
-        // (Existing -O2 above stacks with this; clang accepts
-        // the last `-O` on the command line.)
-        clang.arg("-O1");
     } else if lotus_asan {
-        // -fsanitize=address instruments both the runtime C and
-        // the emitted object. -O1 + frame-pointers keep the
-        // reports legible (symbolized frames) without the O0
-        // slowdown. LeakSanitizer is on by default under ASAN on
-        // Linux; the harness sets ASAN_OPTIONS at runtime.
-        clang
-            .arg("-fsanitize=address")
-            .arg("-fno-omit-frame-pointer")
-            .arg("-O1");
+        // Pulls the ASAN + LeakSanitizer runtimes.
+        clang.arg("-fsanitize=address");
     } else {
+        // Default build: intercept the libc allocator entry points
+        // (the __wrap_* bodies live in the arena object, compiled
+        // with LOTUS_ENABLE_WRAP_MALLOC above) for the
+        // LOTUS_ARENA_LOG_BIG_CHUNKS diagnostic.
         clang
-            .arg("-DLOTUS_ENABLE_WRAP_MALLOC")
             .arg("-Wl,--wrap=malloc")
             .arg("-Wl,--wrap=realloc")
             .arg("-Wl,--wrap=calloc")
             .arg("-Wl,--wrap=mmap");
-    }
-    // F.32-4-prefetch A/B build flag (2026-05-25): set
-    // LOTUS_DISABLE_PREFETCH=1 at build time to compile the C
-    // runtime with the bus-dispatch prefetch hint stubbed out.
-    // Used for measuring the prefetch's contribution against a
-    // baseline build. Default (env unset): prefetch enabled,
-    // matches the shipped behavior. Codegen passes a clang -D
-    // when set; the runtime's __builtin_prefetch call lives
-    // under #ifndef LOTUS_DISABLE_PREFETCH.
-    if std::env::var("LOTUS_DISABLE_PREFETCH")
-        .map(|v| v == "1" || v == "true" || v == "TRUE")
-        .unwrap_or(false)
-    {
-        clang.arg("-DLOTUS_DISABLE_PREFETCH=1");
     }
     if let Some(p) = ts_shim_path.as_ref() {
         clang.arg(p);
@@ -646,10 +715,9 @@ pub fn build_executable_with_options(
         .arg(output_path)
         .status()
         .map_err(|e| CodegenError::Link(format!("clang invocation: {}", e)))?;
+    // Only the per-build user object is transient; the cached
+    // runtime objects persist for reuse by later builds.
     let _ = std::fs::remove_file(&obj_path);
-    let _ = std::fs::remove_file(&runtime_c_path);
-    let _ = std::fs::remove_file(&runtime_tls_c_path);
-    let _ = std::fs::remove_file(&runtime_shm_ring_c_path);
     if !status.success() {
         return Err(CodegenError::Link(format!(
             "clang exited with {}",
