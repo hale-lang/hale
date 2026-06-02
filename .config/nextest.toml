@@ -13,6 +13,17 @@
 # `test-group = { max-threads = 1 }` serializes only the binaries
 # named below; everything else stays fully parallel.
 
+# Hard per-test timeout. nextest has none by default, so a single
+# hung test (a socket/subprocess test that deadlocks on a CI
+# port/PID race, say) wedges its whole partition until GitHub's 6h
+# job cap — observed as a 33-minute "still running" with no progress.
+# `period` warns (SLOW) and `terminate-after` kills + fails the test
+# after period * N. 8 minutes is well clear of the slowest legitimate
+# test (the compiled-corpus oracle builds dozens of binaries) while
+# turning an indefinite wedge into a fast, named failure.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 8 }
+
 [[profile.default.overrides]]
 filter = 'binary(three_hop_import)'
 test-group = 'shared-fixture-dir'
