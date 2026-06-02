@@ -74,6 +74,29 @@ fn leak_exempt(name: &str) -> bool {
     name == "03c-closure-bubbled"
 }
 
+/// Fixtures that the interpreter runs but codegen can't compile YET,
+/// acknowledged as interpreter-only rather than treated as a gap to
+/// chase right now. This is regression protection in both
+/// directions:
+///   * an uncompilable fixture NOT in this set is a hard failure —
+///     something that used to compile regressed, or a new fixture
+///     uses an unsupported feature without a decision being made;
+///   * a fixture IN this set that now COMPILES is also a hard
+///     failure — the list is stale and must shrink. So when the
+///     codegen gap is closed, the gate tells you to remove it here.
+///
+/// Empty — codegen compiles the whole runnable corpus. The three
+/// former entries (`43-enums`, `45-enum-payloads`,
+/// `47-fn-arenas-extras`) were fixed 2026-06-02 by a one-branch
+/// reorder in `type_expr_to_codegen_ty`: enum names now resolve to
+/// `CodegenTy::Enum` before the `pending_type_names` forward-ref
+/// branch, so annotated enum values get the same representation as
+/// constructed ones and the already-built enum machinery (no-payload
+/// print, payload construction/match/deep-copy) became reachable.
+/// The guard remains: any uncompilable fixture is now a hard
+/// failure unless deliberately listed here.
+const EXPECTED_INTERPRETER_ONLY: &[&str] = &[];
+
 /// KNOWN, TRACKED leak the ASAN oracle still flags. Quarantined so
 /// the gate is green on the KNOWN state — but a leak in ANY fixture
 /// outside this set is a hard failure, and a fixture that stops
@@ -271,12 +294,31 @@ fn check_fixture(name: &str, main_hl: &Path, deadline: Duration) -> Outcome {
     bin.push(format!("lotus_corpus_{}_{}", name.replace(['/', '-'], "_"), std::process::id()));
     if let Err(e) = build_executable(&program, &bin) {
         let msg = format!("{e:?}");
-        // A codegen feature gap (interpreter-only fixture) is a
-        // skip; any other build error is a real regression.
+        // A codegen feature gap is ACKNOWLEDGED only when the fixture
+        // is on the interpreter-only list; otherwise it's a
+        // regression (something stopped compiling, or a new fixture
+        // hit an unsupported feature with no decision made).
         if msg.contains("Unsupported(") {
-            return Outcome::Uncompilable(msg);
+            if EXPECTED_INTERPRETER_ONLY.contains(&name) {
+                return Outcome::Uncompilable(msg);
+            }
+            return Outcome::Fail(format!(
+                "UNEXPECTED uncompilable: {msg}\n    (implement the codegen, or \
+                 add to EXPECTED_INTERPRETER_ONLY if interpreter-only is intended)"
+            ));
         }
         return Outcome::Fail(format!("build: {msg}"));
+    }
+
+    // It compiled. If it's still on the interpreter-only list, the
+    // list is stale — fail so the entry gets removed now the gap is
+    // closed (keeps the list honest as codegen catches up).
+    if EXPECTED_INTERPRETER_ONLY.contains(&name) {
+        let _ = std::fs::remove_file(&bin);
+        return Outcome::Fail(format!(
+            "`{name}` is in EXPECTED_INTERPRETER_ONLY but now COMPILES — \
+             remove it from that list (the codegen gap is closed)"
+        ));
     }
 
     let result = run_with_deadline(&bin, deadline);
@@ -383,13 +425,14 @@ fn report(
         Vec<(String, String)>,
     ),
 ) {
-    // Surface the interpreter/codegen divergence as a warning —
-    // not a hard failure (the run oracles are this gate's job),
-    // but loud enough that the gap doesn't stay hidden.
+    // Acknowledged interpreter-only fixtures (EXPECTED_INTERPRETER_ONLY).
+    // Not a failure — the divergence is a known, tracked codegen gap —
+    // but surfaced so it stays visible. (An UNEXPECTED uncompilable
+    // is a hard failure in check_fixture, and a listed fixture that
+    // starts compiling also fails, so this list can't silently drift.)
     if !uncompilable.is_empty() {
         eprintln!(
-            "\n⚠ {} fixture(s) compile under the interpreter but NOT codegen \
-             (excluded from run oracles):",
+            "\nℹ {} fixture(s) acknowledged interpreter-only (codegen gap, tracked):",
             uncompilable.len()
         );
         for (name, reason) in &uncompilable {
