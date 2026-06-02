@@ -413,15 +413,62 @@ static void lotus_chunk_pool_stats_thread_dtor(void *unused) {
     lotus_chunk_pool_stats_emit("thread-exit");
 }
 
+/* Per-thread chunk-pool reclamation (2026-06-02). The chunk pool
+ * (`g_chunk_pool`, __thread) is prefilled with
+ * LOTUS_CHUNK_POOL_PREFILL_DEFAULT (32) malloc'd 64KiB chunks on a
+ * thread's first chunk allocation, and accumulates recycled chunks
+ * over the thread's life. Those chunks are never freed when a
+ * SPAWNED worker thread (pinned locus thread, cooperative pool
+ * worker) exits — its __thread storage is torn down with the
+ * pointers still live, so the 32×64KiB prefill (2MiB) plus any
+ * recycled chunks leak per exited worker. (The main thread never
+ * runs pthread_key destructors — it exits via return-from-main /
+ * exit() — and its still-live TLS keeps the pool reachable, so
+ * LeakSanitizer only ever flags the worker-thread case.) This
+ * destructor, armed for any thread that touches the pool, frees
+ * the pool on thread exit. Independent of the stats diagnostic
+ * above — it must run on every build, not only when
+ * LOTUS_CHUNK_POOL_STATS is set. */
+static pthread_key_t g_chunk_pool_free_key;
+static int g_chunk_pool_free_key_init = 0;
+
+static void lotus_chunk_pool_free_thread_dtor(void *unused) {
+    (void)unused;
+    /* The pool only ever holds malloc'd, default-size chunks:
+     * lotus_arena_release_chunk munmaps `via_mmap` chunks before
+     * they could be pooled, and only chunks with
+     * cap == LOTUS_ARENA_CHUNK_BYTES are admitted. So free() is the
+     * correct reclaim for every entry. Runs on the exiting thread,
+     * so __thread g_chunk_pool refers to that thread's own pool. */
+    while (g_chunk_pool_count > 0) {
+        free(g_chunk_pool[--g_chunk_pool_count]);
+    }
+}
+
 static inline void lotus_mark_thread_for_pool_dtor(void) {
     if (g_thread_marked_for_pool_dtor) return;
-    if (!g_chunk_pool_stats_key_init) return;
-    pthread_setspecific(g_chunk_pool_stats_thread_key, (void *)1);
     g_thread_marked_for_pool_dtor = 1;
+    /* Always arm the pool-free dtor (a non-NULL value is required
+     * for a pthread_key destructor to fire at thread exit). */
+    if (g_chunk_pool_free_key_init) {
+        pthread_setspecific(g_chunk_pool_free_key, (void *)1);
+    }
+    /* The stats-dump dtor is only meaningful when the diagnostic
+     * is enabled (its key is created only in that case). */
+    if (g_chunk_pool_stats_key_init) {
+        pthread_setspecific(g_chunk_pool_stats_thread_key, (void *)1);
+    }
 }
 
 __attribute__((constructor))
 static void lotus_chunk_pool_stats_install(void) {
+    /* The pool-free key is created unconditionally — chunk-pool
+     * reclamation at worker-thread exit is a correctness property,
+     * not a diagnostic. */
+    if (pthread_key_create(&g_chunk_pool_free_key,
+                           lotus_chunk_pool_free_thread_dtor) == 0) {
+        g_chunk_pool_free_key_init = 1;
+    }
     if (lotus_chunk_pool_stats_enabled()) {
         atexit(lotus_chunk_pool_stats_dump_main);
         if (pthread_key_create(&g_chunk_pool_stats_thread_key,
@@ -903,6 +950,17 @@ static void lotus_chunk_pool_prefill_if_needed(void) {
         c->next = NULL;
         c->used = 0;
         c->cap = LOTUS_ARENA_CHUNK_BYTES;
+        /* via_mmap / mmap_size MUST be initialized: prefill chunks
+         * are malloc'd, and a pooled chunk later handed out and then
+         * passed to lotus_arena_release_chunk is dispatched on
+         * `via_mmap`. Left uninitialized (malloc, not calloc), a
+         * garbage non-zero value sends the chunk down the munmap
+         * path with a garbage size — the munmap fails and the chunk
+         * is neither freed nor re-pooled, leaking it. The other two
+         * chunk-creation paths (mmap + malloc-fallback in
+         * new_chunk_for) already set these; prefill was the gap. */
+        c->via_mmap = 0;
+        c->mmap_size = 0;
         g_chunk_pool[g_chunk_pool_count++] = c;
     }
 }

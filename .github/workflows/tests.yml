@@ -248,3 +248,63 @@ jobs:
           cargo test --release -p hale-codegen \
             --test form_hashmap_lockfree_tsan \
             -- --ignored --test-threads=1 --nocapture
+
+  # 2026-06-02 — AddressSanitizer + LeakSanitizer coverage for the
+  # compiled example corpus. The broad corpus is otherwise only
+  # parse-tested + type-checked + interpreter-run (exit-0); the
+  # interpreter has no arenas/pools/coros, so it can't surface the
+  # teardown leaks, shutdown use-after-free, and buffer overflows
+  # that keep appearing at feature intersections in real apps.
+  # `corpus_oracle` compiles every runnable fixture to native and
+  # runs it under the oracle battery; this job adds the sanitizer
+  # arm. Three closure epoch-fire leaks are quarantined in the test
+  # (KNOWN_CLOSURE_LEAKS) so the gate is green on the known state —
+  # any NEW leak/UAF/overflow in any other fixture fails here.
+  #
+  # Separate job like tsan: ASAN-instrumented builds are slower and
+  # need the wrap-malloc shim disabled, so they don't belong in the
+  # normal partitions. The plain exit+deadline arm of corpus_oracle
+  # DOES run in those partitions (no extra toolchain needed).
+  asan:
+    name: asan (example corpus)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-asan-x86_64-linux-llvm18-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-asan-x86_64-linux-llvm18-
+
+      - name: Install LLVM 18 + clang
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y \
+            llvm-18-dev libpolly-18-dev libzstd-dev \
+            clang-18 libclang-18-dev zlib1g-dev
+
+      - name: cargo build --release --workspace
+        run: cargo build --release --workspace
+
+      - name: LOTUS_ASAN=1 cargo test (corpus_oracle under ASAN)
+        # #[ignore]'d like the tsan suite; --ignored opts in.
+        # LOTUS_ASAN=1 tells build_executable to pass
+        # -fsanitize=address to clang for the runtime C compile +
+        # binary link. A new leak outside KNOWN_CLOSURE_LEAKS, or
+        # any UAF/overflow, gates the merge.
+        env:
+          LOTUS_ASAN: "1"
+        run: |
+          cargo test --release -p hale-codegen \
+            --test corpus_oracle \
+            -- --ignored --test-threads=1 --nocapture

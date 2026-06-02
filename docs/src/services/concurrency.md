@@ -24,6 +24,32 @@ third:
   to neighbors. For latency-critical or CPU-bound work that
   shouldn't share.
 
+## Long sleeps don't freeze the pool
+
+A cooperative pool runs one locus at a time, so a locus that sits
+in a long `time::sleep` could, in principle, starve every other
+locus sharing its pool — a 30-second keep-alive timer on the
+`main` pool would block bus handlers for 30 seconds. It doesn't.
+`std::time::sleep` slices any sleep into short intervals (≤100ms)
+and drains the pool's pending bus work between slices, so
+neighbors keep getting dispatched while one locus naps:
+
+```hale
+run() {
+    while true {
+        self.send_heartbeat();
+        std::time::sleep(30s);   // sliced — co-resident handlers
+                                 // still fire every ≤100ms
+    }
+}
+```
+
+The sleeping locus still wakes after the full duration; it just
+doesn't hold the thread hostage in the meantime. You write
+`sleep(30s)` and the slicing is invisible — there's nothing to
+opt into. (A `pinned` locus owns its thread, so its sleeps affect
+no one and aren't sliced.)
+
 ## Placement lives on `main`
 
 You declare placement once, against the top-level loci, in
