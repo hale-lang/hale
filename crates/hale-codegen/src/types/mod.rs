@@ -59,6 +59,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // own `declare_locus_struct` runs later in the
                     // same pass.
                     Ok(CodegenTy::LocusRef(name.clone()))
+                } else if self.user_enums.contains_key(name) {
+                    // Enums resolve to Enum(name) — BEFORE the
+                    // user_types/pending_type_names branch. An enum
+                    // name is also inserted into `pending_type_names`
+                    // by the forward-ref pre-pass, so if that branch
+                    // ran first a declared enum used in a type
+                    // annotation / param / return / match-scrutinee
+                    // would mis-resolve to TypeRef (generic
+                    // record-by-pointer), while enum *construction*
+                    // yields Enum — the representation mismatch made
+                    // the enum machinery unreachable from annotated
+                    // values (no-payload print, payload match, etc.).
+                    // user_enums is populated by the time lowering
+                    // resolves these, so checking it first is the fix.
+                    Ok(CodegenTy::Enum(name.clone()))
                 } else if self.user_types.contains_key(name)
                     || self.pending_type_names.contains(name)
                 {
@@ -78,8 +93,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // that points at a not-yet-registered
                     // imported-lib type decl.
                     Ok(CodegenTy::TypeRef(name.clone()))
-                } else if self.user_enums.contains_key(name) {
-                    Ok(CodegenTy::Enum(name.clone()))
                 } else if self.user_interfaces.contains(name) {
                     // F.20 Phase B: interface type in signature
                     // position. Lowered as a fat pointer (data +
@@ -134,6 +147,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     || self.pending_locus_names.contains(mangled)
                 {
                     Ok(CodegenTy::LocusRef(mangled.to_string()))
+                } else if self.user_enums.contains_key(mangled) {
+                    // Path-qualified enum (e.g. a cross-seed
+                    // `lib::Result`). Checked before the
+                    // user_types/pending_type_names branch for the
+                    // same reason as the single-segment case — enum
+                    // names also land in pending_type_names, and an
+                    // enum must resolve to Enum(name) so its value
+                    // representation matches construction.
+                    Ok(CodegenTy::Enum(mangled.to_string()))
                 } else if self.user_types.contains_key(mangled)
                     || self.pending_type_names.contains(mangled)
                 {
