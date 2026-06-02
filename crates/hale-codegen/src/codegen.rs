@@ -434,10 +434,22 @@ pub fn build_executable_with_options(
     // through pointer-typed parameters. `default<O2>` runs the
     // canonical pass set (mem2reg, SROA, LICM, InstCombine,
     // SimplifyCFG, GVN, etc.) — same as Clang -O2.
-    let pb_opts = inkwell::passes::PassBuilderOptions::create();
-    cx.module
-        .run_passes("default<O2>", &machine, pb_opts)
-        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+    // LOTUS_ASAN diagnostic builds skip the O2 module pipeline so
+    // AddressSanitizer leak/UAF reports carry ACCURATE frames: O2's
+    // inliner collapses an allocation into whatever fn it's inlined
+    // into, so a leak's "allocated from" frame points at the wrong
+    // function (e.g. an inlined alloc symbolized as
+    // `__duration_closures`). Naive IR keeps every call in its true
+    // function. Speed doesn't matter for the dedicated ASAN job.
+    let asan_diag = std::env::var("LOTUS_ASAN")
+        .map(|v| v == "1" || v == "true" || v == "TRUE")
+        .unwrap_or(false);
+    if !asan_diag {
+        let pb_opts = inkwell::passes::PassBuilderOptions::create();
+        cx.module
+            .run_passes("default<O2>", &machine, pb_opts)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+    }
 
     machine
         .write_to_file(&cx.module, FileType::Object, &obj_path)
@@ -548,6 +560,21 @@ pub fn build_executable_with_options(
     let lotus_tsan = std::env::var("LOTUS_TSAN")
         .map(|v| v == "1" || v == "true" || v == "TRUE")
         .unwrap_or(false);
+    // 2026-06-02: AddressSanitizer validation build, symmetric to
+    // the TSAN hook above. Set `LOTUS_ASAN=1` to compile the
+    // runtime C + emitted binary with `-fsanitize=address`. Used
+    // by the compiled-corpus oracle harness
+    // (`crates/hale-codegen/tests/corpus_oracle.rs`) under
+    // `--ignored` to catch the bug classes that keep surfacing at
+    // feature intersections — heap-buffer-overflow (e.g. the >16
+    // accept'd-children overflow), use-after-free (e.g. the
+    // classic-pool shutdown UAF), and leaks (LeakSanitizer ships
+    // inside ASAN and reports at exit). Like TSAN, ASAN's malloc
+    // interceptor collides with the `-Wl,--wrap=malloc` shim, so
+    // the wrap surface is disabled when either sanitizer is on.
+    let lotus_asan = std::env::var("LOTUS_ASAN")
+        .map(|v| v == "1" || v == "true" || v == "TRUE")
+        .unwrap_or(false);
     if lotus_tsan {
         clang.arg("-fsanitize=thread");
         // Conservative: -O1 keeps TSAN reports readable while
@@ -556,6 +583,16 @@ pub fn build_executable_with_options(
         // (Existing -O2 above stacks with this; clang accepts
         // the last `-O` on the command line.)
         clang.arg("-O1");
+    } else if lotus_asan {
+        // -fsanitize=address instruments both the runtime C and
+        // the emitted object. -O1 + frame-pointers keep the
+        // reports legible (symbolized frames) without the O0
+        // slowdown. LeakSanitizer is on by default under ASAN on
+        // Linux; the harness sets ASAN_OPTIONS at runtime.
+        clang
+            .arg("-fsanitize=address")
+            .arg("-fno-omit-frame-pointer")
+            .arg("-O1");
     } else {
         clang
             .arg("-DLOTUS_ENABLE_WRAP_MALLOC")
@@ -20881,6 +20918,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// reads fall through to the self-arena path (matches the
     /// invariant outside method bodies).
     pub(crate) fn close_method_scratch(&mut self) -> Result<(), CodegenError> {
+        self.emit_method_scratch_destroy()?;
+        self.current_method_scratch = None;
+        self.current_method_caller_arena = None;
+        Ok(())
+    }
+
+    /// Emit a `lotus_arena_destroy` of the current method-scratch
+    /// subregion at the builder's current position WITHOUT clearing
+    /// the codegen-time scratch state. For early-exit paths that
+    /// diverge before the body's normal `close_method_scratch` while
+    /// the fall-through path still needs the slot live — e.g. the
+    /// quarantine entry-gate's `skip_bb` return: it bails out of an
+    /// already-quarantined handler after the entry created the
+    /// scratch (open_method_scratch), so without this the scratch
+    /// subregion leaks once per post-quarantine delivery. The two
+    /// runtime paths (skip vs body) are mutually exclusive, so the
+    /// single subregion is destroyed exactly once at run time even
+    /// though both emit a destroy. No-op when no scratch is open.
+    pub(crate) fn emit_method_scratch_destroy(
+        &mut self,
+    ) -> Result<(), CodegenError> {
         let Some(slot) = self.current_method_scratch else {
             return Ok(());
         };
@@ -20901,8 +20959,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 "method.scratch.destroy",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.current_method_scratch = None;
-        self.current_method_caller_arena = None;
         Ok(())
     }
 

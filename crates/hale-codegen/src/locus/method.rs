@@ -717,6 +717,15 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                         .build_conditional_branch(is_q, skip_bb, body_bb)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     self.builder.position_at_end(skip_bb);
+                    // The entry (open_method_scratch) created this
+                    // handler's scratch subregion before the
+                    // quarantine gate; bailing out here without
+                    // destroying it leaks one subregion per delivery
+                    // to an already-quarantined subscriber. Destroy
+                    // it (state stays live for the body path, which
+                    // is mutually exclusive at run time and closes
+                    // it normally at its own exit).
+                    self.emit_method_scratch_destroy()?;
                     self.builder
                         .build_return(None)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
