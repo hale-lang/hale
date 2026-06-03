@@ -132,28 +132,28 @@ program. The loci themselves don't mention threads or transports;
 ```hale
 main locus App {
     params {
-        kraken:   Gateway       = Gateway { venue: "kraken" };
-        coinbase: Gateway       = Gateway { venue: "coinbase" };
-        workers:  WsWorkerPool  = WsWorkerPool { };
-        metrics:  MetricsServer = MetricsServer { port: 9100 };
-        ui:       Dashboard     = Dashboard { };
+        region_us: GameRegion     = GameRegion { name: "us-east" };
+        region_eu: GameRegion     = GameRegion { name: "eu-west" };
+        sessions:  SessionWorkers = SessionWorkers { };
+        metrics:   MetricsServer  = MetricsServer { port: 9100 };
+        admin:     AdminConsole   = AdminConsole { };
     }
 
     placement {
-        kraken:   pinned(core = 1);                       // its own core
-        coinbase: pinned(core = 2);                       // a sibling, on another
-        workers:  cooperative(pool = ws) where async_io;  // 1 thread, 1000s of conns
-        metrics:  cooperative(pool = io);                 // shares the io pool
-        // ui is unlisted -> cooperative(pool = main)
+        region_us: pinned(core = 1);                       // its own core
+        region_eu: pinned(core = 2);                       // a sibling, on another
+        sessions:  cooperative(pool = ws) where async_io;  // 1 thread, 1000s of players
+        metrics:   cooperative(pool = io);                 // shares the io pool
+        // admin is unlisted -> cooperative(pool = main)
     }
 
     bindings {
-        // Ticks: not listed -> delivered by an in-process queue
-        Trades: unix("/run/trades.sock");                       // AF_UNIX, role inferred
-        L2Book: shm_ring("/l2", slot_count: 1024, on_overflow: drop)
-               where intra_machine, zero_copy;                  // shared-memory, no copy
-        Alerts: NatsAdapter { url: "nats://prod:4222" };        // a locus you wrote
-        Export: unix("/run/export.sock") codec(JsonCodec { });  // JSON on the wire
+        // PlayerInput: not listed -> delivered by an in-process queue
+        MatchReady:    unix("/run/match.sock");                       // AF_UNIX, role inferred
+        WorldSnapshot: shm_ring("/world", slot_count: 1024, on_overflow: drop)
+                      where intra_machine, zero_copy;                 // shared-memory, no copy
+        ChatRelay:     NatsAdapter { url: "nats://chat:4222" };       // a locus you wrote
+        Replay:        unix("/run/replay.sock") codec(JsonCodec { }); // JSON on the wire
     }
 }
 ```
@@ -186,12 +186,12 @@ identical no matter which line below you pick.
 - `shm_ring(...) where zero_copy` — a shared-memory ring with no
   copy at the locus boundary, for the hottest same-host routes.
 
-Here's the part that matters: **not one line of `Gateway`,
-`WsWorkerPool`, or `MetricsServer` changes** whether `Trades` is an
-in-process queue or a Unix socket, whether `kraken` is pinned to a
-core or cooperative on the main thread. You design the system once,
-and redeploy it — test, single binary, multi-binary, multi-host —
-by editing `main`.
+Here's the part that matters: **not one line of `GameRegion`,
+`SessionWorkers`, or `MetricsServer` changes** whether `MatchReady`
+is an in-process queue or a Unix socket, whether `region_us` is
+pinned to a core or cooperative on the main thread. You design the
+system once, and redeploy it — test, single binary, multi-binary,
+multi-host — by editing `main`.
 
 ## See it on your own code
 
