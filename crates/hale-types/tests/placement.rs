@@ -558,3 +558,132 @@ fn main() { App { }; }
         combined
     );
 }
+
+// ---------------------------------------------------------------
+// Dead bus receiver (fathom handoff 2026-06-02): a locus that
+// subscribes to the bus but is placed cooperative on a non-main
+// pool never receives a cell — only main-cooperative or pinned
+// loci get delivery. The toolchain used to accept it silently.
+// These lock in the diagnostic and its precision (no false
+// positives on pinned / main / non-subscribing / intra-locus).
+// ---------------------------------------------------------------
+
+const DEAD_RX: &str = "will never fire";
+
+fn dead_receiver_src(placement_spec: &str) -> String {
+    format!(
+        r#"
+type Tick {{ n: Int; }}
+
+locus Gateway {{
+    bus {{ subscribe "tick" as on_tick of type Tick; }}
+    fn on_tick(t: Tick) {{ }}
+    run() {{ }}
+}}
+
+locus Feed {{
+    bus {{ publish "tick" of type Tick; }}
+    run() {{ "tick" <- Tick {{ n: 1 }}; }}
+}}
+
+main locus App {{
+    params {{
+        gw: Gateway = Gateway {{ }};
+        feed: Feed  = Feed {{ }};
+    }}
+    placement {{
+        gw: {placement_spec};
+    }}
+}}
+
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+#[test]
+fn cooperative_nonmain_subscriber_rejected() {
+    let msgs = check(&dead_receiver_src("cooperative(pool = ws)"));
+    assert!(
+        msgs.iter().any(|m| m.contains(DEAD_RX)),
+        "expected dead-bus-receiver diagnostic for a non-main cooperative \
+         subscriber; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn pinned_subscriber_not_rejected() {
+    let msgs = check(&dead_receiver_src("pinned"));
+    assert!(
+        !msgs.iter().any(|m| m.contains(DEAD_RX)),
+        "pinned subscribers receive bus cells (per-locus mailbox); must not \
+         be flagged: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn main_cooperative_subscriber_not_rejected() {
+    let msgs = check(&dead_receiver_src("cooperative(pool = main)"));
+    assert!(
+        !msgs.iter().any(|m| m.contains(DEAD_RX)),
+        "main-pool cooperative subscribers receive bus cells; must not be \
+         flagged: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn cooperative_nonmain_nonsubscriber_not_rejected() {
+    // A non-main cooperative locus that does NOT subscribe is fine.
+    let src = r#"
+locus Worker { run() { } }
+
+main locus App {
+    params { w: Worker = Worker { }; }
+    placement { w: cooperative(pool = compute); }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(DEAD_RX)),
+        "a non-subscribing locus must not be flagged regardless of pool: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn intra_locus_self_pub_sub_not_rejected() {
+    // Publishes AND subscribes the same topic itself → the intra-locus
+    // optimization devirtualizes it to a direct self.handler() call,
+    // which delivers on any pool. Flagging it would be a false positive.
+    let src = r#"
+type Ev { n: Int; }
+
+locus SelfLoop {
+    bus {
+        publish   "ev" of type Ev;
+        subscribe "ev" as on_ev of type Ev;
+    }
+    fn on_ev(e: Ev) { }
+    run() { "ev" <- Ev { n: 1 }; }
+}
+
+main locus App {
+    params { s: SelfLoop = SelfLoop { }; }
+    placement { s: cooperative(pool = ws); }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(DEAD_RX)),
+        "intra-locus self-publish→self-subscribe is devirtualized and \
+         delivers on any pool; must not be flagged: {:?}",
+        msgs
+    );
+}
