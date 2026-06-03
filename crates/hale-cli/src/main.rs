@@ -806,7 +806,10 @@ fn run_check(target: &Path) -> ExitCode {
         for d in &diags {
             eprintln!("{}", d.render(any_source));
         }
-        return ExitCode::from(1);
+        // Warnings print but don't fail the build; only errors do.
+        if diags.iter().any(|d| d.is_error()) {
+            return ExitCode::from(1);
+        }
     }
     eprintln!("ok: {} file(s) typechecked", files.len());
     ExitCode::SUCCESS
@@ -845,7 +848,10 @@ fn run_program(target: &Path) -> ExitCode {
             for d in &diags {
                 eprintln!("{}", d.render(any_source));
             }
-            return ExitCode::from(1);
+            // Warnings print but don't fail the build; only errors do.
+            if diags.iter().any(|d| d.is_error()) {
+                return ExitCode::from(1);
+            }
         }
         let prog_refs: Vec<&Program> = vec![&program];
         return match hale_runtime::run_bundle(&prog_refs) {
@@ -884,7 +890,10 @@ fn run_program(target: &Path) -> ExitCode {
         for d in &diags {
             eprintln!("{}", d.render(any_source));
         }
-        return ExitCode::from(1);
+        // Warnings print but don't fail the build; only errors do.
+        if diags.iter().any(|d| d.is_error()) {
+            return ExitCode::from(1);
+        }
     }
 
     let prog_refs: Vec<&Program> = programs.values().collect();
@@ -1074,7 +1083,10 @@ fn run_build(target: &Path) -> ExitCode {
         for d in &diags {
             eprintln!("{}", d.render(any_source));
         }
-        return ExitCode::from(1);
+        // Warnings print but don't fail the build; only errors do.
+        if diags.iter().any(|d| d.is_error()) {
+            return ExitCode::from(1);
+        }
     }
     let mut options = match parse_build_options() {
         Ok(o) => o,

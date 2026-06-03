@@ -687,3 +687,94 @@ fn main() { App { }; }
         msgs
     );
 }
+
+// ---------------------------------------------------------------
+// Blocking-syscall-on-a-cooperative-pool (fathom handoff #2). A
+// cooperative (non-async_io) locus that calls a known-blocking
+// stdlib op in run() stalls co-scheduled loci. hale's first
+// WARNING (non-fatal) — a single-purpose blocking server is
+// legitimate, so it's surfaced, not rejected.
+// ---------------------------------------------------------------
+
+const BLOCKS_WARN: &str = "holds the pool's OS thread";
+
+fn blocking_src(placement_spec: &str, run_body: &str) -> String {
+    format!(
+        r#"
+locus Gateway {{
+    run() {{ {run_body} }}
+}}
+
+main locus App {{
+    params {{ gw: Gateway = Gateway {{ }}; }}
+    placement {{ gw: {placement_spec}; }}
+}}
+
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+#[test]
+fn cooperative_blocking_run_warns() {
+    let msgs = check(&blocking_src(
+        "cooperative(pool = ws)",
+        "let n = std::io::tls::recv_into(0, 0, 64);",
+    ));
+    assert!(
+        msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
+        "expected a blocking-on-cooperative-pool warning; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn pinned_blocking_run_not_warned() {
+    let msgs = check(&blocking_src(
+        "pinned",
+        "let n = std::io::tls::recv_into(0, 0, 64);",
+    ));
+    assert!(
+        !msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
+        "pinned owns its own thread; blocking is fine: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn async_io_blocking_run_not_warned() {
+    let msgs = check(&blocking_src(
+        "cooperative(pool = ws) where async_io",
+        "let n = std::io::tls::recv_into(0, 0, 64);",
+    ));
+    assert!(
+        !msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
+        "async_io parks on I/O readiness; must not warn: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn cooperative_nonblocking_run_not_warned() {
+    let msgs = check(&blocking_src("cooperative(pool = ws)", "let x = 1 + 1;"));
+    assert!(
+        !msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
+        "no blocking call in run(); must not warn: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn blocking_inside_while_loop_warns() {
+    // The blocking call is nested in `while true { ... }` — exercises
+    // the full-recursion walk into loop bodies.
+    let msgs = check(&blocking_src(
+        "cooperative(pool = ws)",
+        "while true { let n = std::io::tls::recv_into(0, 0, 64); }",
+    ));
+    assert!(
+        msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
+        "a blocking call inside a loop in run() must warn: {:?}",
+        msgs
+    );
+}

@@ -128,5 +128,24 @@ same call either way; the substrate picks the parking lowering at
 the syscall boundary. This is how you get async-style throughput
 without async-style function coloring.
 
+## The compiler checks your placement
+
+Two placement mistakes are caught for you, because both the
+placement and the locus's shape are known at compile time:
+
+- **A subscriber that can never be delivered to is an error.** A
+  locus with a `bus { subscribe ... }` placed `cooperative(pool =
+  X)` on a non-`main` pool would silently never receive a cell
+  (only main-cooperative and pinned loci get bus delivery). The
+  compiler rejects it and points you at `pinned` or the `main`
+  pool.
+- **A blocking call on a cooperative pool is a warning.** If a
+  cooperative locus's `run()` makes a blocking I/O call (a
+  blocking `recv`/`accept`, a subprocess `run`) and the pool
+  isn't `where async_io`, it would hold the pool's thread and
+  stall everything else scheduled there. The compiler warns and
+  suggests `pinned` (own thread) or `where async_io` (parks). For
+  blocking I/O gateways, `pinned` is the prescribed shape.
+
 Next: how loci nest and own each other — [Parents &
 children](./parents-children.md).
