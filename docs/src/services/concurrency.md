@@ -97,6 +97,31 @@ sibling in `main` and give it a placement entry. (This is the
 canonical fix for "my long-running child starved its parent" —
 make it a sibling, not a nested child.)
 
+This inheritance is also how you **co-locate work on a `pinned`
+thread**. There's no `pinned(pool = X)` for sharing a pinned
+thread — `pinned` owns its thread exclusively. So when a pinned
+locus needs helpers on its thread (counters, a metrics registry, a
+signal store — anything it calls directly), you *nest* them: make
+them `params` of the pinned locus, and they inherit its thread.
+Param defaults make this ergonomic — a default can itself
+instantiate the helper:
+
+```hale
+locus Gateway {              // placed pinned in main
+    params {
+        reg:   Registry = Registry { };
+        ticks: metrics::Counter = metrics::counter(self.reg, "ticks");
+    }
+    // run() calls self.ticks.inc() etc. — all on the pinned thread
+}
+```
+
+Hoisting them to siblings instead would put them on a *different*
+thread, and the gateway calling them directly would then be a
+cross-pool method call — which the compiler rejects (see below).
+Nesting is the supported pattern for "many loci, one pinned
+thread."
+
 ## The bus crosses threads for you
 
 When a cooperative locus on one pool publishes to a subscriber on
@@ -146,6 +171,22 @@ placement and the locus's shape are known at compile time:
   stall everything else scheduled there. The compiler warns and
   suggests `pinned` (own thread) or `where async_io` (parks). For
   blocking I/O gateways, `pinned` is the prescribed shape.
+
+It also enforces the **single-threaded-method invariant**: a locus's
+methods may only be called on the thread that owns its pool, so a
+*direct* method call across pools (`self.other.foo()` where `other`
+is placed on a different pool) is a compile error — it would run
+`other`'s method on the wrong thread.
+
+One escape is deliberately **not** traced: a call made through a
+*handler function pointer* rather than a direct method reference —
+the canonical case being a `std::http::Server` handler that reads a
+locus living on another pool. The static call-graph walk can't see
+through the pointer, so it's allowed. That's load-bearing (it's how
+a `/metrics` endpoint on the `io` pool reads a registry nested on a
+pinned gateway), but it's on *you* to keep that access safe —
+typically a read of stable, append-only state, not a mutation that
+would race the owning thread.
 
 Next: how loci nest and own each other — [Parents &
 children](./parents-children.md).
