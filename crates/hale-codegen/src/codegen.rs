@@ -15826,6 +15826,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_crypto_crc32(args, scope)?;
                 Ok(())
             }
+            ["std", "crypto", "ecdsa_p256_sign"] => {
+                let _ = self.lower_std_crypto_ecdsa_p256_sign(args, scope)?;
+                Ok(())
+            }
+            ["std", "crypto", "ecdsa_p256_verify"] => {
+                let _ = self.lower_std_crypto_ecdsa_p256_verify(args, scope)?;
+                Ok(())
+            }
             ["std", "text", "base64", "encode"] => {
                 let _ = self.lower_std_text_base64_encode(args, scope)?;
                 Ok(())
@@ -16519,6 +16527,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "crypto", "crc32"] => {
                 self.lower_std_crypto_crc32(args, scope)
+            }
+            ["std", "crypto", "ecdsa_p256_sign"] => {
+                self.lower_std_crypto_ecdsa_p256_sign(args, scope)
+            }
+            ["std", "crypto", "ecdsa_p256_verify"] => {
+                self.lower_std_crypto_ecdsa_p256_verify(args, scope)
             }
             ["std", "text", "base64", "encode"] => {
                 self.lower_std_text_base64_encode(args, scope)
