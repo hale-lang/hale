@@ -341,6 +341,17 @@ threads, pinned publishers via `lotus_bus_local_dispatch`, etc.
 The drain is idempotent, so existing code with `sleep; yield;`
 stays correct.
 
+**Scope: this delivery is `main`-pool only.** The queue drained
+here is the program-wide *cooperative* queue, drained on the `main`
+thread — so a cooperative subscriber receives cells via its sleep
+loop only when placed on the `main` pool. A subscriber placed
+`cooperative(pool = X)` with `X != main` is **not** reached by this
+drain (its handlers would silently never fire), which is why that
+placement is rejected at compile time — see the dead-bus-receiver
+rule under "Type-check rules" in `spec/semantics.md`. Pinned loci
+are a separate path: they drain their own per-locus mailbox at each
+`sleep`/`yield`, independent of the cooperative queue.
+
 **Long sleeps no longer starve main-pool handlers (2026-05-29).**
 Before the slicing, the drain happened only *after the whole sleep
 returned*, so the natural keep-alive idiom

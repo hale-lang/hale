@@ -3128,7 +3128,14 @@ impl<'a> Checker<'a> {
                              none must; the pool's worker drain loop is \
                              one-or-the-other. (The pool first appeared at \
                              the entry whose I/O mode is the other; pick \
-                             one and apply consistently.)",
+                             one and apply consistently.)\n\nNote: \
+                             `where async_io` governs non-blocking I/O \
+                             readiness — it makes blocking `recv`/`accept`/\
+                             `send` park-and-resume instead of holding the \
+                             thread. It does NOT affect bus delivery or \
+                             handler dispatch; if a `subscribe` handler \
+                             isn't firing, `async_io` is not the fix (check \
+                             the locus's placement instead).",
                             entry.field.name, pool_name
                         ),
                     ));
