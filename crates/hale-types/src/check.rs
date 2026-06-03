@@ -2730,6 +2730,84 @@ impl<'a> Checker<'a> {
                     ));
                 }
             }
+            // Dead bus receiver (fathom handoff 2026-06-02): a locus
+            // that subscribes to the bus but is placed
+            // `cooperative(pool = X)` with X != main never receives a
+            // cell. Inbound dispatch reaches a locus only if it is
+            // cooperative on `main` (its cell lands on the global
+            // queue that main's sliced keep-alive sleep drains) or
+            // `pinned` (its subscribe registration carries a per-locus
+            // mailbox the pinned thread drains at sleep/yield). A
+            // non-main cooperative locus is in neither bucket, so its
+            // handlers silently never fire. Placement and
+            // subscriptions are both static, so reject this at compile
+            // time rather than letting it compile clean and do
+            // nothing (this cost a downstream team most of a day).
+            //
+            // Spared: a subscription to a topic this locus ALSO
+            // publishes — an intra-locus self-publish→self-subscribe
+            // is devirtualized to a direct `self.handler(...)` call
+            // (same instance, same thread), which delivers on any
+            // pool. Rejecting it would be a false positive.
+            if let PlacementSpec::Cooperative { pool } = &entry.spec {
+                let pool_name = pool
+                    .as_ref()
+                    .map(|i| i.name.clone())
+                    .unwrap_or_else(|| "main".to_string());
+                if pool_name != "main" {
+                    let dead: Option<Vec<String>> = match &param.ty {
+                        Ty::Named(lname) => match self.top.lookup(lname) {
+                            Some(TopSymbol::Locus(li)) => {
+                                let published: BTreeSet<&str> = li
+                                    .bus_publishes
+                                    .iter()
+                                    .map(|p| p.subject.as_str())
+                                    .collect();
+                                let handlers: Vec<String> = li
+                                    .bus_subscribes
+                                    .iter()
+                                    .filter(|s| {
+                                        !published.contains(s.subject.as_str())
+                                    })
+                                    .map(|s| s.handler.clone())
+                                    .collect();
+                                if handlers.is_empty() {
+                                    None
+                                } else {
+                                    Some(handlers)
+                                }
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(handlers) = dead {
+                        let plural = handlers.len() > 1;
+                        self.diags.push(Diag::ty(
+                            entry.span,
+                            format!(
+                                "locus `{}` (field `{}`) subscribes to bus \
+                                 topics but is placed `cooperative(pool = \
+                                 {})`. Only main-pool-cooperative or pinned \
+                                 loci receive bus cells, so {} ({}) will \
+                                 never fire. Use `pinned` (recommended for \
+                                 blocking I/O) or place the field on the \
+                                 `main` pool.",
+                                param.ty.display(),
+                                entry.field.name,
+                                pool_name,
+                                if plural {
+                                    "these handlers"
+                                } else {
+                                    "this handler"
+                                },
+                                handlers.join(", "),
+                            ),
+                        ));
+                    }
+                }
+            }
+
             // F.35: per-entry constraint validity.
             for c in &entry.constraints {
                 match c.kind {
