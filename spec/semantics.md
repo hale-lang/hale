@@ -1386,6 +1386,31 @@ main locus App {
    the named locus type. A locus that uses neither feature can
    be placed either cooperative or pinned at the deployment's
    discretion.
+7. **Dead bus receiver (error).** A locus that declares
+   `bus { subscribe ... }` but is placed `cooperative(pool = X)`
+   with `X != main` is rejected: inbound bus dispatch reaches a
+   locus only if it is cooperative on `main` (its cell lands on
+   the global queue that `main`'s sliced keep-alive sleep drains)
+   or `pinned` (its subscribe registration carries a per-locus
+   mailbox the pinned thread drains). A non-main cooperative
+   subscriber is in neither bucket — its handlers would silently
+   never fire. A subscription to a topic the locus also
+   *publishes* is spared (an intra-locus self-publish→subscribe
+   is devirtualized to a direct call, which delivers on any pool).
+8. **Blocking syscall on a cooperative pool (warning).** A locus
+   placed `cooperative(pool = X)` *without* `where async_io`
+   whose `run()` calls a known-blocking stdlib op (tcp/tls recv,
+   accept, `process::run`/`wait`) gets a **warning** (not an
+   error — hale's only non-fatal diagnostic). A blocking call
+   holds the pool's OS thread for its whole duration, stalling
+   every other locus scheduled on that pool and the pool's bus
+   drain. The fix is `pinned` (its own thread — the prescribed
+   shape for blocking I/O) or `cooperative(pool = X) where
+   async_io` (parks on I/O readiness). It is a warning rather
+   than an error because a single-purpose blocking server with
+   nothing co-scheduled is legitimate; detection is best-effort
+   (direct path-call form only — blocking via a handle method or
+   a helper fn isn't traced).
 
 ### Single-threaded-method invariant
 
