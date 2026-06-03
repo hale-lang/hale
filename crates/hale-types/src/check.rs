@@ -197,7 +197,7 @@ pub fn check_bundle(
     // sibling-in-main + placement fix. See `spec/runtime.md §
     // Long-running cooperative children`.
     check_nested_long_running_child(bundle, &mut diags);
-    check_blocking_on_cooperative_pool(bundle, &mut diags);
+    check_cooperative_pool_blocking(bundle, &mut diags);
     // 2026-05-29: a bus-subscribing locus instantiated non-owned
     // inside another locus's method/handler body dissolves at that
     // method's scope exit, so its subscription can never fire.
@@ -620,7 +620,59 @@ fn find_blocking_in_expr(expr: &Expr) -> Option<(String, Span)> {
 /// blocking gateway was moved onto a shared pool). A warning, not an
 /// error — a single-purpose blocking server with nothing co-scheduled
 /// is legitimate; the smell is real but situational.
-fn check_blocking_on_cooperative_pool(
+/// A comparable key for a bus subject (topic name / literal /
+/// qualified path) — used to tell whether a subscription is to a
+/// topic the locus also publishes.
+fn bus_subject_key(s: &BusSubject) -> String {
+    match s {
+        BusSubject::Literal { subject, .. } => subject.clone(),
+        BusSubject::Topic(id) => id.name.clone(),
+        BusSubject::QualifiedTopic(qn) => qn
+            .segments
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join("::"),
+    }
+}
+
+/// Handler names for the locus's `subscribe` entries on topics it
+/// does NOT itself publish — i.e. genuine cross-context receives. A
+/// self-publish→self-subscribe is devirtualized to a direct
+/// `self.handler(...)` call (same instance, same thread), not a bus
+/// receive, so it's excluded.
+fn external_subscription_handlers(decl: &LocusDecl) -> Vec<String> {
+    let mut published: BTreeSet<String> = BTreeSet::new();
+    let mut handlers: Vec<(String, String)> = Vec::new(); // (subject_key, handler)
+    for m in &decl.members {
+        let LocusMember::Bus(b) = m else { continue };
+        for bm in &b.members {
+            match bm {
+                BusMember::Publish { subject, .. } => {
+                    published.insert(bus_subject_key(subject));
+                }
+                BusMember::Subscribe { subject, handler, .. } => {
+                    handlers.push((bus_subject_key(subject), handler.name.clone()));
+                }
+            }
+        }
+    }
+    handlers
+        .into_iter()
+        .filter(|(subj, _)| !published.contains(subj))
+        .map(|(_, h)| h)
+        .collect()
+}
+
+/// Flag blocking calls on cooperative pools. Two outcomes:
+///   * a non-main cooperative SUBSCRIBER whose `run()` blocks is a
+///     **dead receiver** (error) — the blocking call starves the
+///     dispatch that would deliver to its handlers;
+///   * any other cooperative locus whose `run()` blocks gets a
+///     **warning** — it stalls co-scheduled loci on the pool.
+/// An event-driven subscriber (no blocking call — handlers + a sleep
+/// loop, or `where async_io`) is flagged by neither: it receives fine.
+fn check_cooperative_pool_blocking(
     bundle: &Bundle<'_>,
     diags: &mut Vec<Diag>,
 ) {
@@ -690,11 +742,56 @@ fn check_blocking_on_cooperative_pool(
                 }) else {
                     continue;
                 };
-                if let Some((call, span)) = find_blocking_in_block(run_body) {
-                    let pool_name = pool
-                        .as_ref()
-                        .map(|i| i.name.as_str())
-                        .unwrap_or("main");
+                let Some((call, span)) = find_blocking_in_block(run_body)
+                else {
+                    // Event-driven (no blocking call in run()): the pool
+                    // thread stays free, the bus dispatch runs, cells
+                    // arrive. Nothing to flag — even a non-main
+                    // cooperative subscriber receives fine this way.
+                    continue;
+                };
+                let pool_name =
+                    pool.as_ref().map(|i| i.name.as_str()).unwrap_or("main");
+                // Handlers for topics this locus does NOT itself publish
+                // (a self-publish→subscribe is a devirtualized direct
+                // call, not a bus receive).
+                let dead = external_subscription_handlers(decl);
+                if pool_name != "main" && !dead.is_empty() {
+                    // DEAD RECEIVER (error). A non-main cooperative
+                    // subscriber whose run() blocks: cross-process
+                    // dispatch reaches a cooperative locus only when its
+                    // pool thread is free to run the dispatch, and a
+                    // blocking call monopolizes it, so these handlers
+                    // never fire. (Corrected 2026-06-03 from the
+                    // placement-only rule, which over-fired on
+                    // event-driven subscribers — `PriceView`/`WsDispatcher`
+                    // received fine for 16h+ in production.)
+                    diags.push(Diag::ty(
+                        span,
+                        format!(
+                            "locus `{}` (field `{}`) subscribes to bus topics \
+                             ({}) but its `run()` makes the blocking call `{}` \
+                             while placed `cooperative(pool = {})`. The \
+                             blocking call monopolizes the pool's thread, so \
+                             the dispatch that would deliver those cells never \
+                             runs — the handlers can't fire. (An event-driven \
+                             subscriber that yields — handlers plus a \
+                             `time::sleep` loop, or `where async_io` — receives \
+                             fine; the problem is the blocking call, not the \
+                             placement.) Use `pinned` (its own thread + a \
+                             mailbox drained at sleep/yield), or keep `run()` \
+                             non-blocking.",
+                            locus_name,
+                            entry.field.name,
+                            dead.join(", "),
+                            call,
+                            pool_name,
+                        ),
+                    ));
+                } else {
+                    // Blocking on a cooperative pool stalls co-scheduled
+                    // loci (and the pool's bus drain), even when this
+                    // locus isn't itself a subscriber.
                     diags.push(Diag::warn(
                         span,
                         format!(
@@ -2965,83 +3062,12 @@ impl<'a> Checker<'a> {
                     ));
                 }
             }
-            // Dead bus receiver (fathom handoff 2026-06-02): a locus
-            // that subscribes to the bus but is placed
-            // `cooperative(pool = X)` with X != main never receives a
-            // cell. Inbound dispatch reaches a locus only if it is
-            // cooperative on `main` (its cell lands on the global
-            // queue that main's sliced keep-alive sleep drains) or
-            // `pinned` (its subscribe registration carries a per-locus
-            // mailbox the pinned thread drains at sleep/yield). A
-            // non-main cooperative locus is in neither bucket, so its
-            // handlers silently never fire. Placement and
-            // subscriptions are both static, so reject this at compile
-            // time rather than letting it compile clean and do
-            // nothing (this cost a downstream team most of a day).
-            //
-            // Spared: a subscription to a topic this locus ALSO
-            // publishes — an intra-locus self-publish→self-subscribe
-            // is devirtualized to a direct `self.handler(...)` call
-            // (same instance, same thread), which delivers on any
-            // pool. Rejecting it would be a false positive.
-            if let PlacementSpec::Cooperative { pool } = &entry.spec {
-                let pool_name = pool
-                    .as_ref()
-                    .map(|i| i.name.clone())
-                    .unwrap_or_else(|| "main".to_string());
-                if pool_name != "main" {
-                    let dead: Option<Vec<String>> = match &param.ty {
-                        Ty::Named(lname) => match self.top.lookup(lname) {
-                            Some(TopSymbol::Locus(li)) => {
-                                let published: BTreeSet<&str> = li
-                                    .bus_publishes
-                                    .iter()
-                                    .map(|p| p.subject.as_str())
-                                    .collect();
-                                let handlers: Vec<String> = li
-                                    .bus_subscribes
-                                    .iter()
-                                    .filter(|s| {
-                                        !published.contains(s.subject.as_str())
-                                    })
-                                    .map(|s| s.handler.clone())
-                                    .collect();
-                                if handlers.is_empty() {
-                                    None
-                                } else {
-                                    Some(handlers)
-                                }
-                            }
-                            _ => None,
-                        },
-                        _ => None,
-                    };
-                    if let Some(handlers) = dead {
-                        let plural = handlers.len() > 1;
-                        self.diags.push(Diag::ty(
-                            entry.span,
-                            format!(
-                                "locus `{}` (field `{}`) subscribes to bus \
-                                 topics but is placed `cooperative(pool = \
-                                 {})`. Only main-pool-cooperative or pinned \
-                                 loci receive bus cells, so {} ({}) will \
-                                 never fire. Use `pinned` (recommended for \
-                                 blocking I/O) or place the field on the \
-                                 `main` pool.",
-                                param.ty.display(),
-                                entry.field.name,
-                                pool_name,
-                                if plural {
-                                    "these handlers"
-                                } else {
-                                    "this handler"
-                                },
-                                handlers.join(", "),
-                            ),
-                        ));
-                    }
-                }
-            }
+            // (The dead-bus-receiver check moved to
+            // `check_cooperative_pool_blocking` and was corrected: a
+            // non-main cooperative subscriber is dead only when its
+            // `run()` ALSO makes a blocking call that starves the pool
+            // thread — placement alone over-fires on event-driven
+            // subscribers, which receive fine. See that fn.)
 
             // F.35: per-entry constraint validity.
             for c in &entry.constraints {

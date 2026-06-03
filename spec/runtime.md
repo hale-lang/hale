@@ -341,16 +341,23 @@ threads, pinned publishers via `lotus_bus_local_dispatch`, etc.
 The drain is idempotent, so existing code with `sleep; yield;`
 stays correct.
 
-**Scope: this delivery is `main`-pool only.** The queue drained
-here is the program-wide *cooperative* queue, drained on the `main`
-thread — so a cooperative subscriber receives cells via its sleep
-loop only when placed on the `main` pool. A subscriber placed
-`cooperative(pool = X)` with `X != main` is **not** reached by this
-drain (its handlers would silently never fire), which is why that
-placement is rejected at compile time — see the dead-bus-receiver
-rule under "Type-check rules" in `spec/semantics.md`. Pinned loci
-are a separate path: they drain their own per-locus mailbox at each
-`sleep`/`yield`, independent of the cooperative queue.
+**Which path delivers to whom.** The queue drained *here* is the
+program-wide *in-process cooperative* queue, drained on the `main`
+thread — so this sleep-loop drain delivers in-process cells to a
+cooperative subscriber on the `main` pool. It is **not** the only
+delivery path: cross-process topics (`udp://` / `unix://` bound via
+`LOTUS_BUS_CONFIG`) are delivered by the transport reader thread,
+which dispatches directly into the subscribed handler set and
+reaches a cooperative locus on *any* pool — **provided that pool's
+thread is free to run the dispatch.** So a non-`main` cooperative
+subscriber receives reliably as long as it doesn't monopolize its
+pool thread with a blocking call. (Pinned loci are a third path: a
+per-locus mailbox drained at each `sleep`/`yield`.) The failure mode
+is a cooperative subscriber whose `run()` *blocks* — the dispatch
+can't run and its handlers never fire; that blocking-and-subscribing
+combination is what the dead-bus-receiver rule rejects (see
+"Type-check rules" in `spec/semantics.md`), **not** non-`main`
+placement on its own.
 
 **Long sleeps no longer starve main-pool handlers (2026-05-29).**
 Before the slicing, the drain happened only *after the whole sleep

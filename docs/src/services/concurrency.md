@@ -158,19 +158,24 @@ without async-style function coloring.
 Two placement mistakes are caught for you, because both the
 placement and the locus's shape are known at compile time:
 
-- **A subscriber that can never be delivered to is an error.** A
-  locus with a `bus { subscribe ... }` placed `cooperative(pool =
-  X)` on a non-`main` pool would silently never receive a cell
-  (only main-cooperative and pinned loci get bus delivery). The
-  compiler rejects it and points you at `pinned` or the `main`
-  pool.
-- **A blocking call on a cooperative pool is a warning.** If a
-  cooperative locus's `run()` makes a blocking I/O call (a
-  blocking `recv`/`accept`, a subprocess `run`) and the pool
-  isn't `where async_io`, it would hold the pool's thread and
-  stall everything else scheduled there. The compiler warns and
-  suggests `pinned` (own thread) or `where async_io` (parks). For
-  blocking I/O gateways, `pinned` is the prescribed shape.
+- **A subscriber that blocks its own delivery is an error.** A
+  cooperative locus on a non-`main` pool *receives bus cells fine*
+  as long as its pool thread is free to run the dispatch — an
+  event-driven subscriber (handlers plus a `sleep` loop, or `where
+  async_io`) works. But if such a subscriber's `run()` makes a
+  **blocking** call, it monopolizes the pool thread, the dispatch
+  never runs, and its handlers never fire. *That* combination —
+  non-`main` cooperative subscriber **with a blocking `run()`** —
+  is the error; the compiler points you at `pinned` (own thread +
+  mailbox) or keeping `run()` non-blocking. (Placement alone is
+  fine; it's the blocking call that kills delivery.)
+- **A blocking call on a cooperative pool is a warning.** Even when
+  the locus *isn't* a subscriber, a blocking `run()` (a blocking
+  `recv`/`accept`, a subprocess `run`) on a pool that isn't `where
+  async_io` holds the pool's thread and stalls everything else
+  scheduled there. The compiler warns and suggests `pinned` (own
+  thread) or `where async_io` (parks). For blocking I/O gateways,
+  `pinned` is the prescribed shape.
 
 It also enforces the **single-threaded-method invariant**: a locus's
 methods may only be called on the thread that owns its pool, so a
