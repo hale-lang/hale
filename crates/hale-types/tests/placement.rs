@@ -568,9 +568,15 @@ fn main() { App { }; }
 // positives on pinned / main / non-subscribing / intra-locus).
 // ---------------------------------------------------------------
 
-const DEAD_RX: &str = "will never fire";
+// Corrected 2026-06-03 (fathom over-fire handoff): a non-main
+// cooperative subscriber is a dead receiver only when its run() ALSO
+// makes a blocking call that starves the pool thread. Placement alone
+// over-fired on event-driven subscribers (PriceView/WsDispatcher),
+// which receive fine. The error message no longer claims "will never
+// fire" flatly.
+const DEAD_RX: &str = "monopolizes the pool's thread";
 
-fn dead_receiver_src(placement_spec: &str) -> String {
+fn dead_receiver_src(placement_spec: &str, run_body: &str) -> String {
     format!(
         r#"
 type Tick {{ n: Int; }}
@@ -578,7 +584,7 @@ type Tick {{ n: Int; }}
 locus Gateway {{
     bus {{ subscribe "tick" as on_tick of type Tick; }}
     fn on_tick(t: Tick) {{ }}
-    run() {{ }}
+    run() {{ {run_body} }}
 }}
 
 locus Feed {{
@@ -601,20 +607,43 @@ fn main() {{ App {{ }}; }}
     )
 }
 
+const BLOCKING_RUN: &str = "let n = std::io::tls::recv_into(0, 0, 64);";
+
 #[test]
-fn cooperative_nonmain_subscriber_rejected() {
-    let msgs = check(&dead_receiver_src("cooperative(pool = ws)"));
+fn cooperative_nonmain_subscriber_blocking_rejected() {
+    // The gateway shape: non-main cooperative subscriber whose run()
+    // blocks — still rejected (its blocking call starves the dispatch).
+    let msgs = check(&dead_receiver_src("cooperative(pool = ws)", BLOCKING_RUN));
     assert!(
         msgs.iter().any(|m| m.contains(DEAD_RX)),
-        "expected dead-bus-receiver diagnostic for a non-main cooperative \
-         subscriber; got: {:?}",
+        "a non-main cooperative subscriber with a blocking run() is a dead \
+         receiver and must be rejected; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn cooperative_nonmain_subscriber_event_driven_compiles() {
+    // The PriceView shape: non-main cooperative subscriber that does
+    // NOT block (handlers + a sleep loop) — receives fine, must NOT be
+    // rejected. This is the over-fire the correction fixes.
+    let msgs = check(&dead_receiver_src(
+        "cooperative(pool = prices)",
+        "std::time::sleep(60s);",
+    ));
+    assert!(
+        !msgs.iter().any(|m| m.contains(DEAD_RX)),
+        "an event-driven (non-blocking) non-main cooperative subscriber \
+         receives fine and must not be rejected; got: {:?}",
         msgs
     );
 }
 
 #[test]
 fn pinned_subscriber_not_rejected() {
-    let msgs = check(&dead_receiver_src("pinned"));
+    // Pinned owns its thread (+ mailbox) — never a dead receiver, even
+    // with a blocking run().
+    let msgs = check(&dead_receiver_src("pinned", BLOCKING_RUN));
     assert!(
         !msgs.iter().any(|m| m.contains(DEAD_RX)),
         "pinned subscribers receive bus cells (per-locus mailbox); must not \
@@ -625,11 +654,13 @@ fn pinned_subscriber_not_rejected() {
 
 #[test]
 fn main_cooperative_subscriber_not_rejected() {
-    let msgs = check(&dead_receiver_src("cooperative(pool = main)"));
+    // main-pool cooperative subscriber, even blocking, is not the
+    // dead-receiver error (main's sliced sleep drains; at most a
+    // blocking warning).
+    let msgs = check(&dead_receiver_src("cooperative(pool = main)", BLOCKING_RUN));
     assert!(
         !msgs.iter().any(|m| m.contains(DEAD_RX)),
-        "main-pool cooperative subscribers receive bus cells; must not be \
-         flagged: {:?}",
+        "main-pool cooperative subscribers are not the dead-receiver error: {:?}",
         msgs
     );
 }
