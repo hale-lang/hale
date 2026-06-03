@@ -197,6 +197,7 @@ pub fn check_bundle(
     // sibling-in-main + placement fix. See `spec/runtime.md §
     // Long-running cooperative children`.
     check_nested_long_running_child(bundle, &mut diags);
+    check_blocking_on_cooperative_pool(bundle, &mut diags);
     // 2026-05-29: a bus-subscribing locus instantiated non-owned
     // inside another locus's method/handler body dissolves at that
     // method's scope exit, so its subscription can never fire.
@@ -483,6 +484,240 @@ fn locus_has_nontrivial_run(l: &LocusDecl) -> bool {
         }) => !body.stmts.is_empty(),
         _ => false,
     })
+}
+
+/// Stdlib path calls that block the calling OS thread until the I/O
+/// completes. A cooperative (non-`async_io`) locus that runs one in
+/// its `run()` loop holds the pool's thread for the call's whole
+/// duration — stalling every other locus scheduled on that pool and
+/// the pool's bus drain. (`async_io` parks instead of blocking;
+/// `pinned` owns its own thread.) Best-effort, direct-path-call form
+/// only: blocking via a method on a stdlib handle (`stream.recv(...)`)
+/// or through a helper fn isn't traced — this is a warning, so the
+/// incompleteness is acceptable.
+const BLOCKING_STDLIB_PATHS: &[&[&str]] = &[
+    &["std", "io", "tcp", "recv_into"],
+    &["std", "io", "tcp", "__recv"],
+    &["std", "io", "tcp", "__recv_bytes"],
+    &["std", "io", "tcp", "__accept_one"],
+    &["std", "io", "tls", "recv_into"],
+    &["std", "io", "tls", "recv_bytes"],
+    &["std", "process", "run"],
+    &["std", "process", "wait"],
+    &["std", "process", "__wait_pid"],
+];
+
+fn blocking_path_match(segs: &[&str]) -> Option<String> {
+    BLOCKING_STDLIB_PATHS
+        .iter()
+        .find(|p| **p == segs)
+        .map(|p| p.join("::"))
+}
+
+fn find_blocking_in_block(block: &Block) -> Option<(String, Span)> {
+    block.stmts.iter().find_map(find_blocking_in_stmt)
+}
+
+fn find_blocking_in_stmt(stmt: &Stmt) -> Option<(String, Span)> {
+    match stmt {
+        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+            find_blocking_in_expr(value)
+        }
+        Stmt::Assign { value, .. } => find_blocking_in_expr(value),
+        Stmt::Send { subject, value, .. } => {
+            find_blocking_in_expr(subject).or_else(|| find_blocking_in_expr(value))
+        }
+        Stmt::Return(Some(e), _) => find_blocking_in_expr(e),
+        Stmt::Fail { value, .. } => find_blocking_in_expr(value),
+        Stmt::Violate { payload: Some(e), .. } => find_blocking_in_expr(e),
+        Stmt::Recovery { args, .. } => args.iter().find_map(find_blocking_in_expr),
+        Stmt::Expr(e) => find_blocking_in_expr(e),
+        Stmt::If(i) => find_blocking_in_if(i),
+        Stmt::Match(m) => find_blocking_in_match(m),
+        Stmt::For { iter, body, .. } => {
+            find_blocking_in_expr(iter).or_else(|| find_blocking_in_block(body))
+        }
+        Stmt::While { cond, body, .. } => {
+            find_blocking_in_expr(cond).or_else(|| find_blocking_in_block(body))
+        }
+        Stmt::Block(b) => find_blocking_in_block(b),
+        _ => None,
+    }
+}
+
+fn find_blocking_in_if(i: &IfStmt) -> Option<(String, Span)> {
+    find_blocking_in_expr(&i.cond)
+        .or_else(|| find_blocking_in_block(&i.then_block))
+        .or_else(|| match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => find_blocking_in_block(b),
+            Some(ElseBranch::ElseIf(n)) => find_blocking_in_if(n),
+            None => None,
+        })
+}
+
+fn find_blocking_in_match(m: &MatchStmt) -> Option<(String, Span)> {
+    find_blocking_in_expr(&m.scrutinee).or_else(|| {
+        m.arms.iter().find_map(|arm| {
+            arm.guard
+                .as_ref()
+                .and_then(find_blocking_in_expr)
+                .or_else(|| match &arm.body {
+                    MatchArmBody::Expr(e) => find_blocking_in_expr(e),
+                    MatchArmBody::Block(b) => find_blocking_in_block(b),
+                })
+        })
+    })
+}
+
+fn find_blocking_in_expr(expr: &Expr) -> Option<(String, Span)> {
+    match expr {
+        Expr::Call { callee, args, span } => {
+            if let Expr::Path(qn) = callee.as_ref() {
+                let segs: Vec<&str> =
+                    qn.segments.iter().map(|s| s.name.as_str()).collect();
+                if let Some(name) = blocking_path_match(&segs) {
+                    return Some((name, *span));
+                }
+            }
+            find_blocking_in_expr(callee)
+                .or_else(|| args.iter().find_map(find_blocking_in_expr))
+        }
+        Expr::Binary { left, right, .. } => {
+            find_blocking_in_expr(left).or_else(|| find_blocking_in_expr(right))
+        }
+        Expr::Unary { operand, .. } => find_blocking_in_expr(operand),
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
+            find_blocking_in_expr(receiver)
+        }
+        Expr::Index { receiver, index, .. } => {
+            find_blocking_in_expr(receiver).or_else(|| find_blocking_in_expr(index))
+        }
+        Expr::Tuple(es, _) | Expr::Array(es, _) => {
+            es.iter().find_map(find_blocking_in_expr)
+        }
+        Expr::Struct { inits, .. } => {
+            inits.iter().find_map(|i| find_blocking_in_expr(&i.value))
+        }
+        Expr::Block(b) => find_blocking_in_block(b),
+        Expr::If(i) => find_blocking_in_if(i),
+        Expr::Match(m) => find_blocking_in_match(m),
+        Expr::Sum(e, _) | Expr::Prod(e, _) => find_blocking_in_expr(e),
+        Expr::Or { inner, disposition, .. } => find_blocking_in_expr(inner)
+            .or_else(|| match disposition {
+                OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
+                    find_blocking_in_expr(e)
+                }
+                _ => None,
+            }),
+        _ => None,
+    }
+}
+
+/// Warn when a locus placed `cooperative(pool = X)` without
+/// `where async_io` calls a known-blocking stdlib op in its `run()`.
+/// Such a call holds the pool's OS thread, starving co-scheduled loci
+/// (this silently bricked a downstream team's metrics server when a
+/// blocking gateway was moved onto a shared pool). A warning, not an
+/// error — a single-purpose blocking server with nothing co-scheduled
+/// is legitimate; the smell is real but situational.
+fn check_blocking_on_cooperative_pool(
+    bundle: &Bundle<'_>,
+    diags: &mut Vec<Diag>,
+) {
+    let mut local_loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
+    for program in bundle.programs.values() {
+        for item in &program.items {
+            if let TopDecl::Locus(l) = item {
+                local_loci.insert(l.name.name.as_str(), l);
+            }
+        }
+    }
+
+    for program in bundle.programs.values() {
+        for item in &program.items {
+            let TopDecl::Locus(main) = item else { continue };
+            if !main.is_main {
+                continue;
+            }
+            let Some(pb) = main.members.iter().find_map(|m| match m {
+                LocusMember::Placement(pb) => Some(pb),
+                _ => None,
+            }) else {
+                continue;
+            };
+            // field name -> single-segment locus type name.
+            let mut field_locus: BTreeMap<&str, &str> = BTreeMap::new();
+            for m in &main.members {
+                let LocusMember::Params(params) = m else { continue };
+                for pd in &params.params {
+                    if let Some(TypeExpr::Named { path, .. }) = &pd.ty {
+                        if path.segments.len() == 1 {
+                            field_locus.insert(
+                                pd.name.name.as_str(),
+                                path.segments[0].name.as_str(),
+                            );
+                        }
+                    }
+                }
+            }
+
+            for entry in &pb.entries {
+                let PlacementSpec::Cooperative { pool } = &entry.spec else {
+                    continue;
+                };
+                // `where async_io` parks blocking I/O — not a stall.
+                if entry
+                    .constraints
+                    .iter()
+                    .any(|c| matches!(c.kind, PlacementConstraint::AsyncIo))
+                {
+                    continue;
+                }
+                let Some(locus_name) = field_locus.get(entry.field.name.as_str())
+                else {
+                    continue;
+                };
+                let Some(decl) = local_loci.get(locus_name) else {
+                    continue;
+                };
+                let Some(run_body) = decl.members.iter().find_map(|m| match m {
+                    LocusMember::Lifecycle(LifecycleDecl {
+                        kind: LifecycleKind::Run,
+                        body,
+                        ..
+                    }) => Some(body),
+                    _ => None,
+                }) else {
+                    continue;
+                };
+                if let Some((call, span)) = find_blocking_in_block(run_body) {
+                    let pool_name = pool
+                        .as_ref()
+                        .map(|i| i.name.as_str())
+                        .unwrap_or("main");
+                    diags.push(Diag::warn(
+                        span,
+                        format!(
+                            "locus `{}` (field `{}`) is placed `cooperative(pool \
+                             = {})` and calls the blocking `{}` in its `run()`. A \
+                             blocking call holds the pool's OS thread for its whole \
+                             duration, stalling every other locus scheduled on `{}` \
+                             (and the pool's bus drain). Use `pinned` (its own \
+                             thread — the prescribed shape for blocking I/O), or \
+                             `cooperative(pool = {}) where async_io` (which parks on \
+                             I/O readiness instead of blocking the thread).",
+                            locus_name,
+                            entry.field.name,
+                            pool_name,
+                            call,
+                            pool_name,
+                            pool_name,
+                        ),
+                    ));
+                }
+            }
+        }
+    }
 }
 
 fn check_nested_long_running_child(

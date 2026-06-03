@@ -162,14 +162,19 @@ fn all_examples_parse_and_check() {
                 programs: bundle_programs,
             };
             let diags = check_bundle(&bundle);
-            if !diags.is_empty() {
+            // Warnings (e.g. blocking-syscall-on-cooperative-pool) are
+            // advisory and don't fail the corpus typecheck — only
+            // errors do.
+            let errs: Vec<_> =
+                diags.iter().filter(|d| d.is_error()).cloned().collect();
+            if !errs.is_empty() {
                 let source_refs: BTreeMap<String, &str> =
                     sources.iter().map(|(k, v)| (k.clone(), v.as_str())).collect();
                 failures.push(format!(
                     "[{}] bundle {} type errors:\n  {}",
                     project_label,
                     label,
-                    render_diags(&diags, &source_refs)
+                    render_diags(&errs, &source_refs)
                 ));
             }
         }
