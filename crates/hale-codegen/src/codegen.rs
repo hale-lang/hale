@@ -15834,6 +15834,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_text_base64_decode(args, scope)?;
                 Ok(())
             }
+            ["std", "text", "base64", "url_encode"] => {
+                let _ = self.lower_std_text_base64_url_encode(args, scope)?;
+                Ok(())
+            }
             ["std", "rand", "seed_from_time"] => {
                 self.lower_std_rand_seed_from_time(args)?;
                 Ok(())
@@ -16521,6 +16525,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "text", "base64", "decode"] => {
                 self.lower_std_text_base64_decode(args, scope)
+            }
+            ["std", "text", "base64", "url_encode"] => {
+                self.lower_std_text_base64_url_encode(args, scope)
             }
             ["std", "rand", "next_int"] => {
                 self.lower_std_rand_next_int(args, scope)

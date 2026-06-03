@@ -30,6 +30,12 @@ pub(crate) trait TextStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
+    fn lower_std_text_base64_url_encode(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
 }
 
 impl<'ctx, 'p> TextStdlib<'ctx> for Cx<'ctx, 'p> {
@@ -196,6 +202,45 @@ impl<'ctx, 'p> TextStdlib<'ctx> for Cx<'ctx, 'p> {
         let call = self
             .builder
             .build_call(f, &[b_val.into()], "b64.encode.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::String))
+    }
+
+    /// fathom handoff (2026-06-02): lower
+    /// `std::text::base64::url_encode(b: Bytes) -> String`. RFC 4648
+    /// §5 URL-safe alphabet (`-`/`_` for 62/63) with NO padding —
+    /// the form JWT/JWS, OAuth, and webhook signatures use. Same
+    /// shape as `encode`; only the C backer differs.
+    fn lower_std_text_base64_url_encode(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::text::base64::url_encode takes 1 arg (b), got {}",
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::text::base64::url_encode: b must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
+        let f = self
+            .module
+            .get_function("lotus_text_base64url_encode")
+            .expect("lotus_text_base64url_encode declared");
+        let call = self
+            .builder
+            .build_call(f, &[b_val.into()], "b64url.encode.ret")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let ptr = call
             .try_as_basic_value()

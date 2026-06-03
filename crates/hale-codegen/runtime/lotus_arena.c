@@ -11765,6 +11765,52 @@ const char *lotus_text_base64_encode(const void *b) {
     return out;
 }
 
+/* RFC 4648 §5 base64url alphabet: index 62/63 are '-'/'_' rather
+ * than '+'/'/', and the output is UNPADDED. This is the form
+ * JWT/JWS, OAuth, and webhook signatures use. */
+static const char b64url_alpha[65] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+const char *lotus_text_base64url_encode(const void *b) {
+    int64_t len = b ? lotus_bytes_len(b) : 0;
+    const unsigned char *src =
+        b ? (const unsigned char *)b + sizeof(int64_t) : NULL;
+    /* Unpadded length: 4 chars per full 3-byte group, plus a
+     * 1-byte tail -> 2 chars, a 2-byte tail -> 3 chars. */
+    int64_t out_len = (len / 3) * 4 + ((len % 3) ? (len % 3) + 1 : 0);
+
+    char *out = (char *)lotus_bus_payload_arena_alloc((size_t)(out_len + 1), 1);
+    if (!out) return "";
+
+    int64_t i = 0, j = 0;
+    while (i + 3 <= len) {
+        uint32_t v = ((uint32_t)src[i] << 16)
+                   | ((uint32_t)src[i + 1] << 8)
+                   |  (uint32_t)src[i + 2];
+        out[j + 0] = b64url_alpha[(v >> 18) & 0x3F];
+        out[j + 1] = b64url_alpha[(v >> 12) & 0x3F];
+        out[j + 2] = b64url_alpha[(v >> 6) & 0x3F];
+        out[j + 3] = b64url_alpha[v & 0x3F];
+        i += 3;
+        j += 4;
+    }
+    int64_t rem = len - i;
+    if (rem == 1) {
+        uint32_t v = (uint32_t)src[i] << 16;
+        out[j + 0] = b64url_alpha[(v >> 18) & 0x3F];
+        out[j + 1] = b64url_alpha[(v >> 12) & 0x3F];
+        j += 2;
+    } else if (rem == 2) {
+        uint32_t v = ((uint32_t)src[i] << 16) | ((uint32_t)src[i + 1] << 8);
+        out[j + 0] = b64url_alpha[(v >> 18) & 0x3F];
+        out[j + 1] = b64url_alpha[(v >> 12) & 0x3F];
+        out[j + 2] = b64url_alpha[(v >> 6) & 0x3F];
+        j += 3;
+    }
+    out[j] = '\0';
+    return out;
+}
+
 /*
  * v1.x-16: base64::decode. Inverse of lotus_text_base64_encode.
  * Returns a Bytes blob anchored in the bus payload arena.

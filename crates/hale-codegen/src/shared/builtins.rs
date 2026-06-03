@@ -1754,6 +1754,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let b64_decode_ty = ptr_t.fn_type(&[ptr_t.into()], false);
         self.module
             .add_function("lotus_text_base64_decode", b64_decode_ty, None);
+        // declare ptr @lotus_text_base64url_encode(ptr bytes) — RFC
+        // 4648 §5 URL-safe, unpadded (JWT/JWS, OAuth, webhooks).
+        let b64url_encode_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_text_base64url_encode", b64url_encode_ty, None);
         // ws-echo: cheap RNG (xorshift64*) for nonces / jitter.
         let void_t = self.context.void_type();
         let rand_seed_ty = void_t.fn_type(&[], false);
