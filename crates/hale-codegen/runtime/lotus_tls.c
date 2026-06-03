@@ -30,6 +30,12 @@
 
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/ec.h>
+#include <openssl/ecdsa.h>
+#include <openssl/bn.h>
+#include <openssl/bio.h>
 
 #include <pthread.h>
 #include <stdio.h>
@@ -325,4 +331,148 @@ int lotus_tls_close(int handle) {
     }
     if (fd >= 0) close(fd);
     return 0;
+}
+
+/* ----------------------------------------------------------------
+ * ECDSA P-256 (ES256) — fathom handoff 2026-06-02.
+ *
+ * Lives in this TU (not lotus_arena.c) because it uses OpenSSL/
+ * libcrypto, which is already linked for TLS; keeping it here leaves
+ * lotus_arena.c free of the openssl dependency (standalone test
+ * drivers compile arena.c alone). The signature form is raw r||s
+ * (64 bytes, JWS/COSE), not DER — that's what JWT and most venue
+ * APIs want, and it spares every caller a DER→raw conversion.
+ * `message` is hashed with SHA-256 internally (ES256 semantics).
+ * ---------------------------------------------------------------- */
+
+/* Parse a PEM private key and confirm it is an EC key. Accepts both
+ * SEC1 (`-----BEGIN EC PRIVATE KEY-----`, what Coinbase issues) and
+ * PKCS#8 (`-----BEGIN PRIVATE KEY-----`) — PEM_read_bio_PrivateKey
+ * handles both. Caller owns the returned EVP_PKEY. */
+static EVP_PKEY *lotus_ec_priv_from_pem(const unsigned char *pem, int64_t len) {
+    BIO *bio = BIO_new_mem_buf(pem, (int)len);
+    if (!bio) return NULL;
+    EVP_PKEY *pkey = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+    if (pkey && EVP_PKEY_base_id(pkey) != EVP_PKEY_EC) {
+        EVP_PKEY_free(pkey);
+        return NULL;
+    }
+    return pkey;
+}
+
+/* Inner sign: returns a 64-byte r||s blob, or NULL on any failure
+ * (bad key, non-EC key, r/s wider than 32 bytes => not P-256). */
+static void *lotus_ecdsa_p256_sign_or_null(const void *key_b, const void *msg_b) {
+    if (!key_b || !msg_b) return NULL;
+    int64_t key_len = lotus_bytes_len(key_b);
+    const unsigned char *key_d = (const unsigned char *)key_b + sizeof(int64_t);
+    int64_t msg_len = lotus_bytes_len(msg_b);
+    const unsigned char *msg_d = (const unsigned char *)msg_b + sizeof(int64_t);
+
+    EVP_PKEY *pkey = lotus_ec_priv_from_pem(key_d, key_len);
+    if (!pkey) return NULL;
+
+    /* SHA-256 + ECDSA -> DER signature (two-pass: size, then fill). */
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    unsigned char *der = NULL;
+    size_t der_len = 0;
+    int ok = 0;
+    if (ctx
+        && EVP_DigestSignInit(ctx, NULL, EVP_sha256(), NULL, pkey) == 1
+        && EVP_DigestSign(ctx, NULL, &der_len, msg_d, (size_t)msg_len) == 1) {
+        der = (unsigned char *)malloc(der_len);
+        if (der
+            && EVP_DigestSign(ctx, der, &der_len, msg_d, (size_t)msg_len) == 1) {
+            ok = 1;
+        }
+    }
+    EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(pkey);
+    if (!ok) { free(der); return NULL; }
+
+    /* DER ECDSA_SIG -> raw r||s, each left-padded to 32 bytes. */
+    const unsigned char *p = der;
+    ECDSA_SIG *sig = d2i_ECDSA_SIG(NULL, &p, (long)der_len);
+    free(der);
+    if (!sig) return NULL;
+
+    const BIGNUM *r = NULL, *s = NULL;
+    ECDSA_SIG_get0(sig, &r, &s);
+    void *blob = lotus_bytes_create(lotus_bus_payload_arena_get(), 64);
+    if (!blob) { ECDSA_SIG_free(sig); return NULL; }
+    unsigned char *out = (unsigned char *)lotus_bytes_data(blob);
+    /* BN_bn2binpad returns -1 if the value needs more than 32 bytes
+     * (i.e. not a P-256 r/s) — reject rather than truncate. */
+    if (BN_bn2binpad(r, out, 32) != 32 || BN_bn2binpad(s, out + 32, 32) != 32) {
+        ECDSA_SIG_free(sig);
+        return NULL;
+    }
+    ECDSA_SIG_free(sig);
+    return blob;
+}
+
+/* ecdsa_p256_sign(key: Bytes, message: Bytes) -> Bytes.
+ * Always returns a valid Bytes blob: the 64-byte r||s signature on
+ * success, or an EMPTY blob (len 0) on any failure — the same
+ * "empty on failure" convention base64::decode uses, so the result
+ * is always a well-formed Bytes the caller can length-check
+ * (`std::bytes::len(sig) == 0` => signing failed). Fails closed: an
+ * empty signature is rejected by any verifier. (A future
+ * fallible(CryptoError) form can layer on top once the synthesized
+ * stdlib-error plumbing is generalized past IoError.) */
+void *lotus_crypto_ecdsa_p256_sign(const void *key_b, const void *msg_b) {
+    void *sig = lotus_ecdsa_p256_sign_or_null(key_b, msg_b);
+    return sig ? sig : lotus_bytes_create(lotus_bus_payload_arena_get(), 0);
+}
+
+/* ecdsa_p256_verify(pubkey: Bytes (PEM SPKI), message: Bytes,
+ *                    sig_rs: Bytes (64-byte r||s)) -> Int (1/0). */
+int64_t lotus_crypto_ecdsa_p256_verify(
+    const void *pub_b, const void *msg_b, const void *sig_b)
+{
+    if (!pub_b || !msg_b || !sig_b) return 0;
+    int64_t pub_len = lotus_bytes_len(pub_b);
+    const unsigned char *pub_d = (const unsigned char *)pub_b + sizeof(int64_t);
+    int64_t msg_len = lotus_bytes_len(msg_b);
+    const unsigned char *msg_d = (const unsigned char *)msg_b + sizeof(int64_t);
+    int64_t sig_len = lotus_bytes_len(sig_b);
+    const unsigned char *sig_d = (const unsigned char *)sig_b + sizeof(int64_t);
+    if (sig_len != 64) return 0;
+
+    BIO *bio = BIO_new_mem_buf(pub_d, (int)pub_len);
+    if (!bio) return 0;
+    EVP_PKEY *pkey = PEM_read_bio_PUBKEY(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+    if (!pkey) return 0;
+    if (EVP_PKEY_base_id(pkey) != EVP_PKEY_EC) { EVP_PKEY_free(pkey); return 0; }
+
+    /* raw r||s -> ECDSA_SIG -> DER. */
+    ECDSA_SIG *sig = ECDSA_SIG_new();
+    BIGNUM *r = BN_bin2bn(sig_d, 32, NULL);
+    BIGNUM *s = BN_bin2bn(sig_d + 32, 32, NULL);
+    int64_t result = 0;
+    if (sig && r && s && ECDSA_SIG_set0(sig, r, s) == 1) {
+        /* sig now owns r,s. */
+        unsigned char *der = NULL;
+        int der_len = i2d_ECDSA_SIG(sig, &der);
+        if (der_len > 0) {
+            EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+            if (ctx
+                && EVP_DigestVerifyInit(ctx, NULL, EVP_sha256(), NULL, pkey) == 1) {
+                int v = EVP_DigestVerify(
+                    ctx, der, (size_t)der_len, msg_d, (size_t)msg_len);
+                result = (v == 1) ? 1 : 0;
+            }
+            EVP_MD_CTX_free(ctx);
+            OPENSSL_free(der);
+        }
+    } else {
+        /* set0 not reached / failed: we still own r,s. */
+        BN_free(r);
+        BN_free(s);
+    }
+    ECDSA_SIG_free(sig);
+    EVP_PKEY_free(pkey);
+    return result;
 }

@@ -1746,6 +1746,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let crc32_ty = i64_t.fn_type(&[ptr_t.into()], false);
         self.module
             .add_function("lotus_crypto_crc32", crc32_ty, None);
+        // fathom handoff (2026-06-02): ECDSA P-256 / ES256 (OpenSSL,
+        // bodies in lotus_tls.c).
+        // declare ptr @lotus_crypto_ecdsa_p256_sign(ptr key, ptr msg)
+        let ecdsa_sign_ty =
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        self.module
+            .add_function("lotus_crypto_ecdsa_p256_sign", ecdsa_sign_ty, None);
+        // declare i64 @lotus_crypto_ecdsa_p256_verify(ptr pub, ptr msg, ptr sig)
+        let ecdsa_verify_ty =
+            i64_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_crypto_ecdsa_p256_verify",
+            ecdsa_verify_ty,
+            None,
+        );
         // declare ptr @lotus_text_base64_encode(ptr bytes)
         let b64_encode_ty = ptr_t.fn_type(&[ptr_t.into()], false);
         self.module

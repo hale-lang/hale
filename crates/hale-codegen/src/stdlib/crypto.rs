@@ -29,6 +29,18 @@ pub(crate) trait CryptoStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
+    fn lower_std_crypto_ecdsa_p256_sign(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
+    fn lower_std_crypto_ecdsa_p256_verify(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
 }
 
 impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
@@ -200,5 +212,110 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
             .left()
             .expect("returns i64");
         Ok((iv, CodegenTy::Int))
+    }
+
+    /// fathom handoff (2026-06-02): lower
+    /// `std::crypto::ecdsa_p256_sign(key: Bytes, message: Bytes) ->
+    /// Bytes`. ES256 — SHA-256 the message, ECDSA over P-256, return
+    /// the 64-byte raw r‖s signature (JWS/COSE form). `key` is a PEM
+    /// EC private key (SEC1 or PKCS#8). Returns an EMPTY Bytes blob
+    /// on failure (bad key / non-P-256), the base64::decode
+    /// convention — caller checks `std::bytes::len(sig) == 0`.
+    /// Backed by OpenSSL in lotus_tls.c; anchored in the payload arena.
+    fn lower_std_crypto_ecdsa_p256_sign(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::ecdsa_p256_sign takes 2 args (key, message), got {}",
+                args.len()
+            )));
+        }
+        let (key_val, key_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(key_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::ecdsa_p256_sign: key must be Bytes, got {:?}",
+                key_ty
+            )));
+        }
+        let (msg_val, msg_ty) = self.lower_expr(&args[1], scope)?;
+        if !matches!(msg_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::ecdsa_p256_sign: message must be Bytes, got {:?}",
+                msg_ty
+            )));
+        }
+        let key_val = self.unpack_view_if_needed(key_val, &key_ty)?;
+        let msg_val = self.unpack_view_if_needed(msg_val, &msg_ty)?;
+        let f = self
+            .module
+            .get_function("lotus_crypto_ecdsa_p256_sign")
+            .expect("lotus_crypto_ecdsa_p256_sign declared");
+        let call = self
+            .builder
+            .build_call(f, &[key_val.into(), msg_val.into()], "ecdsa.sign.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call.try_as_basic_value().left().expect("returns ptr");
+        Ok((ptr, CodegenTy::Bytes))
+    }
+
+    /// fathom handoff (2026-06-02): lower
+    /// `std::crypto::ecdsa_p256_verify(pubkey: Bytes, message: Bytes,
+    /// sig: Bytes) -> Bool`. `pubkey` is a PEM SPKI EC public key;
+    /// `sig` is the 64-byte raw r‖s. SHA-256 + ECDSA verify in
+    /// lotus_tls.c (OpenSSL). The C fn returns i64 1/0; narrow to i1.
+    fn lower_std_crypto_ecdsa_p256_verify(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 3 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::ecdsa_p256_verify takes 3 args (pubkey, \
+                 message, sig), got {}",
+                args.len()
+            )));
+        }
+        let mut vals = Vec::with_capacity(3);
+        for (i, name) in ["pubkey", "message", "sig"].iter().enumerate() {
+            let (v, ty) = self.lower_expr(&args[i], scope)?;
+            if !matches!(ty, CodegenTy::Bytes | CodegenTy::BytesView) {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::crypto::ecdsa_p256_verify: {} must be Bytes, got {:?}",
+                    name, ty
+                )));
+            }
+            vals.push(self.unpack_view_if_needed(v, &ty)?);
+        }
+        let f = self
+            .module
+            .get_function("lotus_crypto_ecdsa_p256_verify")
+            .expect("lotus_crypto_ecdsa_p256_verify declared");
+        let call = self
+            .builder
+            .build_call(
+                f,
+                &[vals[0].into(), vals[1].into(), vals[2].into()],
+                "ecdsa.verify.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let iv = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64")
+            .into_int_value();
+        // i64 (1/0) -> i1 Bool.
+        let b = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                iv,
+                self.context.i64_type().const_zero(),
+                "ecdsa.verify.bool",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((b.into(), CodegenTy::Bool))
     }
 }
