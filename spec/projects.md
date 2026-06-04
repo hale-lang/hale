@@ -347,12 +347,13 @@ sentinel for non-Cargo trees.
 
 ## `hale run` interaction
 
-Cross-seed import resolution threads the per-build path-rename
-table only through the codegen path. The interpreter has no
-equivalent table; using `alias::Name` paths in a program run
-via `hale run` will fail to resolve the same way
-`std::http::Request { ... }` literals already do. Use `hale
-build` and run the resulting binary directly for programs with
+`hale run` and `hale build` share the same codegen path, so a
+single source file's `import "..." as ...;` directives resolve
+identically under both. The gap is the *ad-hoc directory* form
+(`hale run ./dir`): it bundles the directory's files without
+threading the per-build path-rename table, so `alias::Name` paths
+across git-dependency seeds won't resolve. Use `hale build ./dir`
+(or `hale build` on the entry file) for a multi-seed project with
 cross-seed imports.
 
 ## Git-based dependency fetching (`hale fetch`)

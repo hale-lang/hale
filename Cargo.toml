@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "crates/hale-syntax",
     "crates/hale-types",
-    "crates/hale-runtime",
     "crates/hale-codegen",
     "crates/hale-cli",
     "crates/hale-ts-shim",

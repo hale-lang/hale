@@ -2109,13 +2109,10 @@ the portable access path is via the child handle.
    the child handle (`c.f1`, `c.f2`) — because `violate` is
    divergent, the child's state is frozen at the violate
    moment, so the handle reads return the snapshot the captures
-   clause names. Under `hale run` the interpreter additionally
-   materializes each captured field on the `ClosureViolation`
-   value as a convenience (`err.f1` works); under `hale build`
-   only the child-handle path is wired (the `ClosureViolation`
-   carries `err.locus` + `err.closure` only). The portable
-   access pattern, recommended in both runtimes, is the child-
-   handle path.
+   clause names. The `ClosureViolation` value itself carries
+   `err.locus` + `err.closure`; the captured fields are read
+   through the frozen child handle. The child-handle path is the
+   access pattern for captured state.
 
 3. **`epoch inline`.** A new variant alongside `tick`,
    `duration(d)`, `dissolve`, `birth`, and `explicit`. Inline
@@ -2221,8 +2218,6 @@ declarative instead of folded into a free-form `Error` payload.
   field, `self.draining` codegen, ClosureViolation synthesis at
   the `violate` site with captures snapshot, drain initiation at
   the next cooperative yield.
-- `crates/hale-runtime/` — interpreter parity for the new
-  statement and assertion-less closures.
 
 ### F.28 BytesBuilder is a locus, not a primitive type
 
@@ -2405,11 +2400,6 @@ along the F.29 locus-field cascade path where
 - `crates/hale-codegen/runtime/lotus_arena.c` —
   `lotus_bytes_builder_new` takes `int64_t initial_cap` (was
   zero-arg); other primitives unchanged.
-- `crates/hale-runtime/src/builtins.rs` — interpreter
-  parity moved to the `std::bytes::builder::__*` dispatch
-  paths; the `__new` impl accepts the new `initial_cap` arg
-  (currently ignored since the interpreter's `Vec` backing
-  auto-grows).
 
 **Phase-2 (1): zero-copy `view()`.** Added
 `b.view() -> Bytes` returning a non-owning Bytes pointer that

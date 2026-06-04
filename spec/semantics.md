@@ -1615,19 +1615,16 @@ closure synchronously at the call site:
 
 1. Runtime synthesizes a `ClosureViolation` value carrying:
    - `locus`, `closure` — string names of the failing locus and
-     the inline closure (always present, both runtimes).
-   - Under `hale run` only: one field per name in the
-     closure's `captures:` clause, holding the snapshot of
-     `self.<field>` taken at the fire point. Under `hale
-     build` the LLVM `ClosureViolation` struct has a fixed
-     shape and these convenience fields are not materialized.
-     The portable access pattern is to read frozen child state
-     through the child handle in `on_failure(c, err)` — see
-     "Reading the audit state" below.
-   - If `with EXPR` was given (interpreter), a `payload` field
-     with EXPR's value. Codegen evaluates EXPR for side effects
-     (and to detect typecheck errors on the payload type) but
-     does not materialize a `payload` field on the compiled
+     the inline closure (always present).
+   - The captured fields named in the closure's `captures:`
+     clause are NOT materialized on the `ClosureViolation`
+     struct, which has a fixed shape. The access pattern for
+     captured state is to read the frozen child through the
+     child handle in `on_failure(c, err)` — see "Reading the
+     audit state" below.
+   - If `with EXPR` was given, EXPR is evaluated for side
+     effects (and to detect typecheck errors on the payload
+     type) but no `payload` field is materialized on the
      `ClosureViolation`.
    - The assertion-shape fields (`left`, `right`, `tolerance`,
      `diff`) are NOT populated for inline violations.
@@ -1654,15 +1651,14 @@ on_failure(c: Child, err: ClosureViolation) {
 `violate` is divergent — the method body's remaining statements
 do not execute, so the child's locus state is frozen at the
 violate moment. `c.last_error` reads exactly the value the
-violate site observed. This works identically in both runtimes.
+violate site observed.
 
-Under the interpreter, `err.<capture_name>` is also available
-as a convenience (the interpreter materializes captures fields
-on the `ClosureViolation` struct). Compiled code does not
-materialize these fields. Source that reads `err.last_error`
-will typecheck (`ClosureViolation` admits unknown fields
-permissively at field-access time) but will fail to link / run
-under `hale build` — prefer `c.last_error` for portability.
+The `ClosureViolation` value carries only `err.locus` and
+`err.closure`; it does not materialize the captured fields.
+Source that reads `err.last_error` will typecheck
+(`ClosureViolation` admits unknown fields permissively at
+field-access time) but will fail to link / run — read captured
+state through the child handle (`c.last_error`) instead.
 
 The `violate` statement is divergent: the typechecker treats it
 as `Never`, the same as `fail` in fallible fn bodies and
@@ -2129,11 +2125,12 @@ strict barrier (which rejected transitive imports outright) and
 unblocks composition without leaking dependency identity. See
 `spec/projects.md` for the rationale and per-alias scoping rules.
 
-**`hale run` interaction.** The interpreter path consumes the
-merged program but ignores the per-build path-rename table —
-mirroring the existing `std::http::Request { ... }` literal
-limitation. Programs that use cross-seed imports should be
-built and executed via `hale build`.
+**`hale run` interaction.** `hale run` compiles through the same
+codegen path as `hale build`, so a single file's imports resolve
+identically. The ad-hoc directory form (`hale run ./dir`) bundles
+files without threading the per-build path-rename table, so
+programs with cross-seed imports should be built and executed via
+`hale build`.
 
 ## Region lifetime guarantees
 
