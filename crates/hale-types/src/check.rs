@@ -203,6 +203,12 @@ pub fn check_bundle(
     // method's scope exit, so its subscription can never fire.
     // Hard error unless `--allow-unowned-subscriber` is set.
     check_unowned_subscriber_locus(bundle, allow_unowned_subscriber, &mut diags);
+    // GH #18 #4: bus-graph property checks over the typed topic
+    // topology. v1 (PR A): orphan topics — declared/used subjects
+    // wired to only one end. Gated on a closed-world program (a
+    // `main` locus present), so library seeds whose consumers are
+    // external aren't falsely flagged.
+    check_bus_graph(bundle, top, &mut diags);
     diags
 }
 
@@ -2895,6 +2901,243 @@ fn collect_topic_pub_sub(
         walk(&program.items, &mut pubs, &mut subs);
     }
     (pubs, subs)
+}
+
+// === Bus-graph property checks (GH #18 #4) =========================
+//
+// The bus topology is a typed directed graph already in the AST.
+// PR A walks it for ORPHANs — a subject wired to only one end. Gated
+// on a closed-world program (a `main` locus present): a library seed
+// whose publishers/subscribers live in downstream consumers must not
+// be flagged, since the other half is out of this bundle.
+//
+// Subjects are keyed by `BusSubject::canonical()` (literal string /
+// topic name / qualified last segment), which is exactly the key a
+// declared topic's name matches. False-positive guards: transport
+// bindings (external peer), trailing-`**` wildcard coverage, and
+// cross-seed (`alias::Foo`) references (the other seed owns the other
+// half). A declared topic is matched by both its name and its
+// `wire_subject` (a literal site may address it by the wire form).
+
+/// One end of the bus graph: subject-key → first declaration span,
+/// plus the wildcard patterns seen on that end (matched separately).
+#[derive(Default)]
+struct BusEnd {
+    concrete: BTreeMap<String, Span>,
+    wildcards: Vec<String>,
+}
+
+impl BusEnd {
+    fn record(&mut self, key: String, span: Span) {
+        if key.contains("**") {
+            self.wildcards.push(key);
+        } else {
+            self.concrete.entry(key).or_insert(span);
+        }
+    }
+    /// Does this end carry `subject` — exactly, or via a wildcard?
+    fn covers(&self, subject: &str) -> bool {
+        self.concrete.contains_key(subject)
+            || self.wildcards.iter().any(|p| crate::wildcard_match(p, subject))
+    }
+}
+
+fn check_bus_graph(
+    bundle: &Bundle<'_>,
+    top: &TopScope,
+    diags: &mut Vec<Diag>,
+) {
+    // Closed-world gate: only a complete program (has `main`) has
+    // both ends of every channel in-bundle.
+    let has_main = bundle.programs.values().any(|p| {
+        p.items
+            .iter()
+            .any(|i| matches!(i, TopDecl::Locus(l) if l.is_main))
+    });
+    if !has_main {
+        return;
+    }
+
+    let mut publishers = BusEnd::default();
+    let mut subscribers = BusEnd::default();
+    let mut bound: BTreeSet<String> = BTreeSet::new();
+    // Keys referenced cross-seed (`alias::Foo`) — the other seed owns
+    // the other half; never orphan-flag these.
+    let mut cross_seed: BTreeSet<String> = BTreeSet::new();
+
+    fn walk_bus(
+        items: &[TopDecl],
+        publishers: &mut BusEnd,
+        subscribers: &mut BusEnd,
+        bound: &mut BTreeSet<String>,
+        cross_seed: &mut BTreeSet<String>,
+    ) {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        match m {
+                            LocusMember::Bus(bb) => {
+                                for bm in &bb.members {
+                                    match bm {
+                                        BusMember::Publish { subject, span, .. } => {
+                                            if matches!(subject, BusSubject::QualifiedTopic(_)) {
+                                                cross_seed.insert(subject.canonical().to_string());
+                                            }
+                                            publishers.record(
+                                                subject.canonical().to_string(),
+                                                *span,
+                                            );
+                                        }
+                                        BusMember::Subscribe { subject, span, .. } => {
+                                            if matches!(subject, BusSubject::QualifiedTopic(_)) {
+                                                cross_seed.insert(subject.canonical().to_string());
+                                            }
+                                            subscribers.record(
+                                                subject.canonical().to_string(),
+                                                *span,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            LocusMember::Bindings(bbk) => {
+                                for entry in &bbk.entries {
+                                    bound.insert(entry.topic.name.clone());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                TopDecl::Module(md) => walk_bus(
+                    &md.items, publishers, subscribers, bound, cross_seed,
+                ),
+                _ => {}
+            }
+        }
+    }
+    for program in bundle.programs.values() {
+        walk_bus(
+            &program.items,
+            &mut publishers,
+            &mut subscribers,
+            &mut bound,
+            &mut cross_seed,
+        );
+    }
+
+    // A subject has a publisher if some locus publishes it (exactly
+    // or via wildcard), it is bound to a transport (external peer),
+    // or it's referenced cross-seed. Same for subscriber.
+    let has_pub = |aliases: &[&str]| {
+        aliases.iter().any(|a| {
+            publishers.covers(a) || bound.contains(*a) || cross_seed.contains(*a)
+        })
+    };
+    let has_sub = |aliases: &[&str]| {
+        aliases.iter().any(|a| {
+            subscribers.covers(a) || bound.contains(*a) || cross_seed.contains(*a)
+        })
+    };
+
+    // 1) Declared topics — matched by name and wire_subject.
+    let mut declared_keys: BTreeSet<String> = BTreeSet::new();
+    for (name, sym) in &top.symbols {
+        let TopSymbol::Topic(info) = sym else { continue };
+        // Topics that failed parent resolution carry an empty wire
+        // subject and already have a diagnostic — skip.
+        if info.wire_subject.is_empty() {
+            continue;
+        }
+        declared_keys.insert(name.clone());
+        declared_keys.insert(info.wire_subject.clone());
+        let aliases: Vec<&str> = if info.wire_subject == *name {
+            vec![name.as_str()]
+        } else {
+            vec![name.as_str(), info.wire_subject.as_str()]
+        };
+        let p = has_pub(&aliases);
+        let s = has_sub(&aliases);
+        if p && !s {
+            let span = publishers
+                .concrete
+                .get(name)
+                .or_else(|| publishers.concrete.get(&info.wire_subject))
+                .copied()
+                .unwrap_or(info.span);
+            diags.push(Diag::warn(
+                span,
+                format!(
+                    "bus topic `{}` is published but has no subscriber — \
+                     the cells go nowhere. Add a `subscribe` for it, bind it \
+                     to a transport, or drop the publish.",
+                    name
+                ),
+            ));
+        } else if s && !p {
+            let span = subscribers
+                .concrete
+                .get(name)
+                .or_else(|| subscribers.concrete.get(&info.wire_subject))
+                .copied()
+                .unwrap_or(info.span);
+            diags.push(Diag::warn(
+                span,
+                format!(
+                    "bus topic `{}` is subscribed but never published — its \
+                     handler can't fire. Add a `publish` for it, bind it to a \
+                     transport, or drop the subscription.",
+                    name
+                ),
+            ));
+        } else if !p && !s {
+            diags.push(Diag::warn(
+                info.span,
+                format!(
+                    "bus topic `{}` is declared but neither published nor \
+                     subscribed — it's dead wiring.",
+                    name
+                ),
+            ));
+        }
+    }
+
+    // 2) Literal subjects (not a declared topic's name or wire form).
+    let mut literal_keys: BTreeSet<String> = BTreeSet::new();
+    for k in publishers.concrete.keys().chain(subscribers.concrete.keys()) {
+        if !declared_keys.contains(k) {
+            literal_keys.insert(k.clone());
+        }
+    }
+    for k in literal_keys {
+        let aliases = [k.as_str()];
+        let p = has_pub(&aliases);
+        let s = has_sub(&aliases);
+        if p && !s {
+            let span = publishers.concrete.get(&k).copied().unwrap();
+            diags.push(Diag::warn(
+                span,
+                format!(
+                    "bus subject `\"{}\"` is published but has no subscriber — \
+                     the cells go nowhere. Add a `subscribe`, bind it to a \
+                     transport, or drop the publish.",
+                    k
+                ),
+            ));
+        } else if s && !p {
+            let span = subscribers.concrete.get(&k).copied().unwrap();
+            diags.push(Diag::warn(
+                span,
+                format!(
+                    "bus subject `\"{}\"` is subscribed but never published — \
+                     its handler can't fire. Add a `publish`, bind it to a \
+                     transport, or drop the subscription.",
+                    k
+                ),
+            ));
+        }
+    }
 }
 
 fn collect_known_names(top: &TopScope) -> BTreeMap<String, Span> {
