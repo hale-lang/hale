@@ -13,10 +13,12 @@ that's expected of changes.
   → hale-syntax::parser   (AST)
   → hale-types::resolve   (top scope)
   → hale-types::check     (typechecked Bundle)
-  → either:
-      hale-runtime::eval        (tree-walk interpreter, for `hale run`)
-      hale-codegen::codegen     (LLVM IR via inkwell → object → linked binary, for `hale build`)
+  → hale-codegen::codegen   (LLVM IR via inkwell → object → linked binary)
 ```
+
+Both `hale run` and `hale build` go through codegen — `run`
+compiles to a temporary binary and execs it, `build` leaves the
+binary on disk. There is no separate interpreter.
 
 The C runtime (`crates/hale-codegen/runtime/lotus_arena.c`)
 and the stdlib seed (`crates/hale-codegen/runtime/stdlib/`)
@@ -34,9 +36,6 @@ runtime install.
 - **`hale-types/`** — symbol resolution (`resolve.rs`) and
   type checking (`check.rs`). `Ty` is the canonical type
   representation here.
-- **`hale-runtime/`** — tree-walking interpreter. Used by
-  `hale run`. Parity with codegen is a soft goal; some
-  features ship in codegen first.
 - **`hale-codegen/`** — LLVM codegen via inkwell. Owns the C
   runtime + the bundled stdlib seed. `CodegenTy` is the
   codegen-side type rep (carries layout / repr info that `Ty`

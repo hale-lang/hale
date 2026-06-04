@@ -539,8 +539,7 @@ Constraints v0 codegen enforces (will relax as more lands):
   param, the typed child reference. All lifecycle methods
   return `void`.
 - Locus param defaults must be literals (Int / Float / Bool /
-  String / Duration). Non-literal defaults compile under the
-  interpreter but not via `hale build`.
+  String / Duration). Non-literal defaults are rejected.
 - Contracts are typecheck-only at this layer — they're accepted
   in the AST and skipped by codegen. The expose / consume
   surfaces are still type-checked across coordinator / coordinatee
@@ -553,8 +552,7 @@ Constraints v0 codegen enforces (will relax as more lands):
 
 The struct ABI + accept + drain/dissolve dispatch is what makes
 `01-locus-with-run`, `02-parent-child`, `10-stateful-locus`, and
-`11-drain-dissolve` compile to native ELF identically to their
-interpreter behavior.
+`11-drain-dissolve` compile to native ELF.
 
 ### Bus router (m12)
 

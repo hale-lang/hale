@@ -31,8 +31,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// happy path pays no `arena_alloc` + payload-field stores.
     /// Earlier eager construction made `form_vec_get` 62× slower
     /// than hand-written C on the bench; lazy construction
-    /// removes that overhead. The semantics still match
-    /// `index_error_value` in hale-runtime/src/eval.rs
+    /// removes that overhead. The error semantics are the
+    /// canonical `@form(vec)` contract
     /// (kind = "out_of_bounds" / "empty"; pop's err carries
     /// index=0, len=0; get's err carries index=i, len=current
     /// len at the bad access). `len` for get is read directly

@@ -1,16 +1,16 @@
 //! Compiled-corpus oracle harness.
 //!
 //! The broad example corpus is parse-tested (`hale-syntax`) and
-//! type-checked (`hale-types`) across the whole set, but the only
-//! systematic *run* coverage goes through the interpreter
-//! (`hale-runtime/tests/examples.rs`, exit-code-0 only). The
-//! interpreter has no arenas, pools, wake_fds, or coroutine
-//! parking — so it structurally cannot reproduce the bug classes
+//! type-checked (`hale-types`) across the whole set. This harness
+//! supplies the systematic *run* coverage. (It superseded the old
+//! interpreter exit-code-0 sweep, retired with `hale-runtime`: a
+//! tree-walker has no arenas, pools, wake_fds, or coroutine
+//! parking, so it structurally could not reproduce the bug classes
 //! that keep surfacing at feature *intersections* on the compiled
 //! substrate: teardown-time leaks, shutdown use-after-free,
-//! cross-pool starvation/hangs, and buffer overflows.
+//! cross-pool starvation/hangs, and buffer overflows.)
 //!
-//! This harness closes that blind spot. It compiles every
+//! This harness covers that surface. It compiles every
 //! runnable fixture to a NATIVE binary and runs it under an oracle
 //! battery:
 //!

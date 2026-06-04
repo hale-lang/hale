@@ -221,10 +221,9 @@ fn push_many_survives_realloc() {
 
 // =============================================================
 // v1.x-FORM-2 PR6 / PR5 finale — fallible synthesized methods
-// (get, pop) + Expr::Or three-motion lowering. Mirrors the
-// interpreter parity tests in
-// crates/hale-runtime/tests/form_vec_interpreter.rs so AOT
-// and interpreter agree on the surface.
+// (get, pop) + Expr::Or three-motion lowering. These are now the
+// canonical coverage for the `@form(vec)` get/pop/or surface
+// (ported from the retired interpreter parity suite).
 // =============================================================
 
 /// `l.get(i) or raise` succeeds and returns the cell value.

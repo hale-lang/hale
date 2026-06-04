@@ -950,8 +950,8 @@ zero_copy binding produces.
   `time::monotonic()` are runtime-provided. `time::monotonic()`
   returns a `Duration` (i64 nanoseconds since an unspecified
   reference); only meaningful for elapsed-time differences.
-  Backed by `clock_gettime(CLOCK_MONOTONIC)` on both interpreter
-  and codegen paths. `time::now()` (C7, pond follow-up) returns
+  Backed by `clock_gettime(CLOCK_MONOTONIC)`. `time::now()` (C7,
+  pond follow-up) returns
   wall-clock seconds since the Unix epoch as `Int` via
   `clock_gettime(CLOCK_REALTIME)`; observation only — NTP
   slewing and leap seconds can warp the value, so
@@ -969,14 +969,10 @@ zero_copy binding produces.
   signal does not shorten the total sleep. `CLOCK_REALTIME` is
   used by `time::now()` for wall-clock observation only and
   has no scheduling role.
-- **Implementation invariant.** Both interpreter and codegen
-  paths lower `time::sleep(d)` to
+- **Implementation invariant.** `time::sleep(d)` lowers to
   `clock_nanosleep(CLOCK_MONOTONIC, 0, &req, &rem)` with EINTR
-  retry. The same primitive on both paths means observable
-  scheduling behavior is identical regardless of the
-  compilation route — important for a system targeting
-  high-precision clock semantics where the substrate cannot
-  drift between development and production.
+  retry — important for a system targeting high-precision clock
+  semantics.
 
 ### I/O — minimal
 
@@ -1312,15 +1308,6 @@ passes `sizeof(T)` at each call site.
   propagates and `qsort_r` stops mid-sort — the vec is left
   with every element still present, ordering partially applied.
 
-### Interpreter parity
-
-The interpreter (`crates/hale-runtime/src/eval.rs`)
-implements the same surface via the `SlotState::Vec` variant
-backed by `Rc<RefCell<Vec<Value>>>` and the
-`try_eval_form_vec_call` dispatcher (v1.x-FORM-1 PR7).
-Synthesized methods route directly to this dispatcher before
-normal locus-method lookup.
-
 ## Form-hashmap runtime (v1.x-FORM-4)
 
 The `@form(hashmap)` form lowers to an intrusive open-addressing
@@ -1420,16 +1407,6 @@ marker.
   routes through the substrate-trap → closure-violation
   channel per the two-channel rule.
 
-### Interpreter parity
-
-The interpreter (`crates/hale-runtime/src/eval.rs`)
-implements the same surface via the `SlotState::Hashmap`
-variant and the `try_eval_form_hashmap_call` dispatcher
-(v1.x-FORM-4 PR6). Synthesized methods route directly to this
-dispatcher before normal locus-method lookup. The interpreter's
-backing structure does not need to match the C runtime's
-data-structure choices — only the observable semantics.
-
 ## Form-ring-buffer runtime (v1.x-FORM-5)
 
 `@form(ring_buffer, cap = N)` lowers a pool capacity slot to an
@@ -1482,14 +1459,6 @@ Defined in `crates/hale-codegen/runtime/lotus_arena.c`
   channel is deferred to a future hardening pass — the v1
   contract is "fixed cap; if init can't allocate, the buffer
   is permanently empty."
-
-### Interpreter parity
-
-The interpreter implements the same surface via the
-`SlotState::RingBuffer { cap, items: VecDeque<Value> }` variant
-and the `try_eval_form_ring_buffer_call` dispatcher. The deque
-backing differs from the C struct's circular array, but the
-observable push/pop/len/is_full semantics match.
 
 ## Diagnostic + tuning env vars
 

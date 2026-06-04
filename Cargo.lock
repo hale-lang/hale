@@ -50,7 +50,6 @@ name = "hale-cli"
 version = "0.8.3"
 dependencies = [
  "hale-codegen",
- "hale-runtime",
  "hale-syntax",
  "hale-types",
  "serde",
@@ -64,15 +63,6 @@ dependencies = [
  "hale-syntax",
  "hale-types",
  "inkwell",
-]
-
-[[package]]
-name = "hale-runtime"
-version = "0.8.3"
-dependencies = [
- "hale-syntax",
- "hale-types",
- "libc",
 ]
 
 [[package]]
