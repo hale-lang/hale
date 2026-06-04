@@ -1440,6 +1440,21 @@ main locus App {
    the same locus being both publisher and subscriber. The closed-
    world gate is why this is skipped for library seeds (no `main`):
    their consumers are downstream, out of the bundle. (GH #18 #4.)
+10. **Bus cycles.** An edge `S →(L) D` exists when locus `L` subscribes
+    subject `S` with a handler that sends to subject `D`. A cycle in
+    this graph is a publish→subscribe→publish loop, and the dispatch
+    model splits it two ways:
+    - A **cross-locus** cycle (edges from ≥2 loci) hops between loci
+      through the cooperative *queue* (drained at yield) — it spins
+      the queue / livelocks → **warning**.
+    - An **intra-locus** cycle (every edge in one locus) is
+      intra-locus self-dispatch, which is devirtualized to a direct
+      synchronous call (rule 7), so it recurses on one thread without
+      bound → stack overflow → **error**. To keep the error precise,
+      only **unconditional** sends form intra-locus edges: a
+      self-republish guarded by an `if`/`match`/loop is a terminating
+      state machine, not unbounded recursion, and is not flagged.
+      (GH #18 #4.)
 
 ### Single-threaded-method invariant
 
