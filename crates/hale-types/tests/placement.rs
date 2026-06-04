@@ -809,3 +809,164 @@ fn blocking_inside_while_loop_warns() {
         msgs
     );
 }
+
+// ---------------------------------------------------------------
+// Interprocedural deepening (2026-06-04): the warning now follows
+// the call graph, so a run() that blocks through a helper fn or a
+// `self.method` is flagged just like a literal blocking op. The
+// dead-receiver ERROR deliberately stays direct-call-only.
+// ---------------------------------------------------------------
+
+#[test]
+fn blocking_via_free_fn_helper_warns() {
+    // run() itself has no stdlib blocking op — it calls a free fn
+    // that does. The interprocedural walk must still warn.
+    let src = r#"
+fn pump(fd: Int) -> Int {
+    return std::io::tcp::recv_into(fd, 0, 64);
+}
+
+locus Gateway {
+    run() { let n = pump(0); }
+}
+
+main locus App {
+    params { gw: Gateway = Gateway { }; }
+    placement { gw: cooperative(pool = ws); }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(BLOCKS_WARN) && m.contains("pump()")),
+        "blocking reached through a free-fn helper must warn (naming the \
+         helper); got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn blocking_via_self_method_warns() {
+    // run() calls `self.pull()`, whose body blocks. The intra-locus
+    // method call graph must propagate the block to run().
+    let src = r#"
+locus Gateway {
+    fn pull() { let n = std::io::tcp::recv_into(0, 0, 64); }
+    run() { self.pull(); }
+}
+
+main locus App {
+    params { gw: Gateway = Gateway { }; }
+    placement { gw: cooperative(pool = ws); }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter()
+            .any(|m| m.contains(BLOCKS_WARN) && m.contains("self.pull()")),
+        "blocking reached through a self-method must warn; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn blocking_via_transitive_free_fn_warns() {
+    // run() -> outer() -> inner() (blocks). Two hops; the fixpoint
+    // must taint `outer` from `inner`, then flag run()'s `outer()`.
+    let src = r#"
+fn inner(fd: Int) -> Int { return std::io::tcp::recv_into(fd, 0, 64); }
+fn outer(fd: Int) -> Int { return inner(fd); }
+
+locus Gateway {
+    run() { let n = outer(0); }
+}
+
+main locus App {
+    params { gw: Gateway = Gateway { }; }
+    placement { gw: cooperative(pool = ws); }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(BLOCKS_WARN) && m.contains("outer()")),
+        "blocking two fn-hops deep must warn; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn nonblocking_helper_not_warned() {
+    // run() calls a helper that does NOT block — no false positive.
+    let src = r#"
+fn compute(x: Int) -> Int { return x + x; }
+
+locus Gateway {
+    run() { let n = compute(21); }
+}
+
+main locus App {
+    params { gw: Gateway = Gateway { }; }
+    placement { gw: cooperative(pool = ws); }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
+        "a non-blocking helper must not produce a false warning; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn dead_receiver_stays_direct_only_helper_blocking_warns_not_errors() {
+    // A non-main cooperative SUBSCRIBER whose run() blocks only via a
+    // helper fn. Per the scope decision, the dead-receiver ERROR stays
+    // direct-call-only (no error here), but the pool-stall WARNING
+    // does fire interprocedurally.
+    let src = r#"
+type Tick { n: Int; }
+
+fn pump(fd: Int) -> Int { return std::io::tcp::recv_into(fd, 0, 64); }
+
+locus Gateway {
+    bus { subscribe "tick" as on_tick of type Tick; }
+    fn on_tick(t: Tick) { }
+    run() { let n = pump(0); }
+}
+
+locus Feed {
+    bus { publish "tick" of type Tick; }
+    run() { "tick" <- Tick { n: 1 }; }
+}
+
+main locus App {
+    params {
+        gw: Gateway = Gateway { };
+        feed: Feed  = Feed { };
+    }
+    placement { gw: cooperative(pool = ws); }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(DEAD_RX)),
+        "the dead-receiver ERROR is direct-call-only; blocking via a helper \
+         must NOT raise it; got: {:?}",
+        msgs
+    );
+    assert!(
+        msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
+        "blocking via a helper on a cooperative subscriber must still warn; \
+         got: {:?}",
+        msgs
+    );
+}

@@ -1418,8 +1418,15 @@ main locus App {
    I/O) or `cooperative(pool = X) where async_io` (parks on I/O
    readiness). It is a warning rather than an error because a
    single-purpose blocking server with nothing co-scheduled is
-   legitimate; detection is best-effort (direct path-call form
-   only — blocking via a handle method or a helper fn isn't traced).
+   legitimate. Detection is **interprocedural**: it follows the call
+   graph, so a `run()` that blocks indirectly — through a helper fn
+   or a `self.method` it calls (transitively) — is flagged too, with
+   the diagnostic naming the offending call. It remains best-effort
+   at the edges (blocking via a *handle* method like `stream.recv`,
+   or across a cross-locus `self.field.method()` hop, isn't traced).
+   Note rule 7 (the dead-receiver *error*) stays **direct-call-only**
+   — it is not widened onto indirect paths, so the higher-stakes
+   diagnostic keeps its precision.
 
 ### Single-threaded-method invariant
 
