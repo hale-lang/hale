@@ -2585,6 +2585,30 @@ mod tests {
     }
 
     #[test]
+    fn err_user_crypto_error_shadows_stdlib_with_wrong_shape() {
+        // CryptoError is reached via `std::crypto::ecdsa_p256_sign`
+        // in `or` context (fallible form). A user type of the same
+        // name with the wrong shape must surface the shadow diag.
+        let src = r#"
+            type CryptoError { code: Int; }
+            fn main() {
+                let k = std::bytes::from_string("k");
+                let m = std::bytes::from_string("m");
+                let sig = std::crypto::ecdsa_p256_sign(k, m) or raise;
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags.iter().any(|d| {
+                d.message.contains("shadows the stdlib's `CryptoError`")
+                    && d.message.contains("std::crypto::CryptoError")
+            }),
+            "expected CryptoError-shadow diagnostic, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
     fn ok_user_parse_error_in_form_free_program() {
         // Without any form machinery in use, inject_form_stdlib_types
         // doesn't run, so the collision check is skipped. The

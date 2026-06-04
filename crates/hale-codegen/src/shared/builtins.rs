@@ -1753,6 +1753,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
         self.module
             .add_function("lotus_crypto_ecdsa_p256_sign", ecdsa_sign_ty, None);
+        // declare ptr @lotus_crypto_ecdsa_p256_sign_or_null(ptr key,
+        // ptr msg) — NULL on failure, backs the fallible(CryptoError)
+        // lowering (the bare call uses the empty-bytes form above).
+        self.module.add_function(
+            "lotus_crypto_ecdsa_p256_sign_or_null",
+            ecdsa_sign_ty,
+            None,
+        );
         // declare i64 @lotus_crypto_ecdsa_p256_verify(ptr pub, ptr msg, ptr sig)
         let ecdsa_verify_ty =
             i64_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false);

@@ -3,7 +3,9 @@
 use hale_syntax::ast::Expr;
 use inkwell::values::BasicValueEnum;
 
-use crate::codegen::{CodegenError, CodegenTy, Cx, Scope};
+use crate::codegen::{
+    CodegenError, CodegenTy, Cx, FallibleCallResult, Scope,
+};
 
 pub(crate) trait CryptoStdlib<'ctx> {
     fn lower_std_crypto_sha1(
@@ -35,6 +37,12 @@ pub(crate) trait CryptoStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
+    fn lower_std_crypto_ecdsa_p256_sign_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
 
     fn lower_std_crypto_ecdsa_p256_verify(
         &mut self,
@@ -259,6 +267,72 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let ptr = call.try_as_basic_value().left().expect("returns ptr");
         Ok((ptr, CodegenTy::Bytes))
+    }
+
+    /// 2026-06-04: the `or`-context form of `ecdsa_p256_sign` —
+    /// `std::crypto::ecdsa_p256_sign(key, message) -> Bytes
+    /// fallible(CryptoError)`. Calls the NULL-returning runtime
+    /// symbol; a NULL result (bad/unparseable key, non-P-256 curve,
+    /// signing failure) becomes a `CryptoError { kind:
+    /// "ecdsa_p256_sign", detail: "signing failed (bad key or
+    /// non-P-256 curve)" }`. Bare (non-`or`) calls stay on the
+    /// empty-bytes form via the non-fallible dispatcher.
+    fn lower_std_crypto_ecdsa_p256_sign_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::ecdsa_p256_sign takes 2 args (key, message), got {}",
+                args.len()
+            )));
+        }
+        let (key_val, key_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(key_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::ecdsa_p256_sign: key must be Bytes, got {:?}",
+                key_ty
+            )));
+        }
+        let (msg_val, msg_ty) = self.lower_expr(&args[1], scope)?;
+        if !matches!(msg_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::ecdsa_p256_sign: message must be Bytes, got {:?}",
+                msg_ty
+            )));
+        }
+        let key_val = self.unpack_view_if_needed(key_val, &key_ty)?;
+        let msg_val = self.unpack_view_if_needed(msg_val, &msg_ty)?;
+        let f = self
+            .module
+            .get_function("lotus_crypto_ecdsa_p256_sign_or_null")
+            .expect("lotus_crypto_ecdsa_p256_sign_or_null declared");
+        let sig_ptr = self
+            .builder
+            .build_call(
+                f,
+                &[key_val.into(), msg_val.into()],
+                "ecdsa.sign.or_null",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        // is_err = (sig_ptr == null)
+        let is_err = self
+            .builder
+            .build_is_null(sig_ptr.into_pointer_value(), "ecdsa.sign.is_err")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let detail_ptr =
+            self.global_string("signing failed (bad key or non-P-256 curve)");
+        self.complete_crypto_fallible_call(
+            is_err,
+            detail_ptr.into(),
+            "ecdsa_p256_sign",
+            Some((sig_ptr, CodegenTy::Bytes)),
+            "crypto.ecdsa_p256_sign",
+        )
     }
 
     /// fathom handoff (2026-06-02): lower

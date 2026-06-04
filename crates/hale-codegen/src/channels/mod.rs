@@ -18,6 +18,7 @@ use crate::codegen::{
     FallibleCallResult, FallibleCtx, FnSig, LocusInfo, Scope, SelfCx,
 };
 use crate::stdlib::bytes::BytesStdlib;
+use crate::stdlib::crypto::CryptoStdlib;
 use crate::stdlib::io_file::IoFileStdlib;
 use crate::stdlib::io_fs::IoFsStdlib;
 use crate::stdlib::io_tcp::IoTcpStdlib;
@@ -972,6 +973,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "os", "getrandom"] => Ok(Some(
                 self.lower_std_os_getrandom_fallible(args, scope)?,
             )),
+            // 2026-06-04: ECDSA P-256 signing in `or` context →
+            // fallible(CryptoError). Bare calls keep the empty-bytes
+            // form via the non-fallible dispatcher.
+            ["std", "crypto", "ecdsa_p256_sign"] => Ok(Some(
+                self.lower_std_crypto_ecdsa_p256_sign_fallible(args, scope)?,
+            )),
             // C2 (pond/subprocess): synchronous run + async
             // lifecycle primitives. `run` is user-facing; the
             // `__*` variants are stdlib internals consumed by
@@ -1409,6 +1416,166 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
             .build_store(input_field_ptr, input_str_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        Ok(alloc_ptr)
+    }
+
+    /// 2026-06-04 — analog of `complete_parse_fallible_call` for the
+    /// crypto surface (`std::crypto::ecdsa_p256_sign` flipped to
+    /// `fallible(CryptoError)` in `or` context). The err payload is
+    /// `CryptoError { kind, detail }`. Caller provides the kind tag
+    /// (e.g. "ecdsa_p256_sign") and a `detail` String pointer naming
+    /// what failed.
+    pub(crate) fn complete_crypto_fallible_call(
+        &mut self,
+        is_err: IntValue<'ctx>,
+        detail_str_ptr: BasicValueEnum<'ctx>,
+        kind_tag: &str,
+        success_value: Option<(BasicValueEnum<'ctx>, CodegenTy)>,
+        label: &str,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        let payload_ty = CodegenTy::TypeRef("CryptoError".to_string());
+        let out_err_slot = self.alloca_for(
+            &payload_ty,
+            &format!("{}.out_err.slot", label),
+        )?;
+        let (out_val_slot_opt, success_ty_opt) = match &success_value {
+            Some((_, ty)) => (
+                Some(self.alloca_for(
+                    ty,
+                    &format!("{}.out_val.slot", label),
+                )?),
+                Some(ty.clone()),
+            ),
+            None => (None, None),
+        };
+
+        let func = self
+            .current_fn
+            .expect("fallible-stdlib-path call inside fn body");
+        let lazy_err_bb = self.context.append_basic_block(
+            func,
+            &format!("{}.lazy_err", label),
+        );
+        let store_ok_bb = self.context.append_basic_block(
+            func,
+            &format!("{}.store_ok", label),
+        );
+        let join_bb = self.context.append_basic_block(
+            func,
+            &format!("{}.join", label),
+        );
+
+        self.builder
+            .build_conditional_branch(is_err, lazy_err_bb, store_ok_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // err path: build CryptoError, store in out_err_slot.
+        self.builder.position_at_end(lazy_err_bb);
+        let ce_ptr = self.emit_crypto_error_alloc(detail_str_ptr, kind_tag)?;
+        self.builder
+            .build_store(out_err_slot, ce_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(join_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // ok path: store the success value (if any).
+        self.builder.position_at_end(store_ok_bb);
+        if let (Some(out_val_slot), Some((val, _))) =
+            (out_val_slot_opt, &success_value)
+        {
+            self.builder
+                .build_store(out_val_slot, *val)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        self.builder
+            .build_unconditional_branch(join_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(join_bb);
+        Ok(FallibleCallResult {
+            i1_path: is_err,
+            out_val_slot: out_val_slot_opt,
+            out_err_slot,
+            success_ty: success_ty_opt,
+            payload_ty,
+        })
+    }
+
+    /// Allocate a `CryptoError { kind, detail }` in the current
+    /// arena, populate, return pointer. Mirrors
+    /// `emit_parse_error_alloc`; converts a user-declared
+    /// `type CryptoError` missing the stdlib's expected `kind:
+    /// String` / `detail: String` fields into a clean codegen-time
+    /// diagnostic instead of a runtime panic.
+    pub(crate) fn emit_crypto_error_alloc(
+        &mut self,
+        detail_str_ptr: BasicValueEnum<'ctx>,
+        kind_tag: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let info = self
+            .user_types
+            .get("CryptoError")
+            .cloned()
+            .ok_or_else(|| {
+                CodegenError::Unsupported(
+                    "CryptoError type missing — `declare_builtin_crypto_error_type` \
+                     should have injected it; sequencing bug?".to_string(),
+                )
+            })?;
+        let size = info
+            .struct_ty
+            .size_of()
+            .expect("CryptoError has known size");
+        let alloc_ptr = self.arena_alloc(size, "CryptoError.alloc")?;
+
+        let kind_ptr = self.global_string(kind_tag);
+        let (kind_idx, _) = info.fields.get("kind").cloned().ok_or_else(|| {
+            CodegenError::Unsupported(
+                "user-declared `type CryptoError` is missing the stdlib's \
+                 expected `kind: String` field — std::crypto fns need to \
+                 allocate `CryptoError { kind, detail }` on failure. Either \
+                 match the stdlib shape (`type CryptoError { kind: String; \
+                 detail: String; }`), rename your type (e.g. `MyCryptoError`), \
+                 or use the `std::crypto::CryptoError` qualified path where you \
+                 need the stdlib's"
+                    .to_string(),
+            )
+        })?;
+        let kind_field_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                alloc_ptr,
+                kind_idx,
+                "CryptoError.kind.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(kind_field_ptr, kind_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let (detail_idx, _) = info.fields.get("detail").cloned().ok_or_else(|| {
+            CodegenError::Unsupported(
+                "user-declared `type CryptoError` is missing the stdlib's \
+                 expected `detail: String` field — see the `kind` field \
+                 diagnostic above for the fix options"
+                    .to_string(),
+            )
+        })?;
+        let detail_field_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                alloc_ptr,
+                detail_idx,
+                "CryptoError.detail.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(detail_field_ptr, detail_str_ptr)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         Ok(alloc_ptr)
