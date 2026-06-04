@@ -491,10 +491,13 @@ fn locus_has_nontrivial_run(l: &LocusDecl) -> bool {
 /// its `run()` loop holds the pool's thread for the call's whole
 /// duration — stalling every other locus scheduled on that pool and
 /// the pool's bus drain. (`async_io` parks instead of blocking;
-/// `pinned` owns its own thread.) Best-effort, direct-path-call form
-/// only: blocking via a method on a stdlib handle (`stream.recv(...)`)
-/// or through a helper fn isn't traced — this is a warning, so the
-/// incompleteness is acceptable.
+/// `pinned` owns its own thread.) The warning path follows the call
+/// graph interprocedurally — a `run()` that blocks through a helper
+/// fn or a `self.method` is flagged (see `find_blocking_deep_in_block`
+/// and the `blocking_*_fns` fixpoints). Still best-effort: blocking
+/// via a method on a stdlib *handle* (`stream.recv(...)`) or across a
+/// cross-locus `self.field.method()` hop isn't traced — this is a
+/// warning, so the residual incompleteness is acceptable.
 const BLOCKING_STDLIB_PATHS: &[&[&str]] = &[
     &["std", "io", "tcp", "recv_into"],
     &["std", "io", "tcp", "__recv"],
@@ -613,6 +616,373 @@ fn find_blocking_in_expr(expr: &Expr) -> Option<(String, Span)> {
     }
 }
 
+// === Interprocedural blocking detection (warning path only) =========
+//
+// The direct-call walk above only sees blocking ops written literally
+// in `run()`. A `run()` that calls a helper fn — `self.drain()` or a
+// free `pump(conn)` — that itself blocks holds the pool's thread just
+// as surely, but escaped the syntactic walk. These helpers build a
+// small call graph and propagate "blocks" from leaf stdlib ops up
+// through callees, so the pool-stall **warning** also fires on
+// blocking reached one or more fn-hops deep. (The dead-receiver ERROR
+// deliberately stays direct-call-only — it over-fired once before, so
+// we don't widen its call-graph surface; see
+// `check_cooperative_pool_blocking`.)
+
+/// Names a call expression's callee resolves to, split into free-fn
+/// names (bare ident / single-segment path) and `self.method` names.
+/// Used to build the call graph; over-collection is harmless (the
+/// fixpoint only follows edges into fns it actually knows).
+#[derive(Default)]
+struct CalleeSet {
+    free: BTreeSet<String>,
+    self_methods: BTreeSet<String>,
+}
+
+fn collect_callees_in_block(b: &Block, out: &mut CalleeSet) {
+    for s in &b.stmts {
+        collect_callees_in_stmt(s, out);
+    }
+}
+
+fn collect_callees_in_stmt(stmt: &Stmt, out: &mut CalleeSet) {
+    match stmt {
+        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+            collect_callees_in_expr(value, out)
+        }
+        Stmt::Assign { value, .. } => collect_callees_in_expr(value, out),
+        Stmt::Send { subject, value, .. } => {
+            collect_callees_in_expr(subject, out);
+            collect_callees_in_expr(value, out);
+        }
+        Stmt::Return(Some(e), _) => collect_callees_in_expr(e, out),
+        Stmt::Fail { value, .. } => collect_callees_in_expr(value, out),
+        Stmt::Violate { payload: Some(e), .. } => collect_callees_in_expr(e, out),
+        Stmt::Recovery { args, .. } => {
+            args.iter().for_each(|e| collect_callees_in_expr(e, out))
+        }
+        Stmt::Expr(e) => collect_callees_in_expr(e, out),
+        Stmt::If(i) => collect_callees_in_if(i, out),
+        Stmt::Match(m) => collect_callees_in_match(m, out),
+        Stmt::For { iter, body, .. } => {
+            collect_callees_in_expr(iter, out);
+            collect_callees_in_block(body, out);
+        }
+        Stmt::While { cond, body, .. } => {
+            collect_callees_in_expr(cond, out);
+            collect_callees_in_block(body, out);
+        }
+        Stmt::Block(b) => collect_callees_in_block(b, out),
+        _ => {}
+    }
+}
+
+fn collect_callees_in_if(i: &IfStmt, out: &mut CalleeSet) {
+    collect_callees_in_expr(&i.cond, out);
+    collect_callees_in_block(&i.then_block, out);
+    match i.else_block.as_deref() {
+        Some(ElseBranch::Else(b)) => collect_callees_in_block(b, out),
+        Some(ElseBranch::ElseIf(n)) => collect_callees_in_if(n, out),
+        None => {}
+    }
+}
+
+fn collect_callees_in_match(m: &MatchStmt, out: &mut CalleeSet) {
+    collect_callees_in_expr(&m.scrutinee, out);
+    for arm in &m.arms {
+        if let Some(g) = &arm.guard {
+            collect_callees_in_expr(g, out);
+        }
+        match &arm.body {
+            MatchArmBody::Expr(e) => collect_callees_in_expr(e, out),
+            MatchArmBody::Block(b) => collect_callees_in_block(b, out),
+        }
+    }
+}
+
+/// Record the callee a `Call` resolves to (if a free fn or
+/// `self.method`), then recurse into sub-expressions.
+fn collect_callees_in_expr(expr: &Expr, out: &mut CalleeSet) {
+    match expr {
+        Expr::Call { callee, args, .. } => {
+            match callee.as_ref() {
+                Expr::Ident(id) => {
+                    out.free.insert(id.name.clone());
+                }
+                Expr::Path(qn) if qn.segments.len() == 1 => {
+                    out.free.insert(qn.segments[0].name.clone());
+                }
+                Expr::Field { receiver, name, .. }
+                    if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
+                {
+                    out.self_methods.insert(name.name.clone());
+                }
+                _ => {}
+            }
+            collect_callees_in_expr(callee, out);
+            args.iter().for_each(|a| collect_callees_in_expr(a, out));
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_callees_in_expr(left, out);
+            collect_callees_in_expr(right, out);
+        }
+        Expr::Unary { operand, .. } => collect_callees_in_expr(operand, out),
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
+            collect_callees_in_expr(receiver, out)
+        }
+        Expr::Index { receiver, index, .. } => {
+            collect_callees_in_expr(receiver, out);
+            collect_callees_in_expr(index, out);
+        }
+        Expr::Tuple(es, _) | Expr::Array(es, _) => {
+            es.iter().for_each(|e| collect_callees_in_expr(e, out))
+        }
+        Expr::Struct { inits, .. } => {
+            inits.iter().for_each(|i| collect_callees_in_expr(&i.value, out))
+        }
+        Expr::Block(b) => collect_callees_in_block(b, out),
+        Expr::If(i) => collect_callees_in_if(i, out),
+        Expr::Match(m) => collect_callees_in_match(m, out),
+        Expr::Sum(e, _) | Expr::Prod(e, _) => collect_callees_in_expr(e, out),
+        Expr::Or { inner, disposition, .. } => {
+            collect_callees_in_expr(inner, out);
+            match disposition {
+                OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
+                    collect_callees_in_expr(e, out)
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The set of free-fn names that block — directly (a leaf stdlib op in
+/// the body) or transitively (they call a blocking free fn).
+/// Fixpoint over the free-fn call graph; free fns can't reference
+/// `self`, so they only depend on other free fns.
+fn blocking_free_fns(free_fns: &BTreeMap<String, &Block>) -> BTreeSet<String> {
+    let mut blocking: BTreeSet<String> = free_fns
+        .iter()
+        .filter(|(_, body)| find_blocking_in_block(body).is_some())
+        .map(|(n, _)| n.clone())
+        .collect();
+    let mut callees: BTreeMap<&str, CalleeSet> = BTreeMap::new();
+    for (n, body) in free_fns {
+        let mut cs = CalleeSet::default();
+        collect_callees_in_block(body, &mut cs);
+        callees.insert(n.as_str(), cs);
+    }
+    loop {
+        let mut changed = false;
+        for (n, cs) in &callees {
+            if blocking.contains(*n) {
+                continue;
+            }
+            if cs.free.iter().any(|c| blocking.contains(c)) {
+                blocking.insert((*n).to_string());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    blocking
+}
+
+/// The set of a locus's own method names that block — directly, via a
+/// blocking free fn, or via another blocking method on the same locus.
+/// Seeded by `blocking_free`; fixpoint over the intra-locus method
+/// call graph.
+fn blocking_self_methods(
+    methods: &BTreeMap<String, &Block>,
+    blocking_free: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut callees: BTreeMap<&str, CalleeSet> = BTreeMap::new();
+    let mut blocking: BTreeSet<String> = BTreeSet::new();
+    for (n, body) in methods {
+        let mut cs = CalleeSet::default();
+        collect_callees_in_block(body, &mut cs);
+        if find_blocking_in_block(body).is_some()
+            || cs.free.iter().any(|c| blocking_free.contains(c))
+        {
+            blocking.insert(n.clone());
+        }
+        callees.insert(n.as_str(), cs);
+    }
+    loop {
+        let mut changed = false;
+        for (n, cs) in &callees {
+            if blocking.contains(*n) {
+                continue;
+            }
+            if cs.self_methods.iter().any(|c| blocking.contains(c)) {
+                blocking.insert((*n).to_string());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    blocking
+}
+
+/// Interprocedural form of `find_blocking_in_block`: reports the first
+/// blocking reach in `run()` — a direct leaf stdlib op, OR a call to a
+/// blocking free fn / `self.method`. The returned span is the
+/// run()-level call site; the name describes what blocks. Used for the
+/// pool-stall warning only.
+fn find_blocking_deep_in_block(
+    b: &Block,
+    blocking_free: &BTreeSet<String>,
+    blocking_self: &BTreeSet<String>,
+) -> Option<(String, Span)> {
+    b.stmts
+        .iter()
+        .find_map(|s| find_blocking_deep_in_stmt(s, blocking_free, blocking_self))
+}
+
+fn find_blocking_deep_in_stmt(
+    stmt: &Stmt,
+    bf: &BTreeSet<String>,
+    bs: &BTreeSet<String>,
+) -> Option<(String, Span)> {
+    match stmt {
+        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+            find_blocking_deep_in_expr(value, bf, bs)
+        }
+        Stmt::Assign { value, .. } => find_blocking_deep_in_expr(value, bf, bs),
+        Stmt::Send { subject, value, .. } => {
+            find_blocking_deep_in_expr(subject, bf, bs)
+                .or_else(|| find_blocking_deep_in_expr(value, bf, bs))
+        }
+        Stmt::Return(Some(e), _) => find_blocking_deep_in_expr(e, bf, bs),
+        Stmt::Fail { value, .. } => find_blocking_deep_in_expr(value, bf, bs),
+        Stmt::Violate { payload: Some(e), .. } => {
+            find_blocking_deep_in_expr(e, bf, bs)
+        }
+        Stmt::Recovery { args, .. } => {
+            args.iter().find_map(|e| find_blocking_deep_in_expr(e, bf, bs))
+        }
+        Stmt::Expr(e) => find_blocking_deep_in_expr(e, bf, bs),
+        Stmt::If(i) => find_blocking_deep_in_if(i, bf, bs),
+        Stmt::Match(m) => find_blocking_deep_in_match(m, bf, bs),
+        Stmt::For { iter, body, .. } => find_blocking_deep_in_expr(iter, bf, bs)
+            .or_else(|| find_blocking_deep_in_block(body, bf, bs)),
+        Stmt::While { cond, body, .. } => find_blocking_deep_in_expr(cond, bf, bs)
+            .or_else(|| find_blocking_deep_in_block(body, bf, bs)),
+        Stmt::Block(b) => find_blocking_deep_in_block(b, bf, bs),
+        _ => None,
+    }
+}
+
+fn find_blocking_deep_in_if(
+    i: &IfStmt,
+    bf: &BTreeSet<String>,
+    bs: &BTreeSet<String>,
+) -> Option<(String, Span)> {
+    find_blocking_deep_in_expr(&i.cond, bf, bs)
+        .or_else(|| find_blocking_deep_in_block(&i.then_block, bf, bs))
+        .or_else(|| match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => find_blocking_deep_in_block(b, bf, bs),
+            Some(ElseBranch::ElseIf(n)) => find_blocking_deep_in_if(n, bf, bs),
+            None => None,
+        })
+}
+
+fn find_blocking_deep_in_match(
+    m: &MatchStmt,
+    bf: &BTreeSet<String>,
+    bs: &BTreeSet<String>,
+) -> Option<(String, Span)> {
+    find_blocking_deep_in_expr(&m.scrutinee, bf, bs).or_else(|| {
+        m.arms.iter().find_map(|arm| {
+            arm.guard
+                .as_ref()
+                .and_then(|g| find_blocking_deep_in_expr(g, bf, bs))
+                .or_else(|| match &arm.body {
+                    MatchArmBody::Expr(e) => find_blocking_deep_in_expr(e, bf, bs),
+                    MatchArmBody::Block(b) => find_blocking_deep_in_block(b, bf, bs),
+                })
+        })
+    })
+}
+
+fn find_blocking_deep_in_expr(
+    expr: &Expr,
+    bf: &BTreeSet<String>,
+    bs: &BTreeSet<String>,
+) -> Option<(String, Span)> {
+    match expr {
+        Expr::Call { callee, args, span } => {
+            match callee.as_ref() {
+                Expr::Path(qn) => {
+                    let segs: Vec<&str> =
+                        qn.segments.iter().map(|s| s.name.as_str()).collect();
+                    if let Some(name) = blocking_path_match(&segs) {
+                        return Some((name, *span));
+                    }
+                    if segs.len() == 1 && bf.contains(segs[0]) {
+                        return Some((
+                            format!("{}() (which makes a blocking call)", segs[0]),
+                            *span,
+                        ));
+                    }
+                }
+                Expr::Ident(id) if bf.contains(&id.name) => {
+                    return Some((
+                        format!("{}() (which makes a blocking call)", id.name),
+                        *span,
+                    ));
+                }
+                Expr::Field { receiver, name, .. }
+                    if matches!(receiver.as_ref(), Expr::KwSelf(_))
+                        && bs.contains(&name.name) =>
+                {
+                    return Some((
+                        format!("self.{}() (which makes a blocking call)", name.name),
+                        *span,
+                    ));
+                }
+                _ => {}
+            }
+            find_blocking_deep_in_expr(callee, bf, bs)
+                .or_else(|| args.iter().find_map(|a| find_blocking_deep_in_expr(a, bf, bs)))
+        }
+        Expr::Binary { left, right, .. } => find_blocking_deep_in_expr(left, bf, bs)
+            .or_else(|| find_blocking_deep_in_expr(right, bf, bs)),
+        Expr::Unary { operand, .. } => find_blocking_deep_in_expr(operand, bf, bs),
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
+            find_blocking_deep_in_expr(receiver, bf, bs)
+        }
+        Expr::Index { receiver, index, .. } => {
+            find_blocking_deep_in_expr(receiver, bf, bs)
+                .or_else(|| find_blocking_deep_in_expr(index, bf, bs))
+        }
+        Expr::Tuple(es, _) | Expr::Array(es, _) => {
+            es.iter().find_map(|e| find_blocking_deep_in_expr(e, bf, bs))
+        }
+        Expr::Struct { inits, .. } => {
+            inits.iter().find_map(|i| find_blocking_deep_in_expr(&i.value, bf, bs))
+        }
+        Expr::Block(b) => find_blocking_deep_in_block(b, bf, bs),
+        Expr::If(i) => find_blocking_deep_in_if(i, bf, bs),
+        Expr::Match(m) => find_blocking_deep_in_match(m, bf, bs),
+        Expr::Sum(e, _) | Expr::Prod(e, _) => find_blocking_deep_in_expr(e, bf, bs),
+        Expr::Or { inner, disposition, .. } => {
+            find_blocking_deep_in_expr(inner, bf, bs).or_else(|| match disposition {
+                OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
+                    find_blocking_deep_in_expr(e, bf, bs)
+                }
+                _ => None,
+            })
+        }
+        _ => None,
+    }
+}
+
 /// Warn when a locus placed `cooperative(pool = X)` without
 /// `where async_io` calls a known-blocking stdlib op in its `run()`.
 /// Such a call holds the pool's OS thread, starving co-scheduled loci
@@ -677,13 +1047,23 @@ fn check_cooperative_pool_blocking(
     diags: &mut Vec<Diag>,
 ) {
     let mut local_loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
+    let mut free_fns: BTreeMap<String, &Block> = BTreeMap::new();
     for program in bundle.programs.values() {
         for item in &program.items {
-            if let TopDecl::Locus(l) = item {
-                local_loci.insert(l.name.name.as_str(), l);
+            match item {
+                TopDecl::Locus(l) => {
+                    local_loci.insert(l.name.name.as_str(), l);
+                }
+                TopDecl::Fn(f) => {
+                    free_fns.insert(f.name.name.clone(), &f.body);
+                }
+                _ => {}
             }
         }
     }
+    // Interprocedural call graph for the warning path: free fns that
+    // block (directly or via another blocking free fn).
+    let blocking_free = blocking_free_fns(&free_fns);
 
     for program in bundle.programs.values() {
         for item in &program.items {
@@ -742,21 +1122,51 @@ fn check_cooperative_pool_blocking(
                 }) else {
                     continue;
                 };
-                let Some((call, span)) = find_blocking_in_block(run_body)
-                else {
-                    // Event-driven (no blocking call in run()): the pool
-                    // thread stays free, the bus dispatch runs, cells
-                    // arrive. Nothing to flag — even a non-main
+                // The locus's own methods (named fns + lifecycle
+                // bodies) form the intra-locus call graph for the
+                // interprocedural warning.
+                let mut methods: BTreeMap<String, &Block> = BTreeMap::new();
+                for m in &decl.members {
+                    match m {
+                        LocusMember::Fn(f) => {
+                            methods.insert(f.name.name.clone(), &f.body);
+                        }
+                        LocusMember::Lifecycle(LifecycleDecl {
+                            kind, body, ..
+                        }) => {
+                            methods.insert(format!("{:?}", kind), body);
+                        }
+                        _ => {}
+                    }
+                }
+                let blocking_self =
+                    blocking_self_methods(&methods, &blocking_free);
+
+                // WARNING trigger: blocking reachable from run() either
+                // directly or through a helper fn / self-method.
+                let Some((deep_call, deep_span)) = find_blocking_deep_in_block(
+                    run_body,
+                    &blocking_free,
+                    &blocking_self,
+                ) else {
+                    // Event-driven (nothing blocking reachable): the
+                    // pool thread stays free, the bus dispatch runs,
+                    // cells arrive. Nothing to flag — even a non-main
                     // cooperative subscriber receives fine this way.
                     continue;
                 };
+                // DEAD-RECEIVER trigger stays direct-call-only — its
+                // call-graph surface is deliberately NOT widened (it
+                // over-fired once; see below).
+                let direct = find_blocking_in_block(run_body);
                 let pool_name =
                     pool.as_ref().map(|i| i.name.as_str()).unwrap_or("main");
                 // Handlers for topics this locus does NOT itself publish
                 // (a self-publish→subscribe is a devirtualized direct
                 // call, not a bus receive).
                 let dead = external_subscription_handlers(decl);
-                if pool_name != "main" && !dead.is_empty() {
+                if pool_name != "main" && !dead.is_empty() && direct.is_some() {
+                    let (call, span) = direct.expect("is_some checked");
                     // DEAD RECEIVER (error). A non-main cooperative
                     // subscriber whose run() blocks: cross-process
                     // dispatch reaches a cooperative locus only when its
@@ -791,22 +1201,25 @@ fn check_cooperative_pool_blocking(
                 } else {
                     // Blocking on a cooperative pool stalls co-scheduled
                     // loci (and the pool's bus drain), even when this
-                    // locus isn't itself a subscriber.
+                    // locus isn't itself a subscriber. Interprocedural:
+                    // `deep_call` may name a helper fn / self-method that
+                    // blocks transitively, not just a literal stdlib op.
                     diags.push(Diag::warn(
-                        span,
+                        deep_span,
                         format!(
                             "locus `{}` (field `{}`) is placed `cooperative(pool \
-                             = {})` and calls the blocking `{}` in its `run()`. A \
-                             blocking call holds the pool's OS thread for its whole \
-                             duration, stalling every other locus scheduled on `{}` \
-                             (and the pool's bus drain). Use `pinned` (its own \
-                             thread — the prescribed shape for blocking I/O), or \
-                             `cooperative(pool = {}) where async_io` (which parks on \
-                             I/O readiness instead of blocking the thread).",
+                             = {})` and reaches the blocking call `{}` in its \
+                             `run()`. A blocking call holds the pool's OS thread \
+                             for its whole duration, stalling every other locus \
+                             scheduled on `{}` (and the pool's bus drain). Use \
+                             `pinned` (its own thread — the prescribed shape for \
+                             blocking I/O), or `cooperative(pool = {}) where \
+                             async_io` (which parks on I/O readiness instead of \
+                             blocking the thread).",
                             locus_name,
                             entry.field.name,
                             pool_name,
-                            call,
+                            deep_call,
                             pool_name,
                             pool_name,
                         ),

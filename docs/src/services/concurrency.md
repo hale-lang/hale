@@ -175,7 +175,11 @@ placement and the locus's shape are known at compile time:
   async_io` holds the pool's thread and stalls everything else
   scheduled there. The compiler warns and suggests `pinned` (own
   thread) or `where async_io` (parks). For blocking I/O gateways,
-  `pinned` is the prescribed shape.
+  `pinned` is the prescribed shape. This warning follows the call
+  graph: a `run()` that blocks indirectly — through a helper fn or a
+  `self.method` it calls — is flagged too, naming the offending call.
+  (The dead-receiver *error* above stays direct-call-only, so it
+  never widens onto an indirect path.)
 
 It also enforces the **single-threaded-method invariant**: a locus's
 methods may only be called on the thread that owns its pool, so a
