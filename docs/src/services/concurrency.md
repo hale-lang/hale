@@ -189,6 +189,14 @@ placement and the locus's shape are known at compile time:
   cross-seed (`alias::Topic`) reference, or the same locus being both
   ends. Library code (no `main`) isn't checked — its peers live
   downstream.
+- **A bus cycle is flagged.** If a handler for one topic publishes
+  another in a loop (`a → b → a`), the cell can re-trigger its own
+  publish. A cycle *across* loci spins the cooperative queue — a
+  warning. A cycle *within* one locus is worse: intra-locus publishes
+  are direct synchronous calls, so the loop recurses on the thread
+  until the stack overflows — an error. (Only an *unconditional*
+  self-republish errors; one guarded by an `if` is a terminating
+  state machine and is left alone.)
 
 It also enforces the **single-threaded-method invariant**: a locus's
 methods may only be called on the thread that owns its pool, so a

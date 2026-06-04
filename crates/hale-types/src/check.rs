@@ -209,6 +209,11 @@ pub fn check_bundle(
     // `main` locus present), so library seeds whose consumers are
     // external aren't falsely flagged.
     check_bus_graph(bundle, top, &mut diags);
+    // GH #18 #4 (PR B): bus-graph cycles. A cross-locus publish→
+    // subscribe→publish loop spins the cooperative queue (warning);
+    // an intra-locus loop is devirtualized synchronous self-dispatch
+    // that recurses without bound (error).
+    check_bus_cycles(bundle, &mut diags);
     diags
 }
 
@@ -3134,6 +3139,313 @@ fn check_bus_graph(
                      its handler can't fire. Add a `publish`, bind it to a \
                      transport, or drop the subscription.",
                     k
+                ),
+            ));
+        }
+    }
+}
+
+// === Bus-graph cycles (GH #18 #4, PR B) ============================
+//
+// Edges of the bus graph: when locus `L` subscribes subject `S` with
+// handler `H`, and `H`'s body sends to subject `D`, that's an edge
+// `S →(L) D` — a cell on `S` can cause a cell on `D`. A cycle in this
+// graph is a publish→subscribe→publish loop.
+//
+// The dispatch model splits the two outcomes:
+//   - A **cross-locus** cycle (edges from ≥2 loci) hops between loci
+//     via the cooperative *queue* (drained at yield) — it spins the
+//     queue / livelocks → WARNING.
+//   - An **intra-locus** cycle (all edges in one locus) is
+//     intra-locus self-dispatch, which is **devirtualized to a direct
+//     synchronous call** (spec/semantics.md), so it recurses on one
+//     thread without bound → stack overflow → ERROR.
+// The error stays on the provably-synchronous intra-locus case only,
+// matching the error-precision discipline used elsewhere.
+
+/// The subject a `Topic <- v` send addresses, as a canonical key
+/// (matching `BusSubject::canonical`): a string literal, a bare topic
+/// name, or a qualified path's last segment. None for computed
+/// subjects (not statically traceable).
+fn send_subject_key(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Literal(Literal::String(s), _) => Some(s.clone()),
+        Expr::Ident(id) => Some(id.name.clone()),
+        Expr::Path(qn) => qn.segments.last().map(|s| s.name.clone()),
+        _ => None,
+    }
+}
+
+/// Collect the subjects a handler/`run()` body sends to (the targets
+/// of `Topic <- value`). When `descend_cond` is false, sends nested
+/// inside `if`/`match`/`for`/`while` are skipped — leaving only the
+/// **unconditional** sends that fire on every execution. The
+/// intra-locus error uses the unconditional set (a guarded
+/// self-republish is a terminating state machine, not unbounded
+/// recursion); the cross-locus warning uses all sends.
+fn collect_sends_in_block(
+    b: &Block,
+    descend_cond: bool,
+    out: &mut Vec<(String, Span)>,
+) {
+    for s in &b.stmts {
+        collect_sends_in_stmt(s, descend_cond, out);
+    }
+}
+
+fn collect_sends_in_stmt(
+    stmt: &Stmt,
+    descend_cond: bool,
+    out: &mut Vec<(String, Span)>,
+) {
+    match stmt {
+        Stmt::Send { subject, span, .. } => {
+            if let Some(k) = send_subject_key(subject) {
+                out.push((k, *span));
+            }
+        }
+        Stmt::If(i) if descend_cond => collect_sends_in_if(i, out),
+        Stmt::Match(m) if descend_cond => {
+            for arm in &m.arms {
+                if let MatchArmBody::Block(b) = &arm.body {
+                    collect_sends_in_block(b, descend_cond, out);
+                }
+            }
+        }
+        Stmt::For { body, .. } | Stmt::While { body, .. }
+            if descend_cond =>
+        {
+            collect_sends_in_block(body, descend_cond, out)
+        }
+        // A plain `{ ... }` block always executes — its sends stay
+        // unconditional regardless of `descend_cond`.
+        Stmt::Block(b) => collect_sends_in_block(b, descend_cond, out),
+        _ => {}
+    }
+}
+
+fn collect_sends_in_if(i: &IfStmt, out: &mut Vec<(String, Span)>) {
+    collect_sends_in_block(&i.then_block, true, out);
+    match i.else_block.as_deref() {
+        Some(ElseBranch::Else(b)) => collect_sends_in_block(b, true, out),
+        Some(ElseBranch::ElseIf(n)) => collect_sends_in_if(n, out),
+        None => {}
+    }
+}
+
+/// One directed edge `from → to`, tagged with the producing locus and
+/// the send-site span for diagnostics.
+#[derive(Clone)]
+struct BusEdge {
+    to: String,
+    locus: String,
+    span: Span,
+}
+
+type BusAdj = BTreeMap<String, Vec<BusEdge>>;
+
+/// DFS for a cycle; returns the node sequence `[a, …, a]` of the first
+/// cycle found, or None. Colors: 0 white, 1 gray (on stack), 2 black.
+fn dfs_bus_cycle(
+    node: &str,
+    adj: &BusAdj,
+    color: &mut BTreeMap<String, u8>,
+    path: &mut Vec<String>,
+) -> Option<Vec<String>> {
+    color.insert(node.to_string(), 1);
+    path.push(node.to_string());
+    if let Some(edges) = adj.get(node) {
+        for e in edges {
+            match color.get(&e.to).copied().unwrap_or(0) {
+                1 => {
+                    let start =
+                        path.iter().position(|n| n == &e.to).unwrap_or(0);
+                    let mut cyc = path[start..].to_vec();
+                    cyc.push(e.to.clone());
+                    return Some(cyc);
+                }
+                0 => {
+                    if let Some(c) = dfs_bus_cycle(&e.to, adj, color, path) {
+                        return Some(c);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    path.pop();
+    color.insert(node.to_string(), 2);
+    None
+}
+
+/// The set of loci whose edges realize `cyc`, plus a representative
+/// send span (the first edge's).
+fn cycle_loci(cyc: &[String], adj: &BusAdj) -> (BTreeSet<String>, Span) {
+    let mut loci = BTreeSet::new();
+    let mut span = Span::new(0, 0);
+    let mut first = true;
+    for w in cyc.windows(2) {
+        if let Some(edges) = adj.get(&w[0]) {
+            if let Some(e) = edges.iter().find(|e| e.to == w[1]) {
+                loci.insert(e.locus.clone());
+                if first {
+                    span = e.span;
+                    first = false;
+                }
+            }
+        }
+    }
+    (loci, span)
+}
+
+fn check_bus_cycles(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    // Build the edge set. For each locus, map its subscribe handlers
+    // by name, then for each subscribed subject add edges to whatever
+    // the handler body sends.
+    let mut global: BusAdj = BTreeMap::new();
+    // Per-locus adjacency (only that locus's edges) for the intra
+    // (synchronous) cycle check.
+    let mut per_locus: BTreeMap<String, BusAdj> = BTreeMap::new();
+
+    fn walk_loci<'a>(
+        items: &'a [TopDecl],
+        global: &mut BusAdj,
+        per_locus: &mut BTreeMap<String, BusAdj>,
+    ) {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => {
+                    // handler name -> body
+                    let mut handler_bodies: BTreeMap<&str, &Block> =
+                        BTreeMap::new();
+                    let mut subs: Vec<(String, String)> = Vec::new(); // (subject, handler)
+                    for m in &l.members {
+                        match m {
+                            LocusMember::Fn(f) => {
+                                handler_bodies.insert(f.name.name.as_str(), &f.body);
+                            }
+                            LocusMember::Bus(bb) => {
+                                for bm in &bb.members {
+                                    if let BusMember::Subscribe {
+                                        subject, handler, ..
+                                    } = bm
+                                    {
+                                        subs.push((
+                                            subject.canonical().to_string(),
+                                            handler.name.clone(),
+                                        ));
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    let lname = l.name.name.clone();
+                    for (subject, handler) in subs {
+                        let Some(body) = handler_bodies.get(handler.as_str())
+                        else {
+                            continue;
+                        };
+                        // Cross-locus warning: every send (incl. guarded).
+                        let mut sends_all = Vec::new();
+                        collect_sends_in_block(body, true, &mut sends_all);
+                        for (to, span) in sends_all {
+                            global.entry(subject.clone()).or_default().push(
+                                BusEdge { to, locus: lname.clone(), span },
+                            );
+                        }
+                        // Intra-locus error: only unconditional sends —
+                        // a guarded self-republish terminates.
+                        let mut sends_uncond = Vec::new();
+                        collect_sends_in_block(body, false, &mut sends_uncond);
+                        for (to, span) in sends_uncond {
+                            per_locus
+                                .entry(lname.clone())
+                                .or_default()
+                                .entry(subject.clone())
+                                .or_default()
+                                .push(BusEdge { to, locus: lname.clone(), span });
+                        }
+                    }
+                }
+                TopDecl::Module(md) => walk_loci(&md.items, global, per_locus),
+                _ => {}
+            }
+        }
+    }
+    for program in bundle.programs.values() {
+        walk_loci(&program.items, &mut global, &mut per_locus);
+    }
+
+    // 1) Intra-locus cycles → error (one per locus). Sound because
+    //    intra-locus self-dispatch is devirtualized synchronous.
+    let mut intra_loci: BTreeSet<String> = BTreeSet::new();
+    for (lname, adj) in &per_locus {
+        let roots: Vec<String> = adj.keys().cloned().collect();
+        for root in roots {
+            let mut color = BTreeMap::new();
+            let mut path = Vec::new();
+            if let Some(cyc) = dfs_bus_cycle(&root, adj, &mut color, &mut path) {
+                let (_, span) = cycle_loci(&cyc, adj);
+                diags.push(Diag::ty(
+                    span,
+                    format!(
+                        "locus `{}` has a re-entrant synchronous bus cycle \
+                         `{}`: each publish onto a topic the locus also \
+                         subscribes is a direct in-thread call (intra-locus \
+                         self-dispatch), so this recurses without bound and \
+                         overflows the stack. Break the cycle, or route one \
+                         hop through a different pool (an async enqueue).",
+                        lname,
+                        cyc.join(" → "),
+                    ),
+                ));
+                intra_loci.insert(lname.clone());
+                break;
+            }
+        }
+    }
+
+    // 2) Cross-locus cycles → warning. Exclude edges from loci that
+    //    already have an intra-locus error so those don't shadow a
+    //    genuine cross-locus loop.
+    let mut cross_adj: BusAdj = BTreeMap::new();
+    for (from, edges) in &global {
+        for e in edges {
+            if !intra_loci.contains(&e.locus) {
+                cross_adj
+                    .entry(from.clone())
+                    .or_default()
+                    .push(e.clone());
+            }
+        }
+    }
+    let mut reported: BTreeSet<String> = BTreeSet::new();
+    let roots: Vec<String> = cross_adj.keys().cloned().collect();
+    for root in roots {
+        let mut color = BTreeMap::new();
+        let mut path = Vec::new();
+        if let Some(cyc) = dfs_bus_cycle(&root, &cross_adj, &mut color, &mut path)
+        {
+            let (loci, span) = cycle_loci(&cyc, &cross_adj);
+            if loci.len() < 2 {
+                continue;
+            }
+            let mut nodes: Vec<String> = cyc.clone();
+            nodes.sort();
+            nodes.dedup();
+            let key = nodes.join("|");
+            if !reported.insert(key) {
+                continue;
+            }
+            diags.push(Diag::warn(
+                span,
+                format!(
+                    "bus cycle `{}` across loci ({}): a cell can re-trigger \
+                     its own publish, spinning the cooperative queue. Break \
+                     the loop or add a terminating condition.",
+                    cyc.join(" → "),
+                    loci.into_iter().collect::<Vec<_>>().join(", "),
                 ),
             ));
         }

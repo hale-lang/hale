@@ -248,6 +248,192 @@ fn main() { App { }; }
     );
 }
 
+// --- cycles (PR B) -------------------------------------------------
+
+const REENTRANT: &str = "re-entrant synchronous bus cycle";
+const CROSS_CYCLE: &str = "across loci";
+
+#[test]
+fn intra_locus_self_republish_is_reentrant_error() {
+    // on_t unconditionally republishes T — devirtualized synchronous
+    // self-dispatch recurses without bound. Hard error.
+    let src = r#"
+type Tick { n: Int; }
+topic T { payload: Tick; subject: "t"; }
+
+locus Loop {
+    bus { publish T; subscribe T as on_t; }
+    fn on_t(x: Tick) { T <- Tick { n: 1 }; }
+    birth() { T <- Tick { n: 0 }; }
+}
+
+main locus App {
+    params { l: Loop = Loop { }; }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(REENTRANT) && m.contains("`Loop`")),
+        "an unconditional intra-locus self-republish must be a re-entrant \
+         error; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn intra_locus_two_topic_cycle_is_reentrant_error() {
+    // on_a publishes B, on_b publishes A — both within one locus.
+    let src = r#"
+type Tick { n: Int; }
+topic A { payload: Tick; subject: "a"; }
+topic B { payload: Tick; subject: "b"; }
+
+locus Loop {
+    bus {
+        publish A; publish B;
+        subscribe A as on_a;
+        subscribe B as on_b;
+    }
+    fn on_a(x: Tick) { B <- Tick { n: 1 }; }
+    fn on_b(x: Tick) { A <- Tick { n: 1 }; }
+    birth() { A <- Tick { n: 0 }; }
+}
+
+main locus App {
+    params { l: Loop = Loop { }; }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(REENTRANT)),
+        "an intra-locus A→B→A cycle must be a re-entrant error; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn conditional_self_republish_is_not_an_error() {
+    // The send is guarded by an `if` — a terminating state machine,
+    // not unbounded recursion. Must NOT error.
+    let src = r#"
+type Tick { n: Int; }
+topic T { payload: Tick; subject: "t"; }
+
+locus Stepper {
+    bus { publish T; subscribe T as on_t; }
+    fn on_t(x: Tick) {
+        if x.n < 10 { T <- Tick { n: x.n + 1 }; }
+    }
+    birth() { T <- Tick { n: 0 }; }
+}
+
+main locus App {
+    params { s: Stepper = Stepper { }; }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(REENTRANT)),
+        "a guarded (conditional) self-republish terminates and must not \
+         error; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn cross_locus_cycle_warns() {
+    // P: on_a publishes B; Q: on_b publishes A. A cell loops P↔Q
+    // through the cooperative queue — a spin warning, not an error.
+    let src = r#"
+type Tick { n: Int; }
+topic A { payload: Tick; subject: "a"; }
+topic B { payload: Tick; subject: "b"; }
+
+locus P {
+    bus { subscribe A as on_a; publish B; }
+    fn on_a(x: Tick) { B <- Tick { n: 1 }; }
+}
+
+locus Q {
+    bus { subscribe B as on_b; publish A; }
+    fn on_b(x: Tick) { A <- Tick { n: 1 }; }
+    birth() { A <- Tick { n: 0 }; }
+}
+
+main locus App {
+    params {
+        p: P = P { };
+        q: Q = Q { };
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(CROSS_CYCLE)),
+        "a cross-locus pub/sub cycle must warn; got: {:?}",
+        msgs
+    );
+    assert!(
+        !msgs.iter().any(|m| m.contains(REENTRANT)),
+        "a cross-locus cycle is a warning, not the synchronous error; \
+         got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn acyclic_pub_sub_chain_has_no_cycle_diagnostic() {
+    // A → B → C, no back-edge. No cycle.
+    let src = r#"
+type Tick { n: Int; }
+
+locus First {
+    bus { subscribe "a" as on_a of type Tick; publish "b" of type Tick; }
+    fn on_a(x: Tick) { "b" <- Tick { n: 1 }; }
+}
+
+locus Second {
+    bus { subscribe "b" as on_b of type Tick; publish "c" of type Tick; }
+    fn on_b(x: Tick) { "c" <- Tick { n: 1 }; }
+}
+
+locus Source {
+    bus { publish "a" of type Tick; }
+    birth() { "a" <- Tick { n: 0 }; }
+}
+
+locus Sink {
+    bus { subscribe "c" as on_c of type Tick; }
+    fn on_c(x: Tick) { }
+}
+
+main locus App {
+    params {
+        f: First = First { };
+        s: Second = Second { };
+        src: Source = Source { };
+        snk: Sink = Sink { };
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(CROSS_CYCLE) || m.contains(REENTRANT)),
+        "an acyclic chain must produce no cycle diagnostic; got: {:?}",
+        msgs
+    );
+}
+
 #[test]
 fn library_without_main_is_not_checked() {
     // No `main` locus: the publishers/subscribers may live in
