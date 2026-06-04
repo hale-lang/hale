@@ -92,3 +92,70 @@ fn main() {{
         out
     );
 }
+
+#[test]
+fn ecdsa_p256_sign_fallible_or_raise_success() {
+    // The `or`-context form: a valid key signs and the success
+    // value flows through `or raise` as a plain Bytes — the
+    // signature still verifies.
+    let priv_lit = PRIV_SEC1_PEM.replace('\n', "\\n");
+    let pub_lit = PUB_SPKI_PEM.replace('\n', "\\n");
+    let src = format!(
+        r#"
+fn main() {{
+    let privk = std::bytes::from_string("{priv_lit}");
+    let pubk  = std::bytes::from_string("{pub_lit}");
+    let msg = std::bytes::from_string("hello ES256");
+    let sig = std::crypto::ecdsa_p256_sign(privk, msg) or raise;
+    println("len=", len(sig));
+    println("rt=", std::crypto::ecdsa_p256_verify(pubk, msg, sig));
+}}
+"#,
+        priv_lit = priv_lit,
+        pub_lit = pub_lit,
+    );
+    let out = build_and_run("fallible_ok", &src);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(
+        lines,
+        vec!["len=64", "rt=true"],
+        "fallible ecdsa sign success path diverged; got: {:?}",
+        out
+    );
+}
+
+#[test]
+fn ecdsa_p256_sign_fallible_binds_crypto_error_on_bad_key() {
+    // A bad key drives the failure branch; `or handler(err)` binds
+    // the implicit `err: CryptoError` and the handler reads its
+    // `kind` / `detail` fields, then substitutes a fallback Bytes.
+    let src = r#"
+fn diag(e: CryptoError) -> Bytes {
+    println("kind=", e.kind);
+    println("detail=", e.detail);
+    return std::bytes::from_string("");
+}
+fn main() {
+    let badk = std::bytes::from_string("-----BEGIN EC PRIVATE KEY-----\nnot a real key\n-----END EC PRIVATE KEY-----\n");
+    let msg = std::bytes::from_string("hello ES256");
+    let sig = std::crypto::ecdsa_p256_sign(badk, msg) or diag(err);
+    println("fallback_len=", len(sig));
+}
+"#;
+    let out = build_and_run("fallible_err", src);
+    assert!(
+        out.contains("kind=ecdsa_p256_sign"),
+        "expected CryptoError.kind bound; got: {:?}",
+        out
+    );
+    assert!(
+        out.contains("detail=signing failed"),
+        "expected CryptoError.detail bound; got: {:?}",
+        out
+    );
+    assert!(
+        out.contains("fallback_len=0"),
+        "expected the substitute fallback Bytes; got: {:?}",
+        out
+    );
+}

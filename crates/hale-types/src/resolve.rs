@@ -1556,6 +1556,35 @@ pub(crate) fn inject_form_stdlib_types(scope: &mut TopScope) {
             }),
         );
     }
+    // 2026-06-04 — CryptoError for the `std::crypto::*` path-calls
+    // that return `fallible(CryptoError)` in `or` context (currently
+    // `ecdsa_p256_sign`). Carries:
+    //   - kind: op tag — "ecdsa_p256_sign" — which crypto op failed.
+    //   - detail: human-readable failure context (e.g. "signing
+    //     failed (bad key or non-P-256 curve)").
+    if !scope.symbols.contains_key("CryptoError") {
+        scope.symbols.insert(
+            "CryptoError".to_string(),
+            TopSymbol::Type(TypeInfo {
+                name: "CryptoError".to_string(),
+                kind: TypeKind::Struct(vec![
+                    FieldInfo {
+                        name: "kind".to_string(),
+                        ty: Ty::Prim(PrimType::String),
+                        has_default: false,
+                        span: zero,
+                    },
+                    FieldInfo {
+                        name: "detail".to_string(),
+                        ty: Ty::Prim(PrimType::String),
+                        has_default: false,
+                        span: zero,
+                    },
+                ]),
+                span: zero,
+            }),
+        );
+    }
 }
 
 /// FUv0.8.2 #1 (2026-05-25): when a user has declared a `type
@@ -1590,6 +1619,7 @@ struct StdlibErrorUsage {
     index_error: bool,
     key_error: bool,
     empty_error: bool,
+    crypto_error: bool,
 }
 
 /// Scan every top-level item, every fn / locus-method body,
@@ -1859,6 +1889,13 @@ fn mark_stdlib_error_from_path(
                     out.io_error = true;
                 }
             }
+            "crypto" => {
+                // std::crypto::ecdsa_p256_sign returns
+                // fallible(CryptoError) in `or` context.
+                if segs[2] == "ecdsa_p256_sign" {
+                    out.crypto_error = true;
+                }
+            }
             _ => {}
         }
     }
@@ -1913,6 +1950,15 @@ fn check_stdlib_error_shadowing(
             &[("kind", PrimType::String)],
             "std::form::ring_buffer::EmptyError",
             usage.empty_error,
+        ),
+        (
+            "CryptoError",
+            &[
+                ("kind", PrimType::String),
+                ("detail", PrimType::String),
+            ],
+            "std::crypto::CryptoError",
+            usage.crypto_error,
         ),
     ];
     for (name, expected_fields, qualified, in_use) in expected {

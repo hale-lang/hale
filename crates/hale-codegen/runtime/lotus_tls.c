@@ -413,17 +413,25 @@ static void *lotus_ecdsa_p256_sign_or_null(const void *key_b, const void *msg_b)
 }
 
 /* ecdsa_p256_sign(key: Bytes, message: Bytes) -> Bytes.
- * Always returns a valid Bytes blob: the 64-byte r||s signature on
- * success, or an EMPTY blob (len 0) on any failure — the same
- * "empty on failure" convention base64::decode uses, so the result
- * is always a well-formed Bytes the caller can length-check
- * (`std::bytes::len(sig) == 0` => signing failed). Fails closed: an
- * empty signature is rejected by any verifier. (A future
- * fallible(CryptoError) form can layer on top once the synthesized
- * stdlib-error plumbing is generalized past IoError.) */
+ * The bare (non-`or`) form: always returns a valid Bytes blob — the
+ * 64-byte r||s signature on success, or an EMPTY blob (len 0) on any
+ * failure, the same "empty on failure" convention base64::decode
+ * uses, so the result is always a well-formed Bytes the caller can
+ * length-check (`std::bytes::len(sig) == 0` => signing failed). Fails
+ * closed: an empty signature is rejected by any verifier. */
 void *lotus_crypto_ecdsa_p256_sign(const void *key_b, const void *msg_b) {
     void *sig = lotus_ecdsa_p256_sign_or_null(key_b, msg_b);
     return sig ? sig : lotus_bytes_create(lotus_bus_payload_arena_get(), 0);
+}
+
+/* Exported NULL-returning form backing the fallible(CryptoError)
+ * lowering: returns the 64-byte r||s blob, or NULL on any failure.
+ * The codegen fallible path branches on NULL to synthesize a
+ * `CryptoError`; the bare call stays on the empty-bytes form above. */
+void *lotus_crypto_ecdsa_p256_sign_or_null(
+    const void *key_b, const void *msg_b)
+{
+    return lotus_ecdsa_p256_sign_or_null(key_b, msg_b);
 }
 
 /* ecdsa_p256_verify(pubkey: Bytes (PEM SPKI), message: Bytes,

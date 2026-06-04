@@ -4425,6 +4425,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // 2026-05-17 — `ParseError` payload for the
         // `std::str::parse_int` / `parse_float` fallible flip.
         self.declare_builtin_parse_error_type();
+        // 2026-06-04 — `CryptoError` payload for the
+        // `std::crypto::ecdsa_p256_sign` fallible (`or`-context) form.
+        self.declare_builtin_crypto_error_type();
 
         // F.20: register interface declarations by name. The
         // codegen layer uses this in two places: signature lowering
@@ -6693,6 +6696,36 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         struct_ty.set_body(&llvm_field_tys, false);
         self.user_types.insert(
             "ParseError".to_string(),
+            TypeInfo {
+                struct_ty,
+                fields,
+                field_order,
+                defaults: BTreeMap::new(),
+            },
+        );
+    }
+
+    /// Register the built-in `CryptoError { kind, detail }` record so
+    /// the fallible `std::crypto::*` codegen wrappers can allocate it.
+    /// Mirror of the `CryptoError` injection in
+    /// hale-types/src/resolve.rs. Fields:
+    ///   - kind: String (op tag, e.g. "ecdsa_p256_sign")
+    ///   - detail: String (human-readable failure context)
+    fn declare_builtin_crypto_error_type(&mut self) {
+        if self.user_types.contains_key("CryptoError") {
+            return;
+        }
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let mut fields: BTreeMap<String, (u32, CodegenTy)> = BTreeMap::new();
+        fields.insert("kind".into(), (0, CodegenTy::String));
+        fields.insert("detail".into(), (1, CodegenTy::String));
+        let field_order = vec!["kind".to_string(), "detail".to_string()];
+        let llvm_field_tys: Vec<inkwell::types::BasicTypeEnum> =
+            vec![ptr_t.into(), ptr_t.into()];
+        let struct_ty = self.context.opaque_struct_type("type.CryptoError");
+        struct_ty.set_body(&llvm_field_tys, false);
+        self.user_types.insert(
+            "CryptoError".to_string(),
             TypeInfo {
                 struct_ty,
                 fields,
