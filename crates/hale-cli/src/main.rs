@@ -65,20 +65,15 @@ fn main() -> ExitCode {
         "parse" => run_parse_file(&target),
         "check" => run_check(&target),
         "run" => {
-            // Plumb the script's argv into the interpreter so
-            // `std::env::args_count` / `std::env::arg(i)` work.
-            // Convention mirrors compiled binaries: argv[0] is
-            // the script path; argv[1..] are the trailing CLI
-            // args. `hale run script.hl foo bar` → script
-            // sees ["script.hl", "foo", "bar"].
-            let mut user_args: Vec<String> =
-                Vec::with_capacity(args.len().saturating_sub(2));
-            user_args.push(args[2].clone());
-            for a in args.iter().skip(3) {
-                user_args.push(a.clone());
-            }
-            hale_runtime::set_user_args(user_args);
-            run_program(&target)
+            // `hale run` compiles the program to a temporary binary
+            // (the same codegen backend as `hale build`) and executes
+            // it — there is no separate interpreter. The program's
+            // trailing argv is forwarded to the exec'd process, so
+            // `hale run script.hl foo bar` makes the program's
+            // `std::env::arg(1..)` see ["foo", "bar"] exactly as a
+            // built binary run directly would.
+            let user_args: Vec<String> = args.iter().skip(3).cloned().collect();
+            run_program(&target, &user_args)
         }
         "build" => run_build(&target),
         other => {
@@ -815,7 +810,40 @@ fn run_check(target: &Path) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_program(target: &Path) -> ExitCode {
+/// Compile `program` to a temporary native binary and execute it,
+/// forwarding `user_args` as the program's trailing argv. This is
+/// the whole of `hale run` — the same codegen backend as `hale
+/// build`, so there is no `run`-vs-`build` behavioral divergence.
+fn compile_and_exec(
+    program: &Program,
+    renames: &[(Vec<String>, String)],
+    user_args: &[String],
+) -> ExitCode {
+    let mut bin = std::env::temp_dir();
+    let mut h = DefaultHasher::new();
+    h.write_usize(program.items.len());
+    h.write_u32(std::process::id());
+    bin.push(format!("hale_run_{:016x}", h.finish()));
+    if let Err(e) =
+        hale_codegen::build_executable_with_imports(program, &bin, renames)
+    {
+        eprintln!("build error: {:?}", e);
+        return ExitCode::from(1);
+    }
+    let status = std::process::Command::new(&bin).args(user_args).status();
+    let _ = std::fs::remove_file(&bin);
+    match status {
+        Ok(s) => {
+            ExitCode::from(s.code().unwrap_or(1).clamp(0, 255) as u8)
+        }
+        Err(e) => {
+            eprintln!("could not execute compiled program: {}", e);
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     // Single-file targets follow imports starting from the entry
     // file's directory. Directory targets bundle every .lt under
     // them as today (multi-file projects without import wiring
@@ -827,7 +855,7 @@ fn run_program(target: &Path) -> ExitCode {
         // per the known limitation). Cross-seed imports through
         // `hale run` will likewise fail on `alias::Name` paths;
         // use `hale build` for programs with imports.
-        let (program, _renames, sources, _ctx) = match parse_with_imports(target) {
+        let (program, renames, sources, _ctx) = match parse_with_imports(target) {
             Ok(x) => x,
             Err(errors) => {
                 for (path, d, src) in &errors {
@@ -853,14 +881,7 @@ fn run_program(target: &Path) -> ExitCode {
                 return ExitCode::from(1);
             }
         }
-        let prog_refs: Vec<&Program> = vec![&program];
-        return match hale_runtime::run_bundle(&prog_refs) {
-            Ok(code) => ExitCode::from(code as u8),
-            Err(e) => {
-                eprintln!("runtime error: {}", e);
-                ExitCode::from(1)
-            }
-        };
+        return compile_and_exec(&program, &renames, user_args);
     }
 
     let files = match collect_ap_files(target) {
@@ -896,14 +917,17 @@ fn run_program(target: &Path) -> ExitCode {
         }
     }
 
-    let prog_refs: Vec<&Program> = programs.values().collect();
-    match hale_runtime::run_bundle(&prog_refs) {
-        Ok(code) => ExitCode::from(code as u8),
-        Err(e) => {
-            eprintln!("runtime error: {}", e);
-            ExitCode::from(1)
+    let merged = match merge_programs(programs.values()) {
+        Some(m) => m,
+        None => {
+            eprintln!("no .hl files in {}", target.display());
+            return ExitCode::from(1);
         }
-    }
+    };
+    // Directory `hale run` is the ad-hoc multi-file path; like the
+    // pre-retirement interpreter behavior, it doesn't resolve
+    // cross-seed imports (use `hale build <dir>` for those).
+    compile_and_exec(&merged, &[], user_args)
 }
 
 fn run_build(target: &Path) -> ExitCode {

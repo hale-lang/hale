@@ -63,16 +63,17 @@ cargo test --release --workspace -- --test-threads=1
 
 ## The two ways to run a program
 
-Hale ships two execution paths, and you'll use both:
+Both go through the **same LLVM-native compiler** — there's no
+separate interpreter, so they never disagree:
 
-- **Interpreter** — `hale run prog.hl`. A tree-walking
-  interpreter for fast feedback while you write.
-- **Native** — `hale build prog.hl` produces a native ELF binary
-  via LLVM. This is what you ship.
+- **`hale run prog.hl`** — compiles and runs in one step (the
+  binary is temporary). The fast inner loop while you write.
+- **`hale build prog.hl`** — compiles to a native ELF binary on
+  disk via LLVM. This is the artifact you ship.
 
 ```sh
-cargo run -p hale-cli --bin hale -- run  prog.hl   # interpret
-cargo run -p hale-cli --bin hale -- build prog.hl  # compile
+cargo run -p hale-cli --bin hale -- run  prog.hl   # compile + run
+cargo run -p hale-cli --bin hale -- build prog.hl  # compile to ./prog
 ./prog
 ```
 
