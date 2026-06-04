@@ -1427,6 +1427,19 @@ main locus App {
    Note rule 7 (the dead-receiver *error*) stays **direct-call-only**
    — it is not widened onto indirect paths, so the higher-stakes
    diagnostic keeps its precision.
+9. **Orphan bus topic (warning).** In a closed-world program (a
+   `main` locus present), a bus subject — a declared `topic` or a
+   literal string — wired to only one end is flagged: *published with
+   no subscriber* (the cells go nowhere) or *subscribed with no
+   publisher* (the handler can't fire), and a declared topic touched
+   by neither is *dead wiring*. Suppressed when the other end is
+   plausibly external: a **transport binding** (`bindings { T: ... }`
+   implies a cross-process peer), a **wildcard** subscriber/publisher
+   covering the subject (`log.**` covers `log.app`), a **cross-seed**
+   reference (`alias::Foo` — the other seed owns the other half), or
+   the same locus being both publisher and subscriber. The closed-
+   world gate is why this is skipped for library seeds (no `main`):
+   their consumers are downstream, out of the bundle. (GH #18 #4.)
 
 ### Single-threaded-method invariant
 

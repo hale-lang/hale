@@ -180,6 +180,15 @@ placement and the locus's shape are known at compile time:
   `self.method` it calls — is flagged too, naming the offending call.
   (The dead-receiver *error* above stays direct-call-only, so it
   never widens onto an indirect path.)
+- **An orphan bus topic is a warning.** In a complete program (one
+  with a `main` locus), a topic or subject wired to only one end —
+  published with nobody subscribed, or subscribed with nobody
+  publishing — is flagged, as is a declared topic used by neither.
+  It's suppressed when the other end is plausibly external: a
+  transport `binding`, a wildcard (`log.**`) covering the subject, a
+  cross-seed (`alias::Topic`) reference, or the same locus being both
+  ends. Library code (no `main`) isn't checked — its peers live
+  downstream.
 
 It also enforces the **single-threaded-method invariant**: a locus's
 methods may only be called on the thread that owns its pool, so a
