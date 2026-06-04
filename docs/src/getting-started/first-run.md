@@ -1,6 +1,6 @@
 # Your first run
 
-> Put something on screen, and see the two run modes.
+> Put something on screen.
 
 Create a file `hello.hl`:
 
@@ -10,7 +10,7 @@ fn main() {
 }
 ```
 
-Run it through the interpreter:
+Run it:
 
 ```sh
 hale run hello.hl
@@ -20,15 +20,20 @@ hale run hello.hl
 Hello from Hale.
 ```
 
-Compile it to a native binary and run that:
+`hale run` compiles your program and runs it in one step — it's
+the same native code `hale build` produces, just executed
+immediately and not left on disk. When you want the artifact to
+keep and ship, build it:
 
 ```sh
 hale build hello.hl
 ./hello
 ```
 
-Same output. The interpreter is for fast feedback; `build`
-produces the artifact you ship.
+Same compiler, same output: `run` is the fast inner-loop shape,
+`build` is for the binary you deploy. There's no separate
+interpreter, so anything that runs under `build` runs identically
+under `run`.
 
 ## What's here
 
@@ -60,7 +65,9 @@ That's the whole surface you need to start. The next chapter
 introduces variables and the value types — the vocabulary every
 Hale program is built from.
 
-> **A note on `hale run` vs files with imports.** The
-> interpreter doesn't resolve cross-file library imports yet; for
-> any program that uses `import "..." as ...;` use `hale build`.
-> Single-file programs and whole-directory builds work in both.
+> **`hale run` and imports.** A single file's `import "..." as
+> ...;` directives are resolved by `hale run` just as `hale build`
+> resolves them. The one gap is the ad-hoc *directory* form (`hale
+> run ./dir`), which bundles the directory's files without
+> cross-seed import resolution — use `hale build ./dir` for a
+> multi-file project that imports libraries.

@@ -41,7 +41,7 @@ diagnostic's meaning, go there.
 
 | Command | Does |
 |---|---|
-| `hale run <file/dir>` | interpret (fast feedback) |
+| `hale run <file/dir>` | compile + run (fast feedback) |
 | `hale build <file/dir>` | compile to a native binary |
 | `hale check` | parse + typecheck only |
 | `hale test` | run `*_test.hl` |

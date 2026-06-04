@@ -346,9 +346,9 @@ locus DbPool {
   via the child handle: `c.last_error`, `c.conn_fd`, etc. Since
   `violate` is divergent, the child's locus state is frozen at
   the violate moment — every captured field is readable through
-  the handle. This is the portable access pattern; it works
-  identically under `hale run` (interpreted) and `hale build`
-  (native).
+  the handle. This is the portable access pattern; `hale run`
+  and `hale build` share the same native codegen, so it behaves
+  identically under both.
 
 **Why this shape.** Three forces meet:
 
