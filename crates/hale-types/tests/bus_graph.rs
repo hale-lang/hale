@@ -538,6 +538,137 @@ fn unbounded_loop_without_publish_is_ok() {
     );
 }
 
+// --- subject type-mismatch (PR D) ----------------------------------
+
+const CONFLICT: &str = "conflicting payload types";
+
+#[test]
+fn literal_subject_with_conflicting_payload_types_errors() {
+    let src = r#"
+type Tick { n: Int; }
+type Pulse { hz: Int; }
+
+locus Pub {
+    bus { publish "wire.sig" of type Tick; }
+    birth() { "wire.sig" <- Tick { n: 1 }; }
+}
+
+locus Sub {
+    bus { subscribe "wire.sig" as on_sig of type Pulse; }
+    fn on_sig(p: Pulse) { }
+}
+
+main locus App {
+    params { p: Pub = Pub { }; s: Sub = Sub { }; }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(CONFLICT)
+            && m.contains("wire.sig")
+            && m.contains("Tick")
+            && m.contains("Pulse")),
+        "mismatched payload types on the same literal subject must error; \
+         got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn literal_subject_with_matching_payload_types_is_clean() {
+    let src = r#"
+type Tick { n: Int; }
+
+locus Pub {
+    bus { publish "wire.sig" of type Tick; }
+    birth() { "wire.sig" <- Tick { n: 1 }; }
+}
+
+locus Sub {
+    bus { subscribe "wire.sig" as on_sig of type Tick; }
+    fn on_sig(t: Tick) { }
+}
+
+main locus App {
+    params { p: Pub = Pub { }; s: Sub = Sub { }; }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(CONFLICT)),
+        "agreeing payload types must not error; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn different_subjects_with_different_types_is_clean() {
+    // Two different subjects, each with its own type — no conflict.
+    let src = r#"
+type Tick { n: Int; }
+type Pulse { hz: Int; }
+
+locus L {
+    bus {
+        publish "a" of type Tick;
+        publish "b" of type Pulse;
+        subscribe "a" as on_a of type Tick;
+        subscribe "b" as on_b of type Pulse;
+    }
+    fn on_a(t: Tick) { }
+    fn on_b(p: Pulse) { }
+}
+
+main locus App {
+    params { l: L = L { }; }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(CONFLICT)),
+        "distinct subjects with distinct types must not error; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn declared_topic_is_not_subject_to_mismatch() {
+    // A declared topic unifies its payload at the declaration, so two
+    // sites referencing it can't disagree — and carry no `of type`.
+    let src = r#"
+type Tick { n: Int; }
+topic Beat { payload: Tick; subject: "beat"; }
+
+locus Pub {
+    bus { publish Beat; }
+    birth() { Beat <- Tick { n: 1 }; }
+}
+
+locus Sub {
+    bus { subscribe Beat as on_beat; }
+    fn on_beat(t: Tick) { }
+}
+
+main locus App {
+    params { p: Pub = Pub { }; s: Sub = Sub { }; }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(CONFLICT)),
+        "declared topics are unified by their declaration; got: {:?}",
+        msgs
+    );
+}
+
 #[test]
 fn library_without_main_is_not_checked() {
     // No `main` locus: the publishers/subscribers may live in

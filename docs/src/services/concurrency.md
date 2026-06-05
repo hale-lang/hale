@@ -203,6 +203,11 @@ placement and the locus's shape are known at compile time:
   backpressure, so cells pile up without bound. Pace the loop, drive
   it from an input, or `yield` to let the subscriber drain. (Bounded
   loops are never flagged; any flow-control point clears it.)
+- **A subject payload type-mismatch is an error.** If two sites
+  publish/subscribe the same literal subject string with different
+  `of type` payloads, a subscriber would decode the wrong type at
+  runtime — rejected. (Declared `topic`s are already unified by their
+  declaration, so this only affects ad-hoc literal subjects.)
 
 It also enforces the **single-threaded-method invariant**: a locus's
 methods may only be called on the thread that owns its pool, so a
