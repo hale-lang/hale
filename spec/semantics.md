@@ -1470,6 +1470,17 @@ main locus App {
     `while true` loops are considered (bounded `for`/`while cond`
     loops never are), and any flow-control point anywhere in the loop
     body clears it. (GH #18 #4.)
+12. **Bus subject type-mismatch (error).** Every publish/subscribe
+    site addressing the same **literal** subject string must declare
+    the same `of type` payload — otherwise a subscriber decodes the
+    publisher's bytes as the wrong type at runtime. A declared `topic`
+    is already unified by its declaration (and `of type` is forbidden
+    on topic refs), so this closes the literal-subject gap.
+    Grouping is by *exact* subject string, which excludes wildcards
+    (`log.**` and `log.app` are different strings, never
+    cross-compared). The fix is to declare a `topic` (one payload
+    type, fixed in one place) or align the `of type` annotations.
+    (GH #18 #4.)
 
 ### Single-threaded-method invariant
 

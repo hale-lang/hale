@@ -218,6 +218,12 @@ pub fn check_bundle(
     // yield/throttle floods the bus — the producer has no
     // backpressure. Structural heuristic (warning).
     check_bus_backpressure(bundle, &mut diags);
+    // GH #18 #4: subject type-mismatch. Two literal-subject sites
+    // addressing the same wire subject must agree on the payload
+    // type — otherwise a subscriber decodes the publisher's bytes as
+    // the wrong type. Declared `topic`s are already unified by their
+    // declaration; this closes the literal-subject gap.
+    check_bus_subject_types(bundle, &mut diags);
     diags
 }
 
@@ -3647,6 +3653,144 @@ fn scan_flood_in_if(i: &IfStmt, locus: &str, diags: &mut Vec<Diag>) {
         Some(ElseBranch::Else(b)) => scan_flood_in_block(b, locus, diags),
         Some(ElseBranch::ElseIf(n)) => scan_flood_in_if(n, locus, diags),
         None => {}
+    }
+}
+
+// === Bus subject type-mismatch (GH #18 #4) ========================
+//
+// A *declared* `topic` fixes its payload type once, so every `publish
+// Foo` / `subscribe Foo` site is unified by the declaration — no
+// mismatch possible (and `of type` is forbidden on topic refs). The
+// hole is *literal* subjects (`publish "wire.sig" of type Tick`):
+// nothing ties the `of type` annotations at two sites on the same
+// wire string together, so a publisher's `Tick` and a subscriber's
+// `Pulse` both compile — and at runtime the subscriber decodes the
+// publisher's bytes as the wrong type. That is a hard correctness
+// bug, so this is an **error**.
+//
+// Grouping is by EXACT subject string, which deliberately sidesteps
+// wildcards (`log.**` is a different string than `log.app`, so the
+// two are never cross-compared — wildcard-subscriber type
+// compatibility is a separate, fuzzier question).
+
+/// A canonical, comparable rendering of a `TypeExpr` — equal strings
+/// mean the same type at this layer. Also used in the diagnostic.
+fn type_expr_key(t: &TypeExpr) -> String {
+    match t {
+        TypeExpr::Primitive(p, _) => format!("{:?}", p),
+        TypeExpr::Named { path, generic_args, .. } => {
+            let base = path
+                .segments
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+            if generic_args.is_empty() {
+                base
+            } else {
+                let args = generic_args
+                    .iter()
+                    .map(type_expr_key)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{}<{}>", base, args)
+            }
+        }
+        TypeExpr::Projection { class, inner, .. } => {
+            format!("{:?}({})", class, type_expr_key(inner))
+        }
+        TypeExpr::Array { elem, .. } => format!("[{}]", type_expr_key(elem)),
+        TypeExpr::Tuple(tys, _) => format!(
+            "({})",
+            tys.iter().map(type_expr_key).collect::<Vec<_>>().join(", ")
+        ),
+        TypeExpr::Function { params, ret, .. } => format!(
+            "fn({}){}",
+            params.iter().map(type_expr_key).collect::<Vec<_>>().join(", "),
+            ret.as_ref()
+                .map(|r| format!(" -> {}", type_expr_key(r)))
+                .unwrap_or_default()
+        ),
+    }
+}
+
+fn check_bus_subject_types(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    // subject string -> the distinct payload types seen, each with a
+    // representative site span. Insertion order preserved so the
+    // first-declared type is the "expected" one in the message.
+    let mut subjects: BTreeMap<String, Vec<(String, Span)>> = BTreeMap::new();
+
+    fn record(
+        subject: &BusSubject,
+        ty: &Option<TypeExpr>,
+        span: Span,
+        subjects: &mut BTreeMap<String, Vec<(String, Span)>>,
+    ) {
+        // Only literal subjects carry an independent `of type`; topic
+        // refs are unified by their declaration, qualified refs live
+        // in another seed.
+        let BusSubject::Literal { subject: subj, .. } = subject else {
+            return;
+        };
+        let Some(ty) = ty else { return };
+        let key = type_expr_key(ty);
+        let entry = subjects.entry(subj.clone()).or_default();
+        if !entry.iter().any(|(k, _)| k == &key) {
+            entry.push((key, span));
+        }
+    }
+
+    fn walk(
+        items: &[TopDecl],
+        subjects: &mut BTreeMap<String, Vec<(String, Span)>>,
+    ) {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        if let LocusMember::Bus(bb) = m {
+                            for bm in &bb.members {
+                                match bm {
+                                    BusMember::Publish { subject, ty, span, .. } => {
+                                        record(subject, ty, *span, subjects)
+                                    }
+                                    BusMember::Subscribe { subject, ty, span, .. } => {
+                                        record(subject, ty, *span, subjects)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                TopDecl::Module(md) => walk(&md.items, subjects),
+                _ => {}
+            }
+        }
+    }
+    for program in bundle.programs.values() {
+        walk(&program.items, &mut subjects);
+    }
+
+    for (subj, types) in &subjects {
+        if types.len() < 2 {
+            continue;
+        }
+        let (expected, _) = &types[0];
+        // Report each divergent type once, at its site.
+        for (got, span) in types.iter().skip(1) {
+            diags.push(Diag::ty(
+                *span,
+                format!(
+                    "bus subject `\"{}\"` is used with conflicting payload \
+                     types: `{}` here vs `{}` at another site. Every \
+                     publish/subscribe on the same subject must carry the \
+                     same payload type — a mismatch decodes the wire bytes as \
+                     the wrong type at runtime. Declare a `topic` to fix the \
+                     type in one place, or align the `of type` annotations.",
+                    subj, got, expected,
+                ),
+            ));
+        }
     }
 }
 
