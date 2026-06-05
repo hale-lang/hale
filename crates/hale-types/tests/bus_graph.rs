@@ -434,6 +434,110 @@ fn main() { App { }; }
     );
 }
 
+// --- backpressure (PR C) -------------------------------------------
+
+const BACKPRESSURE: &str = "no backpressure";
+
+fn flood_src(run_body: &str) -> String {
+    format!(
+        r#"
+type Tick {{ n: Int; }}
+topic Beat {{ payload: Tick; subject: "beat"; }}
+
+locus Flooder {{
+    bus {{ publish Beat; subscribe Beat as on_beat; }}
+    fn on_beat(t: Tick) {{ }}
+    run() {{ {run_body} }}
+}}
+
+main locus App {{
+    params {{ f: Flooder = Flooder {{ }}; }}
+}}
+
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+#[test]
+fn unbounded_publish_loop_with_no_flow_control_warns() {
+    let msgs = check(&flood_src("while true { Beat <- Tick { n: 1 }; }"));
+    assert!(
+        msgs.iter().any(|m| m.contains(BACKPRESSURE) && m.contains("`Flooder`")),
+        "an unthrottled publish loop must warn; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn throttled_publish_loop_is_ok() {
+    let msgs = check(&flood_src(
+        "while true { Beat <- Tick { n: 1 }; std::time::sleep(1s); }",
+    ));
+    assert!(
+        !msgs.iter().any(|m| m.contains(BACKPRESSURE)),
+        "a sleep-paced publish loop has backpressure; must not warn; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn yielding_publish_loop_is_ok() {
+    let msgs = check(&flood_src("while true { Beat <- Tick { n: 1 }; yield; }"));
+    assert!(
+        !msgs.iter().any(|m| m.contains(BACKPRESSURE)),
+        "a yielding publish loop lets the subscriber drain; must not warn; \
+         got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn input_driven_publish_loop_is_ok() {
+    // A blocking recv paces the loop — publish rate follows input.
+    let msgs = check(&flood_src(
+        "while true { let n = std::io::tcp::recv_into(0, 0, 64); Beat <- Tick { n: 1 }; }",
+    ));
+    assert!(
+        !msgs.iter().any(|m| m.contains(BACKPRESSURE)),
+        "an input-paced publish loop must not warn; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn bounded_for_loop_publish_is_ok() {
+    let msgs = check(&flood_src("for i in 0..10 { Beat <- Tick { n: i }; }"));
+    assert!(
+        !msgs.iter().any(|m| m.contains(BACKPRESSURE)),
+        "a bounded loop posts a bounded number of cells; must not warn; \
+         got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn breakable_publish_loop_is_ok() {
+    let msgs = check(&flood_src(
+        "let mut i = 0; while true { Beat <- Tick { n: i }; i = i + 1; if i > 5 { break; } }",
+    ));
+    assert!(
+        !msgs.iter().any(|m| m.contains(BACKPRESSURE)),
+        "a loop that can `break` is bounded; must not warn; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn unbounded_loop_without_publish_is_ok() {
+    let msgs = check(&flood_src("while true { let x = 1 + 1; }"));
+    assert!(
+        !msgs.iter().any(|m| m.contains(BACKPRESSURE)),
+        "an unbounded loop that doesn't publish isn't a bus flood; got: {:?}",
+        msgs
+    );
+}
+
 #[test]
 fn library_without_main_is_not_checked() {
     // No `main` locus: the publishers/subscribers may live in

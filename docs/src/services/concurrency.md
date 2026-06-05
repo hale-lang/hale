@@ -197,6 +197,12 @@ placement and the locus's shape are known at compile time:
   until the stack overflows — an error. (Only an *unconditional*
   self-republish errors; one guarded by an `if` is a terminating
   state machine and is left alone.)
+- **An unthrottled publish loop is a warning.** A `while true` loop
+  that publishes with no `yield`, `time::sleep`/`tick`, input-pacing
+  `recv`, or `break`/`return` floods the bus — the producer has no
+  backpressure, so cells pile up without bound. Pace the loop, drive
+  it from an input, or `yield` to let the subscriber drain. (Bounded
+  loops are never flagged; any flow-control point clears it.)
 
 It also enforces the **single-threaded-method invariant**: a locus's
 methods may only be called on the thread that owns its pool, so a

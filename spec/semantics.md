@@ -1459,6 +1459,17 @@ main locus App {
       self-republish guarded by an `if`/`match`/loop is a terminating
       state machine, not unbounded recursion, and is not flagged.
       (GH #18 #4.)
+11. **Bus backpressure (warning).** A locus that publishes to the bus
+    inside an **unbounded** `while true` loop carrying no flow-control
+    or exit point — no cooperative `yield`, no `time::sleep`/`tick`
+    throttle, no input-pacing blocking `recv`, no `break`/`return` —
+    has no backpressure: it posts cells faster than any subscriber can
+    drain, so the queue and the payload arena grow without bound. A
+    full producer-vs-consumer rate analysis is undecidable, so this is
+    a deliberately narrow structural heuristic (warning): only literal
+    `while true` loops are considered (bounded `for`/`while cond`
+    loops never are), and any flow-control point anywhere in the loop
+    body clears it. (GH #18 #4.)
 
 ### Single-threaded-method invariant
 
