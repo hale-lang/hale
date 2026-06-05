@@ -32,6 +32,7 @@ GenMC v0.17.0 builds against the project's LLVM 18. See
 | Model | Mirrors | Status |
 |-------|---------|--------|
 | `lockfree_hashmap_model.c` | `lotus_hashmap_*_lockfree` in `crates/hale-codegen/runtime/lotus_arena.c` — the enter/exit writer-counter protocol, single-grower grow phase, writers-in-flight drain, and EMPTY→CLAIMED→COMMITTED set state machine | ✅ verified: **42 executions, no errors** |
+| `mailbox_model.c` | `lotus_mailbox_*` in `lotus_arena.c` — the pinned-locus mailbox monitor: mutex-protected post/drain/shutdown, the `while (empty && !shutdown)` wait predicate, and "drain pending even after shutdown" | ✅ verified: **10 executions, no errors** |
 
 ## How to run
 
@@ -77,17 +78,27 @@ grow) — exhaustive checking is exponential in threads/operations, and
 the grow-during-write interleaving is the whole race surface. Larger
 configurations are for a deeper sweep, not the gate.
 
+## A note on condition variables
+
+GenMC does not model `pthread_cond_*` (condition variables are a
+liveness mechanism; they're commented out of its runtime `pthread.h`).
+For a lock + condvar monitor like the mailbox, the condvar governs only
+*sleep-vs-spin* — the **safety** properties (mutual exclusion, no
+lost/duplicated cell, no use-after-free) are independent of it. So
+those models replace `cond_wait`/`broadcast` with a lock-guarded spin
+that preserves the exact wait predicate, and check safety under all
+interleavings. Missed-wakeup *liveness* is out of scope for GenMC and
+would need a different tool (e.g. a TLA+ spec of the monitor).
+
 ## Roadmap
 
-PoC done (lockfree hashmap). Remaining substrate primitives, by
-model-checking value (see the inventory in the issue thread):
+PoC done (lockfree hashmap); mailbox added. Remaining substrate
+primitives, by model-checking value (see the inventory in the issue
+thread):
 
-1. **Mailbox** (`lotus_arena.c`, pinned-locus bus) — mutex + condvar; a
-   canonical pattern, good second model to validate the methodology on
-   lock-based code.
-2. **Bus queue** (cooperative pool) — `g_bus_has_pinned`-gated mutex;
+1. **Bus queue** (cooperative pool) — `g_bus_has_pinned`-gated mutex;
    producers + drainer.
-3. **Chunk pool / arena locks** — lower interleaving risk; model if a
+2. **Chunk pool / arena locks** — lower interleaving risk; model if a
    regression appears.
 
 **CI wiring** (follow-up): GenMC takes a few minutes to build, so a CI
