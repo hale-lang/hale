@@ -1361,6 +1361,10 @@ main locus App {
 
 ### Type-check rules
 
+> These placement/bus rules are part of the broader compile-time
+> verification surface; `spec/verification.md` is the canonical
+> catalog of every static check (with severities and enforcing passes).
+
 1. **`placement { }` is `main locus` only.** Any other locus
    declaring `placement { }` is a parse error (same shape as
    `bindings { }`).
