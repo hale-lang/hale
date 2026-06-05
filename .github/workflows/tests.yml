@@ -356,3 +356,50 @@ jobs:
           cargo test --release -p hale-codegen \
             --test corpus_oracle \
             -- --ignored --test-threads=1 --nocapture
+
+  # GH issue #18 item 2: model-check the substrate's concurrent
+  # primitives under ALL C11 interleavings (not just the schedules a
+  # test happens to hit). GenMC runs the actual C; a race / UAF /
+  # assertion violation in any verification/*_model.c gates the merge.
+  # No Rust/cargo — this job only needs LLVM 18 + cmake to build GenMC
+  # and clang to run the models.
+  genmc:
+    name: genmc (substrate race-completeness)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
+          df -h /
+
+      - name: Install LLVM 18 + clang + cmake
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y \
+            llvm-18-dev libpolly-18-dev libzstd-dev \
+            clang-18 libclang-18-dev zlib1g-dev cmake
+
+      # GenMC builds against LLVM 18 in a few minutes; cache the built
+      # tree keyed on build_genmc.sh (which pins the GenMC commit), so
+      # it only rebuilds when the pin / build recipe changes.
+      - name: Cache GenMC build
+        uses: actions/cache@v4
+        with:
+          path: ~/genmc
+          key: genmc-llvm18-${{ hashFiles('verification/build_genmc.sh') }}
+
+      # Build only if the cache missed OR restored a binary that no
+      # longer runs (e.g. libLLVM patch bump under a stale cache).
+      - name: Build GenMC if needed
+        run: |
+          set -eux
+          if ! "$HOME/genmc/build/bin/genmc" --version >/dev/null 2>&1; then
+            verification/build_genmc.sh "$HOME/genmc"
+          fi
+
+      - name: Run substrate model checks
+        run: GENMC="$HOME/genmc/build/bin/genmc" verification/run_genmc.sh
