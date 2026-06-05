@@ -47,6 +47,7 @@ it. (GitHub issue #18 item 4.)
 | **Orphan topic / subject** | a declared `topic` or literal subject wired to only one end — published with no subscriber, subscribed with no publisher, or used by neither | warning | `check_bus_graph` |
 | **Cross-locus bus cycle** | a publish→subscribe→publish loop spanning ≥2 loci — the cell hops via the cooperative queue and can spin / livelock | warning | `check_bus_cycles` |
 | **Intra-locus re-entrant cycle** | an *unconditional* self-republish loop within one locus — intra-locus self-dispatch is a direct synchronous call, so it recurses on one thread without bound (stack overflow) | error | `check_bus_cycles` |
+| **Bus backpressure** | a publish inside an unbounded `while true` loop with no flow-control or exit point (`yield` / `sleep`/`tick` / input-pacing `recv` / `break`/`return`) — floods the bus without bound | warning | `check_bus_backpressure` |
 | **Routing-key fallback rules** | an `on_unmatched: fallback` topic with no `where key == _` subscriber, or a `where key == _` filter on a non-fallback topic | error | `check_phase3_fallback_subscribers` |
 | **Topic parent-chain cycle** | a topic hierarchy that loops (`topic A : B; topic B : A`) | error | `finalize_topic_chain` (resolve) |
 
@@ -77,7 +78,8 @@ diagnostic. See `spec/semantics.md § Locus method dispatch`.
 The remaining GitHub issue #18 candidates are **not** implemented and
 must not be assumed: memory-bound proofs (item 1), model-checked
 race-completeness for substrate primitives (item 2), closure-assertion
-lifting (item 3), backpressure-unboundedness and explicit subject
-type-mismatch diagnostics (the rest of item 4), and resource-budget
-tracking (item 5). Closures still verify their invariants at *runtime*;
-nothing here proves allocation, fd, or thread bounds statically.
+lifting (item 3), an explicit subject type-mismatch diagnostic (the
+last of item 4 — today it's an implicit guarantee of path-mangling),
+and resource-budget tracking (item 5). Closures still verify their
+invariants at *runtime*; nothing here proves allocation, fd, or thread
+bounds statically.

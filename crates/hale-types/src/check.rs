@@ -214,6 +214,10 @@ pub fn check_bundle(
     // an intra-locus loop is devirtualized synchronous self-dispatch
     // that recurses without bound (error).
     check_bus_cycles(bundle, &mut diags);
+    // GH #18 #4: backpressure. An unbounded publish loop with no
+    // yield/throttle floods the bus — the producer has no
+    // backpressure. Structural heuristic (warning).
+    check_bus_backpressure(bundle, &mut diags);
     diags
 }
 
@@ -3449,6 +3453,228 @@ fn check_bus_cycles(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                 ),
             ));
         }
+    }
+}
+
+// === Bus backpressure (GH #18 #4) ==================================
+//
+// A producer with no flow control floods the bus without bound. A
+// full "consumer can't sustain the rate" analysis is undecidable, so
+// this is a deliberately narrow structural heuristic for the clearest
+// case: an UNBOUNDED loop (`while true`) that publishes on some
+// iteration but contains no flow-control or exit point — no
+// cooperative `yield` (which lets a co-scheduled consumer drain), no
+// `time::sleep`/`tick` throttle, no input-pacing blocking `recv`, and
+// no `break`/`return` that could exit. Such a loop posts cells faster
+// than anything can drain them — the queue and the payload arena grow
+// without bound. A warning (the heuristic can't prove the OOM, only
+// flag the missing backpressure). Bounded loops (`for`, `while
+// cond`) are never flagged — only literal `while true`.
+
+/// Flow-control / exit primitives whose presence anywhere in an
+/// unbounded loop body rules out the flood: the loop either paces
+/// itself or can leave.
+fn block_has_flow_control(b: &Block) -> bool {
+    b.stmts.iter().any(stmt_has_flow_control)
+}
+
+fn stmt_has_flow_control(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Yield(_) | Stmt::Break(_) | Stmt::Return(..) => true,
+        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+            expr_has_flow_control_call(value)
+        }
+        Stmt::Assign { value, .. } => expr_has_flow_control_call(value),
+        Stmt::Expr(e) => expr_has_flow_control_call(e),
+        Stmt::Send { subject, value, .. } => {
+            expr_has_flow_control_call(subject)
+                || expr_has_flow_control_call(value)
+        }
+        Stmt::If(i) => if_has_flow_control(i),
+        Stmt::Match(m) => m.arms.iter().any(|arm| match &arm.body {
+            MatchArmBody::Block(b) => block_has_flow_control(b),
+            MatchArmBody::Expr(e) => expr_has_flow_control_call(e),
+        }),
+        Stmt::For { body, .. } | Stmt::While { body, .. } => {
+            block_has_flow_control(body)
+        }
+        Stmt::Block(b) => block_has_flow_control(b),
+        _ => false,
+    }
+}
+
+fn if_has_flow_control(i: &IfStmt) -> bool {
+    block_has_flow_control(&i.then_block)
+        || match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => block_has_flow_control(b),
+            Some(ElseBranch::ElseIf(n)) => if_has_flow_control(n),
+            None => false,
+        }
+}
+
+/// A call to a throttle (`time::sleep`/`tick`) or an input-pacing
+/// blocking op (`recv`/`accept`/`wait`) — both bound the publish rate.
+fn expr_has_flow_control_call(expr: &Expr) -> bool {
+    match expr {
+        Expr::Call { callee, args, .. } => {
+            if let Expr::Path(qn) = callee.as_ref() {
+                let segs: Vec<&str> =
+                    qn.segments.iter().map(|s| s.name.as_str()).collect();
+                if blocking_path_match(&segs).is_some()
+                    || segs == ["std", "time", "sleep"]
+                    || segs == ["std", "time", "tick"]
+                {
+                    return true;
+                }
+            }
+            expr_has_flow_control_call(callee)
+                || args.iter().any(expr_has_flow_control_call)
+        }
+        Expr::Binary { left, right, .. } => {
+            expr_has_flow_control_call(left)
+                || expr_has_flow_control_call(right)
+        }
+        Expr::Unary { operand, .. } => expr_has_flow_control_call(operand),
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
+            expr_has_flow_control_call(receiver)
+        }
+        Expr::Index { receiver, index, .. } => {
+            expr_has_flow_control_call(receiver)
+                || expr_has_flow_control_call(index)
+        }
+        Expr::Tuple(es, _) | Expr::Array(es, _) => {
+            es.iter().any(expr_has_flow_control_call)
+        }
+        Expr::Struct { inits, .. } => {
+            inits.iter().any(|i| expr_has_flow_control_call(&i.value))
+        }
+        Expr::Block(b) => block_has_flow_control(b),
+        Expr::If(i) => {
+            block_has_flow_control(&i.then_block)
+                || matches!(i.else_block.as_deref(), Some(ElseBranch::Else(b)) if block_has_flow_control(b))
+        }
+        Expr::Match(m) => m.arms.iter().any(|arm| match &arm.body {
+            MatchArmBody::Block(b) => block_has_flow_control(b),
+            MatchArmBody::Expr(e) => expr_has_flow_control_call(e),
+        }),
+        Expr::Sum(e, _) | Expr::Prod(e, _) => expr_has_flow_control_call(e),
+        Expr::Or { inner, .. } => expr_has_flow_control_call(inner),
+        _ => false,
+    }
+}
+
+/// Whether a block subtree contains a bus `Topic <- value` send.
+fn block_has_send(b: &Block) -> bool {
+    b.stmts.iter().any(stmt_has_send)
+}
+
+fn stmt_has_send(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Send { .. } => true,
+        Stmt::If(i) => if_has_send(i),
+        Stmt::Match(m) => m.arms.iter().any(|arm| {
+            matches!(&arm.body, MatchArmBody::Block(b) if block_has_send(b))
+        }),
+        Stmt::For { body, .. } | Stmt::While { body, .. } => block_has_send(body),
+        Stmt::Block(b) => block_has_send(b),
+        _ => false,
+    }
+}
+
+fn if_has_send(i: &IfStmt) -> bool {
+    block_has_send(&i.then_block)
+        || match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => block_has_send(b),
+            Some(ElseBranch::ElseIf(n)) => if_has_send(n),
+            None => false,
+        }
+}
+
+fn is_literal_true(e: &Expr) -> bool {
+    matches!(e, Expr::Literal(Literal::Bool(true), _))
+}
+
+/// Walk a method/lifecycle body for unbounded publish-flood loops.
+fn scan_flood_in_block(b: &Block, locus: &str, diags: &mut Vec<Diag>) {
+    for s in &b.stmts {
+        scan_flood_in_stmt(s, locus, diags);
+    }
+}
+
+fn scan_flood_in_stmt(stmt: &Stmt, locus: &str, diags: &mut Vec<Diag>) {
+    match stmt {
+        Stmt::While { cond, body, span } if is_literal_true(cond) => {
+            if block_has_send(body) && !block_has_flow_control(body) {
+                diags.push(Diag::warn(
+                    *span,
+                    format!(
+                        "locus `{}` publishes to the bus inside an unbounded \
+                         `while true` loop with no flow control — no `yield`, \
+                         `time::sleep`/`tick`, input-pacing `recv`, or \
+                         `break`/`return`. The producer has no backpressure, \
+                         so cells pile up in the queue (and the payload arena) \
+                         without bound. Pace the loop (a `time::sleep`/`tick`), \
+                         drive it from an input (a blocking `recv` so the \
+                         publish rate follows the input rate), or `yield` to \
+                         let a co-scheduled subscriber drain.",
+                        locus
+                    ),
+                ));
+                // Reported the outermost flood; don't descend further.
+            } else {
+                scan_flood_in_block(body, locus, diags);
+            }
+        }
+        Stmt::While { body, .. } | Stmt::For { body, .. } => {
+            scan_flood_in_block(body, locus, diags)
+        }
+        Stmt::If(i) => scan_flood_in_if(i, locus, diags),
+        Stmt::Match(m) => {
+            for arm in &m.arms {
+                if let MatchArmBody::Block(b) = &arm.body {
+                    scan_flood_in_block(b, locus, diags);
+                }
+            }
+        }
+        Stmt::Block(b) => scan_flood_in_block(b, locus, diags),
+        _ => {}
+    }
+}
+
+fn scan_flood_in_if(i: &IfStmt, locus: &str, diags: &mut Vec<Diag>) {
+    scan_flood_in_block(&i.then_block, locus, diags);
+    match i.else_block.as_deref() {
+        Some(ElseBranch::Else(b)) => scan_flood_in_block(b, locus, diags),
+        Some(ElseBranch::ElseIf(n)) => scan_flood_in_if(n, locus, diags),
+        None => {}
+    }
+}
+
+fn check_bus_backpressure(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    fn walk(items: &[TopDecl], diags: &mut Vec<Diag>) {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => {
+                    let lname = l.name.name.as_str();
+                    for m in &l.members {
+                        match m {
+                            LocusMember::Lifecycle(LifecycleDecl {
+                                body, ..
+                            }) => scan_flood_in_block(body, lname, diags),
+                            LocusMember::Fn(f) => {
+                                scan_flood_in_block(&f.body, lname, diags)
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                TopDecl::Module(md) => walk(&md.items, diags),
+                _ => {}
+            }
+        }
+    }
+    for program in bundle.programs.values() {
+        walk(&program.items, diags);
     }
 }
 
