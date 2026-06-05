@@ -77,9 +77,15 @@ diagnostic. See `spec/semantics.md § Locus method dispatch`.
 ## Not yet offered
 
 The remaining GitHub issue #18 candidates are **not** implemented and
-must not be assumed: memory-bound proofs (item 1), model-checked
-race-completeness for substrate primitives (item 2), closure-assertion
+must not be assumed: memory-bound proofs (item 1), closure-assertion
 lifting (item 3), and resource-budget tracking (item 5). Item 4
 (bus-graph property checks) is fully landed. Closures still verify
 their invariants at *runtime*; nothing here proves allocation, fd, or
 thread bounds statically.
+
+Item 2 (race-completeness for substrate primitives) is a *substrate*
+quality bar, not a user-facing check: it model-checks the runtime's own
+concurrent primitives under all C11 interleavings. A proof-of-concept
+has landed (the lockfree hashmap's enter/drain/grow protocol, verified
+exhaustively with GenMC) — see `verification/`. It is not yet a CI gate
+across every primitive.
