@@ -741,6 +741,11 @@ pub enum TransportSpec {
         name: String,
         slot_count: u64,
         overflow: ShmRingOverflow,
+        /// shm-ring-interop Proposal B: `layout: <Ident>` names a
+        /// `ring_layout` declaration describing a foreign ring's byte
+        /// layout. `None` = the native `LotusRing` shape (the only
+        /// behavior today; back-compat).
+        layout: Option<Ident>,
         span: Span,
     },
 }

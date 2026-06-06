@@ -269,7 +269,8 @@ adapter_transport = LOCUS_IDENTIFIER , "{" , [ struct_init , { "," , struct_init
 shm_ring_transport = "shm_ring" , "(" , STRING_LIT ,
                      { "," , shm_ring_kwarg } , ")" ;
 shm_ring_kwarg    = ( "slot_count" , ":" , INT_LIT )
-                  | ( "on_overflow" , ":" , overflow_policy ) ;
+                  | ( "on_overflow" , ":" , overflow_policy )
+                  | ( "layout" , ":" , IDENTIFIER ) ;
 overflow_policy    = "block" | "drop" | "fail" ;
 
 (* Form K (2026-05-20): operational constraints the dev team
