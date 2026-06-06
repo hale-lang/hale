@@ -267,6 +267,9 @@ impl<'a> QualifiedRenameApplier<'a> {
                 }
             }
             TopDecl::Topic(t) => self.rewrite_type_expr(&mut t.payload),
+            // ring_layout members are layout tokens (idents/ints) — no
+            // TypeExpr to path-rewrite for cross-seed imports.
+            TopDecl::RingLayout(_) => {}
             TopDecl::Perspective(p) => {
                 for m in &mut p.members {
                     match m {
@@ -399,6 +402,7 @@ fn top_decl_name(d: &TopDecl) -> Option<&str> {
         TopDecl::Fn(f) => Some(&f.name.name),
         TopDecl::Interface(i) => Some(&i.name.name),
         TopDecl::Topic(t) => Some(&t.name.name),
+        TopDecl::RingLayout(r) => Some(&r.name.name),
         TopDecl::Module(_) => None,
         TopDecl::Target(t) => Some(&t.name.name),
     }
@@ -454,6 +458,11 @@ impl<'a> Mangler<'a> {
             TopDecl::Topic(t) => {
                 self.walk_type_expr(&mut t.payload);
                 self.rewrite_ident(&mut t.name.name);
+            }
+            TopDecl::RingLayout(r) => {
+                // Layout members are tokens, not types; only the
+                // declaration name participates in the rename table.
+                self.rewrite_ident(&mut r.name.name);
             }
             TopDecl::Module(_) => {}
             TopDecl::Target(t) => {

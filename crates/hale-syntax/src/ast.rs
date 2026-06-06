@@ -31,6 +31,11 @@ pub enum TopDecl {
     Module(ModuleDecl),
     Interface(InterfaceDecl),
     Topic(TopicDecl),
+    /// shm-ring-interop Proposal B (2026-06-06): `ring_layout Name
+    /// { ... }` — declares the byte layout of an externally-defined
+    /// SHM broadcast ring so a `shm_ring(..., layout: Name)` binding
+    /// can read it. Pure declaration; lowers to a bounded accessor.
+    RingLayout(RingLayoutDecl),
     /// FUv0.8.2 #7 (2026-05-25): `target <name> { cap.path,
     /// cap.path, ... }` — names a substrate (e.g.
     /// `browser-js`, `native`) plus its capability profile.
@@ -52,6 +57,7 @@ impl TopDecl {
             TopDecl::Module(m) => m.span,
             TopDecl::Interface(i) => i.span,
             TopDecl::Topic(t) => t.span,
+            TopDecl::RingLayout(r) => r.span,
             TopDecl::Target(t) => t.span,
         }
     }
@@ -102,6 +108,74 @@ pub struct TopicDecl {
     /// topics — typecheck rejects.
     pub on_unmatched: Option<UnmatchedPolicy>,
     pub span: Span,
+}
+
+/// shm-ring-interop Proposal B: a declared byte layout for an
+/// externally-defined SHM broadcast ring. Members are parsed
+/// loosely (idents + ints); the layout *contract* — known reprs /
+/// orderings / framing kinds, sane offsets — is enforced in
+/// `hale-types::check`. See `notes/binary-shm-ring-interop.md`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RingLayoutDecl {
+    pub name: Ident,
+    /// `magic 0x...;` — expected header magic (None = unchecked).
+    pub magic: Option<i64>,
+    /// `data_at OFF;` — first-record byte offset.
+    pub data_at: Option<i64>,
+    /// Header scalar fields: `name [expect] at OFF : repr;`.
+    pub scalars: Vec<RingScalarField>,
+    /// `cursor [name] { attr value; ... }` (one or more).
+    pub cursors: Vec<RingCursorBlock>,
+    /// `framing KIND { attr value; ... }`.
+    pub framing: Option<RingFramingBlock>,
+    /// `overflow KIND;`.
+    pub overflow: Option<Ident>,
+    pub span: Span,
+}
+
+/// A header scalar: `version 1 at 8 : u32;` — name `version`, an
+/// optional validated `expect` value (1), byte offset (8), and a
+/// width/repr token (`u32`). The repr is a layout token, not a Hale
+/// `TypeExpr`, so it's an `Ident` checked against a known set.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RingScalarField {
+    pub name: Ident,
+    pub expect: Option<i64>,
+    pub at: i64,
+    pub repr: Ident,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RingCursorBlock {
+    /// `cursor published { ... }` → Some("published"); bare
+    /// `cursor { ... }` → None.
+    pub name: Option<Ident>,
+    pub attrs: Vec<RingAttr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RingFramingBlock {
+    /// `byte_records` | `slots`.
+    pub kind: Ident,
+    pub attrs: Vec<RingAttr>,
+    pub span: Span,
+}
+
+/// A `key value;` pair inside a `cursor`/`framing` block, e.g.
+/// `at 64`, `repr atomic_u64`, `len_prefix u32`, `align 8`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RingAttr {
+    pub key: Ident,
+    pub value: RingAttrValue,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RingAttrValue {
+    Ident(Ident),
+    Int(i64),
 }
 
 /// Routing-key `on_unmatched` policy. See `spec/semantics.md`

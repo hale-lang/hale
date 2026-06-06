@@ -7587,6 +7587,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // carry no type-bearing positions; nothing
                     // to collect for generic monomorph.
                 }
+                TopDecl::RingLayout(_) => {
+                    // ring_layout members are layout tokens, not
+                    // type-bearing positions; nothing to collect.
+                }
             }
         }
         Ok(())
