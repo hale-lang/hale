@@ -115,10 +115,20 @@ The discipline that follows:
 1. **Pick one role per binding.** A binding is either a
    `BytesBuilder` (long-lived growable buffer with methods
    `append` / `len` / `shift_front` / `clear` / `snapshot` /
-   `finish` / `view` / `text_view`) or a `Bytes` (immutable
-   length-prefixed blob with functions `at` / `slice` / `len`
-   / `concat`). The typechecker enforces this; no implicit
-   coercion between them.
+   `finish` / `view` / `text_view`, plus the binary-pack writers
+   below) or a `Bytes` (immutable length-prefixed blob with
+   functions `at` / `slice` / `len` / `concat`). The typechecker
+   enforces this; no implicit coercion between them.
+
+   **Binary-pack writers** (2026-06-06, shm-ring-interop Proposal A
+   — the inverse of `std::bytes::read_*`): `b.append_u8(n)`,
+   `b.append_u16_{le,be}(n)` / `u32` / `u64`, the signed
+   `b.append_i8`/`i16_{le,be}`/`i32`/`i64` (identical byte pattern —
+   width is what matters), `b.append_f32_le(x)` /
+   `b.append_f64_{le,be}(x)` (x: Float), and `b.append_pad(to_align)`
+   (zero-fill to the next `to_align` boundary). Each appends the low
+   `width` bytes in the named endianness; a realloc failure routes
+   through `violate alloc_failed` like `append`.
 2. **Cross between roles via explicit calls.** `BytesBuilder →
    Bytes` is either `b.snapshot()` (copies into the bus
    payload arena — stable across mutations) or `b.view()` (no

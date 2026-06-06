@@ -85,6 +85,27 @@ pub(crate) trait BytesStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    /// shm-ring-interop Proposal A (M2): append the low `width` bytes
+    /// of an Int value (args: handle, value, width, big_endian).
+    fn lower_std_bytes_builder_append_scalar(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    /// Append a Float as 8 (f64) or 4 (f32) raw IEEE bytes. `is_f32`
+    /// truncates to f32 first (args: handle, value, big_endian).
+    fn lower_std_bytes_builder_append_float(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        is_f32: bool,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    /// Zero-fill to the next `to_align` boundary (args: handle, to_align).
+    fn lower_std_bytes_builder_append_pad(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
     fn lower_std_bytes_is_alloc_fail(
         &mut self,
         args: &[Expr],
@@ -503,6 +524,184 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
             .build_int_to_ptr(h_val.into_int_value(), ptr_t, "bb.handle.ptr")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok((h_val, ptr.into()))
+    }
+
+    fn lower_std_bytes_builder_append_scalar(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 4 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder::__append_scalar takes 4 args \
+                 (handle, value, width, big_endian), got {}",
+                args.len()
+            )));
+        }
+        let (_h, handle_ptr) = self.lower_bytes_builder_handle_arg(
+            &args[0],
+            scope,
+            "std::bytes::builder::__append_scalar",
+        )?;
+        let (value, v_ty) = self.lower_expr(&args[1], scope)?;
+        if v_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "__append_scalar: value must be Int, got {:?}",
+                v_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let (width, _) = self.lower_expr(&args[2], scope)?;
+        let width_i32 = self
+            .builder
+            .build_int_truncate(width.into_int_value(), i32_t, "bb.width")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let (be, _) = self.lower_expr(&args[3], scope)?;
+        let be_i32 = self
+            .builder
+            .build_int_truncate(be.into_int_value(), i32_t, "bb.be")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_bytes_builder_append_scalar")
+            .expect("lotus_bytes_builder_append_scalar declared");
+        let r = self
+            .builder
+            .build_call(
+                f,
+                &[handle_ptr.into(), value.into(), width_i32.into(), be_i32.into()],
+                "bb.append_scalar.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((r, CodegenTy::Int))
+    }
+
+    fn lower_std_bytes_builder_append_float(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        is_f32: bool,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 3 {
+            return Err(CodegenError::Unsupported(format!(
+                "__append_f{} takes 3 args (handle, value, big_endian), got {}",
+                if is_f32 { 32 } else { 64 },
+                args.len()
+            )));
+        }
+        let (_h, handle_ptr) = self.lower_bytes_builder_handle_arg(
+            &args[0],
+            scope,
+            "std::bytes::builder::__append_float",
+        )?;
+        let (value, v_ty) = self.lower_expr(&args[1], scope)?;
+        if v_ty != CodegenTy::Float {
+            return Err(CodegenError::Unsupported(format!(
+                "__append_float: value must be Float, got {:?}",
+                v_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        // Reinterpret the float's bits as an i64, zero-extended from
+        // i32 for the f32 case, then append `width` low bytes.
+        let (bits, width): (BasicValueEnum<'ctx>, u64) = if is_f32 {
+            let f32v = self
+                .builder
+                .build_float_trunc(
+                    value.into_float_value(),
+                    self.context.f32_type(),
+                    "bb.f32.trunc",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let bits32 = self
+                .builder
+                .build_bit_cast(f32v, i32_t, "bb.f32.bits")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_int_value();
+            let bits64 = self
+                .builder
+                .build_int_z_extend(bits32, i64_t, "bb.f32.bits64")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            (bits64.into(), 4)
+        } else {
+            let bits64 = self
+                .builder
+                .build_bit_cast(value, i64_t, "bb.f64.bits")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            (bits64, 8)
+        };
+        let (be, _) = self.lower_expr(&args[2], scope)?;
+        let be_i32 = self
+            .builder
+            .build_int_truncate(be.into_int_value(), i32_t, "bb.be")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_bytes_builder_append_scalar")
+            .expect("lotus_bytes_builder_append_scalar declared");
+        let r = self
+            .builder
+            .build_call(
+                f,
+                &[
+                    handle_ptr.into(),
+                    bits.into(),
+                    i32_t.const_int(width, false).into(),
+                    be_i32.into(),
+                ],
+                "bb.append_float.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((r, CodegenTy::Int))
+    }
+
+    fn lower_std_bytes_builder_append_pad(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder::__append_pad takes 2 args \
+                 (handle, to_align), got {}",
+                args.len()
+            )));
+        }
+        let (_h, handle_ptr) = self.lower_bytes_builder_handle_arg(
+            &args[0],
+            scope,
+            "std::bytes::builder::__append_pad",
+        )?;
+        let (to_align, ta_ty) = self.lower_expr(&args[1], scope)?;
+        if ta_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "__append_pad: to_align must be Int, got {:?}",
+                ta_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bytes_builder_append_pad")
+            .expect("lotus_bytes_builder_append_pad declared");
+        let r = self
+            .builder
+            .build_call(
+                f,
+                &[handle_ptr.into(), to_align.into()],
+                "bb.append_pad.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((r, CodegenTy::Int))
     }
 
     /// C10 (pond follow-up): `std::bytes::builder_append(b: Bytes,

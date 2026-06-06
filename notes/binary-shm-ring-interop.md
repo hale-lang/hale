@@ -382,7 +382,15 @@ a loopback against a faithful mock before any live wiring):**
      introducing the tentatively-named `BoundsError` — same family,
      same semantics, no parallel error type. (Resolves the
      error-naming open question toward consistency.)
-   - ⬜ Builder-append writers (`append_u32_le`, …) — next.
+   - ✅ **Builder-append writers LANDED** (2026-06-06):
+     `BytesBuilder.append_u8`/`u16`/`u32`/`u64` (`_le`/`_be`), the
+     signed `append_i*`, `append_f32_le`/`append_f64_{le,be}`, and
+     `append_pad(to_align)`. Seed methods (`bytes_builder.hl`) over one
+     runtime helper (`lotus_bytes_builder_append_scalar`) + an
+     `append_pad`; floats bit-cast in codegen. Round-trip tested
+     against the M1 readers. This is the A2 (build-then-copy) producer
+     path — enough for a working ring producer; the zero-copy writable
+     view (A1) is still future.
 2. **Proposal B, read-only, `byte_records` framing.** `ring_layout`
    declaration + `layout:` on the `shm_ring` binding, consumer path only.
    First real target: read `MagusRing`.

@@ -2241,6 +2241,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             bb_append_ty,
             None,
         );
+        // declare i64 @lotus_bytes_builder_append_scalar(ptr handle,
+        //   i64 value, i32 width, i32 big_endian) — binary-pack writer.
+        let i32_bbas = self.context.i32_type();
+        let bb_append_scalar_ty = i64_t.fn_type(
+            &[ptr_t.into(), i64_t.into(), i32_bbas.into(), i32_bbas.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_bytes_builder_append_scalar",
+            bb_append_scalar_ty,
+            None,
+        );
+        // declare i64 @lotus_bytes_builder_append_pad(ptr handle, i64 to_align)
+        let bb_append_pad_ty =
+            i64_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
+        self.module.add_function(
+            "lotus_bytes_builder_append_pad",
+            bb_append_pad_ty,
+            None,
+        );
         // declare i64 @lotus_bytes_builder_len(ptr handle)
         let bb_len_ty = i64_t.fn_type(&[ptr_t.into()], false);
         self.module

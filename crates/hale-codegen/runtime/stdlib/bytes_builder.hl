@@ -225,4 +225,67 @@ locus __StdBytesBytesBuilder {
         }
         return out;
     }
+
+    // shm-ring-interop Proposal A (M2): binary-pack writers. Append a
+    // fixed-width scalar in little- or big-endian order — the inverse
+    // of std::bytes::read_*. Each appends the low `width` bytes of the
+    // Int (signed/unsigned share a byte pattern, so append_i* aliases
+    // append_u* of the same width); realloc failure routes through
+    // `violate alloc_failed` like `append`. big_endian: 0 = LE, 1 = BE.
+    fn append_u8(n: Int) {
+        if std::bytes::builder::__append_scalar(self.handle, n, 1, 0) == 0 { violate alloc_failed; }
+    }
+    fn append_u16_le(n: Int) {
+        if std::bytes::builder::__append_scalar(self.handle, n, 2, 0) == 0 { violate alloc_failed; }
+    }
+    fn append_u16_be(n: Int) {
+        if std::bytes::builder::__append_scalar(self.handle, n, 2, 1) == 0 { violate alloc_failed; }
+    }
+    fn append_u32_le(n: Int) {
+        if std::bytes::builder::__append_scalar(self.handle, n, 4, 0) == 0 { violate alloc_failed; }
+    }
+    fn append_u32_be(n: Int) {
+        if std::bytes::builder::__append_scalar(self.handle, n, 4, 1) == 0 { violate alloc_failed; }
+    }
+    fn append_u64_le(n: Int) {
+        if std::bytes::builder::__append_scalar(self.handle, n, 8, 0) == 0 { violate alloc_failed; }
+    }
+    fn append_u64_be(n: Int) {
+        if std::bytes::builder::__append_scalar(self.handle, n, 8, 1) == 0 { violate alloc_failed; }
+    }
+    fn append_i8(n: Int) {
+        if std::bytes::builder::__append_scalar(self.handle, n, 1, 0) == 0 { violate alloc_failed; }
+    }
+    fn append_i16_le(n: Int) {
+        if std::bytes::builder::__append_scalar(self.handle, n, 2, 0) == 0 { violate alloc_failed; }
+    }
+    fn append_i16_be(n: Int) {
+        if std::bytes::builder::__append_scalar(self.handle, n, 2, 1) == 0 { violate alloc_failed; }
+    }
+    fn append_i32_le(n: Int) {
+        if std::bytes::builder::__append_scalar(self.handle, n, 4, 0) == 0 { violate alloc_failed; }
+    }
+    fn append_i32_be(n: Int) {
+        if std::bytes::builder::__append_scalar(self.handle, n, 4, 1) == 0 { violate alloc_failed; }
+    }
+    fn append_i64_le(n: Int) {
+        if std::bytes::builder::__append_scalar(self.handle, n, 8, 0) == 0 { violate alloc_failed; }
+    }
+    fn append_i64_be(n: Int) {
+        if std::bytes::builder::__append_scalar(self.handle, n, 8, 1) == 0 { violate alloc_failed; }
+    }
+    fn append_f32_le(x: Float) {
+        if std::bytes::builder::__append_f32(self.handle, x, 0) == 0 { violate alloc_failed; }
+    }
+    fn append_f64_le(x: Float) {
+        if std::bytes::builder::__append_f64(self.handle, x, 0) == 0 { violate alloc_failed; }
+    }
+    fn append_f64_be(x: Float) {
+        if std::bytes::builder::__append_f64(self.handle, x, 1) == 0 { violate alloc_failed; }
+    }
+    // Zero-fill to the next `to_align` boundary (no-op if already
+    // aligned). For struct/record layouts that pad fields.
+    fn append_pad(to_align: Int) {
+        if std::bytes::builder::__append_pad(self.handle, to_align) == 0 { violate alloc_failed; }
+    }
 }

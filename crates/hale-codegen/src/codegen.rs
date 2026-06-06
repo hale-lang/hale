@@ -16073,6 +16073,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_bytes_builder_append_slice(args, scope)?;
                 Ok(())
             }
+            ["std", "bytes", "builder", "__append_scalar"] => {
+                let _ = self.lower_std_bytes_builder_append_scalar(args, scope)?;
+                Ok(())
+            }
+            ["std", "bytes", "builder", "__append_f64"] => {
+                let _ = self.lower_std_bytes_builder_append_float(args, scope, false)?;
+                Ok(())
+            }
+            ["std", "bytes", "builder", "__append_f32"] => {
+                let _ = self.lower_std_bytes_builder_append_float(args, scope, true)?;
+                Ok(())
+            }
+            ["std", "bytes", "builder", "__append_pad"] => {
+                let _ = self.lower_std_bytes_builder_append_pad(args, scope)?;
+                Ok(())
+            }
             ["std", "bytes", "builder", "__text_view"] => {
                 let _ = self.lower_std_bytes_builder_text_view(args, scope)?;
                 Ok(())
@@ -16718,6 +16734,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "bytes", "builder", "__append_slice"] => {
                 self.lower_std_bytes_builder_append_slice(args, scope)
+            }
+            ["std", "bytes", "builder", "__append_scalar"] => {
+                self.lower_std_bytes_builder_append_scalar(args, scope)
+            }
+            ["std", "bytes", "builder", "__append_f64"] => {
+                self.lower_std_bytes_builder_append_float(args, scope, false)
+            }
+            ["std", "bytes", "builder", "__append_f32"] => {
+                self.lower_std_bytes_builder_append_float(args, scope, true)
+            }
+            ["std", "bytes", "builder", "__append_pad"] => {
+                self.lower_std_bytes_builder_append_pad(args, scope)
             }
             ["std", "bytes", "builder", "__text_view"] => {
                 self.lower_std_bytes_builder_text_view(args, scope)

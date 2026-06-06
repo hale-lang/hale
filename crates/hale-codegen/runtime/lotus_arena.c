@@ -12766,6 +12766,71 @@ int64_t lotus_bytes_builder_append(void *handle, const void *chunk_blob) {
     return 1;
 }
 
+/* Grow a builder so it can hold `need` bytes (plus the trailing NUL
+ * reserve). Returns 0 on realloc failure (caller routes to
+ * `violate alloc_failed`). Mirrors the grow arm of
+ * lotus_bytes_builder_append. */
+static int bb_ensure_cap(lotus_bytes_builder_t *b, size_t need) {
+    if (need <= b->cap) return 1;
+    size_t new_cap = b->cap ? b->cap : 64;
+    while (new_cap < need) {
+        new_cap *= 2;
+        if (new_cap < b->cap) { new_cap = need; break; }  /* overflow */
+    }
+    char *new_region = (char *)realloc(b->buf - sizeof(int64_t),
+                                       sizeof(int64_t) + new_cap + 1);
+    if (!new_region) return 0;
+    b->buf = new_region + sizeof(int64_t);
+    b->cap = new_cap;
+    return 1;
+}
+
+/* std::bytes::BytesBuilder binary-pack writer (shm-ring-interop
+ * Proposal A, M2). Append the low `width` (1..8) bytes of `value` in
+ * little- or big-endian order. Returns 1 on success, 0 on
+ * alloc-failure (→ violate alloc_failed). Float appends bit-cast in
+ * codegen and call this with the raw bits. */
+int64_t lotus_bytes_builder_append_scalar(void *handle, int64_t value,
+                                          int width, int big_endian) {
+    if (!handle || width < 1 || width > 8) return 0;
+    lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
+    int64_t cur_len = lotus_bb_len(b);
+    size_t need = (size_t)cur_len + (size_t)width;
+    if (!bb_ensure_cap(b, need)) return 0;
+    unsigned char *dst = (unsigned char *)b->buf + cur_len;
+    uint64_t v = (uint64_t)value;
+    if (big_endian) {
+        for (int i = 0; i < width; i++)
+            dst[i] = (unsigned char)((v >> (8 * (width - 1 - i))) & 0xFF);
+    } else {
+        for (int i = 0; i < width; i++)
+            dst[i] = (unsigned char)((v >> (8 * i)) & 0xFF);
+    }
+    lotus_bb_set_len(b, (int64_t)need);
+    b->buf[need] = '\0';
+    b->mutation_epoch += 1;
+    return 1;
+}
+
+/* Zero-fill to the next `to_align` boundary (no-op if already
+ * aligned or to_align <= 1). Returns 1 ok / 0 alloc-fail. */
+int64_t lotus_bytes_builder_append_pad(void *handle, int64_t to_align) {
+    if (!handle) return 0;
+    if (to_align <= 1) return 1;
+    lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
+    int64_t cur_len = lotus_bb_len(b);
+    int64_t rem = cur_len % to_align;
+    if (rem == 0) return 1;
+    int64_t pad = to_align - rem;
+    size_t need = (size_t)cur_len + (size_t)pad;
+    if (!bb_ensure_cap(b, need)) return 0;
+    memset((unsigned char *)b->buf + cur_len, 0, (size_t)pad);
+    lotus_bb_set_len(b, (int64_t)need);
+    b->buf[need] = '\0';
+    b->mutation_epoch += 1;
+    return 1;
+}
+
 int64_t lotus_bytes_builder_len(const void *handle) {
     if (!handle) return 0;
     const lotus_bytes_builder_t *b = (const lotus_bytes_builder_t *)handle;
