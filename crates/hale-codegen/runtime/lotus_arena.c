@@ -11339,6 +11339,41 @@ int64_t lotus_bytes_at(const void *b, int64_t i) {
     return (int64_t)body[i];
 }
 
+/* std::bytes binary-pack reader (GH #18 #4 / shm-ring-interop
+ * Proposal A). Read `width` (1..8) bytes at byte offset `off` from a
+ * Bytes blob, little- or big-endian, zero- or sign-extended into an
+ * i64. Bounds-checked: if [off, off+width) is out of range (or b is
+ * NULL / width invalid), `*oob` is set to 1 and 0 is returned —
+ * codegen branches on `*oob` to raise IndexError, mirroring
+ * lotus_bytes_at's sentinel. A `u64` (width 8, unsigned) with the top
+ * bit set returns a negative i64 (documented Int wrap). Float readers
+ * call this unsigned, then bit-cast the raw bits in codegen. */
+int64_t lotus_bytes_read_uint(const void *b, int64_t off, int width,
+                              int is_signed, int big_endian,
+                              int64_t *oob) {
+    int64_t len = lotus_bytes_len(b);
+    if (!b || off < 0 || width < 1 || width > 8 || off + width > len) {
+        if (oob) *oob = 1;
+        return 0;
+    }
+    if (oob) *oob = 0;
+    const unsigned char *p =
+        (const unsigned char *)b + sizeof(int64_t) + off;
+    uint64_t v = 0;
+    if (big_endian) {
+        for (int i = 0; i < width; i++) v = (v << 8) | p[i];
+    } else {
+        for (int i = width - 1; i >= 0; i--) v = (v << 8) | p[i];
+    }
+    if (is_signed && width < 8) {
+        uint64_t sign_bit = (uint64_t)1 << (width * 8 - 1);
+        if (v & sign_bit) {
+            v |= ~(((uint64_t)1 << (width * 8)) - 1);  /* sign-extend */
+        }
+    }
+    return (int64_t)v;
+}
+
 /*
  * Phase 2g: Bytes slice — returns a fresh Bytes blob containing
  * the half-open range [lo, hi). Out-of-range bounds clamp to the

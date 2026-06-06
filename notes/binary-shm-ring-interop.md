@@ -371,6 +371,18 @@ a loopback against a faithful mock before any live wiring):**
 1. **Proposal A, readers + builder-append.** Self-contained, unblocks
    hand-written binary codecs immediately (and helps non-JSON wire
    formats generally). No SHM dependency.
+   - ✅ **Readers LANDED** (2026-06-06): `read_u8`/`u16`/`u32`/`u64`
+     (`_le`/`_be`), the signed `read_i*`, and `read_f32_le`/
+     `read_f64_{le,be}`, each `(b, off) -> Int|Float
+     fallible(IndexError)`, bounds-checked. One generic runtime helper
+     (`lotus_bytes_read_uint`) backs all integer widths; floats
+     bit-cast the raw bits in codegen. **Decision:** reused the
+     existing **`IndexError`** (the same error `std::bytes::at`
+     already raises for an out-of-range byte offset) rather than
+     introducing the tentatively-named `BoundsError` — same family,
+     same semantics, no parallel error type. (Resolves the
+     error-naming open question toward consistency.)
+   - ⬜ Builder-append writers (`append_u32_le`, …) — next.
 2. **Proposal B, read-only, `byte_records` framing.** `ring_layout`
    declaration + `layout:` on the `shm_ring` binding, consumer path only.
    First real target: read `MagusRing`.

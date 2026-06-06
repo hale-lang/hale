@@ -1896,6 +1896,13 @@ fn mark_stdlib_error_from_path(
                     out.crypto_error = true;
                 }
             }
+            "bytes" => {
+                // std::bytes::at + the binary-pack readers
+                // (read_u32_le, ...) return fallible(IndexError).
+                if segs[2] == "at" || segs[2].starts_with("read_") {
+                    out.index_error = true;
+                }
+            }
             _ => {}
         }
     }

@@ -951,6 +951,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "bytes", "at"] => Ok(Some(
                 self.lower_std_bytes_at_fallible(args, scope)?,
             )),
+            // shm-ring-interop Proposal A: binary-pack readers
+            // `read_<type>_<endian>(b, off) -> Int|Float
+            // fallible(IndexError)`.
+            ["std", "bytes", n] if n.starts_with("read_") => Ok(Some(
+                self.lower_std_bytes_read(n, args, scope)?,
+            )),
             ["std", "str", "parse_int"] => Ok(Some(
                 self.lower_std_str_parse_int_fallible(args, scope)?,
             )),
