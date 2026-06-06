@@ -33,6 +33,7 @@ GenMC v0.17.0 builds against the project's LLVM 18. See
 |-------|---------|--------|
 | `lockfree_hashmap_model.c` | `lotus_hashmap_*_lockfree` in `crates/hale-codegen/runtime/lotus_arena.c` — the enter/exit writer-counter protocol, single-grower grow phase, writers-in-flight drain, and EMPTY→CLAIMED→COMMITTED set state machine | ✅ verified: **42 executions, no errors** |
 | `mailbox_model.c` | `lotus_mailbox_*` in `lotus_arena.c` — the pinned-locus mailbox monitor: mutex-protected post/drain/shutdown, the `while (empty && !shutdown)` wait predicate, and "drain pending even after shutdown" | ✅ verified: **10 executions, no errors** |
+| `bus_queue_model.c` | `lotus_bus_queue_*` in `lotus_arena.c` — the cooperative-pool queue's `g_bus_has_pinned`-gated **conditional lock** on enqueue/drain (concurrent enqueues under the lock; drain snapshots under the lock) | ✅ verified: **2 executions, no errors** |
 
 ## How to run
 
@@ -92,17 +93,16 @@ would need a different tool (e.g. a TLA+ spec of the monitor).
 
 ## Roadmap
 
-PoC done (lockfree hashmap); mailbox added. Remaining substrate
-primitives, by model-checking value (see the inventory in the issue
+Three primitives modeled (lockfree hashmap, mailbox, bus queue).
+Remaining, by model-checking value (see the inventory in the issue
 thread):
 
-1. **Bus queue** (cooperative pool) — `g_bus_has_pinned`-gated mutex;
-   producers + drainer.
-2. **Chunk pool / arena locks** — lower interleaving risk; model if a
+1. **Chunk pool / arena locks** — lower interleaving risk; model if a
    regression appears.
 
-**CI wiring** (follow-up): GenMC takes a few minutes to build, so a CI
-gate should build it once (cached on the LLVM-18 toolchain image) in a
-dedicated job, then run `run_genmc.sh`. Until that lands, the PoC is
-run locally / on demand. The `build_genmc.sh` + `run_genmc.sh` pair is
-the CI recipe.
+**CI gate (live).** The `genmc` job in `.github/workflows/tests.yml`
+builds GenMC (cached on `build_genmc.sh`, ~3 min on a cold cache) and
+runs `run_genmc.sh` on every push/PR, so a race / UAF / assertion
+violation in any model fails the build. New models are picked up
+automatically. `build_genmc.sh` + `run_genmc.sh` are also the local
+recipe.
