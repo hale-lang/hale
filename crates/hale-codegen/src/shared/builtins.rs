@@ -1170,6 +1170,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
+        // Proposal B (2026-06-06): foreign-layout subscriber. Like
+        // the native register above, but the ring shape is described
+        // by a `ring_layout` rather than the LRSRNG1 header — so it
+        // takes a flat 16-entry uint64 descriptor (built from the
+        // resolved layout in `emit_bus_register_shm_ring`) instead of
+        // slot_size/slot_count, and attaches read-only.
+        // declare void @lotus_bus_register_subscriber_shm_ring_layout(
+        //   ptr subject, ptr shm_name, ptr desc_words,
+        //   ptr self_ptr, ptr handler_fn)
+        let bus_register_sub_shm_ring_layout_ty = void_t.fn_type(
+            &[
+                ptr_t.into(),
+                ptr_t.into(),
+                ptr_t.into(),
+                ptr_t.into(),
+                ptr_t.into(),
+            ],
+            false,
+        );
+        self.module.add_function(
+            "lotus_bus_register_subscriber_shm_ring_layout",
+            bus_register_sub_shm_ring_layout_ty,
+            None,
+        );
+
         // m105: adapter-driven inbound dispatch. Hands wire bytes
         // through the subject's registered deserialize fn into the
         // local handler set. Backs the `std::bus::__local_dispatch`

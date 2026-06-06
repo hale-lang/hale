@@ -151,6 +151,15 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
                     subject
                 ))
             })?;
+        // Proposal B (2026-06-06): a `layout:`-bound subscriber reads
+        // a foreign ring. Build the descriptor from the resolved
+        // `ring_layout` and register through the layout-aware path;
+        // the native LRSRNG1 path below is left untouched.
+        if let Some(layout) = info.layout.clone() {
+            return self.emit_bus_register_shm_ring_layout(
+                subject, &info.shm_name, &layout, self_ptr, handler_fn,
+            );
+        }
         let payload_info = self
             .user_types
             .get(&info.payload_type_name)
@@ -330,4 +339,169 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
         Ok(())
     }
 
+}
+
+/// Width in bytes of a `ring_layout` scalar/len repr token. The
+/// repr set is validated at typecheck (hale-types::check_ring_layout);
+/// an unrecognized token here defaults to 8 (the widest), which is
+/// harmless — the layout would already have been rejected upstream.
+fn ring_repr_width(repr: &str) -> u64 {
+    match repr {
+        "u8" | "i8" => 1,
+        "u16" | "i16" => 2,
+        "u32" | "i32" | "f32" => 4,
+        "u64" | "i64" | "f64" | "atomic_u64" => 8,
+        _ => 8,
+    }
+}
+
+/// Build the flat 16-entry descriptor (the slot contract documented
+/// on `lotus_bus_register_subscriber_shm_ring_layout` in
+/// `lotus_shm_ring.c`) from a resolved `ring_layout`.
+///
+/// Field roles are read by convention from the declared layout:
+///   - `magic N;` → expected header magic at offset 0.
+///   - a scalar named `version` with an `expect` → version check.
+///   - a scalar named `buffer_size` → ring capacity source.
+///   - the first `cursor`'s `at` → the published byte cursor offset.
+///   - the `byte_records` framing's `len_prefix`/`align`/
+///     `pad_sentinel` → record framing.
+fn ring_layout_descriptor_words(
+    decl: &hale_syntax::ast::RingLayoutDecl,
+) -> [u64; 16] {
+    use hale_syntax::ast::RingAttrValue;
+    let mut w = [0u64; 16];
+
+    // [0..2] magic
+    if let Some(m) = decl.magic {
+        w[0] = m as u64;
+        w[1] = 1;
+    }
+
+    // [2..6] version: scalar named "version" carrying an expect.
+    if let Some(v) = decl
+        .scalars
+        .iter()
+        .find(|s| s.name.name == "version" && s.expect.is_some())
+    {
+        w[2] = v.at as u64;
+        w[3] = ring_repr_width(&v.repr.name);
+        w[4] = v.expect.unwrap_or(0) as u64;
+        w[5] = 1;
+    }
+
+    // [6..9] buffer_size: scalar named "buffer_size".
+    if let Some(b) = decl.scalars.iter().find(|s| s.name.name == "buffer_size") {
+        w[6] = b.at as u64;
+        w[7] = ring_repr_width(&b.repr.name);
+        w[8] = 1;
+    }
+
+    // [9] data_at
+    w[9] = decl.data_at.unwrap_or(0) as u64;
+
+    // [10] cursor offset (first cursor's `at` attr)
+    if let Some(c) = decl.cursors.first() {
+        for a in &c.attrs {
+            if a.key.name == "at" {
+                if let RingAttrValue::Int(n) = &a.value {
+                    w[10] = *n as u64;
+                }
+            }
+        }
+    }
+
+    // [11..15] framing: len_prefix width, align, pad_sentinel.
+    w[12] = 1; // align default (no sub-record padding)
+    if let Some(f) = &decl.framing {
+        for a in &f.attrs {
+            match (a.key.name.as_str(), &a.value) {
+                ("len_prefix", RingAttrValue::Ident(id)) => {
+                    w[11] = ring_repr_width(&id.name);
+                }
+                ("len_prefix", RingAttrValue::Int(n)) => {
+                    w[11] = *n as u64;
+                }
+                ("align", RingAttrValue::Int(n)) => {
+                    w[12] = *n as u64;
+                }
+                ("pad_sentinel", RingAttrValue::Int(n)) => {
+                    w[13] = *n as u64;
+                    w[14] = 1;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    w
+}
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// Proposal B (2026-06-06): register a subscriber on a
+    /// `layout:`-bound shm_ring topic. Emits a private global holding
+    /// the 16-entry descriptor built from the resolved `ring_layout`
+    /// and calls `lotus_bus_register_subscriber_shm_ring_layout`,
+    /// which attaches the foreign ring read-only and spawns the
+    /// `byte_records` reader thread.
+    fn emit_bus_register_shm_ring_layout(
+        &mut self,
+        subject: &str,
+        shm_name: &str,
+        layout: &hale_syntax::ast::RingLayoutDecl,
+        self_ptr: PointerValue<'ctx>,
+        handler_fn: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let i64_t = self.context.i64_type();
+        let words = ring_layout_descriptor_words(layout);
+        let const_vals: Vec<inkwell::values::IntValue<'ctx>> =
+            words.iter().map(|wrd| i64_t.const_int(*wrd, false)).collect();
+        let arr = i64_t.const_array(&const_vals);
+        let arr_ty = i64_t.array_type(words.len() as u32);
+        let desc_g = self.module.add_global(
+            arr_ty,
+            None,
+            &format!("lotus.shm_ring.layout.desc.{}", subject),
+        );
+        desc_g.set_initializer(&arr);
+        desc_g.set_constant(true);
+        desc_g.set_linkage(inkwell::module::Linkage::Private);
+        let desc_ptr = desc_g.as_pointer_value();
+
+        let subj_ptr = self
+            .builder
+            .build_global_string_ptr(
+                subject,
+                &format!("lotus.shm_ring.layout.subject.{}", subject),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .as_pointer_value();
+        let name_ptr = self
+            .builder
+            .build_global_string_ptr(
+                shm_name,
+                &format!("lotus.shm_ring.layout.name.{}", subject),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .as_pointer_value();
+        let handler_ptr = handler_fn.as_global_value().as_pointer_value();
+        let reg_fn = self
+            .module
+            .get_function("lotus_bus_register_subscriber_shm_ring_layout")
+            .expect("lotus_bus_register_subscriber_shm_ring_layout declared");
+        self.builder
+            .build_call(
+                reg_fn,
+                &[
+                    subj_ptr.into(),
+                    name_ptr.into(),
+                    desc_ptr.into(),
+                    self_ptr.into(),
+                    handler_ptr.into(),
+                ],
+                "shm_ring.sub.register_layout",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
 }
