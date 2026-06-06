@@ -436,6 +436,11 @@ impl Parser {
             TokenKind::Ident(s) if s == "topic" => {
                 self.parse_topic_decl().map(TopDecl::Topic)
             }
+            // `ring_layout Name { ... }` — shm-ring-interop Proposal B.
+            // Contextual keyword, same pattern as `topic`.
+            TokenKind::Ident(s) if s == "ring_layout" => {
+                self.parse_ring_layout_decl().map(TopDecl::RingLayout)
+            }
             // FUv0.8.2 #7 (2026-05-25): `target <name> { ... }` —
             // names the substrate + its capability profile.
             // Contextual keyword recognized only at top-level decl
@@ -658,6 +663,162 @@ impl Parser {
             on_unmatched,
             span: kw.span.merge(close.span),
         })
+    }
+
+    /// shm-ring-interop Proposal B: `ring_layout Name { ... }`. Members
+    /// are keyword-led, `;`-terminated. Parsed loosely (idents + ints);
+    /// the layout contract is enforced in hale-types::check.
+    fn parse_ring_layout_decl(&mut self) -> Result<RingLayoutDecl, Diag> {
+        let kw_tok = self.peek_token().clone();
+        match &kw_tok.kind {
+            TokenKind::Ident(s) if s == "ring_layout" => {
+                self.bump();
+            }
+            _ => return Err(Diag::parse(kw_tok.span, "expected `ring_layout`")),
+        }
+        let name = self.expect_ident("ring_layout name")?;
+        self.expect(TokenKind::LBrace, "{")?;
+
+        let mut magic: Option<i64> = None;
+        let mut data_at: Option<i64> = None;
+        let mut scalars: Vec<RingScalarField> = Vec::new();
+        let mut cursors: Vec<RingCursorBlock> = Vec::new();
+        let mut framing: Option<RingFramingBlock> = None;
+        let mut overflow: Option<Ident> = None;
+
+        while !matches!(self.peek(), TokenKind::RBrace) {
+            let member = self.expect_ring_word("ring_layout member")?;
+            match member.name.as_str() {
+                "magic" => {
+                    magic = Some(self.expect_int_lit("magic")?);
+                    self.expect(TokenKind::Semi, ";")?;
+                }
+                "data_at" => {
+                    data_at = Some(self.expect_int_lit("data_at")?);
+                    self.expect(TokenKind::Semi, ";")?;
+                }
+                "overflow" => {
+                    overflow = Some(self.expect_ring_word("overflow kind")?);
+                    self.expect(TokenKind::Semi, ";")?;
+                }
+                "cursor" => {
+                    // Optional name before the block: `cursor published {`.
+                    let cname = if matches!(self.peek(), TokenKind::Ident(_)) {
+                        Some(self.expect_ident("cursor name")?)
+                    } else {
+                        None
+                    };
+                    let attrs = self.parse_ring_attr_block()?;
+                    cursors.push(RingCursorBlock {
+                        name: cname,
+                        attrs,
+                        span: member.span,
+                    });
+                }
+                "framing" => {
+                    let kind = self.expect_ring_word("framing kind")?;
+                    let attrs = self.parse_ring_attr_block()?;
+                    framing = Some(RingFramingBlock {
+                        kind,
+                        attrs,
+                        span: member.span,
+                    });
+                }
+                _ => {
+                    // Scalar field: `name [expect] at OFF : repr ;`.
+                    let fspan = member.span;
+                    let expect = if matches!(self.peek(), TokenKind::IntLit(_)) {
+                        Some(self.expect_int_lit("expected value")?)
+                    } else {
+                        None
+                    };
+                    let at_kw = self.expect_ident("`at`")?;
+                    if at_kw.name != "at" {
+                        return Err(Diag::parse(
+                            at_kw.span,
+                            "expected `at` in ring_layout scalar field \
+                             (`name [expect] at OFF : repr;`)",
+                        ));
+                    }
+                    let at = self.expect_int_lit("field offset")?;
+                    self.expect(TokenKind::Colon, ":")?;
+                    let repr = self.expect_ring_word("field repr (e.g. `u32`)")?;
+                    self.expect(TokenKind::Semi, ";")?;
+                    scalars.push(RingScalarField {
+                        name: member,
+                        expect,
+                        at,
+                        repr,
+                        span: fspan,
+                    });
+                }
+            }
+        }
+        let close = self.expect(TokenKind::RBrace, "}")?;
+        Ok(RingLayoutDecl {
+            name,
+            magic,
+            data_at,
+            scalars,
+            cursors,
+            framing,
+            overflow,
+            span: kw_tok.span.merge(close.span),
+        })
+    }
+
+    /// Parse a `{ key value; ... }` attribute block for a
+    /// `cursor`/`framing` member. Values are bare idents or ints.
+    fn parse_ring_attr_block(&mut self) -> Result<Vec<RingAttr>, Diag> {
+        self.expect(TokenKind::LBrace, "{")?;
+        let mut attrs: Vec<RingAttr> = Vec::new();
+        while !matches!(self.peek(), TokenKind::RBrace) {
+            let key = self.expect_ring_word("attribute name")?;
+            let kspan = key.span;
+            let value = match self.peek().clone() {
+                TokenKind::IntLit(n) => {
+                    self.bump();
+                    RingAttrValue::Int(n)
+                }
+                _ => {
+                    // ident or keyword-as-word; expect_ring_word
+                    // errors if it's neither.
+                    RingAttrValue::Ident(self.expect_ring_word("attribute value")?)
+                }
+            };
+            self.expect(TokenKind::Semi, ";")?;
+            attrs.push(RingAttr { key, value, span: kspan });
+        }
+        self.expect(TokenKind::RBrace, "}")?;
+        Ok(attrs)
+    }
+
+    /// A bare "word" in a ring_layout — an identifier OR any keyword
+    /// token used as a layout token. Several layout words collide with
+    /// language keywords (`release` ordering, `fail` overflow policy,
+    /// etc.); the layout grammar is unambiguous, so admit them.
+    fn expect_ring_word(&mut self, what: &str) -> Result<Ident, Diag> {
+        if let Some(name) = try_member_keyword_as_name(self.peek()) {
+            let span = self.peek_token().span;
+            self.bump();
+            return Ok(Ident { name: name.to_string(), span });
+        }
+        self.expect_ident(what)
+    }
+
+    fn expect_int_lit(&mut self, what: &str) -> Result<i64, Diag> {
+        let tok = self.peek_token().clone();
+        match self.peek() {
+            TokenKind::IntLit(n) => {
+                let v = *n;
+                self.bump();
+                Ok(v)
+            }
+            other => Err(Diag::parse(
+                tok.span,
+                format!("expected integer literal for {}, got {:?}", what, other),
+            )),
+        }
     }
 
     /// v1.x-FORM-1: `@form(<name>, <args>...)`.

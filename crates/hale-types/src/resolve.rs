@@ -211,6 +211,7 @@ fn collect_type_names(
             TopDecl::Perspective(p) => insert_name(known, &p.name, diags),
             TopDecl::Interface(i) => insert_name(known, &i.name, diags),
             TopDecl::Topic(t) => insert_name(known, &t.name, diags),
+            TopDecl::RingLayout(r) => insert_name(known, &r.name, diags),
             TopDecl::Module(m) => collect_type_names(&m.items, known, diags),
             _ => {}
         }
@@ -430,6 +431,7 @@ fn register_top_decls(
             }
             TopDecl::Interface(i) => register_interface(i, known, scope, diags),
             TopDecl::Topic(t) => register_topic(t, topics, scope, diags),
+            TopDecl::RingLayout(r) => register_ring_layout(r, scope, diags),
             TopDecl::Target(_) => {
                 // FUv0.8.2 #7 (2026-05-25): target capability
                 // declarations don't introduce a scope entry —
@@ -557,6 +559,29 @@ fn register_topic(
         scope,
         &decl.name.name,
         TopSymbol::Topic(info),
+        decl.span,
+        diags,
+    );
+}
+
+/// shm-ring-interop Proposal B: register a `ring_layout Name` as a
+/// resolvable symbol. The layout contract (offsets, reprs, framing) is
+/// validated separately in `check`; here we just bind the name so a
+/// `shm_ring(..., layout: Name)` reference can find it.
+fn register_ring_layout(
+    decl: &hale_syntax::ast::RingLayoutDecl,
+    scope: &mut TopScope,
+    diags: &mut Vec<Diag>,
+) {
+    let info = crate::symbol::RingLayoutInfo {
+        name: decl.name.name.clone(),
+        decl: decl.clone(),
+        span: decl.span,
+    };
+    register_symbol(
+        scope,
+        &decl.name.name,
+        TopSymbol::RingLayout(info),
         decl.span,
         diags,
     );

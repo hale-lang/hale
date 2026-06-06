@@ -198,7 +198,18 @@ Make the SHM ring **layout** a source-level declaration that the existing
 to attach, validate, iterate, and (optionally) publish — all of which the
 runtime already does for `LRSRNG1`; this just parameterizes it.
 
-### Surface (illustrative — exact syntax is the team's call)
+### Surface
+
+> **Status (2026-06-06): the `ring_layout` declaration LANDED (PR1).**
+> The concrete grammar below (members keyword-led + `;`-terminated;
+> `cursor`/`framing` as nested attr blocks; attr values are idents or
+> ints) parses, resolves, and typechecks — the layout *contract*
+> (known width reprs, recognized framing kind with `len_prefix` for
+> `byte_records`, ≥1 cursor with an offset, known cursor
+> reprs/orderings/unit) is enforced in `hale-types::check`. Codegen
+> consumption is **not** wired yet — PR2 adds the `layout:` binding
+> kwarg, PR3 the descriptor-parameterized read-only consumer. Grammar:
+> `spec/grammar.ebnf` (`ring_layout_decl`).
 
 magus2's ring becomes a declaration:
 

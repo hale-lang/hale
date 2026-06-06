@@ -37,6 +37,7 @@ top_decl          = locus_decl
                   | module_decl
                   | interface_decl
                   | topic_decl
+                  | ring_layout_decl
                   | target_decl
                   ;
 
@@ -80,6 +81,37 @@ topic_field       = "payload" , ":" , type_expr , ";"
                   | "keyed_by" , IDENTIFIER , ";"
                   | "on_unmatched" , ":" , unmatched_policy , ";"
                   ;
+
+(* `ring_layout Name { ... }` — declares the byte layout of an
+   externally-defined SHM broadcast ring so a
+   `shm_ring(..., layout: Name)` binding can read it
+   (shm-ring-interop Proposal B). Contextual keyword like `topic`.
+   Members are keyword-led and `;`-terminated; attribute values are
+   bare identifiers or integer literals. The layout *contract*
+   (known reprs, recognized framing, a cursor with an offset) is
+   enforced at typecheck, not in the grammar. *)
+ring_layout_decl  = "ring_layout" , IDENTIFIER ,
+                    "{" , { ring_layout_member } , "}" ;
+ring_layout_member
+                  = "magic" , INT_LIT , ";"
+                  | "data_at" , INT_LIT , ";"
+                  | "overflow" , ring_word , ";"
+                  | ring_scalar_field
+                  | ring_cursor_block
+                  | ring_framing_block
+                  ;
+(* header scalar: `version 1 at 8 : u32;` — name, optional expected
+   value, byte offset, width repr. *)
+ring_scalar_field = IDENTIFIER , [ INT_LIT ] , "at" , INT_LIT ,
+                    ":" , ring_word , ";" ;
+ring_cursor_block = "cursor" , [ IDENTIFIER ] ,
+                    "{" , { ring_attr } , "}" ;
+ring_framing_block= "framing" , ring_word ,
+                    "{" , { ring_attr } , "}" ;
+ring_attr         = IDENTIFIER , ( ring_word | INT_LIT ) , ";" ;
+(* a layout token — an identifier or a keyword admitted as a word
+   (e.g. the `release` ordering, the `fail` overflow policy). *)
+ring_word         = IDENTIFIER ;
 
 (* Routing-key policy on no-key-match publishes — see
    `spec/semantics.md` § "Topic declarations" / "Phase 3:

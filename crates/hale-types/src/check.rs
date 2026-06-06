@@ -4137,6 +4137,180 @@ impl<'a> Checker<'a> {
                 // structural only — the resolver registered
                 // the target name; no use-site checks here yet.
             }
+            TopDecl::RingLayout(r) => self.check_ring_layout(r),
+        }
+    }
+
+    /// shm-ring-interop Proposal B: validate a `ring_layout`'s
+    /// contract — known width reprs, a recognized framing kind (with
+    /// `len_prefix` for byte_records), at least one cursor with an
+    /// `at` offset and a known repr/ordering/unit, and non-negative
+    /// offsets. A wrong-but-well-formed layout still produces wrong
+    /// *values* not OOB (the safety argument), but these catch the
+    /// obvious declaration mistakes at build time.
+    fn check_ring_layout(&mut self, r: &'a hale_syntax::ast::RingLayoutDecl) {
+        use hale_syntax::ast::RingAttrValue;
+        const WIDTHS: &[&str] = &[
+            "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64",
+        ];
+        const ORDERINGS: &[&str] =
+            &["relaxed", "acquire", "release", "acq_rel", "seq_cst"];
+
+        if let Some(off) = r.data_at {
+            if off < 0 {
+                self.diags.push(Diag::ty(
+                    r.span,
+                    format!("ring_layout `{}`: data_at must be >= 0", r.name.name),
+                ));
+            }
+        }
+        for f in &r.scalars {
+            if f.at < 0 {
+                self.diags.push(Diag::ty(
+                    f.span,
+                    format!("ring_layout field `{}`: offset must be >= 0", f.name.name),
+                ));
+            }
+            if !WIDTHS.contains(&f.repr.name.as_str()) {
+                self.diags.push(Diag::ty(
+                    f.repr.span,
+                    format!(
+                        "ring_layout field `{}`: unknown repr `{}` (expected one \
+                         of u8/u16/u32/u64, i8/i16/i32/i64, f32/f64)",
+                        f.name.name, f.repr.name
+                    ),
+                ));
+            }
+        }
+
+        // At least one cursor, each with an `at` offset and known attrs.
+        if r.cursors.is_empty() {
+            self.diags.push(Diag::ty(
+                r.span,
+                format!(
+                    "ring_layout `{}`: needs at least one `cursor {{ ... }}` \
+                     (the published position a consumer reads)",
+                    r.name.name
+                ),
+            ));
+        }
+        for c in &r.cursors {
+            let mut has_at = false;
+            for a in &c.attrs {
+                match a.key.name.as_str() {
+                    "at" => {
+                        has_at = true;
+                        if let RingAttrValue::Int(n) = a.value {
+                            if n < 0 {
+                                self.diags.push(Diag::ty(
+                                    a.span,
+                                    "cursor `at` offset must be >= 0".to_string(),
+                                ));
+                            }
+                        } else {
+                            self.diags.push(Diag::ty(
+                                a.span,
+                                "cursor `at` must be an integer offset".to_string(),
+                            ));
+                        }
+                    }
+                    "load" | "store" => {
+                        if let RingAttrValue::Ident(id) = &a.value {
+                            if !ORDERINGS.contains(&id.name.as_str()) {
+                                self.diags.push(Diag::ty(
+                                    a.span,
+                                    format!(
+                                        "cursor `{}`: unknown memory ordering `{}` \
+                                         (relaxed/acquire/release/acq_rel/seq_cst)",
+                                        a.key.name, id.name
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                    "unit" => {
+                        if let RingAttrValue::Ident(id) = &a.value {
+                            if id.name != "bytes" && id.name != "slots" {
+                                self.diags.push(Diag::ty(
+                                    a.span,
+                                    format!(
+                                        "cursor `unit`: expected `bytes` or `slots`, \
+                                         got `{}`",
+                                        id.name
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                    // `kind`, `repr` accepted as free idents (the
+                    // descriptor build in PR3 maps the known ones).
+                    _ => {}
+                }
+            }
+            if !has_at {
+                self.diags.push(Diag::ty(
+                    c.span,
+                    format!(
+                        "ring_layout `{}`: cursor needs an `at OFFSET;`",
+                        r.name.name
+                    ),
+                ));
+            }
+        }
+
+        // Framing: required, recognized kind; byte_records needs a
+        // len_prefix width.
+        match &r.framing {
+            None => self.diags.push(Diag::ty(
+                r.span,
+                format!(
+                    "ring_layout `{}`: needs a `framing byte_records {{ ... }}` \
+                     (or `framing slots {{ ... }}`)",
+                    r.name.name
+                ),
+            )),
+            Some(fr) => {
+                if fr.kind.name != "byte_records" && fr.kind.name != "slots" {
+                    self.diags.push(Diag::ty(
+                        fr.kind.span,
+                        format!(
+                            "ring_layout `{}`: unknown framing `{}` (expected \
+                             `byte_records` or `slots`)",
+                            r.name.name, fr.kind.name
+                        ),
+                    ));
+                }
+                if fr.kind.name == "byte_records" {
+                    let len_prefix = fr.attrs.iter().find(|a| a.key.name == "len_prefix");
+                    match len_prefix {
+                        None => self.diags.push(Diag::ty(
+                            fr.span,
+                            "framing byte_records: needs `len_prefix u32;` (the \
+                             record length-prefix width)".to_string(),
+                        )),
+                        Some(a) => {
+                            if let RingAttrValue::Ident(id) = &a.value {
+                                if !WIDTHS.contains(&id.name.as_str()) {
+                                    self.diags.push(Diag::ty(
+                                        a.span,
+                                        format!(
+                                            "framing byte_records: `len_prefix` repr \
+                                             `{}` is not a known width",
+                                            id.name
+                                        ),
+                                    ));
+                                }
+                            } else {
+                                self.diags.push(Diag::ty(
+                                    a.span,
+                                    "framing byte_records: `len_prefix` must be a \
+                                     width ident (e.g. u32)".to_string(),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -6617,6 +6791,17 @@ impl<'a> Checker<'a> {
                                 format!(
                                     "topic `{}` is not a value; use `{} <- expr` \
                                      to publish on it",
+                                    id.name, id.name
+                                ),
+                            ));
+                            Ty::Unknown
+                        }
+                        TopSymbol::RingLayout(_) => {
+                            self.diags.push(Diag::ty(
+                                id.span,
+                                format!(
+                                    "ring_layout `{}` is not a value; reference it \
+                                     in a `shm_ring(..., layout: {})` binding",
                                     id.name, id.name
                                 ),
                             ));

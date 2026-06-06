@@ -32,6 +32,7 @@ pub enum TopSymbol {
     Fn(FnSig),
     Interface(InterfaceInfo),
     Topic(TopicInfo),
+    RingLayout(RingLayoutInfo),
 }
 
 impl TopSymbol {
@@ -44,8 +45,20 @@ impl TopSymbol {
             TopSymbol::Fn(f) => f.span,
             TopSymbol::Interface(i) => i.span,
             TopSymbol::Topic(t) => t.span,
+            TopSymbol::RingLayout(r) => r.span,
         }
     }
+}
+
+/// shm-ring-interop Proposal B: a resolved `ring_layout` declaration.
+/// Carries the full AST decl so codegen (PR3) can build the runtime
+/// ring descriptor from its fields; PR1/PR2 only need it to exist as a
+/// resolvable symbol a `shm_ring(..., layout: Name)` binding references.
+#[derive(Debug, Clone)]
+pub struct RingLayoutInfo {
+    pub name: String,
+    pub decl: hale_syntax::ast::RingLayoutDecl,
+    pub span: Span,
 }
 
 /// Resolved `topic Foo { payload: T; }` declaration. The payload
