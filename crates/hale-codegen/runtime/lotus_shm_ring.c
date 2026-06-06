@@ -227,6 +227,142 @@ void lotus_shm_ring_close(lotus_shm_ring_t *ring) {
     free(ring);
 }
 
+/* === Proposal B (2026-06-06) — foreign-layout read-only consumer =======
+ *
+ * A `ring_layout` declaration lets a Hale program read an
+ * EXTERNALLY-defined binary broadcast ring (concretely magus2's
+ * `RingPrefix`) without forking the runtime. The native ring above
+ * (LRSRNG1) is one fixed shape; a layout parameterizes the parts
+ * that vary: the magic, a version field, a buffer_size field, the
+ * first-record offset, the published byte cursor, and the record
+ * framing.
+ *
+ * v1 scope is READ-ONLY, `byte_records` framing, single broadcast
+ * cursor. The producer side for foreign layouts (writing magus2's
+ * ring from Hale) is out of scope (Proposal B M3).
+ *
+ * Endianness: fields are read host-native. magus2 and Hale both
+ * target little-endian x86-64; a cross-endian attach is rejected
+ * upstream (there is no byte-swap path at v1).
+ */
+
+/* Descriptor built by codegen from the resolved `ring_layout` and
+ * passed as a flat uint64 word array (see the desc[] contract in
+ * `lotus_bus_register_subscriber_shm_ring_layout`). Mirrored into
+ * this struct at registration time. */
+typedef struct {
+    uint64_t magic;            /* expected header magic at offset 0 */
+    int      has_magic;
+    uint64_t version_off;      /* header offset of the version field */
+    uint64_t version_width;    /* version field width in bytes */
+    uint64_t version_expect;
+    int      has_version;
+    uint64_t buffer_size_off;  /* header offset of the capacity field */
+    uint64_t buffer_size_width;
+    int      has_buffer_size;
+    uint64_t data_at;          /* first-record byte offset */
+    uint64_t cursor_off;       /* offset of the published byte cursor */
+    uint64_t len_prefix_width; /* record length-prefix width in bytes */
+    uint64_t align;            /* record stride alignment (>=1) */
+    uint64_t pad_sentinel;     /* len value meaning "pad to wrap" */
+    int      has_pad_sentinel;
+} lotus_shm_layout_t;
+
+/* Per-process handle for a layout-described ring. Distinct from
+ * lotus_shm_ring_t: a foreign ring has no Lotus header, so none of
+ * the slot_size/slot_count/consumer_seqno machinery applies. */
+typedef struct {
+    void   *base;          /* mmap base (header at offset 0) */
+    size_t  mapped_size;
+    int     fd;
+    char    shm_name[96];
+    lotus_shm_layout_t desc;
+    uint64_t capacity;     /* ring data-region size in bytes */
+} lotus_shm_layout_ring_t;
+
+/* Read an unsigned little-endian field of `width` (1..8) bytes.
+ * Host is assumed little-endian (see the endianness note above). */
+static uint64_t shm_layout_read_uint(const void *p, uint64_t width) {
+    uint64_t v = 0;
+    if (width > 8) width = 8;
+    memcpy(&v, p, (size_t)width);
+    return v;
+}
+
+/* Attach (read-only) to a foreign ring described by `desc`.
+ *
+ * Unlike lotus_shm_ring_open, this NEVER creates the segment — the
+ * foreign producer owns it. The segment must already exist and be
+ * sized; the consumer fstat()s it for the mapping length, then
+ * validates magic + version and reads buffer_size from the header.
+ *
+ * Returns NULL on error (errno set): segment missing, too small,
+ * magic/version mismatch, or a buffer_size that overruns the map. */
+static lotus_shm_layout_ring_t *
+lotus_shm_ring_open_layout(const char *name, const lotus_shm_layout_t *desc) {
+    if (!name || !desc) { errno = EINVAL; return NULL; }
+    if (strlen(name) + 1 > sizeof(((lotus_shm_layout_ring_t *)0)->shm_name)) {
+        errno = ENAMETOOLONG;
+        return NULL;
+    }
+    int fd = shm_open(name, O_RDONLY, 0600);
+    if (fd < 0) return NULL;
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        int save = errno; close(fd); errno = save; return NULL;
+    }
+    size_t total = (size_t)st.st_size;
+    if (total < desc->data_at) {
+        close(fd); errno = EBADF; return NULL;
+    }
+    void *map = mmap(NULL, total, PROT_READ, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) {
+        int save = errno; close(fd); errno = save; return NULL;
+    }
+    if (desc->has_magic) {
+        uint64_t got = shm_layout_read_uint(map, 8);
+        if (got != desc->magic) {
+            munmap(map, total); close(fd); errno = EBADF; return NULL;
+        }
+    }
+    if (desc->has_version) {
+        uint64_t got = shm_layout_read_uint(
+            (char *)map + desc->version_off, desc->version_width);
+        if (got != desc->version_expect) {
+            munmap(map, total); close(fd); errno = EBADF; return NULL;
+        }
+    }
+    uint64_t capacity;
+    if (desc->has_buffer_size) {
+        capacity = shm_layout_read_uint(
+            (char *)map + desc->buffer_size_off, desc->buffer_size_width);
+    } else {
+        capacity = total - desc->data_at;
+    }
+    if (capacity == 0 || desc->data_at + capacity > total) {
+        munmap(map, total); close(fd); errno = EBADF; return NULL;
+    }
+    lotus_shm_layout_ring_t *r =
+        (lotus_shm_layout_ring_t *)calloc(1, sizeof(*r));
+    if (!r) {
+        munmap(map, total); close(fd); errno = ENOMEM; return NULL;
+    }
+    r->base = map;
+    r->mapped_size = total;
+    r->fd = fd;
+    r->desc = *desc;
+    r->capacity = capacity;
+    strncpy(r->shm_name, name, sizeof(r->shm_name) - 1);
+    return r;
+}
+
+static void lotus_shm_ring_close_layout(lotus_shm_layout_ring_t *r) {
+    if (!r) return;
+    if (r->base) munmap(r->base, r->mapped_size);
+    if (r->fd >= 0) close(r->fd);
+    free(r);
+}
+
 /* Publisher: claim the next slot.
  *
  * Form K7 (2026-05-20): back-pressure semantics determined by
@@ -535,6 +671,12 @@ int lotus_bus_publish_shm_ring(const char *subject,
 
 struct shm_ring_subscriber_t {
     lotus_shm_ring_t *ring;
+    /* Proposal B (2026-06-06): a foreign-layout subscriber sets
+     * is_layout=1 and reads through `lring` instead of `ring`. The
+     * native and layout paths share one registry + atexit teardown;
+     * the reader-thread fn and close fn branch on is_layout. */
+    int is_layout;
+    lotus_shm_layout_ring_t *lring;
     void (*handler_fn)(void *self, void *slot);
     void *self_ptr;
     pthread_t thread;
@@ -578,6 +720,171 @@ static void *shm_ring_reader_thread(void *arg) {
         }
     }
     return NULL;
+}
+
+/* Proposal B (2026-06-06) — reader loop for a foreign `byte_records`
+ * ring. `local` is a monotonic byte cursor (the same units the
+ * producer publishes); the physical read offset is
+ * `data_at + local % capacity`. Each record is `[len_prefix][payload]`;
+ * `len == pad_sentinel` is a tail-pad that fills to the wrap.
+ *
+ * v1 simplifications (matching the native reader):
+ *   - First poll starts `local` at the producer's current cursor, so
+ *     a subscriber reads records published AFTER it attaches (no
+ *     historical replay).
+ *   - Lap handling is lossy + safe: if the producer ran more than
+ *     `capacity` bytes ahead of us, the bytes we missed have been
+ *     overwritten, so we resync to the producer's cursor (a commit
+ *     boundary, hence record-aligned) and resume. Records are never
+ *     read torn — a suspected straddle/corruption also resyncs.
+ *   - Handler runs on this reader thread, like the native path.
+ */
+static void *shm_ring_layout_reader_thread(void *arg) {
+    shm_ring_subscriber_t *sub = (shm_ring_subscriber_t *)arg;
+    lotus_shm_layout_ring_t *r = sub->lring;
+    const lotus_shm_layout_t *d = &r->desc;
+    char *base = (char *)r->base;
+    uint64_t cap = r->capacity;
+    uint64_t local = 0;
+    int initialized = 0;
+    while (!atomic_load_explicit(&sub->should_stop,
+                                  memory_order_acquire)) {
+        uint64_t committed = atomic_load_explicit(
+            (const _Atomic uint64_t *)(base + d->cursor_off),
+            memory_order_acquire);
+        if (!initialized) {
+            local = committed;
+            initialized = 1;
+        }
+        if (committed <= local) {
+            struct timespec ts = {0, 100 * 1000};  /* 100us */
+            nanosleep(&ts, NULL);
+            continue;
+        }
+        /* Lapped: missed bytes are gone — resync to a commit
+         * boundary and drop the gap. */
+        if (committed - local > cap) {
+            local = committed;
+            continue;
+        }
+        while (local < committed) {
+            uint64_t phys = d->data_at + (local % cap);
+            uint64_t len = shm_layout_read_uint(base + phys,
+                                                d->len_prefix_width);
+            if (d->has_pad_sentinel && len == d->pad_sentinel) {
+                /* Tail pad — jump to the next wrap boundary. */
+                local += cap - (local % cap);
+                continue;
+            }
+            uint64_t rec = d->len_prefix_width + len;
+            if (len == 0 || (local % cap) + rec > cap) {
+                /* Malformed or straddles the wrap without a pad —
+                 * treat as desync and resync to the cursor. */
+                local = committed;
+                break;
+            }
+            sub->handler_fn(sub->self_ptr,
+                            base + phys + d->len_prefix_width);
+            uint64_t step = rec;
+            if (d->align > 1) {
+                step = (step + d->align - 1) & ~(d->align - 1);
+            }
+            local += step;
+        }
+    }
+    return NULL;
+}
+
+/* Proposal B (2026-06-06) — register a foreign-layout subscriber.
+ *
+ * `desc_words` is a flat 16-entry uint64 array built by codegen from
+ * the resolved `ring_layout`. The slot contract (keep in sync with
+ * codegen's `emit_bus_register_shm_ring`):
+ *
+ *   [0]  magic              [8]  has_buffer_size
+ *   [1]  has_magic          [9]  data_at
+ *   [2]  version_off        [10] cursor_off
+ *   [3]  version_width      [11] len_prefix_width
+ *   [4]  version_expect     [12] align
+ *   [5]  has_version        [13] pad_sentinel
+ *   [6]  buffer_size_off    [14] has_pad_sentinel
+ *   [7]  buffer_size_width  [15] reserved
+ *
+ * Spawns a reader thread sharing the native subscriber registry +
+ * atexit teardown. _exit(1) on open failure (a misdeclared layout
+ * or an absent producer ring is a hard configuration error). */
+void lotus_bus_register_subscriber_shm_ring_layout(
+        const char *subject,
+        const char *shm_name,
+        const uint64_t *desc_words,
+        void *self_ptr,
+        void (*handler_fn)(void *self, void *slot)) {
+    ensure_shm_ring_atexit_registered();
+
+    lotus_shm_layout_t d;
+    memset(&d, 0, sizeof(d));
+    d.magic             = desc_words[0];
+    d.has_magic         = (int)desc_words[1];
+    d.version_off       = desc_words[2];
+    d.version_width     = desc_words[3];
+    d.version_expect    = desc_words[4];
+    d.has_version       = (int)desc_words[5];
+    d.buffer_size_off   = desc_words[6];
+    d.buffer_size_width = desc_words[7];
+    d.has_buffer_size   = (int)desc_words[8];
+    d.data_at           = desc_words[9];
+    d.cursor_off        = desc_words[10];
+    d.len_prefix_width  = desc_words[11];
+    d.align             = desc_words[12];
+    d.pad_sentinel      = desc_words[13];
+    d.has_pad_sentinel  = (int)desc_words[14];
+
+    lotus_shm_layout_ring_t *r = lotus_shm_ring_open_layout(shm_name, &d);
+    if (!r) {
+        fprintf(stderr,
+                "lotus_bus_register_subscriber_shm_ring_layout(`%s`, `%s`): "
+                "open failed: %s\n",
+                subject, shm_name, strerror(errno));
+        _exit(1);
+    }
+
+    shm_ring_subscriber_t *sub =
+        (shm_ring_subscriber_t *)calloc(1, sizeof(*sub));
+    if (!sub) {
+        fprintf(stderr,
+                "lotus_bus_register_subscriber_shm_ring_layout(`%s`): calloc "
+                "failed\n",
+                subject);
+        _exit(1);
+    }
+    sub->is_layout = 1;
+    sub->lring = r;
+    sub->handler_fn = handler_fn;
+    sub->self_ptr = self_ptr;
+    atomic_store_explicit(&sub->should_stop, 0, memory_order_relaxed);
+
+    lotus_mark_multithreaded();
+    int rc = pthread_create(&sub->thread, NULL,
+                            shm_ring_layout_reader_thread, sub);
+    if (rc != 0) {
+        fprintf(stderr,
+                "lotus_bus_register_subscriber_shm_ring_layout(`%s`): "
+                "pthread_create failed: %d\n",
+                subject, rc);
+        lotus_shm_ring_close_layout(r);
+        free(sub);
+        _exit(1);
+    }
+    int idx = atomic_fetch_add_explicit(
+        &g_shm_ring_subscriber_count, 1, memory_order_acq_rel);
+    if (idx >= LOTUS_SHM_RING_MAX_SUBSCRIBERS) {
+        fprintf(stderr,
+                "lotus_bus_register_subscriber_shm_ring_layout(`%s`): exceeded "
+                "LOTUS_SHM_RING_MAX_SUBSCRIBERS (%d)\n",
+                subject, LOTUS_SHM_RING_MAX_SUBSCRIBERS);
+        _exit(1);
+    }
+    g_shm_ring_subscribers[idx] = sub;
 }
 
 /* Codegen emits one call per shm_ring subscriber registration at
@@ -675,7 +982,11 @@ static void shm_ring_atexit_cleanup(void) {
         shm_ring_subscriber_t *sub = g_shm_ring_subscribers[i];
         if (sub) {
             pthread_join(sub->thread, NULL);
-            if (sub->ring) {
+            if (sub->is_layout) {
+                if (sub->lring) {
+                    lotus_shm_ring_close_layout(sub->lring);
+                }
+            } else if (sub->ring) {
                 lotus_shm_ring_close(sub->ring);
             }
             free(sub);

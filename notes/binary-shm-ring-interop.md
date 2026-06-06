@@ -212,9 +212,27 @@ runtime already does for `LRSRNG1`; this just parameterizes it.
 > `shm_ring(..., layout: Name)` parses and resolves to a declared
 > `ring_layout` (unknown / non-layout names diagnose); absent
 > `layout:` keeps the native ring, so existing bindings are unchanged.
-> No codegen behavior yet — PR3 adds the descriptor-parameterized
-> read-only consumer. Grammar: `spec/grammar.ebnf` (`ring_layout_decl`,
-> `shm_ring_kwarg`).
+> Grammar: `spec/grammar.ebnf` (`ring_layout_decl`, `shm_ring_kwarg`).
+>
+> **PR3 (LANDED): the read-only `byte_records` consumer.**
+> A subscriber on a `layout:`-bound topic now actually reads the
+> foreign ring. Runtime (`lotus_shm_ring.c`):
+> `lotus_shm_ring_open_layout` (attach read-only, validate
+> magic/version, read buffer_size) +
+> `lotus_bus_register_subscriber_shm_ring_layout` + a `byte_records`
+> reader thread (modular `[len_prefix][payload]` walk, `pad_sentinel`
+> tail-pad skip, `align_up` stride; lossy-but-safe lap resync).
+> Codegen (`emit_bus_register_shm_ring`) branches on the resolved
+> layout, emitting a flat 16-entry descriptor global + the
+> layout-aware register call; the native LRSRNG1 path is untouched
+> (back-compat verified). Field roles read by convention from the
+> layout (`version`/`buffer_size` scalars). Validated by a C
+> mock-producer ↔ consumer round-trip (`shm_ring_layout.rs`,
+> roundtrip + wrap, clean under ASan/UBSan) and a codegen IR-shape
+> test (`shm_ring_layout_codegen.rs`). Spec: `semantics.md`
+> § "Foreign rings", `runtime.md`. **Read path complete.**
+> Still out of scope: the producer path for foreign layouts (M3),
+> `slots` framing, historical replay, multi-cursor back-pressure.
 
 magus2's ring becomes a declaration:
 

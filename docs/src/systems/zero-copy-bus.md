@@ -77,6 +77,51 @@ exhaustion needs a policy the substrate can't guess:
 - **`fail`** — panic with a clear diagnostic. Process-level
   visibility into back-pressure.
 
+## Reading someone else's ring
+
+A `shm_ring` binding speaks Hale's *own* ring format. But sometimes
+the ring already exists — written by another program in another
+language, with its own binary layout. Instead of hand-writing FFI
+or forking the runtime, you *declare* that layout and point a
+binding at it:
+
+```hale
+ring_layout MagusRing {
+    magic 0x4D475348514D4B54;        // expected header magic at offset 0
+    version 1 at 8 : u32;            // header field `version`, must equal 1
+    buffer_size at 12 : u32;         // ring capacity, read from the header
+    data_at 128;                     // first record starts here
+    cursor published {               // the producer's published byte cursor
+        at 64; repr atomic_u64; load acquire; unit bytes;
+    }
+    framing byte_records {           // records are [u32 length][payload]
+        len_prefix u32; align 8; pad_sentinel 0xFFFFFFFF;
+    }
+    overflow lap_detect;
+}
+
+main locus App {
+    bindings {
+        Ticks: shm_ring("/magus.ticks", on_overflow: drop,
+                        layout: MagusRing) where zero_copy;
+    }
+}
+```
+
+A subscriber on `Ticks` now reads that foreign ring directly: the
+runtime attaches it read-only, checks the magic and version, and
+walks the length-prefixed records, handing each payload to your
+`on_tick` handler with no copy. Your handler code is identical to
+any other `shm_ring` subscriber — the layout only changes how the
+substrate finds and frames the bytes.
+
+A binding with no `layout:` keeps Hale's native ring, so nothing
+you wrote before changes. This is read-only at this version: you
+can *consume* a foreign ring, not yet *produce* into one. A
+subscriber sees records published after it attaches, and if it
+falls more than a full buffer behind it resyncs rather than
+reading a torn record.
+
 ## The same shape, one tier down
 
 Notice this is the same move as everything else at this level: an

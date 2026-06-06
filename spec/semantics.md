@@ -903,6 +903,89 @@ Transport surface:
   different process and exists before the publisher
   process starts.)
 
+**Foreign rings via `ring_layout` (Proposal B, 2026-06-06).**
+The shm_ring transport above reads/writes the *native* Lotus
+ring (the `LRSRNG1` header + equal-sized slots). To read a ring
+defined by *another* program — concretely a magus2-style binary
+broadcast ring — a `ring_layout` declaration describes that
+ring's binary shape, and a binding references it with the
+`layout:` kwarg:
+
+```hale
+ring_layout MagusRing {
+    magic 0x4D475348514D4B54;        // expected header magic at offset 0
+    version 1 at 8 : u32;            // header field `version`: expect 1
+    buffer_size at 12 : u32;         // ring data capacity, read from header
+    data_at 128;                     // first-record byte offset
+    cursor published {               // the published byte cursor
+        at 64; repr atomic_u64; load acquire; unit bytes;
+    }
+    framing byte_records {           // records are [u32 len][payload]
+        len_prefix u32; align 8; pad_sentinel 0xFFFFFFFF;
+    }
+    overflow lap_detect;
+}
+
+main locus App {
+    bindings {
+        Ticks: shm_ring("/magus.ticks", on_overflow: drop,
+                        layout: MagusRing) where zero_copy;
+    }
+}
+```
+
+The `layout:` reference must resolve to a declared `ring_layout`
+(else a typecheck diagnostic). A binding with no `layout:` is the
+native ring, unchanged.
+
+*The layout contract.* A `ring_layout` is validated at typecheck
+(`hale-types::check`), so a malformed layout fails the build, not
+the read. The rules:
+
+- Each scalar `repr` must be a known fixed width — `u8`/`u16`/
+  `u32`/`u64`, `i8`/`i16`/`i32`/`i64`, `f32`/`f64`.
+- A `cursor` block needs an `at` offset, a known `repr`
+  (`atomic_u64`), a known `load` memory ordering (`relaxed`/
+  `acquire`/`release`/`acq_rel`/`seq_cst`), and a `unit` of
+  `bytes` or `slots`. At least one cursor is required.
+- `framing` kind is `byte_records` or `slots`; `byte_records`
+  requires a `len_prefix`.
+- All offsets are non-negative.
+- A `ring_layout` is a declaration, not a value — referencing its
+  name in expression position is an error.
+
+The member token positions (`acquire`, `atomic_u64`, `bytes`, and
+words that collide with keywords like `release`) are layout
+*words*, not Hale type expressions — bare identifiers (or
+keyword-spelled words) checked against the sets above, never
+resolved as types.
+
+*Scope (v1): read-only `byte_records` consumer.* A subscriber on
+a layout-bound topic registers via
+`lotus_bus_register_subscriber_shm_ring_layout(subject, name,
+desc, self, handler)`, where `desc` is a flat 16-entry descriptor
+codegen builds from the resolved layout. The runtime attaches the
+foreign segment read-only (it never creates it — the foreign
+producer owns the ring), validates the magic and `version`, reads
+`buffer_size` for the data-region capacity, then runs a
+`byte_records` reader thread: acquire-load the published byte
+cursor, and for each record walk `data_at + local % capacity`,
+read the `len_prefix`, skip a `pad_sentinel` tail-pad to the wrap,
+hand the payload view to the handler, and advance by
+`align_up(len_prefix + len, align)`. Field *roles* are read by
+convention from the layout — a scalar named `version` (with an
+expected value) is the version check; one named `buffer_size` is
+the capacity source.
+
+*Limitations (v1).* A subscriber reads records published *after*
+it attaches (no historical replay). Lap handling is lossy + safe:
+if the producer runs more than `capacity` bytes ahead, the missed
+bytes are gone, so the reader resyncs to the producer's cursor (a
+commit boundary) and resumes rather than reading a torn record.
+The handler runs on the reader thread (same constraint as the
+native subscriber). The producer side for foreign layouts, the
+`slots` framing kind, and multi-cursor back-pressure are post-v1.
+
 **In-memory delivery is absence-of-entry.** A topic with no
 binding entry is delivered same-process via the cooperative
 queue. There is no `in_memory` variant — the runtime default

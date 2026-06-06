@@ -1715,6 +1715,11 @@ pub(crate) struct ShmRingBindingInfo {
     /// (publish sites on a `fail`-policy topic will need to
     /// require a `or raise|substitute|hand-off` disposition).
     pub(crate) overflow: ShmRingOverflow,
+    /// Proposal B (2026-06-06): the resolved `ring_layout` decl when
+    /// the binding carries `layout: Name`, else None (native ring).
+    /// A subscriber on a layout-bound topic registers through the
+    /// layout-aware runtime path; the publish side is out of scope.
+    pub(crate) layout: Option<hale_syntax::ast::RingLayoutDecl>,
 }
 
 /// m47 (enums): per-enum metadata. Variants in declaration order;
@@ -5271,7 +5276,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if let LocusMember::Bindings(b) = m {
                 for entry in &b.entries {
                     if let TransportSpec::ShmRing {
-                        name, slot_count, overflow, ..
+                        name, slot_count, overflow, layout, ..
                     } = &entry.transport
                     {
                         let subj = wire_subjects
@@ -5282,6 +5287,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .get(&entry.topic.name)
                             .cloned()
                             .unwrap_or_default();
+                        // Proposal B: resolve `layout: Name` to its
+                        // decl (validated upstream in hale-types) so
+                        // the subscriber register can build the
+                        // descriptor. None → native ring.
+                        let layout_decl = layout.as_ref().and_then(|lid| {
+                            self.program.items.iter().find_map(|it| match it {
+                                TopDecl::RingLayout(r) if r.name.name == lid.name => {
+                                    Some(r.clone())
+                                }
+                                _ => None,
+                            })
+                        });
                         self.shm_ring_subjects.insert(
                             subj,
                             ShmRingBindingInfo {
@@ -5289,6 +5306,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 slot_count: *slot_count,
                                 shm_name: name.clone(),
                                 overflow: *overflow,
+                                layout: layout_decl,
                             },
                         );
                     }

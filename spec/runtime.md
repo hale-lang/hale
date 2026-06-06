@@ -834,6 +834,28 @@ atomic seqno) followed by N slots of `slot_size` bytes each.
 Header magic + sizes are validated on attach to catch ABI
 mismatches across binaries pinned to the same ring name.
 
+**Foreign-layout consumer (Proposal B, 2026-06-06).** Two more
+primitives read an *externally*-defined ring described by a
+`ring_layout` (see semantics.md § "Foreign rings"), rather than
+the native LRSRNG1 shape:
+
+- `lotus_shm_ring_open_layout(name, desc)` — attach an existing
+  foreign segment READ-ONLY (never creates), `fstat` for the map
+  length, validate `magic`/`version`, read `buffer_size` for the
+  data-region capacity. `desc` is a `lotus_shm_layout_t` built
+  from a flat 16-entry uint64 descriptor codegen emits.
+- `lotus_bus_register_subscriber_shm_ring_layout(subject, name,
+  desc_words, self, handler)` — open via the above and spawn a
+  `byte_records` reader thread that walks `[len_prefix][payload]`
+  records (modular over `capacity`, skipping `pad_sentinel`
+  tail-pads, advancing by `align_up`). Shares the native
+  subscriber registry + `atexit` teardown; a layout subscriber is
+  marked `is_layout` and torn down via `lotus_shm_ring_close_layout`.
+
+Field reads are host-native endianness (magus2 and Hale are both
+little-endian x86-64). v1 is read-only `byte_records`; the
+producer side and `slots` framing are post-v1.
+
 v1 scope: single-producer, multi-consumer; in-memory delivery is
 in scope (POSIX shm_open works intra-machine cross-process).
 Multi-producer (CAS-based claim), back-pressure / timeout
