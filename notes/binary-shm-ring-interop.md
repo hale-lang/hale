@@ -206,10 +206,15 @@ runtime already does for `LRSRNG1`; this just parameterizes it.
 > ints) parses, resolves, and typechecks — the layout *contract*
 > (known width reprs, recognized framing kind with `len_prefix` for
 > `byte_records`, ≥1 cursor with an offset, known cursor
-> reprs/orderings/unit) is enforced in `hale-types::check`. Codegen
-> consumption is **not** wired yet — PR2 adds the `layout:` binding
-> kwarg, PR3 the descriptor-parameterized read-only consumer. Grammar:
-> `spec/grammar.ebnf` (`ring_layout_decl`).
+> reprs/orderings/unit) is enforced in `hale-types::check`.
+>
+> **PR2 (LANDED): the `layout:` binding kwarg.**
+> `shm_ring(..., layout: Name)` parses and resolves to a declared
+> `ring_layout` (unknown / non-layout names diagnose); absent
+> `layout:` keeps the native ring, so existing bindings are unchanged.
+> No codegen behavior yet — PR3 adds the descriptor-parameterized
+> read-only consumer. Grammar: `spec/grammar.ebnf` (`ring_layout_decl`,
+> `shm_ring_kwarg`).
 
 magus2's ring becomes a declaration:
 

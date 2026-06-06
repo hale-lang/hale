@@ -1814,10 +1814,16 @@ impl Parser {
                 let name = self.expect_string_literal("shm_ring name")?;
                 let mut slot_count: u64 = 128;
                 let mut overflow: Option<ShmRingOverflow> = None;
+                let mut layout: Option<Ident> = None;
                 while self.eat(&TokenKind::Comma) {
                     let key = self.expect_ident("shm_ring kwarg name")?;
                     self.expect(TokenKind::Colon, ":")?;
                     match key.name.as_str() {
+                        "layout" => {
+                            layout = Some(self.expect_ident(
+                                "ring_layout name for `layout:`",
+                            )?);
+                        }
                         "slot_count" => {
                             let tok = self.peek_token().clone();
                             match tok.kind {
@@ -1881,7 +1887,7 @@ impl Parser {
                                 key.span,
                                 format!(
                                     "unknown `shm_ring` kwarg `{}` (recognized: \
-                                     `slot_count`, `on_overflow`)",
+                                     `slot_count`, `on_overflow`, `layout`)",
                                     other
                                 ),
                             ));
@@ -1904,6 +1910,7 @@ impl Parser {
                     name,
                     slot_count,
                     overflow,
+                    layout,
                     span: head_tok.span.merge(close.span),
                 })
             }

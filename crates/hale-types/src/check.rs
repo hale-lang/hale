@@ -2819,6 +2819,37 @@ fn check_main_and_bindings(
                                 }
                             }
 
+                            // shm-ring-interop Proposal B: a
+                            // `shm_ring(..., layout: Name)` binding's
+                            // layout reference must resolve to a
+                            // declared `ring_layout`. Absent layout =
+                            // the native shape (back-compat).
+                            if let TransportSpec::ShmRing {
+                                layout: Some(lid), ..
+                            } = &entry.transport
+                            {
+                                match top.lookup(&lid.name) {
+                                    Some(TopSymbol::RingLayout(_)) => {}
+                                    Some(_) => diags.push(Diag::ty(
+                                        lid.span,
+                                        format!(
+                                            "shm_ring binding for topic `{}`: \
+                                             `layout: {}` is not a `ring_layout` \
+                                             declaration",
+                                            entry.topic.name, lid.name
+                                        ),
+                                    )),
+                                    None => diags.push(Diag::ty(
+                                        lid.span,
+                                        format!(
+                                            "shm_ring binding for topic `{}`: \
+                                             unknown ring_layout `{}`",
+                                            entry.topic.name, lid.name
+                                        ),
+                                    )),
+                                }
+                            }
+
                             // Form K4a (2026-05-20): operational-
                             // constraint validity. The `where ...`
                             // clause asserts properties of the
