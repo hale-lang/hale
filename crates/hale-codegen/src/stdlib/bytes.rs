@@ -14,6 +14,16 @@ pub(crate) trait BytesStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
+    /// `std::bytes::read_<type>_<endian>(b, off)` binary-pack readers
+    /// (u8/u16/u32/u64, i8/i16/i32/i64, f32/f64), each
+    /// `-> Int|Float fallible(IndexError)`. `name` is the bare fn name
+    /// (e.g. "read_u32_le"); it carries width/signedness/endianness.
+    fn lower_std_bytes_read(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
     fn lower_std_bytes_builder_new(
         &mut self,
         args: &[Expr],
@@ -229,6 +239,188 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
             out_val_slot: Some(out_val_slot),
             out_err_slot,
             success_ty: Some(CodegenTy::Int),
+            payload_ty,
+        })
+    }
+
+    fn lower_std_bytes_read(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        // Parse `read_<type>[_<endian>]` → width / signed / endian /
+        // float. u8/i8 have no endian suffix (width 1).
+        let spec = name.strip_prefix("read_").ok_or_else(|| {
+            CodegenError::Unsupported(format!("not a bytes reader: {}", name))
+        })?;
+        let (tok, big_endian) = if let Some(t) = spec.strip_suffix("_le") {
+            (t, false)
+        } else if let Some(t) = spec.strip_suffix("_be") {
+            (t, true)
+        } else {
+            (spec, false) // u8 / i8 — width 1, endianness irrelevant
+        };
+        let (width, is_signed, is_float): (i32, bool, bool) = match tok {
+            "u8" => (1, false, false),
+            "u16" => (2, false, false),
+            "u32" => (4, false, false),
+            "u64" => (8, false, false),
+            "i8" => (1, true, false),
+            "i16" => (2, true, false),
+            "i32" => (4, true, false),
+            "i64" => (8, true, false),
+            "f32" => (4, false, true),
+            "f64" => (8, false, true),
+            _ => {
+                return Err(CodegenError::Unsupported(format!(
+                    "unknown bytes reader `std::bytes::{}`",
+                    name
+                )))
+            }
+        };
+
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::{} takes 2 args (b, off), got {}",
+                name,
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::{}: first arg must be Bytes, got {:?}",
+                name, b_ty
+            )));
+        }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
+        let (off_val, off_ty) = self.lower_expr(&args[1], scope)?;
+        if off_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::{}: offset must be Int, got {:?}",
+                name, off_ty
+            )));
+        }
+        let off_ssa = off_val.into_int_value();
+
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        // oob out-param (i64 *) — entry-block alloca so it's hoisted.
+        let oob_slot = self.alloca_for(&CodegenTy::Int, "bytes.read.oob")?;
+        let read_fn = self
+            .module
+            .get_function("lotus_bytes_read_uint")
+            .expect("lotus_bytes_read_uint declared");
+        let raw = self
+            .builder
+            .build_call(
+                read_fn,
+                &[
+                    b_val.into(),
+                    off_ssa.into(),
+                    i32_t.const_int(width as u64, false).into(),
+                    i32_t.const_int(is_signed as u64, false).into(),
+                    i32_t.const_int(big_endian as u64, false).into(),
+                    oob_slot.into(),
+                ],
+                "bytes.read.raw",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_bytes_read_uint returns i64")
+            .into_int_value();
+        // is_err = (*oob != 0)
+        let oob_v = self
+            .builder
+            .build_load(i64_t, oob_slot, "bytes.read.oob.v")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                oob_v,
+                i64_t.const_zero(),
+                "bytes.read.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Success value: int readers hand back the raw i64; float
+        // readers bit-cast the raw bits (f64) or truncate+bitcast+
+        // fpext (f32 → Hale's f64 Float).
+        let (success_val, success_ty): (BasicValueEnum<'ctx>, CodegenTy) =
+            if !is_float {
+                (raw.into(), CodegenTy::Int)
+            } else if width == 8 {
+                let f = self
+                    .builder
+                    .build_bit_cast(raw, self.context.f64_type(), "bytes.read.f64")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                (f, CodegenTy::Float)
+            } else {
+                let bits32 = self
+                    .builder
+                    .build_int_truncate(raw, i32_t, "bytes.read.f32.bits")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let f32v = self
+                    .builder
+                    .build_bit_cast(bits32, self.context.f32_type(), "bytes.read.f32")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_float_value();
+                let f64v = self
+                    .builder
+                    .build_float_ext(f32v, self.context.f64_type(), "bytes.read.f32.ext")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                (f64v.into(), CodegenTy::Float)
+            };
+
+        // Lazy IndexError on the err path (mirrors bytes::at): fetch
+        // len only when out of bounds.
+        let payload_ty = CodegenTy::TypeRef("IndexError".to_string());
+        let out_val_slot = self.alloca_for(&success_ty, "bytes.read.out_val")?;
+        let out_err_slot = self.alloca_for(&payload_ty, "bytes.read.out_err")?;
+        self.builder
+            .build_store(out_val_slot, success_val)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let func = self.current_fn.expect("bytes.read inside fn body");
+        let lazy_err_bb =
+            self.context.append_basic_block(func, "bytes.read.lazy_err");
+        let join_bb = self.context.append_basic_block(func, "bytes.read.join");
+        self.builder
+            .build_conditional_branch(is_err, lazy_err_bb, join_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(lazy_err_bb);
+        let len_fn = self
+            .module
+            .get_function("lotus_bytes_len")
+            .expect("lotus_bytes_len declared");
+        let len_ssa = self
+            .builder
+            .build_call(len_fn, &[b_val.into()], "bytes.read.len")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64")
+            .into_int_value();
+        let ie_ptr =
+            self.emit_index_error_alloc("out_of_bounds", off_ssa, len_ssa)?;
+        self.builder
+            .build_store(out_err_slot, ie_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(join_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(join_bb);
+        Ok(FallibleCallResult {
+            i1_path: is_err,
+            out_val_slot: Some(out_val_slot),
+            out_err_slot,
+            success_ty: Some(success_ty),
             payload_ty,
         })
     }
