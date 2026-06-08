@@ -280,15 +280,26 @@ fn compile_cached_runtime_object(
     if obj.exists() {
         return Ok(obj);
     }
-    // Compile to per-process temp paths, then atomically rename the
-    // object into place — so concurrent `hale build`s (the corpus
-    // oracle runs fixtures in parallel) never see a half-written .o.
+    // Compile to a UNIQUE temp path, then atomically rename the object
+    // into place — so concurrent builds never see a half-written .o
+    // and never clobber each other's in-flight source. The corpus
+    // oracle runs fixtures in parallel *threads of one process*, so a
+    // `{pid}` suffix is not enough: two threads compiling the same
+    // runtime object (same source+flags → same `key`) would share the
+    // temp path, and one thread's post-compile `remove_file` could
+    // delete the source out from under another thread's clang (-> a
+    // "no such file / no input files" build failure). A per-call
+    // process-wide nonce disambiguates concurrent same-process builds;
+    // `{pid}` still disambiguates across processes.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static RT_TMP_NONCE: AtomicU64 = AtomicU64::new(0);
     let pid = std::process::id();
-    let src_tmp = dir.join(format!("lotus-rt-{stem}-{key:016x}.{pid}.c"));
+    let nonce = RT_TMP_NONCE.fetch_add(1, Ordering::Relaxed);
+    let src_tmp = dir.join(format!("lotus-rt-{stem}-{key:016x}.{pid}.{nonce}.c"));
     std::fs::write(&src_tmp, source).map_err(|e| {
         CodegenError::Link(format!("write runtime {stem} C: {e}"))
     })?;
-    let obj_tmp = dir.join(format!("lotus-rt-{stem}-{key:016x}.{pid}.o"));
+    let obj_tmp = dir.join(format!("lotus-rt-{stem}-{key:016x}.{pid}.{nonce}.o"));
     let status = Command::new("clang")
         .arg("-c")
         .args(cflags)
