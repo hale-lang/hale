@@ -852,9 +852,23 @@ the native LRSRNG1 shape:
   subscriber registry + `atexit` teardown; a layout subscriber is
   marked `is_layout` and torn down via `lotus_shm_ring_close_layout`.
 
-Field reads are host-native endianness (magus2 and Hale are both
-little-endian x86-64). v1 is read-only `byte_records`; the
-producer side and `slots` framing are post-v1.
+The producer side (Proposal B M3a) mirrors these:
+
+- `lotus_shm_ring_create_layout(name, desc, capacity)` — CREATE +
+  own the segment (size `data_at + capacity`, write the
+  magic/`version`/`buffer_size` header, zero the cursor). Attaches
+  read-write without re-init if it already exists.
+- `lotus_bus_register_shm_ring_layout(subject, name, desc_words,
+  capacity)` — create via the above + register a producer (one per
+  subject). `lotus_bus_publish_shm_ring_layout(subject, value,
+  size)` frames one `byte_records` record (the inverse of the
+  reader: reserve `align_up`, `pad_sentinel` at the wrap, write the
+  length prefix + payload, release-store the cursor). The producer
+  rings are closed + `shm_unlink`'d at `atexit`.
+
+Field reads/writes are host-native endianness (magus2 and Hale are
+both little-endian x86-64). v1 is `byte_records` only; the `slots`
+framing kind and a zero-copy writable producer view are post-v1.
 
 v1 scope: single-producer, multi-consumer; in-memory delivery is
 in scope (POSIX shm_open works intra-machine cross-process).

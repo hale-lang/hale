@@ -852,10 +852,24 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .as_pointer_value();
+        // Proposal B M3a: a `layout:`-bound topic frames a foreign
+        // `byte_records` record via the layout publish path; the
+        // native ring uses claim + memcpy + commit. Both take the
+        // same (subject, value, size) arguments.
+        let is_layout = self
+            .shm_ring_subjects
+            .get(subject)
+            .map(|info| info.layout.is_some())
+            .unwrap_or(false);
+        let publish_fn_name = if is_layout {
+            "lotus_bus_publish_shm_ring_layout"
+        } else {
+            "lotus_bus_publish_shm_ring"
+        };
         let publish_fn = self
             .module
-            .get_function("lotus_bus_publish_shm_ring")
-            .expect("lotus_bus_publish_shm_ring declared");
+            .get_function(publish_fn_name)
+            .unwrap_or_else(|| panic!("{} declared", publish_fn_name));
         self.builder
             .build_call(
                 publish_fn,

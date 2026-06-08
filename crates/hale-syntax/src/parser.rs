@@ -1815,6 +1815,7 @@ impl Parser {
                 let mut slot_count: u64 = 128;
                 let mut overflow: Option<ShmRingOverflow> = None;
                 let mut layout: Option<Ident> = None;
+                let mut buffer_size: Option<u64> = None;
                 while self.eat(&TokenKind::Comma) {
                     let key = self.expect_ident("shm_ring kwarg name")?;
                     self.expect(TokenKind::Colon, ":")?;
@@ -1823,6 +1824,33 @@ impl Parser {
                             layout = Some(self.expect_ident(
                                 "ring_layout name for `layout:`",
                             )?);
+                        }
+                        "buffer_size" => {
+                            let tok = self.peek_token().clone();
+                            match tok.kind {
+                                TokenKind::IntLit(n) if n > 0 => {
+                                    self.bump();
+                                    buffer_size = Some(n as u64);
+                                }
+                                TokenKind::IntLit(_) => {
+                                    return Err(Diag::parse(
+                                        tok.span,
+                                        "shm_ring `buffer_size:` must be a positive \
+                                         byte count"
+                                            .to_string(),
+                                    ));
+                                }
+                                other => {
+                                    return Err(Diag::parse(
+                                        tok.span,
+                                        format!(
+                                            "expected positive integer for shm_ring \
+                                             `buffer_size:`, got {:?}",
+                                            other
+                                        ),
+                                    ));
+                                }
+                            }
                         }
                         "slot_count" => {
                             let tok = self.peek_token().clone();
@@ -1887,7 +1915,8 @@ impl Parser {
                                 key.span,
                                 format!(
                                     "unknown `shm_ring` kwarg `{}` (recognized: \
-                                     `slot_count`, `on_overflow`, `layout`)",
+                                     `slot_count`, `on_overflow`, `layout`, \
+                                     `buffer_size`)",
                                     other
                                 ),
                             ));
@@ -1911,6 +1940,7 @@ impl Parser {
                     slot_count,
                     overflow,
                     layout,
+                    buffer_size,
                     span: head_tok.span.merge(close.span),
                 })
             }

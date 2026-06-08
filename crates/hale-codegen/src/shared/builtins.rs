@@ -1195,6 +1195,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
+        // Proposal B M3a (2026-06-06): foreign-layout PRODUCER. The
+        // prelude emits a register for each layout-bound topic the
+        // bundle publishes (creates the ring); publish sites route
+        // through publish_shm_ring_layout (frames one byte_records
+        // record + advances the cursor).
+        // declare void @lotus_bus_register_shm_ring_layout(
+        //   ptr subject, ptr shm_name, ptr desc_words, i64 capacity)
+        let bus_register_shm_ring_layout_ty = void_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), ptr_t.into(), i64_t.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_bus_register_shm_ring_layout",
+            bus_register_shm_ring_layout_ty,
+            None,
+        );
+        // declare i32 @lotus_bus_publish_shm_ring_layout(
+        //   ptr subject, ptr value, i64 value_size)
+        let bus_publish_shm_ring_layout_ty = i32_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), i64_t.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_bus_publish_shm_ring_layout",
+            bus_publish_shm_ring_layout_ty,
+            None,
+        );
+
         // m105: adapter-driven inbound dispatch. Hands wire bytes
         // through the subject's registered deserialize fn into the
         // local handler set. Backs the `std::bus::__local_dispatch`

@@ -48,6 +48,17 @@ extern void lotus_bus_register_subscriber_shm_ring_layout(
     void *self_ptr,
     void (*handler_fn)(void *self, void *slot));
 
+/* Proposal B M3a — producer-side C ABI. */
+extern void lotus_bus_register_shm_ring_layout(
+    const char *subject,
+    const char *shm_name,
+    const uint64_t *desc_words,
+    uint64_t capacity);
+extern int lotus_bus_publish_shm_ring_layout(
+    const char *subject,
+    const void *value,
+    uint64_t value_size);
+
 /* Layout constants — mirror the `MagusRing` ring_layout used in the
  * Rust-side tests. */
 #define MAGIC          0x4D475348514D4B54ULL
@@ -199,9 +210,67 @@ static int run(const char *name, uint64_t capacity, int n, int pace_us) {
     return rc;
 }
 
+/* Proposal B M3a — round-trip through the PRODUCER C ABI: register a
+ * producer (creates the ring), register a consumer (attaches), publish
+ * N records via lotus_bus_publish_shm_ring_layout, validate the
+ * consumer reads them back in order. Exercises producer + consumer
+ * framing symmetry end to end. `pace_us > 0` (with a small capacity)
+ * forces the pad-at-wrap path on the producer side too. */
+static int run_producer(const char *name, uint64_t capacity, int n, int pace_us) {
+    uint64_t desc[16];
+    build_desc(desc);
+
+    /* Producer creates + owns the ring. */
+    lotus_bus_register_shm_ring_layout("magus.ticks", name, desc, capacity);
+    /* Consumer attaches read-only and parks at cursor 0. */
+    lotus_bus_register_subscriber_shm_ring_layout(
+        "magus.ticks", name, desc, NULL, on_record);
+    struct timespec warmup = {0, 5 * 1000 * 1000};  /* 5ms */
+    nanosleep(&warmup, NULL);
+
+    for (int i = 0; i < n; i++) {
+        Payload p = { .seq_id = i + 1, .value = (int64_t)(i + 1) * 7 };
+        if (lotus_bus_publish_shm_ring_layout(
+                "magus.ticks", &p, sizeof(p)) != 0) {
+            fprintf(stderr, "publish %d failed\n", i);
+            return 2;
+        }
+        if (pace_us > 0) {
+            struct timespec ts = {0, (long)pace_us * 1000};
+            nanosleep(&ts, NULL);
+        }
+    }
+
+    for (int spins = 0; spins < 2000; spins++) {
+        if (atomic_load_explicit(&g_recv_count, memory_order_acquire) >= n) {
+            break;
+        }
+        struct timespec ts = {0, 1000 * 1000};
+        nanosleep(&ts, NULL);
+    }
+    int got = atomic_load_explicit(&g_recv_count, memory_order_acquire);
+    if (got != n) {
+        fprintf(stderr, "expected %d records, got %d\n", n, got);
+        return 3;
+    }
+    for (int i = 0; i < n; i++) {
+        if (g_recv[i].seq_id != i + 1 ||
+            g_recv[i].value != (int64_t)(i + 1) * 7) {
+            fprintf(stderr, "record %d mismatch: seq_id=%lld value=%lld\n",
+                    i, (long long)g_recv[i].seq_id,
+                    (long long)g_recv[i].value);
+            return 3;
+        }
+    }
+    /* atexit teardown joins the reader + closes/unlinks both handles. */
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s <roundtrip|wrap> <shm_name>\n", argv[0]);
+        fprintf(stderr,
+                "usage: %s <roundtrip|wrap|producer|producer_wrap> <shm_name>\n",
+                argv[0]);
         return 1;
     }
     if (strcmp(argv[1], "roundtrip") == 0) {
@@ -212,6 +281,12 @@ int main(int argc, char **argv) {
         /* capacity 256 wraps every ~10 records; pace 1ms (10x the
          * reader's 100us poll) so the consumer never laps. */
         return run(argv[2], 256, 40, 1000);
+    }
+    if (strcmp(argv[1], "producer") == 0) {
+        return run_producer(argv[2], 4096, 64, 0);
+    }
+    if (strcmp(argv[1], "producer_wrap") == 0) {
+        return run_producer(argv[2], 256, 40, 1000);
     }
     fprintf(stderr, "unknown mode `%s`\n", argv[1]);
     return 1;

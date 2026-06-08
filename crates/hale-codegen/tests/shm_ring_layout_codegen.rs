@@ -98,3 +98,69 @@ fn layout_binding_emits_layout_register_call() {
          binding; IR did not contain lotus.shm_ring.layout.desc"
     );
 }
+
+#[test]
+fn layout_publisher_emits_producer_register_and_publish() {
+    // Proposal B M3a: a bundle that *publishes* a layout-bound topic
+    // creates the foreign ring in the prelude
+    // (lotus_bus_register_shm_ring_layout) and frames each `<-`
+    // through lotus_bus_publish_shm_ring_layout — NOT the native
+    // register/publish.
+    let src = r#"
+        ring_layout MagusRing {
+            magic 0x4D475348514D4B54;
+            version 1 at 8 : u32;
+            buffer_size at 12 : u32;
+            data_at 128;
+            cursor published { at 64; repr atomic_u64; load acquire; unit bytes; }
+            framing byte_records { len_prefix u32; align 8; pad_sentinel 0xFFFFFFFF; }
+            overflow lap_detect;
+        }
+
+        type Tick { px: Int; sz: Int; }
+        topic Ticks { payload: Tick; }
+
+        locus Producer {
+            bus { publish Ticks; }
+            birth() { Ticks <- Tick { px: 1, sz: 7 }; }
+        }
+
+        main locus App {
+            bindings {
+                Ticks: shm_ring("/magus.ticks", on_overflow: drop,
+                                layout: MagusRing, buffer_size: 4096) where zero_copy;
+            }
+        }
+
+        fn main() { App { }; Producer { }; }
+    "#;
+
+    let bin = unique_path("producer", "bin");
+    let ir = bin.with_extension("ll");
+    let program = hale_syntax::parse_source(src).expect("parse");
+
+    std::env::set_var("LOTUS_DUMP_IR", "1");
+    let result = build_executable(&program, &bin);
+    std::env::remove_var("LOTUS_DUMP_IR");
+    result.expect("build");
+
+    let ir_text = std::fs::read_to_string(&ir).expect("read IR");
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_file(&ir);
+
+    assert!(
+        ir_text.contains("lotus_bus_register_shm_ring_layout"),
+        "a publishing layout binding must create the ring via the \
+         producer register; IR missing lotus_bus_register_shm_ring_layout"
+    );
+    assert!(
+        ir_text.contains("lotus_bus_publish_shm_ring_layout"),
+        "a `<-` on a layout topic must route through the layout publish \
+         path; IR missing lotus_bus_publish_shm_ring_layout"
+    );
+    // The native register/publish must NOT appear for this binding.
+    assert!(
+        !ir_text.contains("call void @lotus_bus_register_shm_ring("),
+        "a layout binding must not emit the native LRSRNG1 register"
+    );
+}
