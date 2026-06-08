@@ -302,7 +302,7 @@ jobs:
   # normal partitions. The plain exit+deadline arm of corpus_oracle
   # DOES run in those partitions (no extra toolchain needed).
   asan:
-    name: asan (example corpus)
+    name: sanitizers (asan corpus + ubsan foreign-ring)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -356,6 +356,35 @@ jobs:
           cargo test --release -p hale-codegen \
             --test corpus_oracle \
             -- --ignored --test-threads=1 --nocapture
+
+      # 2026-06-08 — UBSan (+ASan) coverage for the foreign-ring
+      # (`ring_layout`) boundary, folded into THIS job to reuse the
+      # workspace build above (a separate job would redo the expensive
+      # LLVM-linked release build for no benefit). `ring_layout` reads
+      # rings written by another program, so the interesting failures
+      # are at the non-conforming / hostile foreign-producer edge: a
+      # record `len` that disagrees with the bound payload size, a
+      # `buffer_size` that isn't an `align` multiple, a pack-read offset
+      # near INT64_MAX. A review found three OOB holes there the normal
+      # corpus never hit (it stays inside the safe invariants); this step
+      # runs the suites that DO exercise those edges with LOTUS_UBSAN=1
+      # (clang -fsanitize=address,undefined -fno-sanitize-recover), so a
+      # signed-overflow / OOB / wrongful-dispatch regression aborts and
+      # gates the merge. Scoped to the foreign-ring + pack tests on
+      # purpose: a full-corpus UBSan run could surface unrelated latent
+      # UB elsewhere (a separate effort). Leaks stay the ASan step's
+      # remit (detect_leaks=0 here) so this stays focused on UB / OOB.
+      - name: LOTUS_UBSAN=1 foreign-ring + pack suite (under ASan+UBSan)
+        env:
+          LOTUS_UBSAN: "1"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
+          ASAN_OPTIONS: "detect_leaks=0"
+        run: |
+          cargo test --release -p hale-codegen \
+            --test bytes_pack_read \
+            --test shm_ring_layout \
+            --test shm_ring_layout_producer \
+            -- --test-threads=1 --nocapture
 
   # GH issue #18 item 2: model-check the substrate's concurrent
   # primitives under ALL C11 interleavings (not just the schedules a
