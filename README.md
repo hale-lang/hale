@@ -25,6 +25,15 @@ Hale is a bet that the gap doesn't have to be there.
 
 ## A matchmaker, in Hale
 
+<!-- Rendered SVG (GitHub can't highlight `hale` itself). Source:
+     assets/readme/matchmaker.hl; regenerate with
+     `python3 tools/hale_svg.py assets/readme/matchmaker.hl assets/readme/matchmaker.svg`.
+     The copyable source is in the <details> below; keep the two in sync. -->
+![A matchmaker, in Hale](assets/readme/matchmaker.svg)
+
+<details>
+<summary>Source</summary>
+
 ```hale
 type Player    { id: String; name: String; }
 type MatchInfo { match_id: String; players: [Player]; }
@@ -47,6 +56,8 @@ locus Matchmaker {
     }
 }
 ```
+
+</details>
 
 Every phrase from the description has a syntactic home, in the order
 you thought them:

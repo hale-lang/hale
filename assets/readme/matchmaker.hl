@@ -1,0 +1,20 @@
+type Player    { id: String; name: String; }
+type MatchInfo { match_id: String; players: [Player]; }
+
+topic JoinQueue  { payload: Player; }
+topic MatchReady { payload: MatchInfo; }
+
+locus Matchmaker {
+    params { target_size: Int = 4; }
+    bus {
+        subscribe JoinQueue as on_join;
+        publish   MatchReady;
+    }
+
+    fn on_join(p: Player) {
+        self.waiting.push(p);
+        if self.waiting.len() >= self.target_size {
+            MatchReady <- assemble_match(self.waiting, self.target_size);
+        }
+    }
+}
