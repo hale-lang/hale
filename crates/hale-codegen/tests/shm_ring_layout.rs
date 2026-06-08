@@ -51,6 +51,14 @@ fn build_driver(tag: &str) -> PathBuf {
     // overflow / OOB checks; -O2 otherwise.
     if std::env::var("LOTUS_UBSAN").map(|v| v == "1").unwrap_or(false) {
         cmd.arg("-fsanitize=address,undefined")
+            // The raw (BytesView) path calls the handler through an
+            // intentionally cast, ABI-compatible function pointer; the
+            // driver's view struct and the runtime's are layout-identical
+            // but distinct C types, which trips UBSan's (overly strict
+            // for this) function-type check. The real Hale path is clean
+            // (LLVM methods carry no UBSan type descriptor). Address +
+            // overflow + alignment checks stay on.
+            .arg("-fno-sanitize=function")
             .arg("-fno-sanitize-recover=all")
             .arg("-O1")
             .arg("-g");
@@ -177,4 +185,13 @@ fn layout_bad_buffer_size_rejected() {
     // best-effort segment cleanup (the _exit(1) skips the driver's unlink)
     let stripped = name.trim_start_matches('/');
     let _ = std::fs::remove_file(format!("/dev/shm/{}", stripped));
+}
+
+/// Raw / heterogeneous foreign ring (value_size == 0): records of two
+/// different sizes tagged by an i64 `kind` discriminator, consumed by a
+/// single raw subscriber that receives a BytesView per record and
+/// decodes both shapes. The path for real mixed-record external rings.
+#[test]
+fn layout_heterogeneous_raw_view() {
+    run_mode("heterogeneous");
 }

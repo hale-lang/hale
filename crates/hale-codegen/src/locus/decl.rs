@@ -1274,6 +1274,16 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                     .and_then(|lt| match lt {
                                         CodegenTy::TypeRef(n) => Some(n),
                                         CodegenTy::Enum(n) => Some(n),
+                                        // Raw-frame foreign-ring path: a
+                                        // BytesView payload has no struct
+                                        // type. The name isn't a user_type,
+                                        // so the layout-subscriber lowering
+                                        // resolves value_size = 0 (raw) and
+                                        // the runtime hands the handler a
+                                        // bounded view per record.
+                                        CodegenTy::BytesView => {
+                                            Some("BytesView".to_string())
+                                        }
                                         _ => None,
                                     })
                                     .ok_or_else(|| {
@@ -1281,8 +1291,8 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                             "locus `{}` subscribe `{}`: \
                                              missing or unsupported \
                                              payload type (m60 requires \
-                                             a TypeRef or has-payload \
-                                             Enum)",
+                                             a TypeRef, has-payload Enum, \
+                                             or BytesView)",
                                             l.name.name, subject
                                         ))
                                     })?;

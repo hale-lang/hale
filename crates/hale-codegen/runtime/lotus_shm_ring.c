@@ -925,6 +925,18 @@ int lotus_bus_publish_shm_ring_layout(const char *subject,
  * post-v1.
  */
 
+/* Raw-frame (BytesView) record view, used by the `value_size == 0`
+ * consumer path (heterogeneous / variable-length rings). Layout must
+ * match lotus_arena.c's `lotus_view_t` / `LOTUS_VIEW_EPOCH_STATIC`: a
+ * `{ void* src; int64_t epoch; }` pair where epoch == -1 marks a
+ * static view whose `src` is a Bytes-shaped blob (`[i64 len][data]`).
+ * The pack readers (std::bytes::read_*) expect that blob prefix, which
+ * a raw ring record lacks — and the mapping is read-only — so the
+ * record payload is copied into a Bytes-shaped scratch blob per
+ * dispatch rather than aliased. */
+typedef struct { void *src; int64_t epoch; } shm_lotus_view_t;
+#define SHM_VIEW_EPOCH_STATIC ((int64_t)-1)
+
 struct shm_ring_subscriber_t {
     lotus_shm_ring_t *ring;
     /* Proposal B (2026-06-06): a foreign-layout subscriber sets
@@ -935,6 +947,10 @@ struct shm_ring_subscriber_t {
     lotus_shm_layout_ring_t *lring;
     void (*handler_fn)(void *self, void *slot);
     void *self_ptr;
+    /* Reused Bytes-shaped scratch blob for the raw (value_size==0)
+     * BytesView path; grown on demand, freed at teardown. */
+    char *scratch;
+    size_t scratch_cap;
     pthread_t thread;
     /* Form K-cleanup (2026-05-20): atexit hook sets this to 1
      * before pthread_join. Reader loop checks each iteration
@@ -1073,8 +1089,37 @@ static void *shm_ring_layout_reader_thread(void *arg) {
                 pos = committed % cap;
                 break;
             }
-            sub->handler_fn(sub->self_ptr,
-                            base + phys + d->len_prefix_width);
+            char *payload = base + phys + d->len_prefix_width;
+            if (d->value_size == 0) {
+                /* Raw-frame mode: the bound payload is a BytesView, so
+                 * the consumer can't assume a fixed record size. Hand
+                 * the handler a bounded BytesView over a Bytes-shaped
+                 * copy of the record payload; it decodes (discriminator
+                 * + std::bytes::read_*) itself. The framed `len` is
+                 * already validated to fit the ring above. */
+                size_t need = (size_t)sizeof(int64_t) + (size_t)len;
+                if (sub->scratch_cap < need) {
+                    char *p = (char *)realloc(sub->scratch, need);
+                    if (!p) {  /* OOM — skip this record, resync */
+                        local = committed;
+                        pos = committed % cap;
+                        break;
+                    }
+                    sub->scratch = p;
+                    sub->scratch_cap = need;
+                }
+                *(int64_t *)sub->scratch = (int64_t)len;
+                memcpy(sub->scratch + sizeof(int64_t), payload, (size_t)len);
+                shm_lotus_view_t v;
+                v.src = sub->scratch;
+                v.epoch = SHM_VIEW_EPOCH_STATIC;
+                ((void (*)(void *, shm_lotus_view_t))sub->handler_fn)(
+                    sub->self_ptr, v);
+            } else {
+                /* Typed-flat mode: the record IS the payload struct
+                 * (len == value_size, checked above); hand its pointer. */
+                sub->handler_fn(sub->self_ptr, payload);
+            }
             uint64_t step = d->len_prefix_width + len;
             if (d->align > 1) {
                 step = (step + d->align - 1) & ~(d->align - 1);
@@ -1266,6 +1311,7 @@ static void shm_ring_atexit_cleanup(void) {
             } else if (sub->ring) {
                 lotus_shm_ring_close(sub->ring);
             }
+            free(sub->scratch);
             free(sub);
             g_shm_ring_subscribers[i] = NULL;
         }

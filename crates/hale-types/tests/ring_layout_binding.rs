@@ -150,3 +150,33 @@ fn buffer_size_multiple_of_align_is_clean() {
         msgs
     );
 }
+
+#[test]
+fn bytesview_payload_on_layout_binding_is_clean() {
+    // Raw-frame mode: a BytesView payload on a layout binding is the
+    // path for heterogeneous / variable-length rings — accepted (not
+    // required to be flat-shapeable).
+    let src = format!(
+        r#"
+{LAYOUT}
+topic Recs {{ payload: BytesView; }}
+locus Sub {{
+    bus {{ subscribe Recs as on_rec; }}
+    fn on_rec(v: BytesView) {{ let _ = std::bytes::read_u8(v, 0) or 0; }}
+}}
+main locus App {{
+    bindings {{
+        Recs: shm_ring("/foreign.ticks", on_overflow: drop, layout: MagusRing);
+    }}
+}}
+fn main() {{ App {{ }}; Sub {{ }}; }}
+"#
+    );
+    let msgs = check(&src);
+    assert!(
+        !msgs.iter().any(|m| m.contains("flat-shapeable")),
+        "a BytesView payload on a layout binding must be accepted (raw-frame \
+         mode); got: {:?}",
+        msgs
+    );
+}
