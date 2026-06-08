@@ -18,26 +18,13 @@ import html
 import re
 import sys
 
-# Keyword set — mirrors pond/heron/queries/highlights.scm (the most
-# complete source) and docs/hale-highlight.js; keep the three in sync.
+# Keyword set — generated from the compiler's canonical list, not edited
+# by hand. Source: crates/hale-syntax/src/keywords.rs.
+# BEGIN GENERATED KEYWORDS — regen: `cargo test -p hale-syntax --test keyword_sync` (UPDATE_KEYWORDS=1 to bless).
 KEYWORDS = set(
-    "locus perspective interface module topic ring_layout type const fn import export as main "
-    "tier projection schedule rich chunked recognition fixed_cell shared_slab spillover "
-    "summary_only cooperative pinned cap core mode "
-    "params contract bus capacity bindings placement indexed_by as_parent_for "
-    "birth accept run drain dissolve on_failure bulk harmonic resolution birth_check "
-    "expose consume inferred "
-    "subscribe publish of payload subject stable_when serialize_as "
-    "pool heap "
-    "closure epoch persists_through resets_on resets_per_epoch captures inline tick "
-    "duration explicit approx within "
-    "unix shm_ring where role listen connect slot_count on_overflow block drop "
-    "intra_process intra_machine cross_machine zero_copy "
-    "let mut if else match for in while return break continue self yield sum prod "
-    "restart restart_in_place quarantine reorganize bubble violate with until "
-    "fallible fail or terminate release "
-    "trait impl async await macro".split()
+    "accept approx as as_parent_for async await bindings birth birth_check block break bubble bulk bus cap capacity captures chunked closure connect const consume continue contract cooperative core cross_machine dissolve drain drop duration else epoch explicit export expose fail fallible fixed_cell fn for harmonic heap if impl import in indexed_by inferred inline interface intra_machine intra_process let listen locus macro main match mode module mut of on on_failure on_overflow or params payload persists_through perspective pinned placement pool prod projection publish quarantine recognition release reorganize resets_on resets_per_epoch resolution restart restart_in_place return rich ring_layout role run schedule self serialize_as shared_slab shm_ring slot_count spillover stable_when subject subscribe sum summary_only terminate tick tier topic trait type unix until violate where while with within yield zero_copy".split()
 )
+# END GENERATED KEYWORDS
 LITERALS = {"true", "false", "nil"}
 
 # GitHub-dark theme (renders well over the SVG's own dark background on
