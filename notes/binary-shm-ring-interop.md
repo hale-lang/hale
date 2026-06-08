@@ -332,15 +332,31 @@ why it does **not** widen the unsafe surface.
   compiler emits the bounded accessor — exactly as it does today for
   `LRSRNG1`. The trusted/unsafe surface is the *ring-layout lowering*, a
   single compiler component, not per-use app code.
-- **All access is bounded to the mapping.** Record offsets are taken
-  `mod buffer_size`; payload views are clamped to
-  `[off, off+len) ∩ [data_at, data_at+buffer_size)`; the pack primitives
-  are themselves bounds-checked. So a **wrong declaration produces wrong
-  values, never out-of-bounds memory access.** That is strictly safer
-  than `@ffi("c")` glue, which can OOB.
-- **Validated at attach.** `magic` + `version` mismatch → clean failure
-  (don't map an incompatible ring), per the existing
-  `lotus_shm_ring_open` behavior.
+- **All access is bounded to the mapping — given the checks below.**
+  Record offsets stay within `[data_at, data_at+buffer_size)`; the pack
+  primitives are bounds-checked (overflow-safe: a near-`INT64_MAX`
+  offset can't wrap the guard). The headline guarantee — **a wrong
+  declaration produces wrong values, never out-of-bounds memory
+  access** — holds *because* the boundary against a non-conforming /
+  hostile foreign producer is closed by:
+    - **frontend** (`check_ring_layout` / the binding check):
+      `len_prefix_width <= align`, `buffer_size % align == 0` (producer
+      `buffer_size:`), an 8-aligned `atomic_u64` cursor, and presence of
+      `magic` / `data_at` / a `buffer_size` scalar;
+    - **attach** (`lotus_shm_ring_open_layout`): reject a foreign
+      `buffer_size` that isn't a multiple of `align`;
+    - **per record** (the `byte_records` reader): the len-prefix read is
+      clamped to `pos + len_prefix_width <= cap`; the framed `len` must
+      equal the bound payload's fixed `value_size` (else resync, never
+      dispatch — so the handler never reads past a short record); the
+      record-fit test is overflow-safe against a hostile `len`.
+
+  Without those, a hostile producer *could* drive an OOB read at the
+  wrap; with them it cannot. This is still strictly safer than
+  `@ffi("c")` glue, which has no such enforced boundary.
+- **Validated at attach.** `magic` + `version` mismatch, or a
+  `buffer_size` that isn't `align`-aligned / overruns the mapping →
+  clean failure (don't map an incompatible ring).
 - **The trust boundary is the same as every schema binding.** You assert
   the declared layout matches the producer — identical to `bindgen`
   (`#[repr(C)]`), `svd2rust` (memory-mapped registers), or an SBE schema.

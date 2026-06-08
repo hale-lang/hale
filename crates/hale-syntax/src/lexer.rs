@@ -700,12 +700,28 @@ impl<'a> Lexer<'a> {
         if text.is_empty() {
             return Err(Diag::lex(span, "empty digits in numeric literal"));
         }
-        let v = i64::from_str_radix(&text, radix).map_err(|_| {
-            Diag::lex(
-                span,
-                format!("invalid integer literal: 0{:?}{}", radix_prefix(radix), text),
-            )
-        })?;
+        // Radix (hex / binary / octal) literals accept the full u64
+        // range and store the bit pattern as i64, so a mask or magic with
+        // the top bit set (e.g. a `ring_layout magic 0xFFFF_FFFF_FFFF_FFFF`)
+        // is expressible; a consumer recovers the intended value with
+        // `x as u64`. Decimal literals keep the signed i64 range (see
+        // lex_number). Only a value that overflows even u64 is an error.
+        let v = match i64::from_str_radix(&text, radix) {
+            Ok(v) => v,
+            Err(_) => match u64::from_str_radix(&text, radix) {
+                Ok(u) => u as i64,
+                Err(_) => {
+                    return Err(Diag::lex(
+                        span,
+                        format!(
+                            "invalid integer literal: 0{:?}{}",
+                            radix_prefix(radix),
+                            text
+                        ),
+                    ));
+                }
+            },
+        };
         Ok(Token::new(TokenKind::IntLit(v), span))
     }
 

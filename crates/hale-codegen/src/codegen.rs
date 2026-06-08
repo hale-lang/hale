@@ -569,6 +569,12 @@ pub fn build_executable_with_options(
     // prefetch / source change yields a fresh object.
     let lotus_tsan = env_flag("LOTUS_TSAN");
     let lotus_asan = env_flag("LOTUS_ASAN");
+    // LOTUS_UBSAN: address + undefined-behavior sanitizers together, with
+    // -fno-sanitize-recover so any UB (e.g. the signed `off + width`
+    // overflow class in the pack readers / ring framing) aborts and is
+    // caught. Separate from LOTUS_ASAN so the corpus-oracle ASan gate is
+    // unaffected; used to validate the foreign-ring boundary hardening.
+    let lotus_ubsan = env_flag("LOTUS_UBSAN");
     let prefetch_disabled = env_flag("LOTUS_DISABLE_PREFETCH");
     let mut rt_cflags: Vec<String> = Vec::new();
     if lotus_tsan {
@@ -577,6 +583,11 @@ pub fn build_executable_with_options(
         // bodies (LOTUS_ENABLE_WRAP_MALLOC) are left out here and the
         // -Wl,--wrap link flags below are skipped.
         rt_cflags.push("-fsanitize=thread".into());
+        rt_cflags.push("-O1".into());
+    } else if lotus_ubsan {
+        rt_cflags.push("-fsanitize=address,undefined".into());
+        rt_cflags.push("-fno-sanitize-recover=all".into());
+        rt_cflags.push("-fno-omit-frame-pointer".into());
         rt_cflags.push("-O1".into());
     } else if lotus_asan {
         // ASAN: same rationale as TSAN re: the wrap shim.
@@ -681,6 +692,8 @@ pub fn build_executable_with_options(
         // Pulls the TSAN runtime; the wrap shim is disabled (TSAN's
         // own allocator interceptor collides with -Wl,--wrap).
         clang.arg("-fsanitize=thread");
+    } else if lotus_ubsan {
+        clang.arg("-fsanitize=address,undefined");
     } else if lotus_asan {
         // Pulls the ASAN + LeakSanitizer runtimes.
         clang.arg("-fsanitize=address");
@@ -5657,8 +5670,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     // actual size from the header.
                                     const DEFAULT_CAP: u64 = 1 << 20;
                                     let cap = buffer_size.unwrap_or(DEFAULT_CAP);
+                                    // The bound payload's fixed byte size,
+                                    // framed as each record's `len` (and
+                                    // checked == len on the consumer).
+                                    let value_size = self
+                                        .shm_ring_subjects
+                                        .get(&subject)
+                                        .map(|i| i.payload_type_name.clone())
+                                        .and_then(|n| self.user_types.get(&n))
+                                        .and_then(|pi| pi.struct_ty.size_of())
+                                        .and_then(|iv| iv.get_zero_extended_constant())
+                                        .unwrap_or(0);
                                     self.emit_bus_register_shm_ring_layout_producer(
-                                        &subject, name, &decl, cap,
+                                        &subject, name, &decl, cap, value_size,
                                     )?;
                                 }
                             }

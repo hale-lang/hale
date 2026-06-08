@@ -156,8 +156,17 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
         // `ring_layout` and register through the layout-aware path;
         // the native LRSRNG1 path below is left untouched.
         if let Some(layout) = info.layout.clone() {
+            // The bound payload's fixed byte size — the consumer requires
+            // each record's framed `len` to equal this before dispatch.
+            let value_size = self
+                .user_types
+                .get(&info.payload_type_name)
+                .and_then(|pi| pi.struct_ty.size_of())
+                .and_then(|iv| iv.get_zero_extended_constant())
+                .unwrap_or(0);
             return self.emit_bus_register_shm_ring_layout(
-                subject, &info.shm_name, &layout, self_ptr, handler_fn,
+                subject, &info.shm_name, &layout, value_size, self_ptr,
+                handler_fn,
             );
         }
         let payload_info = self
@@ -368,6 +377,7 @@ fn ring_repr_width(repr: &str) -> u64 {
 ///     `pad_sentinel` → record framing.
 fn ring_layout_descriptor_words(
     decl: &hale_syntax::ast::RingLayoutDecl,
+    value_size: u64,
 ) -> [u64; 16] {
     use hale_syntax::ast::RingAttrValue;
     let mut w = [0u64; 16];
@@ -434,6 +444,13 @@ fn ring_layout_descriptor_words(
         }
     }
 
+    // [15] value_size: the bound payload's fixed byte size. The consumer
+    // requires each record's framed `len` to equal this before handing
+    // the bytes to the handler (which reads exactly value_size bytes),
+    // so a short record from a non-conforming producer can't drive an
+    // OOB read.
+    w[15] = value_size;
+
     w
 }
 
@@ -452,9 +469,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         subject: &str,
         layout: &hale_syntax::ast::RingLayoutDecl,
+        value_size: u64,
     ) -> PointerValue<'ctx> {
         let i64_t = self.context.i64_type();
-        let words = ring_layout_descriptor_words(layout);
+        let words = ring_layout_descriptor_words(layout, value_size);
         let const_vals: Vec<inkwell::values::IntValue<'ctx>> =
             words.iter().map(|wrd| i64_t.const_int(*wrd, false)).collect();
         let arr = i64_t.const_array(&const_vals);
@@ -475,10 +493,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         subject: &str,
         shm_name: &str,
         layout: &hale_syntax::ast::RingLayoutDecl,
+        value_size: u64,
         self_ptr: PointerValue<'ctx>,
         handler_fn: FunctionValue<'ctx>,
     ) -> Result<(), CodegenError> {
-        let desc_ptr = self.ring_layout_desc_global(subject, layout);
+        let desc_ptr = self.ring_layout_desc_global(subject, layout, value_size);
 
         let subj_ptr = self
             .builder
@@ -528,8 +547,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         shm_name: &str,
         layout: &hale_syntax::ast::RingLayoutDecl,
         capacity: u64,
+        value_size: u64,
     ) -> Result<(), CodegenError> {
-        let desc_ptr = self.ring_layout_desc_global(subject, layout);
+        let desc_ptr = self.ring_layout_desc_global(subject, layout, value_size);
         let subj_ptr = self
             .builder
             .build_global_string_ptr(

@@ -11352,7 +11352,14 @@ int64_t lotus_bytes_read_uint(const void *b, int64_t off, int width,
                               int is_signed, int big_endian,
                               int64_t *oob) {
     int64_t len = lotus_bytes_len(b);
-    if (!b || off < 0 || width < 1 || width > 8 || off + width > len) {
+    /* Overflow-safe bound: `off + width > len` would overflow int64_t
+     * for `off` near INT64_MAX (signed-overflow UB, and on wrap it goes
+     * negative and passes → OOB read). The `||` chain has already
+     * established `off >= 0` and `1 <= width <= 8` here, so
+     * `len - (int64_t)width` is computed without overflow and the
+     * comparison rejects correctly even when `len < width` (then the
+     * RHS is negative and `off >= 0` fails it). */
+    if (!b || off < 0 || width < 1 || width > 8 || off > len - (int64_t)width) {
         if (oob) *oob = 1;
         return 0;
     }

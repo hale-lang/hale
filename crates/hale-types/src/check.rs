@@ -2825,11 +2825,47 @@ fn check_main_and_bindings(
                             // declared `ring_layout`. Absent layout =
                             // the native shape (back-compat).
                             if let TransportSpec::ShmRing {
-                                layout: Some(lid), ..
+                                layout: Some(lid), buffer_size, ..
                             } = &entry.transport
                             {
                                 match top.lookup(&lid.name) {
-                                    Some(TopSymbol::RingLayout(_)) => {
+                                    Some(TopSymbol::RingLayout(rl)) => {
+                                        // The producer's compile-time
+                                        // `buffer_size:` must be a multiple
+                                        // of the layout's record `align`,
+                                        // else a record header near the wrap
+                                        // lands in (cap-len_prefix, cap) →
+                                        // OOB. (The consumer enforces the
+                                        // same at attach for the foreign
+                                        // header's capacity.)
+                                        if let Some(bs) = buffer_size {
+                                            use hale_syntax::ast::RingAttrValue;
+                                            let align = rl
+                                                .decl
+                                                .framing
+                                                .as_ref()
+                                                .and_then(|f| f.attrs.iter().find_map(|a| {
+                                                    match (a.key.name.as_str(), &a.value) {
+                                                        ("align", RingAttrValue::Int(n)) => Some(*n),
+                                                        _ => None,
+                                                    }
+                                                }))
+                                                .unwrap_or(1);
+                                            if align > 1 && (*bs as i64) % align != 0 {
+                                                diags.push(Diag::ty(
+                                                    entry.span,
+                                                    format!(
+                                                        "shm_ring binding for topic `{}`: \
+                                                         `buffer_size: {}` must be a \
+                                                         multiple of the `{}` layout's \
+                                                         record `align` ({}) — otherwise a \
+                                                         record header can straddle the \
+                                                         wrap boundary",
+                                                        entry.topic.name, bs, lid.name, align
+                                                    ),
+                                                ));
+                                            }
+                                        }
                                         // Conformance (2026-06-06): a
                                         // layout-bound topic is read by
                                         // direct pointer-cast and written
@@ -4467,29 +4503,49 @@ impl<'a> Checker<'a> {
         //     truncated sentinel and never fires.
         if let Some(fr) = &r.framing {
             if fr.kind.name == "byte_records" {
-                if let Some((align, span)) =
+                let align_attr =
                     fr.attrs.iter().find_map(|a| match (a.key.name.as_str(), &a.value) {
                         ("align", RingAttrValue::Int(n)) => Some((*n, a.span)),
                         _ => None,
-                    })
-                {
-                    if align < 1 || (align & (align - 1)) != 0 {
-                        self.diags.push(Diag::ty(
-                            span,
-                            format!(
-                                "ring_layout `{}`: framing `align {}` must be a power \
-                                 of two — it's the record-stride alignment the reader \
-                                 masks with",
-                                r.name.name, align
-                            ),
-                        ));
-                    }
+                    });
+                // Absent `align` defaults to 1 (byte-packed) at runtime.
+                let align = align_attr.map(|(n, _)| n).unwrap_or(1);
+                let align_span = align_attr.map(|(_, s)| s).unwrap_or(fr.span);
+                if align < 1 || (align & (align - 1)) != 0 {
+                    self.diags.push(Diag::ty(
+                        align_span,
+                        format!(
+                            "ring_layout `{}`: framing `align {}` must be a power \
+                             of two — it's the record-stride alignment the reader \
+                             masks with",
+                            r.name.name, align
+                        ),
+                    ));
                 }
                 let len_width =
                     fr.attrs.iter().find_map(|a| match (a.key.name.as_str(), &a.value) {
                         ("len_prefix", RingAttrValue::Ident(id)) => repr_bytes(&id.name),
                         _ => None,
                     });
+                // The length prefix must fit within one alignment unit, or
+                // a record near the wrap boundary can land its header in
+                // (cap - len_prefix_width, cap) → an OOB read/write. With
+                // `len_prefix_width <= align` and `cap % align == 0`, every
+                // record header is fully inside the data region.
+                if let Some(w) = len_width {
+                    if align >= 1 && w > align {
+                        self.diags.push(Diag::ty(
+                            align_span,
+                            format!(
+                                "ring_layout `{}`: framing `len_prefix` width ({} \
+                                 bytes) exceeds `align` ({}) — the record header \
+                                 could straddle the wrap boundary; set `align` to at \
+                                 least the len-prefix width",
+                                r.name.name, w, align
+                            ),
+                        ));
+                    }
+                }
                 let pad =
                     fr.attrs.iter().find_map(|a| match (a.key.name.as_str(), &a.value) {
                         ("pad_sentinel", RingAttrValue::Int(n)) => Some((*n, a.span)),
@@ -4512,6 +4568,140 @@ impl<'a> Checker<'a> {
                             ),
                         ));
                     }
+                }
+            }
+        }
+
+        // --- Frontend hardening (2026-06-08) ---
+        let is_byte_records =
+            r.framing.as_ref().map(|f| f.kind.name == "byte_records").unwrap_or(false);
+
+        // Unaligned atomic cursor: an `atomic_u64` cursor whose `at` is
+        // not 8-aligned makes the runtime's atomic load undefined (torn /
+        // misaligned). This is the one genuinely UB-adjacent frontend gap.
+        for c in &r.cursors {
+            let repr = c.attrs.iter().find_map(|a| match (a.key.name.as_str(), &a.value) {
+                ("repr", RingAttrValue::Ident(id)) => Some(id.name.as_str()),
+                _ => None,
+            });
+            let at = c.attrs.iter().find_map(|a| match (a.key.name.as_str(), &a.value) {
+                ("at", RingAttrValue::Int(n)) => Some(*n),
+                _ => None,
+            });
+            if repr == Some("atomic_u64") {
+                if let Some(at) = at {
+                    if at % 8 != 0 {
+                        self.diags.push(Diag::ty(
+                            c.span,
+                            format!(
+                                "ring_layout `{}`: an `atomic_u64` cursor's `at` \
+                                 offset ({}) must be 8-byte aligned — an unaligned \
+                                 atomic load is undefined",
+                                r.name.name, at
+                            ),
+                        ));
+                    }
+                }
+            }
+            // Cursor `unit` must agree with the framing kind: byte cursors
+            // for `byte_records`, slot cursors for `slots`.
+            let unit = c.attrs.iter().find_map(|a| match (a.key.name.as_str(), &a.value) {
+                ("unit", RingAttrValue::Ident(id)) => Some(id.name.as_str()),
+                _ => None,
+            });
+            if let (Some(unit), Some(fr)) = (unit, &r.framing) {
+                let ok = (unit == "bytes" && fr.kind.name == "byte_records")
+                    || (unit == "slots" && fr.kind.name == "slots");
+                if !ok && (unit == "bytes" || unit == "slots") {
+                    self.diags.push(Diag::ty(
+                        c.span,
+                        format!(
+                            "ring_layout `{}`: cursor `unit {}` doesn't match \
+                             `framing {}` (expected `bytes` with `byte_records`, \
+                             `slots` with `slots`)",
+                            r.name.name, unit, fr.kind.name
+                        ),
+                    ));
+                }
+            }
+            // Typo-safety: warn on unrecognized cursor attr keys.
+            for a in &c.attrs {
+                if !matches!(a.key.name.as_str(),
+                    "at" | "repr" | "load" | "store" | "unit" | "kind") {
+                    self.diags.push(Diag::warn(
+                        a.span,
+                        format!(
+                            "ring_layout `{}`: unknown cursor attribute `{}` \
+                             (recognized: at, repr, load, store, unit, kind)",
+                            r.name.name, a.key.name
+                        ),
+                    ));
+                }
+            }
+        }
+
+        // Presence: the runtime needs a source for each of these. Today a
+        // layout can omit them and still typecheck, leaving the consumer
+        // with nothing to read.
+        if r.magic.is_none() {
+            self.diags.push(Diag::ty(
+                r.span,
+                format!(
+                    "ring_layout `{}`: needs a `magic` value — without it the \
+                     consumer cannot validate it attached the right segment",
+                    r.name.name
+                ),
+            ));
+        }
+        if is_byte_records && r.data_at.is_none() {
+            self.diags.push(Diag::ty(
+                r.span,
+                format!(
+                    "ring_layout `{}`: `byte_records` framing needs `data_at` \
+                     (the first-record offset)",
+                    r.name.name
+                ),
+            ));
+        }
+        if !r.scalars.iter().any(|s| s.name.name == "buffer_size") {
+            self.diags.push(Diag::ty(
+                r.span,
+                format!(
+                    "ring_layout `{}`: needs a `buffer_size` scalar — the consumer \
+                     reads the ring's data-region capacity from it",
+                    r.name.name
+                ),
+            ));
+        }
+
+        // Overflow policy must be one of the known kinds.
+        if let Some(ov) = &r.overflow {
+            const POLICIES: &[&str] = &["lap_detect", "block", "drop", "fail"];
+            if !POLICIES.contains(&ov.name.as_str()) {
+                self.diags.push(Diag::ty(
+                    ov.span,
+                    format!(
+                        "ring_layout `{}`: unknown `overflow {}` (expected one of \
+                         lap_detect, block, drop, fail)",
+                        r.name.name, ov.name
+                    ),
+                ));
+            }
+        }
+
+        // Typo-safety: warn on unrecognized framing attr keys.
+        if let Some(fr) = &r.framing {
+            for a in &fr.attrs {
+                if !matches!(a.key.name.as_str(),
+                    "len_prefix" | "align" | "pad_sentinel" | "slot_size") {
+                    self.diags.push(Diag::warn(
+                        a.span,
+                        format!(
+                            "ring_layout `{}`: unknown framing attribute `{}` \
+                             (recognized: len_prefix, align, pad_sentinel, slot_size)",
+                            r.name.name, a.key.name
+                        ),
+                    ));
                 }
             }
         }

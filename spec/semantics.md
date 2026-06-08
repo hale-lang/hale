@@ -967,6 +967,13 @@ wrong, so they are caught at compile time:
   record-stride alignment the reader masks with.
 - `pad_sentinel` must fit in the `len_prefix` width; otherwise wrap
   detection reads a truncated value and never fires.
+- `len_prefix` width must be `<= align`, and a producer's
+  compile-time `buffer_size:` must be a multiple of `align` — else a
+  record header could land in `(cap - len_prefix_width, cap)` and read
+  or write past the data region.
+- An `atomic_u64` cursor's `at` must be 8-byte aligned (an unaligned
+  atomic load is undefined); `magic`, `data_at` (for `byte_records`),
+  and a `buffer_size` scalar must all be present.
 
 *Payload conformance at the binding.* A `layout:`-bound topic is
 read by a direct pointer-cast (and, on the producer side, written
@@ -975,6 +982,17 @@ by a `memcpy` of the payload struct — the foreign record bytes
 flat-shapeable payload, enforced whether or not the binding also
 asserts `where zero_copy`; a payload with `String`, `Bytes`, or
 other variable-size fields is rejected.
+
+*Out-of-bounds safety.* The guarantee is that a wrong layout — or a
+non-conforming / hostile foreign producer — yields **wrong values,
+never an out-of-bounds access**. It holds given the checks above
+plus the runtime's boundary defenses: the consumer rejects, at
+attach, a foreign `buffer_size` that isn't a multiple of `align`;
+each record's len-prefix read is clamped within the data region; and
+the framed `len` must equal the bound payload's fixed size before the
+handler is invoked (a short record is resynced, never dispatched), so
+the handler cannot read past a record near the wrap. The bound checks
+are overflow-safe against a hostile `len` or offset.
 
 The member token positions (`acquire`, `atomic_u64`, `bytes`, and
 words that collide with keywords like `release`) are layout
