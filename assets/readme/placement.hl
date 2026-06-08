@@ -1,0 +1,26 @@
+main locus App {
+    params {
+        region_us: GameRegion     = GameRegion { name: "us-east" };
+        region_eu: GameRegion     = GameRegion { name: "eu-west" };
+        sessions:  SessionWorkers = SessionWorkers { };
+        metrics:   MetricsServer  = MetricsServer { port: 9100 };
+        admin:     AdminConsole   = AdminConsole { };
+    }
+
+    placement {
+        region_us: pinned(core = 1);                       // its own core
+        region_eu: pinned(core = 2);                       // a sibling, on another
+        sessions:  cooperative(pool = ws) where async_io;  // 1 thread, 1000s of players
+        metrics:   cooperative(pool = io);                 // shares the io pool
+        // admin is unlisted -> cooperative(pool = main)
+    }
+
+    bindings {
+        // PlayerInput: not listed -> delivered by an in-process queue
+        MatchReady:    unix("/run/match.sock");                       // AF_UNIX, role inferred
+        WorldSnapshot: shm_ring("/world", slot_count: 1024, on_overflow: drop)
+                      where intra_machine, zero_copy;                 // shared-memory, no copy
+        ChatRelay:     NatsAdapter { url: "nats://chat:4222" };       // a locus you wrote
+        Replay:        unix("/run/replay.sock") codec(JsonCodec { }); // JSON on the wire
+    }
+}
