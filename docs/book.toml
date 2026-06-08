@@ -12,6 +12,9 @@ no-section-label = false
 site-url = "/hale/"
 git-repository-url = "https://github.com/hale-lang/hale"
 edit-url-template = "https://github.com/hale-lang/hale/edit/main/docs/{path}"
+# Registers the `hale` language with highlight.js (mdbook's bundled
+# build doesn't know it) so ```hale code blocks are highlighted.
+additional-js = ["hale-highlight.js"]
 
 [output.html.fold]
 enable = true
