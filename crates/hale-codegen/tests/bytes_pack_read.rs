@@ -15,7 +15,20 @@ use hale_codegen::build_executable;
 fn build_and_run(name: &str, src: &str) -> String {
     let program = hale_syntax::parse_source(src).expect("parse");
     let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_bytes_pack_{}_{}", name, std::process::id()));
+    // Salt the temp path with a process-wide counter in addition to
+    // name + pid: pid disambiguates across test *binaries*, but nextest
+    // runs tests within one binary in parallel threads, so two tests
+    // sharing a `name` would otherwise compile/exec the same path and
+    // clobber each other (a nondeterministic flake — same class as the
+    // #64 runtime-object race). The counter makes every call unique.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    bin.push(format!(
+        "hale_bytes_pack_{}_{}_{}",
+        name,
+        std::process::id(),
+        seq
+    ));
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -109,7 +122,7 @@ fn main() {
     println("ok=", to_string(std::bytes::read_u16_le(b, 4) or raise));
 }
 "#;
-    let out = build_and_run("oob", src);
+    let out = build_and_run("oob_fields", src);
     assert!(
         out.contains("kind=out_of_bounds") && out.contains("index=4") && out.contains("len=6"),
         "expected IndexError fields on OOB; got {:?}",
@@ -144,7 +157,7 @@ fn main() {
     println("boundok=", to_string(std::bytes::read_u16_le(b, 4) or -1));
 }
 "#;
-    let out = build_and_run("oob", src);
+    let out = build_and_run("oob_overflow", src);
     let lines: Vec<&str> = out.lines().collect();
     assert!(lines.contains(&"max=-1"),
         "off==i64::MAX must hit IndexError (the overflow case), not OOB-read; got {:?}", out);

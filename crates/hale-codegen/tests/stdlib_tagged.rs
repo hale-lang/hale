@@ -12,7 +12,17 @@ use hale_codegen::build_executable;
 fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(source).expect("parse");
     let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_stdlib_tagged_{}", name));
+    // Salt with pid + a process-wide counter so two tests can never
+    // share a temp-build path under nextest's parallel execution
+    // (the bytes_pack_read flake class).
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    bin.push(format!(
+        "hale_test_stdlib_tagged_{}_{}_{}",
+        name,
+        std::process::id(),
+        seq
+    ));
     build_executable(&program, &bin).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
