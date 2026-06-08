@@ -764,6 +764,12 @@ typedef struct {
     char subject[64];
     lotus_shm_layout_ring_t *ring;
     uint64_t local;   /* the producer's own monotonic byte cursor */
+    uint64_t pos;     /* `local % capacity`, maintained incrementally to
+                       * keep the per-record `% cap` modulo off the hot
+                       * path (a 64-bit division; capacity is runtime, not
+                       * required power-of-two). Records never straddle the
+                       * wrap (the pad guarantees it), so a compare-subtract
+                       * suffices. See experiments/foreign-ring-throughput. */
 } shm_ring_layout_producer_t;
 
 static shm_ring_layout_producer_t
@@ -813,6 +819,7 @@ void lotus_bus_register_shm_ring_layout(const char *subject,
     p->subject[sizeof(p->subject) - 1] = '\0';
     p->ring = r;
     p->local = 0;
+    p->pos = 0;
 }
 
 /* Publish-side dispatch for a layout-bound topic. Frames `value`
@@ -844,20 +851,26 @@ int lotus_bus_publish_shm_ring_layout(const char *subject,
                     (unsigned long long)cap);
             _exit(1);
         }
-        /* Tail-pad if the record would straddle the wrap. */
-        if ((p->local % cap) + step > cap) {
-            uint64_t off = d->data_at + (p->local % cap);
+        /* Tail-pad if the record would straddle the wrap. `p->pos`
+         * tracks `p->local % cap` incrementally — no per-record modulo. */
+        uint64_t pos = p->pos;
+        if (pos + step > cap) {
+            uint64_t off = d->data_at + pos;
             if (d->has_pad_sentinel) {
                 shm_layout_write_uint(base + off, d->len_prefix_width,
                                       d->pad_sentinel);
             }
-            p->local += cap - (p->local % cap);
+            p->local += cap - pos;
+            pos = 0;
             atomic_store_explicit(cursor, p->local, memory_order_release);
         }
-        uint64_t off = d->data_at + (p->local % cap);
+        uint64_t off = d->data_at + pos;
         shm_layout_write_uint(base + off, d->len_prefix_width, value_size);
         memcpy(base + off + d->len_prefix_width, value, value_size);
         p->local += step;
+        pos += step;
+        if (pos >= cap) pos -= cap;   /* step <= cap and no straddle */
+        p->pos = pos;
         atomic_store_explicit(cursor, p->local, memory_order_release);
         return 0;
     }
@@ -970,6 +983,12 @@ static void *shm_ring_layout_reader_thread(void *arg) {
     char *base = (char *)r->base;
     uint64_t cap = r->capacity;
     uint64_t local = 0;
+    /* `pos == local % cap`, maintained incrementally so the per-record
+     * walk has no 64-bit modulo (capacity is runtime, not required
+     * power-of-two). The `% cap` only appears on the rare resync paths
+     * (init / lap / desync), never per record. See
+     * experiments/foreign-ring-throughput. */
+    uint64_t pos = 0;
     int initialized = 0;
     while (!atomic_load_explicit(&sub->should_stop,
                                   memory_order_acquire)) {
@@ -978,6 +997,7 @@ static void *shm_ring_layout_reader_thread(void *arg) {
             memory_order_acquire);
         if (!initialized) {
             local = committed;
+            pos = committed % cap;
             initialized = 1;
         }
         if (committed <= local) {
@@ -989,22 +1009,25 @@ static void *shm_ring_layout_reader_thread(void *arg) {
          * boundary and drop the gap. */
         if (committed - local > cap) {
             local = committed;
+            pos = committed % cap;
             continue;
         }
         while (local < committed) {
-            uint64_t phys = d->data_at + (local % cap);
+            uint64_t phys = d->data_at + pos;
             uint64_t len = shm_layout_read_uint(base + phys,
                                                 d->len_prefix_width);
             if (d->has_pad_sentinel && len == d->pad_sentinel) {
                 /* Tail pad — jump to the next wrap boundary. */
-                local += cap - (local % cap);
+                local += cap - pos;
+                pos = 0;
                 continue;
             }
             uint64_t rec = d->len_prefix_width + len;
-            if (len == 0 || (local % cap) + rec > cap) {
+            if (len == 0 || pos + rec > cap) {
                 /* Malformed or straddles the wrap without a pad —
                  * treat as desync and resync to the cursor. */
                 local = committed;
+                pos = committed % cap;
                 break;
             }
             sub->handler_fn(sub->self_ptr,
@@ -1014,6 +1037,8 @@ static void *shm_ring_layout_reader_thread(void *arg) {
                 step = (step + d->align - 1) & ~(d->align - 1);
             }
             local += step;
+            pos += step;
+            if (pos >= cap) pos -= cap;   /* step <= cap, no straddle */
         }
     }
     return NULL;
