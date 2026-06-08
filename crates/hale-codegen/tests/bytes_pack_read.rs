@@ -119,3 +119,41 @@ fn main() {
     // [0x05, 0x06] LE = 0x0605 = 1541.
     assert!(out.contains("ok=1541"), "in-bounds read; got {:?}", out);
 }
+
+#[test]
+fn oob_offsets_take_indexerror_path_not_oob_read() {
+    // Hardening regression (2026-06-08): every read whose [off, off+width)
+    // exceeds the buffer — including off == i64::MAX, which made the old
+    // `off + width > len` guard overflow (signed UB; on wrap it went
+    // negative and *passed* the guard → OOB read) — must take the
+    // IndexError path and substitute the sentinel, never read OOB.
+    // Run under UBSan (LOTUS_UBSAN=1) to catch the overflow directly.
+    let src = r#"
+fn b6() -> Bytes {
+    let a = std::bytes::concat(std::bytes::from_int(1), std::bytes::from_int(2));
+    let c = std::bytes::concat(a, std::bytes::from_int(3));
+    let d = std::bytes::concat(c, std::bytes::from_int(4));
+    let e = std::bytes::concat(d, std::bytes::from_int(128));
+    return std::bytes::concat(e, std::bytes::from_int(255));
+}
+fn main() {
+    let b = b6();
+    println("max=", to_string(std::bytes::read_u32_le(b, 9223372036854775807) or -1));
+    println("atlen=", to_string(std::bytes::read_u8(b, 6) or -1));
+    println("straddle=", to_string(std::bytes::read_u32_le(b, 4) or -1));
+    println("boundok=", to_string(std::bytes::read_u16_le(b, 4) or -1));
+}
+"#;
+    let out = build_and_run("oob", src);
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(lines.contains(&"max=-1"),
+        "off==i64::MAX must hit IndexError (the overflow case), not OOB-read; got {:?}", out);
+    assert!(lines.contains(&"atlen=-1"),
+        "off==len must hit IndexError; got {:?}", out);
+    assert!(lines.contains(&"straddle=-1"),
+        "off+width past end must hit IndexError; got {:?}", out);
+    // Sanity: a read that fits at the boundary (off 4, width 2, len 6)
+    // still succeeds — the guard rejects only genuine OOB.
+    assert!(lines.contains(&"boundok=65408"),
+        "valid boundary read [0x80,0xFF] LE must succeed; got {:?}", out);
+}

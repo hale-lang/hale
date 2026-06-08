@@ -232,3 +232,102 @@ ring_layout R {
         msgs
     );
 }
+
+// --- Frontend hardening (2026-06-08) ---
+
+#[test]
+fn len_prefix_wider_than_align_errors() {
+    // len_prefix u64 (8) with align 4 → a record header could straddle
+    // the wrap. Must error.
+    let src = r#"
+ring_layout R {
+    magic 0x1;
+    buffer_size at 12 : u32;
+    data_at 128;
+    cursor published { at 64; repr atomic_u64; load acquire; unit bytes; }
+    framing byte_records { len_prefix u64; align 4; }
+}
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("exceeds `align`")),
+        "len_prefix wider than align must error; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn unaligned_atomic_cursor_errors() {
+    let src = r#"
+ring_layout R {
+    magic 0x1;
+    buffer_size at 12 : u32;
+    data_at 128;
+    cursor published { at 60; repr atomic_u64; load acquire; unit bytes; }
+    framing byte_records { len_prefix u32; align 8; }
+}
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("8-byte aligned")),
+        "an atomic_u64 cursor at a non-8-aligned offset must error; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn missing_magic_and_buffer_size_error() {
+    // No magic, no buffer_size scalar, no data_at — each is required.
+    let src = r#"
+ring_layout R {
+    cursor published { at 64; repr atomic_u64; load acquire; unit bytes; }
+    framing byte_records { len_prefix u32; align 8; }
+}
+"#;
+    let msgs = check(src);
+    assert!(msgs.iter().any(|m| m.contains("needs a `magic`")), "got: {:?}", msgs);
+    assert!(msgs.iter().any(|m| m.contains("needs a `buffer_size` scalar")), "got: {:?}", msgs);
+    assert!(msgs.iter().any(|m| m.contains("needs `data_at`")), "got: {:?}", msgs);
+}
+
+#[test]
+fn cursor_unit_must_match_framing() {
+    let src = r#"
+ring_layout R {
+    magic 0x1;
+    buffer_size at 12 : u32;
+    data_at 128;
+    cursor published { at 64; repr atomic_u64; load acquire; unit slots; }
+    framing byte_records { len_prefix u32; align 8; }
+}
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("doesn't match `framing")),
+        "cursor unit/framing mismatch must error; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn u64_magic_with_top_bit_set_is_expressible() {
+    // A full-width u64 magic (top bit set) must lex + typecheck — it
+    // can't be written as a positive i64. Must be clean.
+    let src = r#"
+ring_layout R {
+    magic 0xFFFFFFFFFFFFFFFF;
+    version 1 at 8 : u32;
+    buffer_size at 12 : u32;
+    data_at 128;
+    cursor published { at 64; repr atomic_u64; load acquire; unit bytes; }
+    framing byte_records { len_prefix u32; align 8; pad_sentinel 0xFFFFFFFF; }
+    overflow lap_detect;
+}
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.is_empty(),
+        "a u64 magic with the top bit set must be expressible + clean; got: {:?}",
+        msgs
+    );
+}

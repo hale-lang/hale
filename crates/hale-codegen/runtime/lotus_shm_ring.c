@@ -267,6 +267,15 @@ typedef struct {
     uint64_t align;            /* record stride alignment (>=1) */
     uint64_t pad_sentinel;     /* len value meaning "pad to wrap" */
     int      has_pad_sentinel;
+    uint64_t value_size;       /* fixed byte size of the bound payload
+                                * struct (codegen-known, flat). The
+                                * consumer requires each record's framed
+                                * `len` to equal this before dispatch — a
+                                * non-conforming foreign producer with a
+                                * short record would otherwise let the
+                                * handler read `value_size` bytes past the
+                                * record (OOB near the wrap). 0 = unknown
+                                * (skip the check). */
 } lotus_shm_layout_t;
 
 /* Per-process handle for a layout-described ring. Distinct from
@@ -320,6 +329,7 @@ static void shm_layout_from_words(const uint64_t *w, lotus_shm_layout_t *d) {
     d->align             = w[12];
     d->pad_sentinel      = w[13];
     d->has_pad_sentinel  = (int)w[14];
+    d->value_size        = w[15];
 }
 
 /* Attach (read-only) to a foreign ring described by `desc`.
@@ -373,6 +383,15 @@ lotus_shm_ring_open_layout(const char *name, const lotus_shm_layout_t *desc) {
         capacity = total - desc->data_at;
     }
     if (capacity == 0 || desc->data_at + capacity > total) {
+        munmap(map, total); close(fd); errno = EBADF; return NULL;
+    }
+    /* The capacity is read from the FOREIGN header at runtime, so it is
+     * not covered by the binding's compile-time checks. A byte_records
+     * ring whose capacity isn't a multiple of `align` lets a record
+     * header land in (cap - len_prefix_width, cap) → an OOB read past
+     * the data region. Reject such a ring at attach rather than read it.
+     * (len_prefix_width <= align is guaranteed by the frontend.) */
+    if (desc->align > 1 && (capacity % desc->align) != 0) {
         munmap(map, total); close(fd); errno = EBADF; return NULL;
     }
     lotus_shm_layout_ring_t *r =
@@ -1013,6 +1032,16 @@ static void *shm_ring_layout_reader_thread(void *arg) {
             continue;
         }
         while (local < committed) {
+            /* The len-prefix read itself must stay within the data
+             * region. With a conforming ring (cap % align == 0,
+             * len_prefix_width <= align, pos always align-aligned) this
+             * always holds; the guard defends against a hostile cursor.
+             * pos < cap and len_prefix_width <= 8, so no overflow. */
+            if (pos + d->len_prefix_width > cap) {
+                local = committed;
+                pos = committed % cap;
+                break;
+            }
             uint64_t phys = d->data_at + pos;
             uint64_t len = shm_layout_read_uint(base + phys,
                                                 d->len_prefix_width);
@@ -1022,17 +1051,31 @@ static void *shm_ring_layout_reader_thread(void *arg) {
                 pos = 0;
                 continue;
             }
-            uint64_t rec = d->len_prefix_width + len;
-            if (len == 0 || pos + rec > cap) {
-                /* Malformed or straddles the wrap without a pad —
-                 * treat as desync and resync to the cursor. */
+            /* The handler reads exactly `value_size` bytes; a conforming
+             * producer frames `len == value_size`. A non-conforming /
+             * hostile producer with a short (or long) record would let
+             * the handler read past the framed bytes — treat any
+             * mismatch as corruption and resync rather than dispatch.
+             * (Checking this first also pins `len` to a known-small
+             * value before the arithmetic below.) */
+            if (d->value_size != 0 && len != d->value_size) {
+                local = committed;
+                pos = committed % cap;
+                break;
+            }
+            /* The record's payload must fit before the wrap. Overflow-
+             * safe: pos + len_prefix_width <= cap (checked above), so the
+             * room is `cap - pos - len_prefix_width`; compare `len`
+             * against it without adding the (attacker-controlled) len. */
+            uint64_t room = cap - pos - d->len_prefix_width;
+            if (len == 0 || len > room) {
                 local = committed;
                 pos = committed % cap;
                 break;
             }
             sub->handler_fn(sub->self_ptr,
                             base + phys + d->len_prefix_width);
-            uint64_t step = rec;
+            uint64_t step = d->len_prefix_width + len;
             if (d->align > 1) {
                 step = (step + d->align - 1) & ~(d->align - 1);
             }
@@ -1057,7 +1100,7 @@ static void *shm_ring_layout_reader_thread(void *arg) {
  *   [4]  version_expect     [12] align
  *   [5]  has_version        [13] pad_sentinel
  *   [6]  buffer_size_off    [14] has_pad_sentinel
- *   [7]  buffer_size_width  [15] reserved
+ *   [7]  buffer_size_width  [15] value_size (bound payload fixed size)
  *
  * Spawns a reader thread sharing the native subscriber registry +
  * atexit teardown. _exit(1) on open failure (a misdeclared layout

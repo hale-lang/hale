@@ -106,6 +106,7 @@ static void build_desc(uint64_t desc[16]) {
     desc[11] = LEN_WIDTH;
     desc[12] = ALIGN;
     desc[13] = PAD_SENTINEL; desc[14] = 1;            /* has_pad_sentinel */
+    desc[15] = sizeof(Payload);                        /* value_size */
 }
 
 /* ---- producer side ---- */
@@ -266,12 +267,178 @@ static int run_producer(const char *name, uint64_t capacity, int n, int pace_us)
     return 0;
 }
 
+/* ---- hostile / edge-case foreign producers (hardening, 2026-06-08) ---- */
+
+/* A foreign producer that advertises a `buffer_size` that is NOT a
+ * multiple of `align` (8). The consumer's open_layout must reject the
+ * attach (cap % align != 0) rather than read records whose header could
+ * land in (cap - len_prefix_width, cap). On rejection the
+ * register-subscriber path _exit(1)s with a diagnostic, so this driver
+ * exits non-zero *without* an OOB. If the consumer wrongly accepted it,
+ * we reach the BUG line and exit 0 (the test then fails). */
+static int run_bad_bufsize(const char *name) {
+    uint64_t capacity = 4094;  /* not a multiple of ALIGN (8) */
+    size_t total = DATA_AT + (size_t)capacity;
+    int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) { fprintf(stderr, "shm_open: %s\n", strerror(errno)); return 2; }
+    if (ftruncate(fd, (off_t)total) != 0) { shm_unlink(name); return 2; }
+    void *map = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) { shm_unlink(name); return 2; }
+    char *base = (char *)map;
+    *(uint64_t *)(base + 0) = MAGIC;
+    *(uint32_t *)(base + VERSION_OFF) = (uint32_t)VERSION_VAL;
+    *(uint32_t *)(base + BUFSZ_OFF) = (uint32_t)capacity;
+    atomic_store_explicit((_Atomic uint64_t *)(base + CURSOR_OFF), 0,
+                          memory_order_release);
+    uint64_t desc[16];
+    build_desc(desc);
+    /* Expected: open_layout rejects (cap % align != 0) → _exit(1). */
+    lotus_bus_register_subscriber_shm_ring_layout(
+        "foreign.ticks", name, desc, NULL, on_record);
+    fprintf(stderr, "BUG: consumer accepted a non-align-multiple buffer_size\n");
+    munmap(map, total); close(fd); shm_unlink(name);
+    return 0;  /* not rejected → test fails on exit==0 */
+}
+
+/* A foreign producer that frames a record whose `len` is SHORTER than
+ * the bound payload's value_size, positioned so the handler reading
+ * value_size bytes would run past the data region. The consumer must
+ * detect len != value_size and resync (drop it), never dispatch it.
+ * Two good records precede it; the consumer must receive exactly those
+ * two and not OOB-read the short one. */
+static int run_short_record(const char *name) {
+    uint64_t capacity = 64;  /* multiple of ALIGN(8); data region [128,192) */
+    size_t total = DATA_AT + (size_t)capacity;
+    int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) { fprintf(stderr, "shm_open: %s\n", strerror(errno)); return 2; }
+    if (ftruncate(fd, (off_t)total) != 0) { shm_unlink(name); return 2; }
+    void *map = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) { shm_unlink(name); return 2; }
+    char *base = (char *)map;
+    *(uint64_t *)(base + 0) = MAGIC;
+    *(uint32_t *)(base + VERSION_OFF) = (uint32_t)VERSION_VAL;
+    *(uint32_t *)(base + BUFSZ_OFF) = (uint32_t)capacity;
+    _Atomic uint64_t *cursor = (_Atomic uint64_t *)(base + CURSOR_OFF);
+    atomic_store_explicit(cursor, 0, memory_order_release);
+
+    uint64_t desc[16];
+    build_desc(desc);
+    lotus_bus_register_subscriber_shm_ring_layout(
+        "foreign.ticks", name, desc, NULL, on_record);
+    struct timespec warmup = {0, 5 * 1000 * 1000};
+    nanosleep(&warmup, NULL);
+
+    uint64_t step = align_up(LEN_WIDTH + sizeof(Payload), ALIGN);  /* 24 */
+    uint64_t local = 0;
+    /* two conforming records at pos 0 and 24 */
+    for (int i = 0; i < 2; i++) {
+        uint64_t off = DATA_AT + local;
+        *(uint32_t *)(base + off) = (uint32_t)sizeof(Payload);
+        Payload p = { .seq_id = i + 1, .value = (int64_t)(i + 1) * 7 };
+        memcpy(base + off + LEN_WIDTH, &p, sizeof(Payload));
+        local += step;
+        atomic_store_explicit(cursor, local, memory_order_release);
+    }
+    /* short record at pos 48: len = 8 (< sizeof(Payload)=16). Its own
+     * bytes fit ([52,60) within [.,64)), but a handler reading 16 bytes
+     * would read [180,196) — past the data region end (192) → OOB. */
+    {
+        uint64_t off = DATA_AT + local;  /* 128 + 48 */
+        *(uint32_t *)(base + off) = (uint32_t)8;
+        unsigned char tiny[8] = {1,2,3,4,5,6,7,8};
+        memcpy(base + off + LEN_WIDTH, tiny, sizeof(tiny));
+        local += align_up(LEN_WIDTH + 8, ALIGN);  /* 16 → local 64 */
+        atomic_store_explicit(cursor, local, memory_order_release);
+    }
+    /* drain window */
+    for (int s = 0; s < 500; s++) {
+        struct timespec ts = {0, 1000 * 1000};
+        nanosleep(&ts, NULL);
+        if (atomic_load_explicit(&g_recv_count, memory_order_acquire) >= 2) break;
+    }
+    int got = atomic_load_explicit(&g_recv_count, memory_order_acquire);
+    munmap(map, total); close(fd); shm_unlink(name);
+    if (got != 2) {
+        fprintf(stderr, "expected exactly 2 conforming records, got %d "
+                "(short record must be resynced, not dispatched)\n", got);
+        return 3;
+    }
+    return 0;
+}
+
+/* A conforming foreign ring with a u64 length prefix (len_prefix_width
+ * == align == 8). Round-trips records through the 8-byte len path. */
+static int run_u64_lenprefix(const char *name) {
+    enum { LW8 = 8 };
+    uint64_t capacity = 4096;
+    size_t total = DATA_AT + (size_t)capacity;
+    int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) { fprintf(stderr, "shm_open: %s\n", strerror(errno)); return 2; }
+    if (ftruncate(fd, (off_t)total) != 0) { shm_unlink(name); return 2; }
+    void *map = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) { shm_unlink(name); return 2; }
+    char *base = (char *)map;
+    *(uint64_t *)(base + 0) = MAGIC;
+    *(uint32_t *)(base + VERSION_OFF) = (uint32_t)VERSION_VAL;
+    *(uint32_t *)(base + BUFSZ_OFF) = (uint32_t)capacity;
+    _Atomic uint64_t *cursor = (_Atomic uint64_t *)(base + CURSOR_OFF);
+    atomic_store_explicit(cursor, 0, memory_order_release);
+
+    uint64_t desc[16];
+    build_desc(desc);
+    desc[11] = LW8;   /* len_prefix_width = 8 (u64) */
+    lotus_bus_register_subscriber_shm_ring_layout(
+        "foreign.ticks", name, desc, NULL, on_record);
+    struct timespec warmup = {0, 5 * 1000 * 1000};
+    nanosleep(&warmup, NULL);
+
+    int n = 32;
+    uint64_t step = align_up(LW8 + sizeof(Payload), ALIGN);
+    uint64_t local = 0;
+    for (int i = 0; i < n; i++) {
+        uint64_t off = DATA_AT + local;
+        *(uint64_t *)(base + off) = (uint64_t)sizeof(Payload);  /* u64 len */
+        Payload p = { .seq_id = i + 1, .value = (int64_t)(i + 1) * 7 };
+        memcpy(base + off + LW8, &p, sizeof(Payload));
+        local += step;
+        atomic_store_explicit(cursor, local, memory_order_release);
+    }
+    for (int s = 0; s < 1000; s++) {
+        struct timespec ts = {0, 1000 * 1000};
+        nanosleep(&ts, NULL);
+        if (atomic_load_explicit(&g_recv_count, memory_order_acquire) >= n) break;
+    }
+    int got = atomic_load_explicit(&g_recv_count, memory_order_acquire);
+    munmap(map, total); close(fd); shm_unlink(name);
+    if (got != n) {
+        fprintf(stderr, "u64-lenprefix: expected %d, got %d\n", n, got);
+        return 3;
+    }
+    for (int i = 0; i < n; i++) {
+        if (g_recv[i].seq_id != i + 1 || g_recv[i].value != (int64_t)(i + 1) * 7) {
+            fprintf(stderr, "u64-lenprefix record %d mismatch\n", i);
+            return 3;
+        }
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr,
-                "usage: %s <roundtrip|wrap|producer|producer_wrap> <shm_name>\n",
+                "usage: %s <roundtrip|wrap|producer|producer_wrap|"
+                "bad_bufsize|short_record|u64_lenprefix> <shm_name>\n",
                 argv[0]);
         return 1;
+    }
+    if (strcmp(argv[1], "bad_bufsize") == 0) {
+        return run_bad_bufsize(argv[2]);
+    }
+    if (strcmp(argv[1], "short_record") == 0) {
+        return run_short_record(argv[2]);
+    }
+    if (strcmp(argv[1], "u64_lenprefix") == 0) {
+        return run_u64_lenprefix(argv[2]);
     }
     if (strcmp(argv[1], "roundtrip") == 0) {
         /* capacity 4096 holds 64 * 24 = 1536 bytes — no wrap. */

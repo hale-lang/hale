@@ -32,10 +32,23 @@ fn build_driver(tag: &str) -> PathBuf {
 
     let mut bin = std::env::temp_dir();
     bin.push(format!("lotus_shm_ring_layout_driver_{}", tag));
-    let status = Command::new("clang")
-        .arg(driver_c)
-        .arg(ring_c)
-        .arg("-O2")
+    let mut cmd = Command::new("clang");
+    cmd.arg(&driver_c).arg(&ring_c);
+    // Honor the same sanitizer env flags as the codegen build, so the
+    // foreign-ring suite can be run under ASan / UBSan (the hostile-
+    // producer cases are where OOB bugs live). UBSan adds the signed-
+    // overflow / OOB checks; -O2 otherwise.
+    if std::env::var("LOTUS_UBSAN").map(|v| v == "1").unwrap_or(false) {
+        cmd.arg("-fsanitize=address,undefined")
+            .arg("-fno-sanitize-recover=all")
+            .arg("-O1")
+            .arg("-g");
+    } else if std::env::var("LOTUS_ASAN").map(|v| v == "1").unwrap_or(false) {
+        cmd.arg("-fsanitize=address").arg("-O1").arg("-g");
+    } else {
+        cmd.arg("-O2");
+    }
+    let status = cmd
         .arg("-lrt")
         .arg("-lpthread")
         .arg("-o")
@@ -96,4 +109,61 @@ fn layout_producer_roundtrip() {
 #[test]
 fn layout_producer_wrap() {
     run_mode("producer_wrap");
+}
+
+// --- Hardening (2026-06-08): hostile / non-conforming foreign producers
+// at the boundary ring_layout exists to serve. Run under ASan+UBSan
+// (LOTUS_UBSAN=1) to confirm no OOB. ---
+
+/// A foreign record whose framed `len` is shorter than the bound
+/// payload's value_size must be resynced (dropped), never dispatched —
+/// dispatching it would let the handler read value_size bytes past the
+/// record (OOB near the wrap). The driver writes two conforming records
+/// then a short one; the consumer must receive exactly the two.
+#[test]
+fn layout_short_record_resynced_not_dispatched() {
+    run_mode("short_record");
+}
+
+/// A conforming foreign ring with a u64 length prefix
+/// (len_prefix_width == align == 8) must round-trip cleanly.
+#[test]
+fn layout_u64_len_prefix_roundtrips() {
+    run_mode("u64_lenprefix");
+}
+
+/// A foreign producer advertising a `buffer_size` that isn't a multiple
+/// of `align` must be REJECTED at attach (cap % align != 0), not read —
+/// otherwise a record header could straddle the wrap. The driver exits
+/// non-zero (the register path _exit(1)s with a diagnostic); the test
+/// confirms it rejected (didn't reach the "BUG" line) with no sanitizer
+/// error.
+#[test]
+fn layout_bad_buffer_size_rejected() {
+    let driver = build_driver("badbuf");
+    let name = unique_shm_name("badbuf");
+    let out = Command::new(&driver)
+        .arg("bad_bufsize")
+        .arg(&name)
+        .output()
+        .expect("run driver");
+    let _ = std::fs::remove_file(&driver);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // Rejected (non-zero exit), and NOT via a sanitizer fault.
+    assert!(
+        !out.status.success(),
+        "a non-align-multiple buffer_size must be rejected at attach, but the \
+         consumer accepted it.\nstderr: {}",
+        stderr
+    );
+    assert!(
+        !stderr.contains("AddressSanitizer")
+            && !stderr.contains("runtime error")
+            && !stderr.contains("BUG:"),
+        "rejection must be clean (no OOB / no wrongful accept).\nstderr: {}",
+        stderr
+    );
+    // best-effort segment cleanup (the _exit(1) skips the driver's unlink)
+    let stripped = name.trim_start_matches('/');
+    let _ = std::fs::remove_file(format!("/dev/shm/{}", stripped));
 }

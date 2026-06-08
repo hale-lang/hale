@@ -123,3 +123,30 @@ fn main() {{ App {{ }}; Producer {{ }}; }}
         msgs
     );
 }
+
+#[test]
+fn buffer_size_not_multiple_of_align_errors() {
+    // The producer's compile-time `buffer_size:` must be a multiple of
+    // the layout's record `align` (the ForeignRing layout uses align 8),
+    // else a record header can straddle the wrap → OOB.
+    let msgs = check(&program(
+        r#"Foo: shm_ring("/foreign.ticks", on_overflow: drop, layout: ForeignRing, buffer_size: 4094);"#,
+    ));
+    assert!(
+        msgs.iter().any(|m| m.contains("must be a multiple of") && m.contains("align")),
+        "a buffer_size not a multiple of align must error; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn buffer_size_multiple_of_align_is_clean() {
+    let msgs = check(&program(
+        r#"Foo: shm_ring("/foreign.ticks", on_overflow: drop, layout: ForeignRing, buffer_size: 4096) where zero_copy;"#,
+    ));
+    assert!(
+        !msgs.iter().any(|m| m.contains("multiple of")),
+        "a buffer_size that IS a multiple of align must be clean; got: {:?}",
+        msgs
+    );
+}
