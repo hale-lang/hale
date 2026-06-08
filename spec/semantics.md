@@ -954,6 +954,28 @@ the read. The rules:
 - A `ring_layout` is a declaration, not a value — referencing its
   name in expression position is an error.
 
+*Cross-field conformance.* Because the foreign format is fixed and
+unchangeable, a layout that mis-transcribes it is the program's own
+bug — and several of these fields silently corrupt the reader if
+wrong, so they are caught at compile time:
+
+- Every header scalar and the cursor (an 8-byte atomic) must lie
+  *before* `data_at` — a field whose `[at, at+width)` overruns the
+  data region is rejected.
+- No two header fields (or a field and the cursor) may overlap.
+- `byte_records` `align` must be a power of two — it is the
+  record-stride alignment the reader masks with.
+- `pad_sentinel` must fit in the `len_prefix` width; otherwise wrap
+  detection reads a truncated value and never fires.
+
+*Payload conformance at the binding.* A `layout:`-bound topic is
+read by a direct pointer-cast (and, on the producer side, written
+by a `memcpy` of the payload struct — the foreign record bytes
+*are* the Hale struct, bindgen-style). That requires a
+flat-shapeable payload, enforced whether or not the binding also
+asserts `where zero_copy`; a payload with `String`, `Bytes`, or
+other variable-size fields is rejected.
+
 The member token positions (`acquire`, `atomic_u64`, `bytes`, and
 words that collide with keywords like `release`) are layout
 *words*, not Hale type expressions — bare identifiers (or

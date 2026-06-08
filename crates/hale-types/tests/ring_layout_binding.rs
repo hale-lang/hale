@@ -92,3 +92,34 @@ fn layout_less_binding_is_back_compat() {
         msgs
     );
 }
+
+#[test]
+fn layout_binding_with_nonflat_payload_errors() {
+    // A foreign ring record is read by direct cast / written by memcpy,
+    // so a layout-bound topic needs a flat-shapeable payload regardless
+    // of whether `where zero_copy` is also asserted. `T` here has a
+    // String field — not flat-shapeable.
+    let src = format!(
+        r#"
+{LAYOUT}
+type T {{ name: String; }}
+topic Foo {{ payload: T; }}
+locus Producer {{
+    bus {{ publish Foo; }}
+    birth() {{ Foo <- T {{ name: "x" }}; }}
+}}
+main locus App {{
+    bindings {{
+        Foo: shm_ring("/magus.ticks", on_overflow: drop, layout: MagusRing);
+    }}
+}}
+fn main() {{ App {{ }}; Producer {{ }}; }}
+"#
+    );
+    let msgs = check(&src);
+    assert!(
+        msgs.iter().any(|m| m.contains("requires a flat-shapeable payload")),
+        "a layout binding with a non-flat payload must error; got: {:?}",
+        msgs
+    );
+}

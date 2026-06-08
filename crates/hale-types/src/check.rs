@@ -2829,7 +2829,41 @@ fn check_main_and_bindings(
                             } = &entry.transport
                             {
                                 match top.lookup(&lid.name) {
-                                    Some(TopSymbol::RingLayout(_)) => {}
+                                    Some(TopSymbol::RingLayout(_)) => {
+                                        // Conformance (2026-06-06): a
+                                        // layout-bound topic is read by
+                                        // direct pointer-cast and written
+                                        // by memcpy of the payload struct
+                                        // (the bindgen-style contract — the
+                                        // foreign format is fixed, so the
+                                        // Hale struct must *be* the record
+                                        // bytes). That's only sound if the
+                                        // payload is flat-shapeable, and it
+                                        // holds whether or not the binding
+                                        // also asserts `where zero_copy`.
+                                        if let Some(TopSymbol::Topic(topic)) =
+                                            top.lookup(&entry.topic.name)
+                                        {
+                                            if !is_flat_shapeable(&topic.payload, top) {
+                                                diags.push(Diag::ty(
+                                                    entry.span,
+                                                    format!(
+                                                        "shm_ring binding for topic \
+                                                         `{}` with `layout: {}` requires \
+                                                         a flat-shapeable payload, but \
+                                                         `{}` contains String, Bytes, or \
+                                                         other variable-size fields — a \
+                                                         foreign ring record is read by \
+                                                         direct cast, which needs a \
+                                                         fixed byte layout",
+                                                        entry.topic.name,
+                                                        lid.name,
+                                                        topic.payload.display()
+                                                    ),
+                                                ));
+                                            }
+                                        }
+                                    }
                                     Some(_) => diags.push(Diag::ty(
                                         lid.span,
                                         format!(
@@ -4339,6 +4373,144 @@ impl<'a> Checker<'a> {
                                 ));
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        // shm-ring-interop conformance (2026-06-06): cross-field
+        // geometric consistency. magus2's binary format is fixed and
+        // unchangeable, so a `ring_layout` that mis-transcribes it is
+        // purely *our* bug — and several of these fields silently
+        // corrupt PR3's already-shipped reader if they're wrong (a
+        // cursor past `data_at`, an overlapping field, a non-power-of-
+        // two `align` the reader masks with, a `pad_sentinel` too wide
+        // for the `len_prefix` to hold). Catch them at compile time.
+        fn repr_bytes(name: &str) -> Option<i64> {
+            Some(match name {
+                "u8" | "i8" => 1,
+                "u16" | "i16" => 2,
+                "u32" | "i32" | "f32" => 4,
+                "u64" | "i64" | "f64" | "atomic_u64" => 8,
+                _ => return None,
+            })
+        }
+
+        // Occupied header intervals [start, end) with a label + span.
+        let mut intervals: Vec<(i64, i64, String, Span)> = Vec::new();
+        for f in &r.scalars {
+            if f.at >= 0 {
+                if let Some(w) = repr_bytes(&f.repr.name) {
+                    intervals.push((
+                        f.at,
+                        f.at + w,
+                        format!("field `{}`", f.name.name),
+                        f.span,
+                    ));
+                }
+            }
+        }
+        for c in &r.cursors {
+            let at = c.attrs.iter().find_map(|a| match (a.key.name.as_str(), &a.value) {
+                ("at", RingAttrValue::Int(n)) if *n >= 0 => Some(*n),
+                _ => None,
+            });
+            if let Some(at) = at {
+                let label = c
+                    .name
+                    .as_ref()
+                    .map(|n| format!("cursor `{}`", n.name))
+                    .unwrap_or_else(|| "cursor".to_string());
+                // A cursor is an atomic u64 — 8 bytes.
+                intervals.push((at, at + 8, label, c.span));
+            }
+        }
+
+        // (1) every header field + cursor must lie before `data_at`.
+        if let Some(data_at) = r.data_at {
+            for (start, end, label, span) in &intervals {
+                if *end > data_at {
+                    self.diags.push(Diag::ty(
+                        *span,
+                        format!(
+                            "ring_layout `{}`: {} occupies bytes [{}, {}) which \
+                             overruns `data_at {}` — header fields and the cursor \
+                             must lie before the data region",
+                            r.name.name, label, start, end, data_at
+                        ),
+                    ));
+                }
+            }
+        }
+
+        // (2) no two header fields / cursor may overlap.
+        for i in 0..intervals.len() {
+            for j in (i + 1)..intervals.len() {
+                let (a0, a1) = (intervals[i].0, intervals[i].1);
+                let (b0, b1) = (intervals[j].0, intervals[j].1);
+                if a0 < b1 && b0 < a1 {
+                    self.diags.push(Diag::ty(
+                        intervals[i].3,
+                        format!(
+                            "ring_layout `{}`: {} (bytes [{}, {})) overlaps {} \
+                             (bytes [{}, {}))",
+                            r.name.name, intervals[i].2, a0, a1, intervals[j].2, b0, b1
+                        ),
+                    ));
+                }
+            }
+        }
+
+        // (3) byte_records framing: `align` must be a power of two
+        //     (the reader does `& ~(align-1)`); `pad_sentinel` must
+        //     fit in the `len_prefix` width or wrap-detection reads a
+        //     truncated sentinel and never fires.
+        if let Some(fr) = &r.framing {
+            if fr.kind.name == "byte_records" {
+                if let Some((align, span)) =
+                    fr.attrs.iter().find_map(|a| match (a.key.name.as_str(), &a.value) {
+                        ("align", RingAttrValue::Int(n)) => Some((*n, a.span)),
+                        _ => None,
+                    })
+                {
+                    if align < 1 || (align & (align - 1)) != 0 {
+                        self.diags.push(Diag::ty(
+                            span,
+                            format!(
+                                "ring_layout `{}`: framing `align {}` must be a power \
+                                 of two — it's the record-stride alignment the reader \
+                                 masks with",
+                                r.name.name, align
+                            ),
+                        ));
+                    }
+                }
+                let len_width =
+                    fr.attrs.iter().find_map(|a| match (a.key.name.as_str(), &a.value) {
+                        ("len_prefix", RingAttrValue::Ident(id)) => repr_bytes(&id.name),
+                        _ => None,
+                    });
+                let pad =
+                    fr.attrs.iter().find_map(|a| match (a.key.name.as_str(), &a.value) {
+                        ("pad_sentinel", RingAttrValue::Int(n)) => Some((*n, a.span)),
+                        _ => None,
+                    });
+                if let (Some(w), Some((pad, span))) = (len_width, pad) {
+                    let max: u64 = if w >= 8 { u64::MAX } else { (1u64 << (w * 8)) - 1 };
+                    if pad < 0 || (pad as u64) > max {
+                        self.diags.push(Diag::ty(
+                            span,
+                            format!(
+                                "ring_layout `{}`: `pad_sentinel {:#x}` does not fit \
+                                 in the `len_prefix` width ({} byte{}) — wrap \
+                                 detection would read a truncated value and never \
+                                 trigger",
+                                r.name.name,
+                                pad,
+                                w,
+                                if w == 1 { "" } else { "s" }
+                            ),
+                        ));
                     }
                 }
             }
