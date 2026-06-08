@@ -158,11 +158,14 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
         if let Some(layout) = info.layout.clone() {
             // The bound payload's fixed byte size — the consumer requires
             // each record's framed `len` to equal this before dispatch.
+            // 0 ⇒ the raw/BytesView path (no struct, e.g. a heterogeneous
+            // ring). Use the data layout's ABI size (matches the
+            // producer's `size_of()`-framed `len`); `size_of()` itself is
+            // a constant-expression that doesn't fold to an integer.
             let value_size = self
                 .user_types
                 .get(&info.payload_type_name)
-                .and_then(|pi| pi.struct_ty.size_of())
-                .and_then(|iv| iv.get_zero_extended_constant())
+                .map(|pi| self.target_data.get_abi_size(&pi.struct_ty))
                 .unwrap_or(0);
             return self.emit_bus_register_shm_ring_layout(
                 subject, &info.shm_name, &layout, value_size, self_ptr,

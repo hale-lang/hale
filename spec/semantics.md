@@ -975,13 +975,28 @@ wrong, so they are caught at compile time:
   atomic load is undefined); `magic`, `data_at` (for `byte_records`),
   and a `buffer_size` scalar must all be present.
 
-*Payload conformance at the binding.* A `layout:`-bound topic is
-read by a direct pointer-cast (and, on the producer side, written
-by a `memcpy` of the payload struct — the foreign record bytes
-*are* the Hale struct, bindgen-style). That requires a
-flat-shapeable payload, enforced whether or not the binding also
-asserts `where zero_copy`; a payload with `String`, `Bytes`, or
-other variable-size fields is rejected.
+*Payload conformance at the binding.* A `layout:`-bound topic's
+payload picks the consumer mode:
+
+- A **flat-shapeable struct** → *typed mode*: the record is read by a
+  direct pointer-cast (and, on the producer side, written by a `memcpy`
+  of the payload struct — the foreign record bytes *are* the Hale
+  struct, bindgen-style). The framed `len` must equal the struct's
+  fixed size or the record is resynced (the OOB guard above). Enforced
+  whether or not the binding also asserts `where zero_copy`.
+- A **`BytesView`** → *raw-frame mode*: for heterogeneous /
+  variable-length rings (e.g. a discriminated-union feed). The
+  consumer can't assume a fixed size, so `value_size` is 0 (the
+  size gate is off) and the handler receives a bounded `BytesView`
+  over each record — it decodes with `std::bytes::read_*` + a
+  discriminator branch. The framed-size bounds checks against the ring
+  still apply; the record payload is copied into a Bytes-shaped scratch
+  blob (the pack readers need that prefix, and the mapping is
+  read-only), so raw-frame mode is not zero-copy. Producing a
+  `BytesView` topic (the raw producer path) is not yet supported.
+
+Any other payload (with `String`, `Bytes`, or variable-size fields and
+not itself `BytesView`) is rejected.
 
 *Out-of-bounds safety.* The guarantee is that a wrong layout — or a
 non-conforming / hostile foreign producer — yields **wrong values,

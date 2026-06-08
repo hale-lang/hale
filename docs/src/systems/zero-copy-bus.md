@@ -137,6 +137,36 @@ at this version: a subscriber sees records published after it
 attaches (no replay of history), and if it falls more than a full
 buffer behind it resyncs rather than read a torn record.
 
+### Mixed record types: a raw `BytesView` payload
+
+The examples above bind a fixed payload struct — every record on the
+ring is the same shape. Real feeds are often heterogeneous: a header
+plus one of several record types, selected by a discriminator, with
+varying length. Bind such a topic to a **`BytesView`** payload and the
+subscriber receives a bounded view over each record to decode itself:
+
+```hale
+topic Recs { payload: BytesView; }
+
+locus Reader {
+    bus { subscribe Recs as on_rec; }
+    fn on_rec(v: BytesView) {
+        let kind = std::bytes::read_u8(v, 0) or 0;
+        match kind {
+            1 => { /* decode an L1 record with std::bytes::read_* */ }
+            2 => { /* decode an L2 record */ }
+            _ => { }
+        }
+    }
+}
+```
+
+No fixed size is assumed (a differently-sized valid record isn't
+dropped), and you decode with the `std::bytes::read_*` pack readers and
+a discriminator branch. This is the path for reading real external
+mixed-record rings; the typed-struct binding stays the fast path for a
+homogeneous ring.
+
 ## The same shape, one tier down
 
 Notice this is the same move as everything else at this level: an

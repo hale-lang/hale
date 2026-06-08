@@ -95,6 +95,37 @@ static void on_record(void *self, void *slot) {
     }
 }
 
+/* ---- raw (BytesView) consumer (value_size == 0) ----
+ * The runtime hands a `{ void* src; int64_t epoch }` view by value
+ * over a Bytes-shaped blob (`[i64 len][payload]`). We decode a
+ * heterogeneous record: an i64 `kind` discriminator at payload offset
+ * 0 selects a 16-byte (kind 1) or 24-byte (kind 2) record. */
+typedef struct { void *src; int64_t epoch; } RawView;
+static _Atomic int g_raw_count = 0;
+static int64_t g_raw_kind[MAX_RECV];
+static int64_t g_raw_len[MAX_RECV];
+static int64_t g_raw_a[MAX_RECV];
+static int64_t g_raw_b[MAX_RECV];   /* only meaningful for kind 2 */
+
+static void on_raw(void *self, RawView v) {
+    (void)self;
+    char *blob = (char *)v.src;
+    int64_t len = *(int64_t *)blob;        /* blob prefix */
+    char *p = blob + sizeof(int64_t);       /* record payload */
+    int i = atomic_fetch_add_explicit(&g_raw_count, 1, memory_order_acq_rel);
+    if (i < MAX_RECV) {
+        int64_t kind = 0, a = 0, b = 0;  /* memcpy: payload fields are
+                                          * byte-aligned, not 8-aligned */
+        memcpy(&kind, p + 0, sizeof(int64_t));
+        if (len >= 16) memcpy(&a, p + 8, sizeof(int64_t));
+        if (len >= 24) memcpy(&b, p + 16, sizeof(int64_t));
+        g_raw_len[i] = len;
+        g_raw_kind[i] = kind;
+        g_raw_a[i] = a;
+        g_raw_b[i] = b;
+    }
+}
+
 static void build_desc(uint64_t desc[16]) {
     memset(desc, 0, 16 * sizeof(uint64_t));
     desc[0]  = MAGIC;        desc[1]  = 1;            /* magic, has_magic */
@@ -423,13 +454,140 @@ static int run_u64_lenprefix(const char *name) {
     return 0;
 }
 
+/* Raw / heterogeneous foreign ring: records of two different sizes,
+ * tagged by an i64 `kind` discriminator at payload offset 0. A single
+ * raw (value_size == 0) subscriber receives a BytesView per record and
+ * decodes both shapes — the path for real mixed-record external rings. */
+static int run_heterogeneous(const char *name) {
+    uint64_t capacity = 4096;
+    size_t total = DATA_AT + (size_t)capacity;
+    int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) { fprintf(stderr, "shm_open: %s\n", strerror(errno)); return 2; }
+    if (ftruncate(fd, (off_t)total) != 0) { shm_unlink(name); return 2; }
+    void *map = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) { shm_unlink(name); return 2; }
+    char *base = (char *)map;
+    *(uint64_t *)(base + 0) = MAGIC;
+    *(uint32_t *)(base + VERSION_OFF) = (uint32_t)VERSION_VAL;
+    *(uint32_t *)(base + BUFSZ_OFF) = (uint32_t)capacity;
+    _Atomic uint64_t *cursor = (_Atomic uint64_t *)(base + CURSOR_OFF);
+    atomic_store_explicit(cursor, 0, memory_order_release);
+
+    uint64_t desc[16];
+    build_desc(desc);
+    desc[15] = 0;  /* value_size = 0 → raw BytesView path */
+    lotus_bus_register_subscriber_shm_ring_layout(
+        "foreign.ticks", name, desc, NULL, (void (*)(void *, void *))on_raw);
+    struct timespec warmup = {0, 5 * 1000 * 1000};
+    nanosleep(&warmup, NULL);
+
+    int n = 8;
+    uint64_t local = 0;
+    for (int i = 0; i < n; i++) {
+        int64_t kind = (i % 2) + 1;                 /* 1 or 2 */
+        uint64_t plen = (kind == 1) ? 16 : 24;      /* differently sized */
+        uint64_t off = DATA_AT + local;
+        *(uint32_t *)(base + off) = (uint32_t)plen;
+        char *p = base + off + LEN_WIDTH;
+        int64_t a = (int64_t)(100 + i), b = (int64_t)(200 + i);
+        memcpy(p + 0, &kind, sizeof(int64_t));
+        memcpy(p + 8, &a, sizeof(int64_t));          /* a */
+        if (kind == 2) memcpy(p + 16, &b, sizeof(int64_t));  /* b */
+        local += align_up(LEN_WIDTH + plen, ALIGN);
+        atomic_store_explicit(cursor, local, memory_order_release);
+    }
+    for (int s = 0; s < 1000; s++) {
+        struct timespec ts = {0, 1000 * 1000};
+        nanosleep(&ts, NULL);
+        if (atomic_load_explicit(&g_raw_count, memory_order_acquire) >= n) break;
+    }
+    int got = atomic_load_explicit(&g_raw_count, memory_order_acquire);
+    munmap(map, total); close(fd); shm_unlink(name);
+    if (got != n) {
+        fprintf(stderr, "heterogeneous: expected %d records, got %d\n", n, got);
+        return 3;
+    }
+    for (int i = 0; i < n; i++) {
+        int64_t exp_kind = (i % 2) + 1;
+        int64_t exp_len = (exp_kind == 1) ? 16 : 24;
+        if (g_raw_kind[i] != exp_kind || g_raw_len[i] != exp_len ||
+            g_raw_a[i] != 100 + i ||
+            (exp_kind == 2 && g_raw_b[i] != 200 + i)) {
+            fprintf(stderr,
+                    "heterogeneous record %d mismatch: kind=%lld len=%lld "
+                    "a=%lld b=%lld\n",
+                    i, (long long)g_raw_kind[i], (long long)g_raw_len[i],
+                    (long long)g_raw_a[i], (long long)g_raw_b[i]);
+            return 3;
+        }
+    }
+    return 0;
+}
+
+/* External heterogeneous producer (no in-process consumer): creates the
+ * ring, then writes differently-sized records for a SEPARATE process
+ * (e.g. a Hale BytesView subscriber) to consume. Creates + writes the
+ * header, waits for the consumer to attach, writes N records, waits for
+ * it to drain, then unlinks. Used by the cross-process Hale-consumer
+ * end-to-end test. */
+static int run_produce_external(const char *name) {
+    uint64_t capacity = 4096;
+    size_t total = DATA_AT + (size_t)capacity;
+    int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) { fprintf(stderr, "shm_open: %s\n", strerror(errno)); return 2; }
+    if (ftruncate(fd, (off_t)total) != 0) { shm_unlink(name); return 2; }
+    void *map = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) { shm_unlink(name); return 2; }
+    char *base = (char *)map;
+    *(uint64_t *)(base + 0) = MAGIC;
+    *(uint32_t *)(base + VERSION_OFF) = (uint32_t)VERSION_VAL;
+    *(uint32_t *)(base + BUFSZ_OFF) = (uint32_t)capacity;
+    _Atomic uint64_t *cursor = (_Atomic uint64_t *)(base + CURSOR_OFF);
+    atomic_store_explicit(cursor, 0, memory_order_release);
+
+    /* Give the consumer time to attach + park at cursor 0 before we
+     * publish (it reads from the live cursor, no replay). */
+    struct timespec attach_wait = {0, 250 * 1000 * 1000};  /* 250ms */
+    nanosleep(&attach_wait, NULL);
+
+    int n = 6;
+    uint64_t local = 0;
+    for (int i = 0; i < n; i++) {
+        int64_t kind = (i % 2) + 1;
+        uint64_t plen = (kind == 1) ? 16 : 24;
+        uint64_t off = DATA_AT + local;
+        *(uint32_t *)(base + off) = (uint32_t)plen;
+        char *p = base + off + LEN_WIDTH;
+        int64_t a = (int64_t)(100 + i), b = (int64_t)(200 + i);
+        memcpy(p + 0, &kind, sizeof(int64_t));
+        memcpy(p + 8, &a, sizeof(int64_t));
+        if (kind == 2) memcpy(p + 16, &b, sizeof(int64_t));
+        local += align_up(LEN_WIDTH + plen, ALIGN);
+        atomic_store_explicit(cursor, local, memory_order_release);
+        struct timespec pace = {0, 5 * 1000 * 1000};  /* 5ms */
+        nanosleep(&pace, NULL);
+    }
+    /* Let the consumer finish reading before we unlink. */
+    struct timespec drain = {0, 400 * 1000 * 1000};  /* 400ms */
+    nanosleep(&drain, NULL);
+    munmap(map, total); close(fd); shm_unlink(name);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr,
                 "usage: %s <roundtrip|wrap|producer|producer_wrap|"
-                "bad_bufsize|short_record|u64_lenprefix> <shm_name>\n",
+                "bad_bufsize|short_record|u64_lenprefix|heterogeneous|"
+                "produce_external> <shm_name>\n",
                 argv[0]);
         return 1;
+    }
+    if (strcmp(argv[1], "produce_external") == 0) {
+        return run_produce_external(argv[2]);
+    }
+    if (strcmp(argv[1], "heterogeneous") == 0) {
+        return run_heterogeneous(argv[2]);
     }
     if (strcmp(argv[1], "bad_bufsize") == 0) {
         return run_bad_bufsize(argv[2]);

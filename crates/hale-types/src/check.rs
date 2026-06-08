@@ -2880,18 +2880,32 @@ fn check_main_and_bindings(
                                         if let Some(TopSymbol::Topic(topic)) =
                                             top.lookup(&entry.topic.name)
                                         {
-                                            if !is_flat_shapeable(&topic.payload, top) {
+                                            // A `BytesView` payload selects the raw-frame
+                                            // mode: the consumer hands the handler a
+                                            // bounded view over each record (decoded with
+                                            // `std::bytes::read_*` + a discriminator), for
+                                            // heterogeneous / variable-length rings. Any
+                                            // other payload takes the typed-flat path,
+                                            // which is read by direct cast and so must be
+                                            // flat-shapeable.
+                                            let is_raw_view = matches!(
+                                                &topic.payload,
+                                                Ty::Prim(hale_syntax::ast::PrimType::BytesView)
+                                            );
+                                            if !is_raw_view
+                                                && !is_flat_shapeable(&topic.payload, top)
+                                            {
                                                 diags.push(Diag::ty(
                                                     entry.span,
                                                     format!(
                                                         "shm_ring binding for topic \
                                                          `{}` with `layout: {}` requires \
-                                                         a flat-shapeable payload, but \
-                                                         `{}` contains String, Bytes, or \
-                                                         other variable-size fields — a \
-                                                         foreign ring record is read by \
-                                                         direct cast, which needs a \
-                                                         fixed byte layout",
+                                                         a flat-shapeable payload (read by \
+                                                         direct cast) or a `BytesView` \
+                                                         payload (raw-frame mode), but \
+                                                         `{}` is neither — it contains \
+                                                         String, Bytes, or other \
+                                                         variable-size fields",
                                                         entry.topic.name,
                                                         lid.name,
                                                         topic.payload.display()

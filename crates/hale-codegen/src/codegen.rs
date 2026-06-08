@@ -456,6 +456,7 @@ pub fn build_executable_with_options(
         context: &context,
         module,
         builder,
+        target_data,
         program: &merged,
         current_fn: None,
         current_user_fn_ret: None,
@@ -1197,6 +1198,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     pub(crate) context: &'ctx Context,
     pub(crate) module: Module<'ctx>,
     pub(crate) builder: inkwell::builder::Builder<'ctx>,
+    /// Target data layout — for concrete (compile-time `u64`) type sizes
+    /// where `Type::size_of()` (a constant-expression) can't be folded to
+    /// an integer. E.g. the foreign-ring descriptor's `value_size`.
+    pub(crate) target_data: inkwell::targets::TargetData,
     pub(crate) program: &'p Program,
     /// Set while lowering a function's body so that `if` / `while`
     /// can `append_basic_block` onto it.
@@ -4787,7 +4792,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut payload_types: BTreeSet<String> = BTreeSet::new();
         for info in self.user_loci.values() {
             for (_, _, payload_type, _) in &info.subscriptions {
-                payload_types.insert(payload_type.clone());
+                // "BytesView" is the raw-frame foreign-ring marker, not a
+                // declared struct — the consumer hands the handler a
+                // bounded view, so there's no wire serializer to synth.
+                if payload_type != "BytesView" {
+                    payload_types.insert(payload_type.clone());
+                }
             }
         }
         for l in &locus_decls {
@@ -5678,8 +5688,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                         .get(&subject)
                                         .map(|i| i.payload_type_name.clone())
                                         .and_then(|n| self.user_types.get(&n))
-                                        .and_then(|pi| pi.struct_ty.size_of())
-                                        .and_then(|iv| iv.get_zero_extended_constant())
+                                        .map(|pi| self.target_data.get_abi_size(&pi.struct_ty))
                                         .unwrap_or(0);
                                     self.emit_bus_register_shm_ring_layout_producer(
                                         &subject, name, &decl, cap, value_size,
