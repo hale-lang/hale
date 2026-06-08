@@ -270,7 +270,8 @@ shm_ring_transport = "shm_ring" , "(" , STRING_LIT ,
                      { "," , shm_ring_kwarg } , ")" ;
 shm_ring_kwarg    = ( "slot_count" , ":" , INT_LIT )
                   | ( "on_overflow" , ":" , overflow_policy )
-                  | ( "layout" , ":" , IDENTIFIER ) ;
+                  | ( "layout" , ":" , IDENTIFIER )
+                  | ( "buffer_size" , ":" , INT_LIT ) ;
 overflow_policy    = "block" | "drop" | "fail" ;
 
 (* Form K (2026-05-20): operational constraints the dev team

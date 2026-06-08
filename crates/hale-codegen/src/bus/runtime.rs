@@ -444,14 +444,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// and calls `lotus_bus_register_subscriber_shm_ring_layout`,
     /// which attaches the foreign ring read-only and spawns the
     /// `byte_records` reader thread.
-    fn emit_bus_register_shm_ring_layout(
+    /// Emit a private global holding the 16-entry descriptor built
+    /// from a resolved `ring_layout`, returning a pointer to it. Both
+    /// the subscriber (attach) and producer (create) register paths
+    /// hand this pointer to the runtime.
+    pub(crate) fn ring_layout_desc_global(
         &mut self,
         subject: &str,
-        shm_name: &str,
         layout: &hale_syntax::ast::RingLayoutDecl,
-        self_ptr: PointerValue<'ctx>,
-        handler_fn: FunctionValue<'ctx>,
-    ) -> Result<(), CodegenError> {
+    ) -> PointerValue<'ctx> {
         let i64_t = self.context.i64_type();
         let words = ring_layout_descriptor_words(layout);
         let const_vals: Vec<inkwell::values::IntValue<'ctx>> =
@@ -466,7 +467,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         desc_g.set_initializer(&arr);
         desc_g.set_constant(true);
         desc_g.set_linkage(inkwell::module::Linkage::Private);
-        let desc_ptr = desc_g.as_pointer_value();
+        desc_g.as_pointer_value()
+    }
+
+    fn emit_bus_register_shm_ring_layout(
+        &mut self,
+        subject: &str,
+        shm_name: &str,
+        layout: &hale_syntax::ast::RingLayoutDecl,
+        self_ptr: PointerValue<'ctx>,
+        handler_fn: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let desc_ptr = self.ring_layout_desc_global(subject, layout);
 
         let subj_ptr = self
             .builder
@@ -500,6 +512,55 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     handler_ptr.into(),
                 ],
                 "shm_ring.sub.register_layout",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Proposal B M3a (2026-06-06): register a PRODUCER for a
+    /// `layout:`-bound topic the bundle publishes. Emits the
+    /// descriptor global + a `lotus_bus_register_shm_ring_layout`
+    /// call, which CREATES the foreign ring (this process owns it).
+    /// `capacity` is the data-region size in bytes.
+    pub(crate) fn emit_bus_register_shm_ring_layout_producer(
+        &mut self,
+        subject: &str,
+        shm_name: &str,
+        layout: &hale_syntax::ast::RingLayoutDecl,
+        capacity: u64,
+    ) -> Result<(), CodegenError> {
+        let desc_ptr = self.ring_layout_desc_global(subject, layout);
+        let subj_ptr = self
+            .builder
+            .build_global_string_ptr(
+                subject,
+                &format!("lotus.shm_ring.layout.psubject.{}", subject),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .as_pointer_value();
+        let name_ptr = self
+            .builder
+            .build_global_string_ptr(
+                shm_name,
+                &format!("lotus.shm_ring.layout.pname.{}", subject),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .as_pointer_value();
+        let cap_val = self.context.i64_type().const_int(capacity, false);
+        let reg_fn = self
+            .module
+            .get_function("lotus_bus_register_shm_ring_layout")
+            .expect("lotus_bus_register_shm_ring_layout declared");
+        self.builder
+            .build_call(
+                reg_fn,
+                &[
+                    subj_ptr.into(),
+                    name_ptr.into(),
+                    desc_ptr.into(),
+                    cap_val.into(),
+                ],
+                "shm_ring.register_layout_producer",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())

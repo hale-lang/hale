@@ -746,6 +746,12 @@ pub enum TransportSpec {
         /// layout. `None` = the native `LotusRing` shape (the only
         /// behavior today; back-compat).
         layout: Option<Ident>,
+        /// Proposal B M3a: producer ring capacity in bytes (the data
+        /// region size). Only meaningful with `layout:` (a foreign
+        /// `byte_records` ring has no fixed slots); `None` = the
+        /// per-transport default. Ignored for the native ring, which
+        /// sizes from `slot_count` × payload size.
+        buffer_size: Option<u64>,
         span: Span,
     },
 }

@@ -982,9 +982,8 @@ words that collide with keywords like `release`) are layout
 keyword-spelled words) checked against the sets above, never
 resolved as types.
 
-*Scope (v1): read-only `byte_records` consumer.* A subscriber on
-a layout-bound topic registers via
-`lotus_bus_register_subscriber_shm_ring_layout(subject, name,
+*Consumer (read).* A subscriber on a layout-bound topic registers
+via `lotus_bus_register_subscriber_shm_ring_layout(subject, name,
 desc, self, handler)`, where `desc` is a flat 16-entry descriptor
 codegen builds from the resolved layout. The runtime attaches the
 foreign segment read-only (it never creates it — the foreign
@@ -999,14 +998,32 @@ convention from the layout — a scalar named `version` (with an
 expected value) is the version check; one named `buffer_size` is
 the capacity source.
 
+*Producer (write).* If the bundle *publishes* a layout-bound topic,
+it is the ring's single producer (SPMC): the prelude CREATES the
+segment via `lotus_bus_register_shm_ring_layout(subject, name,
+desc, capacity)` — sizing it `data_at + capacity`, writing the
+header (magic, `version`, `buffer_size = capacity`) and zeroing the
+cursor — and each `Topic <- value` routes through
+`lotus_bus_publish_shm_ring_layout`, the exact inverse of the
+reader: reserve `align_up(len_prefix + payload, align)`, write a
+`pad_sentinel` and wrap if the record would straddle the end, write
+the length prefix + a `memcpy` of the (flat) payload, then
+release-store the cursor. Capacity comes from the binding's
+`buffer_size:` kwarg (bytes; a per-transport default applies when
+omitted). A layout binding that is only *subscribed* in this bundle
+creates nothing — it attaches the foreign producer's ring.
+
 *Limitations (v1).* A subscriber reads records published *after*
-it attaches (no historical replay). Lap handling is lossy + safe:
-if the producer runs more than `capacity` bytes ahead, the missed
-bytes are gone, so the reader resyncs to the producer's cursor (a
-commit boundary) and resumes rather than reading a torn record.
-The handler runs on the reader thread (same constraint as the
-native subscriber). The producer side for foreign layouts, the
-`slots` framing kind, and multi-cursor back-pressure are post-v1.
+it attaches (no historical replay) — so an in-process producer must
+not publish before the consumer's reader thread has started (a
+non-issue for an external long-running producer like magus2). Lap
+handling is lossy + safe: if the producer runs more than `capacity`
+bytes ahead, the missed bytes are gone, so the reader resyncs to the
+producer's cursor (a commit boundary) and resumes rather than
+reading a torn record. Handlers run on the reader thread (same
+constraint as the native subscriber). The `slots` framing kind, the
+zero-copy writable producer view (A1 — the producer copies the
+payload once today), and multi-cursor back-pressure are post-v1.
 
 **In-memory delivery is absence-of-entry.** A topic with no
 binding entry is delivered same-process via the cooperative

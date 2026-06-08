@@ -116,11 +116,26 @@ any other `shm_ring` subscriber — the layout only changes how the
 substrate finds and frames the bytes.
 
 A binding with no `layout:` keeps Hale's native ring, so nothing
-you wrote before changes. This is read-only at this version: you
-can *consume* a foreign ring, not yet *produce* into one. A
-subscriber sees records published after it attaches, and if it
-falls more than a full buffer behind it resyncs rather than
-reading a torn record.
+you wrote before changes.
+
+The same binding works the other way too. If a locus in your
+program *publishes* the topic, it becomes the ring's producer: Hale
+creates the segment, writes the header the layout describes, and
+frames each `Ticks <- Tick { ... }` as a length-prefixed record
+another program (or another language) can read. Give the binding a
+`buffer_size:` to size the ring:
+
+```hale
+Ticks: shm_ring("/magus.ticks", on_overflow: drop,
+                layout: MagusRing, buffer_size: 65536) where zero_copy;
+```
+
+So the same declared layout lets Hale sit on either side of a
+foreign ring — consume what another process writes, or produce what
+another process reads — with the locus body unchanged. Two caveats
+at this version: a subscriber sees records published after it
+attaches (no replay of history), and if it falls more than a full
+buffer behind it resyncs rather than read a torn record.
 
 ## The same shape, one tier down
 

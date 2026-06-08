@@ -81,3 +81,19 @@ fn layout_byte_records_roundtrip() {
 fn layout_byte_records_wrap() {
     run_mode("wrap");
 }
+
+// Proposal B M3a — the PRODUCER C ABI
+// (lotus_bus_register_shm_ring_layout + publish_shm_ring_layout):
+// register a producer that creates the ring, publish records, and
+// confirm a consumer reads them back in order. Validates that the
+// producer's framing is the exact inverse of the reader's.
+
+#[test]
+fn layout_producer_roundtrip() {
+    run_mode("producer");
+}
+
+#[test]
+fn layout_producer_wrap() {
+    run_mode("producer_wrap");
+}

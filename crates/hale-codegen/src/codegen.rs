@@ -5315,6 +5315,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// Proposal B M3a (2026-06-06): does any locus in this bundle
+    /// `publish` the topic on the given wire subject? Drives whether a
+    /// `layout:`-bound binding creates the foreign ring (producer) in
+    /// the prelude or merely attaches it read-only at a subscriber's
+    /// birth. `desugar` has already rewritten `publish Foo;` to a
+    /// `BusSubject::Literal` carrying the topic's wire subject, so we
+    /// match that (and the pre-desugar `Topic` form defensively).
+    fn bundle_publishes_topic(&self, wire_subject: &str) -> bool {
+        use hale_syntax::ast::{BusMember, BusSubject, LocusMember};
+        self.program.items.iter().any(|item| {
+            let TopDecl::Locus(l) = item else { return false };
+            l.members.iter().any(|m| {
+                let LocusMember::Bus(bus) = m else { return false };
+                bus.members.iter().any(|bm| match bm {
+                    BusMember::Publish { subject: BusSubject::Literal { subject, .. }, .. } => {
+                        subject == wire_subject
+                    }
+                    BusMember::Publish { subject: BusSubject::Topic(i), .. } => {
+                        i.name == wire_subject
+                    }
+                    _ => false,
+                })
+            })
+        })
+    }
+
     /// Phase 3 (2026-05-25): walk top-level topic decls and
     /// record each KEYED topic's (wire subject → payload type +
     /// keyed_by field) for the codegen-side publish lookup.
@@ -5589,7 +5615,44 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         )?;
                         continue;
                     }
-                    TransportSpec::ShmRing { name, slot_count, overflow, .. } => {
+                    TransportSpec::ShmRing {
+                        name, slot_count, overflow, layout, buffer_size, ..
+                    } => {
+                        // Proposal B M3a (2026-06-06): a foreign-layout
+                        // binding does NOT create the native LRSRNG1
+                        // ring. If this bundle PUBLISHES the topic, it
+                        // is the ring's producer and creates it here;
+                        // otherwise a subscriber attaches it read-only
+                        // at locus birth (PR3) and the prelude emits
+                        // nothing. (Without this branch the native
+                        // register below would stamp an LRSRNG1 header
+                        // onto a foreign ring name — wrong either way.)
+                        if let Some(lid) = layout {
+                            if self.bundle_publishes_topic(&subject) {
+                                let decl = self.program.items.iter().find_map(
+                                    |it| match it {
+                                        TopDecl::RingLayout(r)
+                                            if r.name.name == lid.name =>
+                                        {
+                                            Some(r.clone())
+                                        }
+                                        _ => None,
+                                    },
+                                );
+                                if let Some(decl) = decl {
+                                    // Default capacity when the binding
+                                    // omits `buffer_size:` — 1 MiB data
+                                    // region. A consumer reads the
+                                    // actual size from the header.
+                                    const DEFAULT_CAP: u64 = 1 << 20;
+                                    let cap = buffer_size.unwrap_or(DEFAULT_CAP);
+                                    self.emit_bus_register_shm_ring_layout_producer(
+                                        &subject, name, &decl, cap,
+                                    )?;
+                                }
+                            }
+                            continue;
+                        }
                         // Form K4c (2026-05-20): emit the
                         // shm_ring registration + record the
                         // subject for lower_send's publish-side
