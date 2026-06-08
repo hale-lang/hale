@@ -906,14 +906,14 @@ Transport surface:
 **Foreign rings via `ring_layout` (Proposal B, 2026-06-06).**
 The shm_ring transport above reads/writes the *native* Lotus
 ring (the `LRSRNG1` header + equal-sized slots). To read a ring
-defined by *another* program — concretely a magus2-style binary
+defined by *another* program — an externally-defined binary
 broadcast ring — a `ring_layout` declaration describes that
 ring's binary shape, and a binding references it with the
 `layout:` kwarg:
 
 ```hale
-ring_layout MagusRing {
-    magic 0x4D475348514D4B54;        // expected header magic at offset 0
+ring_layout ForeignRing {
+    magic 0x52494E47464D5431;        // expected header magic at offset 0
     version 1 at 8 : u32;            // header field `version`: expect 1
     buffer_size at 12 : u32;         // ring data capacity, read from header
     data_at 128;                     // first-record byte offset
@@ -928,8 +928,8 @@ ring_layout MagusRing {
 
 main locus App {
     bindings {
-        Ticks: shm_ring("/magus.ticks", on_overflow: drop,
-                        layout: MagusRing) where zero_copy;
+        Ticks: shm_ring("/foreign.ticks", on_overflow: drop,
+                        layout: ForeignRing) where zero_copy;
     }
 }
 ```
@@ -1016,7 +1016,7 @@ creates nothing — it attaches the foreign producer's ring.
 *Limitations (v1).* A subscriber reads records published *after*
 it attaches (no historical replay) — so an in-process producer must
 not publish before the consumer's reader thread has started (a
-non-issue for an external long-running producer like magus2). Lap
+non-issue for an external long-running producer like an external market-data feed). Lap
 handling is lossy + safe: if the producer runs more than `capacity`
 bytes ahead, the missed bytes are gone, so the reader resyncs to the
 producer's cursor (a commit boundary) and resumes rather than

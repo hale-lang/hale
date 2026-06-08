@@ -11,8 +11,8 @@ fn check(src: &str) -> Vec<String> {
 }
 
 const VALID: &str = r#"
-ring_layout MagusRing {
-    magic 0x4D475348514D4B54;
+ring_layout ForeignRing {
+    magic 0x52494E47464D5431;
     version 1 at 8 : u32;
     buffer_size at 12 : u32;
     data_at 128;
@@ -153,7 +153,7 @@ fn main() {
 }
 
 // ---- conformance: cross-field geometric consistency (2026-06-06) ----
-// magus2's format is fixed, so a mis-transcribed layout is our bug and
+// the foreign format is fixed, so a mis-transcribed layout is our bug and
 // several of these fields silently corrupt the reader. Caught at
 // compile time.
 

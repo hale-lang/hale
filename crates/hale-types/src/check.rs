@@ -4379,7 +4379,7 @@ impl<'a> Checker<'a> {
         }
 
         // shm-ring-interop conformance (2026-06-06): cross-field
-        // geometric consistency. magus2's binary format is fixed and
+        // geometric consistency. the foreign format is fixed and
         // unchangeable, so a `ring_layout` that mis-transcribes it is
         // purely *our* bug — and several of these fields silently
         // corrupt PR3's already-shipped reader if they're wrong (a

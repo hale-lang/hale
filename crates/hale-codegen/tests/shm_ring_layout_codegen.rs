@@ -2,7 +2,7 @@
 //! shm_ring subscriber.
 //!
 //! Compiles a Hale program with a `ring_layout` declaration and a
-//! subscriber whose binding carries `layout: MagusRing`, dumps the
+//! subscriber whose binding carries `layout: ForeignRing`, dumps the
 //! LLVM IR via `LOTUS_DUMP_IR`, and asserts codegen took the
 //! foreign-layout path: it emits the descriptor global and a call
 //! to `lotus_bus_register_subscriber_shm_ring_layout` (NOT the
@@ -37,8 +37,8 @@ fn unique_path(tag: &str, ext: &str) -> PathBuf {
 #[test]
 fn layout_binding_emits_layout_register_call() {
     let src = r#"
-        ring_layout MagusRing {
-            magic 0x4D475348514D4B54;
+        ring_layout ForeignRing {
+            magic 0x52494E47464D5431;
             version 1 at 8 : u32;
             buffer_size at 12 : u32;
             data_at 128;
@@ -62,7 +62,7 @@ fn layout_binding_emits_layout_register_call() {
 
         main locus App {
             bindings {
-                Ticks: shm_ring("/magus.ticks", on_overflow: drop, layout: MagusRing) where zero_copy;
+                Ticks: shm_ring("/foreign.ticks", on_overflow: drop, layout: ForeignRing) where zero_copy;
             }
         }
 
@@ -107,8 +107,8 @@ fn layout_publisher_emits_producer_register_and_publish() {
     // through lotus_bus_publish_shm_ring_layout — NOT the native
     // register/publish.
     let src = r#"
-        ring_layout MagusRing {
-            magic 0x4D475348514D4B54;
+        ring_layout ForeignRing {
+            magic 0x52494E47464D5431;
             version 1 at 8 : u32;
             buffer_size at 12 : u32;
             data_at 128;
@@ -127,8 +127,8 @@ fn layout_publisher_emits_producer_register_and_publish() {
 
         main locus App {
             bindings {
-                Ticks: shm_ring("/magus.ticks", on_overflow: drop,
-                                layout: MagusRing, buffer_size: 4096) where zero_copy;
+                Ticks: shm_ring("/foreign.ticks", on_overflow: drop,
+                                layout: ForeignRing, buffer_size: 4096) where zero_copy;
             }
         }
 
