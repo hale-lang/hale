@@ -866,7 +866,7 @@ The producer side (Proposal B M3a) mirrors these:
   length prefix + payload, release-store the cursor). The producer
   rings are closed + `shm_unlink`'d at `atexit`.
 
-Field reads/writes are host-native endianness (magus2 and Hale are
+Field reads/writes are host-native endianness (the foreign producer and Hale are
 both little-endian x86-64). v1 is `byte_records` only; the `slots`
 framing kind and a zero-copy writable producer view are post-v1.
 

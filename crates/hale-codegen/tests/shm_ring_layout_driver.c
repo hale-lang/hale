@@ -3,7 +3,7 @@
  *
  * Exercises the read-only `byte_records` consumer path
  * (lotus_bus_register_subscriber_shm_ring_layout + the layout
- * reader thread) against a magus2-shaped producer that this driver
+ * reader thread) against a foreign-layout producer that this driver
  * plays itself.
  *
  * The driver is BOTH sides over one POSIX SHM segment:
@@ -59,9 +59,9 @@ extern int lotus_bus_publish_shm_ring_layout(
     const void *value,
     uint64_t value_size);
 
-/* Layout constants — mirror the `MagusRing` ring_layout used in the
+/* Layout constants — mirror the `ForeignRing` ring_layout used in the
  * Rust-side tests. */
-#define MAGIC          0x4D475348514D4B54ULL
+#define MAGIC          0x52494E47464D5431ULL
 #define VERSION_OFF    8
 #define VERSION_WIDTH  4
 #define VERSION_VAL    1
@@ -141,7 +141,7 @@ static int run(const char *name, uint64_t capacity, int n, int pace_us) {
     uint64_t desc[16];
     build_desc(desc);
     lotus_bus_register_subscriber_shm_ring_layout(
-        "magus.ticks", name, desc, NULL, on_record);
+        "foreign.ticks", name, desc, NULL, on_record);
     /* Give the reader a moment to attach + park at cursor 0. */
     struct timespec warmup = {0, 5 * 1000 * 1000};  /* 5ms */
     nanosleep(&warmup, NULL);
@@ -221,17 +221,17 @@ static int run_producer(const char *name, uint64_t capacity, int n, int pace_us)
     build_desc(desc);
 
     /* Producer creates + owns the ring. */
-    lotus_bus_register_shm_ring_layout("magus.ticks", name, desc, capacity);
+    lotus_bus_register_shm_ring_layout("foreign.ticks", name, desc, capacity);
     /* Consumer attaches read-only and parks at cursor 0. */
     lotus_bus_register_subscriber_shm_ring_layout(
-        "magus.ticks", name, desc, NULL, on_record);
+        "foreign.ticks", name, desc, NULL, on_record);
     struct timespec warmup = {0, 5 * 1000 * 1000};  /* 5ms */
     nanosleep(&warmup, NULL);
 
     for (int i = 0; i < n; i++) {
         Payload p = { .seq_id = i + 1, .value = (int64_t)(i + 1) * 7 };
         if (lotus_bus_publish_shm_ring_layout(
-                "magus.ticks", &p, sizeof(p)) != 0) {
+                "foreign.ticks", &p, sizeof(p)) != 0) {
             fprintf(stderr, "publish %d failed\n", i);
             return 2;
         }

@@ -15,7 +15,7 @@
 //!
 //! The subscriber prints each received tick; we assert all N arrive
 //! in order, proving the producer's framing is read back correctly
-//! by the consumer (and, by construction, by any magus2-shaped
+//! by the consumer (and, by construction, by any same-layout
 //! reader).
 
 use std::path::PathBuf;
@@ -39,8 +39,8 @@ fn hale_producer_roundtrips_through_foreign_layout() {
 
     let src = format!(
         r#"
-        ring_layout MagusRing {{
-            magic 0x4D475348514D4B54;
+        ring_layout ForeignRing {{
+            magic 0x52494E47464D5431;
             version 1 at 8 : u32;
             buffer_size at 12 : u32;
             data_at 128;
@@ -74,7 +74,7 @@ fn hale_producer_roundtrips_through_foreign_layout() {
         main locus App {{
             bindings {{
                 Ticks: shm_ring("{shm_name}", on_overflow: drop,
-                                layout: MagusRing, buffer_size: 4096) where zero_copy;
+                                layout: ForeignRing, buffer_size: 4096) where zero_copy;
             }}
         }}
 
@@ -87,7 +87,7 @@ fn hale_producer_roundtrips_through_foreign_layout() {
             // cursor (no historical replay), so an in-process producer
             // that ran first would advance the cursor past records the
             // just-attached reader never saw. A real external producer
-            // (magus2) is long-running, so this is a test-only barrier.
+            // is long-running, so this is a test-only barrier.
             time::sleep(50ms);
             Producer {{ }};
             time::sleep(500ms);

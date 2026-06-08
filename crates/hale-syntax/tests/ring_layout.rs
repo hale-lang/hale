@@ -9,8 +9,8 @@ use hale_syntax::parse_source;
 #[test]
 fn parses_full_ring_layout() {
     let src = r#"
-ring_layout MagusRing {
-    magic 0x4D475348514D4B54;
+ring_layout ForeignRing {
+    magic 0x52494E47464D5431;
     version 1 at 8 : u32;
     buffer_size at 12 : u32;
     data_at 128;
@@ -33,8 +33,8 @@ ring_layout MagusRing {
         })
         .expect("ring_layout decl present");
 
-    assert_eq!(rl.name.name, "MagusRing");
-    assert_eq!(rl.magic, Some(0x4D475348514D4B54));
+    assert_eq!(rl.name.name, "ForeignRing");
+    assert_eq!(rl.magic, Some(0x52494E47464D5431));
     assert_eq!(rl.data_at, Some(128));
     assert_eq!(rl.overflow.as_ref().map(|i| i.name.as_str()), Some("lap_detect"));
 

@@ -11,8 +11,8 @@ fn check(src: &str) -> Vec<String> {
 }
 
 const LAYOUT: &str = r#"
-ring_layout MagusRing {
-    magic 0x4D475348514D4B54;
+ring_layout ForeignRing {
+    magic 0x52494E47464D5431;
     version 1 at 8 : u32;
     buffer_size at 12 : u32;
     data_at 128;
@@ -45,7 +45,7 @@ fn main() {{ App {{ }}; Producer {{ }}; }}
 #[test]
 fn layout_binding_resolves_clean() {
     let msgs = check(&program(
-        r#"Foo: shm_ring("/magus.ticks", on_overflow: drop, layout: MagusRing) where zero_copy;"#,
+        r#"Foo: shm_ring("/foreign.ticks", on_overflow: drop, layout: ForeignRing) where zero_copy;"#,
     ));
     assert!(
         !msgs.iter().any(|m| m.contains("ring_layout")),
@@ -57,7 +57,7 @@ fn layout_binding_resolves_clean() {
 #[test]
 fn unknown_layout_errors() {
     let msgs = check(&program(
-        r#"Foo: shm_ring("/magus.ticks", on_overflow: drop, layout: Nonexistent) where zero_copy;"#,
+        r#"Foo: shm_ring("/foreign.ticks", on_overflow: drop, layout: Nonexistent) where zero_copy;"#,
     ));
     assert!(
         msgs.iter().any(|m| m.contains("unknown ring_layout `Nonexistent`")),
@@ -70,7 +70,7 @@ fn unknown_layout_errors() {
 fn layout_naming_a_non_layout_errors() {
     // `Foo` is a topic, not a ring_layout.
     let msgs = check(&program(
-        r#"Foo: shm_ring("/magus.ticks", on_overflow: drop, layout: Foo) where zero_copy;"#,
+        r#"Foo: shm_ring("/foreign.ticks", on_overflow: drop, layout: Foo) where zero_copy;"#,
     ));
     assert!(
         msgs.iter().any(|m| m.contains("is not a `ring_layout`")),
@@ -110,7 +110,7 @@ locus Producer {{
 }}
 main locus App {{
     bindings {{
-        Foo: shm_ring("/magus.ticks", on_overflow: drop, layout: MagusRing);
+        Foo: shm_ring("/foreign.ticks", on_overflow: drop, layout: ForeignRing);
     }}
 }}
 fn main() {{ App {{ }}; Producer {{ }}; }}

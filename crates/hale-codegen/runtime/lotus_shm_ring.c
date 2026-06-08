@@ -229,21 +229,22 @@ void lotus_shm_ring_close(lotus_shm_ring_t *ring) {
 
 /* === Proposal B (2026-06-06) — foreign-layout read-only consumer =======
  *
- * A `ring_layout` declaration lets a Hale program read an
- * EXTERNALLY-defined binary broadcast ring (concretely magus2's
- * `RingPrefix`) without forking the runtime. The native ring above
+ * A `ring_layout` declaration lets a Hale program read (and, via the
+ * M3a producer path below, write) an EXTERNALLY-defined binary
+ * broadcast ring without forking the runtime. The native ring above
  * (LRSRNG1) is one fixed shape; a layout parameterizes the parts
  * that vary: the magic, a version field, a buffer_size field, the
  * first-record offset, the published byte cursor, and the record
  * framing.
  *
- * v1 scope is READ-ONLY, `byte_records` framing, single broadcast
- * cursor. The producer side for foreign layouts (writing magus2's
- * ring from Hale) is out of scope (Proposal B M3).
+ * v1 scope is `byte_records` framing, single broadcast cursor, both
+ * the read-only consumer (here) and the producer (M3a, further down).
+ * The `slots` framing kind and a zero-copy writable producer view are
+ * out of scope.
  *
- * Endianness: fields are read host-native. magus2 and Hale both
- * target little-endian x86-64; a cross-endian attach is rejected
- * upstream (there is no byte-swap path at v1).
+ * Endianness: fields are read host-native. The foreign program and
+ * Hale both target little-endian x86-64; a cross-endian attach is
+ * rejected upstream (there is no byte-swap path at v1).
  */
 
 /* Descriptor built by codegen from the resolved `ring_layout` and
@@ -757,7 +758,7 @@ int lotus_bus_publish_shm_ring(const char *subject,
  * then release-store the monotonic byte cursor so a consumer's
  * acquire-load sees the bytes.
  *
- * Endianness is host-native (LE), matching the consumer + magus2.
+ * Endianness is host-native (LE), matching the consumer + the foreign reader.
  */
 typedef struct {
     char subject[64];

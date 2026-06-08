@@ -1,14 +1,15 @@
 # Binary SHM-ring interop: `ring_layout` declarations + `std::bytes` pack primitives
 
 **Status:** Design proposal, 2026-06-06. Pre-implementation. Driven by a
-concrete first consumer (fathom ↔ magus2). Two related but independently
+concrete first consumer (fathom ↔ the external stack). Two related but independently
 landable features. Awaiting compiler-team review + staging decision.
 
 **Authors / context:** Raised from the fathom side while scoping
-interop with **magus2**, a sister C++ trading stack whose inter-process
-transport is a lock-free shared-memory broadcast ring
-(`magus2/src/infra/shm/ring_layout.hpp`). The same need recurs for any
-binary wire protocol (binary venue feeds, drop-copy streams, etc.).
+interop with **an external trading stack** (a sister C++ system) whose
+inter-process transport is a lock-free shared-memory broadcast ring
+(its shared-memory ring-layout header — the `RingPrefix` struct). The
+same need recurs for any binary wire protocol (binary venue feeds,
+drop-copy streams, etc.).
 
 ---
 
@@ -44,11 +45,11 @@ pattern: *declare the foreign layout, codegen the safe typed accessor.*
 
 ### The immediate need
 
-magus2 exposes its hot-path data over a POSIX-SHM lock-free SPMC ring.
+The external stack exposes its hot-path data over a POSIX-SHM lock-free SPMC ring.
 Layout (`ring_layout.hpp`, verbatim constants):
 
 ```
-k_ring_magic       = 0x4D475348514D4B54   // "MGSHQMKT"
+k_ring_magic       = 0x52494E47464D5431   // "RINGFMT1"
 k_ring_version     = 1
 k_padding_sentinel = 0xFFFFFFFF
 k_cacheline_size   = 64
@@ -78,7 +79,7 @@ struct RingPrefix {
   writes the `0xFFFFFFFF` padding sentinel as the length and wraps.
 - **Overflow (lapping):** `committed < local || committed - local >
   buffer_size` → the reader fell behind and must resync.
-- SPMC, single producer; cross-language by design (magus2 already has a
+- SPMC, single producer; cross-language by design (the external stack already has a
   Rust↔C++ SHM-transit perf test).
 
 fathom wants to read (and possibly write) this ring from Hale.
@@ -93,11 +94,11 @@ fathom wants to read (and possibly write) this ring from Hale.
 | Read u32/u64/f64 at a byte offset | ❌ `std::bytes` is `at`(1 byte)/`slice`/`concat`/builder | **no binary pack/unpack** |
 | Map a foreign ring layout | ❌ | layout is not declarable; only `LRSRNG1` is wired |
 
-The `LRSRNG1` and `MGSHQMKT` formats are structurally different:
+The `LRSRNG1` and `RINGFMT1` formats are structurally different:
 
-| | `LRSRNG1` (ours) | `MGSHQMKT` (magus2) |
+| | `LRSRNG1` (ours) | `RINGFMT1` (the external stack) |
 |---|---|---|
-| magic | `0x4C5253524E4731` | `0x4D475348514D4B54` |
+| magic | `0x4C5253524E4731` | `0x52494E47464D5431` |
 | header | 128 B (magic@0, slot_size@8, slot_count@16, seqno@24, consumer_seqno@64) | 64 B + cursor@64 + data@128 |
 | published cursor | `seqno` (slot count) @24 | `committed` (byte count) @64 |
 | record model | **fixed-size slots** | **variable-length byte records** (`u32` len + 8-align) |
@@ -105,8 +106,8 @@ The `LRSRNG1` and `MGSHQMKT` formats are structurally different:
 
 So the injectable codec (payload) does **not** bridge this — the
 slot-vs-byte framing and cursor semantics live in the C runtime. Today
-the only routes to magus2's ring are: adopt our format on the magus2
-side, or drop to `@ffi("c")` glue. This proposal adds a third, better
+the only routes to the external stack's ring are: adopt our format on
+the external side, or drop to `@ffi("c")` glue. This proposal adds a third, better
 one: **declare the foreign layout and let codegen lower it safely.**
 
 ---
@@ -138,7 +139,7 @@ std::bytes::read_f64_be(b, off) -> Float fallible(BoundsError);
 
 Notes / decisions to make:
 - **`u64` → `Int`.** Hale `Int` is i64; a true `u64` with the top bit set
-  wraps to negative. magus2 cursors/ids fit i63 in practice, but the
+  wraps to negative. the external stack's cursors/ids fit i63 in practice, but the
   general primitive should say so. Options: (1) document the wrap and add
   `read_u64` returning the raw bit pattern as i64; (2) gate on a `Uint`
   type if/when one exists (FFI spec already reserves `Uint`). Recommend
@@ -148,7 +149,7 @@ Notes / decisions to make:
   For the ring fast path (millions of reads/s) a later
   `read_*_unchecked` (caller asserts the slice was length-validated once)
   is a reasonable optimization — explicitly out of scope for v1.
-- **Endianness.** Provide both; x86-native binary structs (magus2) are
+- **Endianness.** Provide both; x86-native binary structs (the external stack) are
   LE, so `_le` is the common case. A bare `read_u32`/`read_u64` aliasing
   host-endian is a convenience worth considering but invites portability
   bugs — recommend explicit `_le`/`_be` only.
@@ -234,11 +235,11 @@ runtime already does for `LRSRNG1`; this just parameterizes it.
 > Still out of scope: the producer path for foreign layouts (M3),
 > `slots` framing, historical replay, multi-cursor back-pressure.
 
-magus2's ring becomes a declaration:
+The external stack's ring becomes a declaration:
 
 ```hale
-ring_layout MagusRing {
-    magic        0x4D475348514D4B54;
+ring_layout ForeignRing {
+    magic        0x52494E47464D5431;
     version_at   8  : u32;          // validated == expected_version
     expected_version 1;
     buffer_size_at 12 : u32;        // ring capacity, read from header
@@ -283,8 +284,8 @@ defaults to `LotusRing` (100% back-compat):
 
 ```hale
 bindings {
-    // read magus2's ring:
-    MagusTick: shm_ring("/magus.mdgw.ticks", layout: MagusRing) where zero_copy;
+    // read the external stack's ring:
+    ForeignTick: shm_ring("/foreign.mdgw.ticks", layout: ForeignRing) where zero_copy;
     // unchanged today's form still means layout: LotusRing
     Tick:      shm_ring("/lotus.ticks", slot_count: 4096, on_overflow: drop) where zero_copy;
 }
@@ -368,7 +369,7 @@ through the safety model.
   YAGNI until a real "format unknown until runtime" case exists.
 - **An arbitrary ring DSL.** Do **not** try to parameterize every
   conceivable ring. Cover the two formats that exist (`LotusRing`
-  slot-framed, `MagusRing` byte-record-framed) plus the common Aeron-ish
+  slot-framed, `ForeignRing` byte-record-framed) plus the common Aeron-ish
   shape, and stop. The failure mode to avoid is a config-soup DSL where
   every ring is a special case.
 - **Replacing `@ffi("c")`.** FFI remains the escape hatch for calling a
@@ -380,20 +381,20 @@ through the safety model.
 
 ## Driving use case & validation plan
 
-**fathom ↔ magus2.** fathom (Hale) reads magus2's `MagusRing` (market
-data / feed), and optionally publishes into a magus2 `ingress` ring.
-Same-host only (SHM). The payload structs are magus2 POD messages,
+**fathom ↔ the external stack.** fathom (Hale) reads the external stack's `ForeignRing` (market
+data / feed), and optionally publishes into the external stack's `ingress` ring.
+Same-host only (SHM). The payload structs are the external stack's POD messages,
 decoded via an injectable codec built on the Proposal-A primitives.
 
 **Validation (mirrors how fathom de-risked its grease UDP integration —
 a loopback against a faithful mock before any live wiring):**
 1. Pack primitives: unit tests, round-trip every width/endianness; fuzz
    against bounds.
-2. `ring_layout` read path: a Hale reader with `layout: MagusRing`
+2. `ring_layout` read path: a Hale reader with `layout: ForeignRing`
    against a byte-ring writer producing the exact `RingPrefix` format
-   (either a small C harness or magus2's own `ring_replay` test rig) —
+   (either a small C harness or the external stack's own `ring_replay` test rig) —
    assert bit-for-bit record recovery, wrap, and lap-detect.
-3. `ring_layout` producer path: Hale writer → magus2 (or C) reader.
+3. `ring_layout` producer path: Hale writer → the external stack (or C) reader.
 4. Regression: the existing `LRSRNG1` tests must pass unchanged with
    `LotusRing` as the default declaration (proves the parameterization
    didn't regress the hardcoded path).
@@ -427,7 +428,7 @@ a loopback against a faithful mock before any live wiring):**
      view (A1) is still future.
 2. **Proposal B, read-only, `byte_records` framing.** `ring_layout`
    declaration + `layout:` on the `shm_ring` binding, consumer path only.
-   First real target: read `MagusRing`.
+   First real target: read `ForeignRing`.
 3. **Proposal B, producer path** + Proposal A writable view (A1) for
    zero-copy writes.
 4. **Dogfood:** re-express `LRSRNG1` as the built-in `LotusRing`
@@ -455,7 +456,7 @@ Each stage is independently useful and testable.
    `u64`. Internally compare/advance them correctly even though the
    user-facing scalar reads are i64. Confirm the runtime keeps cursors as
    `uint64_t` and only the *payload* reads surface as `Int`.
-4. **Multi-producer.** magus2's ring is SPSC/SPMC like ours (single
+4. **Multi-producer.** the external stack's ring is SPSC/SPMC like ours (single
    producer). Keep MP out of scope (matches `lotus_shm_ring.c` v1).
 5. **Bounds-check cost.** Is `fallible(BoundsError)` per scalar read
    acceptable on the hot path, or do we want the validated-slice +
@@ -473,7 +474,7 @@ Each stage is independently useful and testable.
 - **Aeron** — shared-memory log buffer with a documented layout + many
   language clients; the canonical "ring as a published wire ABI."
 - **LMAX Disruptor** — the SPMC ring-buffer + published-sequence pattern
-  both `LRSRNG1` and `MGSHQMKT` are instances of.
+  both `LRSRNG1` and `RINGFMT1` are instances of.
 - **SBE / Cap'n Proto / FlatBuffers** — schema → generated zero-copy
   typed accessors that index straight into a buffer (the Proposal-A′
   layer).
@@ -510,21 +511,20 @@ Hale:
 - `notes/proto-locus-design.md` — relevant to where `ring_layout` sits in
   the form/locus model.
 
-magus2 (the driving consumer):
-- `magus2/src/infra/shm/ring_layout.hpp` — the `RingPrefix` layout
-  reproduced above.
-- `magus2/src/infra/shm/{frame_codec,ingress_ring,shared_memory}.hpp` —
-  framing + producer/consumer.
-- `magus2/src/infra/types/short_types.hpp` — `u32`/`u64`/`i32`/`i64`.
+The external stack (the driving consumer) — its shared-memory layer:
+- the ring-layout header — the `RingPrefix` layout reproduced above.
+- the frame-codec / ingress-ring / shared-memory headers — framing +
+  producer/consumer.
+- its short-types header — `u32`/`u64`/`i32`/`i64`.
 
 ---
 
 ## Coordination
 
-fathom is the first consumer and will validate each stage against magus2
+fathom is the first consumer and will validate each stage against the external stack
 (and a faithful mock, the same way it de-risked its grease UDP
 integration with a loopback before live wiring). Sequencing that unblocks
 fathom fastest: **Proposal A readers first** (immediately useful for any
 binary codec), then **Proposal B read-only / `byte_records`** (reads
-magus2's ring). Producer + zero-copy-write + `LotusRing` dogfood can
+the external stack's ring). Producer + zero-copy-write + `LotusRing` dogfood can
 follow.
