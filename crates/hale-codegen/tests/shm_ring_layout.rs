@@ -31,7 +31,18 @@ fn build_driver(tag: &str) -> PathBuf {
     ring_c.push("lotus_shm_ring.c");
 
     let mut bin = std::env::temp_dir();
-    bin.push(format!("lotus_shm_ring_layout_driver_{}", tag));
+    // Salt with pid + a process-wide counter so two tests can never
+    // share a driver-binary path under nextest's parallel execution
+    // (the bytes_pack_read flake class). The SHM object names are
+    // already unique via unique_shm_name.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    bin.push(format!(
+        "lotus_shm_ring_layout_driver_{}_{}_{}",
+        tag,
+        std::process::id(),
+        seq
+    ));
     let mut cmd = Command::new("clang");
     cmd.arg(&driver_c).arg(&ring_c);
     // Honor the same sanitizer env flags as the codegen build, so the
