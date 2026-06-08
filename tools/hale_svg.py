@@ -18,20 +18,25 @@ import html
 import re
 import sys
 
-# Keyword set — keep in sync with docs/hale-highlight.js and the lexer
-# (crates/hale-syntax/src/lexer.rs).
+# Keyword set — mirrors pond/heron/queries/highlights.scm (the most
+# complete source) and docs/hale-highlight.js; keep the three in sync.
 KEYWORDS = set(
-    "locus perspective type const fn import export module topic ring_layout "
-    "params contract bus capacity as_parent_for indexed_by bindings placement mode "
-    "birth accept run drain dissolve on_failure "
-    "bulk harmonic resolution projection rich chunked recognition "
-    "cooperative pinned pool core "
-    "closure epoch persists_through resets_on resets_per_epoch approx within inline captures "
-    "restart restart_in_place quarantine reorganize bubble "
+    "locus perspective interface module topic ring_layout type const fn import export as main "
+    "tier projection schedule rich chunked recognition fixed_cell shared_slab spillover "
+    "summary_only cooperative pinned cap core mode "
+    "params contract bus capacity bindings placement indexed_by as_parent_for "
+    "birth accept run drain dissolve on_failure bulk harmonic resolution birth_check "
     "expose consume inferred "
-    "subscribe publish on of stable_when serialize_as "
-    "let mut if else match for in while return break continue tier self "
-    "trait impl interface async await yield terminate release macro where with violate fail".split()
+    "subscribe publish of payload subject stable_when serialize_as "
+    "pool heap "
+    "closure epoch persists_through resets_on resets_per_epoch captures inline tick "
+    "duration explicit approx within "
+    "unix shm_ring where role listen connect slot_count on_overflow block drop "
+    "intra_process intra_machine cross_machine zero_copy "
+    "let mut if else match for in while return break continue self yield sum prod "
+    "restart restart_in_place quarantine reorganize bubble violate with until "
+    "fallible fail or terminate release "
+    "trait impl async await macro".split()
 )
 LITERALS = {"true", "false", "nil"}
 

@@ -140,6 +140,14 @@ a `bindings { }` block. This is the control panel for the entire
 program. The loci themselves don't mention threads or transports;
 `main` does, in one place:
 
+<!-- Rendered SVG; source assets/readme/placement.hl, regenerate with
+     `python3 tools/hale_svg.py assets/readme/placement.hl assets/readme/placement.svg`.
+     Copyable source is in the <details>; keep the two in sync. -->
+![The main locus: placement and bindings](assets/readme/placement.svg)
+
+<details>
+<summary>Source</summary>
+
 ```hale
 main locus App {
     params {
@@ -168,6 +176,8 @@ main locus App {
     }
 }
 ```
+
+</details>
 
 **`placement { }` — where each locus runs.** Same-type siblings can
 sit on different cores; it keys on the field name, not the type.
