@@ -62,10 +62,22 @@ field declares a default (`currency: String = "USD"`), in which case the
 default fills it. Because `from_json` is `fallible`, you must address it
 (`or raise`, `or <fallback>`, …) like any other fallible call.
 
+A field whose type is **another `json:`-tagged struct** is parsed
+recursively — nest as deep as you like, and a missing field anywhere
+raises with that field's name:
+
+```hale
+type Addr   { city: String `json:"city"`; zip: Int `json:"zip"`; }
+type Person { name: String `json:"name"`; home: Addr `json:"home"`; }
+
+let p = Person::from_json(body) or raise;
+println(p.home.city);
+```
+
 The tag is general `key:"value"` metadata — `json:` is one consumer;
-other keys are free for future tools. (Fields must be scalar — `Int` /
-`Float` / `Bool` / `String` — for now; nested types and arrays are a
-follow-up.)
+other keys are free for future tools. (Fields must be scalars — `Int` /
+`Float` / `Bool` / `String` — or nested `json:`-tagged structs; array
+fields are a follow-up, pending a growable value collection.)
 
 ## Arrays
 

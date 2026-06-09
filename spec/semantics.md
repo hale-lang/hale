@@ -1052,9 +1052,12 @@ payload picks the consumer mode:
   the field name; unmatched keys (and nested objects/arrays under them)
   are skipped. A missing field raises `JsonError { kind, field }` unless
   the field declares a literal default (`= "USD"`), which fills it.
-  `from_json` is `fallible`, so callers must address it. Nested-struct
-  and array fields are a follow-up. Further tag keys remain reserved for
-  future consumers (validation, db mapping).
+  `from_json` is `fallible`, so callers must address it. A field whose
+  type is another generated JSON struct is parsed recursively (the nested
+  object's raw text is handed to that type's parser; a nested failure
+  propagates). Array fields remain a follow-up (no growable value
+  collection yet). Further tag keys remain reserved for future consumers
+  (validation, db mapping).
 
 Any other payload (with `String`, `Bytes`, or variable-size fields and
 not itself `BytesView`) is rejected.

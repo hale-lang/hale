@@ -64,11 +64,18 @@ impl ScalarTy {
     }
 }
 
+enum FieldKind {
+    Scalar(ScalarTy),
+    /// A field whose type is another generated JSON struct — parsed by
+    /// recursing into the nested object's raw text.
+    Nested(String),
+}
+
 struct JsonField {
     name: String,           // struct field name
     key: String,            // JSON key (tag value or field name)
-    ty: ScalarTy,
-    default_src: Option<String>, // literal default source, if declared
+    kind: FieldKind,
+    default_src: Option<String>, // scalar literal default; None for nested/required
 }
 
 struct JsonType {
@@ -105,38 +112,80 @@ fn tag_json_key(tag: &Option<String>) -> Option<String> {
     tag.as_deref().and_then(|t| crate::desugar::tag_value(t, "json"))
 }
 
-/// Collect every struct type that opts into JSON parsing (≥1 `json:` tag)
-/// and whose fields are all scalar. A type with a non-scalar field is
-/// skipped (left to a future nested/array pass).
-fn collect_json_types(items: &[TopDecl], out: &mut Vec<JsonType>) {
+/// A single-segment named type (`Inner`, not `mod::Inner` or `Box<T>`).
+fn named_single(te: &TypeExpr) -> Option<&str> {
+    match te {
+        TypeExpr::Named { path, generic_args, .. }
+            if generic_args.is_empty() && path.segments.len() == 1 =>
+        {
+            Some(&path.segments[0].name)
+        }
+        _ => None,
+    }
+}
+
+/// Names of all structs that opt into JSON parsing (≥1 `json:` tag).
+fn collect_json_type_names(items: &[TopDecl], out: &mut HashSet<String>) {
     for item in items {
         match item {
             TopDecl::Type(td) => {
                 if let TypeDeclBody::Struct(fields) = &td.body {
-                    let opts_in = fields.iter().any(|f| tag_json_key(&f.tag).is_some());
-                    if !opts_in {
+                    if fields.iter().any(|f| tag_json_key(&f.tag).is_some()) {
+                        out.insert(td.name.name.clone());
+                    }
+                }
+            }
+            TopDecl::Module(m) => collect_json_type_names(&m.items, out),
+            _ => {}
+        }
+    }
+}
+
+/// Build the field schema for every opted-in struct. Each field must be a
+/// scalar (Int/Float/Bool/String) or a nested field whose type is itself a
+/// generated JSON struct (in `names`); a field of any other type leaves
+/// the whole type ungenerated (arrays + non-JSON structs are future work).
+fn collect_json_types(items: &[TopDecl], names: &HashSet<String>, out: &mut Vec<JsonType>) {
+    for item in items {
+        match item {
+            TopDecl::Type(td) => {
+                if let TypeDeclBody::Struct(fields) = &td.body {
+                    if !fields.iter().any(|f| tag_json_key(&f.tag).is_some()) {
                         continue;
                     }
                     let mut jfields = Vec::new();
-                    let mut all_scalar = true;
+                    let mut ok = true;
                     for f in fields {
-                        let Some(ty) = scalar_of(&f.ty) else {
-                            all_scalar = false;
+                        let kind = if let Some(s) = scalar_of(&f.ty) {
+                            FieldKind::Scalar(s)
+                        } else if let Some(tn) = named_single(&f.ty) {
+                            if names.contains(tn) {
+                                FieldKind::Nested(tn.to_string())
+                            } else {
+                                ok = false;
+                                break;
+                            }
+                        } else {
+                            ok = false;
                             break;
+                        };
+                        let default_src = match kind {
+                            FieldKind::Scalar(_) => f.default.as_ref().and_then(literal_src),
+                            FieldKind::Nested(_) => None,
                         };
                         jfields.push(JsonField {
                             name: f.name.name.clone(),
                             key: tag_json_key(&f.tag).unwrap_or_else(|| f.name.name.clone()),
-                            ty,
-                            default_src: f.default.as_ref().and_then(literal_src),
+                            kind,
+                            default_src,
                         });
                     }
-                    if all_scalar && !jfields.is_empty() {
+                    if ok && !jfields.is_empty() {
                         out.push(JsonType { name: td.name.name.clone(), fields: jfields });
                     }
                 }
             }
-            TopDecl::Module(m) => collect_json_types(&m.items, out),
+            TopDecl::Module(m) => collect_json_types(&m.items, names, out),
             _ => {}
         }
     }
@@ -148,14 +197,25 @@ fn generate_parser_src(t: &JsonType) -> String {
         "fn __json_parse_{}(__s: String) -> {} fallible(JsonError) {{\n",
         t.name, t.name
     ));
+    // Locals. Scalars accumulate the parsed value; nested fields keep the
+    // raw object text and are parsed at construction (no zero-value for a
+    // struct local). A presence flag is needed unless a scalar default
+    // covers a missing key.
     for f in &t.fields {
-        let init = f.default_src.as_deref().unwrap_or_else(|| f.ty.zero());
-        b.push_str(&format!(
-            "    let mut __f_{}: {} = {};\n",
-            f.name,
-            f.ty.type_name(),
-            init
-        ));
+        match &f.kind {
+            FieldKind::Scalar(s) => {
+                let init = f.default_src.as_deref().unwrap_or_else(|| s.zero());
+                b.push_str(&format!(
+                    "    let mut __f_{}: {} = {};\n",
+                    f.name,
+                    s.type_name(),
+                    init
+                ));
+            }
+            FieldKind::Nested(_) => {
+                b.push_str(&format!("    let mut __raw_{}: String = \"\";\n", f.name));
+            }
+        }
         if f.default_src.is_none() {
             b.push_str(&format!("    let mut __seen_{}: Bool = false;\n", f.name));
         }
@@ -172,11 +232,17 @@ fn generate_parser_src(t: &JsonType) -> String {
             f.key.len(),
             f.key
         ));
-        b.push_str(&format!(
-            "            __f_{} = std::json::{}(__it, __s);\n",
-            f.name,
-            f.ty.reader()
-        ));
+        match &f.kind {
+            FieldKind::Scalar(s) => b.push_str(&format!(
+                "            __f_{} = std::json::{}(__it, __s);\n",
+                f.name,
+                s.reader()
+            )),
+            FieldKind::Nested(_) => b.push_str(&format!(
+                "            __raw_{} = std::json::obj_value_raw(__it, __s);\n",
+                f.name
+            )),
+        }
         if f.default_src.is_none() {
             b.push_str(&format!("            __seen_{} = true;\n", f.name));
         }
@@ -194,8 +260,24 @@ fn generate_parser_src(t: &JsonType) -> String {
             ));
         }
     }
-    let inits: Vec<String> =
-        t.fields.iter().map(|f| format!("{}: __f_{}", f.name, f.name)).collect();
+    // Recurse into nested fields before construction so their JsonError
+    // propagates via `or raise`.
+    for f in &t.fields {
+        if let FieldKind::Nested(tn) = &f.kind {
+            b.push_str(&format!(
+                "    let __p_{} = __json_parse_{}(__raw_{}) or raise;\n",
+                f.name, tn, f.name
+            ));
+        }
+    }
+    let inits: Vec<String> = t
+        .fields
+        .iter()
+        .map(|f| match f.kind {
+            FieldKind::Scalar(_) => format!("{}: __f_{}", f.name, f.name),
+            FieldKind::Nested(_) => format!("{}: __p_{}", f.name, f.name),
+        })
+        .collect();
     b.push_str(&format!("    return {} {{ {} }};\n}}\n", t.name, inits.join(", ")));
     b
 }
@@ -203,8 +285,10 @@ fn generate_parser_src(t: &JsonType) -> String {
 /// Synthesize `__json_parse_<T>` + `JsonError`, inject them, then rewrite
 /// every `T::from_json(s)` call to `__json_parse_T(s)`.
 pub fn generate_json_parsers(program: &mut Program) {
+    let mut names = HashSet::new();
+    collect_json_type_names(&program.items, &mut names);
     let mut types = Vec::new();
-    collect_json_types(&program.items, &mut types);
+    collect_json_types(&program.items, &names, &mut types);
     if types.is_empty() {
         return;
     }
