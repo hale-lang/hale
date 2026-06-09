@@ -696,6 +696,84 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
                 end_ty
             )));
         }
+        // Inline when `expected` is a compile-time string literal — always
+        // so in the generated JSON parser (key dispatch + bool reads).
+        // Emit a length check guarding an unrolled byte compare, no call.
+        // The length guard is required: a length mismatch must short-
+        // circuit to false WITHOUT loading (the span may be shorter than
+        // the literal, so the loads would run past it).
+        if let Expr::Literal(hale_syntax::ast::Literal::String(lit), _) = &args[3] {
+            let bytes = lit.as_bytes();
+            let n = bytes.len();
+            let i8_t = self.context.i8_type();
+            let i64_t = self.context.i64_type();
+            let bool_t = self.context.bool_type();
+            let s_ptr = s_val.into_pointer_value();
+            let start_iv = start_val.into_int_value();
+            let end_iv = end_val.into_int_value();
+            let len = self
+                .builder
+                .build_int_sub(end_iv, start_iv, "re.len")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let len_ok = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    len,
+                    i64_t.const_int(n as u64, false),
+                    "re.lenok",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let func = self.current_fn.expect("range_eq inside fn body");
+            let entry_bb = self.builder.get_insert_block().unwrap();
+            let cmp_bb = self.context.append_basic_block(func, "re.cmp");
+            let cont_bb = self.context.append_basic_block(func, "re.cont");
+            self.builder
+                .build_conditional_branch(len_ok, cmp_bb, cont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(cmp_bb);
+            let mut acc = bool_t.const_int(1, false); // i1 true
+            for (i, &bt) in bytes.iter().enumerate() {
+                let off = self
+                    .builder
+                    .build_int_add(start_iv, i64_t.const_int(i as u64, false), "re.off")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let bp = unsafe {
+                    self.builder
+                        .build_in_bounds_gep(i8_t, s_ptr, &[off], "re.gep")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                };
+                let b = self
+                    .builder
+                    .build_load(i8_t, bp, "re.b")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_int_value();
+                let eq = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        b,
+                        i8_t.const_int(bt as u64, false),
+                        "re.eqi",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                acc = self
+                    .builder
+                    .build_and(acc, eq, "re.and")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            let cmp_end_bb = self.builder.get_insert_block().unwrap();
+            self.builder
+                .build_unconditional_branch(cont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(cont_bb);
+            let phi = self
+                .builder
+                .build_phi(bool_t, "re.res")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            phi.add_incoming(&[(&acc, cmp_end_bb), (&bool_t.const_zero(), entry_bb)]);
+            return Ok((phi.as_basic_value(), CodegenTy::Bool));
+        }
         let (t_val, t_ty) = self.lower_expr(&args[3], scope)?;
         if !matches!(t_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
