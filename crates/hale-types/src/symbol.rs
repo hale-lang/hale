@@ -227,6 +227,10 @@ pub struct FieldInfo {
     pub name: String,
     pub ty: Ty,
     pub has_default: bool,
+    /// The field's raw backtick metadata tag, if any (e.g.
+    /// `repr:"u32_le"`). Carried so the checker can validate
+    /// repr-tagged-field accessors (`T::field` / `T::set_field`).
+    pub tag: Option<String>,
     pub span: Span,
 }
 

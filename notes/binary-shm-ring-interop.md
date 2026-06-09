@@ -207,11 +207,12 @@ Generated accessors `L2::price(v)` (read a `Bytes`/`BytesView`) and
 `std::bytes::read_*`/`write_*` call at the field's offset — so they reuse
 the primitives' typing (incl. `fallible(IndexError)`), bounds-checking,
 and cost, and compose with the BytesView consumer + the `Topic.write`
-zero-copy block. Two PRs: the general field-tag mechanism (#80, parse +
-store), then the `repr:` consumer (desugar). Known follow-up: a typo'd
-field name (`L2::pirce`) currently errors at codegen rather than
-typecheck (the path call is permissively typed, same as a raw
-`std::bytes::` call).
+zero-copy block. Three PRs: the general field-tag mechanism (#80, parse +
+store), the `repr:` consumer (#81, desugar), then a typecheck guard so a
+typo'd field (`L2::pirce`) is flagged at typecheck with the field list
+(it would otherwise only fail at codegen, since the path call is
+permissively typed like a raw `std::bytes::` call). `FieldInfo` now
+carries the field tag so the checker can recognize a wire layout.
 
 ---
 

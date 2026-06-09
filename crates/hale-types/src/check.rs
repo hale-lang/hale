@@ -7373,6 +7373,65 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                // Proposal A′: validate repr-tagged field accessors. When
+                // `T::member(...)` names a wire-layout struct (a type with
+                // a `repr:`-tagged field), `member` must be one of its
+                // fields (read: `T::field`) or `set_<field>` (write). This
+                // catches a mistyped field at typecheck — otherwise the
+                // accessor desugars to an unknown `std::bytes::*` call and
+                // only fails at codegen. Valid accessors stay permissively
+                // typed (the desugar lowers them to the pack primitives).
+                if let Expr::Path(qn) = callee.as_ref() {
+                    if qn.segments.len() == 2 {
+                        let tname = &qn.segments[0].name;
+                        let member = &qn.segments[1].name;
+                        if let Some(TopSymbol::Type(TypeInfo {
+                            kind: TypeKind::Struct(fields),
+                            ..
+                        })) = self.top.symbols.get(tname)
+                        {
+                            let is_wire = fields.iter().any(|f| {
+                                f.tag
+                                    .as_deref()
+                                    .and_then(|t| {
+                                        hale_syntax::desugar::tag_value(t, "repr")
+                                    })
+                                    .is_some()
+                            });
+                            if is_wire {
+                                let field = member
+                                    .strip_prefix("set_")
+                                    .unwrap_or(member);
+                                let known =
+                                    fields.iter().any(|f| f.name == *field);
+                                if !known {
+                                    let names: Vec<&str> = fields
+                                        .iter()
+                                        .map(|f| f.name.as_str())
+                                        .collect();
+                                    self.diags.push(Diag::ty(
+                                        qn.span,
+                                        format!(
+                                            "`{}` has no wire field `{}`. \
+                                             Accessors are `{}::<field>` \
+                                             (read) and `{}::set_<field>` \
+                                             (write); fields: {}",
+                                            tname,
+                                            field,
+                                            tname,
+                                            tname,
+                                            names.join(", ")
+                                        ),
+                                    ));
+                                }
+                                for a in args {
+                                    let _ = self.check_expr(a);
+                                }
+                                return Ty::Unknown;
+                            }
+                        }
+                    }
+                }
                 let callee_ty = self.check_expr(callee);
                 let arg_tys: Vec<Ty> = args.iter().map(|a| self.check_expr(a)).collect();
                 // F.20: when a fn param is an interface type, the
