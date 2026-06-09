@@ -785,6 +785,164 @@ fn __json_iter_substring(it: std::json::ArrayIterSpan, json: String) -> String {
     return json[it.cur_start..it.cur_end];
 }
 
+// 2026-06-09 — single-pass OBJECT member cursor (Proposal A′ / JSON
+// Tier 2 substrate). The array-span iterator above walks `[...]`
+// elements; this walks `{...}` members, exposing each member's key and
+// value as `[start, end)` ranges into the source (no substring alloc) so
+// a schema-specialized parser can dispatch on the key and parse the
+// value in ONE pass — instead of an O(N) `find_*_field` rescan per
+// field. This is the seam a future SIMD structural index slots under
+// (Tier 3): the generated extractor drives `obj_next` + the range
+// accessors regardless of how the spans are found.
+//
+// Key matching uses `std::str::range_eq` against the RAW key bytes
+// between the quotes — correct for the unescaped object keys that cover
+// effectively all real schemas; an escaped key (`"a\"b"`) won't match
+// and is treated as an unknown field (skipped).
+type __JsonObjectIterSpan {
+    pos: Int;          // next scan position in source json
+    key_start: Int;    // current key's content start (inside quotes), -1 done
+    key_end: Int;      // current key's content end exclusive
+    val_start: Int;    // current value's start
+    val_end: Int;      // current value's end exclusive (ws-trimmed)
+    done: Bool;        // sticky; once true, helpers no-op
+}
+
+fn __json_obj_first_span(json: String) -> std::json::ObjectIterSpan {
+    let total = len(json);
+    let mut p = 0;
+    while p < total {
+        let c = std::str::byte_at_unchecked(json, p);
+        if c == 32 || c == 9 || c == 10 || c == 13 { p = p + 1; } else { break; }
+    }
+    if p >= total || std::str::byte_at_unchecked(json, p) != 123 {
+        // Not an object (`{`).
+        return std::json::ObjectIterSpan {
+            pos: total, key_start: -1, key_end: 0, val_start: -1, val_end: 0, done: true
+        };
+    }
+    return __json_obj_step_span(json, p + 1);
+}
+
+fn __json_obj_next_span(it: std::json::ObjectIterSpan, json: String)
+    -> std::json::ObjectIterSpan
+{
+    if it.done { return it; }
+    return __json_obj_step_span(json, it.pos);
+}
+
+// Internal: from `start` (past `{` or the previous member), skip
+// whitespace + comma, read `"key" : value`, and bound the value with the
+// same depth / in-string scan the array iterator uses.
+fn __json_obj_step_span(json: String, start: Int)
+    -> std::json::ObjectIterSpan
+{
+    let total = len(json);
+    let done_iter = std::json::ObjectIterSpan {
+        pos: total, key_start: -1, key_end: 0, val_start: -1, val_end: 0, done: true
+    };
+    let mut p = start;
+    while p < total {
+        let c = std::str::byte_at_unchecked(json, p);
+        if c == 32 || c == 9 || c == 10 || c == 13 || c == 44 { p = p + 1; } else { break; }
+    }
+    if p >= total { return done_iter; }
+    let c = std::str::byte_at_unchecked(json, p);
+    if c == 125 {  // `}` — end of object
+        return std::json::ObjectIterSpan {
+            pos: p + 1, key_start: -1, key_end: 0, val_start: -1, val_end: 0, done: true
+        };
+    }
+    if c != 34 { return done_iter; }  // expected a `"`-quoted key
+    let key_start = p + 1;
+    let mut kp = key_start;
+    while kp < total {
+        let ch = std::str::byte_at_unchecked(json, kp);
+        if ch == 92 { kp = kp + 2; continue; }  // backslash: skip escaped byte
+        if ch == 34 { break; }
+        kp = kp + 1;
+    }
+    let key_end = kp;
+    let mut q = kp + 1;  // past closing quote
+    while q < total {
+        let ch = std::str::byte_at_unchecked(json, q);
+        if ch == 32 || ch == 9 || ch == 10 || ch == 13 { q = q + 1; } else { break; }
+    }
+    if q >= total || std::str::byte_at_unchecked(json, q) != 58 { return done_iter; }  // `:`
+    q = q + 1;
+    while q < total {
+        let ch = std::str::byte_at_unchecked(json, q);
+        if ch == 32 || ch == 9 || ch == 10 || ch == 13 { q = q + 1; } else { break; }
+    }
+    let val_start = q;
+    let mut depth = 0;
+    let mut in_str = false;
+    while q < total {
+        let ch = std::str::byte_at_unchecked(json, q);
+        if in_str {
+            if ch == 92 { q = q + 2; continue; }
+            if ch == 34 { in_str = false; }
+            q = q + 1;
+            continue;
+        }
+        if ch == 34 { in_str = true; q = q + 1; continue; }
+        if ch == 123 || ch == 91 { depth = depth + 1; q = q + 1; continue; }
+        if ch == 125 || ch == 93 {
+            if depth == 0 { break; }
+            depth = depth - 1;
+            q = q + 1;
+            continue;
+        }
+        if ch == 44 && depth == 0 { break; }
+        q = q + 1;
+    }
+    // Trim trailing whitespace from the value range.
+    let mut ve = q;
+    while ve > val_start {
+        let ch = std::str::byte_at_unchecked(json, ve - 1);
+        if ch == 32 || ch == 9 || ch == 10 || ch == 13 { ve = ve - 1; } else { break; }
+    }
+    return std::json::ObjectIterSpan {
+        pos: q, key_start: key_start, key_end: key_end,
+        val_start: val_start, val_end: ve, done: false
+    };
+}
+
+fn __json_obj_key_len(it: std::json::ObjectIterSpan) -> Int {
+    if it.done { return 0; }
+    return it.key_end - it.key_start;
+}
+
+fn __json_obj_key_eq(it: std::json::ObjectIterSpan, json: String, name: String) -> Bool {
+    if it.done { return false; }
+    return std::str::range_eq(json, it.key_start, it.key_end, name);
+}
+
+fn __json_obj_value_raw(it: std::json::ObjectIterSpan, json: String) -> String {
+    if it.done { return ""; }
+    return json[it.val_start..it.val_end];
+}
+
+fn __json_obj_value_int(it: std::json::ObjectIterSpan, json: String) -> Int {
+    if it.done { return 0; }
+    return std::str::range_parse_int(json, it.val_start, it.val_end) or 0;
+}
+
+fn __json_obj_value_bool(it: std::json::ObjectIterSpan, json: String) -> Bool {
+    if it.done { return false; }
+    return std::str::range_eq(json, it.val_start, it.val_end, "true");
+}
+
+fn __json_obj_value_string(it: std::json::ObjectIterSpan, json: String) -> String {
+    if it.done { return ""; }
+    let raw = json[it.val_start..it.val_end];
+    let n = len(raw);
+    if n >= 2 && raw[0..1] == "\"" && raw[(n - 1)..n] == "\"" {
+        return __json_unescape_string(raw[1..(n - 1)]);
+    }
+    return raw;
+}
+
 // 2026-05-26 — range-bearing iter_find variants. The existing
 // iter_find_field_raw / iter_find_string_field helpers each
 // allocate an owned-String substring at return (an
