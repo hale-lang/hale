@@ -276,7 +276,22 @@ typedef struct {
                                 * handler read `value_size` bytes past the
                                 * record (OOB near the wrap). 0 = unknown
                                 * (skip the check). */
+    /* Framing kind + slot geometry. `framing_kind` is
+     * LOTUS_RING_FRAMING_BYTE_RECORDS (0) for variable-length records
+     * (len_prefix/align/pad_sentinel above apply) or
+     * LOTUS_RING_FRAMING_SLOTS (1) for a fixed-stride slot ring — the
+     * native LotusRing shape. For slots, slot_size / slot_count are read
+     * from the foreign header at the given offsets (like buffer_size),
+     * the cursor is the published seqno, and data_at is the first slot. */
+    uint64_t framing_kind;
+    uint64_t slot_size_off;
+    uint64_t slot_size_width;
+    uint64_t slot_count_off;
+    uint64_t slot_count_width;
 } lotus_shm_layout_t;
+
+#define LOTUS_RING_FRAMING_BYTE_RECORDS 0
+#define LOTUS_RING_FRAMING_SLOTS        1
 
 /* Per-process handle for a layout-described ring. Distinct from
  * lotus_shm_ring_t: a foreign ring has no Lotus header, so none of
@@ -288,6 +303,10 @@ typedef struct {
     char    shm_name[96];
     lotus_shm_layout_t desc;
     uint64_t capacity;     /* ring data-region size in bytes */
+    /* Slot geometry, read from the foreign header at attach (slots
+     * framing only; 0 for byte_records). */
+    uint64_t slot_size;
+    uint64_t slot_count;
     int     owns_unlink;   /* 1 if this handle created the segment */
 } lotus_shm_layout_ring_t;
 
@@ -330,6 +349,11 @@ static void shm_layout_from_words(const uint64_t *w, lotus_shm_layout_t *d) {
     d->pad_sentinel      = w[13];
     d->has_pad_sentinel  = (int)w[14];
     d->value_size        = w[15];
+    d->framing_kind      = w[16];
+    d->slot_size_off     = w[17];
+    d->slot_size_width   = w[18];
+    d->slot_count_off    = w[19];
+    d->slot_count_width  = w[20];
 }
 
 /* Attach (read-only) to a foreign ring described by `desc`.
@@ -376,23 +400,44 @@ lotus_shm_ring_open_layout(const char *name, const lotus_shm_layout_t *desc) {
         }
     }
     uint64_t capacity;
-    if (desc->has_buffer_size) {
-        capacity = shm_layout_read_uint(
-            (char *)map + desc->buffer_size_off, desc->buffer_size_width);
+    uint64_t slot_size = 0, slot_count = 0;
+    if (desc->framing_kind == LOTUS_RING_FRAMING_SLOTS) {
+        /* Slots framing: the geometry lives in the foreign header (like
+         * buffer_size). Capacity = slot_size * slot_count. Reject a ring
+         * with a zero/overflowing product or slots that don't fit the
+         * mapping — the reader indexes slots from these. */
+        slot_size = shm_layout_read_uint(
+            (char *)map + desc->slot_size_off, desc->slot_size_width);
+        slot_count = shm_layout_read_uint(
+            (char *)map + desc->slot_count_off, desc->slot_count_width);
+        if (slot_size == 0 || slot_count == 0 ||
+            slot_size > (UINT64_MAX / slot_count)) {
+            munmap(map, total); close(fd); errno = EBADF; return NULL;
+        }
+        capacity = slot_size * slot_count;
+        if (capacity > total - desc->data_at) {  /* overflow-safe */
+            munmap(map, total); close(fd); errno = EBADF; return NULL;
+        }
     } else {
-        capacity = total - desc->data_at;
-    }
-    if (capacity == 0 || desc->data_at + capacity > total) {
-        munmap(map, total); close(fd); errno = EBADF; return NULL;
-    }
-    /* The capacity is read from the FOREIGN header at runtime, so it is
-     * not covered by the binding's compile-time checks. A byte_records
-     * ring whose capacity isn't a multiple of `align` lets a record
-     * header land in (cap - len_prefix_width, cap) → an OOB read past
-     * the data region. Reject such a ring at attach rather than read it.
-     * (len_prefix_width <= align is guaranteed by the frontend.) */
-    if (desc->align > 1 && (capacity % desc->align) != 0) {
-        munmap(map, total); close(fd); errno = EBADF; return NULL;
+        if (desc->has_buffer_size) {
+            capacity = shm_layout_read_uint(
+                (char *)map + desc->buffer_size_off, desc->buffer_size_width);
+        } else {
+            capacity = total - desc->data_at;
+        }
+        if (capacity == 0 || desc->data_at + capacity > total) {
+            munmap(map, total); close(fd); errno = EBADF; return NULL;
+        }
+        /* The capacity is read from the FOREIGN header at runtime, so it
+         * is not covered by the binding's compile-time checks. A
+         * byte_records ring whose capacity isn't a multiple of `align`
+         * lets a record header land in (cap - len_prefix_width, cap) → an
+         * OOB read past the data region. Reject such a ring at attach
+         * rather than read it. (len_prefix_width <= align is guaranteed
+         * by the frontend.) */
+        if (desc->align > 1 && (capacity % desc->align) != 0) {
+            munmap(map, total); close(fd); errno = EBADF; return NULL;
+        }
     }
     lotus_shm_layout_ring_t *r =
         (lotus_shm_layout_ring_t *)calloc(1, sizeof(*r));
@@ -404,6 +449,8 @@ lotus_shm_ring_open_layout(const char *name, const lotus_shm_layout_t *desc) {
     r->fd = fd;
     r->desc = *desc;
     r->capacity = capacity;
+    r->slot_size = slot_size;
+    r->slot_count = slot_count;
     strncpy(r->shm_name, name, sizeof(r->shm_name) - 1);
     return r;
 }
@@ -1011,11 +1058,78 @@ static void *shm_ring_reader_thread(void *arg) {
  *     read torn — a suspected straddle/corruption also resyncs.
  *   - Handler runs on this reader thread, like the native path.
  */
+/* Build a bounded BytesView over a record/slot payload and dispatch it to
+ * a raw (value_size == 0) handler. The pack readers expect a Bytes-shaped
+ * `[i64 len][data]` blob the raw record lacks (and the mapping is
+ * read-only), so the payload is copied into the subscriber's reused
+ * scratch blob. No-op on OOM (drops this record). */
+static void shm_layout_dispatch_view(shm_ring_subscriber_t *sub,
+                                     const char *payload, uint64_t len) {
+    size_t need = (size_t)sizeof(int64_t) + (size_t)len;
+    if (sub->scratch_cap < need) {
+        char *p = (char *)realloc(sub->scratch, need);
+        if (!p) return;
+        sub->scratch = p;
+        sub->scratch_cap = need;
+    }
+    *(int64_t *)sub->scratch = (int64_t)len;
+    memcpy(sub->scratch + sizeof(int64_t), payload, (size_t)len);
+    shm_lotus_view_t v;
+    v.src = sub->scratch;
+    v.epoch = SHM_VIEW_EPOCH_STATIC;
+    ((void (*)(void *, shm_lotus_view_t))sub->handler_fn)(sub->self_ptr, v);
+}
+
 static void *shm_ring_layout_reader_thread(void *arg) {
     shm_ring_subscriber_t *sub = (shm_ring_subscriber_t *)arg;
     lotus_shm_layout_ring_t *r = sub->lring;
     const lotus_shm_layout_t *d = &r->desc;
     char *base = (char *)r->base;
+
+    if (d->framing_kind == LOTUS_RING_FRAMING_SLOTS) {
+        /* Fixed-stride slot ring (the native LotusRing shape). The cursor
+         * is the published seqno (1-based); slot S lives at
+         * data_at + (S % slot_count) * slot_size. Matches
+         * lotus_shm_ring_read_slot: skip a seqno the producer has already
+         * lapped (published - S >= slot_count) rather than read a torn
+         * slot. Starts live — no replay of pre-attach slots, like the
+         * byte_records reader. */
+        uint64_t slot_size = r->slot_size;
+        uint64_t slot_count = r->slot_count;
+        const _Atomic uint64_t *seqno_p =
+            (const _Atomic uint64_t *)(base + d->cursor_off);
+        uint64_t last_seen = 0;
+        int initialized = 0;
+        while (!atomic_load_explicit(&sub->should_stop,
+                                      memory_order_acquire)) {
+            uint64_t published =
+                atomic_load_explicit(seqno_p, memory_order_acquire);
+            if (!initialized) {
+                last_seen = published;
+                initialized = 1;
+            }
+            if (published <= last_seen) {
+                struct timespec ts = {0, 100 * 1000};  /* 100us */
+                nanosleep(&ts, NULL);
+                continue;
+            }
+            while (last_seen < published) {
+                last_seen++;
+                if (published - last_seen >= slot_count) {
+                    continue;  /* lapped — slot re-claimed; skip */
+                }
+                uint64_t idx = last_seen % slot_count;
+                char *slot = base + d->data_at + idx * slot_size;
+                if (d->value_size == 0) {
+                    shm_layout_dispatch_view(sub, slot, slot_size);
+                } else {
+                    sub->handler_fn(sub->self_ptr, slot);
+                }
+            }
+        }
+        return NULL;
+    }
+
     uint64_t cap = r->capacity;
     uint64_t local = 0;
     /* `pos == local % cap`, maintained incrementally so the per-record
@@ -1093,28 +1207,10 @@ static void *shm_ring_layout_reader_thread(void *arg) {
             if (d->value_size == 0) {
                 /* Raw-frame mode: the bound payload is a BytesView, so
                  * the consumer can't assume a fixed record size. Hand
-                 * the handler a bounded BytesView over a Bytes-shaped
-                 * copy of the record payload; it decodes (discriminator
-                 * + std::bytes::read_*) itself. The framed `len` is
-                 * already validated to fit the ring above. */
-                size_t need = (size_t)sizeof(int64_t) + (size_t)len;
-                if (sub->scratch_cap < need) {
-                    char *p = (char *)realloc(sub->scratch, need);
-                    if (!p) {  /* OOM — skip this record, resync */
-                        local = committed;
-                        pos = committed % cap;
-                        break;
-                    }
-                    sub->scratch = p;
-                    sub->scratch_cap = need;
-                }
-                *(int64_t *)sub->scratch = (int64_t)len;
-                memcpy(sub->scratch + sizeof(int64_t), payload, (size_t)len);
-                shm_lotus_view_t v;
-                v.src = sub->scratch;
-                v.epoch = SHM_VIEW_EPOCH_STATIC;
-                ((void (*)(void *, shm_lotus_view_t))sub->handler_fn)(
-                    sub->self_ptr, v);
+                 * the handler a bounded BytesView over the record payload;
+                 * it decodes (discriminator + std::bytes::read_*) itself.
+                 * The framed `len` is already validated to fit above. */
+                shm_layout_dispatch_view(sub, payload, len);
             } else {
                 /* Typed-flat mode: the record IS the payload struct
                  * (len == value_size, checked above); hand its pointer. */

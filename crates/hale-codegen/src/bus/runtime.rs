@@ -381,9 +381,9 @@ fn ring_repr_width(repr: &str) -> u64 {
 fn ring_layout_descriptor_words(
     decl: &hale_syntax::ast::RingLayoutDecl,
     value_size: u64,
-) -> [u64; 16] {
+) -> [u64; 21] {
     use hale_syntax::ast::RingAttrValue;
-    let mut w = [0u64; 16];
+    let mut w = [0u64; 21];
 
     // [0..2] magic
     if let Some(m) = decl.magic {
@@ -453,6 +453,26 @@ fn ring_layout_descriptor_words(
     // so a short record from a non-conforming producer can't drive an
     // OOB read.
     w[15] = value_size;
+
+    // [16..21] framing kind + slot geometry (slots framing). Word [16] is
+    // 0 for `byte_records` (the [11..15] fields above apply) and 1 for
+    // `slots` — a fixed-stride slot ring (the native LotusRing shape). For
+    // `slots`, the consumer reads slot_size / slot_count from the foreign
+    // header (scalars named accordingly, like `buffer_size`), and the
+    // cursor [10] is the published seqno (slot count, not bytes).
+    if let Some(f) = &decl.framing {
+        if f.kind.name == "slots" {
+            w[16] = 1;
+            if let Some(s) = decl.scalars.iter().find(|s| s.name.name == "slot_size") {
+                w[17] = s.at as u64;
+                w[18] = ring_repr_width(&s.repr.name);
+            }
+            if let Some(s) = decl.scalars.iter().find(|s| s.name.name == "slot_count") {
+                w[19] = s.at as u64;
+                w[20] = ring_repr_width(&s.repr.name);
+            }
+        }
+    }
 
     w
 }

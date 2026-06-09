@@ -195,3 +195,13 @@ fn layout_bad_buffer_size_rejected() {
 fn layout_heterogeneous_raw_view() {
     run_mode("heterogeneous");
 }
+
+/// Dogfood (runtime): the native LotusRing (LRSRNG1) slot ring read
+/// through the `ring_layout` abstraction. A layout-`slots` consumer
+/// attaches with a descriptor that *describes our own native format* and
+/// reads the very ring the native producer (lotus_shm_ring_open +
+/// claim/commit) writes. Proves the abstraction covers the in-house ring.
+#[test]
+fn layout_slots_reads_native_lotus_ring() {
+    run_mode("lotus_dogfood");
+}

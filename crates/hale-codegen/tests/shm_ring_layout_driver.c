@@ -59,6 +59,23 @@ extern int lotus_bus_publish_shm_ring_layout(
     const void *value,
     uint64_t value_size);
 
+/* Native LotusRing (LRSRNG1) producer API — the dogfood test has a
+ * layout-`slots` consumer read the very ring this native producer writes. */
+typedef enum {
+    LOTUS_SHM_OVERFLOW_BLOCK = 0,
+    LOTUS_SHM_OVERFLOW_DROP = 1,
+    LOTUS_SHM_OVERFLOW_FAIL = 2,
+} lotus_shm_overflow_policy_t;
+typedef struct lotus_shm_ring lotus_shm_ring_t;  /* opaque */
+extern lotus_shm_ring_t *lotus_shm_ring_open(const char *name,
+                                             uint64_t slot_size,
+                                             uint64_t slot_count,
+                                             lotus_shm_overflow_policy_t policy);
+extern void *lotus_shm_ring_claim(lotus_shm_ring_t *ring);
+extern void lotus_shm_ring_commit(lotus_shm_ring_t *ring);
+extern void lotus_shm_ring_close(lotus_shm_ring_t *ring);
+#define LOTUS_RING_MAGIC 0x4C5253524E4731ULL  /* "LRSRNG1" */
+
 /* Layout constants — mirror the `ForeignRing` ring_layout used in the
  * Rust-side tests. */
 #define MAGIC          0x52494E47464D5431ULL
@@ -126,8 +143,8 @@ static void on_raw(void *self, RawView v) {
     }
 }
 
-static void build_desc(uint64_t desc[16]) {
-    memset(desc, 0, 16 * sizeof(uint64_t));
+static void build_desc(uint64_t desc[21]) {
+    memset(desc, 0, 21 * sizeof(uint64_t));  /* [16..20]=0 → byte_records */
     desc[0]  = MAGIC;        desc[1]  = 1;            /* magic, has_magic */
     desc[2]  = VERSION_OFF;  desc[3]  = VERSION_WIDTH;
     desc[4]  = VERSION_VAL;  desc[5]  = 1;            /* version_expect, has_version */
@@ -170,7 +187,7 @@ static int run(const char *name, uint64_t capacity, int n, int pace_us) {
 
     /* Consumer attaches after the header is valid; it starts reading
      * from the current cursor (0), so it sees every record below. */
-    uint64_t desc[16];
+    uint64_t desc[21] = {0};
     build_desc(desc);
     lotus_bus_register_subscriber_shm_ring_layout(
         "foreign.ticks", name, desc, NULL, on_record);
@@ -249,7 +266,7 @@ static int run(const char *name, uint64_t capacity, int n, int pace_us) {
  * framing symmetry end to end. `pace_us > 0` (with a small capacity)
  * forces the pad-at-wrap path on the producer side too. */
 static int run_producer(const char *name, uint64_t capacity, int n, int pace_us) {
-    uint64_t desc[16];
+    uint64_t desc[21] = {0};
     build_desc(desc);
 
     /* Producer creates + owns the ring. */
@@ -321,7 +338,7 @@ static int run_bad_bufsize(const char *name) {
     *(uint32_t *)(base + BUFSZ_OFF) = (uint32_t)capacity;
     atomic_store_explicit((_Atomic uint64_t *)(base + CURSOR_OFF), 0,
                           memory_order_release);
-    uint64_t desc[16];
+    uint64_t desc[21] = {0};
     build_desc(desc);
     /* Expected: open_layout rejects (cap % align != 0) → _exit(1). */
     lotus_bus_register_subscriber_shm_ring_layout(
@@ -352,7 +369,7 @@ static int run_short_record(const char *name) {
     _Atomic uint64_t *cursor = (_Atomic uint64_t *)(base + CURSOR_OFF);
     atomic_store_explicit(cursor, 0, memory_order_release);
 
-    uint64_t desc[16];
+    uint64_t desc[21] = {0};
     build_desc(desc);
     lotus_bus_register_subscriber_shm_ring_layout(
         "foreign.ticks", name, desc, NULL, on_record);
@@ -415,7 +432,7 @@ static int run_u64_lenprefix(const char *name) {
     _Atomic uint64_t *cursor = (_Atomic uint64_t *)(base + CURSOR_OFF);
     atomic_store_explicit(cursor, 0, memory_order_release);
 
-    uint64_t desc[16];
+    uint64_t desc[21] = {0};
     build_desc(desc);
     desc[11] = LW8;   /* len_prefix_width = 8 (u64) */
     lotus_bus_register_subscriber_shm_ring_layout(
@@ -473,7 +490,7 @@ static int run_heterogeneous(const char *name) {
     _Atomic uint64_t *cursor = (_Atomic uint64_t *)(base + CURSOR_OFF);
     atomic_store_explicit(cursor, 0, memory_order_release);
 
-    uint64_t desc[16];
+    uint64_t desc[21] = {0};
     build_desc(desc);
     desc[15] = 0;  /* value_size = 0 → raw BytesView path */
     lotus_bus_register_subscriber_shm_ring_layout(
@@ -574,14 +591,113 @@ static int run_produce_external(const char *name) {
     return 0;
 }
 
+/* Dogfood: the native LotusRing (LRSRNG1) slot ring, read through the
+ * `ring_layout` abstraction. The NATIVE producer (lotus_shm_ring_open +
+ * claim/commit) writes the ring; a layout-`slots` consumer attaches with
+ * a descriptor that *describes our own native format* and reads the same
+ * records. Proves the abstraction covers the in-house ring. */
+static int run_lotus_dogfood(const char *name) {
+    uint64_t slot_count = 16;
+    lotus_shm_ring_t *ring = lotus_shm_ring_open(
+        name, sizeof(Payload), slot_count, LOTUS_SHM_OVERFLOW_DROP);
+    if (!ring) {
+        fprintf(stderr, "native lotus_shm_ring_open: %s\n", strerror(errno));
+        return 2;
+    }
+
+    /* A `ring_layout LotusRing` descriptor for the native LRSRNG1 header:
+     * magic@0, slot_size@8, slot_count@16, seqno@24, slots@128. framing =
+     * slots; geometry read from the header; cursor = the published seqno. */
+    uint64_t desc[21] = {0};
+    desc[0] = LOTUS_RING_MAGIC;
+    desc[1] = 1;                  /* has_magic */
+    desc[9] = 128;                /* data_at (header is two cache lines) */
+    desc[10] = 24;               /* cursor = seqno offset */
+    desc[15] = sizeof(Payload);  /* value_size (typed payload) */
+    desc[16] = 1;                /* framing = slots */
+    desc[17] = 8; desc[18] = 8;  /* slot_size  @ 8,  u64 */
+    desc[19] = 16; desc[20] = 8; /* slot_count @ 16, u64 */
+    lotus_bus_register_subscriber_shm_ring_layout(
+        "lotus.dogfood", name, desc, NULL, on_record);
+
+    struct timespec warmup = {0, 5 * 1000 * 1000};
+    nanosleep(&warmup, NULL);
+
+    int n = 8;
+    for (int i = 0; i < n; i++) {
+        Payload *slot = (Payload *)lotus_shm_ring_claim(ring);
+        slot->seq_id = i + 1;
+        slot->value = (int64_t)(i + 1) * 7;
+        lotus_shm_ring_commit(ring);
+        struct timespec pace = {0, 2 * 1000 * 1000};
+        nanosleep(&pace, NULL);
+    }
+    for (int s = 0; s < 1000; s++) {
+        struct timespec ts = {0, 1000 * 1000};
+        nanosleep(&ts, NULL);
+        if (atomic_load_explicit(&g_recv_count, memory_order_acquire) >= n) break;
+    }
+    int got = atomic_load_explicit(&g_recv_count, memory_order_acquire);
+    lotus_shm_ring_close(ring);  /* free the native producer handle */
+    if (got != n) {
+        fprintf(stderr, "lotus_dogfood: expected %d records, got %d\n", n, got);
+        return 3;
+    }
+    for (int i = 0; i < n; i++) {
+        if (g_recv[i].seq_id != i + 1 || g_recv[i].value != (int64_t)(i + 1) * 7) {
+            fprintf(stderr, "lotus_dogfood record %d mismatch: seq=%lld val=%lld\n",
+                    i, (long long)g_recv[i].seq_id, (long long)g_recv[i].value);
+            return 3;
+        }
+    }
+    shm_unlink(name);
+    return 0;
+}
+
+/* External native (LRSRNG1) producer, no in-process consumer — for the
+ * Hale end-to-end dogfood: a separate Hale process binds `layout:
+ * LotusRing` and reads this native ring. Creates the ring, waits for the
+ * Hale consumer to attach, publishes, waits for it to drain, closes. */
+static int run_produce_native_external(const char *name) {
+    uint64_t slot_count = 16;
+    lotus_shm_ring_t *ring = lotus_shm_ring_open(
+        name, sizeof(Payload), slot_count, LOTUS_SHM_OVERFLOW_DROP);
+    if (!ring) {
+        fprintf(stderr, "native lotus_shm_ring_open: %s\n", strerror(errno));
+        return 2;
+    }
+    struct timespec attach = {0, 250 * 1000 * 1000};  /* 250ms to attach */
+    nanosleep(&attach, NULL);
+    int n = 6;
+    for (int i = 0; i < n; i++) {
+        Payload *slot = (Payload *)lotus_shm_ring_claim(ring);
+        slot->seq_id = i + 1;
+        slot->value = (int64_t)(i + 1) * 7;
+        lotus_shm_ring_commit(ring);
+        struct timespec pace = {0, 5 * 1000 * 1000};
+        nanosleep(&pace, NULL);
+    }
+    struct timespec drain = {0, 400 * 1000 * 1000};
+    nanosleep(&drain, NULL);
+    lotus_shm_ring_close(ring);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr,
                 "usage: %s <roundtrip|wrap|producer|producer_wrap|"
                 "bad_bufsize|short_record|u64_lenprefix|heterogeneous|"
-                "produce_external> <shm_name>\n",
+                "produce_external|lotus_dogfood|produce_native_external> "
+                "<shm_name>\n",
                 argv[0]);
         return 1;
+    }
+    if (strcmp(argv[1], "lotus_dogfood") == 0) {
+        return run_lotus_dogfood(argv[2]);
+    }
+    if (strcmp(argv[1], "produce_native_external") == 0) {
+        return run_produce_native_external(argv[2]);
     }
     if (strcmp(argv[1], "produce_external") == 0) {
         return run_produce_external(argv[2]);

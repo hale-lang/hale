@@ -938,6 +938,32 @@ The `layout:` reference must resolve to a declared `ring_layout`
 (else a typecheck diagnostic). A binding with no `layout:` is the
 native ring, unchanged.
 
+*Slot rings (`framing slots`).* The example above is a variable-length
+`byte_records` ring. A `slots` framing describes a fixed-stride slot
+ring instead — the shape of the native Lotus ring itself. The geometry
+(`slot_size`, `slot_count`) is read from the foreign header rather than
+fixed in the layout, the cursor is the published seqno (1-based; `unit
+slots`), and slot *S* lives at `data_at + (S mod slot_count) ×
+slot_size`. A consumer skips a seqno the producer has already lapped
+(`published − S ≥ slot_count`) rather than read a torn slot — matching
+the native reader. This makes the native `LRSRNG1` ring expressible as a
+`ring_layout`, read through the same abstraction as a foreign one:
+
+```hale
+ring_layout LotusRing {
+    magic 0x4C5253524E4731;          // "LRSRNG1"
+    slot_size  at 8  : u64;          // geometry read from the header
+    slot_count at 16 : u64;
+    data_at 128;                     // first slot (after the 2-cache-line header)
+    cursor published { at 24; repr atomic_u64; load acquire; unit slots; }
+    framing slots { }
+    overflow lap_detect;
+}
+```
+
+The producer side for a foreign `slots` ring (a Hale writer) is not yet
+offered; `slots` is a consumer framing at this version.
+
 *The layout contract.* A `ring_layout` is validated at typecheck
 (`hale-types::check`), so a malformed layout fails the build, not
 the read. The rules:
@@ -948,8 +974,11 @@ the read. The rules:
   (`atomic_u64`), a known `load` memory ordering (`relaxed`/
   `acquire`/`release`/`acq_rel`/`seq_cst`), and a `unit` of
   `bytes` or `slots`. At least one cursor is required.
-- `framing` kind is `byte_records` or `slots`; `byte_records`
-  requires a `len_prefix`.
+- `framing` kind is `byte_records` or `slots`. `byte_records`
+  requires a `len_prefix` (and reads capacity from a `buffer_size`
+  scalar); `slots` requires `slot_size` and `slot_count` scalars (the
+  consumer reads the slot geometry from the foreign header, and derives
+  capacity as their product).
 - All offsets are non-negative.
 - A `ring_layout` is a declaration, not a value — referencing its
   name in expression position is an error.
