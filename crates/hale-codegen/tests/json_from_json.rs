@@ -122,3 +122,27 @@ fn to_json_emits_valid_json_and_round_trips() {
     // round-trip preserves nested + escaped values
     assert!(out.contains(r#"rt=7 London buy"x"#), "round-trip wrong:\n{}", out);
 }
+
+#[test]
+fn simd_cursor_handles_escapes_nesting_and_chunk_boundaries() {
+    // Stresses the SIMD scan path: escaped quotes/backslashes inside
+    // strings (the quote-or-backslash scan), padding that pushes keys
+    // across 16-byte chunk boundaries, deep nesting on an unmatched key
+    // (depth scan), and heavy whitespace.
+    let src = r#"
+        type T {
+            tag: String  `json:"tag"`;
+            n: Int       `json:"n"`;
+        }
+        fn main() {
+            let body = "{  \"skip\" : { \"a\": [1,2,{\"deep\": \"x\"}], \"b\": 9 } ,
+                          \"tag\":  \"a\\\"b\\\\c\"  ,  \"n\" : -1234567890 }";
+            let t = T::from_json(body) or raise;
+            println("tag=", t.tag, " n=", to_string(t.n));
+        }
+    "#;
+    let (out, status) = build_and_run("stress", src);
+    assert!(status.success(), "run failed: {}", out);
+    // tag is the 3-escape string a"b\c ; n is the long negative int
+    assert!(out.contains(r#"tag=a"b\c n=-1234567890"#), "stress parse wrong:\n{}", out);
+}

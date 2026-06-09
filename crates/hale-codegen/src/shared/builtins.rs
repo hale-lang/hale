@@ -1802,6 +1802,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             bytes_write_uint_ty,
             None,
         );
+        // JSON Tier-3 Level-A SIMD scan primitives:
+        // i64 @lotus_json_next_*(ptr s, i64 from, i64 len).
+        let json_scan_ty =
+            i64_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false);
+        for name in [
+            "lotus_json_next_struct_or_quote",
+            "lotus_json_next_quote_or_bs",
+            "lotus_json_next_non_ws",
+        ] {
+            self.module.add_function(name, json_scan_ty, None);
+        }
         // A1 zero-copy ring write: reserve a slot, commit a length.
         // declare ptr @lotus_bus_reserve_shm_ring_layout(ptr subject, i64 max)
         let reserve_ty = ptr_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
