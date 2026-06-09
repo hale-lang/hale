@@ -1174,6 +1174,14 @@ pub struct StructField {
     pub name: Ident,
     pub ty: TypeExpr,
     pub default: Option<Expr>,
+    /// Go-style metadata tag: the raw text of a backtick string written
+    /// after the field (`price: Int `wire:"u32_le"`;`). Free-form
+    /// `key:"value"` metadata that downstream features parse — the
+    /// binary-pack layer (Proposal A′) reads a `wire:` key; ignored
+    /// otherwise. The backtick lexer is shared with time literals, which
+    /// only occur in expression position; in field-declaration position
+    /// it's a tag.
+    pub tag: Option<String>,
     pub span: Span,
 }
 

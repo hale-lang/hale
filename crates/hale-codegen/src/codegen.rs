@@ -8037,6 +8037,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         name: f.name.clone(),
                         ty: Self::substitute_type_expr(&f.ty, &subst),
                         default: f.default.clone(),
+                        tag: f.tag.clone(),
                         span: f.span.clone(),
                     })
                     .collect();

@@ -553,7 +553,14 @@ type_decl         = "type" , IDENTIFIER , [ generic_params ] , "=" ,
                     "enum" , "{" , enum_variant , { "," , enum_variant } , "}" , ";"
                   ;
 
-struct_field      = IDENTIFIER , ":" , type_expr , [ "=" , expression ] , ";" ;
+struct_field      = IDENTIFIER , ":" , type_expr , [ "=" , expression ] ,
+                    [ field_tag ] , ";" ;
+(* Go-style metadata tag: a backtick raw string of free-form `key:"value"`
+   pairs that downstream features parse (the binary-pack layer reads a
+   `wire:` key; ignored otherwise). Shares the backtick lexing with time
+   literals — a time literal only appears in expression position, a tag
+   only in field-declaration position. *)
+field_tag         = "`" , { ? any char except backtick ? } , "`" ;
 
 enum_variant      = IDENTIFIER , [ "(" , type_expr , { "," , type_expr } , ")" ] ;
 
