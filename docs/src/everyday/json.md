@@ -74,6 +74,17 @@ let p = Person::from_json(body) or raise;
 println(p.home.city);
 ```
 
+The same tags drive the reverse direction — `Type::to_json(value)`
+serializes back to a JSON string (numbers and bools bare, strings escaped,
+nested structs recursed), so `from_json` / `to_json` round-trip:
+
+```hale
+let body = Order::to_json(o);          // -> {"id":7,"px":...}
+let o2   = Order::from_json(body) or raise;
+```
+
+`to_json` is not fallible — serialization always succeeds.
+
 The tag is general `key:"value"` metadata — `json:` is one consumer;
 other keys are free for future tools.
 

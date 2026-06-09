@@ -282,8 +282,44 @@ fn generate_parser_src(t: &JsonType) -> String {
     b
 }
 
-/// Synthesize `__json_parse_<T>` + `JsonError`, inject them, then rewrite
-/// every `T::from_json(s)` call to `__json_parse_T(s)`.
+/// The Hale string-literal `"<sep>\"<key>\":"` — the member prefix for the
+/// emitted object (sep is "" for the first field, "," after).
+fn prefix_lit(sep: &str, key: &str) -> String {
+    format!("\"{}\\\"{}\\\":\"", sep, key)
+}
+
+/// Emit-side: `__json_to_json_<T>(v: T) -> String`, building the object by
+/// string concat. Numbers/bools via `to_string`, strings quoted +
+/// escaped, nested structs recurse. Not fallible — serialization always
+/// succeeds.
+fn generate_emit_src(t: &JsonType) -> String {
+    let mut b = String::new();
+    b.push_str(&format!(
+        "fn __json_to_json_{}(__v: {}) -> String {{\n",
+        t.name, t.name
+    ));
+    b.push_str("    let mut __b: String = \"{\";\n");
+    for (i, f) in t.fields.iter().enumerate() {
+        let sep = if i == 0 { "" } else { "," };
+        let prefix = prefix_lit(sep, &f.key);
+        let value = match &f.kind {
+            FieldKind::Scalar(ScalarTy::Str) => format!(
+                "\"\\\"\" + std::json::escape_string(__v.{}) + \"\\\"\"",
+                f.name
+            ),
+            FieldKind::Scalar(_) => format!("to_string(__v.{})", f.name),
+            FieldKind::Nested(tn) => format!("__json_to_json_{}(__v.{})", tn, f.name),
+        };
+        b.push_str(&format!("    __b = __b + {} + {};\n", prefix, value));
+    }
+    b.push_str("    __b = __b + \"}\";\n");
+    b.push_str("    return __b;\n}\n");
+    b
+}
+
+/// Synthesize `__json_parse_<T>` / `__json_to_json_<T>` / `JsonError`,
+/// inject them, then rewrite every `T::from_json(s)` and `T::to_json(o)`
+/// call to the generated function.
 pub fn generate_json_parsers(program: &mut Program) {
     let mut names = HashSet::new();
     collect_json_type_names(&program.items, &mut names);
@@ -312,6 +348,9 @@ pub fn generate_json_parsers(program: &mut Program) {
     for t in &types {
         if !existing_fns.contains(&format!("__json_parse_{}", t.name)) {
             src.push_str(&generate_parser_src(t));
+        }
+        if !existing_fns.contains(&format!("__json_to_json_{}", t.name)) {
+            src.push_str(&generate_emit_src(t));
         }
     }
     if !src.trim().is_empty() {
@@ -438,18 +477,23 @@ fn rewrite_expr(e: &mut Expr, names: &HashSet<String>) {
             for a in args.iter_mut() {
                 rewrite_expr(a, names);
             }
-            // `T::from_json(s)` with T a generated type -> `__json_parse_T(s)`.
+            // `T::from_json(s)` / `T::to_json(o)` with T a generated type
+            // -> `__json_parse_T(s)` / `__json_to_json_T(o)`.
             if args.len() == 1 {
                 if let Expr::Path(qn) = callee.as_ref() {
-                    if qn.segments.len() == 2
-                        && qn.segments[1].name == "from_json"
-                        && names.contains(&qn.segments[0].name)
-                    {
-                        let fname = format!("__json_parse_{}", qn.segments[0].name);
-                        *callee = Box::new(Expr::Ident(Ident {
-                            name: fname,
-                            span: *span,
-                        }));
+                    if qn.segments.len() == 2 && names.contains(&qn.segments[0].name) {
+                        let prefix = match qn.segments[1].name.as_str() {
+                            "from_json" => Some("__json_parse_"),
+                            "to_json" => Some("__json_to_json_"),
+                            _ => None,
+                        };
+                        if let Some(prefix) = prefix {
+                            let fname = format!("{}{}", prefix, qn.segments[0].name);
+                            *callee = Box::new(Expr::Ident(Ident {
+                                name: fname,
+                                span: *span,
+                            }));
+                        }
                     }
                 }
             }

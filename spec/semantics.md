@@ -1052,7 +1052,10 @@ payload picks the consumer mode:
   the field name; unmatched keys (and nested objects/arrays under them)
   are skipped. A missing field raises `JsonError { kind, field }` unless
   the field declares a literal default (`= "USD"`), which fills it.
-  `from_json` is `fallible`, so callers must address it. A field whose
+  `from_json` is `fallible`, so callers must address it. The same tags
+  drive emit: `Type::to_json(v) -> String` serializes a value back (bare
+  numbers/bools, escaped strings, nested structs recursed), round-tripping
+  with `from_json`; it is not fallible. A field whose
   type is another generated JSON struct is parsed recursively (the nested
   object's raw text is handed to that type's parser; a nested failure
   propagates). Array fields are **not** supported by design — Hale
