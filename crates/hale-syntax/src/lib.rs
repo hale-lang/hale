@@ -11,6 +11,7 @@
 pub mod ast;
 pub mod desugar;
 pub mod error;
+pub mod json_gen;
 pub mod keywords;
 pub mod lexer;
 pub mod parser;

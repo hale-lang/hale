@@ -402,6 +402,9 @@ pub fn build_executable_with_options(
     // optimizable Send statements into direct `self.handler(...)`
     // method calls. desugar_topics then handles whatever bus refs
     // remain.
+    // JSON Tier 2: synthesize `__json_parse_<T>` + rewrite `T::from_json`.
+    // Idempotent — a no-op if the CLI already generated them pre-typecheck.
+    hale_syntax::json_gen::generate_json_parsers(&mut program_owned);
     hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
     hale_syntax::desugar::desugar_topics(&mut program_owned);
     // Proposal A′: rewrite repr-tagged field accessors (`L2::price(v)` /
@@ -17097,6 +17100,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let result = self.lower_user_fn_call("__json_obj_value_bool", args, scope)?;
                 result.ok_or_else(|| CodegenError::Unsupported(
                     "std::json::obj_value_bool returns Bool but called in a position that expects no value".to_string()))
+            }
+            ["std", "json", "obj_value_float"] => {
+                let result = self.lower_user_fn_call("__json_obj_value_float", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::obj_value_float returns Float but called in a position that expects no value".to_string()))
             }
             ["std", "json", "obj_value_string"] => {
                 let result = self.lower_user_fn_call("__json_obj_value_string", args, scope)?;

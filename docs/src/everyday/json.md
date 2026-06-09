@@ -31,6 +31,42 @@ let inner = std::json::find_field_raw(doc, "address");
 let city  = std::json::find_string_field(inner, "city");
 ```
 
+## Parsing into a type
+
+Pulling fields one by one rescans the document per field. When you have
+a fixed shape, tag the fields with their JSON keys and the compiler
+generates a single-pass parser for you:
+
+```hale
+type Order {
+    id: Int      `json:"id"`;
+    price: Int   `json:"px"`;     // JSON key differs from the field name
+    qty: Float   `json:"sz"`;
+    active: Bool `json:"on"`;
+    side: String `json:"side"`;
+    currency: String = "USD";     // optional: default fills a missing key
+}
+
+let o = Order::from_json(body) or raise;
+println(o.price);
+```
+
+`Type::from_json(s) -> Type fallible(JsonError)` walks the object once,
+dispatches each key to the matching field, and reads the value by the
+field's declared type — no per-field rescan, and unmatched keys (and
+nested objects/arrays under them) are skipped. The `json:"<key>"` tag
+sets the JSON key; without it the field name is the key.
+
+A **missing field raises** `JsonError`, naming the field — *unless* the
+field declares a default (`currency: String = "USD"`), in which case the
+default fills it. Because `from_json` is `fallible`, you must address it
+(`or raise`, `or <fallback>`, …) like any other fallible call.
+
+The tag is general `key:"value"` metadata — `json:` is one consumer;
+other keys are free for future tools. (Fields must be scalar — `Int` /
+`Float` / `Bool` / `String` — for now; nested types and arrays are a
+follow-up.)
+
 ## Arrays
 
 Walk a JSON array with the iterator pair:

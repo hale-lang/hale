@@ -933,6 +933,11 @@ fn __json_obj_value_bool(it: std::json::ObjectIterSpan, json: String) -> Bool {
     return std::str::range_eq(json, it.val_start, it.val_end, "true");
 }
 
+fn __json_obj_value_float(it: std::json::ObjectIterSpan, json: String) -> Float {
+    if it.done { return 0.0; }
+    return std::str::parse_float(json[it.val_start..it.val_end]) or 0.0;
+}
+
 fn __json_obj_value_string(it: std::json::ObjectIterSpan, json: String) -> String {
     if it.done { return ""; }
     let raw = json[it.val_start..it.val_end];
