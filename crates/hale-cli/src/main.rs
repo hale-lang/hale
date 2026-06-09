@@ -379,6 +379,10 @@ fn resolve_imports(
     workspace_root: Option<&Path>,
     visited: &mut std::collections::BTreeSet<PathBuf>,
     sources: &mut BTreeMap<PathBuf, String>,
+    // Per-file (virtual base offset, canonical path, byte length). Each
+    // file is parsed at a distinct base so merged spans are globally
+    // unique and a diagnostic can be demultiplexed back to its file.
+    file_bases: &mut Vec<(u32, PathBuf, u32)>,
     errors: &mut Vec<(PathBuf, hale_syntax::Diag, String)>,
     merged_items: &mut Vec<hale_syntax::ast::TopDecl>,
     renames: &mut ImportRenames,
@@ -492,7 +496,12 @@ fn resolve_imports(
             if trace {
                 eprintln!("[import]     parse start: {}", file.display());
             }
-            let program = match hale_syntax::parse_source(&source) {
+            let base = file_bases
+                .last()
+                .map(|(b, _, l)| b + l + 1)
+                .unwrap_or(0);
+            file_bases.push((base, canon.clone(), source.len() as u32));
+            let program = match hale_syntax::parse_source_at(&source, base) {
                 Ok(p) => p,
                 Err(diags) => {
                     for d in diags {
@@ -604,6 +613,7 @@ fn resolve_imports(
                 workspace_root,
                 visited,
                 sources,
+                file_bases,
                 errors,
                 merged_items,
                 renames,
@@ -642,7 +652,13 @@ pub struct EntryCtx {
 fn parse_with_imports(
     entry: &Path,
 ) -> Result<
-    (Program, ImportRenames, BTreeMap<PathBuf, String>, EntryCtx),
+    (
+        Program,
+        ImportRenames,
+        BTreeMap<PathBuf, String>,
+        Vec<(u32, PathBuf, u32)>,
+        EntryCtx,
+    ),
     Vec<(PathBuf, hale_syntax::Diag, String)>,
 > {
     let mut sources: BTreeMap<PathBuf, String> = BTreeMap::new();
@@ -674,6 +690,10 @@ fn parse_with_imports(
         }
     };
     visited.insert(entry_canon.clone());
+    // The entry file occupies base 0 (parse_source above = no shift);
+    // imported files get subsequent virtual bases in resolve_imports.
+    let mut file_bases: Vec<(u32, PathBuf, u32)> =
+        vec![(0, entry_canon.clone(), entry_source.len() as u32)];
     sources.insert(entry_canon, entry_source);
 
     let entry_imports = entry_program.imports.clone();
@@ -686,6 +706,7 @@ fn parse_with_imports(
         workspace_root.as_deref(),
         &mut visited,
         &mut sources,
+        &mut file_bases,
         &mut errors,
         &mut merged_items,
         &mut renames,
@@ -718,15 +739,47 @@ fn parse_with_imports(
         workspace_root,
         imports: entry_imports,
     };
-    Ok((merged, renames, sources, ctx))
+    Ok((merged, renames, sources, file_bases, ctx))
 }
 
 
+/// Render a post-merge diagnostic, demultiplexing its (globally-unique,
+/// `parse_source_at`-shifted) span back to the file it came from via
+/// `file_bases`, so the output reads `path:line:col` against that file's
+/// own source instead of an arbitrary file. Falls back to the entry
+/// source if the span isn't in any known file range.
+fn render_located(
+    d: &hale_syntax::Diag,
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &BTreeMap<PathBuf, String>,
+) -> String {
+    let off = d.span.start.as_usize() as u32;
+    for (base, path, len) in file_bases {
+        if off >= *base && off < base.saturating_add(*len) {
+            if let Some(src) = sources.get(path) {
+                return d.render_located(&path.display().to_string(), src, *base);
+            }
+        }
+    }
+    let any = sources.values().next().map(|s| s.as_str()).unwrap_or("");
+    d.render(any)
+}
+
 fn parse_files(
     files: &[PathBuf],
-) -> Result<(BTreeMap<PathBuf, Program>, BTreeMap<PathBuf, String>), ExitCode> {
+) -> Result<
+    (
+        BTreeMap<PathBuf, Program>,
+        BTreeMap<PathBuf, String>,
+        Vec<(u32, PathBuf, u32)>,
+    ),
+    ExitCode,
+> {
     let mut programs: BTreeMap<PathBuf, Program> = BTreeMap::new();
     let mut sources: BTreeMap<PathBuf, String> = BTreeMap::new();
+    // (virtual base, path, len) — each file parsed at a distinct base so
+    // merged spans demultiplex back to their file (see parse_source_at).
+    let mut file_bases: Vec<(u32, PathBuf, u32)> = Vec::new();
     let mut had_error = false;
     for f in files {
         let source = match fs::read_to_string(f) {
@@ -737,15 +790,16 @@ fn parse_files(
                 continue;
             }
         };
-        match hale_syntax::parse_source(&source) {
+        let base = file_bases.last().map(|(b, _, l)| b + l + 1).unwrap_or(0);
+        file_bases.push((base, f.clone(), source.len() as u32));
+        match hale_syntax::parse_source_at(&source, base) {
             Ok(p) => {
                 programs.insert(f.clone(), p);
                 sources.insert(f.clone(), source);
             }
             Err(diags) => {
-                eprintln!("{}:", f.display());
                 for d in &diags {
-                    eprintln!("  {}", d.render(&source));
+                    eprintln!("{}", d.render_located(&f.display().to_string(), &source, base));
                 }
                 had_error = true;
             }
@@ -754,7 +808,7 @@ fn parse_files(
     if had_error {
         return Err(ExitCode::from(1));
     }
-    Ok((programs, sources))
+    Ok((programs, sources, file_bases))
 }
 
 fn run_check(target: &Path) -> ExitCode {
@@ -765,7 +819,7 @@ fn run_check(target: &Path) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let (mut programs, sources) = match parse_files(&files) {
+    let (mut programs, sources, file_bases) = match parse_files(&files) {
         Ok(x) => x,
         Err(code) => return code,
     };
@@ -797,9 +851,8 @@ fn run_check(target: &Path) -> ExitCode {
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
     let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
     if !diags.is_empty() {
-        let any_source = sources.values().next().map(|s| s.as_str()).unwrap_or("");
         for d in &diags {
-            eprintln!("{}", d.render(any_source));
+            eprintln!("{}", render_located(d, &file_bases, &sources));
         }
         // Warnings print but don't fail the build; only errors do.
         if diags.iter().any(|d| d.is_error()) {
@@ -855,7 +908,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         // per the known limitation). Cross-seed imports through
         // `hale run` will likewise fail on `alias::Name` paths;
         // use `hale build` for programs with imports.
-        let (program, renames, sources, _ctx) = match parse_with_imports(target) {
+        let (program, renames, sources, file_bases, _ctx) = match parse_with_imports(target) {
             Ok(x) => x,
             Err(errors) => {
                 for (path, d, src) in &errors {
@@ -872,9 +925,8 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
             std::env::args().any(|a| a == "--allow-unowned-subscriber");
         let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
         if !diags.is_empty() {
-            let any_source = sources.values().next().map(|s| s.as_str()).unwrap_or("");
             for d in &diags {
-                eprintln!("{}", d.render(any_source));
+                eprintln!("{}", render_located(d, &file_bases, &sources));
             }
             // Warnings print but don't fail the build; only errors do.
             if diags.iter().any(|d| d.is_error()) {
@@ -891,7 +943,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let (programs, sources) = match parse_files(&files) {
+    let (programs, sources, file_bases) = match parse_files(&files) {
         Ok(x) => x,
         Err(code) => return code,
     };
@@ -907,9 +959,8 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
     let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
     if !diags.is_empty() {
-        let any_source = sources.values().next().map(|s| s.as_str()).unwrap_or("");
         for d in &diags {
-            eprintln!("{}", d.render(any_source));
+            eprintln!("{}", render_located(d, &file_bases, &sources));
         }
         // Warnings print but don't fail the build; only errors do.
         if diags.iter().any(|d| d.is_error()) {
@@ -948,8 +999,8 @@ fn run_build(target: &Path) -> ExitCode {
     // directory shape is the user-facing answer to the
     // single-file-app-monolith friction; the file shape stays for
     // backwards compatibility and for one-off scripts.
-    let (mut program, renames, sources, output, entry_ctx) = if target.is_file() {
-        let (program, renames, sources, ctx) = match parse_with_imports(target) {
+    let (mut program, renames, sources, file_bases, output, entry_ctx) = if target.is_file() {
+        let (program, renames, sources, file_bases, ctx) = match parse_with_imports(target) {
             Ok(x) => x,
             Err(errors) => {
                 for (path, d, src) in &errors {
@@ -961,7 +1012,7 @@ fn run_build(target: &Path) -> ExitCode {
         };
         // hello-world.hl → hello-world
         let output = target.with_extension("");
-        (program, renames, sources, output, ctx)
+        (program, renames, sources, file_bases, output, ctx)
     } else if target.is_dir() {
         let files = match collect_ap_files(target) {
             Ok(f) => f,
@@ -970,7 +1021,7 @@ fn run_build(target: &Path) -> ExitCode {
                 return ExitCode::from(1);
             }
         };
-        let (programs, sources) = match parse_files(&files) {
+        let (programs, sources, mut dir_file_bases) = match parse_files(&files) {
             Ok(x) => x,
             Err(code) => return code,
         };
@@ -1015,6 +1066,7 @@ fn run_build(target: &Path) -> ExitCode {
             workspace_root.as_deref(),
             &mut visited,
             &mut path_sources,
+            &mut dir_file_bases,
             &mut import_errors,
             &mut merged_items,
             &mut renames,
@@ -1067,7 +1119,7 @@ fn run_build(target: &Path) -> ExitCode {
             workspace_root,
             imports: union_imports,
         };
-        (with_imports, renames, path_sources, output, ctx)
+        (with_imports, renames, path_sources, dir_file_bases, output, ctx)
     } else {
         eprintln!("not a file or directory: {}", target.display());
         return ExitCode::from(1);
@@ -1083,9 +1135,8 @@ fn run_build(target: &Path) -> ExitCode {
     // single-pool use are left alone.
     let pre_diags = hale_types::apply_sync_inference(&mut program);
     if !pre_diags.is_empty() {
-        let any_source = sources.values().next().map(|s| s.as_str()).unwrap_or("");
         for d in &pre_diags {
-            eprintln!("{}", d.render(any_source));
+            eprintln!("{}", render_located(d, &file_bases, &sources));
         }
         return ExitCode::from(1);
     }
@@ -1103,9 +1154,8 @@ fn run_build(target: &Path) -> ExitCode {
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
     let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
     if !diags.is_empty() {
-        let any_source = sources.values().next().map(|s| s.as_str()).unwrap_or("");
         for d in &diags {
-            eprintln!("{}", d.render(any_source));
+            eprintln!("{}", render_located(d, &file_bases, &sources));
         }
         // Warnings print but don't fail the build; only errors do.
         if diags.iter().any(|d| d.is_error()) {

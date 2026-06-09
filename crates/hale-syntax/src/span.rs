@@ -11,6 +11,13 @@ impl Pos {
     pub fn as_usize(self) -> usize {
         self.0 as usize
     }
+    /// Offset this position by `delta` bytes. Used to relocate a single
+    /// file's spans into a process-wide coordinate space so multi-file
+    /// builds can demultiplex a span back to its originating file (see
+    /// `parse_source_at`).
+    pub fn shifted(self, delta: u32) -> Self {
+        Pos(self.0.wrapping_add(delta))
+    }
 }
 
 /// A half-open byte range [start, end) into the source.
@@ -25,6 +32,14 @@ impl Span {
         Span {
             start: Pos::new(start),
             end: Pos::new(end),
+        }
+    }
+
+    /// Offset both ends by `delta` bytes (see `Pos::shifted`).
+    pub fn shifted(self, delta: u32) -> Span {
+        Span {
+            start: self.start.shifted(delta),
+            end: self.end.shifted(delta),
         }
     }
 
