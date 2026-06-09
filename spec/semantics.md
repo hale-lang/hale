@@ -1042,8 +1042,19 @@ payload picks the consumer mode:
   the field's offset (computed in declaration order over the tagged
   fields, or pinned with `,at=N`). These desugar to the matching
   `std::bytes::read_*` / `write_*` call, so they share the primitives'
-  bounds-checking and cost. Other tag keys are reserved for future
-  consumers (serialization, validation).
+  bounds-checking and cost.
+- A `json:"<key>"` tag is the second tag consumer: a struct with at least
+  one `json:` tag gets a generated `Type::from_json(s) -> Type
+  fallible(JsonError)` that parses the object in a single pass (driving
+  the `std::json` object cursor), dispatching each key to the matching
+  field and reading the value by the field's declared scalar type
+  (`Int` / `Float` / `Bool` / `String`). The key is the tag value, else
+  the field name; unmatched keys (and nested objects/arrays under them)
+  are skipped. A missing field raises `JsonError { kind, field }` unless
+  the field declares a literal default (`= "USD"`), which fills it.
+  `from_json` is `fallible`, so callers must address it. Nested-struct
+  and array fields are a follow-up. Further tag keys remain reserved for
+  future consumers (validation, db mapping).
 
 Any other payload (with `String`, `Bytes`, or variable-size fields and
 not itself `BytesView`) is rejected.

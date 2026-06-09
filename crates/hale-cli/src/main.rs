@@ -830,6 +830,10 @@ fn run_check(target: &Path) -> ExitCode {
     // auto-inferable cross-pool calls while `build` silently
     // applies — same source, divergent answers.
     for prog in programs.values_mut() {
+        // JSON Tier 2: synthesize `__json_parse_<T>` + rewrite
+        // `T::from_json` before typecheck, so the generated parser is
+        // checked and callers must address its `fallible(JsonError)`.
+        hale_syntax::json_gen::generate_json_parsers(prog);
         let pre_diags = hale_types::apply_sync_inference(prog);
         if !pre_diags.is_empty() {
             let any_source = sources.values().next().map(|s| s.as_str()).unwrap_or("");
@@ -1133,6 +1137,7 @@ fn run_build(target: &Path) -> ExitCode {
     // F.32-0 cross-pool diagnostic stays quiet for auto-
     // inferable cases. Loci with existing sync kwarg or
     // single-pool use are left alone.
+    hale_syntax::json_gen::generate_json_parsers(&mut program);
     let pre_diags = hale_types::apply_sync_inference(&mut program);
     if !pre_diags.is_empty() {
         for d in &pre_diags {
