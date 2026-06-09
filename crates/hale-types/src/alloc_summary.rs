@@ -8,11 +8,12 @@
 //! per body:
 //!
 //! - **allocation sites** — `Struct` / `Array` / `[v; N]` / `Bytes` literals
-//!   (each lowers to an arena alloc) and `+` sites (a *possible* String
-//!   concat; type info in a later stage prunes the arithmetic ones), each
-//!   tagged **local** (freed at scope exit) vs **escaping** (flows to a
-//!   `return`, a `self.field` store, or a bus `<-`), with its enclosing
-//!   **loop depth**;
+//!   (each lowers to an arena alloc), tagged **local** vs **escaping**
+//!   (flows to a `return`, a `self.field` store, or a bus `<-`), with its
+//!   enclosing **loop depth** and (step 2) a **reclaim scope** + **bound
+//!   verdict**. String `+` concat is also a real site, but telling it from
+//!   arithmetic `+` needs type info this pass lacks, so it's deferred to a
+//!   type-aware stage rather than flagged and crying wolf on every `i + 1`;
 //! - **call edges** — resolved to a `FnKey` where possible (free fn,
 //!   `self`-method) or left unresolved (foreign receiver / stdlib / builtin),
 //!   each with its loop depth;
@@ -68,7 +69,6 @@ pub enum AllocKind {
     ArrayLit,
     ArrayRepeat,
     BytesLit,
-    PossibleConcat,
 }
 
 impl AllocKind {
@@ -78,7 +78,6 @@ impl AllocKind {
             AllocKind::ArrayLit => "array-literal".to_string(),
             AllocKind::ArrayRepeat => "array-repeat".to_string(),
             AllocKind::BytesLit => "bytes-literal".to_string(),
-            AllocKind::PossibleConcat => "possible-concat".to_string(),
         }
     }
 }
@@ -104,8 +103,79 @@ impl Escape {
             Escape::Sent => "escaping=bus-send",
         }
     }
-    fn escapes(&self) -> bool {
-        !matches!(self, Escape::Local)
+}
+
+/// When an allocation's memory is actually reclaimed — the *empirically
+/// validated* reclamation model (step 2), which differs from
+/// `spec/memory.md`. Measured: a struct allocated inside a non-inlinable
+/// free fn called 3M× in a loop accumulates to ~99 MB (vs ~5 MB for an
+/// alloc-free loop) — i.e. **free-fn returns do NOT reclaim per call**
+/// (the spec's §"Free fn functions" region-free-at-return is not what
+/// runs). So a value allocation lives until its enclosing **locus**
+/// dissolves; only bus sends get a per-dispatch arena.
+///
+/// The conservative consequence (and the whole point — "no false
+/// bounded"): any value allocation inside a loop accumulates per
+/// iteration, bounded only by the loop's trip count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReclaimScope {
+    /// Freed wholesale only when the enclosing locus dissolves — so it
+    /// accumulates across every loop iteration in between. Covers
+    /// `Local`, `Returned`, and `StoredToSelf` value allocations.
+    EnclosingLocus,
+    /// Routed to the bus payload arena, reclaimed after the message is
+    /// dispatched — a genuine per-iteration boundary. (Modeled from the
+    /// spec + bus codegen; RSS-validation of this path is pending, noted
+    /// in the step-2 validation test.)
+    AfterBusDispatch,
+}
+
+impl ReclaimScope {
+    fn of(escape: Escape) -> Self {
+        match escape {
+            Escape::Sent => ReclaimScope::AfterBusDispatch,
+            _ => ReclaimScope::EnclosingLocus,
+        }
+    }
+    /// Does this allocation persist across loop iterations (vs being
+    /// reclaimed each iteration)?
+    fn accumulates_in_loop(&self) -> bool {
+        matches!(self, ReclaimScope::EnclosingLocus)
+    }
+    fn label(&self) -> &'static str {
+        match self {
+            ReclaimScope::EnclosingLocus => "reclaim@locus-dissolve",
+            ReclaimScope::AfterBusDispatch => "reclaim@bus-dispatch",
+        }
+    }
+}
+
+/// The model's per-site bound verdict (step 2 output; step 3 turns the
+/// unbounded case into a diagnostic).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SiteVerdict {
+    /// Not in any loop — at most one allocation per invocation. (Whether
+    /// the invocation itself is unbounded is the call-graph multiplicity
+    /// question, resolved in step 3.)
+    OncePerInvocation,
+    /// In a loop but reclaimed each iteration (bus dispatch) — bounded.
+    PerIterationReclaim,
+    /// Accumulates, but every enclosing loop has a const trip count —
+    /// bounded by that constant.
+    AccumulatesBoundedLoop,
+    /// Accumulates inside an unbounded loop (`while true` / runtime
+    /// `for`-iter) — the leak precursor.
+    AccumulatesUnbounded,
+}
+
+impl SiteVerdict {
+    fn label(&self) -> &'static str {
+        match self {
+            SiteVerdict::OncePerInvocation => "once-per-invocation",
+            SiteVerdict::PerIterationReclaim => "per-iteration-reclaim",
+            SiteVerdict::AccumulatesBoundedLoop => "accumulates×const",
+            SiteVerdict::AccumulatesUnbounded => "ACCUMULATES-UNBOUNDED",
+        }
     }
 }
 
@@ -115,7 +185,25 @@ pub struct AllocSite {
     pub kind: AllocKind,
     pub escape: Escape,
     pub loop_depth: u32,
+    /// True if any enclosing loop has a non-const (runtime / `while true`)
+    /// trip count.
+    pub in_unbounded_loop: bool,
+    pub reclaim: ReclaimScope,
     pub span: Span,
+}
+
+impl AllocSite {
+    pub fn verdict(&self) -> SiteVerdict {
+        if self.loop_depth == 0 {
+            SiteVerdict::OncePerInvocation
+        } else if !self.reclaim.accumulates_in_loop() {
+            SiteVerdict::PerIterationReclaim
+        } else if self.in_unbounded_loop {
+            SiteVerdict::AccumulatesUnbounded
+        } else {
+            SiteVerdict::AccumulatesBoundedLoop
+        }
+    }
 }
 
 /// A resolved or unresolved call target.
@@ -248,12 +336,18 @@ impl AllocSummary {
                 ));
             }
             for s in &f.sites {
-                let flag = if s.escape.escapes() && s.loop_depth > 0 { "  <-- escaping-in-loop" } else { "" };
+                let v = s.verdict();
+                let flag = if matches!(v, SiteVerdict::AccumulatesUnbounded) {
+                    "  <-- LEAK PRECURSOR"
+                } else {
+                    ""
+                };
                 out.push_str(&format!(
-                    "    alloc {:<16} {:<20} loop_depth={} @{}..{}{}\n",
+                    "    alloc {:<16} {:<20} {:<22} {:<22} @{}..{}{}\n",
                     s.kind.label(),
                     s.escape.label(),
-                    s.loop_depth,
+                    v.label(),
+                    s.reclaim.label(),
                     s.span.start.0,
                     s.span.end.0,
                     flag
@@ -330,6 +424,7 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
             escaping: &escaping,
             enclosing_locus: enclosing_locus.clone(),
             known: &known,
+            loop_stack: Vec::new(),
         };
         w.walk_block(body, 0, Escape::Local);
         summary.fns.insert(
@@ -379,6 +474,22 @@ struct Walker<'a> {
     escaping: &'a BTreeMap<String, Escape>,
     enclosing_locus: Option<String>,
     known: &'a BTreeSet<FnKey>,
+    /// One entry per enclosing loop: `true` if that loop has a const trip
+    /// count. A value alloc is in an unbounded loop iff any entry is false.
+    loop_stack: Vec<bool>,
+}
+
+impl<'a> Walker<'a> {
+    fn push_site(&mut self, kind: AllocKind, escape: Escape, depth: u32, span: Span) {
+        self.sites.push(AllocSite {
+            kind,
+            escape,
+            loop_depth: depth,
+            in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
+            reclaim: ReclaimScope::of(escape),
+            span,
+        });
+    }
 }
 
 impl<'a> Walker<'a> {
@@ -415,13 +526,21 @@ impl<'a> Walker<'a> {
             }
             Stmt::For { iter, body, span, .. } => {
                 self.walk_expr(iter, depth, Escape::Local);
-                self.loops.push(LoopInfo { kind: for_loop_kind(iter), depth, span: *span });
+                let kind = for_loop_kind(iter);
+                let bounded = matches!(kind, LoopKind::ForRange { bounded: Some(_) });
+                self.loops.push(LoopInfo { kind, depth, span: *span });
+                self.loop_stack.push(bounded);
                 self.walk_block(body, depth + 1, Escape::Local);
+                self.loop_stack.pop();
             }
             Stmt::While { cond, body, span } => {
                 self.walk_expr(cond, depth, Escape::Local);
+                // A `while` trip count is never a compile-time constant
+                // here (the cond is runtime), so always unbounded.
                 self.loops.push(LoopInfo { kind: while_loop_kind(cond), depth, span: *span });
+                self.loop_stack.push(false);
                 self.walk_block(body, depth + 1, Escape::Local);
+                self.loop_stack.pop();
             }
             Stmt::If(if_stmt) => self.walk_if(if_stmt, depth, Escape::Local),
             Stmt::Match(m) => self.walk_match(m, depth, Escape::Local),
@@ -475,59 +594,32 @@ impl<'a> Walker<'a> {
         match expr {
             Expr::Struct { path, inits, span } => {
                 let name = path.segments.last().map(|s| s.name.clone()).unwrap_or_default();
-                self.sites.push(AllocSite {
-                    kind: AllocKind::StructLit(name),
-                    escape,
-                    loop_depth: depth,
-                    span: *span,
-                });
+                self.push_site(AllocKind::StructLit(name), escape, depth, *span);
                 for si in inits {
                     self.walk_expr(&si.value, depth, escape);
                 }
             }
             Expr::Array(xs, span) => {
-                self.sites.push(AllocSite {
-                    kind: AllocKind::ArrayLit,
-                    escape,
-                    loop_depth: depth,
-                    span: *span,
-                });
+                self.push_site(AllocKind::ArrayLit, escape, depth, *span);
                 for x in xs {
                     self.walk_expr(x, depth, escape);
                 }
             }
             Expr::ArrayRepeat { val, span, .. } => {
                 // `count` is a const `u64`, not an expr — nothing to walk.
-                self.sites.push(AllocSite {
-                    kind: AllocKind::ArrayRepeat,
-                    escape,
-                    loop_depth: depth,
-                    span: *span,
-                });
+                self.push_site(AllocKind::ArrayRepeat, escape, depth, *span);
                 self.walk_expr(val, depth, escape);
             }
             Expr::Literal(Literal::Bytes(_), span) => {
-                self.sites.push(AllocSite {
-                    kind: AllocKind::BytesLit,
-                    escape,
-                    loop_depth: depth,
-                    span: *span,
-                });
+                self.push_site(AllocKind::BytesLit, escape, depth, *span);
             }
             Expr::Literal(_, _) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
-            Expr::Binary { op: BinOp::Add, left, right, span } => {
-                // A `+` whose operands may be Strings → arena concat. With
-                // no type info here this over-reports arithmetic `+`; a
-                // later stage prunes via types.
-                self.sites.push(AllocSite {
-                    kind: AllocKind::PossibleConcat,
-                    escape,
-                    loop_depth: depth,
-                    span: *span,
-                });
-                self.walk_expr(left, depth, escape);
-                self.walk_expr(right, depth, escape);
-            }
+            // NOTE: a String `+` is an arena concat and a real allocation
+            // site, but telling it from arithmetic `+` needs type info this
+            // (type-free) pass doesn't have. Flagging every `i + 1` as a
+            // leak precursor is the exact cry-wolf failure the scope warns
+            // against, so String-concat detection is deferred to a
+            // type-aware stage. Here `+` is just recursed, not a site.
             Expr::Binary { left, right, .. } => {
                 self.walk_expr(left, depth, Escape::Local);
                 self.walk_expr(right, depth, Escape::Local);
@@ -808,6 +900,76 @@ mod tests {
         let s = summarize(src);
         let f = fns(&s, &FnKey::method("C", "use_it"));
         assert!(f.calls.iter().any(|c| c.callee == Callee::Resolved(FnKey::method("C", "helper"))));
+    }
+
+    #[test]
+    fn struct_in_while_true_is_leak_precursor() {
+        // The empirically-validated model: a value alloc in an unbounded
+        // loop accumulates (reclaim@locus-dissolve), so the verdict is
+        // ACCUMULATES-UNBOUNDED — even though it never escapes.
+        let src = r#"
+            type Q { a: Int; }
+            locus C {
+                run { let mut i = 0; while true { let q = Q { a: i }; i = i + 1; } }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::method("C", "run"));
+        let st = f.sites.iter().find(|s| matches!(s.kind, AllocKind::StructLit(_))).expect("struct");
+        assert_eq!(st.reclaim, ReclaimScope::EnclosingLocus);
+        assert!(st.in_unbounded_loop);
+        assert_eq!(st.verdict(), SiteVerdict::AccumulatesUnbounded);
+    }
+
+    #[test]
+    fn struct_in_bounded_for_is_bounded() {
+        let src = r#"
+            type Q { a: Int; }
+            fn work() { for i in 0..100 { let q = Q { a: i }; } }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::free_fn("work"));
+        let st = f.sites.iter().find(|s| matches!(s.kind, AllocKind::StructLit(_))).expect("struct");
+        assert!(!st.in_unbounded_loop);
+        assert_eq!(st.verdict(), SiteVerdict::AccumulatesBoundedLoop);
+    }
+
+    #[test]
+    fn struct_outside_loop_is_once_per_invocation() {
+        let src = r#"
+            type Q { a: Int; }
+            fn make() -> Q { return Q { a: 1 }; }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::free_fn("make"));
+        assert_eq!(f.sites[0].verdict(), SiteVerdict::OncePerInvocation);
+    }
+
+    #[test]
+    fn bus_send_in_loop_reclaims_per_iteration() {
+        // A sent value routes to the payload arena (per-dispatch reclaim),
+        // so even in an unbounded loop its verdict is per-iteration-bounded.
+        let src = r#"
+            type Q { a: Int; }
+            locus C {
+                bus { publish "t" of type Q; }
+                run {
+                    let mut i = 0;
+                    while true { let q = Q { a: i }; "t" <- q; i = i + 1; }
+                }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::method("C", "run"));
+        // The `q` bound by `let` is tagged Sent (it flows to the send), so
+        // its alloc reclaims at dispatch.
+        let sent = f.sites.iter().find(|s| s.reclaim == ReclaimScope::AfterBusDispatch);
+        assert!(sent.is_some(), "expected a bus-dispatch-reclaimed site");
+        assert_eq!(sent.unwrap().verdict(), SiteVerdict::PerIterationReclaim);
     }
 
     #[test]

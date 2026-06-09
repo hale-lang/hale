@@ -6,16 +6,48 @@ ordering, and the one that builds the shared compile-time dataflow
 infrastructure that items #3 (closure-lifting) and #5 (resource-budgets)
 reuse.
 
-> **Step 1 landed:** `crates/hale-types/src/alloc_summary.rs` — the
+> **Step 1 landed (#100):** `crates/hale-types/src/alloc_summary.rs` — the
 > per-method allocation summary + call graph, behind `hale check
-> --dump-alloc-summary`. It records allocation sites (escape-tagged, with
-> loop depth), call edges (resolved/unresolved), loops (bounded/runtime),
-> and entry-point multiplicity. **No bound-proving** — it's the reusable IR
-> for steps 2-4 (and items #3/#5). The dump already surfaces the precursor
-> signal (an escaping allocation inside an unbounded loop → marked
-> `escaping-in-loop`); the bound solver (step 3) turns that into a
-> diagnostic. Validated: 8 unit tests + clean dumps across the fixture
-> corpus.
+> --dump-alloc-summary`. Records allocation sites (escape-tagged, loop
+> depth), call edges (resolved/unresolved), loops (bounded/runtime), entry
+> multiplicity. The reusable IR for steps 2-4 (and items #3/#5).
+>
+> **Step 2 landed (the reclamation model):** each site now carries a
+> `ReclaimScope` + a `SiteVerdict` (`OncePerInvocation` /
+> `PerIterationReclaim` / `AccumulatesBoundedLoop` / `AccumulatesUnbounded`),
+> the dump flags the last as `LEAK PRECURSOR`, and an RSS test
+> (`alloc_model_rss.rs`) ties the verdict to measured peak RSS in both
+> directions (the scope's "no false bounded" teeth).
+>
+> **The model was corrected by measurement** (see below) — `spec/memory.md`
+> overstates free-fn reclaim. The type-free `+`-as-concat over-report from
+> step 1 was *removed* (it flagged every `i + 1`); String-concat detection
+> is deferred to a type-aware stage.
+
+## The empirical reclamation model (measured, not assumed)
+
+The scope warned the reclamation model is the whole ballgame. RSS
+experiments (3M-iteration loops, `std::process::rss_bytes()`) established:
+
+| program | RSS | reading |
+|---|---|---|
+| no-alloc loop | ~5 MB | runtime floor |
+| struct allocated directly in the loop | ~99 MB | accumulates |
+| struct allocated inside a **non-inlinable free fn** called per iter, only an `Int` returned | ~99 MB | **also accumulates** |
+
+The third row is the key finding: **free-fn returns do NOT reclaim per
+call** — a value allocated inside a called free fn accumulates in the
+caller's region exactly as if inlined. This **contradicts `spec/memory.md`
+§"Free fn functions"** ("the function returns when … region freed"). So
+the model attributes a value allocation's reclaim to its enclosing
+**locus** (dissolve), not the fn return. Conservative and correct (no
+false "bounded"). Only bus sends get a per-iteration boundary
+(`reclaim@bus-dispatch`).
+
+> **Open question for the user / spec:** is the spec aspirational (correct
+> it to "value allocations live until the enclosing locus dissolves") or is
+> free-fn region teardown an unimplemented reclaim (a runtime fix)? Left
+> untouched pending that call; the model encodes the *shipped* behavior.
 
 ## Goal
 
