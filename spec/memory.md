@@ -219,6 +219,32 @@ returns when:
 - Body's last statement completes, AND
 - All children of the implicit locus have dissolved.
 
+### Value allocations vs. the free-fn implicit locus
+
+The free-fn implicit locus governs the lifetime of **child loci
+and bound handles** instantiated in the body — those dissolve at
+the function's return. It does **not** give the function a
+value-allocation arena of its own.
+
+Ordinary **value allocations** (struct / record literals,
+`String` concatenation, array and `Bytes` literals) made in a
+free `fn` body bump into the nearest enclosing **locus's** region
+and are reclaimed only when that locus dissolves — **not** when
+the function returns. A value allocated inside a helper `fn`
+called from a hot loop therefore accumulates in the caller's
+region exactly as if it had been written inline; the function
+boundary is not a reclamation boundary for values.
+
+The practical consequence: a value allocation inside an
+unbounded loop (a `run()` / bus-handler loop, a `while true`)
+grows the locus region without bound for the locus's lifetime —
+the recurring leak class behind several past OOMs. To bound it,
+either bound the loop, route the value over the bus (the payload
+arena reclaims per dispatch), or move the allocating work into a
+child locus that dissolves per iteration. The compile-time
+analysis that surfaces this is GitHub issue #18 item 1
+(memory-bound proofs); see `spec/verification.md`.
+
 ## Bookkeeping reclamation (per-arena defrag)
 
 Per F.3: within a parent's arena, dissolved-coordinatee

@@ -44,10 +44,11 @@ the model attributes a value allocation's reclaim to its enclosing
 false "bounded"). Only bus sends get a per-iteration boundary
 (`reclaim@bus-dispatch`).
 
-> **Open question for the user / spec:** is the spec aspirational (correct
-> it to "value allocations live until the enclosing locus dissolves") or is
-> free-fn region teardown an unimplemented reclaim (a runtime fix)? Left
-> untouched pending that call; the model encodes the *shipped* behavior.
+> **Resolved (2026-06-09):** the spec was corrected to match shipped
+> behavior — `spec/memory.md` §"Value allocations vs. the free-fn implicit
+> locus" now states that value allocations bump into the enclosing locus's
+> region and reclaim only at its dissolve, not at fn return. The model
+> encodes that.
 
 ## Goal
 
