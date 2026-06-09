@@ -361,6 +361,329 @@ fn rewrite_match(m: &mut MatchStmt, topics: &BTreeMap<String, TopicEntry>) {
     }
 }
 
+// ---------------------------------------------------------------
+// Proposal A′: repr-tagged field accessors.
+// ---------------------------------------------------------------
+//
+// A struct whose fields carry `repr:"<wire-type>"` tags is a binary
+// (wire) layout. For such a type `L2`, a call `L2::price(v)` reads the
+// `price` field at its computed byte offset from `v` (a Bytes/BytesView),
+// and `L2::set_price(w, x)` writes it into `w` (a BytesMut). This pass
+// rewrites those accessor calls into the equivalent `std::bytes::read_*` /
+// `write_*` calls so the rest of the pipeline (typecheck, codegen) needs
+// no accessor-specific logic — they ride the existing pack primitives,
+// including the `fallible(IndexError)` typing. Runs before typecheck (so
+// the checker sees the desugared calls) and is idempotent.
+
+/// A field's wire placement, parsed from its `repr:"…"` tag.
+#[derive(Debug, Clone)]
+struct WireField {
+    offset: u64,
+    /// The pack-primitive type token, e.g. `"u32_le"` — `read_`/`write_`
+    /// prefix it to name the runtime call.
+    repr: String,
+}
+
+type WireLayouts = BTreeMap<String, BTreeMap<String, WireField>>;
+
+/// Extract a Go-style `key:"value"` from a tag string.
+fn tag_value(tag: &str, key: &str) -> Option<String> {
+    let needle = format!("{}:\"", key);
+    let start = tag.find(&needle)? + needle.len();
+    let rest = &tag[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// Byte width of a pack-primitive type token (endianness suffix ignored).
+fn repr_width(repr: &str) -> u64 {
+    let base = repr
+        .strip_suffix("_le")
+        .or_else(|| repr.strip_suffix("_be"))
+        .unwrap_or(repr);
+    match base {
+        "u8" | "i8" => 1,
+        "u16" | "i16" => 2,
+        "u32" | "i32" | "f32" => 4,
+        _ => 8,
+    }
+}
+
+/// Compute a struct's wire layout from its fields' `repr:` tags. Offsets
+/// run in declaration order over the tagged fields (each advances the
+/// cursor by its width); an explicit `,at=N` in the tag pins an offset
+/// for a foreign format with padding. Returns `None` if no field is
+/// repr-tagged (an ordinary struct).
+fn wire_layout(fields: &[StructField]) -> Option<BTreeMap<String, WireField>> {
+    let mut layout = BTreeMap::new();
+    let mut cursor = 0u64;
+    for f in fields {
+        let Some(repr_val) = f.tag.as_deref().and_then(|t| tag_value(t, "repr")) else {
+            continue;
+        };
+        let mut parts = repr_val.split(',');
+        let repr = parts.next().unwrap_or("").trim().to_string();
+        let mut at: Option<u64> = None;
+        for p in parts {
+            if let Some(n) = p.trim().strip_prefix("at=") {
+                at = n.trim().parse().ok();
+            }
+        }
+        let width = repr_width(&repr);
+        let offset = at.unwrap_or(cursor);
+        cursor = offset + width;
+        layout.insert(f.name.name.clone(), WireField { offset, repr });
+    }
+    if layout.is_empty() {
+        None
+    } else {
+        Some(layout)
+    }
+}
+
+fn collect_wire_layouts(items: &[TopDecl], out: &mut WireLayouts) {
+    for item in items {
+        match item {
+            TopDecl::Type(td) => {
+                if let TypeDeclBody::Struct(fields) = &td.body {
+                    if let Some(layout) = wire_layout(fields) {
+                        out.insert(td.name.name.clone(), layout);
+                    }
+                }
+            }
+            TopDecl::Module(m) => collect_wire_layouts(&m.items, out),
+            _ => {}
+        }
+    }
+}
+
+/// Rewrite repr-tagged field accessors into `std::bytes::*` calls.
+pub fn desugar_repr_accessors(program: &mut Program) {
+    let mut layouts = WireLayouts::new();
+    collect_wire_layouts(&program.items, &mut layouts);
+    if layouts.is_empty() {
+        return;
+    }
+    acc_items(&mut program.items, &layouts);
+}
+
+fn std_bytes_call(name: &str, args: Vec<Expr>, span: Span) -> Expr {
+    let seg = |s: &str| Ident {
+        name: s.to_string(),
+        span,
+    };
+    Expr::Call {
+        callee: Box::new(Expr::Path(QualifiedName {
+            segments: vec![seg("std"), seg("bytes"), seg(name)],
+            span,
+        })),
+        args,
+        span,
+    }
+}
+
+/// If `callee(args)` is an accessor of a wire-tagged type, return its
+/// `std::bytes::*` replacement.
+fn try_accessor(
+    callee: &Expr,
+    args: &[Expr],
+    span: Span,
+    w: &WireLayouts,
+) -> Option<Expr> {
+    let Expr::Path(qn) = callee else { return None };
+    if qn.segments.len() != 2 {
+        return None;
+    }
+    let layout = w.get(&qn.segments[0].name)?;
+    let member = &qn.segments[1].name;
+    // Read: `T::field(v)` → `std::bytes::read_<repr>(v, off)`.
+    if let Some(wf) = layout.get(member) {
+        if args.len() != 1 {
+            return None;
+        }
+        return Some(std_bytes_call(
+            &format!("read_{}", wf.repr),
+            vec![args[0].clone(), Expr::Literal(Literal::Int(wf.offset as i64), span)],
+            span,
+        ));
+    }
+    // Write: `T::set_field(w, x)` → `std::bytes::write_<repr>(w, off, x)`.
+    if let Some(field) = member.strip_prefix("set_") {
+        if let Some(wf) = layout.get(field) {
+            if args.len() != 2 {
+                return None;
+            }
+            return Some(std_bytes_call(
+                &format!("write_{}", wf.repr),
+                vec![
+                    args[0].clone(),
+                    Expr::Literal(Literal::Int(wf.offset as i64), span),
+                    args[1].clone(),
+                ],
+                span,
+            ));
+        }
+    }
+    None
+}
+
+fn acc_items(items: &mut [TopDecl], w: &WireLayouts) {
+    for item in items {
+        match item {
+            TopDecl::Fn(f) => acc_block(&mut f.body, w),
+            TopDecl::Locus(l) => {
+                for member in &mut l.members {
+                    match member {
+                        LocusMember::Lifecycle(lc) => acc_block(&mut lc.body, w),
+                        LocusMember::Mode(md) => acc_block(&mut md.body, w),
+                        LocusMember::Fn(fd) => acc_block(&mut fd.body, w),
+                        _ => {}
+                    }
+                }
+            }
+            TopDecl::Module(m) => acc_items(&mut m.items, w),
+            _ => {}
+        }
+    }
+}
+
+fn acc_block(b: &mut Block, w: &WireLayouts) {
+    for s in &mut b.stmts {
+        acc_stmt(s, w);
+    }
+    if let Some(t) = &mut b.tail {
+        acc_expr(t, w);
+    }
+}
+
+fn acc_stmt(s: &mut Stmt, w: &WireLayouts) {
+    match s {
+        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => acc_expr(value, w),
+        Stmt::Assign { target, value, .. } => {
+            acc_expr(value, w);
+            for seg in &mut target.tail {
+                if let LValueSeg::Index(e) = seg {
+                    acc_expr(e, w);
+                }
+            }
+        }
+        Stmt::If(if_stmt) => acc_if(if_stmt, w),
+        Stmt::Match(m) => acc_match(m, w),
+        Stmt::For { iter, body, .. } => {
+            acc_expr(iter, w);
+            acc_block(body, w);
+        }
+        Stmt::While { cond, body, .. } => {
+            acc_expr(cond, w);
+            acc_block(body, w);
+        }
+        Stmt::Return(Some(e), _) => acc_expr(e, w),
+        Stmt::Fail { value, .. } => acc_expr(value, w),
+        Stmt::Send { subject, value, .. } => {
+            acc_expr(subject, w);
+            acc_expr(value, w);
+        }
+        Stmt::Block(b) => acc_block(b, w),
+        Stmt::Recovery { args, .. } => {
+            for a in args {
+                acc_expr(a, w);
+            }
+        }
+        Stmt::Violate { payload, .. } => {
+            if let Some(p) = payload {
+                acc_expr(p, w);
+            }
+        }
+        Stmt::ShmWrite { max, body, .. } => {
+            acc_expr(max, w);
+            acc_block(body, w);
+        }
+        Stmt::Expr(e) => acc_expr(e, w),
+        Stmt::Return(None, _)
+        | Stmt::Break(_)
+        | Stmt::Continue(_)
+        | Stmt::Yield(_)
+        | Stmt::Terminate(_) => {}
+    }
+}
+
+fn acc_if(if_stmt: &mut IfStmt, w: &WireLayouts) {
+    acc_expr(&mut if_stmt.cond, w);
+    acc_block(&mut if_stmt.then_block, w);
+    if let Some(eb) = &mut if_stmt.else_block {
+        match eb.as_mut() {
+            ElseBranch::Else(b) => acc_block(b, w),
+            ElseBranch::ElseIf(inner) => acc_if(inner, w),
+        }
+    }
+}
+
+fn acc_match(m: &mut MatchStmt, w: &WireLayouts) {
+    acc_expr(&mut m.scrutinee, w);
+    for arm in &mut m.arms {
+        match &mut arm.body {
+            MatchArmBody::Block(b) => acc_block(b, w),
+            MatchArmBody::Expr(e) => acc_expr(e, w),
+        }
+    }
+}
+
+fn acc_expr(e: &mut Expr, w: &WireLayouts) {
+    match e {
+        Expr::Call { callee, args, span } => {
+            acc_expr(callee, w);
+            for a in args.iter_mut() {
+                acc_expr(a, w);
+            }
+            if let Some(rewritten) = try_accessor(callee, args, *span, w) {
+                *e = rewritten;
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            acc_expr(left, w);
+            acc_expr(right, w);
+        }
+        Expr::Unary { operand, .. } => acc_expr(operand, w),
+        Expr::Field { receiver, .. } => acc_expr(receiver, w),
+        Expr::Index { receiver, index, .. } => {
+            acc_expr(receiver, w);
+            acc_expr(index, w);
+        }
+        Expr::Path2 { receiver, .. } => acc_expr(receiver, w),
+        Expr::Tuple(es, _) | Expr::Array(es, _) => {
+            for x in es {
+                acc_expr(x, w);
+            }
+        }
+        Expr::Struct { inits, .. } => {
+            for i in inits {
+                acc_expr(&mut i.value, w);
+            }
+        }
+        Expr::Block(b) => acc_block(b, w),
+        Expr::If(if_stmt) => acc_if(if_stmt, w),
+        Expr::Match(m) => acc_match(m, w),
+        Expr::Sum(inner, _) | Expr::Prod(inner, _) => acc_expr(inner, w),
+        Expr::Approx { left, right, tolerance, .. } => {
+            acc_expr(left, w);
+            acc_expr(right, w);
+            acc_expr(tolerance, w);
+        }
+        Expr::Range { lo, hi, .. } => {
+            acc_expr(lo, w);
+            acc_expr(hi, w);
+        }
+        Expr::ArrayRepeat { val, .. } => acc_expr(val, w),
+        Expr::Or { inner, disposition, .. } => {
+            acc_expr(inner, w);
+            if let OrDisposition::Substitute(s) = disposition {
+                acc_expr(s, w);
+            }
+        }
+        Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
+    }
+}
+
 fn rewrite_expr(e: &mut Expr, topics: &BTreeMap<String, TopicEntry>) {
     match e {
         Expr::Block(b) => rewrite_block(b, topics),

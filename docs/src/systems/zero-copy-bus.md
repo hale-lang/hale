@@ -207,6 +207,48 @@ body's tail yields. The `std::bytes::write_*` family mirrors the readers
 scoped to the block, so the view can't escape and the commit can't be
 forgotten.
 
+### Naming the fields (`repr:` tags)
+
+Hand-writing `read_u32_le(b, 12)` per field is error-prone — the offsets
+are implicit and drift as the record changes. Tag a struct's fields with
+their wire representation and the offsets are computed for you, with typed
+accessors generated from the layout:
+
+```hale
+type L2 {
+    kind:  Int `repr:"u8"`;       // 1 byte  @ 0
+    price: Int `repr:"u32_le"`;   // 4 bytes @ 1
+    qty:   Int `repr:"u32_le"`;   // 4 bytes @ 5
+}
+```
+
+Now the consumer reads fields by name and the producer writes them by
+name — both compose with everything above:
+
+```hale
+fn on_rec(v: BytesView) {
+    let p = L2::price(v) or raise;       // read u32_le @ 1
+    ...
+}
+
+fn emit(level: L2) {
+    Recs.write(9) { w =>
+        L2::set_kind(w, 2)            or raise;
+        L2::set_price(w, level.price) or raise;
+        L2::set_qty(w, level.qty)     or raise;
+        9
+    };
+}
+```
+
+`Type::field(v)` and `Type::set_field(w, x)` desugar to the matching
+`std::bytes::read_*` / `write_*` call at the field's computed offset — so
+they're exactly as cheap (and as bounds-checked) as writing the primitive
+by hand. Offsets run in declaration order over the tagged fields; pin one
+for a padded foreign format with `repr:"u32_le,at=4"`. The tag itself is
+general `key:"value"` metadata — `repr:` is the binary-pack consumer;
+other keys (e.g. `json:`) are free for later tools.
+
 ## The same shape, one tier down
 
 Notice this is the same move as everything else at this level: an

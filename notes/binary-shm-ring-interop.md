@@ -181,13 +181,37 @@ Recommend shipping the readers + builder-append first (A2 is enough for a
 working producer), and adding the writable view (A1) when the zero-copy
 write path matters.
 
-### Optional follow-on — layout-declared payload structs
+### Proposal A′ — typed field accessors (LANDED 2026-06-09)
 
-The payload analog of `ring_layout` below: declare a POD struct layout
-(`@repr(c)` / field offsets) once and get generated typed field
-accessors, instead of hand-writing `read_u32_le(b, 12)` per field. This
-is the `bindgen`/`zerocopy`/SBE-codegen layer. Strictly additive on top
-of the pack primitives — call it out as a future Proposal A′, not v1.
+The payload analog of `ring_layout`: declare a struct's binary layout
+once and get generated typed field accessors, instead of hand-writing
+`read_u32_le(b, 12)` per field. The `bindgen`/`zerocopy`/SBE-codegen
+layer, strictly additive on the pack primitives.
+
+Design pivoted during implementation away from a dedicated `payload`
+block / `@repr(c)` annotation toward **Go-style struct field tags** — a
+general field-metadata mechanism (a backtick `key:"value"` string after a
+field), so a plain `type` carries its wire layout and the door is open to
+`json:`/`db:`/validation consumers later:
+
+```hale
+type L2 {
+    kind:  Int `repr:"u8"`;
+    price: Int `repr:"u32_le"`;   // offsets computed; pin with ,at=N
+    qty:   Int `repr:"u32_le"`;
+}
+```
+
+Generated accessors `L2::price(v)` (read a `Bytes`/`BytesView`) and
+`L2::set_price(w, x)` (write a `BytesMut`) desugar to the matching
+`std::bytes::read_*`/`write_*` call at the field's offset — so they reuse
+the primitives' typing (incl. `fallible(IndexError)`), bounds-checking,
+and cost, and compose with the BytesView consumer + the `Topic.write`
+zero-copy block. Two PRs: the general field-tag mechanism (#80, parse +
+store), then the `repr:` consumer (desugar). Known follow-up: a typo'd
+field name (`L2::pirce`) currently errors at codegen rather than
+typecheck (the path call is permissively typed, same as a raw
+`std::bytes::` call).
 
 ---
 
