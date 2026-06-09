@@ -836,6 +836,13 @@ typedef struct {
                        * required power-of-two). Records never straddle the
                        * wrap (the pad guarantees it), so a compare-subtract
                        * suffices. See experiments/foreign-ring-throughput. */
+    /* A1 zero-copy write: an open reservation made by
+     * lotus_bus_reserve_shm_ring_layout, closed by ..._commit_.... The
+     * record starts at `pos`; the producer wrote directly into the slot.
+     * `reserved_max` is the capacity the reservation guaranteed; commit
+     * rejects a length beyond it. */
+    uint64_t reserved_max;
+    int      has_reservation;
 } shm_ring_layout_producer_t;
 
 static shm_ring_layout_producer_t
@@ -942,6 +949,110 @@ int lotus_bus_publish_shm_ring_layout(const char *subject,
     }
     fprintf(stderr,
             "lotus_bus_publish_shm_ring_layout(`%s`): no registration for "
+            "this subject\n",
+            subject);
+    return -1;
+}
+
+/* A1 zero-copy write — reserve side. Claims room for a record of up to
+ * `max` payload bytes and returns a pointer to its DATA region (just past
+ * the len prefix) so the producer can write fields directly into the
+ * mapped ring, with no intermediate buffer + copy. Pads + wraps eagerly
+ * if a max-sized record wouldn't fit before end-of-buffer (the pad
+ * advances the cursor, which the consumer skips — the not-yet-committed
+ * record stays beyond `committed` until commit writes its len prefix).
+ * Returns NULL if the subject isn't a registered producer; _exit(1) on a
+ * record that can't ever fit. The reservation is closed by
+ * lotus_bus_commit_shm_ring_layout. */
+void *lotus_bus_reserve_shm_ring_layout(const char *subject, uint64_t max) {
+    for (int i = 0; i < g_shm_ring_layout_producer_count; i++) {
+        shm_ring_layout_producer_t *p = &g_shm_ring_layout_producers[i];
+        if (strcmp(p->subject, subject) != 0) continue;
+        const lotus_shm_layout_t *d = &p->ring->desc;
+        char *base = (char *)p->ring->base;
+        uint64_t cap = p->ring->capacity;
+        _Atomic uint64_t *cursor =
+            (_Atomic uint64_t *)(base + d->cursor_off);
+
+        uint64_t max_step = d->len_prefix_width + max;
+        if (d->align > 1) {
+            max_step = (max_step + d->align - 1) & ~(d->align - 1);
+        }
+        if (max_step > cap) {
+            fprintf(stderr,
+                    "lotus_bus_reserve_shm_ring_layout(`%s`): record (%llu "
+                    "bytes framed for max=%llu) exceeds ring capacity (%llu)\n",
+                    subject, (unsigned long long)max_step,
+                    (unsigned long long)max, (unsigned long long)cap);
+            _exit(1);
+        }
+        uint64_t pos = p->pos;
+        if (pos + max_step > cap) {
+            uint64_t off = d->data_at + pos;
+            if (d->has_pad_sentinel) {
+                shm_layout_write_uint(base + off, d->len_prefix_width,
+                                      d->pad_sentinel);
+            }
+            p->local += cap - pos;
+            pos = 0;
+            p->pos = pos;
+            atomic_store_explicit(cursor, p->local, memory_order_release);
+        }
+        p->reserved_max = max;
+        p->has_reservation = 1;
+        return base + d->data_at + pos + d->len_prefix_width;
+    }
+    fprintf(stderr,
+            "lotus_bus_reserve_shm_ring_layout(`%s`): no registration for "
+            "this subject\n",
+            subject);
+    return NULL;
+}
+
+/* A1 zero-copy write — commit side. Finalizes the open reservation: writes
+ * the record's len prefix (`len`, the actual bytes written, which must not
+ * exceed the reserved `max`) and release-publishes the cursor, making the
+ * record visible to consumers. Returns 0 on success, -1 if the subject
+ * isn't registered or has no open reservation. */
+int lotus_bus_commit_shm_ring_layout(const char *subject, uint64_t len) {
+    for (int i = 0; i < g_shm_ring_layout_producer_count; i++) {
+        shm_ring_layout_producer_t *p = &g_shm_ring_layout_producers[i];
+        if (strcmp(p->subject, subject) != 0) continue;
+        if (!p->has_reservation) {
+            fprintf(stderr,
+                    "lotus_bus_commit_shm_ring_layout(`%s`): commit with no "
+                    "open reservation\n",
+                    subject);
+            return -1;
+        }
+        if (len > p->reserved_max) {
+            fprintf(stderr,
+                    "lotus_bus_commit_shm_ring_layout(`%s`): committed %llu "
+                    "bytes but only %llu were reserved\n",
+                    subject, (unsigned long long)len,
+                    (unsigned long long)p->reserved_max);
+            _exit(1);
+        }
+        const lotus_shm_layout_t *d = &p->ring->desc;
+        char *base = (char *)p->ring->base;
+        uint64_t cap = p->ring->capacity;
+        _Atomic uint64_t *cursor =
+            (_Atomic uint64_t *)(base + d->cursor_off);
+        uint64_t off = d->data_at + p->pos;
+        shm_layout_write_uint(base + off, d->len_prefix_width, len);
+        uint64_t step = d->len_prefix_width + len;
+        if (d->align > 1) {
+            step = (step + d->align - 1) & ~(d->align - 1);
+        }
+        p->local += step;
+        p->pos += step;
+        if (p->pos >= cap) p->pos -= cap;
+        p->has_reservation = 0;
+        atomic_store_explicit(cursor, p->local, memory_order_release);
+        return 0;
+    }
+    fprintf(stderr,
+            "lotus_bus_commit_shm_ring_layout(`%s`): no registration for "
             "this subject\n",
             subject);
     return -1;

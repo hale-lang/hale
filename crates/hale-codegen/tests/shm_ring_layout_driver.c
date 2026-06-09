@@ -58,6 +58,9 @@ extern int lotus_bus_publish_shm_ring_layout(
     const char *subject,
     const void *value,
     uint64_t value_size);
+/* A1 zero-copy write: reserve a slot, write directly, commit the length. */
+extern void *lotus_bus_reserve_shm_ring_layout(const char *subject, uint64_t max);
+extern int lotus_bus_commit_shm_ring_layout(const char *subject, uint64_t len);
 
 /* Native LotusRing (LRSRNG1) producer API — the dogfood test has a
  * layout-`slots` consumer read the very ring this native producer writes. */
@@ -683,15 +686,76 @@ static int run_produce_native_external(const char *name) {
     return 0;
 }
 
+/* A1 zero-copy write: reserve a max-sized slot, write differently-sized
+ * records DIRECTLY into the mapped ring (no intermediate buffer), commit
+ * the actual length. A raw (value_size == 0) consumer reads them back —
+ * proving reserve/commit frames variable-length records correctly. */
+static int run_reserve_commit(const char *name) {
+    uint64_t desc[21] = {0};
+    build_desc(desc);
+    desc[15] = 0;  /* value_size = 0 → raw consumer (variable records) */
+    lotus_bus_register_shm_ring_layout("foreign.ticks", name, desc, 4096);
+    lotus_bus_register_subscriber_shm_ring_layout(
+        "foreign.ticks", name, desc, NULL, (void (*)(void *, void *))on_raw);
+    struct timespec warmup = {0, 5 * 1000 * 1000};
+    nanosleep(&warmup, NULL);
+
+    int n = 6;
+    for (int i = 0; i < n; i++) {
+        int64_t kind = (i % 2) + 1;
+        uint64_t plen = (kind == 1) ? 16 : 24;
+        /* Reserve room for the largest record (24), write only `plen`. */
+        char *slot = (char *)lotus_bus_reserve_shm_ring_layout("foreign.ticks", 24);
+        if (!slot) {
+            fprintf(stderr, "reserve %d failed\n", i);
+            return 2;
+        }
+        int64_t a = (int64_t)(100 + i), b = (int64_t)(200 + i);
+        memcpy(slot + 0, &kind, sizeof(int64_t));
+        memcpy(slot + 8, &a, sizeof(int64_t));
+        if (kind == 2) memcpy(slot + 16, &b, sizeof(int64_t));
+        if (lotus_bus_commit_shm_ring_layout("foreign.ticks", plen) != 0) {
+            fprintf(stderr, "commit %d failed\n", i);
+            return 2;
+        }
+        struct timespec pace = {0, 5 * 1000 * 1000};
+        nanosleep(&pace, NULL);
+    }
+    for (int s = 0; s < 2000; s++) {
+        if (atomic_load_explicit(&g_raw_count, memory_order_acquire) >= n) break;
+        struct timespec ts = {0, 1000 * 1000};
+        nanosleep(&ts, NULL);
+    }
+    int got = atomic_load_explicit(&g_raw_count, memory_order_acquire);
+    if (got != n) {
+        fprintf(stderr, "reserve_commit: expected %d records, got %d\n", n, got);
+        return 3;
+    }
+    for (int i = 0; i < n; i++) {
+        int64_t exp_kind = (i % 2) + 1;
+        int64_t exp_len = (exp_kind == 1) ? 16 : 24;
+        if (g_raw_kind[i] != exp_kind || g_raw_len[i] != exp_len ||
+            g_raw_a[i] != 100 + i ||
+            (exp_kind == 2 && g_raw_b[i] != 200 + i)) {
+            fprintf(stderr, "reserve_commit record %d mismatch\n", i);
+            return 3;
+        }
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr,
                 "usage: %s <roundtrip|wrap|producer|producer_wrap|"
                 "bad_bufsize|short_record|u64_lenprefix|heterogeneous|"
-                "produce_external|lotus_dogfood|produce_native_external> "
-                "<shm_name>\n",
+                "produce_external|lotus_dogfood|produce_native_external|"
+                "reserve_commit> <shm_name>\n",
                 argv[0]);
         return 1;
+    }
+    if (strcmp(argv[1], "reserve_commit") == 0) {
+        return run_reserve_commit(argv[2]);
     }
     if (strcmp(argv[1], "lotus_dogfood") == 0) {
         return run_lotus_dogfood(argv[2]);
