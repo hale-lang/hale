@@ -1011,6 +1011,7 @@ const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "iter", "Lines"], "__StdIterLines"),
     (&["std", "json", "ArrayIter"], "__JsonArrayIter"),
     (&["std", "json", "ArrayIterSpan"], "__JsonArrayIterSpan"),
+    (&["std", "json", "ObjectIterSpan"], "__JsonObjectIterSpan"),
     (&["std", "json", "Builder"], "__StdJsonBuilder"),
     (&["std", "json", "JsonFieldRange"], "__JsonFieldRange"),
     (&["std", "lang", "Lang"], "__StdLangLang"),
@@ -17060,6 +17061,47 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let result = self.lower_user_fn_call("__json_array_next_span", args, scope)?;
                 result.ok_or_else(|| CodegenError::Unsupported(
                     "std::json::array_next_span returns ArrayIterSpan but called in a position that expects no value".to_string()))
+            }
+            // Single-pass object member cursor (JSON Tier 2 substrate).
+            ["std", "json", "object_first"] => {
+                let result = self.lower_user_fn_call("__json_obj_first_span", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::object_first returns ObjectIterSpan but called in a position that expects no value".to_string()))
+            }
+            ["std", "json", "object_next"] => {
+                let result = self.lower_user_fn_call("__json_obj_next_span", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::object_next returns ObjectIterSpan but called in a position that expects no value".to_string()))
+            }
+            ["std", "json", "obj_key_len"] => {
+                let result = self.lower_user_fn_call("__json_obj_key_len", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::obj_key_len returns Int but called in a position that expects no value".to_string()))
+            }
+            ["std", "json", "obj_key_eq"] => {
+                let result = self.lower_user_fn_call("__json_obj_key_eq", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::obj_key_eq returns Bool but called in a position that expects no value".to_string()))
+            }
+            ["std", "json", "obj_value_raw"] => {
+                let result = self.lower_user_fn_call("__json_obj_value_raw", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::obj_value_raw returns String but called in a position that expects no value".to_string()))
+            }
+            ["std", "json", "obj_value_int"] => {
+                let result = self.lower_user_fn_call("__json_obj_value_int", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::obj_value_int returns Int but called in a position that expects no value".to_string()))
+            }
+            ["std", "json", "obj_value_bool"] => {
+                let result = self.lower_user_fn_call("__json_obj_value_bool", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::obj_value_bool returns Bool but called in a position that expects no value".to_string()))
+            }
+            ["std", "json", "obj_value_string"] => {
+                let result = self.lower_user_fn_call("__json_obj_value_string", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::obj_value_string returns String but called in a position that expects no value".to_string()))
             }
             ["std", "json", "iter_find_field_raw"] => {
                 let result = self.lower_user_fn_call("__json_iter_find_field_raw", args, scope)?;
