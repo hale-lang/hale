@@ -251,6 +251,10 @@ fn generate_parser_src(t: &JsonType) -> String {
     b.push_str("            } else {\n");
     b.push_str("                __q = std::json::next_non_ws(__s, __q + 1, __total);\n");
     b.push_str("                let __vs = __q;\n");
+    // Track whether a string value contained a backslash escape — lets a
+    // String field skip the unescape copy entirely in the common
+    // escape-free case (it falls out of the value scan for free).
+    b.push_str("                let mut __esc = false;\n");
     // Value end: jump structural-to-structural, skipping strings + nesting.
     b.push_str("                let mut __depth = 0;\n");
     b.push_str("                let mut __vscan = true;\n");
@@ -262,6 +266,7 @@ fn generate_parser_src(t: &JsonType) -> String {
     b.push_str("                        if __c == 34 {\n");
     b.push_str("                            let mut __sp = std::json::next_quote_or_bs(__s, __q + 1, __total);\n");
     b.push_str("                            while __sp < __total && std::str::byte_at_unchecked(__s, __sp) == 92 {\n");
+    b.push_str("                                __esc = true;\n");
     b.push_str("                                __sp = std::json::next_quote_or_bs(__s, __sp + 2, __total);\n");
     b.push_str("                            }\n");
     b.push_str("                            if __sp >= __total { __q = __total; __vscan = false; } else { __q = __sp + 1; }\n");
@@ -290,6 +295,13 @@ fn generate_parser_src(t: &JsonType) -> String {
             f.key
         ));
         match &f.kind {
+            // String: slice directly when escape-free (the common case),
+            // only unescape-copy when the scan saw a backslash.
+            FieldKind::Scalar(ScalarTy::Str) => b.push_str(&format!(
+                "                    if __esc {{ __f_{} = std::json::unescape_string(__s[(__vs + 1)..(__ve - 1)]); }} \
+                 else {{ __f_{} = __s[(__vs + 1)..(__ve - 1)]; }}\n",
+                f.name, f.name
+            )),
             FieldKind::Scalar(s) => b.push_str(&format!(
                 "                    __f_{} = {};\n",
                 f.name,
