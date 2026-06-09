@@ -86,10 +86,17 @@ pub fn check_bundle(bundle: &Bundle<'_>) -> Vec<Diag> {
 /// escape hatch for code that manages the subscriber's lifetime
 /// some other way.
 /// Render the per-method allocation summary + call graph for a bundle
-/// (GH #18 item 1, step 1). Drives `--dump-alloc-summary`; no bound-proving.
+/// (GH #18 item 1). Drives `--dump-alloc-summary`.
 pub fn dump_alloc_summary(bundle: &Bundle<'_>) -> String {
     let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
     alloc_summary::summarize_programs(&progs).render()
+}
+
+/// Bound-solver warnings: one per unbounded-accumulation allocation site
+/// (GH #18 item 1, step 3). Opt-in via `--warn-unbounded-alloc`.
+pub fn unbounded_alloc_warnings(bundle: &Bundle<'_>) -> Vec<Diag> {
+    let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    alloc_summary::unbounded_alloc_diags(&progs)
 }
 
 pub fn check_bundle_opts(

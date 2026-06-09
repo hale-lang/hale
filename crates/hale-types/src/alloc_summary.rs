@@ -32,7 +32,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::*;
-use hale_syntax::Span;
+use hale_syntax::{Diag, Span};
 
 /// Identifies a fn for summary lookup. Free fns have `locus: None`; locus
 /// methods + lifecycle hooks carry the enclosing locus's name. Lifecycle
@@ -221,6 +221,9 @@ pub enum Callee {
 pub struct CallEdge {
     pub callee: Callee,
     pub loop_depth: u32,
+    /// True if the call is inside an unbounded loop — then the callee is
+    /// invoked unboundedly many times regardless of its own multiplicity.
+    pub in_unbounded_loop: bool,
     pub span: Span,
 }
 
@@ -302,27 +305,129 @@ pub struct AllocSummary {
     pub fns: BTreeMap<FnKey, FnSummary>,
 }
 
+/// Why a site's final verdict is unbounded — the diagnostic anchor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeakReason {
+    /// The allocation is directly inside an unbounded loop in its own body.
+    InUnboundedLoop,
+    /// The allocation's fn is *invoked* unboundedly (a bus handler, or
+    /// reached through a call inside an unbounded loop), so even a
+    /// once-per-call alloc accumulates.
+    InvokedUnboundedly,
+}
+
+/// A confirmed unbounded-accumulation site (step 3 output → diagnostic).
+#[derive(Debug, Clone)]
+pub struct LeakSite {
+    pub owner: FnKey,
+    pub kind: AllocKind,
+    pub escape: Escape,
+    pub reason: LeakReason,
+    pub span: Span,
+}
+
 impl AllocSummary {
+    /// Fns reached under an unbounded-multiplicity context — the call-graph
+    /// half of the bound solver. Seeded with bus handlers (per-message),
+    /// then a fixed point: a resolved callee is invoked unboundedly if its
+    /// caller is, or the call edge is inside an unbounded loop.
+    pub fn unbounded_invoked(&self) -> BTreeSet<FnKey> {
+        let mut set: BTreeSet<FnKey> = self
+            .fns
+            .values()
+            .filter(|f| f.entry == Some(EntryKind::BusHandler))
+            .map(|f| f.key.clone())
+            .collect();
+        loop {
+            let mut changed = false;
+            for f in self.fns.values() {
+                let caller_unbounded = set.contains(&f.key);
+                for c in &f.calls {
+                    if let Callee::Resolved(callee) = &c.callee {
+                        let edge_unbounded = caller_unbounded || c.in_unbounded_loop;
+                        if edge_unbounded
+                            && self.fns.contains_key(callee)
+                            && set.insert(callee.clone())
+                        {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        set
+    }
+
+    /// A site's final verdict, folding in call-graph multiplicity: an
+    /// accumulating site in an unboundedly-invoked fn is unbounded even if
+    /// it's only once-per-call in its own body. Bus-dispatch reclaim stays
+    /// bounded regardless (the value is freed each dispatch).
+    fn final_verdict(&self, owner: &FnKey, site: &AllocSite, unbounded: &BTreeSet<FnKey>) -> SiteVerdict {
+        let intra = site.verdict();
+        match intra {
+            SiteVerdict::AccumulatesUnbounded | SiteVerdict::PerIterationReclaim => intra,
+            _ if unbounded.contains(owner) && site.reclaim.accumulates_in_loop() => {
+                SiteVerdict::AccumulatesUnbounded
+            }
+            _ => intra,
+        }
+    }
+
+    /// Every site whose final verdict is unbounded accumulation — the
+    /// step-3 result the diagnostic emits.
+    pub fn leak_sites(&self) -> Vec<LeakSite> {
+        let unbounded = self.unbounded_invoked();
+        let mut out = Vec::new();
+        for f in self.fns.values() {
+            for s in &f.sites {
+                if self.final_verdict(&f.key, s, &unbounded) == SiteVerdict::AccumulatesUnbounded {
+                    let reason = if matches!(s.verdict(), SiteVerdict::AccumulatesUnbounded) {
+                        LeakReason::InUnboundedLoop
+                    } else {
+                        LeakReason::InvokedUnboundedly
+                    };
+                    out.push(LeakSite {
+                        owner: f.key.clone(),
+                        kind: s.kind.clone(),
+                        escape: s.escape,
+                        reason,
+                        span: s.span,
+                    });
+                }
+            }
+        }
+        out
+    }
+
     /// Human-readable dump for `--dump-alloc-summary`.
     pub fn render(&self) -> String {
+        let unbounded = self.unbounded_invoked();
         let mut out = String::new();
-        out.push_str("# allocation summary (GH #18 item 1, step 1 — no bound-proving)\n");
+        out.push_str("# allocation summary (GH #18 item 1, steps 1-3)\n");
         let entries: Vec<&FnSummary> = self.fns.values().filter(|f| f.entry.is_some()).collect();
         out.push_str(&format!(
-            "# {} fns, {} entry points\n\n",
+            "# {} fns, {} entry points, {} invoked-unboundedly\n\n",
             self.fns.len(),
-            entries.len()
+            entries.len(),
+            unbounded.len()
         ));
         for f in self.fns.values() {
-            let entry = match f.entry {
-                Some(e) => format!(
-                    "   [entry: {} ({})]",
+            let mut tags = Vec::new();
+            if let Some(e) = f.entry {
+                tags.push(format!(
+                    "entry: {} ({})",
                     e.label(),
-                    if e.one_shot() { "one-shot" } else { "per-message/unbounded" }
-                ),
-                None => String::new(),
-            };
-            out.push_str(&format!("fn {}{}\n", f.key.display(), entry));
+                    if e.one_shot() { "one-shot" } else { "per-message" }
+                ));
+            }
+            if unbounded.contains(&f.key) {
+                tags.push("invoked-unboundedly".to_string());
+            }
+            let tag = if tags.is_empty() { String::new() } else { format!("   [{}]", tags.join(", ")) };
+            out.push_str(&format!("fn {}{}\n", f.key.display(), tag));
             if f.sites.is_empty() && f.calls.is_empty() && f.loops.is_empty() {
                 out.push_str("    (no allocations, calls, or loops)\n");
             }
@@ -336,9 +441,9 @@ impl AllocSummary {
                 ));
             }
             for s in &f.sites {
-                let v = s.verdict();
+                let v = self.final_verdict(&f.key, s, &unbounded);
                 let flag = if matches!(v, SiteVerdict::AccumulatesUnbounded) {
-                    "  <-- LEAK PRECURSOR"
+                    "  <-- LEAK"
                 } else {
                     ""
                 };
@@ -439,6 +544,39 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
         );
     }
     summary
+}
+
+/// Bound-solver diagnostics: a warning per unbounded-accumulation site.
+/// Opt-in (the corpus shows zero false positives, but allocation patterns
+/// are common enough that this is gated until validated for default-on).
+pub fn unbounded_alloc_diags(programs: &[&Program]) -> Vec<Diag> {
+    let summary = summarize_programs(programs);
+    summary
+        .leak_sites()
+        .iter()
+        .map(|ls| {
+            let where_ = match ls.reason {
+                LeakReason::InUnboundedLoop => "inside an unbounded loop",
+                LeakReason::InvokedUnboundedly => {
+                    "in a fn invoked unboundedly (a per-message bus handler, \
+                     or reached through a call inside an unbounded loop)"
+                }
+            };
+            Diag::warn(
+                ls.span,
+                format!(
+                    "unbounded allocation: this {} {} accumulates in `{}`'s region \
+                     until the locus dissolves — it is never reclaimed per iteration, \
+                     so it grows without bound. Bound the loop, route the value over the \
+                     bus (the payload arena reclaims per dispatch), or move the allocating \
+                     work into a per-iteration child locus.",
+                    ls.kind.label(),
+                    where_,
+                    ls.owner.display()
+                ),
+            )
+        })
+        .collect()
 }
 
 fn lifecycle_key(kind: LifecycleKind) -> (String, EntryKind) {
@@ -700,7 +838,12 @@ impl<'a> Walker<'a> {
             }
             _ => Callee::Unresolved("<expr>".to_string()),
         };
-        self.calls.push(CallEdge { callee: resolved, loop_depth: depth, span });
+        self.calls.push(CallEdge {
+            callee: resolved,
+            loop_depth: depth,
+            in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
+            span,
+        });
     }
 }
 
@@ -985,5 +1128,76 @@ mod tests {
         let s = summarize(src);
         let f = fns(&s, &FnKey::method("C", "set"));
         assert_eq!(f.sites[0].escape, Escape::StoredToSelf);
+    }
+
+    // ---- step 3: call-graph propagation + the bound solver ----
+
+    #[test]
+    fn alloc_in_fn_called_in_unbounded_loop_is_flagged() {
+        // The JSON leak class: an allocating helper called in a hot loop.
+        // The helper's own body has no loop, but it's invoked unboundedly.
+        let src = r#"
+            type Q { a: Int; }
+            fn make(n: Int) -> Q { return Q { a: n }; }
+            locus C { run { let mut i = 0; while true { let q = make(i); i = i + 1; } } }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        assert!(s.unbounded_invoked().contains(&FnKey::free_fn("make")));
+        let leaks = s.leak_sites();
+        assert!(
+            leaks.iter().any(|l| l.owner == FnKey::free_fn("make")
+                && l.reason == LeakReason::InvokedUnboundedly),
+            "make's alloc should be flagged via call-graph propagation; got {:?}",
+            leaks
+        );
+    }
+
+    #[test]
+    fn alloc_in_fn_called_once_is_not_flagged() {
+        let src = r#"
+            type Q { a: Int; }
+            fn make(n: Int) -> Q { return Q { a: n }; }
+            fn main() { let q = make(1); }
+        "#;
+        let s = summarize(src);
+        assert!(
+            s.leak_sites().is_empty(),
+            "a once-called allocation must not be flagged: {:?}",
+            s.leak_sites()
+        );
+    }
+
+    #[test]
+    fn sent_alloc_in_handler_is_not_flagged() {
+        // A per-message handler that only sends its allocation: bounded,
+        // because the payload arena reclaims per dispatch.
+        let src = r#"
+            type Q { a: Int; }
+            locus C {
+                bus { subscribe "in" as on_in of type Q; publish "out" of type Q; }
+                fn on_in(m: Q) { let q = Q { a: m.a }; "out" <- q; }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        assert!(
+            s.leak_sites().is_empty(),
+            "a sent allocation in a handler reclaims per dispatch: {:?}",
+            s.leak_sites()
+        );
+    }
+
+    #[test]
+    fn diags_are_located_and_nonempty_for_a_leak() {
+        let src = r#"
+            type Q { a: Int; }
+            locus C { run { while true { let q = Q { a: 1 }; } } }
+            fn main() { }
+        "#;
+        let program = hale_syntax::parse_source(src).expect("parse");
+        let diags = unbounded_alloc_diags(&[&program]);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("unbounded allocation"));
     }
 }
