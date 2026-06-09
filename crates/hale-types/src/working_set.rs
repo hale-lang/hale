@@ -887,6 +887,9 @@ fn stmt_scratch_bytes(s: &hale_syntax::ast::Stmt, idx: &Index<'_>) -> u64 {
         Stmt::Return(Some(e), _) => expr_scratch_bytes(e, idx),
         Stmt::Fail { value, .. } => expr_scratch_bytes(value, idx),
         Stmt::Block(b) => block_scratch_bytes(b, idx),
+        Stmt::ShmWrite { max, body, .. } => {
+            expr_scratch_bytes(max, idx).saturating_add(block_scratch_bytes(body, idx))
+        }
         Stmt::Send { subject, value, .. } => {
             expr_scratch_bytes(subject, idx)
                 .saturating_add(expr_scratch_bytes(value, idx))

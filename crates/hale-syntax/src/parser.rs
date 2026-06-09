@@ -3604,6 +3604,23 @@ impl Parser {
         stmts: &mut Vec<Stmt>,
     ) -> Result<Option<Expr>, Diag> {
         let expr = self.parse_expr()?;
+        // A1 zero-copy write: `Topic.write(max) { binding => body }`.
+        // Recognized when a `<ident>.write(<expr>)` call is immediately
+        // followed by a closure-style `{ binding => ... }` block.
+        if matches!(self.peek(), TokenKind::LBrace) {
+            if let Expr::Call { callee, args, .. } = &expr {
+                if let Expr::Field { receiver, name, .. } = callee.as_ref() {
+                    if name.name == "write" && args.len() == 1 {
+                        if let Expr::Ident(topic) = receiver.as_ref() {
+                            let topic = topic.clone();
+                            let max = Box::new(args[0].clone());
+                            let call_span = expr.span();
+                            return self.parse_shm_write_block(topic, max, call_span, stmts);
+                        }
+                    }
+                }
+            }
+        }
         if matches!(self.peek(), TokenKind::LeftArrow) {
             self.bump();
             // Phase 3 routing keys (2026-05-25): `K <- value or X`
@@ -3654,6 +3671,48 @@ impl Parser {
         // `expect(Semi)` so error messages stay consistent.
         let _ = self.expect(TokenKind::Semi, ";")?;
         unreachable!("expect(Semi) at non-Semi non-RBrace token must error")
+    }
+
+    /// Parse the `{ binding => body }` block of an A1 zero-copy write
+    /// (`Topic.write(max) { ... }`), pushing the resulting
+    /// `Stmt::ShmWrite` onto `stmts`. The body parses like a normal block
+    /// body (statements + an optional tail expression, which becomes the
+    /// committed byte count).
+    fn parse_shm_write_block(
+        &mut self,
+        topic: Ident,
+        max: Box<Expr>,
+        call_span: Span,
+        stmts: &mut Vec<Stmt>,
+    ) -> Result<Option<Expr>, Diag> {
+        let lb = self.expect(TokenKind::LBrace, "{")?;
+        let binding = self.expect_ident("write-block binding name")?;
+        self.expect(TokenKind::FatArrow, "=>")?;
+        let mut body_stmts = Vec::new();
+        let mut tail: Option<Box<Expr>> = None;
+        while !self.at(&TokenKind::RBrace) && !matches!(self.peek(), TokenKind::Eof) {
+            if let Some(t) = self.parse_block_item(&mut body_stmts)? {
+                tail = Some(Box::new(t));
+                break;
+            }
+        }
+        let rb = self.expect(TokenKind::RBrace, "}")?;
+        // An optional trailing `;` — the construct is a statement, so
+        // `Topic.write(n) { ... };` is the idiomatic spelling.
+        self.eat(&TokenKind::Semi);
+        let body = Block {
+            stmts: body_stmts,
+            tail,
+            span: lb.span.merge(rb.span),
+        };
+        stmts.push(Stmt::ShmWrite {
+            topic,
+            max,
+            binding,
+            body,
+            span: call_span.merge(rb.span),
+        });
+        Ok(None)
     }
 
     fn peek_assign_op(&self) -> Option<AssignOp> {

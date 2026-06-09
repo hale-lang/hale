@@ -1451,7 +1451,8 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                     }
                                 }
                                 CodegenTy::BytesView
-                                | CodegenTy::StringView => self
+                                | CodegenTy::StringView
+                                | CodegenTy::BytesMut => self
                                     .view_struct_ty()
                                     .fn_type(&llvm_param_tys, false),
                                 CodegenTy::String
@@ -1635,7 +1636,8 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                     }
                                 }
                                 CodegenTy::BytesView
-                                | CodegenTy::StringView => self
+                                | CodegenTy::StringView
+                                | CodegenTy::BytesMut => self
                                     .view_struct_ty()
                                     .fn_type(&llvm_param_tys, false),
                                 CodegenTy::String

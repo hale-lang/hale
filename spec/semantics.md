@@ -1026,7 +1026,14 @@ payload picks the consumer mode:
   with a `BytesBuilder`) frames `[len_prefix len][bytes]` where `len` is
   the value's actual byte length, so a producer can emit
   heterogeneous / variable-width records — the runtime publish path is
-  size-generic.
+  size-generic. For a *zero-copy* write, `Topic.write(max) { w => ... ;
+  len }` reserves up to `max` bytes, binds a writable `BytesMut` view `w`
+  over the slot (written with the `std::bytes::write_*` family, the
+  bounds-checked mirror of the readers), and commits the byte count the
+  body's tail yields — the producer writes record fields directly into
+  the mapped ring with no intermediate buffer. The reserve and commit are
+  scoped to the block, so the view can't escape and the commit can't be
+  forgotten.
 
 Any other payload (with `String`, `Bytes`, or variable-size fields and
 not itself `BytesView`) is rejected.

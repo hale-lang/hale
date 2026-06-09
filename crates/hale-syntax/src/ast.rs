@@ -1440,6 +1440,19 @@ pub enum Stmt {
         or_disposition: Option<OrDisposition>,
         span: Span,
     },
+    /// A1 zero-copy ring write: `Topic.write(max) { w => body ; len }`.
+    /// Reserves up to `max` bytes in the (layout-bound) `topic`'s ring,
+    /// binds the writable view `binding` (a `BytesMut` over the slot) over
+    /// the `body`, then commits the byte count the body's tail expression
+    /// yields. The reserve/commit are scoped to the body so the view can't
+    /// escape and the commit can't be forgotten.
+    ShmWrite {
+        topic: Ident,
+        max: Box<Expr>,
+        binding: Ident,
+        body: Block,
+        span: Span,
+    },
     Expr(Expr),
 }
 

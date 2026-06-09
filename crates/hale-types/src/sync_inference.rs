@@ -333,6 +333,10 @@ fn walk_stmt(s: &Stmt, cx: &mut WalkCx<'_>) {
             walk_expr(value, cx);
         }
         Stmt::Expr(e) => walk_expr(e, cx),
+        Stmt::ShmWrite { max, body, .. } => {
+            walk_expr(max, cx);
+            walk_block(body, cx);
+        }
         Stmt::Return(None, _)
         | Stmt::Break(_)
         | Stmt::Continue(_)

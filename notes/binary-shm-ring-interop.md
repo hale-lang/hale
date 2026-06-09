@@ -456,9 +456,19 @@ a loopback against a faithful mock before any live wiring):**
      the BytesView consumer (#72). Codegen-only (`lower_send_shm_ring`
      extracts data+len via `lotus_bytes_data`/`lotus_bytes_len`); the
      runtime publish was already size-generic. End-to-end test
-     (`shm_ring_layout_bytesview_producer.rs`). The A1 zero-copy writable
-     view (write directly into the slot, no build-then-copy) is still
-     future.
+     (`shm_ring_layout_bytesview_producer.rs`).
+   - ✅ **A1 zero-copy writable view LANDED** (2026-06-08):
+     `Topic.write(max) { w => ...; len }` reserves a slot, binds a
+     writable `BytesMut` view `w`, and commits the tail length — the
+     producer writes fields DIRECTLY into the mapped ring (no
+     build-then-copy). New surface: the closure-scoped `write` construct
+     (a bespoke parser form — Hale has no value-closures/keyword-args), a
+     `BytesMut` type (reuses the 16-byte view ABI), the
+     `std::bytes::write_*` family (mirrors the readers, backed by
+     `lotus_bytes_write_uint`), and a runtime reserve/commit split of the
+     publish path (#78). Tests: C-driver `reserve_commit` +
+     `shm_ring_layout_zerocopy_write.rs` (Hale end-to-end). This was the
+     last open item in the foreign-ring interop staging.
 4. **Dogfood:** re-express `LRSRNG1` as the built-in `LotusRing`
    declaration; delete the hardcoded constants in favor of the default
    instantiation.

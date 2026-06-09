@@ -1782,6 +1782,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             bytes_read_uint_ty,
             None,
         );
+        // declare void @lotus_bytes_write_uint(ptr base, i64 cap, i64 off,
+        //   i32 width, i64 val, i32 big_endian, ptr oob) — binary-pack
+        // writer into a raw region (A1 zero-copy ring write).
+        let bytes_write_uint_ty = self.context.void_type().fn_type(
+            &[
+                ptr_t.into(),
+                i64_t.into(),
+                i64_t.into(),
+                i32_bru.into(),
+                i64_t.into(),
+                i32_bru.into(),
+                ptr_t.into(),
+            ],
+            false,
+        );
+        self.module.add_function(
+            "lotus_bytes_write_uint",
+            bytes_write_uint_ty,
+            None,
+        );
+        // A1 zero-copy ring write: reserve a slot, commit a length.
+        // declare ptr @lotus_bus_reserve_shm_ring_layout(ptr subject, i64 max)
+        let reserve_ty = ptr_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
+        self.module
+            .add_function("lotus_bus_reserve_shm_ring_layout", reserve_ty, None);
+        // declare i32 @lotus_bus_commit_shm_ring_layout(ptr subject, i64 len)
+        let commit_ty = i32_bru.fn_type(&[ptr_t.into(), i64_t.into()], false);
+        self.module
+            .add_function("lotus_bus_commit_shm_ring_layout", commit_ty, None);
         // declare ptr @lotus_bytes_slice(ptr bytes, i64 lo, i64 hi)
         let bytes_slice_ty = ptr_t.fn_type(
             &[ptr_t.into(), i64_t.into(), i64_t.into()],

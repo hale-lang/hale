@@ -778,6 +778,10 @@ impl<'a> Mangler<'a> {
                 self.walk_expr(subject);
                 self.walk_expr(value);
             }
+            Stmt::ShmWrite { max, body, .. } => {
+                self.walk_expr(max);
+                self.walk_block(body);
+            }
             Stmt::Expr(e) => self.walk_expr(e),
         }
     }

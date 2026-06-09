@@ -597,11 +597,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     _ => self.context.i32_type().into(),
                 }
             }
-            CodegenTy::BytesView | CodegenTy::StringView => {
+            CodegenTy::BytesView | CodegenTy::StringView | CodegenTy::BytesMut => {
                 // F.30b view ABI: views are 16-byte by-value
                 // structs `{void *src, int64_t epoch}`. The same
                 // type is used at field/storage sites and as the
-                // return type of view-producing helpers.
+                // return type of view-producing helpers. A1 `BytesMut`
+                // reuses it as `{void *base, int64_t cap}`.
                 self.view_struct_ty().into()
             }
             CodegenTy::String
@@ -965,7 +966,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::LocusRef(_)
             | CodegenTy::BytesView
             | CodegenTy::StringView
-            | CodegenTy::Cell(_, _) => false,
+            | CodegenTy::Cell(_, _)
+            | CodegenTy::BytesMut => false,
             CodegenTy::String
             | CodegenTy::Bytes
             | CodegenTy::TypeRef(_)
