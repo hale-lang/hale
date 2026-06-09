@@ -385,3 +385,60 @@ fn consumer_uses_greeter_and_formatted_from_lib_toy() {
         stdout
     );
 }
+
+#[test]
+fn method_name_shadowed_by_top_level_fn_resolves() {
+    // pond P1 (FRICTION method-name-shadowed-by-fn): a cross-seed method
+    // call where the imported seed also has a top-level fn of the same
+    // name. The method decl lives in member position and must keep its
+    // name; before the fix the mangler renamed the *decl* to the fn's
+    // mangled name (because both shared `title`), while the call site
+    // correctly didn't — so codegen reported "locus … has no method
+    // `title`".
+    let lib_src = r#"
+        fn title(s: String) -> String { return s; }
+        locus Console {
+            params { }
+            fn title(s: String) { println(s); }
+        }
+    "#;
+    let consumer_src = r#"
+        fn main() {
+            let c = lib::Console { };
+            c.title("collision-ok");
+        }
+    "#;
+    let alias = "lib";
+    let mut lib_prog = parse_source(lib_src).expect("parse lib");
+    // Build the rename map (immutable borrow), then mangle the seed.
+    let seed_renames = {
+        let stem_refs: Vec<(String, &Program)> = vec![("thing".to_string(), &lib_prog)];
+        mangle::build_seed_renames(&stem_refs, alias)
+    };
+    let renames: Vec<(Vec<String>, String)> = seed_renames
+        .iter()
+        .map(|(name, mangled)| (vec![alias.to_string(), name.clone()], mangled.clone()))
+        .collect();
+    mangle::mangle_with_renames(&mut lib_prog, &seed_renames);
+
+    let mut consumer = parse_source(consumer_src).expect("parse consumer");
+    consumer.imports.clear();
+    consumer.items.extend(lib_prog.items);
+
+    let mut bin = std::env::temp_dir();
+    bin.push(format!("hale_p1_method_shadow_{}", std::process::id()));
+    build_executable_with_imports(&consumer, &bin, &renames).expect("build consumer + lib");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(
+        out.status.success(),
+        "non-zero exit: {:?} stderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("collision-ok"),
+        "got: {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
