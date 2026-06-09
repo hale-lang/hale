@@ -21,6 +21,7 @@
 //! closure cycle existence, full call-site signature checking
 //! against built-ins.
 
+pub mod alloc_summary;
 pub mod check;
 pub mod purity;
 pub mod resolve;
@@ -84,6 +85,13 @@ pub fn check_bundle(bundle: &Bundle<'_>) -> Vec<Diag> {
 /// body" hard error to allowed — the `--allow-unowned-subscriber`
 /// escape hatch for code that manages the subscriber's lifetime
 /// some other way.
+/// Render the per-method allocation summary + call graph for a bundle
+/// (GH #18 item 1, step 1). Drives `--dump-alloc-summary`; no bound-proving.
+pub fn dump_alloc_summary(bundle: &Bundle<'_>) -> String {
+    let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    alloc_summary::summarize_programs(&progs).render()
+}
+
 pub fn check_bundle_opts(
     bundle: &Bundle<'_>,
     allow_unowned_subscriber: bool,

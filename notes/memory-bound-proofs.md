@@ -1,9 +1,21 @@
 # Memory-bound proofs (GH #18 item 1)
 
-Status: **scope / proposal.** Nothing built. Written 2026-06-09. This is
-the next unstarted GH #18 candidate per the issue's own ordering, and the
-one that builds the shared compile-time dataflow infrastructure that items
-#3 (closure-lifting) and #5 (resource-budgets) reuse.
+Status: **step 1 (the dataflow scaffold) landed; bound-proving not started.**
+Written 2026-06-09. The next unstarted GH #18 candidate per the issue's own
+ordering, and the one that builds the shared compile-time dataflow
+infrastructure that items #3 (closure-lifting) and #5 (resource-budgets)
+reuse.
+
+> **Step 1 landed:** `crates/hale-types/src/alloc_summary.rs` — the
+> per-method allocation summary + call graph, behind `hale check
+> --dump-alloc-summary`. It records allocation sites (escape-tagged, with
+> loop depth), call edges (resolved/unresolved), loops (bounded/runtime),
+> and entry-point multiplicity. **No bound-proving** — it's the reusable IR
+> for steps 2-4 (and items #3/#5). The dump already surfaces the precursor
+> signal (an escaping allocation inside an unbounded loop → marked
+> `escaping-in-loop`); the bound solver (step 3) turns that into a
+> diagnostic. Validated: 8 unit tests + clean dumps across the fixture
+> corpus.
 
 ## Goal
 

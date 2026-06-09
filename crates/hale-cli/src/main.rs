@@ -851,6 +851,13 @@ fn run_check(target: &Path) -> ExitCode {
     let bundle = hale_types::Bundle {
         programs: bundle_programs,
     };
+    // GH #18 item 1 (step 1): dump the per-method allocation summary +
+    // call graph and exit. A diagnostic view of the scaffold; no
+    // bound-proving yet.
+    if std::env::args().any(|a| a == "--dump-alloc-summary") {
+        print!("{}", hale_types::dump_alloc_summary(&bundle));
+        return ExitCode::SUCCESS;
+    }
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
     let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
