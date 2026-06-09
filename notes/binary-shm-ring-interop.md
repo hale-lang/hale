@@ -447,6 +447,18 @@ a loopback against a faithful mock before any live wiring):**
    First real target: read `ForeignRing`.
 3. **Proposal B, producer path** + Proposal A writable view (A1) for
    zero-copy writes.
+   - ✅ **Typed producer LANDED** (M3a, #61): `Topic <- Struct { ... }`
+     frames a fixed-size `byte_records` record.
+   - ✅ **BytesView/raw producer LANDED** (2026-06-08): `Topic <- bytes`
+     (a `Bytes` or `BytesView` value) frames `[len_prefix len][bytes]`
+     with `len` = the value's actual byte length, so a Hale program can
+     emit heterogeneous / variable-width records — the producer mirror of
+     the BytesView consumer (#72). Codegen-only (`lower_send_shm_ring`
+     extracts data+len via `lotus_bytes_data`/`lotus_bytes_len`); the
+     runtime publish was already size-generic. End-to-end test
+     (`shm_ring_layout_bytesview_producer.rs`). The A1 zero-copy writable
+     view (write directly into the slot, no build-then-copy) is still
+     future.
 4. **Dogfood:** re-express `LRSRNG1` as the built-in `LotusRing`
    declaration; delete the hardcoded constants in favor of the default
    instantiation.

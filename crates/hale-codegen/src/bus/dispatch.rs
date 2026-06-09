@@ -807,43 +807,90 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
             }
             _ => None,
         };
-        let (payload_val, payload_struct_name): (PointerValue<'ctx>, String) =
+        // Compute the (data pointer, byte size) the runtime frames as one
+        // record. Two shapes:
+        //   - a flat struct payload (the typed path): pointer to the
+        //     struct + its fixed `size_of`.
+        //   - a Bytes / BytesView payload (the raw / variable-length path,
+        //     the producer mirror of the BytesView consumer): the value's
+        //     data pointer + its actual byte length, so a heterogeneous /
+        //     variable-width record can be published.
+        let (value_ptr, size_iv): (PointerValue<'ctx>, inkwell::values::IntValue<'ctx>) =
             if let Some((slot, mname)) = stack_payload {
-                (slot, mname)
+                let info = self
+                    .user_types
+                    .get(&mname)
+                    .cloned()
+                    .expect("checked above");
+                let size = info
+                    .struct_ty
+                    .size_of()
+                    .expect("flat struct has compile-time size");
+                (slot, size)
             } else {
-                // Non-literal expressions: lower normally,
-                // require a struct-typed result whose pointer we
-                // can pass to memcpy.
                 let (v, ty) = self.lower_expr(value, scope)?;
-                match (&v, &ty) {
-                    (BasicValueEnum::PointerValue(p), CodegenTy::TypeRef(n)) => {
-                        (*p, n.clone())
+                match ty {
+                    CodegenTy::Bytes | CodegenTy::BytesView => {
+                        let blob = self.unpack_view_if_needed(v, &ty)?;
+                        let len_fn = self
+                            .module
+                            .get_function("lotus_bytes_len")
+                            .expect("lotus_bytes_len declared");
+                        let len = self
+                            .builder
+                            .build_call(len_fn, &[blob.into()], "shm.send.bytes.len")
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .try_as_basic_value()
+                            .left()
+                            .expect("lotus_bytes_len returns i64")
+                            .into_int_value();
+                        let data_fn = self
+                            .module
+                            .get_function("lotus_bytes_data")
+                            .expect("lotus_bytes_data declared");
+                        let data = self
+                            .builder
+                            .build_call(data_fn, &[blob.into()], "shm.send.bytes.data")
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .try_as_basic_value()
+                            .left()
+                            .expect("lotus_bytes_data returns ptr")
+                            .into_pointer_value();
+                        (data, len)
+                    }
+                    CodegenTy::TypeRef(n) => {
+                        let p = match v {
+                            BasicValueEnum::PointerValue(p) => p,
+                            _ => {
+                                return Err(CodegenError::Unsupported(format!(
+                                    "shm_ring send for subject `{}`: struct payload \
+                                     `{}` must lower to a pointer",
+                                    subject, n
+                                )));
+                            }
+                        };
+                        let info = self.user_types.get(&n).cloned().ok_or_else(|| {
+                            CodegenError::Unsupported(format!(
+                                "shm_ring send for subject `{}`: payload type `{}` \
+                                 not registered in user_types",
+                                subject, n
+                            ))
+                        })?;
+                        let size = info
+                            .struct_ty
+                            .size_of()
+                            .expect("flat struct has compile-time size");
+                        (p, size)
                     }
                     _ => {
                         return Err(CodegenError::Unsupported(format!(
-                            "shm_ring send for subject `{}`: payload must be \
-                             a struct-typed value (struct literal or \
-                             struct-shaped expression); got {:?}",
+                            "shm_ring send for subject `{}`: payload must be a \
+                             struct, Bytes, or BytesView value; got {:?}",
                             subject, ty
                         )));
                     }
                 }
             };
-        let info = self
-            .user_types
-            .get(&payload_struct_name)
-            .cloned()
-            .ok_or_else(|| {
-                CodegenError::Unsupported(format!(
-                    "shm_ring send for subject `{}`: payload type `{}` not \
-                     registered in user_types",
-                    subject, payload_struct_name
-                ))
-            })?;
-        let payload_size_iv = info
-            .struct_ty
-            .size_of()
-            .expect("flat struct has compile-time size");
         let subj_ptr = self
             .builder
             .build_global_string_ptr(
@@ -875,8 +922,8 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                 publish_fn,
                 &[
                     subj_ptr.into(),
-                    payload_val.into(),
-                    payload_size_iv.into(),
+                    value_ptr.into(),
+                    size_iv.into(),
                 ],
                 "bus.shm_ring.publish.call",
             )

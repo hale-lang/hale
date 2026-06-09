@@ -167,6 +167,22 @@ a discriminator branch. This is the path for reading real external
 mixed-record rings; the typed-struct binding stays the fast path for a
 homogeneous ring.
 
+Producing such a ring is symmetric — build a record with a
+`BytesBuilder` and send the bytes:
+
+```hale
+fn emit_l2(level: L2) {
+    let b = std::bytes::BytesBuilder { initial_cap: 64 };
+    b.append_u8(2);                // discriminator
+    b.append_u32_le(level.price);
+    b.append_u32_le(level.qty);
+    Recs <- b.view();              // framed at its own length
+}
+```
+
+`Recs <- bytes` frames `[len_prefix len][bytes]` where `len` is the
+value's actual byte length, so each record carries its own size.
+
 ## The same shape, one tier down
 
 Notice this is the same move as everything else at this level: an
