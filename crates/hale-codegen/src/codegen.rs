@@ -16280,6 +16280,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_bytes_builder_append(args, scope)?;
                 Ok(())
             }
+            ["std", "bytes", "builder", "__append_str"] => {
+                let _ = self.lower_std_bytes_builder_append_str(args, scope)?;
+                Ok(())
+            }
             ["std", "bytes", "builder", "__len"] => {
                 let _ = self.lower_std_bytes_builder_len(args, scope)?;
                 Ok(())
@@ -16958,6 +16962,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "bytes", "builder", "__append"] => {
                 self.lower_std_bytes_builder_append(args, scope)
+            }
+            ["std", "bytes", "builder", "__append_str"] => {
+                self.lower_std_bytes_builder_append_str(args, scope)
             }
             ["std", "bytes", "builder", "__len"] => {
                 self.lower_std_bytes_builder_len(args, scope)

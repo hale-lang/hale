@@ -75,7 +75,7 @@ matching C-ABI representation at the call boundary:
 | `Int` | `i64` | `int64_t` | 64-bit signed throughout. |
 | `Float` | `double` | `double` | 64-bit IEEE 754. |
 | `Bool` | `i32` | `int32_t` | Hale's i1 zero-extends to i32 at the call, truncates back at the return. Avoids C `_Bool` cross-platform ambiguity. |
-| `String` | `ptr` | `const char *` | NUL-terminated. Caller owns; callee MUST NOT retain past the call. |
+| `String` | `ptr` | `const char *` | NUL-terminated. Caller owns; callee MUST NOT retain past the call. A `StringView` does **not** implicitly coerce to a `String` parameter — it isn't NUL-terminated, so a `char*`-expecting callee would `strlen` past its end. Pass a view as a `StringView` parameter (→ `lotus_view_t`, length-carrying) or materialize it first via `std::str::clone`. |
 | `Bytes` | `ptr` | `void *` (header) | Points at Hale's `[int64 len][payload]` header — callee uses `lotus_bytes_len(p)` / `lotus_bytes_data(p)` (declared in `lotus_arena.h`) to inspect. Caller owns. |
 | `BytesView` / `StringView` | `{ ptr, i64 }` (struct by value) | `lotus_view_t` | 16-byte F.30b view layout. C glue MAY use `lotus_view_data` to recover the payload pointer + length. |
 | `Duration` / `Time` | `i64` | `int64_t` | Both are 64-bit nanosecond counts under the hood. |

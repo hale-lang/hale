@@ -142,6 +142,17 @@ locus __StdBytesBytesBuilder {
             violate alloc_failed;
         }
     }
+    // pond P3: append a String's bytes (NUL-terminated) directly —
+    // one strlen + memcpy in the runtime, vs byte-walking through
+    // append_u8 (pond/tui's frame renderer did ~10k C calls per full
+    // redraw). The String is appended verbatim (no NUL, no length
+    // prefix); use snapshot()/finish() to materialize.
+    fn append_str(s: String) {
+        let ok = std::bytes::builder::__append_str(self.handle, s);
+        if ok == 0 {
+            violate alloc_failed;
+        }
+    }
     // Phase-3 Site 1 (2026-05-19): copy src[lo..hi) directly into
     // the builder's tail. Eliminates the
     // `slice(src, lo, hi) + append(chunk)` pair's intermediate

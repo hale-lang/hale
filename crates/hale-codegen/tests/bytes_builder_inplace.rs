@@ -268,3 +268,26 @@ fn recv_loop_simulation_recycles_capacity() {
     assert!(stdout.contains("final_len=0"), "got: {:?}", stdout);
     assert!(stdout.contains("body=done"), "got: {:?}", stdout);
 }
+
+#[test]
+fn builder_append_str_appends_string_bytes() {
+    // pond P3: append a String's bytes in one C call instead of
+    // byte-walking through append_u8.
+    let src = r#"
+        fn main() {
+            let b = std::bytes::BytesBuilder { initial_cap: 4 };
+            b.append_str("hello, ");
+            b.append_str("");
+            b.append_str("world");
+            b.append_u8(33);
+            print("s=");
+            println(std::str::from_bytes(b.snapshot()));
+            print("len=");
+            println(b.len());
+        }
+    "#;
+    let (stdout, status) = build_and_run("append_str", src);
+    assert!(status.success(), "exit: {:?}", status);
+    assert!(stdout.contains("s=hello, world!"), "got: {:?}", stdout);
+    assert!(stdout.contains("len=13"), "got: {:?}", stdout);
+}
