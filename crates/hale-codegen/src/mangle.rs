@@ -555,7 +555,7 @@ impl<'a> Mangler<'a> {
                     }
                 }
             }
-            LocusMember::Fn(f) => self.walk_fn_decl(f),
+            LocusMember::Fn(f) => self.walk_method_decl(f),
             LocusMember::Const(c) => {
                 self.walk_type_expr(&mut c.ty);
                 self.walk_expr(&mut c.value);
@@ -666,8 +666,25 @@ impl<'a> Mangler<'a> {
         }
     }
 
+    /// Top-level free fn: its name is a seed top-level decl, so rewrite it
+    /// through the rename map, then walk the signature + body.
     fn walk_fn_decl(&mut self, f: &mut FnDecl) {
         self.rewrite_ident(&mut f.name.name);
+        self.walk_fn_signature_and_body(f);
+    }
+
+    /// Locus method: its name lives in *member* position — looked up on the
+    /// locus by its original name (the locus name carries the seed
+    /// prefix), never through the seed top-level rename map. Rewriting it
+    /// when a top-level fn happens to share the name renamed the decl away
+    /// from its (correctly-unrewritten) call sites → "locus … has no
+    /// method `name`" (pond P1, FRICTION method-name-shadowed-by-fn). So
+    /// walk the signature + body but leave the name alone.
+    fn walk_method_decl(&mut self, f: &mut FnDecl) {
+        self.walk_fn_signature_and_body(f);
+    }
+
+    fn walk_fn_signature_and_body(&mut self, f: &mut FnDecl) {
         self.push_scope();
         for g in &f.generics {
             self.bind(&g.name.name);
