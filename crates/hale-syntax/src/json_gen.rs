@@ -54,14 +54,6 @@ impl ScalarTy {
             ScalarTy::Str => "\"\"",
         }
     }
-    fn reader(self) -> &'static str {
-        match self {
-            ScalarTy::Int => "obj_value_int",
-            ScalarTy::Float => "obj_value_float",
-            ScalarTy::Bool => "obj_value_bool",
-            ScalarTy::Str => "obj_value_string",
-        }
-    }
 }
 
 enum FieldKind {
@@ -191,15 +183,28 @@ fn collect_json_types(items: &[TopDecl], names: &HashSet<String>, out: &mut Vec<
     }
 }
 
+/// The Hale expression that parses a scalar value span `[__vs, __ve)` into
+/// the field's type. Strings slice + unescape (the one real allocation);
+/// ints/bools read the range allocation-free.
+fn scalar_value_expr(s: ScalarTy) -> &'static str {
+    match s {
+        ScalarTy::Int => "std::str::range_parse_int(__s, __vs, __ve) or 0",
+        ScalarTy::Float => "std::str::parse_float(__s[__vs..__ve]) or 0.0",
+        ScalarTy::Bool => "std::str::range_eq(__s, __vs, __ve, \"true\")",
+        ScalarTy::Str => "std::json::unescape_string(__s[(__vs + 1)..(__ve - 1)])",
+    }
+}
+
 fn generate_parser_src(t: &JsonType) -> String {
     let mut b = String::new();
     b.push_str(&format!(
         "fn __json_parse_{}(__s: String) -> {} fallible(JsonError) {{\n",
         t.name, t.name
     ));
-    // Locals. Scalars accumulate the parsed value; nested fields keep the
-    // raw object text and are parsed at construction (no zero-value for a
-    // struct local). A presence flag is needed unless a scalar default
+    b.push_str("    let __total = len(__s);\n");
+    // Field accumulators + presence flags. Scalars hold the parsed value;
+    // nested fields hold the matched object's raw text (parsed at
+    // construction). A presence flag is omitted when a scalar default
     // covers a missing key.
     for f in &t.fields {
         match &f.kind {
@@ -220,38 +225,93 @@ fn generate_parser_src(t: &JsonType) -> String {
             b.push_str(&format!("    let mut __seen_{}: Bool = false;\n", f.name));
         }
     }
-    b.push_str("    let mut __it = std::json::object_first(__s);\n");
-    b.push_str("    while !__it.done {\n");
+    // Inlined single-pass scan — no cursor structs, only Int offsets +
+    // the leaf SIMD/range primitives. Skip to `{`, then walk members.
+    b.push_str("    let mut __p = std::json::next_non_ws(__s, 0, __total);\n");
+    b.push_str("    if __p < __total && std::str::byte_at_unchecked(__s, __p) == 123 { __p = __p + 1; }\n");
+    b.push_str("    let mut __more = true;\n");
+    b.push_str("    while __more {\n");
+    b.push_str("        __p = std::json::next_non_ws(__s, __p, __total);\n");
+    b.push_str("        while __p < __total && std::str::byte_at_unchecked(__s, __p) == 44 {\n");
+    b.push_str("            __p = std::json::next_non_ws(__s, __p + 1, __total);\n");
+    b.push_str("        }\n");
+    b.push_str("        if __p >= __total || std::str::byte_at_unchecked(__s, __p) != 34 {\n");
+    b.push_str("            __more = false;\n");
+    b.push_str("        } else {\n");
+    // Key span [__ks, __ke).
+    b.push_str("            let __ks = __p + 1;\n");
+    b.push_str("            let mut __ke = std::json::next_quote_or_bs(__s, __ks, __total);\n");
+    b.push_str("            while __ke < __total && std::str::byte_at_unchecked(__s, __ke) == 92 {\n");
+    b.push_str("                __ke = std::json::next_quote_or_bs(__s, __ke + 2, __total);\n");
+    b.push_str("            }\n");
+    // Whitespace, `:`, whitespace.
+    b.push_str("            let mut __q = std::json::next_non_ws(__s, __ke + 1, __total);\n");
+    b.push_str("            if __q >= __total || std::str::byte_at_unchecked(__s, __q) != 58 {\n");
+    b.push_str("                __more = false;\n");
+    b.push_str("            } else {\n");
+    b.push_str("                __q = std::json::next_non_ws(__s, __q + 1, __total);\n");
+    b.push_str("                let __vs = __q;\n");
+    // Value end: jump structural-to-structural, skipping strings + nesting.
+    b.push_str("                let mut __depth = 0;\n");
+    b.push_str("                let mut __vscan = true;\n");
+    b.push_str("                while __vscan {\n");
+    b.push_str("                    __q = std::json::next_struct_or_quote(__s, __q, __total);\n");
+    b.push_str("                    if __q >= __total { __q = __total; __vscan = false; }\n");
+    b.push_str("                    else {\n");
+    b.push_str("                        let __c = std::str::byte_at_unchecked(__s, __q);\n");
+    b.push_str("                        if __c == 34 {\n");
+    b.push_str("                            let mut __sp = std::json::next_quote_or_bs(__s, __q + 1, __total);\n");
+    b.push_str("                            while __sp < __total && std::str::byte_at_unchecked(__s, __sp) == 92 {\n");
+    b.push_str("                                __sp = std::json::next_quote_or_bs(__s, __sp + 2, __total);\n");
+    b.push_str("                            }\n");
+    b.push_str("                            if __sp >= __total { __q = __total; __vscan = false; } else { __q = __sp + 1; }\n");
+    b.push_str("                        } else if __c == 123 || __c == 91 { __depth = __depth + 1; __q = __q + 1; }\n");
+    b.push_str("                        else if __c == 125 || __c == 93 { if __depth == 0 { __vscan = false; } else { __depth = __depth - 1; __q = __q + 1; } }\n");
+    b.push_str("                        else { if __depth == 0 { __vscan = false; } else { __q = __q + 1; } }\n");
+    b.push_str("                    }\n");
+    b.push_str("                }\n");
+    // Trim trailing whitespace so the value span ends at the value's last
+    // byte (number digit / closing quote), not on the delimiter's run of
+    // whitespace — range_parse_int and the string-slice both need this.
+    b.push_str("                let mut __ve = __q;\n");
+    b.push_str("                while __ve > __vs {\n");
+    b.push_str("                    let __tc = std::str::byte_at_unchecked(__s, __ve - 1);\n");
+    b.push_str("                    if __tc == 32 || __tc == 9 || __tc == 10 || __tc == 13 { __ve = __ve - 1; } else { break; }\n");
+    b.push_str("                }\n");
+    // Per-field dispatch on the key span.
     let mut first = true;
     for f in &t.fields {
         let kw = if first { "if" } else { "} else if" };
         first = false;
         b.push_str(&format!(
-            "        {} std::json::obj_key_len(__it) == {} && std::json::obj_key_eq(__it, __s, \"{}\") {{\n",
+            "                {} (__ke - __ks) == {} && std::str::range_eq(__s, __ks, __ke, \"{}\") {{\n",
             kw,
             f.key.len(),
             f.key
         ));
         match &f.kind {
             FieldKind::Scalar(s) => b.push_str(&format!(
-                "            __f_{} = std::json::{}(__it, __s);\n",
+                "                    __f_{} = {};\n",
                 f.name,
-                s.reader()
+                scalar_value_expr(*s)
             )),
             FieldKind::Nested(_) => b.push_str(&format!(
-                "            __raw_{} = std::json::obj_value_raw(__it, __s);\n",
+                "                    __raw_{} = __s[__vs..__ve];\n",
                 f.name
             )),
         }
         if f.default_src.is_none() {
-            b.push_str(&format!("            __seen_{} = true;\n", f.name));
+            b.push_str(&format!("                    __seen_{} = true;\n", f.name));
         }
     }
     if !first {
-        b.push_str("        }\n");
+        b.push_str("                }\n");
     }
-    b.push_str("        __it = std::json::object_next(__it, __s);\n");
-    b.push_str("    }\n");
+    b.push_str("                __p = __q;\n");
+    b.push_str("            }\n"); // close the `:` else
+    b.push_str("        }\n"); // close the key else
+    b.push_str("    }\n"); // close while __more
+    // Presence checks.
     for f in &t.fields {
         if f.default_src.is_none() {
             b.push_str(&format!(
@@ -260,8 +320,7 @@ fn generate_parser_src(t: &JsonType) -> String {
             ));
         }
     }
-    // Recurse into nested fields before construction so their JsonError
-    // propagates via `or raise`.
+    // Recurse into nested fields (their JsonError propagates via `or raise`).
     for f in &t.fields {
         if let FieldKind::Nested(tn) = &f.kind {
             b.push_str(&format!(
