@@ -331,3 +331,49 @@ ring_layout R {
         msgs
     );
 }
+
+/// A LotusRing-shaped `slots` layout (the native LRSRNG1 format) is clean:
+/// slot geometry comes from `slot_size`/`slot_count` scalars, the cursor
+/// is the seqno, and there's no buffer_size/len_prefix.
+#[test]
+fn valid_slots_layout_is_clean() {
+    let src = r#"
+ring_layout LotusRing {
+    magic 0x4C5253524E4731;
+    slot_size  at 8  : u64;
+    slot_count at 16 : u64;
+    data_at 128;
+    cursor published { at 24; repr atomic_u64; load acquire; unit slots; }
+    framing slots { }
+    overflow lap_detect;
+}
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.is_empty(),
+        "a well-formed slots ring_layout must typecheck clean; got: {:?}",
+        msgs
+    );
+}
+
+/// `framing slots` without the slot geometry is rejected — the consumer
+/// reads slot_size/slot_count from the header, so the scalars are required.
+#[test]
+fn slots_framing_requires_slot_geometry() {
+    let src = r#"
+ring_layout Bad {
+    magic 0x4C5253524E4731;
+    data_at 128;
+    cursor published { at 24; repr atomic_u64; load acquire; unit slots; }
+    framing slots { }
+    overflow lap_detect;
+}
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("slot_size"))
+            && msgs.iter().any(|m| m.contains("slot_count")),
+        "framing slots without slot_size/slot_count must be diagnosed; got: {:?}",
+        msgs
+    );
+}

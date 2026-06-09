@@ -450,6 +450,17 @@ a loopback against a faithful mock before any live wiring):**
 4. **Dogfood:** re-express `LRSRNG1` as the built-in `LotusRing`
    declaration; delete the hardcoded constants in favor of the default
    instantiation.
+   - ✅ **`slots` framing LANDED (additive)** (2026-06-08): the layout
+     path now supports `framing slots` — a fixed-stride slot ring whose
+     geometry (`slot_size`/`slot_count`) is read from the foreign header,
+     cursor = the published seqno, lap-skip matching the native reader. A
+     `ring_layout LotusRing` expresses the native `LRSRNG1` shape, and a
+     `layout: LotusRing` consumer reads a ring the native producer writes
+     (C-driver `lotus_dogfood` + a Hale end-to-end test). Scope was
+     **additive**: the native registration/publish path is unchanged (no
+     reroute), so the hardcoded constants are *not* yet deleted — that
+     (and parameterized slot geometry for a layout *producer*) is the
+     remaining tail. Proves the abstraction covers the in-house ring.
 5. **(Optional) Proposal A′:** layout-declared payload structs
    (`@repr(c)` → typed accessors).
 

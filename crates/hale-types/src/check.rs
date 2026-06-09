@@ -4395,6 +4395,24 @@ impl<'a> Checker<'a> {
                         ),
                     ));
                 }
+                // Slots framing: a fixed-stride slot ring (the native
+                // LotusRing shape). The consumer reads the geometry from
+                // the foreign header, so it needs `slot_size` + `slot_count`
+                // scalars (no `len_prefix` — records aren't length-framed).
+                if fr.kind.name == "slots" {
+                    for field in ["slot_size", "slot_count"] {
+                        if !r.scalars.iter().any(|s| s.name.name == field) {
+                            self.diags.push(Diag::ty(
+                                fr.span,
+                                format!(
+                                    "framing slots: needs a `{field}` scalar — the \
+                                     consumer reads the slot geometry from the \
+                                     foreign header (e.g. `{field} at <off> : u64;`)"
+                                ),
+                            ));
+                        }
+                    }
+                }
                 if fr.kind.name == "byte_records" {
                     let len_prefix = fr.attrs.iter().find(|a| a.key.name == "len_prefix");
                     match len_prefix {
@@ -4589,6 +4607,8 @@ impl<'a> Checker<'a> {
         // --- Frontend hardening (2026-06-08) ---
         let is_byte_records =
             r.framing.as_ref().map(|f| f.kind.name == "byte_records").unwrap_or(false);
+        let is_slots =
+            r.framing.as_ref().map(|f| f.kind.name == "slots").unwrap_or(false);
 
         // Unaligned atomic cursor: an `atomic_u64` cursor whose `at` is
         // not 8-aligned makes the runtime's atomic load undefined (torn /
@@ -4667,17 +4687,19 @@ impl<'a> Checker<'a> {
                 ),
             ));
         }
-        if is_byte_records && r.data_at.is_none() {
+        if (is_byte_records || is_slots) && r.data_at.is_none() {
             self.diags.push(Diag::ty(
                 r.span,
                 format!(
-                    "ring_layout `{}`: `byte_records` framing needs `data_at` \
-                     (the first-record offset)",
+                    "ring_layout `{}`: framing needs `data_at` (the first \
+                     record/slot offset)",
                     r.name.name
                 ),
             ));
         }
-        if !r.scalars.iter().any(|s| s.name.name == "buffer_size") {
+        // byte_records reads the data-region capacity from a `buffer_size`
+        // scalar; slots derives it from slot_size × slot_count instead.
+        if is_byte_records && !r.scalars.iter().any(|s| s.name.name == "buffer_size") {
             self.diags.push(Diag::ty(
                 r.span,
                 format!(
