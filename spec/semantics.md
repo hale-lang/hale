@@ -1034,6 +1034,16 @@ payload picks the consumer mode:
   the mapped ring with no intermediate buffer. The reserve and commit are
   scoped to the block, so the view can't escape and the commit can't be
   forgotten.
+- A struct field may carry a Go-style backtick metadata tag after its
+  type (`price: Int `repr:"u32_le"`;`) — free-form `key:"value"` metadata
+  stored on the field. A `repr:"<wire-type>"` key makes the struct a
+  binary layout: `Type::field(v)` reads that field from a `Bytes` /
+  `BytesView` and `Type::set_field(w, x)` writes it into a `BytesMut`, at
+  the field's offset (computed in declaration order over the tagged
+  fields, or pinned with `,at=N`). These desugar to the matching
+  `std::bytes::read_*` / `write_*` call, so they share the primitives'
+  bounds-checking and cost. Other tag keys are reserved for future
+  consumers (serialization, validation).
 
 Any other payload (with `String`, `Bytes`, or variable-size fields and
 not itself `BytesView`) is rejected.
