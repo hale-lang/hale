@@ -860,7 +860,11 @@ fn run_check(target: &Path) -> ExitCode {
     }
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
-    let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
+    let mut diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
+    // GH #18 item 1 step 3: opt-in unbounded-allocation warnings.
+    if std::env::args().any(|a| a == "--warn-unbounded-alloc") {
+        diags.extend(hale_types::unbounded_alloc_warnings(&bundle));
+    }
     if !diags.is_empty() {
         for d in &diags {
             eprintln!("{}", render_located(d, &file_bases, &sources));

@@ -19,10 +19,25 @@ reuse.
 > (`alloc_model_rss.rs`) ties the verdict to measured peak RSS in both
 > directions (the scope's "no false bounded" teeth).
 >
+> **Step 3 landed (the bound solver):** call-graph multiplicity
+> propagation (`unbounded_invoked` — bus handlers, fixed-point over call
+> edges in unbounded loops) folds into a `final_verdict`, so an allocation
+> in a fn *invoked* unboundedly (a per-message handler, or a helper called
+> in a hot loop — the JSON leak class) is flagged even when its own body
+> has no loop. `leak_sites()` → `unbounded_alloc_diags()` emits a located,
+> actionable warning, opt-in via `hale check --warn-unbounded-alloc`.
+> **Corpus: zero false positives** — the only 4 flags are genuine
+> per-message-handler accumulations (e.g. `22-moving-average`'s
+> `Window::on_sample` rebuilds a 4-elem array per message into `self`).
+> *Deferred:* loop-ranking (proving `while i < N` bounded) — no corpus
+> fixture triggers that false positive yet, so it's a refinement, not a
+> blocker; a user `while i < 100 { alloc }` would currently over-flag
+> (conservative, never false-"bounded"). And `@unbounded` escape valve.
+>
 > **The model was corrected by measurement** (see below) — `spec/memory.md`
-> overstates free-fn reclaim. The type-free `+`-as-concat over-report from
-> step 1 was *removed* (it flagged every `i + 1`); String-concat detection
-> is deferred to a type-aware stage.
+> was corrected to match (free-fn no per-call reclaim). The type-free
+> `+`-as-concat over-report from step 1 was *removed* (it flagged every
+> `i + 1`); String-concat detection is deferred to a type-aware stage.
 
 ## The empirical reclamation model (measured, not assumed)
 
