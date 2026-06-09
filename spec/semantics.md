@@ -1021,8 +1021,12 @@ payload picks the consumer mode:
   discriminator branch. The framed-size bounds checks against the ring
   still apply; the record payload is copied into a Bytes-shaped scratch
   blob (the pack readers need that prefix, and the mapping is
-  read-only), so raw-frame mode is not zero-copy. Producing a
-  `BytesView` topic (the raw producer path) is not yet supported.
+  read-only), so raw-frame mode is not zero-copy. The producer side is
+  symmetric: `Recs <- bytes` (a `Bytes` or `BytesView` value, e.g. built
+  with a `BytesBuilder`) frames `[len_prefix len][bytes]` where `len` is
+  the value's actual byte length, so a producer can emit
+  heterogeneous / variable-width records — the runtime publish path is
+  size-generic.
 
 Any other payload (with `String`, `Bytes`, or variable-size fields and
 not itself `BytesView`) is rejected.
