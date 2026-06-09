@@ -38,8 +38,8 @@
 #include <malloc.h>
 #include <string.h>
 #include <pthread.h>
-#if defined(__SSE2__)
-#include <emmintrin.h>  /* JSON Tier-3 Level-A SIMD scan primitives */
+#if defined(__x86_64__)
+#include <immintrin.h>  /* JSON Tier-3 SIMD scan primitives (SSE2 + AVX2) */
 #endif
 #include <sched.h>
 #include <sys/types.h>
@@ -11424,13 +11424,87 @@ void lotus_bytes_write_uint(void *base, int64_t cap, int64_t off, int width,
  * class at/after `from`, or `len` if none. The single-pass `std::json`
  * object/array cursors call these instead of byte-at-a-time inner loops.
  *
- * SSE2 (baseline on x86-64) scans 16-byte chunks; a scalar tail handles
- * the final < 16 bytes so there is never an out-of-bounds read (the
- * `from + 16 <= len` guard keeps the vector load fully in-bounds —
- * ASan-safe). On non-SSE2 targets the scalar loop is the whole impl, and
- * it must stay byte-identical to the SSE2 result (the cursor's existing
- * test corpus + a differential fuzz enforce that).
+ * Tiered: AVX2 (32-byte chunks) when the CPU supports it (runtime
+ * detected), else SSE2 (16-byte, baseline on x86-64), else scalar. Each
+ * SIMD chunk loop has a `+ width <= len` guard so the vector load is
+ * always fully in-bounds (ASan-safe), and a scalar tail finishes the
+ * remainder. All three tiers must yield byte-identical results (the
+ * cursor's test corpus enforces it on whatever tier the CPU selects).
  */
+
+#if defined(__x86_64__)
+/* Cached runtime AVX2 check (set once). */
+static int lotus_have_avx2(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        cached = __builtin_cpu_supports("avx2") ? 1 : 0;
+    }
+    return cached;
+}
+
+/* AVX2 (32-byte) variants — compiled with AVX2 codegen via the target
+ * attribute (the rest of this TU stays baseline) and reached only after
+ * lotus_have_avx2(). Each does its own scalar tail for the final < 32. */
+__attribute__((target("avx2")))
+static int64_t lotus_json_avx2_struct_or_quote(const unsigned char *d, int64_t i, int64_t len) {
+    for (; i + 32 <= len; i += 32) {
+        __m256i v = _mm256_loadu_si256((const __m256i *)(d + i));
+        __m256i m = _mm256_or_si256(
+            _mm256_or_si256(
+                _mm256_or_si256(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('{')),
+                                _mm256_cmpeq_epi8(v, _mm256_set1_epi8('}'))),
+                _mm256_or_si256(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('[')),
+                                _mm256_cmpeq_epi8(v, _mm256_set1_epi8(']')))),
+            _mm256_or_si256(_mm256_cmpeq_epi8(v, _mm256_set1_epi8(',')),
+                            _mm256_cmpeq_epi8(v, _mm256_set1_epi8('"'))));
+        unsigned mask = (unsigned)_mm256_movemask_epi8(m);
+        if (mask) return i + __builtin_ctz(mask);
+    }
+    for (; i < len; i++) {
+        unsigned char c = d[i];
+        if (c == '{' || c == '}' || c == '[' || c == ']' || c == ',' || c == '"')
+            return i;
+    }
+    return len;
+}
+
+__attribute__((target("avx2")))
+static int64_t lotus_json_avx2_quote_or_bs(const unsigned char *d, int64_t i, int64_t len) {
+    for (; i + 32 <= len; i += 32) {
+        __m256i v = _mm256_loadu_si256((const __m256i *)(d + i));
+        __m256i m = _mm256_or_si256(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('"')),
+                                    _mm256_cmpeq_epi8(v, _mm256_set1_epi8('\\')));
+        unsigned mask = (unsigned)_mm256_movemask_epi8(m);
+        if (mask) return i + __builtin_ctz(mask);
+    }
+    for (; i < len; i++) {
+        unsigned char c = d[i];
+        if (c == '"' || c == '\\') return i;
+    }
+    return len;
+}
+
+__attribute__((target("avx2")))
+static int64_t lotus_json_avx2_non_ws(const unsigned char *d, int64_t i, int64_t len) {
+    for (; i + 32 <= len; i += 32) {
+        __m256i v = _mm256_loadu_si256((const __m256i *)(d + i));
+        __m256i ws = _mm256_or_si256(
+            _mm256_or_si256(_mm256_cmpeq_epi8(v, _mm256_set1_epi8(' ')),
+                            _mm256_cmpeq_epi8(v, _mm256_set1_epi8('\t'))),
+            _mm256_or_si256(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('\n')),
+                            _mm256_cmpeq_epi8(v, _mm256_set1_epi8('\r'))));
+        /* All 32 lanes valid in a full chunk, so the inverted mask needs
+         * no masking — ctz finds the first non-whitespace lane. */
+        unsigned nonws = ~(unsigned)_mm256_movemask_epi8(ws);
+        if (nonws) return i + __builtin_ctz(nonws);
+    }
+    for (; i < len; i++) {
+        unsigned char c = d[i];
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') return i;
+    }
+    return len;
+}
+#endif
 
 /* First offset >= from whose byte is a JSON structural char or a quote:
  * `{ } [ ] , "` (no `:` — the value scan doesn't need it). Drives the
@@ -11438,6 +11512,9 @@ void lotus_bytes_write_uint(void *base, int64_t cap, int64_t off, int width,
 int64_t lotus_json_next_struct_or_quote(const char *s, int64_t from, int64_t len) {
     const unsigned char *d = (const unsigned char *)s;
     int64_t i = from < 0 ? 0 : from;
+#if defined(__x86_64__)
+    if (lotus_have_avx2()) return lotus_json_avx2_struct_or_quote(d, i, len);
+#endif
 #if defined(__SSE2__)
     for (; i + 16 <= len; i += 16) {
         __m128i v = _mm_loadu_si128((const __m128i *)(d + i));
@@ -11467,6 +11544,9 @@ int64_t lotus_json_next_struct_or_quote(const char *s, int64_t from, int64_t len
 int64_t lotus_json_next_quote_or_bs(const char *s, int64_t from, int64_t len) {
     const unsigned char *d = (const unsigned char *)s;
     int64_t i = from < 0 ? 0 : from;
+#if defined(__x86_64__)
+    if (lotus_have_avx2()) return lotus_json_avx2_quote_or_bs(d, i, len);
+#endif
 #if defined(__SSE2__)
     for (; i + 16 <= len; i += 16) {
         __m128i v = _mm_loadu_si128((const __m128i *)(d + i));
@@ -11488,6 +11568,9 @@ int64_t lotus_json_next_quote_or_bs(const char *s, int64_t from, int64_t len) {
 int64_t lotus_json_next_non_ws(const char *s, int64_t from, int64_t len) {
     const unsigned char *d = (const unsigned char *)s;
     int64_t i = from < 0 ? 0 : from;
+#if defined(__x86_64__)
+    if (lotus_have_avx2()) return lotus_json_avx2_non_ws(d, i, len);
+#endif
 #if defined(__SSE2__)
     for (; i + 16 <= len; i += 16) {
         __m128i v = _mm_loadu_si128((const __m128i *)(d + i));

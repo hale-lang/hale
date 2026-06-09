@@ -1,9 +1,9 @@
 # JSON Tier 3 — SIMD-accelerated parsing
 
-Status: **Level A (SSE2) landed for both cursors, 2026-06-09** (workload:
-high-volume market-data JSON ingest). Object + array cursors both jump
-structural-to-structural via the SIMD primitives. Remaining: AVX2/NEON
-(wider chunks + ARM, behind runtime dispatch), then (if profiling demands)
+Status: **Level A landed, 2026-06-09** (workload: high-volume market-data
+JSON ingest). Object + array cursors jump structural-to-structural via the
+SIMD primitives, which dispatch AVX2 (32-byte) → SSE2 (16-byte) → scalar
+by runtime CPU support. Remaining: NEON (ARM), then (if profiling demands)
 Level B. Written after JSON Tier 2 (`from_json` / `to_json`, scalar,
 schema-specialized) landed (#84–#88).
 
