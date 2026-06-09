@@ -1,10 +1,30 @@
 # JSON parse — closing the V8 gap by inlining leaf primitives
 
-Status: **scope / proposal.** Nothing built. Written 2026-06-09 after the
-inline-parser (#93) + string-fast-path (#94) brought `from_json` to ~75ms
-(200k × 7-field), beating Go ~2× and Python ~2.9×, **~1.47× behind V8's
-JSON.parse (~51ms)**. This scopes closing that last gap — and the key
-finding is that the lever is *not* a JSON-specific LLVM rewrite.
+Status: **executed + landed at ~58ms (2026-06-09).** The leaf-primitive
+inlining below was done and measured; the original "byte_at ≈ half the
+time" hypothesis was **wrong** — byte_at was only ~3ms. Outcome:
+
+| step | time | note |
+|------|------|------|
+| inline parser (#93) | 96 ms | |
+| + string fast-path (#94) | 75 ms | |
+| + `byte_at` → gep+load (#96) | 72 ms | scoped as the big lever; was ~3ms |
+| + `range_eq` vs literal (#97) | **~58 ms** | the real cheap win, ~10ms |
+| `range_parse_int` | — | **declined** (see below) |
+
+`range_parse_int` lowers to `strtoll` (errno/overflow + full-consumption);
+inlining it means reimplementing strtoll in IR, and a subtly-wrong
+overflow check would pass the bench/tests yet misparse ~19-digit numbers
+in production — a latent correctness bug for ~5–10ms. Not worth it.
+
+Final: ~58ms — **~1.15× behind V8**, beats Go ~2.4× / Python ~3.5×, 5×
+faster + 11× leaner than the cursor version. The remaining ~44ms is the
+`next_*` SIMD scan floor — only the IR-scan rewrite (Approach B) closes
+that, and it's a large separate project, deferred. **Landed here.**
+
+---
+
+Original scope (kept for the record; the byte_at weighting was wrong):
 
 ## Where the 75ms floor actually is
 
