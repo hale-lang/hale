@@ -105,6 +105,12 @@ pub(crate) enum CodegenTy {
     /// NUL-terminated buffer. Runtime layout identical to
     /// `String`. Returned only by `BytesBuilder.text_view()`.
     StringView,
+    /// A1 zero-copy ring write: a writable view over a reserved ring
+    /// slot — a `{ ptr, i64 cap }` pair (16-byte by-value struct). Bound
+    /// by the `Topic.write(max) { w => ... }` construct and consumed by
+    /// `std::bytes::write_*`. Never heap-backed; writes go straight into
+    /// the mapped ring.
+    BytesMut,
     /// Pointer to a locus's struct. The string carries the locus
     /// name; the layout + field map live in `Cx.user_loci`. Used
     /// for the child param of `accept(g: ChildLocus)`.
@@ -2249,6 +2255,10 @@ fn count_self_fields_in_stmt(
             count_self_fields_in_expr(subject, counts, depth);
             count_self_fields_in_expr(value, counts, depth);
         }
+        Stmt::ShmWrite { max, body, .. } => {
+            count_self_fields_in_expr(max, counts, depth);
+            count_self_fields_in_block(body, counts, depth);
+        }
         Stmt::Expr(e) => count_self_fields_in_expr(e, counts, depth),
         Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) => {}
     }
@@ -2444,6 +2454,9 @@ fn stmt_reads_self_children(s: &Stmt) -> bool {
         }
         Stmt::Send { subject, value, .. } => {
             expr_reads_self_children(subject) || expr_reads_self_children(value)
+        }
+        Stmt::ShmWrite { max, body, .. } => {
+            expr_reads_self_children(max) || block_reads_self_children(body)
         }
         Stmt::Expr(e) => expr_reads_self_children(e),
         Stmt::Return(None, _)
@@ -8229,7 +8242,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         self.context.i32_type().fn_type(&llvm_param_tys, false)
                     }
                 }
-                Some(CodegenTy::BytesView) | Some(CodegenTy::StringView) => self
+                Some(CodegenTy::BytesView) | Some(CodegenTy::StringView) | Some(CodegenTy::BytesMut) => self
                     .view_struct_ty()
                     .fn_type(&llvm_param_tys, false),
                 Some(CodegenTy::String)
@@ -8383,7 +8396,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Float => Ok(self.context.f64_type().into()),
             CodegenTy::Bool => Ok(self.context.i32_type().into()),
             CodegenTy::String | CodegenTy::Bytes => Ok(ptr_t.into()),
-            CodegenTy::BytesView | CodegenTy::StringView => {
+            CodegenTy::BytesView | CodegenTy::StringView | CodegenTy::BytesMut => {
                 // 16-byte struct by value: { ptr, i64 }.
                 Ok(self.view_struct_ty().into())
             }
@@ -8450,7 +8463,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Float => Ok(self.context.f64_type().into()),
             CodegenTy::Bool => Ok(self.context.i32_type().into()),
             CodegenTy::String | CodegenTy::Bytes => Ok(ptr_t.into()),
-            CodegenTy::BytesView | CodegenTy::StringView => {
+            CodegenTy::BytesView | CodegenTy::StringView | CodegenTy::BytesMut => {
                 Ok(self.view_struct_ty().into())
             }
             CodegenTy::TypeRef(name) => {
@@ -10931,6 +10944,77 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             Stmt::Send { subject, value, or_disposition, .. } => {
                 self.lower_send(subject, value, or_disposition.as_ref(), scope)?;
+                Ok(BlockEnd::Open)
+            }
+            Stmt::ShmWrite { topic, max, binding, body, .. } => {
+                // A1 zero-copy write: reserve a slot, bind a BytesMut view
+                // over it, run the body (which writes directly into the
+                // mapped ring via `std::bytes::write_*`), then commit the
+                // byte count the body's tail yields.
+                let subject = topic.name.clone();
+                let subj_ptr = self
+                    .builder
+                    .build_global_string_ptr(
+                        &subject,
+                        &format!("lotus.shm_ring.write.subject.{}", subject),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .as_pointer_value();
+                let (max_val, _) = self.lower_expr(max, scope)?;
+                let max_i64 = max_val.into_int_value();
+                let reserve_fn = self
+                    .module
+                    .get_function("lotus_bus_reserve_shm_ring_layout")
+                    .expect("lotus_bus_reserve_shm_ring_layout declared");
+                let base = self
+                    .builder
+                    .build_call(
+                        reserve_fn,
+                        &[subj_ptr.into(), max_i64.into()],
+                        "shm.write.reserve",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("reserve returns ptr")
+                    .into_pointer_value();
+                // BytesMut = `{ base, cap }` (the view struct shape).
+                let vt = self.view_struct_ty();
+                let bm0 = self
+                    .builder
+                    .build_insert_value(vt.get_undef(), base, 0, "shm.write.bm.base")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let bm = self
+                    .builder
+                    .build_insert_value(bm0.into_struct_value(), max_i64, 1, "shm.write.bm.cap")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_struct_value();
+                let w_slot = self.alloca_for(&CodegenTy::BytesMut, &binding.name)?;
+                self.builder
+                    .build_store(w_slot, bm)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                scope
+                    .locals
+                    .insert(binding.name.clone(), (w_slot, CodegenTy::BytesMut));
+                for s in &body.stmts {
+                    self.lower_stmt(s, scope)?;
+                }
+                // The tail expression is the committed byte count.
+                let len_i64 = match &body.tail {
+                    Some(t) => self.lower_expr(t, scope)?.0.into_int_value(),
+                    None => self.context.i64_type().const_zero(),
+                };
+                let commit_fn = self
+                    .module
+                    .get_function("lotus_bus_commit_shm_ring_layout")
+                    .expect("lotus_bus_commit_shm_ring_layout declared");
+                self.builder
+                    .build_call(
+                        commit_fn,
+                        &[subj_ptr.into(), len_i64.into()],
+                        "shm.write.commit",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok(BlockEnd::Open)
             }
             // v1.x-VIOLATE (F.27): inline structural failure.
@@ -13428,7 +13512,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.context.i32_type().into()
                 }
             }
-            CodegenTy::BytesView | CodegenTy::StringView => {
+            CodegenTy::BytesView | CodegenTy::StringView | CodegenTy::BytesMut => {
                 // F.30b view ABI: 16-byte struct value, alloca'd
                 // by struct type so loads/stores move the full
                 // {src, epoch} pair atomically.
@@ -15473,6 +15557,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     return Err(CodegenError::Unsupported(
                         "println of a function pointer — function \
                          values have no surface representation".into(),
+                    ));
+                }
+                CodegenTy::BytesMut => {
+                    return Err(CodegenError::Unsupported(
+                        "println of a BytesMut — a writable ring view has \
+                         no printable representation".into(),
                     ));
                 }
                 CodegenTy::Bytes | CodegenTy::BytesView => {

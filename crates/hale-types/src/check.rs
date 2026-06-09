@@ -1766,6 +1766,10 @@ fn walk_stmt_pool(stmt: &Stmt, cx: &mut PoolCheckCx) {
         }
         Stmt::Fail { value, .. } => walk_expr_pool(value, cx),
         Stmt::Block(b) => walk_block_pool(b, cx),
+        Stmt::ShmWrite { max, body, .. } => {
+            walk_expr_pool(max, cx);
+            walk_block_pool(body, cx);
+        }
         Stmt::Recovery { args, .. } => {
             for a in args {
                 walk_expr_pool(a, cx);
@@ -6655,6 +6659,62 @@ impl<'a> Checker<'a> {
             }
             Stmt::Expr(e) => {
                 let _ = self.check_expr_addressed(e);
+            }
+            Stmt::ShmWrite { topic, max, binding, body, span } => {
+                // The receiver must be a declared topic (its layout-bound
+                // producer binding is validated at the binding site).
+                if !matches!(
+                    self.top.lookup(&topic.name),
+                    Some(TopSymbol::Topic(_))
+                ) {
+                    self.diags.push(Diag::ty(
+                        topic.span,
+                        format!("`{}.write`: `{}` is not a declared topic",
+                                topic.name, topic.name),
+                    ));
+                }
+                let max_ty = self.check_expr_addressed(max);
+                if !matches!(max_ty, Ty::Prim(PrimType::Int) | Ty::Unknown) {
+                    self.diags.push(Diag::ty(
+                        max.span(),
+                        format!("`{}.write(max)`: max must be Int, got {}",
+                                topic.name, max_ty.display()),
+                    ));
+                }
+                // Bind the writable view over the body, then require the
+                // body to end with the Int byte count to commit.
+                self.locals.push();
+                self.locals.insert(
+                    &binding.name,
+                    LocalSym { ty: Ty::Unknown, is_mut: false },
+                );
+                for s in &body.stmts {
+                    self.check_stmt(s);
+                }
+                match &body.tail {
+                    Some(t) => {
+                        let tt = self.check_expr_addressed(t);
+                        if !matches!(tt, Ty::Prim(PrimType::Int) | Ty::Unknown) {
+                            self.diags.push(Diag::ty(
+                                t.span(),
+                                format!(
+                                    "`{}.write {{ ... }}` must end with the Int \
+                                     byte count to commit, got {}",
+                                    topic.name, tt.display()
+                                ),
+                            ));
+                        }
+                    }
+                    None => self.diags.push(Diag::ty(
+                        *span,
+                        format!(
+                            "`{}.write {{ ... }}` must end with the Int byte \
+                             count to commit (the record length)",
+                            topic.name
+                        ),
+                    )),
+                }
+                self.locals.pop();
             }
         }
     }

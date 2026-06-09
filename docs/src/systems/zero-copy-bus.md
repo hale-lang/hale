@@ -183,6 +183,30 @@ fn emit_l2(level: L2) {
 `Recs <- bytes` frames `[len_prefix len][bytes]` where `len` is the
 value's actual byte length, so each record carries its own size.
 
+### Writing in place (zero-copy)
+
+That builds the record in a temporary buffer, then copies it into the
+ring. To skip the copy on a hot producer path, write the fields
+*directly* into the reserved slot:
+
+```hale
+fn emit_l2(level: L2) {
+    Recs.write(24) { w =>           // reserve up to 24 bytes
+        std::bytes::write_u8(w, 0, 2)              or raise;
+        std::bytes::write_u32_le(w, 1, level.price) or raise;
+        std::bytes::write_u32_le(w, 5, level.qty)   or raise;
+        9                            // bytes written -> the record length
+    };
+}
+```
+
+`Topic.write(max) { w => ... }` reserves up to `max` bytes, hands the
+body a writable view `w` over the slot, and commits the byte count the
+body's tail yields. The `std::bytes::write_*` family mirrors the readers
+(bounds-checked, `fallible(IndexError)`). The reserve and commit are
+scoped to the block, so the view can't escape and the commit can't be
+forgotten.
+
 ## The same shape, one tier down
 
 Notice this is the same move as everything else at this level: an

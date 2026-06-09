@@ -381,6 +381,19 @@ fn scan_stmt(
             }
             None
         }
+        Stmt::ShmWrite { max, body, .. } => {
+            if let Some(imp) = scan_expr(max, all_fns, map, any_unknown) {
+                return Some(imp);
+            }
+            for s in &body.stmts {
+                if let Some(imp) = scan_stmt(s, all_fns, map, any_unknown) {
+                    return Some(imp);
+                }
+            }
+            body.tail
+                .as_ref()
+                .and_then(|t| scan_expr(t, all_fns, map, any_unknown))
+        }
         Stmt::Expr(e) => scan_expr(e, all_fns, map, any_unknown),
         Stmt::Recovery { args, span, op, .. } => {
             // Recovery primitives (quarantine, restart, etc.) all
@@ -672,6 +685,7 @@ fn stmt_span(s: &Stmt) -> Span {
         Stmt::If(if_stmt) => if_stmt.span,
         Stmt::Match(m) => m.span,
         Stmt::Block(b) => b.span,
+        Stmt::ShmWrite { span, .. } => *span,
         Stmt::Expr(e) => match e {
             Expr::Literal(_, span) => *span,
             _ => Span::new(0, 0),

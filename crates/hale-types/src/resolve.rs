@@ -1766,6 +1766,10 @@ fn scan_stmt_for_stdlib_usage(s: &Stmt, out: &mut StdlibErrorUsage) {
         Stmt::Return(Some(e), _) => scan_expr_for_stdlib_usage(e, out),
         Stmt::Fail { value, .. } => scan_expr_for_stdlib_usage(value, out),
         Stmt::Block(b) => scan_block_for_stdlib_usage(b, out),
+        Stmt::ShmWrite { max, body, .. } => {
+            scan_expr_for_stdlib_usage(max, out);
+            scan_block_for_stdlib_usage(body, out);
+        }
         Stmt::Send { subject, value, .. } => {
             scan_expr_for_stdlib_usage(subject, out);
             scan_expr_for_stdlib_usage(value, out);
@@ -1923,8 +1927,12 @@ fn mark_stdlib_error_from_path(
             }
             "bytes" => {
                 // std::bytes::at + the binary-pack readers
-                // (read_u32_le, ...) return fallible(IndexError).
-                if segs[2] == "at" || segs[2].starts_with("read_") {
+                // (read_u32_le, ...) + the A1 writers (write_u32_le, ...)
+                // return fallible(IndexError).
+                if segs[2] == "at"
+                    || segs[2].starts_with("read_")
+                    || segs[2].starts_with("write_")
+                {
                     out.index_error = true;
                 }
             }

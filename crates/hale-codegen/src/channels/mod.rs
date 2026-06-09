@@ -957,6 +957,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "bytes", n] if n.starts_with("read_") => Ok(Some(
                 self.lower_std_bytes_read(n, args, scope)?,
             )),
+            // A1 zero-copy write: `write_<type>_<endian>(w, off, val) -> ()
+            // fallible(IndexError)`.
+            ["std", "bytes", n] if n.starts_with("write_") => Ok(Some(
+                self.lower_std_bytes_write(n, args, scope)?,
+            )),
             ["std", "str", "parse_int"] => Ok(Some(
                 self.lower_std_str_parse_int_fallible(args, scope)?,
             )),

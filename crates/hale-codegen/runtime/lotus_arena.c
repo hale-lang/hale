@@ -11381,6 +11381,38 @@ int64_t lotus_bytes_read_uint(const void *b, int64_t off, int width,
     return (int64_t)v;
 }
 
+/* A1 zero-copy write: write `val`'s low `width` bytes at `base[off ..
+ * off+width)` in the given endianness. `cap` is the writable capacity;
+ * an out-of-range write sets `*oob` and writes nothing. Unlike
+ * lotus_bytes_read_uint (which reads a Bytes blob PAST its `[i64 len]`
+ * prefix), this writes into a RAW region — `base` is the data pointer
+ * directly — for a `BytesMut` over a reserved ring slot. Floats are
+ * bit-cast to their integer pattern in codegen and written through here
+ * (width 4 / 8), so no separate float helper is needed. */
+void lotus_bytes_write_uint(void *base, int64_t cap, int64_t off, int width,
+                            int64_t val, int big_endian, int64_t *oob) {
+    /* Overflow-safe bound, mirroring read_uint: off > cap - width. */
+    if (!base || off < 0 || width < 1 || width > 8 ||
+        off > cap - (int64_t)width) {
+        if (oob) *oob = 1;
+        return;
+    }
+    if (oob) *oob = 0;
+    unsigned char *p = (unsigned char *)base + off;
+    uint64_t v = (uint64_t)val;
+    if (big_endian) {
+        for (int i = width - 1; i >= 0; i--) {
+            p[i] = (unsigned char)(v & 0xff);
+            v >>= 8;
+        }
+    } else {
+        for (int i = 0; i < width; i++) {
+            p[i] = (unsigned char)(v & 0xff);
+            v >>= 8;
+        }
+    }
+}
+
 /*
  * Phase 2g: Bytes slice — returns a fresh Bytes blob containing
  * the half-open range [lo, hi). Out-of-range bounds clamp to the

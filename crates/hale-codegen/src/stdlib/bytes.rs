@@ -24,6 +24,12 @@ pub(crate) trait BytesStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
+    fn lower_std_bytes_write(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
     fn lower_std_bytes_builder_new(
         &mut self,
         args: &[Expr],
@@ -442,6 +448,177 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
             out_val_slot: Some(out_val_slot),
             out_err_slot,
             success_ty: Some(success_ty),
+            payload_ty,
+        })
+    }
+
+    /// A1 zero-copy write: `std::bytes::write_<type>[_<endian>](w: BytesMut,
+    /// off: Int, val) -> () fallible(IndexError)`. Mirror of the readers:
+    /// writes a fixed-width scalar at `off` into the writable view `w`
+    /// (data ptr + capacity), bounds-checked against the capacity. Floats
+    /// are bit-cast to their integer pattern and written through the same
+    /// `lotus_bytes_write_uint`.
+    fn lower_std_bytes_write(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        let spec = name.strip_prefix("write_").ok_or_else(|| {
+            CodegenError::Unsupported(format!("not a bytes writer: {}", name))
+        })?;
+        let (tok, big_endian) = if let Some(t) = spec.strip_suffix("_le") {
+            (t, false)
+        } else if let Some(t) = spec.strip_suffix("_be") {
+            (t, true)
+        } else {
+            (spec, false)
+        };
+        let (width, is_float): (i32, bool) = match tok {
+            "u8" | "i8" => (1, false),
+            "u16" | "i16" => (2, false),
+            "u32" | "i32" => (4, false),
+            "u64" | "i64" => (8, false),
+            "f32" => (4, true),
+            "f64" => (8, true),
+            _ => {
+                return Err(CodegenError::Unsupported(format!(
+                    "unknown bytes writer `std::bytes::{}`",
+                    name
+                )))
+            }
+        };
+        if args.len() != 3 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::{} takes 3 args (w, off, val), got {}",
+                name,
+                args.len()
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+
+        // w: BytesMut → a `{ ptr base, i64 cap }` struct value.
+        let (w_val, w_ty) = self.lower_expr(&args[0], scope)?;
+        if w_ty != CodegenTy::BytesMut {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::{}: first arg must be a BytesMut (from a \
+                 `Topic.write(...)` block), got {:?}",
+                name, w_ty
+            )));
+        }
+        let w_struct = w_val.into_struct_value();
+        let base = self
+            .builder
+            .build_extract_value(w_struct, 0, "bytes.write.base")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        let cap = self
+            .builder
+            .build_extract_value(w_struct, 1, "bytes.write.cap")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+
+        let (off_val, off_ty) = self.lower_expr(&args[1], scope)?;
+        if off_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::{}: offset must be Int, got {:?}",
+                name, off_ty
+            )));
+        }
+        let off_ssa = off_val.into_int_value();
+
+        // val → an i64 bit pattern. Floats bit-cast (f64 directly; f32 is
+        // truncate f64→f32, bitcast to i32, zero-extend to i64 — the low
+        // `width` bytes are what gets written).
+        let (val_v, val_ty) = self.lower_expr(&args[2], scope)?;
+        let val_bits = if !is_float {
+            if val_ty != CodegenTy::Int {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::bytes::{}: value must be Int, got {:?}",
+                    name, val_ty
+                )));
+            }
+            val_v.into_int_value()
+        } else if width == 8 {
+            self.builder
+                .build_bit_cast(val_v.into_float_value(), i64_t, "bytes.write.f64.bits")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_int_value()
+        } else {
+            let f32v = self
+                .builder
+                .build_float_trunc(val_v.into_float_value(), self.context.f32_type(), "bytes.write.f32")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let bits32 = self
+                .builder
+                .build_bit_cast(f32v, i32_t, "bytes.write.f32.bits")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_int_value();
+            self.builder
+                .build_int_z_extend(bits32, i64_t, "bytes.write.f32.zext")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+
+        let oob_slot = self.alloca_for(&CodegenTy::Int, "bytes.write.oob")?;
+        let write_fn = self
+            .module
+            .get_function("lotus_bytes_write_uint")
+            .expect("lotus_bytes_write_uint declared");
+        self.builder
+            .build_call(
+                write_fn,
+                &[
+                    base.into(),
+                    cap.into(),
+                    off_ssa.into(),
+                    i32_t.const_int(width as u64, false).into(),
+                    val_bits.into(),
+                    i32_t.const_int(big_endian as u64, false).into(),
+                    oob_slot.into(),
+                ],
+                "bytes.write.call",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let oob_v = self
+            .builder
+            .build_load(i64_t, oob_slot, "bytes.write.oob.v")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                oob_v,
+                i64_t.const_zero(),
+                "bytes.write.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // () success; lazy IndexError(off, cap) on the err path.
+        let payload_ty = CodegenTy::TypeRef("IndexError".to_string());
+        let out_err_slot = self.alloca_for(&payload_ty, "bytes.write.out_err")?;
+        let func = self.current_fn.expect("bytes.write inside fn body");
+        let lazy_err_bb = self.context.append_basic_block(func, "bytes.write.lazy_err");
+        let join_bb = self.context.append_basic_block(func, "bytes.write.join");
+        self.builder
+            .build_conditional_branch(is_err, lazy_err_bb, join_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(lazy_err_bb);
+        let ie_ptr = self.emit_index_error_alloc("out_of_bounds", off_ssa, cap)?;
+        self.builder
+            .build_store(out_err_slot, ie_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(join_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(join_bb);
+        Ok(FallibleCallResult {
+            i1_path: is_err,
+            out_val_slot: None,
+            out_err_slot,
+            success_ty: None,
             payload_ty,
         })
     }
