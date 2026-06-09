@@ -65,3 +65,28 @@ fn from_json_raises_on_missing_required_and_defaults_optional() {
     assert!(status.success(), "run failed: {}", out);
     assert!(out.contains("side=ERR"), "missing required px should have raised:\n{}", out);
 }
+
+#[test]
+fn from_json_recurses_into_nested_json_structs() {
+    // `home: Addr` where Addr is itself a generated JSON struct: the outer
+    // parser hands the nested object's raw text to Addr's parser, and a
+    // missing nested field propagates the error out.
+    let src = r#"
+        type Addr { city: String `json:"city"`; zip: Int `json:"zip"`; }
+        type Person {
+            name: String `json:"name"`;
+            home: Addr   `json:"home"`;
+        }
+        fn main() {
+            let p = Person::from_json("{\"name\": \"Ada\", \"home\": {\"city\": \"London\", \"zip\": 1234}}") or raise;
+            println("name=", p.name, " city=", p.home.city, " zip=", to_string(p.home.zip));
+            let bad = Person::from_json("{\"name\": \"X\", \"home\": {\"city\": \"NoZip\"}}")
+                or Person { name: "ERR", home: Addr { city: "ERR", zip: -1 } };
+            println("bad=", bad.name);
+        }
+    "#;
+    let (out, status) = build_and_run("nested", src);
+    assert!(status.success(), "run failed: {}", out);
+    assert!(out.contains("name=Ada city=London zip=1234"), "nested parse wrong:\n{}", out);
+    assert!(out.contains("bad=ERR"), "missing nested field should propagate:\n{}", out);
+}
