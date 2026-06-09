@@ -38,6 +38,9 @@
 #include <malloc.h>
 #include <string.h>
 #include <pthread.h>
+#if defined(__SSE2__)
+#include <emmintrin.h>  /* JSON Tier-3 Level-A SIMD scan primitives */
+#endif
 #include <sched.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -11411,6 +11414,97 @@ void lotus_bytes_write_uint(void *base, int64_t cap, int64_t off, int width,
             v >>= 8;
         }
     }
+}
+
+/*
+ * JSON Tier-3 Level-A — SIMD scan primitives.
+ *
+ * Each takes a NUL-terminated String `char*` (the data pointer directly),
+ * a start offset, and the precomputed length, and returns the offset of the next byte matching a small character
+ * class at/after `from`, or `len` if none. The single-pass `std::json`
+ * object/array cursors call these instead of byte-at-a-time inner loops.
+ *
+ * SSE2 (baseline on x86-64) scans 16-byte chunks; a scalar tail handles
+ * the final < 16 bytes so there is never an out-of-bounds read (the
+ * `from + 16 <= len` guard keeps the vector load fully in-bounds —
+ * ASan-safe). On non-SSE2 targets the scalar loop is the whole impl, and
+ * it must stay byte-identical to the SSE2 result (the cursor's existing
+ * test corpus + a differential fuzz enforce that).
+ */
+
+/* First offset >= from whose byte is a JSON structural char or a quote:
+ * `{ } [ ] , "` (no `:` — the value scan doesn't need it). Drives the
+ * outside-string value scan and finds an object key's opening quote. */
+int64_t lotus_json_next_struct_or_quote(const char *s, int64_t from, int64_t len) {
+    const unsigned char *d = (const unsigned char *)s;
+    int64_t i = from < 0 ? 0 : from;
+#if defined(__SSE2__)
+    for (; i + 16 <= len; i += 16) {
+        __m128i v = _mm_loadu_si128((const __m128i *)(d + i));
+        __m128i m = _mm_or_si128(
+            _mm_or_si128(
+                _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8('{')),
+                             _mm_cmpeq_epi8(v, _mm_set1_epi8('}'))),
+                _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8('[')),
+                             _mm_cmpeq_epi8(v, _mm_set1_epi8(']')))),
+            _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8(',')),
+                         _mm_cmpeq_epi8(v, _mm_set1_epi8('"'))));
+        int mask = _mm_movemask_epi8(m);
+        if (mask) return i + __builtin_ctz((unsigned)mask);
+    }
+#endif
+    for (; i < len; i++) {
+        unsigned char c = d[i];
+        if (c == '{' || c == '}' || c == '[' || c == ']' || c == ',' || c == '"')
+            return i;
+    }
+    return len;
+}
+
+/* First offset >= from whose byte is a quote or backslash (`" \`).
+ * Drives the inside-string scan (key + string values): a `\` means skip
+ * the escaped byte, a `"` closes the string. */
+int64_t lotus_json_next_quote_or_bs(const char *s, int64_t from, int64_t len) {
+    const unsigned char *d = (const unsigned char *)s;
+    int64_t i = from < 0 ? 0 : from;
+#if defined(__SSE2__)
+    for (; i + 16 <= len; i += 16) {
+        __m128i v = _mm_loadu_si128((const __m128i *)(d + i));
+        __m128i m = _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8('"')),
+                                 _mm_cmpeq_epi8(v, _mm_set1_epi8('\\')));
+        int mask = _mm_movemask_epi8(m);
+        if (mask) return i + __builtin_ctz((unsigned)mask);
+    }
+#endif
+    for (; i < len; i++) {
+        unsigned char c = d[i];
+        if (c == '"' || c == '\\') return i;
+    }
+    return len;
+}
+
+/* First offset >= from whose byte is NOT JSON whitespace (space, tab,
+ * newline, carriage return). Drives the skip-whitespace loops. */
+int64_t lotus_json_next_non_ws(const char *s, int64_t from, int64_t len) {
+    const unsigned char *d = (const unsigned char *)s;
+    int64_t i = from < 0 ? 0 : from;
+#if defined(__SSE2__)
+    for (; i + 16 <= len; i += 16) {
+        __m128i v = _mm_loadu_si128((const __m128i *)(d + i));
+        __m128i ws = _mm_or_si128(
+            _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8(' ')),
+                         _mm_cmpeq_epi8(v, _mm_set1_epi8('\t'))),
+            _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8('\n')),
+                         _mm_cmpeq_epi8(v, _mm_set1_epi8('\r'))));
+        int nonws = (~_mm_movemask_epi8(ws)) & 0xFFFF;
+        if (nonws) return i + __builtin_ctz((unsigned)nonws);
+    }
+#endif
+    for (; i < len; i++) {
+        unsigned char c = d[i];
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') return i;
+    }
+    return len;
 }
 
 /*

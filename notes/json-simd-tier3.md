@@ -1,10 +1,18 @@
 # JSON Tier 3 — SIMD-accelerated parsing
 
-Status: **scope / proposal.** Nothing built. Written 2026-06-09 after JSON
-Tier 2 (`from_json` / `to_json`, scalar, schema-specialized) landed
-(#84–#88). This scopes the SIMD substrate the cursor was designed as a
-seam for — and, importantly, argues it's two separable levels, the first
-much cheaper than "implement simdjson."
+Status: **Level A in progress.** Object cursor on SSE2 landed 2026-06-09
+(workload: high-volume market-data JSON ingest). Remaining: the array
+cursor on the same primitives, then AVX2/NEON, then (if profiling
+demands) Level B. Written after JSON Tier 2 (`from_json` / `to_json`,
+scalar, schema-specialized) landed (#84–#88).
+
+**Landed (Level A, object cursor):** `lotus_json_next_struct_or_quote` /
+`next_quote_or_bs` / `next_non_ws` — SSE2 16-byte scans with a scalar
+tail + scalar fallback (`(char* s, from, len)`; the cursor passes the
+precomputed length so there's no per-step strlen). `__json_obj_step_span`
+rewired to jump structural-to-structural instead of byte-at-a-time. The
+generated `from_json` is unchanged (the seam held); existing json suites
++ a SIMD stress test pass, ASan/UBSan-clean. Known follow-ons below.
 
 ## Where we are
 

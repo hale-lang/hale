@@ -16187,6 +16187,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_str_byte_at_unchecked(args, scope)?;
                 Ok(())
             }
+            ["std", "json", "next_struct_or_quote"] => {
+                let _ = self.lower_json_scan("lotus_json_next_struct_or_quote", args, scope)?;
+                Ok(())
+            }
+            ["std", "json", "next_quote_or_bs"] => {
+                let _ = self.lower_json_scan("lotus_json_next_quote_or_bs", args, scope)?;
+                Ok(())
+            }
+            ["std", "json", "next_non_ws"] => {
+                let _ = self.lower_json_scan("lotus_json_next_non_ws", args, scope)?;
+                Ok(())
+            }
             ["std", "io", "sockopt", name]
                 if SOCKOPT_NAMES.contains(name) =>
             {
@@ -16871,6 +16883,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "str", "byte_at_unchecked"] => {
                 self.lower_std_str_byte_at_unchecked(args, scope)
+            }
+            ["std", "json", "next_struct_or_quote"] => {
+                self.lower_json_scan("lotus_json_next_struct_or_quote", args, scope)
+            }
+            ["std", "json", "next_quote_or_bs"] => {
+                self.lower_json_scan("lotus_json_next_quote_or_bs", args, scope)
+            }
+            ["std", "json", "next_non_ws"] => {
+                self.lower_json_scan("lotus_json_next_non_ws", args, scope)
             }
             // 2026-05-26 — named socket-option constants. Each
             // resolves to a zero-arg call into the matching C

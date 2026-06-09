@@ -28,6 +28,12 @@ pub(crate) trait StrStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_json_scan(
+        &mut self,
+        fn_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
     fn lower_std_str_range_parse_int_fallible(
         &mut self,
         args: &[Expr],
@@ -383,6 +389,52 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
                 &[s_val.into(), i_val.into()],
                 "str.byte_at_unchecked.ret",
             )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((v, CodegenTy::Int))
+    }
+
+    /// JSON Tier-3 Level-A scan primitive: `(json: String, from: Int) ->
+    /// Int`, dispatched to a `lotus_json_next_*` SIMD runtime fn. Shares
+    /// the `byte_at_unchecked` shape (String blob + offset → offset).
+    fn lower_json_scan(
+        &mut self,
+        fn_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 3 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::json::{} takes 3 args (json, from, len), got {}",
+                fn_name,
+                args.len()
+            )));
+        }
+        let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::json::{}: first arg must be String, got {:?}",
+                fn_name, s_ty
+            )));
+        }
+        let s_val = self.unpack_view_if_needed(s_val, &s_ty)?;
+        let (from_val, from_ty) = self.lower_expr(&args[1], scope)?;
+        let (len_val, len_ty) = self.lower_expr(&args[2], scope)?;
+        if !matches!(from_ty, CodegenTy::Int) || !matches!(len_ty, CodegenTy::Int) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::json::{}: from and len must be Int, got {:?}, {:?}",
+                fn_name, from_ty, len_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function(fn_name)
+            .unwrap_or_else(|| panic!("{} declared", fn_name));
+        let v = self
+            .builder
+            .build_call(f, &[s_val.into(), from_val.into(), len_val.into()], "json.scan.ret")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .try_as_basic_value()
             .left()
