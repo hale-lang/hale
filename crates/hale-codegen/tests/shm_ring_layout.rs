@@ -205,3 +205,12 @@ fn layout_heterogeneous_raw_view() {
 fn layout_slots_reads_native_lotus_ring() {
     run_mode("lotus_dogfood");
 }
+
+/// A1 zero-copy write (runtime): a producer reserves a max-sized slot,
+/// writes differently-sized records DIRECTLY into the mapped ring (no
+/// intermediate buffer + copy), and commits the actual length; a raw
+/// consumer reads them back. Validates the reserve/commit framing split.
+#[test]
+fn layout_reserve_commit_zero_copy_write() {
+    run_mode("reserve_commit");
+}
