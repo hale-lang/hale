@@ -2770,12 +2770,25 @@ impl Parser {
         } else {
             None
         };
+        // Optional Go-style metadata tag: a backtick string after the
+        // field. The backtick lexer is shared with time literals (which
+        // only appear in expression position); in field-declaration
+        // position it's a tag, and we keep its raw body verbatim.
+        let tag = if matches!(self.peek(), TokenKind::TimeLit(_)) {
+            match self.bump().kind {
+                TokenKind::TimeLit(body) => Some(body),
+                _ => unreachable!("peeked TimeLit"),
+            }
+        } else {
+            None
+        };
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(StructField {
             span: name.span.merge(semi.span),
             name,
             ty,
             default,
+            tag,
         })
     }
 
