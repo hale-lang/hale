@@ -386,8 +386,10 @@ struct WireField {
 
 type WireLayouts = BTreeMap<String, BTreeMap<String, WireField>>;
 
-/// Extract a Go-style `key:"value"` from a tag string.
-fn tag_value(tag: &str, key: &str) -> Option<String> {
+/// Extract a Go-style `key:"value"` from a struct field's backtick tag
+/// string. Shared by the `repr:` accessor desugar and the typechecker's
+/// accessor validation.
+pub fn tag_value(tag: &str, key: &str) -> Option<String> {
     let needle = format!("{}:\"", key);
     let start = tag.find(&needle)? + needle.len();
     let rest = &tag[start..];
