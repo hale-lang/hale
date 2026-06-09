@@ -90,3 +90,35 @@ fn from_json_recurses_into_nested_json_structs() {
     assert!(out.contains("name=Ada city=London zip=1234"), "nested parse wrong:\n{}", out);
     assert!(out.contains("bad=ERR"), "missing nested field should propagate:\n{}", out);
 }
+
+#[test]
+fn to_json_emits_valid_json_and_round_trips() {
+    // Emit covers numbers (unquoted), bools, strings (quoted + escaped),
+    // and nested structs (recursed); then parse the emitted text back.
+    let src = r#"
+        type Addr { city: String `json:"city"`; zip: Int `json:"zip"`; }
+        type Order {
+            id: Int      `json:"id"`;
+            price: Float `json:"px"`;
+            active: Bool `json:"on"`;
+            side: String `json:"side"`;
+            home: Addr   `json:"home"`;
+        }
+        fn main() {
+            let o = Order { id: 7, price: 2.5, active: true, side: "buy\"x",
+                            home: Addr { city: "London", zip: 1234 } };
+            let j = Order::to_json(o);
+            println("json=", j);
+            let back = Order::from_json(j) or raise;
+            println("rt=", to_string(back.id), " ", back.home.city, " ", back.side);
+        }
+    "#;
+    let (out, status) = build_and_run("tojson", src);
+    assert!(status.success(), "run failed: {}", out);
+    assert!(
+        out.contains(r#"json={"id":7,"px":2.5,"on":true,"side":"buy\"x","home":{"city":"London","zip":1234}}"#),
+        "emit wrong:\n{}", out
+    );
+    // round-trip preserves nested + escaped values
+    assert!(out.contains(r#"rt=7 London buy"x"#), "round-trip wrong:\n{}", out);
+}
