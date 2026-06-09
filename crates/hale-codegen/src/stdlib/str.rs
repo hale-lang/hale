@@ -378,22 +378,31 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
                 i_ty
             )));
         }
-        let f = self
-            .module
-            .get_function("lotus_str_byte_at_unchecked")
-            .expect("lotus_str_byte_at_unchecked declared");
+        // Inline as `zext(load i8, ptr + i)` instead of a call — a Hale
+        // String is a `char*`, so byte i is one GEP + load. This is the
+        // hot path for every byte-scanning routine (the JSON cursor, the
+        // pack readers, hand-rolled scans); a function call per byte
+        // dominated their cost. The "unchecked" contract already promises
+        // the caller guarantees `0 <= i < len`, so no bounds check (a
+        // buggy caller gets a raw OOB load — same UB the name implies).
+        let i8_t = self.context.i8_type();
+        let s_ptr = s_val.into_pointer_value();
+        let idx = i_val.into_int_value();
+        let byte_ptr = unsafe {
+            self.builder
+                .build_in_bounds_gep(i8_t, s_ptr, &[idx], "byte_at.gep")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+        let byte = self
+            .builder
+            .build_load(i8_t, byte_ptr, "byte_at.byte")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
         let v = self
             .builder
-            .build_call(
-                f,
-                &[s_val.into(), i_val.into()],
-                "str.byte_at_unchecked.ret",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("returns i64");
-        Ok((v, CodegenTy::Int))
+            .build_int_z_extend(byte, self.context.i64_type(), "byte_at.zext")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((v.into(), CodegenTy::Int))
     }
 
     /// JSON Tier-3 Level-A scan primitive: `(json: String, from: Int) ->
