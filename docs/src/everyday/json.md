@@ -75,9 +75,15 @@ println(p.home.city);
 ```
 
 The tag is general `key:"value"` metadata — `json:` is one consumer;
-other keys are free for future tools. (Fields must be scalars — `Int` /
-`Float` / `Bool` / `String` — or nested `json:`-tagged structs; array
-fields are a follow-up, pending a growable value collection.)
+other keys are free for future tools.
+
+Fields must be scalars — `Int` / `Float` / `Bool` / `String` — or nested
+`json:`-tagged structs. **Array fields are not supported**, by design:
+Hale sequences are locus-owned (there is no heap-owning value list to put
+in a struct). To read a JSON array, walk it with the [array
+cursor](#arrays) and `push` each element into a `@form(vec)` cell on a
+locus — `from_json` handles the flat/nested record shape, arrays stay an
+explicit, locus-owned step.
 
 ## Arrays
 

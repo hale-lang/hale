@@ -1055,9 +1055,12 @@ payload picks the consumer mode:
   `from_json` is `fallible`, so callers must address it. A field whose
   type is another generated JSON struct is parsed recursively (the nested
   object's raw text is handed to that type's parser; a nested failure
-  propagates). Array fields remain a follow-up (no growable value
-  collection yet). Further tag keys remain reserved for future consumers
-  (validation, db mapping).
+  propagates). Array fields are **not** supported by design — Hale
+  sequences are locus-owned (there is no heap-owning value collection),
+  so a JSON array is read by walking the array cursor and pushing into a
+  `@form(vec)` locus cell, not parsed into a struct value field (see
+  `notes/value-collections.md`). Further tag keys remain reserved for
+  future consumers (validation, db mapping).
 
 Any other payload (with `String`, `Bytes`, or variable-size fields and
 not itself `BytesView`) is rejected.
