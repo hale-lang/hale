@@ -778,7 +778,11 @@ impl<'a> Mangler<'a> {
                 self.walk_expr(subject);
                 self.walk_expr(value);
             }
-            Stmt::ShmWrite { max, body, .. } => {
+            Stmt::ShmWrite { topic, max, body, .. } => {
+                // Mangle the topic ref like a bus publish/subscribe
+                // subject, so `Topic.write(...)` resolves to the same
+                // (possibly import-renamed) subject the binding registers.
+                self.rewrite_ident(&mut topic.name);
                 self.walk_expr(max);
                 self.walk_block(body);
             }
