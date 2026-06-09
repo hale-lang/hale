@@ -660,13 +660,7 @@ type __JsonArrayIterSpan {
 
 fn __json_array_first_span(json: String) -> std::json::ArrayIterSpan {
     let total = len(json);
-    // Skip leading whitespace.
-    let mut p = 0;
-    while p < total {
-        let c = std::str::byte_at_unchecked(json, p);
-        if c == 32 || c == 9 || c == 10 || c == 13 { p = p + 1; }
-        else { break; }
-    }
+    let p = std::json::next_non_ws(json, 0, total);
     if p >= total {
         return std::json::ArrayIterSpan {
             pos: total, cur_start: -1, cur_end: 0, done: true
@@ -697,11 +691,10 @@ fn __json_array_step_span(json: String, start: Int)
     -> std::json::ArrayIterSpan
 {
     let total = len(json);
-    let mut p = start;
-    while p < total {
-        let c = std::str::byte_at_unchecked(json, p);
-        if c == 32 || c == 9 || c == 10 || c == 13 || c == 44 { p = p + 1; }
-        else { break; }
+    // Skip whitespace, then any leading comma (+ trailing whitespace).
+    let mut p = std::json::next_non_ws(json, start, total);
+    while p < total && std::str::byte_at_unchecked(json, p) == 44 {
+        p = std::json::next_non_ws(json, p + 1, total);
     }
     if p >= total {
         return std::json::ArrayIterSpan {
@@ -715,27 +708,34 @@ fn __json_array_step_span(json: String, start: Int)
             pos: p + 1, cur_start: -1, cur_end: 0, done: true
         };
     }
+    // Element value: jump structural-to-structural, tracking nesting and
+    // skipping string contents wholesale (cur_end lands on the delimiter,
+    // matching the scalar iterator — element spans are not ws-trimmed).
     let elem_start = p;
     let mut depth = 0;
-    let mut in_str = false;
-    while p < total {
-        let ch = std::str::byte_at_unchecked(json, p);
-        if in_str {
-            if ch == 92 { p = p + 2; continue; }
-            if ch == 34 { in_str = false; }
-            p = p + 1;
-            continue;
+    let mut scanning = true;
+    while scanning {
+        p = std::json::next_struct_or_quote(json, p, total);
+        if p >= total {
+            p = total;
+            scanning = false;
+        } else {
+            let ch = std::str::byte_at_unchecked(json, p);
+            if ch == 34 {  // string — skip to its closing quote
+                let mut sp = std::json::next_quote_or_bs(json, p + 1, total);
+                while sp < total && std::str::byte_at_unchecked(json, sp) == 92 {
+                    sp = std::json::next_quote_or_bs(json, sp + 2, total);
+                }
+                if sp >= total { p = total; scanning = false; } else { p = sp + 1; }
+            } else if ch == 123 || ch == 91 {  // { [
+                depth = depth + 1;
+                p = p + 1;
+            } else if ch == 125 || ch == 93 {  // } ]
+                if depth == 0 { scanning = false; } else { depth = depth - 1; p = p + 1; }
+            } else {  // comma
+                if depth == 0 { scanning = false; } else { p = p + 1; }
+            }
         }
-        if ch == 34 { in_str = true; p = p + 1; continue; }
-        if ch == 123 || ch == 91 { depth = depth + 1; p = p + 1; continue; }
-        if ch == 125 || ch == 93 {
-            if depth == 0 { break; }
-            depth = depth - 1;
-            p = p + 1;
-            continue;
-        }
-        if ch == 44 && depth == 0 { break; }
-        p = p + 1;
     }
     return std::json::ArrayIterSpan {
         pos: p, cur_start: elem_start, cur_end: p, done: false
@@ -810,11 +810,7 @@ type __JsonObjectIterSpan {
 
 fn __json_obj_first_span(json: String) -> std::json::ObjectIterSpan {
     let total = len(json);
-    let mut p = 0;
-    while p < total {
-        let c = std::str::byte_at_unchecked(json, p);
-        if c == 32 || c == 9 || c == 10 || c == 13 { p = p + 1; } else { break; }
-    }
+    let p = std::json::next_non_ws(json, 0, total);
     if p >= total || std::str::byte_at_unchecked(json, p) != 123 {
         // Not an object (`{`).
         return std::json::ObjectIterSpan {

@@ -163,3 +163,27 @@ fn find_field_raw_in_with_explicit_bounds() {
     let c_line = stdout.lines().find(|l| l.starts_with("c=")).unwrap();
     assert_eq!(c_line, "c=", "expected c=<empty>, got: {:?}", c_line);
 }
+
+#[test]
+fn array_of_records_walk_through_simd_cursor() {
+    // Market-data shape: an array of objects. Walk the array (array
+    // cursor) and parse each element (object cursor) — both SIMD now.
+    let src = r#"
+        type Level { px: Float `json:"px"`; sz: Int `json:"sz"`; }
+        fn main() {
+            let book = "[ {\"px\": 1.5, \"sz\": 10}, {\"px\": 2.25, \"sz\": 20},
+                          {\"px\": 3.0, \"sz\": 30, \"note\": \"x\\\"y\"} ]";
+            let mut it = std::json::array_first_span(book);
+            let mut total = 0;
+            while !it.done {
+                let lvl = Level::from_json(std::json::iter_substring(it, book)) or raise;
+                total = total + lvl.sz;
+                it = std::json::array_next_span(it, book);
+            }
+            println("total=", to_string(total));
+        }
+    "#;
+    let (out, status) = build_and_run("arr_rec", src);
+    assert!(status.success(), "run failed: {}", out);
+    assert!(out.contains("total=60"), "array-of-records walk wrong:\n{}", out);
+}

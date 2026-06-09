@@ -1,10 +1,11 @@
 # JSON Tier 3 — SIMD-accelerated parsing
 
-Status: **Level A in progress.** Object cursor on SSE2 landed 2026-06-09
-(workload: high-volume market-data JSON ingest). Remaining: the array
-cursor on the same primitives, then AVX2/NEON, then (if profiling
-demands) Level B. Written after JSON Tier 2 (`from_json` / `to_json`,
-scalar, schema-specialized) landed (#84–#88).
+Status: **Level A (SSE2) landed for both cursors, 2026-06-09** (workload:
+high-volume market-data JSON ingest). Object + array cursors both jump
+structural-to-structural via the SIMD primitives. Remaining: AVX2/NEON
+(wider chunks + ARM, behind runtime dispatch), then (if profiling demands)
+Level B. Written after JSON Tier 2 (`from_json` / `to_json`, scalar,
+schema-specialized) landed (#84–#88).
 
 **Landed (Level A, object cursor):** `lotus_json_next_struct_or_quote` /
 `next_quote_or_bs` / `next_non_ws` — SSE2 16-byte scans with a scalar
