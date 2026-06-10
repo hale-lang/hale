@@ -871,6 +871,10 @@ fn run_check(target: &Path) -> ExitCode {
     if std::env::args().any(|a| a == "--warn-unbounded-alloc") {
         diags.extend(hale_types::unbounded_alloc_warnings(&bundle));
     }
+    // GH #18 item 5: opt-in fd-resource-leak warnings.
+    if std::env::args().any(|a| a == "--warn-resource-leak") {
+        diags.extend(hale_types::resource_leak_warnings(&bundle));
+    }
     if !diags.is_empty() {
         for d in &diags {
             eprintln!("{}", render_located(d, &file_bases, &sources));

@@ -108,6 +108,14 @@ pub fn unbounded_alloc_warnings(bundle: &Bundle<'_>) -> Vec<Diag> {
     alloc_summary::unbounded_alloc_diags(&progs)
 }
 
+/// Resource-leak warnings: an fd-acquiring call whose result is stored
+/// resident in an unbounded context (GH #18 item 5, leak stage). Opt-in
+/// via `--warn-resource-leak`.
+pub fn resource_leak_warnings(bundle: &Bundle<'_>) -> Vec<Diag> {
+    let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    resource_budget::resource_leak_diags(&progs)
+}
+
 pub fn check_bundle_opts(
     bundle: &Bundle<'_>,
     allow_unowned_subscriber: bool,
