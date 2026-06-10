@@ -1,0 +1,28 @@
+// std::term::RawMode — RAII guard for terminal raw mode (pond P4 stage 3).
+//
+//   fn main() {
+//       let raw = std::term::RawMode { };   // birth() -> raw mode on stdin
+//       // ... interactive read loop ...
+//   }                                        // dissolve() -> termios restored
+//
+// birth() enters raw mode on stdin; dissolve() (auto-fired at the
+// let-binding's scope exit) restores the saved termios. Raw mode clears
+// ECHO/ICANON/ISIG, so input arrives unbuffered byte-by-byte and Ctrl-C
+// is delivered as byte 0x03 (the caller owns the quit path).
+//
+// Soft-fail: if stdin isn't a tty, __raw_enable is a no-op and the program
+// runs unstyled rather than erroring — birth doesn't violate.
+//
+// Backstop: __raw_enable also registers a runtime atexit termios restore.
+// Since lotus_view_stale_panic + lotus_root_panic exit() (pond P2), a panic
+// or an unhandled error escaping main restores the terminal too — not just
+// the normal dissolve path. (Uncatchable signals / _exit still bypass it.)
+// So an interactive app needs no FFI glue for terminal hygiene.
+locus __StdTermRawMode {
+    birth() {
+        std::term::__raw_enable();
+    }
+    dissolve() {
+        std::term::__raw_disable();
+    }
+}

@@ -944,6 +944,9 @@ const STDLIB_AP_SOURCE: &str = concat!(
     // only path-call primitives (`std::bytes::builder::__*`) that
     // resolve at codegen time; independent of order.
     include_str!("../runtime/stdlib/bytes_builder.hl"),
+    // std::term::RawMode guard locus (pond P4 stage 3). Calls the
+    // std::term::__raw_* path-call primitives; order-independent.
+    include_str!("../runtime/stdlib/term.hl"),
 );
 
 /// Maps each user-facing stdlib path (locus OR type) to the
@@ -1009,6 +1012,7 @@ const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "io", "file", "write_bytes"], "__std_io_file_write_bytes"),
     (&["std", "io", "file", "write_line"], "__std_io_file_write_line"),
     (&["std", "io", "file", "seek"], "__std_io_file_seek"),
+    (&["std", "term", "RawMode"], "__StdTermRawMode"),
     (&["std", "io", "tcp", "Listener"], "__StdIoTcpListener"),
     (&["std", "io", "tcp", "Stream"], "__StdIoTcpStream"),
     (&["std", "io", "tcp", "LogEvent"], "__StdIoTcpLogEvent"),
@@ -15732,7 +15736,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // `std::` prefix) is the canonical typo.
                 const STDLIB_ROOTS: &[&str] = &[
                     "env", "process", "time", "str", "bytes", "math",
-                    "io", "text", "log", "http", "test",
+                    "io", "term", "text", "log", "http", "test",
                 ];
                 if let Some(first) = segs.first() {
                     if STDLIB_ROOTS.contains(first) && segs.len() >= 2 {
@@ -15848,7 +15852,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // trip on `env::args_count` vs `std::env::args_count`.
                 const STDLIB_ROOTS: &[&str] = &[
                     "env", "process", "time", "str", "bytes", "math",
-                    "io", "text", "log", "http", "test",
+                    "io", "term", "text", "log", "http", "test",
                 ];
                 if let Some(first) = segs.first() {
                     if STDLIB_ROOTS.contains(first) && segs.len() >= 2 {
@@ -15945,6 +15949,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "io", "stdout", "write_bytes"] => {
                 let _ = self.lower_std_io_stdout_write_bytes(args, scope)?;
+                Ok(())
+            }
+            ["std", "term", "__raw_enable"] => {
+                let _ = self.lower_std_term_raw_toggle(args, "lotus_term_raw_enable")?;
+                Ok(())
+            }
+            ["std", "term", "__raw_disable"] => {
+                let _ = self.lower_std_term_raw_toggle(args, "lotus_term_raw_disable")?;
                 Ok(())
             }
             ["std", "process", "dump_arena_residency"] => {
@@ -16725,6 +16737,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "term", "is_tty"] => self.lower_std_term_is_tty(args, scope),
             ["std", "io", "stdout", "write_bytes"] => {
                 self.lower_std_io_stdout_write_bytes(args, scope)
+            }
+            ["std", "term", "__raw_enable"] => {
+                self.lower_std_term_raw_toggle(args, "lotus_term_raw_enable")
+            }
+            ["std", "term", "__raw_disable"] => {
+                self.lower_std_term_raw_toggle(args, "lotus_term_raw_disable")
             }
             ["std", "process", "dump_arena_residency"] => {
                 self.lower_std_process_dump_arena_residency(args)

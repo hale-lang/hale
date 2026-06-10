@@ -1414,6 +1414,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let term_write_ty = i64_t.fn_type(&[ptr_t.into()], false);
         self.module
             .add_function("lotus_term_write_stdout", term_write_ty, None);
+        // declare i64 @lotus_term_raw_enable(void) / @lotus_term_raw_disable(void)
+        // — termios raw-mode toggle backing std::term::RawMode (1 ok / 0 fail).
+        let term_raw_ty = i64_t.fn_type(&[], false);
+        self.module
+            .add_function("lotus_term_raw_enable", term_raw_ty, None);
+        self.module
+            .add_function("lotus_term_raw_disable", term_raw_ty, None);
         // declare void @lotus_arena_residency_dump_fd(i32 fd)
         // 2026-05-22 PM: writes per-arena residency snapshot
         // (bytes / chunks / construction backtrace) to the given

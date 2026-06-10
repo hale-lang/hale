@@ -51,6 +51,7 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <errno.h>
+#include <termios.h>
 #include <time.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -10744,6 +10745,73 @@ int64_t lotus_term_write_stdout(const char *s) {
         off += (size_t)n;
     }
     return (int64_t)off;
+}
+
+/* pond P4 stage 3: terminal raw-mode toggle on stdin, backing the
+ * std::term::RawMode guard locus. Static state — a process has one
+ * controlling terminal. */
+static struct termios g_term_saved;
+static int g_term_saved_valid = 0;
+static int g_term_raw_active = 0;
+static int g_term_atexit_installed = 0;
+
+/* The atexit backstop: restore the saved termios on any exit() path —
+ * which, since lotus_view_stale_panic + lotus_root_panic exit() (pond P2),
+ * means a panic during raw mode also restores the terminal. _exit() and
+ * uncatchable signals still bypass this (noted in the scope). */
+static void lotus_term_restore_at_exit(void) {
+    if (g_term_raw_active && g_term_saved_valid) {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_term_saved);
+    }
+}
+
+/* Enter raw mode on stdin. 1 ok / 0 soft-fail (not a tty or tcsetattr
+ * rejected — the caller runs unstyled rather than erroring). Idempotent.
+ * ISIG is cleared, so Ctrl-C arrives as byte 0x03, not SIGINT — the caller
+ * owns the quit path while raw. Registers the atexit restore once. */
+int64_t lotus_term_raw_enable(void) {
+    if (g_term_raw_active) {
+        return 1;
+    }
+    if (!isatty(STDIN_FILENO)) {
+        return 0;
+    }
+    if (tcgetattr(STDIN_FILENO, &g_term_saved) != 0) {
+        return 0;
+    }
+    g_term_saved_valid = 1;
+    struct termios raw = g_term_saved;
+    raw.c_iflag &= ~(tcflag_t)(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+    raw.c_oflag &= ~(tcflag_t)(OPOST);
+    raw.c_cflag |= (tcflag_t)CS8;
+    raw.c_lflag &= ~(tcflag_t)(ECHO | ICANON | IEXTEN | ISIG);
+    raw.c_cc[VMIN] = 0;
+    raw.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0) {
+        return 0;
+    }
+    g_term_raw_active = 1;
+    if (!g_term_atexit_installed) {
+        atexit(lotus_term_restore_at_exit);
+        g_term_atexit_installed = 1;
+    }
+    return 1;
+}
+
+/* Restore the saved termios. 1 ok (incl. the not-currently-raw no-op),
+ * 0 on tcsetattr failure. */
+int64_t lotus_term_raw_disable(void) {
+    if (!g_term_raw_active) {
+        return 1;
+    }
+    if (!g_term_saved_valid) {
+        return 0;
+    }
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_term_saved) != 0) {
+        return 0;
+    }
+    g_term_raw_active = 0;
+    return 1;
 }
 
 int lotus_process_run(

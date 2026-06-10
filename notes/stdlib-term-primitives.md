@@ -13,8 +13,19 @@ the pond terminal-stack handoff (P4, `term/FRICTION.md § stdlib-term-primitives
 > hot-path reasoning as `read_byte` (a write error is a control outcome the
 > caller checks; a `FallibleCallResult` is heavier than this per-frame path
 > wants). A `fallible` variant can be added later if a caller wants it.
-> Stages 2-4 (`size`, the `RawMode` guard locus + runtime atexit backstop,
-> `read_byte`) remain.
+>
+> **Stage 3 landed:** `std::term::RawMode` guard locus
+> (`runtime/stdlib/term.hl`, mapped via `STDLIB_PATH_RENAMES`) — birth
+> enters raw mode via `lotus_term_raw_enable`, dissolve restores via
+> `lotus_term_raw_disable`. `raw_enable` registers a runtime `atexit`
+> termios restore, so with the exit()-on-panic path (P2, #106) a panic /
+> unhandled error / normal return all restore the terminal — **pond's
+> hand-rolled FFI atexit restore is now retired.** Soft-fails on a non-tty.
+> Tested: the guard births/dissolves cleanly (piped); tty activation
+> confirmed under a pty. (Uncatchable signals / `_exit` still bypass the
+> restore — noted in Risks.)
+>
+> Stages 2 + 4 (`size` + `TermSize`, `read_byte`) remain.
 Five libc one-liners pond ships as FFI glue are generic OS surface, not
 terminal-styling logic — they want a `std::` home so a color-aware logger
 or a TUI doesn't have to vendor an FFI lib (with the C-symbol-collision +
