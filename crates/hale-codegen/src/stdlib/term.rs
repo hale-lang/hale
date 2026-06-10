@@ -24,6 +24,15 @@ pub(crate) trait TermStdlib<'ctx> {
         args: &[Expr],
         c_fn: &str,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_term_size_packed(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_io_stdin_read_byte(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
 }
 
 impl<'ctx, 'p> TermStdlib<'ctx> for Cx<'ctx, 'p> {
@@ -141,6 +150,69 @@ impl<'ctx, 'p> TermStdlib<'ctx> for Cx<'ctx, 'p> {
             .try_as_basic_value()
             .left()
             .expect("raw toggle returns i64");
+        Ok((ret, CodegenTy::Int))
+    }
+
+    /// `std::term::__size_packed() -> Int` — `(cols << 16) | rows`, 0 when
+    /// stdout isn't a tty. Internal; the `std::term::size()` stdlib wrapper
+    /// unpacks it into a `TermSize` record.
+    fn lower_std_term_size_packed(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if !args.is_empty() {
+            return Err(CodegenError::Unsupported(format!(
+                "std::term::__size_packed takes 0 args, got {}",
+                args.len()
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_term_size_packed")
+            .expect("lotus_term_size_packed declared");
+        let ret = self
+            .builder
+            .build_call(f, &[], "size_packed.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_term_size_packed returns i64");
+        Ok((ret, CodegenTy::Int))
+    }
+
+    /// `std::io::stdin::read_byte(timeout_ms: Int) -> Int` — `poll` up to
+    /// `timeout_ms`, then a 1-byte `read`. Returns `0..255` = the byte,
+    /// `-1` = timeout, `-2` = EOF/error (sentinel — a timeout is a control
+    /// outcome on a poll loop, not an error).
+    fn lower_std_io_stdin_read_byte(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::stdin::read_byte takes 1 arg (timeout_ms: Int), got {}",
+                args.len()
+            )));
+        }
+        let (t_val, t_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(t_ty, CodegenTy::Int) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::stdin::read_byte: timeout_ms must be Int, got {:?}",
+                t_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_term_read_byte")
+            .expect("lotus_term_read_byte declared");
+        let ret = self
+            .builder
+            .build_call(f, &[t_val.into()], "read_byte.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_term_read_byte returns i64");
         Ok((ret, CodegenTy::Int))
     }
 }

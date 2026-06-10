@@ -1421,6 +1421,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .add_function("lotus_term_raw_enable", term_raw_ty, None);
         self.module
             .add_function("lotus_term_raw_disable", term_raw_ty, None);
+        // declare i64 @lotus_term_size_packed(void)  — (cols<<16)|rows / 0
+        self.module
+            .add_function("lotus_term_size_packed", i64_t.fn_type(&[], false), None);
+        // declare i64 @lotus_term_read_byte(i64 timeout_ms) — byte / -1 / -2
+        self.module.add_function(
+            "lotus_term_read_byte",
+            i64_t.fn_type(&[i64_t.into()], false),
+            None,
+        );
         // declare void @lotus_arena_residency_dump_fd(i32 fd)
         // 2026-05-22 PM: writes per-arena residency snapshot
         // (bytes / chunks / construction backtrace) to the given

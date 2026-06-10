@@ -1013,6 +1013,8 @@ const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "io", "file", "write_line"], "__std_io_file_write_line"),
     (&["std", "io", "file", "seek"], "__std_io_file_seek"),
     (&["std", "term", "RawMode"], "__StdTermRawMode"),
+    (&["std", "term", "TermSize"], "__StdTermTermSize"),
+    (&["std", "term", "size"], "__std_term_size"),
     (&["std", "io", "tcp", "Listener"], "__StdIoTcpListener"),
     (&["std", "io", "tcp", "Stream"], "__StdIoTcpStream"),
     (&["std", "io", "tcp", "LogEvent"], "__StdIoTcpLogEvent"),
@@ -15959,6 +15961,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_term_raw_toggle(args, "lotus_term_raw_disable")?;
                 Ok(())
             }
+            ["std", "term", "__size_packed"] => {
+                let _ = self.lower_std_term_size_packed(args)?;
+                Ok(())
+            }
+            ["std", "io", "stdin", "read_byte"] => {
+                let _ = self.lower_std_io_stdin_read_byte(args, scope)?;
+                Ok(())
+            }
             ["std", "process", "dump_arena_residency"] => {
                 let _ = self.lower_std_process_dump_arena_residency(args)?;
                 Ok(())
@@ -16743,6 +16753,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "term", "__raw_disable"] => {
                 self.lower_std_term_raw_toggle(args, "lotus_term_raw_disable")
+            }
+            ["std", "term", "__size_packed"] => self.lower_std_term_size_packed(args),
+            ["std", "io", "stdin", "read_byte"] => {
+                self.lower_std_io_stdin_read_byte(args, scope)
             }
             ["std", "process", "dump_arena_residency"] => {
                 self.lower_std_process_dump_arena_residency(args)
