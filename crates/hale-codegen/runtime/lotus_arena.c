@@ -12872,7 +12872,15 @@ void lotus_view_stale_panic(const char *kind,
             "the mutation completes.\n",
             kind, (long long)stamped, (long long)current);
     fflush(stderr);
-    _exit(1);
+    /* pond P2 (FRICTION panic-exit-bypasses-atexit): exit(), not _exit(),
+     * so atexit-registered cleanup runs — a full-screen TUI's FFI glue
+     * restores termios + leaves the alt screen here instead of stranding
+     * the user's terminal in raw mode. The reader-thread `_exit`
+     * constraint is about a bus *handler* calling exit mid-dispatch, not
+     * this fatal-violation path, so exit() is safe (matches
+     * lotus_root_panic). Single-token change keeps the compiler's
+     * noreturn inference (exit is noreturn) intact. */
+    exit(1);
 }
 
 /* F.30b read-site unpacking helpers. Codegen emits a call to one
