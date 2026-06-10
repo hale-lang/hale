@@ -47,6 +47,48 @@ The resolver checks the argument, then the prefixed environment
 variable (`MYAPP_PORT`), then the supplied default. Empty values
 fall through to the next layer rather than counting as "set."
 
+## Interactive terminal I/O
+
+For a tool that draws to the terminal or reads keystrokes, a few
+`std::` primitives cover the OS surface without an FFI dependency.
+
+`std::term::is_tty(fd)` answers *"is this a terminal?"* — the usual
+guard for whether to emit color:
+
+```hale
+let color = std::term::is_tty(2);   // fd 2 = stderr
+```
+
+`std::term::size()` returns a `TermSize { cols, rows }` record (and
+`{0, 0}` when stdout isn't a tty). `std::term::RawMode` is a guard
+locus that puts the terminal in raw mode for its lifetime — no line
+buffering, no echo — and restores it on scope exit, and on a panic
+or unhandled error too via an atexit backstop:
+
+```hale
+fn main() {
+    let raw = std::term::RawMode { };       // birth: enter raw mode
+    // ... read keys, draw frames ...
+}                                           // dissolve: restore the terminal
+```
+
+For the bytes themselves, `std::io::stdin::read_byte(timeout_ms)`
+polls one byte (`0..255`, `-1` on timeout, `-2` on EOF), and
+`std::io::stdout::write_bytes(s)` does a raw, unbuffered write — it
+`fflush`es first so it stays ordered with any `println` output:
+
+```hale
+loop {
+    let b = std::io::stdin::read_byte(100);   // 100ms poll
+    if b == -1 { continue; }                    // timeout: redraw, tick, …
+    if b == -2 { break; }                       // EOF
+    std::io::stdout::write_bytes("got a key\r\n");
+}
+```
+
+These are primitives, not a TUI — key decoding and styling live in
+a library on top of them.
+
 ## Where this fits
 
 This is the boundary between the outside world and your program.

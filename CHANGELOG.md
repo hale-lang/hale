@@ -6,13 +6,113 @@ behavior.
 
 ---
 
-## v0.8.3 — CQRS at the locus boundary + F.34 windowed closures
+## v0.8.3 — verification track, SHM-ring interop, fast JSON
 
-A small release focused on closing structural-design rules at
-typecheck. Three compile-time rejections previously only
-discoverable as silent runtime behavior become hard errors; one
-new closure-clause closes the rate-budget gap; one substrate
-diagnostic closes the silent-drop debug gap.
+The largest release since v0.8.0 (cumulative since v0.8.2). Four
+headline arcs, no source-level breaking changes:
+
+- the compile-time **verification track** (GitHub issue #18) — six
+  candidate analyses, four built, one a substrate gate, one parked;
+- **binary shared-memory-ring interop** — read/write foreign SHM
+  rings by declaring their layout, plus `std::bytes` packing;
+- a **JSON parse/emit performance pass** that lands near V8;
+- retirement of the tree-walking interpreter and a new `std::term`
+  primitive surface.
+
+### Compile-time verification (GitHub issue #18)
+
+The verification roadmap, addressed. The canonical catalog is the
+new `spec/verification.md` (#47).
+
+- **Bus-graph property checks (item 4)** — fully landed, runs by
+  default. Interprocedural blocking-call detection (warning, #44),
+  orphan-topic check (#45), bus-cycle warning + re-entrant
+  sync-deadlock error (#46), backpressure check (#48), and bus
+  subject type-mismatch (#49).
+- **Race-completeness for substrate primitives (item 2)** — a GenMC
+  model-checking gate (#50–53) over the lockfree hashmap, the
+  pinned-locus mailbox, and the cooperative-pool bus queue under all
+  C11 interleavings, wired into CI (#52). A substrate quality bar,
+  not a user-facing check.
+- **Memory-bound proofs (item 1)** — opt-in
+  (`hale check --warn-unbounded-alloc`, `--dump-alloc-summary`). A
+  per-method allocation summary + call-graph escape/loop dataflow
+  (#100), an empirically-validated reclamation model (#101) that
+  **corrected the spec** (#102 — value allocations live until the
+  enclosing locus dissolves; free-fn returns do *not* reclaim per
+  call), a bound solver with call-graph propagation (#103),
+  call-result escape tagging (#112), and **loop-ranking** that proves
+  a `while v < N` const counter bounded (#117). Kept off-default
+  deliberately (#118) pending an `@unbounded` escape valve, since the
+  warnings include legitimately bounded-by-design patterns.
+- **Resource-budget tracking (item 5)** — opt-in. Static counts of
+  pinned threads / cooperative pools / bus subjects / fd-acquisition
+  sites (`--dump-resource-budget`, #111/#115/#116), a CI ceiling gate
+  (`--check-resource-budget budget.toml`, #113), and fd-leak
+  detection (`--warn-resource-leak`, #112).
+- **Closure-assertion lifting (item 3)** — scoped and **deliberately
+  parked** (#114): the tractable constant case is already handled by
+  typecheck, and the remaining symbolic case is low-leverage for a
+  niche feature.
+
+### Binary shared-memory-ring interop
+
+Read and write *externally-defined* binary SHM broadcast rings by
+declaring their layout — no hand-written FFI.
+
+- **`std::bytes` binary packing** (#55, #56) — bounds-checked
+  little/big-endian readers (`read_u8` … `read_u64_{le,be}`, signed +
+  float variants) and `BytesBuilder` writers (`append_u16_le` …
+  `append_pad`).
+- **`ring_layout` declaration** (#57) — a top-level decl describing a
+  foreign ring's magic / version / cursor / framing / overflow; a
+  `shm_ring(..., layout: N)` binding kwarg (#58) binds a topic to it.
+  Read-only consumer (#59), producer (#61), and `ring_layout` ↔
+  payload conformance checks (#60), cataloged in `spec/verification.md`
+  (#66).
+- **Raw `BytesView` payload mode** (#72, #77) — a bounded view per
+  record for heterogeneous rings, with a symmetric producer path;
+  native-ring `slots` framing reachable through the same abstraction
+  (#75).
+- **Go-style struct field tags** (#80) + **repr-tagged field
+  accessors** (#81, #82) — direct typed field access over a raw frame
+  at compile-computed offsets.
+- **Zero-copy ring write surface** (#78, #79) — a reserve/commit split
+  for writing records in place. OOB-hole fixes at the foreign-producer
+  boundary (#67), under UBSan in CI (#68).
+
+### JSON performance
+
+A parse + emit pass bringing generated JSON codecs near V8.
+
+- **Tier 2 — generated codecs from `json:` tags** (#84–88): a
+  single-pass object-member cursor, `Type::from_json` (including
+  nested structs), and a symmetric `Type::to_json`.
+- **Tier 3 — SIMD** (#90–92): SIMD-accelerated object/array cursors
+  with an AVX2 path for the scan primitives.
+- **Inline leaf primitives** (#93–97): the generated parser inlined
+  (no per-field cursor structs), the unescape copy skipped for
+  escape-free strings, and `byte_at` / `range_eq` inlined to
+  gep+load / direct compares. A representative parse went ~291 ms →
+  ~58 ms — within range of V8.
+
+### Standard library & runtime
+
+- **`std::term` + raw byte I/O** (#108–110): `is_tty(fd) -> Bool`,
+  `size() -> TermSize`, the `RawMode` guard locus (atexit-backed
+  termios restore), `std::io::stdout::write_bytes`, and
+  `std::io::stdin::read_byte` — terminal hygiene with no vendored FFI
+  glue.
+- **Interpreter retired** (#41, #42): `hale run` now compiles + execs
+  via codegen; the tree-walking `hale-runtime` crate is deleted, so
+  there is no interpreter/codegen parity to maintain.
+- **Stale-view panic via `exit()`** (#106) so `atexit` cleanup (e.g.
+  the `RawMode` restore) runs on a panic path.
+- **`BytesBuilder.append_str`** (#105) + a clarified StringView
+  non-coercion rule at `@ffi` params.
+- **ECDSA P-256** gains a `fallible(CryptoError)` form (#43).
+- **Locus method names no longer mangled** (#104) — fixes inline /
+  `accept`'d loci referenced in method bodies.
 
 ### Language surface
 
@@ -100,6 +200,22 @@ diagnostic closes the silent-drop debug gap.
   index resolution pattern (the previous example used the
   now-rejected `reg.counter().inc()` shape).
 - **`spec/design-rationale.md`** — new F.34 entry.
+- **`spec/verification.md`** (new) — the canonical catalog of all
+  static checks: the default bus-graph rules, the `ring_layout`
+  conformance + geometry checks, and the opt-in memory/resource
+  analyses (with the `--check-resource-budget` TOML schema).
+- **`spec/memory.md`** — corrected to the shipped reclamation model
+  (value allocations live until the enclosing locus dissolves;
+  free-fn returns don't reclaim per call).
+- **`spec/stdlib.md`** — `std::term` + `std::io::{stdin,stdout}` raw
+  I/O rows; the `std::bytes` binary-pack reader/writer family;
+  `BytesBuilder.append_str`.
+- **`spec/ffi.md`** / **`spec/semantics.md`** / **`spec/grammar.ebnf`**
+  — StringView non-coercion at `@ffi` params; the `ring_layout`
+  declaration grammar + foreign-ring payload modes.
+- **mdBook** — `systems/performance.md` gains a "Catching it at
+  compile time" section (the analysis flags); `everyday/cli-config.md`
+  gains "Interactive terminal I/O" (`std::term` / raw byte I/O).
 
 ---
 

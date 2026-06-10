@@ -85,6 +85,54 @@ count. Make them **flows** — declare `release(c: Conn)` on the
 parent — so each child's region is reclaimed when its connection
 ends. If RSS tracks connection count, this is almost always why.
 
+## Catching it at compile time
+
+The growth patterns above — a per-message handler that allocates
+into `self`, a connection child left resident — have a static
+shape, and `hale check` can flag them before you ever measure RSS.
+These are **opt-in** advisory warnings, not build failures:
+
+- `hale check app.hl --warn-unbounded-alloc` flags an allocation
+  that accumulates without bound: a struct / array / bytes value
+  created in a per-message bus handler (or a runtime-bounded loop)
+  and stored into `self`, where it lives until the locus dissolves.
+  The fix is the one from this chapter — route it over the bus,
+  bound the loop, or move it into a per-iteration child. A
+  `while i < N { … }` counter with a constant bound is *proven*
+  bounded and left alone.
+- `hale check app.hl --warn-resource-leak` is the same idea for file
+  descriptors: an `open` / `connect` / `accept` whose result is
+  stored resident in an unbounded context, so fds pile up.
+
+For the resource *surface* — thread / pool / subject / fd counts,
+not a leak — there's a budget you can read or gate on:
+
+```sh
+hale check app.hl --dump-resource-budget
+# OS threads (pinned loci):  1
+# cooperative pools:         1  [io]
+# bus subjects:              4
+# fd acquisition sites:      2
+```
+
+Drop a ceiling file in CI and the build fails when a count climbs
+past it — *"this PR added a pinned thread; bump the ceiling if you
+meant to."* Every key is optional:
+
+```toml
+# budget.toml
+pinned_threads = 4
+bus_subjects   = 16
+```
+
+```sh
+hale check app.hl --check-resource-budget budget.toml
+```
+
+None of these run by default — they're tools you reach for when a
+program's memory or fd surface is something you want to hold the
+line on.
+
 ## Knobs for when it's not your code
 
 The substrate exposes diagnostics and glibc tuning via
