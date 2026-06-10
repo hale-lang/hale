@@ -20,6 +20,71 @@
 use std::collections::BTreeSet;
 
 use hale_syntax::ast::*;
+use hale_syntax::Diag;
+
+use crate::alloc_summary::{self, Callee, Escape};
+
+/// Stdlib path-calls that acquire a held OS resource (a file descriptor)
+/// — the result is a locus (`File` / `Stream` / `Listener`) that closes
+/// the fd on dissolve. If such a call's result is stored resident
+/// (`self`-store) and the call runs in an unbounded context, the fd
+/// accumulates. Unmangled paths (this analysis runs pre-rename).
+const FD_ACQUIRING_PATHS: &[&str] = &[
+    "std::io::file::open",
+    "std::io::tcp::connect",
+    "std::io::tcp::listen_socket",
+    "std::io::tcp::__listen_socket",
+    "std::io::tcp::accept_one",
+    "std::io::tcp::__accept_one",
+];
+
+/// GH #18 item 5, leak-detection stage: warn on an fd-acquiring call whose
+/// result is stored resident (`self`) in an unboundedly-invoked fn or an
+/// unbounded loop — the fd accumulates. Reuses `alloc_summary`'s
+/// call-result escape tagging + unbounded-context dataflow (the gap that
+/// item 1's site-only escape tagging left open). Opt-in via
+/// `hale check --warn-resource-leak`.
+pub fn resource_leak_diags(programs: &[&Program]) -> Vec<Diag> {
+    let summary = alloc_summary::summarize_programs(programs);
+    let unbounded = summary.unbounded_invoked();
+    let mut out = Vec::new();
+    for f in summary.fns.values() {
+        for c in &f.calls {
+            let path = match &c.callee {
+                Callee::Unresolved(p) => p,
+                Callee::Resolved(_) => continue,
+            };
+            if !FD_ACQUIRING_PATHS.contains(&path.as_str()) {
+                continue;
+            }
+            // The fd holder must escape its scope (stored resident) — a
+            // `Local` holder is bound + dissolved per iteration (the fd
+            // closes), so it's bounded.
+            if !matches!(c.escape, Escape::StoredToSelf) {
+                continue;
+            }
+            // ... in an unbounded context (a per-message handler, or a
+            // call inside an unbounded loop). A one-shot self-store (e.g.
+            // a server's single listener in birth) is fine.
+            if !(c.in_unbounded_loop || unbounded.contains(&f.key)) {
+                continue;
+            }
+            out.push(Diag::warn(
+                c.span,
+                format!(
+                    "unbounded fd acquisition: `{}` opens a held resource stored to \
+                     `self` in `{}`, which runs unboundedly (a per-message handler or a \
+                     call inside an unbounded loop) — the file descriptor accumulates \
+                     resident. Dissolve the holder per iteration (a scoped `let`), or \
+                     keep a single long-lived holder instead of re-opening.",
+                    path,
+                    f.key.display()
+                ),
+            ));
+        }
+    }
+    out
+}
 
 /// Per-program resource tally.
 #[derive(Debug, Clone, Default)]
@@ -170,5 +235,66 @@ mod tests {
         assert_eq!(b.pinned_threads, 0);
         assert!(b.cooperative_pools.is_empty());
         assert!(b.bus_subjects.is_empty());
+    }
+
+    // ---- leak detection (result-escape tagging) ----
+
+    fn leaks(src: &str) -> Vec<String> {
+        let program = parse_source(src).expect("parse");
+        resource_leak_diags(&[&program]).iter().map(|d| d.message.clone()).collect()
+    }
+
+    #[test]
+    fn fd_stored_to_self_in_handler_is_flagged() {
+        // A per-message handler that opens an fd and stores it resident →
+        // the fd accumulates per message. The result-escape tag (the call's
+        // result flows to self) + the unbounded handler context catch it.
+        let src = r#"
+            type Msg { path: String; }
+            locus Opener {
+                params { f: Int = 0; }
+                bus { subscribe "open" as on_open of type Msg; }
+                fn on_open(m: Msg) {
+                    self.f = std::io::file::open(m.path, "r") or raise;
+                }
+            }
+            fn main() { }
+        "#;
+        let ls = leaks(src);
+        assert_eq!(ls.len(), 1, "expected 1 fd-leak; got {:?}", ls);
+        assert!(ls[0].contains("unbounded fd acquisition"), "got: {:?}", ls);
+    }
+
+    #[test]
+    fn local_fd_in_handler_is_not_flagged() {
+        // The fd is bound to a `let` (not stored), so it dissolves at scope
+        // exit — bounded, not a leak.
+        let src = r#"
+            type Msg { path: String; }
+            locus Opener {
+                bus { subscribe "open" as on_open of type Msg; }
+                fn on_open(m: Msg) {
+                    let f = std::io::file::open(m.path, "r") or raise;
+                }
+            }
+            fn main() { }
+        "#;
+        assert!(leaks(src).is_empty(), "a let-scoped fd must not be flagged: {:?}", leaks(src));
+    }
+
+    #[test]
+    fn fd_stored_in_birth_is_not_flagged() {
+        // One-shot self-store (birth) — a single long-lived holder, not a
+        // per-iteration accumulation.
+        let src = r#"
+            locus Server {
+                params { sock: Int = 0; }
+                birth() {
+                    self.sock = std::io::tcp::listen_socket(8080) or raise;
+                }
+            }
+            fn main() { }
+        "#;
+        assert!(leaks(src).is_empty(), "a one-shot birth open is not a leak: {:?}", leaks(src));
     }
 }

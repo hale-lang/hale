@@ -51,7 +51,7 @@ impl FnKey {
     pub fn method(locus: impl Into<String>, name: impl Into<String>) -> Self {
         Self { locus: Some(locus.into()), fn_name: name.into() }
     }
-    fn display(&self) -> String {
+    pub fn display(&self) -> String {
         match &self.locus {
             Some(l) => format!("{}::{}", l, self.fn_name),
             None => self.fn_name.clone(),
@@ -224,6 +224,14 @@ pub struct CallEdge {
     /// True if the call is inside an unbounded loop — then the callee is
     /// invoked unboundedly many times regardless of its own multiplicity.
     pub in_unbounded_loop: bool,
+    /// Where the call's *result* flows — the call-result analog of an
+    /// allocation site's escape. A resource-acquiring call (an fd opener)
+    /// whose result escapes in an unbounded context holds the resource
+    /// resident → a leak; a `Local` result is bound-and-dissolved per
+    /// iteration → bounded. (Closes the gap noted in
+    /// notes/resource-budgets.md; also lets #1 see a factory call whose
+    /// result escapes when the callee body is external/unresolved.)
+    pub escape: Escape,
     pub span: Span,
 }
 
@@ -463,7 +471,12 @@ impl AllocSummary {
                     Callee::Resolved(k) => k.display(),
                     Callee::Unresolved(n) => format!("<unresolved: {}>", n),
                 };
-                out.push_str(&format!("    call  {} loop_depth={}\n", tgt, c.loop_depth));
+                out.push_str(&format!(
+                    "    call  {} loop_depth={} result={}\n",
+                    tgt,
+                    c.loop_depth,
+                    c.escape.label()
+                ));
             }
         }
         out
@@ -764,7 +777,7 @@ impl<'a> Walker<'a> {
             }
             Expr::Unary { operand, .. } => self.walk_expr(operand, depth, Escape::Local),
             Expr::Call { callee, args, span } => {
-                self.record_call(callee, *span, depth);
+                self.record_call(callee, *span, depth, escape);
                 // The callee receiver may itself allocate; its result
                 // doesn't escape via this site.
                 match callee.as_ref() {
@@ -810,7 +823,7 @@ impl<'a> Walker<'a> {
         }
     }
 
-    fn record_call(&mut self, callee: &Expr, span: Span, depth: u32) {
+    fn record_call(&mut self, callee: &Expr, span: Span, depth: u32, escape: Escape) {
         let resolved = match callee {
             Expr::Ident(id) => {
                 let key = FnKey::free_fn(id.name.clone());
@@ -842,6 +855,7 @@ impl<'a> Walker<'a> {
             callee: resolved,
             loop_depth: depth,
             in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
+            escape,
             span,
         });
     }

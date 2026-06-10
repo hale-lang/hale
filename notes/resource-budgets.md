@@ -1,10 +1,21 @@
 # Resource-budget tracking (GH #18 item 5)
 
-Status: **scope + count slice landed.** Written 2026-06-10. The verification
-candidate that "complements #1" and reuses the shared dataflow infra built
-for memory-bound proofs (#100/#101/#103). The issue frames it as a *linter*
-— a useful "is this in range" signal + a CI gate ("this PR raised the fd
-ceiling — intentional?"), not a proof.
+Status: **count slice + fd-leak detection landed.** Written 2026-06-10. The
+verification candidate that "complements #1" and reuses the shared dataflow
+infra built for memory-bound proofs (#100/#101/#103). The issue frames it as
+a *linter* — a useful "is this in range" signal + a CI gate ("this PR raised
+the fd ceiling — intentional?"), not a proof.
+
+> **Leak detection landed (the gap below is closed).** `alloc_summary`'s
+> `CallEdge` now carries the **escape of the call's result** (the call-
+> result analog of an allocation site's escape), so an fd-acquiring call
+> (`std::io::file::open` / `tcp::connect`/`listen`/`accept`) whose result is
+> stored resident (`self`) in an unbounded context (a per-message handler /
+> a call in an unbounded loop) is flagged — the fd accumulates. Opt-in via
+> `hale check --warn-resource-leak`; `resource_budget::resource_leak_diags`.
+> Zero false positives on the corpus. This result-escape tagging also
+> upgrades **item #1** (a factory call whose result escapes in a loop is now
+> visible in the dump as `result=escaping=…`).
 
 ## The resources (language-visible)
 
@@ -36,19 +47,20 @@ ceiling — intentional?"), not a proof.
    allocation leak, but for fds/threads. `alloc_summary`'s
    `unbounded_invoked` + `in_unbounded_loop` carry over directly.
 
-## The gap for leak detection (why it's the next stage, not this one)
+## The gap for leak detection (now closed)
 
 Hale fds are held by loci (`Stream`/`File`) that auto-close on dissolve.
 So an fd "leak" isn't an open without a close — it's an fd-opening call
-whose **result escapes** (stored to `self`, returned, pushed) so the
-holding locus stays resident, *in an unbounded context*. That's the same
-escape-into-unbounded-context obligation as #1 — but `alloc_summary`
-currently tags escape only on **direct allocation sites**, not on **call
-results** (an fd-open is a `Call`, recorded as a `CallEdge` without a
-result-escape tag). Closing that gap — result-escape tagging on resource-
-acquiring calls — is the leak-detection stage's real work, and it upgrades
-#1 too (a factory call whose result escapes in a loop). Deferred, scoped
-here.
+whose **result escapes** (stored to `self`) so the holding locus stays
+resident, *in an unbounded context*. That's the same escape-into-unbounded-
+context obligation as #1 — but `alloc_summary` originally tagged escape only
+on **direct allocation sites**, not on **call results** (an fd-open is a
+`Call`, recorded as a `CallEdge`). **`CallEdge` now carries a result escape**
+(threaded from the same `escape` context that tags alloc sites, including
+the `let x = open(); … self.f = x;` indirection via the name pre-pass), so
+the leak check filters resource-acquiring calls with a `self`-store result
+in an unbounded context. A `Local` (let-scoped, dissolved per iteration)
+holder is bounded and not flagged.
 
 ## Open question (from the issue), resolved
 
@@ -72,14 +84,13 @@ No false positives (it's a count). Validated by unit tests.
 ## Staging
 
 1. **Static counts** (threads + pools + subjects) — **landed**.
-2. **fd / held-fd-locus counts** — add an expr-walk tally of fd-opening
-   stdlib calls + held-fd locus instantiations. Still a count (zero-FP).
-3. **Budget gate** — a `resource-budgets.json`-style ceiling file + a
+2. **Leak detection** — result-escape tagging on resource-acquiring calls
+   + the unbounded-context filter — **landed** (`--warn-resource-leak`).
+3. **fd / held-fd-locus counts** — add an expr-walk tally of fd-opening
+   calls + held-fd locus instantiations to the count dump. Still zero-FP.
+4. **Budget gate** — a `resource-budgets.json`-style ceiling file + a
    `--check-resource-budget` mode that fails when a count exceeds its
    declared ceiling. The CI-gate payoff.
-4. **Leak detection** — result-escape tagging on resource-acquiring calls
-   (the gap above), then reuse `leak_sites` to flag an fd/thread acquired
-   in an unbounded context whose holder escapes. Warning-first, like #1.
 
 ## Risks
 
