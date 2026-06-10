@@ -86,11 +86,20 @@ No false positives (it's a count). Validated by unit tests.
 1. **Static counts** (threads + pools + subjects) — **landed**.
 2. **Leak detection** — result-escape tagging on resource-acquiring calls
    + the unbounded-context filter — **landed** (`--warn-resource-leak`).
-3. **fd / held-fd-locus counts** — add an expr-walk tally of fd-opening
-   calls + held-fd locus instantiations to the count dump. Still zero-FP.
-4. **Budget gate** — a `resource-budgets.json`-style ceiling file + a
-   `--check-resource-budget` mode that fails when a count exceeds its
-   declared ceiling. The CI-gate payoff.
+3. **Budget gate** — **landed.** `hale check <prog> --check-resource-budget
+   <file.toml>` reads a TOML ceiling file and exits non-zero if any count
+   exceeds its declared ceiling (the CI payoff: "this PR raised the
+   thread/subject count — bump the ceiling if intentional"). Unknown keys
+   error (typo protection); a resource with no declared ceiling is
+   unconstrained. Format:
+   ```toml
+   pinned_threads    = 4
+   cooperative_pools = 2
+   bus_subjects      = 16
+   ```
+4. **fd / held-fd-locus counts** (remaining) — add an expr-walk tally of
+   fd-opening calls + held-fd locus instantiations to the count dump +
+   ceiling. Still zero-FP. The only unshipped stage.
 
 ## Risks
 
