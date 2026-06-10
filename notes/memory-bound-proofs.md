@@ -29,10 +29,17 @@ reuse.
 > **Corpus: zero false positives** — the only 4 flags are genuine
 > per-message-handler accumulations (e.g. `22-moving-average`'s
 > `Window::on_sample` rebuilds a 4-elem array per message into `self`).
-> *Deferred:* loop-ranking (proving `while i < N` bounded) — no corpus
-> fixture triggers that false positive yet, so it's a refinement, not a
-> blocker; a user `while i < 100 { alloc }` would currently over-flag
-> (conservative, never false-"bounded"). And `@unbounded` escape valve.
+> **Loop-ranking landed:** `while v < N { … v += c … }` is proven
+> const-bounded when `N` is a const literal and `v` is const-initialized
+> and only ever incremented by positive consts (whole-fn scan). Such a
+> loop ranks `WhileCounter` (a const trip bound), so an in-loop alloc is
+> `accumulates×const`, not `ACCUMULATES-UNBOUNDED` — `while i < 100 {
+> alloc }` no longer over-flags. Sound: any reset / runtime increment /
+> runtime or non-const init / `self.field` counter stays unbounded (never
+> a false "bounded"; four soundness cases pinned in
+> `while_counter_ranking_is_sound`). Corpus unchanged (still 4 real
+> per-handler flags). *Still deferred:* the `@unbounded` escape valve and
+> type-aware String-concat sites.
 >
 > **The model was corrected by measurement** (see below) — `spec/memory.md`
 > was corrected to match (free-fn no per-call reclaim). The type-free

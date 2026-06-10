@@ -58,12 +58,17 @@ fn build_and_rss(name: &str, src: &str) -> i64 {
 /// as much at runtime — free-fn returns don't reclaim, which is what fixes
 /// the reclaim scope to the locus — but flagging that needs the call-graph
 /// multiplicity propagation in step 3.)
+// The loop bound is a *runtime* value (the param `n`), not a literal —
+// otherwise loop-ranking would (correctly) prove `while i < <const>`
+// bounded and the model would not flag the alloc. A runtime ceiling is
+// the genuine unbounded case: the model can't statically bound the trips,
+// and at runtime the 3M iterations still accumulate ~190 MB.
 const ACCUMULATING: &str = r#"
     type Q { a: Int; b: Int; c: Int; d: Int; e: Int; f: Int; g: Int; h: Int; }
-    fn work() -> Int {
+    fn work(n: Int) -> Int {
         let mut s = 0;
         let mut i = 0;
-        while i < 3000000 {
+        while i < n {
             let q = Q { a: i, b: i, c: i, d: i, e: i, f: i, g: i, h: i };
             s = s + q.a + q.h;
             i = i + 1;
@@ -71,7 +76,7 @@ const ACCUMULATING: &str = r#"
         return s;
     }
     fn main() {
-        let s = work();
+        let s = work(3000000);
         print("sum=");
         println(s);
         print("final_rss_mb=");
