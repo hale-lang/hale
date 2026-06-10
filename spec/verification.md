@@ -77,24 +77,41 @@ CQRS is GitHub issue #18 item 6; its three sanctioned remedies
 (parent-child + contract, bus mediator, delegation) are named in the
 diagnostic. See `spec/semantics.md § Locus method dispatch`.
 
-## Not yet offered
+## Opt-in & deferred analyses
 
-Item 4 (bus-graph property checks) is fully landed. The remaining GitHub
-issue #18 candidates are partial or unstarted, and none is a default gate
-— don't assume them in a build:
+Item 4 (bus-graph property checks) is fully landed and runs by default.
+The other GitHub issue #18 candidates are **opt-in** (behind a flag) or
+deferred — none is a default gate, so don't assume them in a build:
 
 - **Memory-bound proofs (item 1)** — the analysis exists (per-method
-  allocation summary + call-graph escape/loop dataflow) and emits
-  unbounded-accumulation warnings, but **opt-in** via `hale check
-  --warn-unbounded-alloc`; not on by default. Type-aware String-concat
-  sites + loop-ranking are unfinished. See `notes/memory-bound-proofs.md`.
-- **Resource-budget tracking (item 5)** — a static **count** of pinned
-  threads / cooperative pools / bus subjects (`hale check
-  --dump-resource-budget`); a **CI ceiling gate** (`--check-resource-budget
-  <file.toml>` — fails the build when a count exceeds a declared ceiling);
-  and **fd-leak detection** (`--warn-resource-leak` — an fd-acquiring call
-  whose result is stored resident in an unbounded context, opt-in). Held-fd
-  *counts* are the one unshipped piece. See `notes/resource-budgets.md`.
+  allocation summary + call-graph escape/loop dataflow, including
+  call-result escape tagging and **loop-ranking** that proves a
+  `while v < N` const counter bounded) and emits unbounded-accumulation
+  warnings, **opt-in** via `hale check --warn-unbounded-alloc`
+  (`--dump-alloc-summary` prints the raw per-fn allocation summary). Not on
+  by default — *deliberately held* pending an `@unbounded` escape valve +
+  a replace-vs-append refinement, because the warnings include
+  legitimately bounded-by-design patterns (a fixed-window store-latest) the
+  author would accept. Type-aware String-concat sites remain deferred. See
+  `notes/memory-bound-proofs.md`.
+- **Resource-budget tracking (item 5)** — fully shipped, opt-in. A static
+  **count** of pinned threads / cooperative pools / bus subjects /
+  fd-acquisition sites (fd-opening calls *and* held-fd `Listener` /
+  `Stream` instantiations) via `hale check --dump-resource-budget`; a **CI
+  ceiling gate** `--check-resource-budget <file.toml>` (fails the build
+  when a count exceeds a declared ceiling); and **fd-leak detection**
+  `--warn-resource-leak` (an fd-acquiring call whose result is stored
+  resident in an unbounded context). See `notes/resource-budgets.md`.
+
+  The ceiling file is TOML; every key is optional (an absent key leaves
+  that resource unconstrained, an unknown key is an error):
+
+  ```toml
+  pinned_threads    = 4
+  cooperative_pools = 2
+  bus_subjects      = 16
+  fd_open_sites     = 8
+  ```
 - **Closure-assertion lifting (item 3)** — scoped, deliberately parked.
   The tractable case (constant assertions) is already handled: typecheck
   rejects any closure whose assertion observes no runtime-varying value
