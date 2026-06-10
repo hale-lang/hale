@@ -47,6 +47,7 @@ use crate::stdlib::process::ProcessStdlib;
 use crate::stdlib::rand::RandStdlib;
 use crate::stdlib::sockopt::SockoptStdlib;
 use crate::stdlib::str::StrStdlib;
+use crate::stdlib::term::TermStdlib;
 use crate::stdlib::text::TextStdlib;
 use crate::stdlib::time::TimeStdlib;
 
@@ -15938,6 +15939,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_process_rss_bytes(args)?;
                 Ok(())
             }
+            ["std", "term", "is_tty"] => {
+                let _ = self.lower_std_term_is_tty(args, scope)?;
+                Ok(())
+            }
+            ["std", "io", "stdout", "write_bytes"] => {
+                let _ = self.lower_std_io_stdout_write_bytes(args, scope)?;
+                Ok(())
+            }
             ["std", "process", "dump_arena_residency"] => {
                 let _ = self.lower_std_process_dump_arena_residency(args)?;
                 Ok(())
@@ -16713,6 +16722,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         match segs {
             ["std", "process", "pid"] => self.lower_std_process_pid(args),
             ["std", "process", "rss_bytes"] => self.lower_std_process_rss_bytes(args),
+            ["std", "term", "is_tty"] => self.lower_std_term_is_tty(args, scope),
+            ["std", "io", "stdout", "write_bytes"] => {
+                self.lower_std_io_stdout_write_bytes(args, scope)
+            }
             ["std", "process", "dump_arena_residency"] => {
                 self.lower_std_process_dump_arena_residency(args)
             }

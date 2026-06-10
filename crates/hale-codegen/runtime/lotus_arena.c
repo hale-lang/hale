@@ -10711,6 +10711,41 @@ int64_t lotus_process_rss_bytes(void) {
     return (int64_t)ru.ru_maxrss * 1024;
 }
 
+/* pond P4 stage 1 (std::term + std::io::stdout). Generic OS surface
+ * pond/term vendored as FFI glue, moved into the runtime so a
+ * color-aware logger or a frame renderer doesn't need an FFI dependency.
+ * POSIX; on a non-tty / non-POSIX build these degrade soft. */
+
+/* std::term::is_tty(fd) -> Bool. */
+int64_t lotus_term_is_tty(int64_t fd) {
+    return isatty((int)fd) ? 1 : 0;
+}
+
+/* std::io::stdout::write_bytes(s) -> Int. fflush stdio first — the
+ * prelude line-buffers stdout (_IOLBF), so a raw write(2) would
+ * otherwise reorder ahead of buffered println output. Then write the
+ * string's bytes verbatim. Returns bytes written, -1 on error; EINTR is
+ * retried (so a multi-line frame isn't flushed per newline). */
+int64_t lotus_term_write_stdout(const char *s) {
+    if (s == NULL) {
+        return 0;
+    }
+    fflush(stdout);
+    size_t len = strlen(s);
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = write(STDOUT_FILENO, s + off, len - off);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        off += (size_t)n;
+    }
+    return (int64_t)off;
+}
+
 int lotus_process_run(
     const char *argv_blob,
     int32_t *out_code,

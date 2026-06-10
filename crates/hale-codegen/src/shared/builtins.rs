@@ -1404,6 +1404,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let rss_bytes_ty = i64_t.fn_type(&[], false);
         self.module
             .add_function("lotus_process_rss_bytes", rss_bytes_ty, None);
+        // pond P4 stage 1: terminal/raw-IO primitives.
+        // declare i64 @lotus_term_is_tty(i64 fd)  — isatty(fd) -> 0/1
+        let term_is_tty_ty = i64_t.fn_type(&[i64_t.into()], false);
+        self.module
+            .add_function("lotus_term_is_tty", term_is_tty_ty, None);
+        // declare i64 @lotus_term_write_stdout(ptr s) — fflush + raw
+        // write(1, s, strlen(s)); bytes written, -1 on error.
+        let term_write_ty = i64_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_term_write_stdout", term_write_ty, None);
         // declare void @lotus_arena_residency_dump_fd(i32 fd)
         // 2026-05-22 PM: writes per-arena residency snapshot
         // (bytes / chunks / construction backtrace) to the given
