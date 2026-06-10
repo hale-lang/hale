@@ -41,6 +41,20 @@ reuse.
 > per-handler flags). *Still deferred:* the `@unbounded` escape valve and
 > type-aware String-concat sites.
 >
+> **Default-on deliberately held (2026-06-10).** Considered promoting
+> `--warn-unbounded-alloc` to fire by default; kept opt-in. The 4 flags are
+> *true* positives but include legitimately bounded-by-design patterns —
+> `22-moving-average`'s `Window::on_sample` keeps a fixed 4-elem window;
+> per the reclamation model the *replaced* arrays aren't freed until
+> dissolve, so the warning is correct but the author would reasonably
+> accept it. Default-on would emit **unsuppressable** warnings on 3 shipped
+> example fixtures with no way to acknowledge intent. Prerequisites before
+> revisiting: (1) the `@unbounded` escape valve (acknowledge an intended
+> accumulation → suppress its warning), and ideally (2) a replace-vs-append
+> refinement so a store-latest (`self.x = …`, bounded) is distinguished
+> from an append (`self.list.push(…)`, growing). Then default-on with a
+> `--no-warn-unbounded-alloc` opt-out + triaged examples.
+>
 > **The model was corrected by measurement** (see below) — `spec/memory.md`
 > was corrected to match (free-fn no per-call reclaim). The type-free
 > `+`-as-concat over-report from step 1 was *removed* (it flagged every
