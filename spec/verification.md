@@ -95,8 +95,14 @@ issue #18 candidates are partial or unstarted, and none is a default gate
   and **fd-leak detection** (`--warn-resource-leak` — an fd-acquiring call
   whose result is stored resident in an unbounded context, opt-in). Held-fd
   *counts* are the one unshipped piece. See `notes/resource-budgets.md`.
-- **Closure-assertion lifting (item 3)** — unstarted. Closures still
-  verify their invariants at *runtime*.
+- **Closure-assertion lifting (item 3)** — scoped, deliberately parked.
+  The tractable case (constant assertions) is already handled: typecheck
+  rejects any closure whose assertion observes no runtime-varying value
+  (pure literals *or* const arithmetic), so there are no constant closures
+  to lift. The only liftable closures are ones provable from producer
+  arithmetic (symbolic execution) — low-leverage for a niche feature, not
+  built. Closures still verify their (runtime-observing) invariants at
+  *runtime*. See `notes/closure-lifting.md`.
 
 Nothing here yet *proves* allocation, fd, or thread bounds as a
 build-failing gate; the item-1 warnings are advisory.
