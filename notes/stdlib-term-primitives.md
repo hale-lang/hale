@@ -1,7 +1,20 @@
 # `std::term` + raw byte I/O primitives (pond P4)
 
-Status: **scope / proposal.** Nothing built. Written 2026-06-09 from the
-pond terminal-stack handoff (P4, `term/FRICTION.md § stdlib-term-primitives`).
+Status: **stage 1 landed; stages 2-4 not started.** Written 2026-06-09 from
+the pond terminal-stack handoff (P4, `term/FRICTION.md § stdlib-term-primitives`).
+
+> **Stage 1 landed:** `std::term::is_tty(fd) -> Bool` +
+> `std::io::stdout::write_bytes(s) -> Int` — `lotus_term_is_tty` /
+> `lotus_term_write_stdout` C primitives, path-call lowering in
+> `crates/hale-codegen/src/stdlib/term.rs`, spec'd in `spec/stdlib.md`,
+> tested in `term_primitives.rs` (incl. the `fflush` ordering check).
+> **Shape note:** `write_bytes` shipped as a **sentinel `Int`** (`-1` on
+> error), not `fallible(IoError)` as this doc first proposed — the same
+> hot-path reasoning as `read_byte` (a write error is a control outcome the
+> caller checks; a `FallibleCallResult` is heavier than this per-frame path
+> wants). A `fallible` variant can be added later if a caller wants it.
+> Stages 2-4 (`size`, the `RawMode` guard locus + runtime atexit backstop,
+> `read_byte`) remain.
 Five libc one-liners pond ships as FFI glue are generic OS surface, not
 terminal-styling logic — they want a `std::` home so a color-aware logger
 or a TUI doesn't have to vendor an FFI lib (with the C-symbol-collision +

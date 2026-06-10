@@ -25,5 +25,6 @@ pub(crate) mod process;
 pub(crate) mod rand;
 pub(crate) mod sockopt;
 pub(crate) mod str;
+pub(crate) mod term;
 pub(crate) mod text;
 pub(crate) mod time;
