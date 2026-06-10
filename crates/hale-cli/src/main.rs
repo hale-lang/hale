@@ -858,6 +858,12 @@ fn run_check(target: &Path) -> ExitCode {
         print!("{}", hale_types::dump_alloc_summary(&bundle));
         return ExitCode::SUCCESS;
     }
+    // GH #18 item 5: dump the per-program resource budget (pinned threads,
+    // cooperative pools, bus subjects) and exit.
+    if std::env::args().any(|a| a == "--dump-resource-budget") {
+        print!("{}", hale_types::dump_resource_budget(&bundle));
+        return ExitCode::SUCCESS;
+    }
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
     let mut diags = hale_types::check_bundle_opts(&bundle, allow_unowned);

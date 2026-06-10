@@ -25,6 +25,7 @@ pub mod alloc_summary;
 pub mod check;
 pub mod purity;
 pub mod resolve;
+pub mod resource_budget;
 pub mod symbol;
 pub mod sync_inference;
 pub mod ty;
@@ -90,6 +91,14 @@ pub fn check_bundle(bundle: &Bundle<'_>) -> Vec<Diag> {
 pub fn dump_alloc_summary(bundle: &Bundle<'_>) -> String {
     let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
     alloc_summary::summarize_programs(&progs).render()
+}
+
+/// Render the per-program resource budget — pinned threads, cooperative
+/// pools, bus subjects (GH #18 item 5, count slice). Drives
+/// `--dump-resource-budget`.
+pub fn dump_resource_budget(bundle: &Bundle<'_>) -> String {
+    let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    resource_budget::budget_for_programs(&progs).render()
 }
 
 /// Bound-solver warnings: one per unbounded-accumulation allocation site
