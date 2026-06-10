@@ -96,6 +96,12 @@ pub struct ResourceBudget {
     pub cooperative_pools: BTreeSet<String>,
     /// Distinct bus subject strings (router table entries).
     pub bus_subjects: BTreeSet<String>,
+    /// fd-opening call sites (`std::io::file::open` / `tcp::connect` /
+    /// `listen` / `accept`) — the file-descriptor acquisition surface. A
+    /// static site count, not a runtime fd count. (Direct held-fd locus
+    /// instantiations — `tcp::Listener { }` — aren't counted yet; they'd
+    /// need path-qualified struct matching, see notes/resource-budgets.md.)
+    pub fd_open_sites: usize,
 }
 
 /// Declared per-resource ceilings (from a project's resource-budget file).
@@ -107,6 +113,7 @@ pub struct ResourceCeiling {
     pub pinned_threads: Option<usize>,
     pub cooperative_pools: Option<usize>,
     pub bus_subjects: Option<usize>,
+    pub fd_open_sites: Option<usize>,
 }
 
 /// Compare a tallied budget against declared ceilings. Returns one
@@ -127,6 +134,7 @@ pub fn check_ceiling(b: &ResourceBudget, c: &ResourceCeiling) -> Vec<String> {
     chk("pinned_threads (OS threads)", b.pinned_threads, c.pinned_threads);
     chk("cooperative_pools", b.cooperative_pools.len(), c.cooperative_pools);
     chk("bus_subjects", b.bus_subjects.len(), c.bus_subjects);
+    chk("fd_open_sites", b.fd_open_sites, c.fd_open_sites);
     v
 }
 
@@ -156,6 +164,15 @@ pub fn budget_for_programs(programs: &[&Program]) -> ResourceBudget {
             }
         }
     }
+    // fd-opening call sites — reuse alloc_summary's call edges (the FD
+    // paths are unambiguous qualified stdlib calls → zero FP).
+    let summary = alloc_summary::summarize_programs(programs);
+    b.fd_open_sites = summary
+        .fns
+        .values()
+        .flat_map(|f| f.calls.iter())
+        .filter(|c| matches!(&c.callee, Callee::Unresolved(p) if FD_ACQUIRING_PATHS.contains(&p.as_str())))
+        .count();
     b
 }
 
@@ -212,6 +229,7 @@ impl ResourceBudget {
         for s in &self.bus_subjects {
             out.push_str(&format!("    - {}\n", s));
         }
+        out.push_str(&format!("fd-opening call sites:     {}\n", self.fd_open_sites));
         out
     }
 }
@@ -259,6 +277,25 @@ mod tests {
         "#;
         let b = budget(src);
         assert_eq!(b.bus_subjects.len(), 1, "same subject should dedupe: {:?}", b.bus_subjects);
+    }
+
+    #[test]
+    fn counts_fd_open_call_sites() {
+        let src = r#"
+            type Msg { path: String; }
+            locus Opener {
+                bus { subscribe "open" as on_open of type Msg; }
+                fn on_open(m: Msg) {
+                    let a = std::io::file::open(m.path, "r") or raise;
+                    let c = std::io::tcp::connect("127.0.0.1", 80) or raise;
+                    let n = m.path;
+                }
+            }
+            fn main() { }
+        "#;
+        let program = parse_source(src).expect("parse");
+        let b = budget_for_programs(&[&program]);
+        assert_eq!(b.fd_open_sites, 2, "expected 2 fd-open sites (open + connect)");
     }
 
     #[test]

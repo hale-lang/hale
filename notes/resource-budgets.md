@@ -97,9 +97,15 @@ No false positives (it's a count). Validated by unit tests.
    cooperative_pools = 2
    bus_subjects      = 16
    ```
-4. **fd / held-fd-locus counts** (remaining) — add an expr-walk tally of
-   fd-opening calls + held-fd locus instantiations to the count dump +
-   ceiling. Still zero-FP. The only unshipped stage.
+4. **fd counts** — **landed.** `fd_open_sites` tallies fd-opening call
+   sites (`std::io::file::open` / `tcp::connect`/`listen`/`accept`) by
+   reusing `alloc_summary`'s call edges (unambiguous qualified paths →
+   zero FP); shows in the dump + gated by the ceiling. *Remaining:* direct
+   held-fd locus instantiations (`tcp::Listener { }`) aren't counted — the
+   alloc summary keeps only a struct's last path segment, so matching by
+   name alone would risk colliding with a user type named `Listener` /
+   `Stream` / `File`; counting those needs path-qualified struct matching.
+   A minor tail; the call-site surface is the bulk of fd acquisition.
 
 ## Risks
 
