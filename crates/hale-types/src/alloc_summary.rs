@@ -244,6 +244,11 @@ pub enum LoopKind {
     ForIter,
     While,
     WhileTrue,
+    /// `while v < N { … v += c … }` — a const-bounded counter: `v` is
+    /// const-initialized and only ever incremented by positive consts
+    /// toward a const ceiling `N`, so the trip count is bounded by a
+    /// compile-time constant (proven by loop-ranking).
+    WhileCounter,
 }
 
 impl LoopKind {
@@ -254,6 +259,7 @@ impl LoopKind {
             LoopKind::ForIter => "for-iter(runtime)".to_string(),
             LoopKind::While => "while".to_string(),
             LoopKind::WhileTrue => "while-true".to_string(),
+            LoopKind::WhileCounter => "while-counter(bounded)".to_string(),
         }
     }
 }
@@ -543,6 +549,7 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
             enclosing_locus: enclosing_locus.clone(),
             known: &known,
             loop_stack: Vec::new(),
+            fn_body: body,
         };
         w.walk_block(body, 0, Escape::Local);
         summary.fns.insert(
@@ -628,6 +635,10 @@ struct Walker<'a> {
     /// One entry per enclosing loop: `true` if that loop has a const trip
     /// count. A value alloc is in an unbounded loop iff any entry is false.
     loop_stack: Vec<bool>,
+    /// The whole fn body — loop-ranking scans it to decide whether a
+    /// `while v < N` counter is const-bounded (const init + only positive
+    /// const increments anywhere in the fn).
+    fn_body: &'a Block,
 }
 
 impl<'a> Walker<'a> {
@@ -686,10 +697,14 @@ impl<'a> Walker<'a> {
             }
             Stmt::While { cond, body, span } => {
                 self.walk_expr(cond, depth, Escape::Local);
-                // A `while` trip count is never a compile-time constant
-                // here (the cond is runtime), so always unbounded.
-                self.loops.push(LoopInfo { kind: while_loop_kind(cond), depth, span: *span });
-                self.loop_stack.push(false);
+                // Loop-ranking: a `while v < N` counter whose `v` is
+                // const-initialized and only ever incremented by positive
+                // consts is const-bounded; any other `while` is unbounded
+                // (its trip count is runtime, like a runtime `for`-iter).
+                let bounded = while_counter_bounded(cond, self.fn_body);
+                let kind = if bounded { LoopKind::WhileCounter } else { while_loop_kind(cond) };
+                self.loops.push(LoopInfo { kind, depth, span: *span });
+                self.loop_stack.push(bounded);
                 self.walk_block(body, depth + 1, Escape::Local);
                 self.loop_stack.pop();
             }
@@ -886,6 +901,120 @@ fn while_loop_kind(cond: &Expr) -> LoopKind {
     }
 }
 
+/// Loop-ranking: is `while <cond> { … }` a const-bounded counter? True iff
+/// the cond is `v < N` / `v <= N` (`N` a const Int literal, `v` a local
+/// Ident) and, across the whole fn body, `v` is const-initialized exactly
+/// once and its only mutations are positive const increments (`v += k` /
+/// `v = v + k`, `k > 0`). Then `v` rises monotonically from a const toward
+/// a const ceiling → the trip count is bounded by a compile-time constant.
+/// Conservative: any non-increment mutation, shadowing, non-const init, or
+/// a `self.field` counter → false (never a false "bounded").
+fn while_counter_bounded(cond: &Expr, fn_body: &Block) -> bool {
+    let var = match cond {
+        Expr::Binary { op: BinOp::Lt | BinOp::LtEq, left, right, .. } => {
+            match (left.as_ref(), right.as_ref()) {
+                (Expr::Ident(v), Expr::Literal(Literal::Int(_), _)) => v.name.as_str(),
+                _ => return false,
+            }
+        }
+        _ => return false,
+    };
+    let mut s = CounterScan::default();
+    scan_counter_block(fn_body, var, &mut s);
+    s.const_inits == 1
+        && s.nonconst_inits == 0
+        && s.rebindings == 0
+        && s.bad_assigns == 0
+        && s.pos_increments >= 1
+}
+
+#[derive(Default)]
+struct CounterScan {
+    const_inits: usize,    // `let mut v = <const int>`
+    nonconst_inits: usize, // `let mut v = <non-const>`
+    rebindings: usize,     // a `for v` / `let (…, v, …)` shadow
+    pos_increments: usize, // `v += k` / `v = v + k`, k > 0
+    bad_assigns: usize,    // any other assignment to v
+}
+
+fn scan_counter_block(b: &Block, v: &str, s: &mut CounterScan) {
+    for stmt in &b.stmts {
+        scan_counter_stmt(stmt, v, s);
+    }
+}
+
+fn scan_counter_stmt(stmt: &Stmt, v: &str, s: &mut CounterScan) {
+    match stmt {
+        Stmt::Let { name, value, .. } => {
+            if name.name == v {
+                if matches!(value, Expr::Literal(Literal::Int(_), _)) {
+                    s.const_inits += 1;
+                } else {
+                    s.nonconst_inits += 1;
+                }
+            }
+        }
+        Stmt::LetTuple { names, .. } => {
+            if names.iter().any(|n| n.name == v) {
+                s.rebindings += 1;
+            }
+        }
+        Stmt::Assign { target, op, value, .. } => {
+            if target.head.name == v && target.tail.is_empty() {
+                if is_pos_increment(v, op, value) {
+                    s.pos_increments += 1;
+                } else {
+                    s.bad_assigns += 1;
+                }
+            }
+        }
+        Stmt::For { name, body, .. } => {
+            if name.name == v {
+                s.rebindings += 1;
+            }
+            scan_counter_block(body, v, s);
+        }
+        Stmt::While { body, .. } => scan_counter_block(body, v, s),
+        Stmt::If(if_stmt) => scan_counter_if(if_stmt, v, s),
+        Stmt::Match(m) => {
+            for arm in &m.arms {
+                if let MatchArmBody::Block(bl) = &arm.body {
+                    scan_counter_block(bl, v, s);
+                }
+            }
+        }
+        Stmt::Block(bl) => scan_counter_block(bl, v, s),
+        Stmt::ShmWrite { body, .. } => scan_counter_block(body, v, s),
+        _ => {}
+    }
+}
+
+fn scan_counter_if(if_stmt: &IfStmt, v: &str, s: &mut CounterScan) {
+    scan_counter_block(&if_stmt.then_block, v, s);
+    if let Some(eb) = &if_stmt.else_block {
+        match eb.as_ref() {
+            ElseBranch::Else(bl) => scan_counter_block(bl, v, s),
+            ElseBranch::ElseIf(inner) => scan_counter_if(inner, v, s),
+        }
+    }
+}
+
+fn is_pos_increment(v: &str, op: &AssignOp, value: &Expr) -> bool {
+    match op {
+        AssignOp::PlusEq => matches!(value, Expr::Literal(Literal::Int(k), _) if *k > 0),
+        AssignOp::Eq => {
+            if let Expr::Binary { op: BinOp::Add, left, right, .. } = value {
+                let is_v = |e: &Expr| matches!(e, Expr::Ident(i) if i.name == v);
+                let pos = |e: &Expr| matches!(e, Expr::Literal(Literal::Int(k), _) if *k > 0);
+                (is_v(left) && pos(right)) || (pos(left) && is_v(right))
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
 /// Pre-pass: local names whose value flows to an escape position directly
 /// as `Ident(name)` — covering the common `let x = <alloc>; … return x;`
 /// indirection. Walks the whole body (nested blocks/ifs/loops/matches).
@@ -1005,7 +1134,64 @@ mod tests {
         let st = f.sites.iter().find(|s| matches!(s.kind, AllocKind::StructLit(_))).expect("struct site");
         assert_eq!(st.escape, Escape::Local);
         assert_eq!(st.loop_depth, 1);
-        assert!(f.loops.iter().any(|l| matches!(l.kind, LoopKind::While)));
+        // `while i < 10 { … i = i + 1 }` is a const-bounded counter
+        // (loop-ranking), so the loop ranks WhileCounter and the in-loop
+        // struct accumulates by a constant, not unboundedly.
+        assert!(f.loops.iter().any(|l| matches!(l.kind, LoopKind::WhileCounter)));
+        assert_eq!(st.verdict(), SiteVerdict::AccumulatesBoundedLoop);
+    }
+
+    #[test]
+    fn while_counter_ranking_is_sound() {
+        let verdict = |src: &str| {
+            let s = summarize(src);
+            let f = fns(&s, &FnKey::free_fn("run_it"));
+            f.sites
+                .iter()
+                .find(|s| matches!(s.kind, AllocKind::StructLit(_)))
+                .expect("struct site")
+                .verdict()
+        };
+        // (a) const init + only positive const increment → bounded.
+        assert_eq!(
+            verdict(
+                r#"type Q { a: Int; }
+                   fn run_it() { let mut i = 0; while i < 100 { let q = Q { a: i }; let _ = q; i = i + 1; } }
+                   fn main() { }"#
+            ),
+            SiteVerdict::AccumulatesBoundedLoop,
+            "const counter must rank bounded"
+        );
+        // (b) a reset in the body breaks monotonicity → unbounded.
+        assert_eq!(
+            verdict(
+                r#"type Q { a: Int; }
+                   fn run_it() { let mut i = 0; while i < 100 { let q = Q { a: i }; let _ = q; if i == 50 { i = 0; } i = i + 1; } }
+                   fn main() { }"#
+            ),
+            SiteVerdict::AccumulatesUnbounded,
+            "a counter reset must stay unbounded (no false bounded)"
+        );
+        // (c) a runtime (non-const) increment → unbounded.
+        assert_eq!(
+            verdict(
+                r#"type Q { a: Int; }
+                   fn run_it(step: Int) { let mut i = 0; while i < 100 { let q = Q { a: i }; let _ = q; i = i + step; } }
+                   fn main() { }"#
+            ),
+            SiteVerdict::AccumulatesUnbounded,
+            "a runtime step must stay unbounded"
+        );
+        // (d) a runtime (non-const) initial value → unbounded.
+        assert_eq!(
+            verdict(
+                r#"type Q { a: Int; }
+                   fn run_it(start: Int) { let mut i = start; while i < 100 { let q = Q { a: i }; let _ = q; i = i + 1; } }
+                   fn main() { }"#
+            ),
+            SiteVerdict::AccumulatesUnbounded,
+            "a runtime init must stay unbounded"
+        );
     }
 
     #[test]
