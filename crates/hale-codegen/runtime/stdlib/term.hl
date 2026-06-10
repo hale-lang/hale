@@ -26,3 +26,18 @@ locus __StdTermRawMode {
         std::term::__raw_disable();
     }
 }
+
+// std::term::size() -> TermSize — terminal dimensions (pond P4 stage 2).
+// `{ cols: 0, rows: 0 }` when stdout isn't a tty or the ioctl fails (the
+// sentinel — check `cols == 0`). Poll per frame instead of handling
+// SIGWINCH. The C primitive packs (cols << 16) | rows into one Int; this
+// wrapper unpacks it into the record (cols = p / 65536, rows = p % 65536).
+type __StdTermTermSize {
+    cols: Int;
+    rows: Int;
+}
+
+fn __std_term_size() -> __StdTermTermSize {
+    let p = std::term::__size_packed();
+    return __StdTermTermSize { cols: p / 65536, rows: p % 65536 };
+}

@@ -52,6 +52,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <termios.h>
+#include <sys/ioctl.h>
 #include <time.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -10812,6 +10813,48 @@ int64_t lotus_term_raw_disable(void) {
     }
     g_term_raw_active = 0;
     return 1;
+}
+
+/* pond P4 stage 2: terminal size as (cols << 16) | rows; 0 when stdout
+ * isn't a tty or the ioctl fails. The stdlib std::term::size() wrapper
+ * unpacks this into a TermSize {cols, rows} record. Poll per frame
+ * instead of handling SIGWINCH. */
+int64_t lotus_term_size_packed(void) {
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != 0) {
+        return 0;
+    }
+    if (ws.ws_col == 0 || ws.ws_row == 0) {
+        return 0;
+    }
+    return ((int64_t)ws.ws_col << 16) | (int64_t)ws.ws_row;
+}
+
+/* pond P4 stage 4: block up to timeout_ms for one byte on stdin.
+ * Returns 0..255 = the byte; -1 = timeout; -2 = EOF or error.
+ * timeout_ms <= 0 means a pure poll (don't wait). EINTR reads as a
+ * timeout so the caller's loop ticks. */
+int64_t lotus_term_read_byte(int64_t timeout_ms) {
+    struct pollfd p;
+    p.fd = STDIN_FILENO;
+    p.events = POLLIN;
+    p.revents = 0;
+    int rc = poll(&p, 1, (int)timeout_ms);
+    if (rc == 0) {
+        return -1;
+    }
+    if (rc < 0) {
+        return (errno == EINTR) ? -1 : -2;
+    }
+    unsigned char b;
+    ssize_t n = read(STDIN_FILENO, &b, 1);
+    if (n == 1) {
+        return (int64_t)b;
+    }
+    if (n == 0) {
+        return -2;
+    }
+    return (errno == EINTR) ? -1 : -2;
 }
 
 int lotus_process_run(

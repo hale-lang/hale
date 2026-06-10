@@ -1,7 +1,7 @@
 # `std::term` + raw byte I/O primitives (pond P4)
 
-Status: **stage 1 landed; stages 2-4 not started.** Written 2026-06-09 from
-the pond terminal-stack handoff (P4, `term/FRICTION.md § stdlib-term-primitives`).
+Status: **all stages (1-4) landed.** Written 2026-06-09 from the pond
+terminal-stack handoff (P4, `term/FRICTION.md § stdlib-term-primitives`).
 
 > **Stage 1 landed:** `std::term::is_tty(fd) -> Bool` +
 > `std::io::stdout::write_bytes(s) -> Int` — `lotus_term_is_tty` /
@@ -25,7 +25,19 @@ the pond terminal-stack handoff (P4, `term/FRICTION.md § stdlib-term-primitives
 > confirmed under a pty. (Uncatchable signals / `_exit` still bypass the
 > restore — noted in Risks.)
 >
-> Stages 2 + 4 (`size` + `TermSize`, `read_byte`) remain.
+>
+> **Stages 2 + 4 landed:** `std::term::size() -> TermSize` (record
+> `{cols, rows}` — a `lotus_term_size_packed` ioctl primitive + a `term.hl`
+> wrapper that unpacks the `(cols<<16)|rows` Int into the record; `{0,0}`
+> sentinel on a non-tty, not `fallible` — kept simple like `write_bytes`/
+> `read_byte`). `std::io::stdin::read_byte(timeout_ms) -> Int` (`poll`+
+> `read`, sentinel `0..255`/`-1` timeout/`-2` EOF). Tested in
+> `term_primitives.rs`; the read_byte byte/EOF/timeout sentinels verified
+> across piped / `/dev/null` / held-open-pipe stdin.
+>
+> **The whole std::term surface (P4) is shipped.** Remaining future work
+> (out of this scope): parkable stdin on `async_io` pools (F.35), and
+> `read_key`/styling = library territory.
 Five libc one-liners pond ships as FFI glue are generic OS surface, not
 terminal-styling logic — they want a `std::` home so a color-aware logger
 or a TUI doesn't have to vendor an FFI lib (with the C-symbol-collision +
