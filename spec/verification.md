@@ -79,12 +79,24 @@ diagnostic. See `spec/semantics.md § Locus method dispatch`.
 
 ## Not yet offered
 
-The remaining GitHub issue #18 candidates are **not** implemented and
-must not be assumed: memory-bound proofs (item 1), closure-assertion
-lifting (item 3), and resource-budget tracking (item 5). Item 4
-(bus-graph property checks) is fully landed. Closures still verify
-their invariants at *runtime*; nothing here proves allocation, fd, or
-thread bounds statically.
+Item 4 (bus-graph property checks) is fully landed. The remaining GitHub
+issue #18 candidates are partial or unstarted, and none is a default gate
+— don't assume them in a build:
+
+- **Memory-bound proofs (item 1)** — the analysis exists (per-method
+  allocation summary + call-graph escape/loop dataflow) and emits
+  unbounded-accumulation warnings, but **opt-in** via `hale check
+  --warn-unbounded-alloc`; not on by default. Type-aware String-concat
+  sites + loop-ranking are unfinished. See `notes/memory-bound-proofs.md`.
+- **Resource-budget tracking (item 5)** — a static **count** of pinned
+  threads / cooperative pools / bus subjects via `hale check
+  --dump-resource-budget`; informational only, no ceiling gate or fd-leak
+  detection yet. See `notes/resource-budgets.md`.
+- **Closure-assertion lifting (item 3)** — unstarted. Closures still
+  verify their invariants at *runtime*.
+
+Nothing here yet *proves* allocation, fd, or thread bounds as a
+build-failing gate; the item-1 warnings are advisory.
 
 Item 2 (race-completeness for substrate primitives) is a *substrate*
 quality bar, not a user-facing check: it model-checks the runtime's own
