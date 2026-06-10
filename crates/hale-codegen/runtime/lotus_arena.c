@@ -13028,6 +13028,26 @@ int64_t lotus_bytes_builder_append_scalar(void *handle, int64_t value,
     return 1;
 }
 
+/* std::bytes::BytesBuilder.append_str — append a Hale String's bytes
+ * (a NUL-terminated char*) in one strlen + one memcpy, instead of
+ * byte-walking through append_u8 (pond/tui's frame renderer did
+ * ~10k C calls per full-frame redraw). Returns 1 ok / 0 alloc-fail. */
+int64_t lotus_bytes_builder_append_str(void *handle, const char *str) {
+    if (!handle) return 0;
+    if (!str) return 1;
+    lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
+    size_t add = strlen(str);
+    if (add == 0) return 1;
+    int64_t cur_len = lotus_bb_len(b);
+    size_t need = (size_t)cur_len + add;
+    if (!bb_ensure_cap(b, need)) return 0;
+    memcpy(b->buf + cur_len, str, add);
+    lotus_bb_set_len(b, (int64_t)need);
+    b->buf[need] = '\0';
+    b->mutation_epoch += 1;
+    return 1;
+}
+
 /* Zero-fill to the next `to_align` boundary (no-op if already
  * aligned or to_align <= 1). Returns 1 ok / 0 alloc-fail. */
 int64_t lotus_bytes_builder_append_pad(void *handle, int64_t to_align) {

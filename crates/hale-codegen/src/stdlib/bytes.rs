@@ -46,6 +46,11 @@ pub(crate) trait BytesStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_bytes_builder_append_str(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
     fn lower_std_bytes_builder_len(
         &mut self,
         args: &[Expr],
@@ -927,6 +932,53 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         // Returns i64 status: 1=ok, 0=fail (realloc NULL or null
         // handle). The BytesBuilder locus's `append` method checks
         // this and routes to `violate alloc_failed` on 0 per F.27.
+        let status = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64 status");
+        Ok((status, CodegenTy::Int))
+    }
+
+    /// pond P3: `std::bytes::builder::__append_str(handle, s: String)`.
+    /// Append a Hale String's bytes in one C call (strlen + memcpy in the
+    /// runtime), instead of byte-walking through append_u8. Returns i64
+    /// status (1=ok / 0=alloc-fail) like `__append`.
+    fn lower_std_bytes_builder_append_str(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder::__append_str takes 2 args (handle, s), got {}",
+                args.len()
+            )));
+        }
+        let (_h_int, handle_ptr) = self.lower_bytes_builder_handle_arg(
+            &args[0],
+            scope,
+            "std::bytes::builder::__append_str",
+        )?;
+        let (s_val, s_ty) = self.lower_expr(&args[1], scope)?;
+        // String only — NOT StringView. A String is a NUL-terminated
+        // char* the runtime can strlen; a StringView is (ptr, len) into a
+        // larger buffer with no NUL at its end, so strlen would overrun it.
+        // A view must be materialized (std::str::clone / a slice) first.
+        if !matches!(s_ty, CodegenTy::String) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder::__append_str: s must be String (not \
+                 StringView — it isn't NUL-terminated; materialize it first), got {:?}",
+                s_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bytes_builder_append_str")
+            .expect("lotus_bytes_builder_append_str declared");
+        let call = self
+            .builder
+            .build_call(f, &[handle_ptr.into(), s_val.into()], "bb.append_str.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let status = call
             .try_as_basic_value()
             .left()

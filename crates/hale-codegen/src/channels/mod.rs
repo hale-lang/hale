@@ -1130,6 +1130,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | ["std", "str", "builder_finish"]
             | ["std", "bytes", "builder", "__new"]
             | ["std", "bytes", "builder", "__append"]
+            | ["std", "bytes", "builder", "__append_str"]
             | ["std", "bytes", "builder", "__len"]
             | ["std", "bytes", "builder", "__finish"]
             | ["std", "bytes", "builder", "__shift_front"]

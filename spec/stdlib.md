@@ -114,7 +114,10 @@ The discipline that follows:
 
 1. **Pick one role per binding.** A binding is either a
    `BytesBuilder` (long-lived growable buffer with methods
-   `append` / `len` / `shift_front` / `clear` / `snapshot` /
+   `append` (chunk: Bytes) / `append_str` (s: String — append the
+   string's bytes verbatim in one strlen + memcpy; `String` only,
+   a non-NUL-terminated `StringView` must be materialized first) /
+   `len` / `shift_front` / `clear` / `snapshot` /
    `finish` / `view` / `text_view`, plus the binary-pack writers
    below) or a `Bytes` (immutable length-prefixed blob with
    functions `at` / `slice` / `len` / `concat`). The typechecker

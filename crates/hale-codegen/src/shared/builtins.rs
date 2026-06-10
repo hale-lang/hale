@@ -2334,6 +2334,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             bb_append_ty,
             None,
         );
+        // declare i64 @lotus_bytes_builder_append_str(ptr handle, ptr str)
+        // — append a Hale String's bytes (NUL-terminated) in one
+        // strlen + memcpy. Same (ptr, ptr) shape as __append.
+        self.module.add_function(
+            "lotus_bytes_builder_append_str",
+            bb_append_ty,
+            None,
+        );
         // declare i64 @lotus_bytes_builder_append_scalar(ptr handle,
         //   i64 value, i32 width, i32 big_endian) — binary-pack writer.
         let i32_bbas = self.context.i32_type();
