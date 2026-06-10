@@ -879,6 +879,7 @@ fn run_check(target: &Path) -> ExitCode {
                 pinned_threads: Option<usize>,
                 cooperative_pools: Option<usize>,
                 bus_subjects: Option<usize>,
+                fd_open_sites: Option<usize>,
             }
             let text = match std::fs::read_to_string(path) {
                 Ok(t) => t,
@@ -898,6 +899,7 @@ fn run_check(target: &Path) -> ExitCode {
                 pinned_threads: ct.pinned_threads,
                 cooperative_pools: ct.cooperative_pools,
                 bus_subjects: ct.bus_subjects,
+                fd_open_sites: ct.fd_open_sites,
             };
             let violations = hale_types::check_resource_ceiling(&bundle, &ceiling);
             if violations.is_empty() {
