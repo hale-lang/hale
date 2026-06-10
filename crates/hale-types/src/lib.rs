@@ -116,6 +116,18 @@ pub fn resource_leak_warnings(bundle: &Bundle<'_>) -> Vec<Diag> {
     resource_budget::resource_leak_diags(&progs)
 }
 
+/// Check a bundle's resource counts against declared ceilings (GH #18 item
+/// 5, the CI gate). Returns one violation message per over-budget resource
+/// (empty = within budget). Drives `--check-resource-budget`.
+pub fn check_resource_ceiling(
+    bundle: &Bundle<'_>,
+    ceiling: &resource_budget::ResourceCeiling,
+) -> Vec<String> {
+    let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    let budget = resource_budget::budget_for_programs(&progs);
+    resource_budget::check_ceiling(&budget, ceiling)
+}
+
 pub fn check_bundle_opts(
     bundle: &Bundle<'_>,
     allow_unowned_subscriber: bool,

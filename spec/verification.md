@@ -89,9 +89,12 @@ issue #18 candidates are partial or unstarted, and none is a default gate
   --warn-unbounded-alloc`; not on by default. Type-aware String-concat
   sites + loop-ranking are unfinished. See `notes/memory-bound-proofs.md`.
 - **Resource-budget tracking (item 5)** — a static **count** of pinned
-  threads / cooperative pools / bus subjects via `hale check
-  --dump-resource-budget`; informational only, no ceiling gate or fd-leak
-  detection yet. See `notes/resource-budgets.md`.
+  threads / cooperative pools / bus subjects (`hale check
+  --dump-resource-budget`); a **CI ceiling gate** (`--check-resource-budget
+  <file.toml>` — fails the build when a count exceeds a declared ceiling);
+  and **fd-leak detection** (`--warn-resource-leak` — an fd-acquiring call
+  whose result is stored resident in an unbounded context, opt-in). Held-fd
+  *counts* are the one unshipped piece. See `notes/resource-budgets.md`.
 - **Closure-assertion lifting (item 3)** — unstarted. Closures still
   verify their invariants at *runtime*.
 

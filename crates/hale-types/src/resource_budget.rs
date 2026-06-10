@@ -98,6 +98,38 @@ pub struct ResourceBudget {
     pub bus_subjects: BTreeSet<String>,
 }
 
+/// Declared per-resource ceilings (from a project's resource-budget file).
+/// `None` = no ceiling for that resource. A count exceeding its ceiling
+/// fails `--check-resource-budget` — the CI gate ("this PR raised the
+/// thread/subject count — intentional? bump the ceiling").
+#[derive(Debug, Clone, Default)]
+pub struct ResourceCeiling {
+    pub pinned_threads: Option<usize>,
+    pub cooperative_pools: Option<usize>,
+    pub bus_subjects: Option<usize>,
+}
+
+/// Compare a tallied budget against declared ceilings. Returns one
+/// violation message per resource over its ceiling (empty = within
+/// budget). Resources without a declared ceiling are unconstrained.
+pub fn check_ceiling(b: &ResourceBudget, c: &ResourceCeiling) -> Vec<String> {
+    let mut v = Vec::new();
+    let mut chk = |name: &str, actual: usize, ceil: Option<usize>| {
+        if let Some(max) = ceil {
+            if actual > max {
+                v.push(format!(
+                    "{}: {} exceeds the declared ceiling of {}",
+                    name, actual, max
+                ));
+            }
+        }
+    };
+    chk("pinned_threads (OS threads)", b.pinned_threads, c.pinned_threads);
+    chk("cooperative_pools", b.cooperative_pools.len(), c.cooperative_pools);
+    chk("bus_subjects", b.bus_subjects.len(), c.bus_subjects);
+    v
+}
+
 /// Walk the bundle and tally the structural resources.
 pub fn budget_for_programs(programs: &[&Program]) -> ResourceBudget {
     let mut b = ResourceBudget::default();
@@ -227,6 +259,39 @@ mod tests {
         "#;
         let b = budget(src);
         assert_eq!(b.bus_subjects.len(), 1, "same subject should dedupe: {:?}", b.bus_subjects);
+    }
+
+    #[test]
+    fn ceiling_check_flags_over_budget_and_passes_within() {
+        let src = r#"
+            type T { n: Int; }
+            locus C {
+                bus {
+                    subscribe "a" as oa of type T;
+                    publish "b" of type T;
+                    subscribe "c" as oc of type T;
+                }
+                fn oa(m: T) { let _ = m.n; }
+                fn oc(m: T) { let _ = m.n; }
+            }
+            fn main() { }
+        "#;
+        let program = parse_source(src).expect("parse");
+        let b = budget_for_programs(&[&program]);
+        assert_eq!(b.bus_subjects.len(), 3);
+        // Ceiling 2 → over budget.
+        let over = check_ceiling(
+            &b,
+            &ResourceCeiling { bus_subjects: Some(2), ..Default::default() },
+        );
+        assert_eq!(over.len(), 1, "{:?}", over);
+        assert!(over[0].contains("bus_subjects: 3 exceeds"), "{:?}", over);
+        // Ceiling 3 → within budget; no ceiling on the others → unconstrained.
+        let within = check_ceiling(
+            &b,
+            &ResourceCeiling { bus_subjects: Some(3), ..Default::default() },
+        );
+        assert!(within.is_empty(), "should be within budget: {:?}", within);
     }
 
     #[test]

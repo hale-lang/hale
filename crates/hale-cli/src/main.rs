@@ -864,6 +864,55 @@ fn run_check(target: &Path) -> ExitCode {
         print!("{}", hale_types::dump_resource_budget(&bundle));
         return ExitCode::SUCCESS;
     }
+    // GH #18 item 5: the CI gate. `--check-resource-budget <path>` reads a
+    // TOML ceiling file and fails the build if any count exceeds it.
+    {
+        let cli_args: Vec<String> = std::env::args().collect();
+        let ceiling_path = cli_args
+            .iter()
+            .position(|a| a == "--check-resource-budget")
+            .and_then(|i| cli_args.get(i + 1));
+        if let Some(path) = ceiling_path {
+            #[derive(serde::Deserialize, Default)]
+            #[serde(deny_unknown_fields)]
+            struct CeilingToml {
+                pinned_threads: Option<usize>,
+                cooperative_pools: Option<usize>,
+                bus_subjects: Option<usize>,
+            }
+            let text = match std::fs::read_to_string(path) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("--check-resource-budget: cannot read `{}`: {}", path, e);
+                    return ExitCode::from(1);
+                }
+            };
+            let ct: CeilingToml = match toml::from_str(&text) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("--check-resource-budget: invalid budget file `{}`: {}", path, e);
+                    return ExitCode::from(1);
+                }
+            };
+            let ceiling = hale_types::resource_budget::ResourceCeiling {
+                pinned_threads: ct.pinned_threads,
+                cooperative_pools: ct.cooperative_pools,
+                bus_subjects: ct.bus_subjects,
+            };
+            let violations = hale_types::check_resource_ceiling(&bundle, &ceiling);
+            if violations.is_empty() {
+                println!("resource budget OK (within `{}`)", path);
+                return ExitCode::SUCCESS;
+            }
+            for v in &violations {
+                eprintln!(
+                    "resource budget exceeded: {} — raise the ceiling in `{}` if intentional",
+                    v, path
+                );
+            }
+            return ExitCode::from(1);
+        }
+    }
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
     let mut diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
