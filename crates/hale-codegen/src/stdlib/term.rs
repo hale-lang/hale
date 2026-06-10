@@ -19,6 +19,11 @@ pub(crate) trait TermStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_term_raw_toggle(
+        &mut self,
+        args: &[Expr],
+        c_fn: &str,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
 }
 
 impl<'ctx, 'p> TermStdlib<'ctx> for Cx<'ctx, 'p> {
@@ -105,6 +110,37 @@ impl<'ctx, 'p> TermStdlib<'ctx> for Cx<'ctx, 'p> {
             .try_as_basic_value()
             .left()
             .expect("lotus_term_write_stdout returns i64");
+        Ok((ret, CodegenTy::Int))
+    }
+
+    /// `std::term::__raw_enable()` / `__raw_disable()` -> Int (1 ok / 0
+    /// fail). Internal primitives behind the `std::term::RawMode` guard
+    /// locus's birth/dissolve. `raw_enable` also registers a runtime
+    /// atexit termios restore — so with the exit()-on-panic path (P2) the
+    /// terminal is restored on panic/error/return.
+    fn lower_std_term_raw_toggle(
+        &mut self,
+        args: &[Expr],
+        c_fn: &str,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if !args.is_empty() {
+            return Err(CodegenError::Unsupported(format!(
+                "std::term::{} takes 0 args, got {}",
+                c_fn.trim_start_matches("lotus_term_"),
+                args.len()
+            )));
+        }
+        let f = self
+            .module
+            .get_function(c_fn)
+            .unwrap_or_else(|| panic!("{} declared", c_fn));
+        let ret = self
+            .builder
+            .build_call(f, &[], "raw_toggle.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("raw toggle returns i64");
         Ok((ret, CodegenTy::Int))
     }
 }

@@ -64,3 +64,23 @@ fn write_bytes_flushes_so_ordering_is_consistent_with_println() {
         stdout
     );
 }
+
+#[test]
+fn raw_mode_guard_births_and_dissolves_cleanly() {
+    // pond P4 stage 3: the RawMode guard locus. With stdin piped (not a
+    // tty) raw_enable soft-fails — the program runs unstyled and the
+    // dissolve no-ops; the point is the guard instantiates, runs birth +
+    // dissolve, and exits clean (the wiring is sound). On a real tty
+    // raw_enable activates + registers the atexit restore (verified
+    // separately: is_tty(0) is true under a pty), which composes with the
+    // exit()-on-panic path (P2) to restore the terminal.
+    let src = r#"
+        fn main() {
+            let raw = std::term::RawMode { };
+            println("in-raw-scope");
+        }
+    "#;
+    let (stdout, status) = build_and_run("raw_mode", src);
+    assert!(status.success(), "RawMode guard should exit clean on a non-tty; {:?}", status);
+    assert!(stdout.contains("in-raw-scope"), "guard body didn't run; got: {:?}", stdout);
+}
