@@ -744,7 +744,11 @@ impl<'a> Walker<'a> {
     fn walk_expr(&mut self, expr: &Expr, depth: u32, escape: Escape) {
         match expr {
             Expr::Struct { path, inits, span } => {
-                let name = path.segments.last().map(|s| s.name.clone()).unwrap_or_default();
+                // The *qualified* path (joined) — a local struct is
+                // single-segment ("Quote"), a stdlib one carries its full
+                // path ("std::io::tcp::Listener") so consumers can match it
+                // without colliding with a same-named user type.
+                let name = path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
                 self.push_site(AllocKind::StructLit(name), escape, depth, *span);
                 for si in inits {
                     self.walk_expr(&si.value, depth, escape);

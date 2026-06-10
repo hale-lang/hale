@@ -105,7 +105,7 @@ No false positives (it's a count). Validated by unit tests.
    alloc summary keeps only a struct's last path segment, so matching by
    name alone would risk colliding with a user type named `Listener` /
    `Stream` / `File`; counting those needs path-qualified struct matching.
-   A minor tail; the call-site surface is the bulk of fd acquisition.
+   Now counted too (matched on the qualified path, so a user type named `Listener` doesn't collide) — fd acquisition = open-calls + held-fd-locus instantiations. Stage complete.
 
 ## Risks
 

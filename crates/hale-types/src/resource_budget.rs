@@ -22,7 +22,14 @@ use std::collections::BTreeSet;
 use hale_syntax::ast::*;
 use hale_syntax::Diag;
 
-use crate::alloc_summary::{self, Callee, Escape};
+use crate::alloc_summary::{self, AllocKind, Callee, Escape};
+
+/// Held-fd loci instantiated directly (vs via a call) — `tcp::Listener { }`
+/// holds a listening fd from birth. Matched on the *qualified* struct path
+/// (so a user type named `Listener` doesn't collide). `File` comes via
+/// `open()` (a call, counted above); `Stream` mostly via connect/accept.
+const HELD_FD_LOCUS_PATHS: &[&str] =
+    &["std::io::tcp::Listener", "std::io::tcp::Stream"];
 
 /// Stdlib path-calls that acquire a held OS resource (a file descriptor)
 /// — the result is a locus (`File` / `Stream` / `Listener`) that closes
@@ -96,11 +103,11 @@ pub struct ResourceBudget {
     pub cooperative_pools: BTreeSet<String>,
     /// Distinct bus subject strings (router table entries).
     pub bus_subjects: BTreeSet<String>,
-    /// fd-opening call sites (`std::io::file::open` / `tcp::connect` /
-    /// `listen` / `accept`) — the file-descriptor acquisition surface. A
-    /// static site count, not a runtime fd count. (Direct held-fd locus
-    /// instantiations — `tcp::Listener { }` — aren't counted yet; they'd
-    /// need path-qualified struct matching, see notes/resource-budgets.md.)
+    /// fd acquisition sites — the file-descriptor surface. Counts both
+    /// fd-opening calls (`std::io::file::open` / `tcp::connect` / `listen`
+    /// / `accept`) and direct held-fd locus instantiations
+    /// (`tcp::Listener { }` / `tcp::Stream { }`). A static site count, not
+    /// a runtime fd count.
     pub fd_open_sites: usize,
 }
 
@@ -164,15 +171,24 @@ pub fn budget_for_programs(programs: &[&Program]) -> ResourceBudget {
             }
         }
     }
-    // fd-opening call sites — reuse alloc_summary's call edges (the FD
-    // paths are unambiguous qualified stdlib calls → zero FP).
+    // fd acquisition sites — reuse alloc_summary. Two forms, both
+    // unambiguous (qualified paths → zero FP): fd-opening *calls*
+    // (open/connect/accept) and direct held-fd *locus instantiations*
+    // (`tcp::Listener { }`).
     let summary = alloc_summary::summarize_programs(programs);
-    b.fd_open_sites = summary
+    let calls = summary
         .fns
         .values()
         .flat_map(|f| f.calls.iter())
         .filter(|c| matches!(&c.callee, Callee::Unresolved(p) if FD_ACQUIRING_PATHS.contains(&p.as_str())))
         .count();
+    let loci = summary
+        .fns
+        .values()
+        .flat_map(|f| f.sites.iter())
+        .filter(|s| matches!(&s.kind, AllocKind::StructLit(n) if HELD_FD_LOCUS_PATHS.contains(&n.as_str())))
+        .count();
+    b.fd_open_sites = calls + loci;
     b
 }
 
@@ -229,7 +245,7 @@ impl ResourceBudget {
         for s in &self.bus_subjects {
             out.push_str(&format!("    - {}\n", s));
         }
-        out.push_str(&format!("fd-opening call sites:     {}\n", self.fd_open_sites));
+        out.push_str(&format!("fd acquisition sites:      {}\n", self.fd_open_sites));
         out
     }
 }
@@ -296,6 +312,34 @@ mod tests {
         let program = parse_source(src).expect("parse");
         let b = budget_for_programs(&[&program]);
         assert_eq!(b.fd_open_sites, 2, "expected 2 fd-open sites (open + connect)");
+    }
+
+    #[test]
+    fn counts_held_fd_locus_instantiations() {
+        // Direct held-fd locus instantiations, matched on the qualified
+        // path (a user type named `Listener` would not collide).
+        let src = r#"
+            fn serve() {
+                let l = std::io::tcp::Listener { port: 8080 };
+                let s = std::io::tcp::Stream { fd: 3 };
+            }
+            fn main() { }
+        "#;
+        let program = parse_source(src).expect("parse");
+        let b = budget_for_programs(&[&program]);
+        assert_eq!(b.fd_open_sites, 2, "Listener + Stream instantiations");
+    }
+
+    #[test]
+    fn user_type_named_listener_does_not_collide() {
+        // A local `Listener` (single-segment path) is NOT a held-fd locus.
+        let src = r#"
+            type Listener { id: Int; }
+            fn make() -> Listener { return Listener { id: 1 }; }
+            fn main() { }
+        "#;
+        let program = parse_source(src).expect("parse");
+        assert_eq!(budget_for_programs(&[&program]).fd_open_sites, 0);
     }
 
     #[test]
