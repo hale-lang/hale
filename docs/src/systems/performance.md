@@ -89,17 +89,21 @@ ends. If RSS tracks connection count, this is almost always why.
 
 The growth patterns above — a per-message handler that allocates
 into `self`, a connection child left resident — have a static
-shape, and `hale check` can flag them before you ever measure RSS.
-These are **opt-in** advisory warnings, not build failures:
+shape, and `hale check` flags them before you ever measure RSS.
+These are advisory warnings, not build failures:
 
-- `hale check app.hl --warn-unbounded-alloc` flags an allocation
-  that accumulates without bound: a struct / array / bytes value
-  created in a per-message bus handler (or a runtime-bounded loop)
-  and stored into `self`, where it lives until the locus dissolves.
-  The fix is the one from this chapter — route it over the bus,
-  bound the loop, or move it into a per-iteration child. A
-  `while i < N { … }` counter with a constant bound is *proven*
-  bounded and left alone.
+- **On by default**, `hale check` flags an allocation that
+  accumulates without bound: a struct / array / bytes value created
+  in a per-message bus handler (or a runtime-bounded loop) that
+  escapes into `self`, where it lives until the locus dissolves —
+  e.g. a whole-value replace `self.latest = Thing{…}`, which
+  bump-allocates a fresh value each message. The fix is usually
+  **in-place mutation** (`self.latest.field = v`, `self.arr[i] = v`)
+  instead of replacing the whole value, or the moves from this
+  chapter — a capacity-bounded `@form`, route it over the bus, or a
+  per-iteration child. A `while i < N { … }` counter with a constant
+  bound is *proven* bounded and left alone. `--no-warn-unbounded-alloc`
+  opts out.
 - `hale check app.hl --warn-resource-leak` is the same idea for file
   descriptors: an `open` / `connect` / `accept` whose result is
   stored resident in an unbounded context, so fds pile up.

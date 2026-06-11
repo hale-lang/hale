@@ -918,8 +918,11 @@ fn run_check(target: &Path) -> ExitCode {
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
     let mut diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
-    // GH #18 item 1 step 3: opt-in unbounded-allocation warnings.
-    if std::env::args().any(|a| a == "--warn-unbounded-alloc") {
+    // GH #18 item 1: unbounded-allocation warnings, ON BY DEFAULT.
+    // `--no-warn-unbounded-alloc` opts out; `--warn-unbounded-alloc` is
+    // still accepted (now a no-op) for back-compat. The warnings are
+    // advisory — they print but don't fail the build (only errors do).
+    if !std::env::args().any(|a| a == "--no-warn-unbounded-alloc") {
         diags.extend(hale_types::unbounded_alloc_warnings(&bundle));
     }
     // GH #18 item 5: opt-in fd-resource-leak warnings.
