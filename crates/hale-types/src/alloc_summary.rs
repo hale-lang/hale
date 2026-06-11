@@ -615,8 +615,11 @@ pub fn unbounded_alloc_diags(programs: &[&Program]) -> Vec<Diag> {
                 format!(
                     "unbounded allocation: this {} {} accumulates in `{}`'s region \
                      until the locus dissolves — it is never reclaimed per iteration, \
-                     so it grows without bound. Bound the loop, route the value over the \
-                     bus (the payload arena reclaims per dispatch), or move the allocating \
+                     so it grows without bound. Bound the loop; store it in a \
+                     capacity-bounded form (`@form(ring_buffer)` / `@form(lru_cache)` / \
+                     a `capacity` slot) instead of a replaced field; mutate fixed state \
+                     in place rather than rebuilding it; route the value over the bus \
+                     (the payload arena reclaims per dispatch); or move the allocating \
                      work into a per-iteration child locus.",
                     ls.kind.label(),
                     where_,

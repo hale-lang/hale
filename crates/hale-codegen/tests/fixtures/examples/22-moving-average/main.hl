@@ -3,7 +3,8 @@
 //
 // What this exercises end-to-end:
 //   - Fixed-cap array as locus state (`[Int; 4]`).
-//   - Mutation through self.X = ... (replace oldest slot).
+//   - In-place indexed slot write (`self.recent[head] = ...`),
+//     so the window never reallocates.
 //   - Subscribe + publish on the bus, with a typed payload.
 //   - For-over-array inside a handler body.
 //   - A modular index walking the circular buffer, written
@@ -50,22 +51,11 @@ locus Window {
     }
 
     fn on_sample(s: Sample) {
-        // Slot the new value at `head`. We can't write
-        // self.recent[head] = ... in v0 codegen (indexed
-        // self assignment is gated), so we rebuild the array
-        // by mapping over the old contents — replace one
-        // slot, copy the rest.
-        let mut next = [0, 0, 0, 0];
-        let mut i = 0;
-        while i < 4 {
-            if i == self.head {
-                next[i] = s.value;
-            } else {
-                next[i] = self.recent[i];
-            }
-            i = i + 1;
-        }
-        self.recent = next;
+        // Overwrite the oldest slot in place via indexed
+        // self-assignment. No per-message array allocation, so the
+        // window doesn't accumulate replaced arrays in the locus
+        // arena — the state is exactly the four live slots.
+        self.recent[self.head] = s.value;
         self.head = (self.head + 1) % 4;
 
         // Recompute the rolling sum + emit smoothed value.
