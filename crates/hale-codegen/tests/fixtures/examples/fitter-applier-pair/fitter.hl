@@ -38,14 +38,14 @@ locus FitterL {
     }
 
     fn on_observation(obs: Observation) {
-        // Update fitted kernel from the new observation.
-        // In production this is real curve fitting; here a
-        // stub that increments perspective_id each time.
-        self.latest_kernel = Kernel {
-            scale: self.latest_kernel.scale,
-            valid_after: obs.timestamp,
-            perspective_id: self.latest_kernel.perspective_id + 1,
-        };
+        // Update the fitted kernel in place from the new observation
+        // (scale is carried unchanged). Mutating the fields avoids
+        // re-allocating the whole struct every message, so the kernel
+        // state doesn't accumulate in the locus arena. In production
+        // this is real curve fitting; here a stub that bumps
+        // perspective_id each time.
+        self.latest_kernel.valid_after = obs.timestamp;
+        self.latest_kernel.perspective_id = self.latest_kernel.perspective_id + 1;
         self.validation_count = self.validation_count + 1;
 
         // Wrap as a perspective, ship if stable.

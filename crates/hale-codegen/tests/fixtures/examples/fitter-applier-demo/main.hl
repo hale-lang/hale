@@ -103,14 +103,12 @@ locus FitterL {
     }
 
     fn on_observation(obs: Observation) {
-        // Refit the kernel from the new observation. v0 stub:
-        // bump perspective_id each time, leave the scale at
-        // 1.0d.
-        self.latest_kernel = Kernel {
-            scale: self.latest_kernel.scale,
-            valid_after: obs.timestamp,
-            perspective_id: self.latest_kernel.perspective_id + 1,
-        };
+        // Refit the kernel from the new observation in place — bump
+        // perspective_id, leave the scale at 1.0d. Mutating the fields
+        // avoids re-allocating the whole struct every message, so the
+        // kernel state doesn't accumulate in the locus arena.
+        self.latest_kernel.valid_after = obs.timestamp;
+        self.latest_kernel.perspective_id = self.latest_kernel.perspective_id + 1;
         self.validation_count = self.validation_count + 1;
 
         // Multi-perspective stability commit-rule: ship only
