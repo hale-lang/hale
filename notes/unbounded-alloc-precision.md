@@ -95,42 +95,54 @@ Among `StoredToSelf` sites, split by a syntactic test on the assignment:
 (`self.window = compute(m)`).
 
 - **Append** — incorporates all prior values → unbounded by construction.
-  Warn with high confidence; advice = "bound / cap / route."
-- **Replace** — one live value; resident-only leak (the arena keeps old
-  copies). Warn **only if the locus is long-running** (R3), with a
-  replace-specific message: *"one value is live, but the old one isn't
-  reclaimed until the locus dissolves — use a fixed `capacity` slot, route
-  over the bus, or shorten the locus lifetime."* Replace-of-a-fixed-size
-  field is the runtime-fix candidate (below).
+  Warn; advice = "bound / cap / route."
+- **Replace** — one live value, but a **resident leak** in a bump arena
+  (the old copies linger until the locus dissolves). Still warn (it's a
+  true positive), with a replace-specific message: *"one value is live, but
+  the old one isn't reclaimed until the locus dissolves — use a fixed
+  `capacity` slot, route over the bus."* Replace-of-a-fixed-size field is
+  the runtime-fix candidate (below) — that's what makes it genuinely
+  bounded, not a lifetime exemption.
 
-### R3 — lifetime-awareness (kills the short-lived-locus false positives)
+### R3 — lifetime-awareness — **investigated, NOT built (unsound)**
 
-Classify the owner locus's lifetime from its lifecycle shape (compile-time
-known):
+The idea was: exempt accumulation in a short-lived / flow locus, since its
+region is reclaimed when it dissolves. **It doesn't survive scrutiny — it
+would introduce false negatives, violating "never a false bounded."**
 
-- **Long-running / resident** — a top-level singleton, a locus with a
-  non-trivial `run()`, a bus subscriber with no `release` above it.
-  Accumulation = forever → **warn**.
-- **Short-lived / flow** — an `accept`'d child whose parent declares
-  `release` (region reclaimed per unit of work), a one-shot `main` in a
-  non-service program, a per-request flow. Accumulation bounded by the
-  (bounded) lifetime → **don't warn** (or downgrade to a note).
+The cross-invocation warning fires only on **per-message handlers**, which
+belong to **bus subscribers** — long-lived by nature. The only short-lived
+subscriber is a *flow* (an `accept`'d + `release`'d child). But a flow can
+be **persistent** (a streaming connection): its handler runs unboundedly
+over its life, and `self.buf = self.buf + chunk` accumulates the whole time,
+reclaimed only at `release` — effectively never for a persistent
+connection. That's a **real leak**, and whether a flow handles bounded vs
+unbounded messages before release is **runtime data**, not statically
+knowable. Exempting flows would hide it.
 
-Conservative default: unknown / can't classify → treat as long-running
-(warn). Never a false "bounded."
+The genuinely short-lived loci (local guard loci à la `BytesBuilder`) have
+no bus handler, so they're never in the flagged set to begin with. There is
+no sound, tractable lifetime exemption for the cross-invocation case. (The
+earlier "bounded by the connection lifetime" reasoning silently assumed the
+connection is short — the same flaw as the original replace-vs-append
+claim.)
+
+**Conclusion:** the post-R1 warnings are genuine. The remaining lever for
+fewer warnings + eventual default-on is **not** lifetime exemption — it's
+making *replace* genuinely bounded via the runtime sidecar (in-place slot
+reuse for fixed-size replaced `self` fields), then R2 recognizing it.
 
 ## How they compose
 
-| site | owner lifetime | verdict after refinements |
-|---|---|---|
-| non-escaping `Local` in a handler | any | **silent** (R1 — reclaimed per call) |
-| `Local` in an unbounded loop | any | **warn** (unchanged — accumulates within the call) |
-| `StoredToSelf` *append* (`self.f = self.f + x`) | long-running | **warn** (unbounded by construction) |
-| `StoredToSelf` *append* | short-lived | silent / note (R3) |
-| `StoredToSelf` *replace* (`self.f = E`) | long-running | **warn**, replace-specific message (R2) |
-| `StoredToSelf` *replace* | short-lived | **silent** (R3) |
+| site | verdict after refinements |
+|---|---|
+| non-escaping `Local` in a handler | **silent** (R1 — reclaimed per delivery) |
+| `Local` in an unbounded loop | **warn** (accumulates within the call) |
+| `StoredToSelf` *append* (`self.f = self.f + x`) | **warn** — unbounded by construction |
+| `StoredToSelf` *replace* (`self.f = E`) | **warn** — resident leak; bounded only with the runtime sidecar (R2 message) |
 
-The corpus's moving-average / fitter warnings are long-running `StoredToSelf`
+(No lifetime column — R3 showed it can't soundly bound the cross-invocation
+case.) The corpus's moving-average / fitter warnings are `StoredToSelf`
 sites, so they **stay** (true positives) — with sharper messages. What goes
 away is transient handler scratch (R1) and any short-lived-locus
 accumulation (R3). That's the point: after the refinements the surviving
@@ -154,12 +166,16 @@ diagnostic should point at.
    via codegen; see above).
 1. **R1** — escape-awareness on the cross-invocation path — **LANDED**
    (corpus 4 → 3, removed a transient-local FP).
-2. **R3** — lifetime classification. Removes short-lived-locus warnings.
-   *(next)*
-3. **R2** — replace-vs-append messaging + runtime-fix targeting.
-4. **Re-evaluate default-on** — only once the surviving corpus warnings are
-   all true positives. Then it's a warning that's *right*, needing no
-   escape hatch.
+2. ~~**R3** — lifetime classification~~ — **dropped (unsound)**; see above.
+3. **R2** — replace-vs-append *messaging* (not suppression) — distinguish
+   append (`self.f = self.f + x`) from replace (`self.f = E`) for a sharper
+   diagnostic, and flag replace-of-fixed-size as the runtime-fix candidate.
+4. **Runtime sidecar** — in-place slot reuse for fixed-size replaced `self`
+   fields. The actual lever: it makes replace genuinely bounded, so R2's
+   replace case can drop to "bounded."
+5. **Re-evaluate default-on** — once the runtime sidecar + R2 land, the
+   surviving warnings are all genuine unbounded growth (true positives) —
+   the precondition for a default-on warning that needs no escape hatch.
 
 ## Risk
 
