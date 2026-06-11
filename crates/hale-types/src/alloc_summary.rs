@@ -103,6 +103,25 @@ impl Escape {
             Escape::Sent => "escaping=bus-send",
         }
     }
+    /// Does this value survive its method's return — i.e. persist across
+    /// *invocations* of an unboundedly-invoked fn (a per-message handler)?
+    ///
+    /// A locus method / bus handler opens a **method-scratch subregion** at
+    /// entry and destroys it at exit (per delivery) — transients allocate
+    /// into the scratch and are freed per call, while escaping values are
+    /// copied out to `self` / the caller first (see
+    /// `open_method_scratch` / `emit_method_scratch_destroy` in codegen).
+    /// So a `Local` is reclaimed per invocation and does NOT accumulate
+    /// across deliveries; only `StoredToSelf` (persists in the locus) and
+    /// `Returned` (escapes to the caller) do. `Sent` is reclaimed per
+    /// dispatch (handled by its `AfterBusDispatch` reclaim scope).
+    ///
+    /// This is only about *cross-invocation* multiplicity. A `Local` in an
+    /// unbounded loop *within a single call* still accumulates until that
+    /// call returns — that case is caught by the in-loop verdict, not here.
+    fn persists_across_calls(&self) -> bool {
+        matches!(self, Escape::StoredToSelf | Escape::Returned)
+    }
 }
 
 /// When an allocation's memory is actually reclaimed — the *empirically
@@ -383,7 +402,16 @@ impl AllocSummary {
         let intra = site.verdict();
         match intra {
             SiteVerdict::AccumulatesUnbounded | SiteVerdict::PerIterationReclaim => intra,
-            _ if unbounded.contains(owner) && site.reclaim.accumulates_in_loop() => {
+            // Cross-invocation accumulation (a per-message handler / a fn
+            // reached from an unbounded loop): only ESCAPING values persist
+            // across invocations. A non-escaping `Local` is reclaimed at the
+            // per-call method-scratch destroy (R1 — escape-awareness), so it
+            // does not accumulate across deliveries. The in-loop case
+            // (intra == AccumulatesUnbounded) is handled above and untouched.
+            _ if unbounded.contains(owner)
+                && site.reclaim.accumulates_in_loop()
+                && site.escape.persists_across_calls() =>
+            {
                 SiteVerdict::AccumulatesUnbounded
             }
             _ => intra,
@@ -1191,6 +1219,62 @@ mod tests {
             ),
             SiteVerdict::AccumulatesUnbounded,
             "a runtime init must stay unbounded"
+        );
+    }
+
+    #[test]
+    fn r1_escape_awareness_on_the_cross_invocation_path() {
+        // (a) a per-message handler builds a transient it does NOT store →
+        // reclaimed at the per-delivery method-scratch destroy → not a leak.
+        let transient = r#"
+            type T { n: Int; }
+            type Tmp { a: Int; b: Int; }
+            locus L {
+                params { last: Int = 0; }
+                bus { subscribe "in" as on_in of type T; }
+                fn on_in(m: T) { let tmp = Tmp { a: m.n, b: m.n }; self.last = tmp.a; }
+            }
+            fn main() { }
+        "#;
+        assert!(
+            summarize(transient).leak_sites().is_empty(),
+            "a non-escaping handler local is reclaimed per delivery — must not flag"
+        );
+
+        // (b) the same handler storing the struct INTO self → escapes the
+        // scratch → accumulates across deliveries → flagged.
+        let stored = r#"
+            type T { n: Int; }
+            type Tmp { a: Int; b: Int; }
+            locus L {
+                params { last: Tmp; }
+                bus { subscribe "in" as on_in of type T; }
+                fn on_in(m: T) { self.last = Tmp { a: m.n, b: m.n }; }
+            }
+            fn main() { }
+        "#;
+        assert_eq!(
+            summarize(stored).leak_sites().len(),
+            1,
+            "a self-stored handler alloc persists across deliveries — must flag"
+        );
+
+        // (c) a non-escaping local in an UNBOUNDED LOOP inside the handler
+        // accumulates within the (never-returning) call → still flagged.
+        // R1 only changes the cross-invocation path, not the in-loop one.
+        let in_loop = r#"
+            type T { n: Int; }
+            type Tmp { a: Int; }
+            locus L {
+                bus { subscribe "in" as on_in of type T; }
+                fn on_in(m: T) { while true { let tmp = Tmp { a: m.n }; let _ = tmp.a; } }
+            }
+            fn main() { }
+        "#;
+        assert_eq!(
+            summarize(in_loop).leak_sites().len(),
+            1,
+            "a non-escaping local in an unbounded loop still accumulates within the call"
         );
     }
 
