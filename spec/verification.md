@@ -77,23 +77,29 @@ CQRS is GitHub issue #18 item 6; its three sanctioned remedies
 (parent-child + contract, bus mediator, delegation) are named in the
 diagnostic. See `spec/semantics.md § Locus method dispatch`.
 
-## Opt-in & deferred analyses
+## Default-on & opt-in analyses
 
-Item 4 (bus-graph property checks) is fully landed and runs by default.
-The other GitHub issue #18 candidates are **opt-in** (behind a flag) or
-deferred — none is a default gate, so don't assume them in a build:
+Two GitHub issue #18 analyses run **by default**: item 4 (bus-graph property
+checks — *errors*, fail the build) and item 1 (memory-bound — *advisory
+warnings*, print but don't fail). The rest are **opt-in** (behind a flag) or
+deferred. Only item 4 is a build gate; don't assume the others in a build:
 
-- **Memory-bound proofs (item 1)** — the analysis exists (per-method
-  allocation summary + call-graph escape/loop dataflow, including
-  call-result escape tagging and **loop-ranking** that proves a
-  `while v < N` const counter bounded) and emits unbounded-accumulation
-  warnings, **opt-in** via `hale check --warn-unbounded-alloc`
-  (`--dump-alloc-summary` prints the raw per-fn allocation summary). Not on
-  by default — *deliberately held* pending an `@unbounded` escape valve +
-  a replace-vs-append refinement, because the warnings include
-  legitimately bounded-by-design patterns (a fixed-window store-latest) the
-  author would accept. Type-aware String-concat sites remain deferred. See
-  `notes/memory-bound-proofs.md`.
+- **Memory-bound proofs (item 1)** — **on by default** in `hale check`
+  (advisory warnings; they print but don't fail the build).
+  `--no-warn-unbounded-alloc` opts out; `--dump-alloc-summary` prints the
+  raw per-fn summary. A per-method allocation summary + call-graph
+  escape/loop dataflow — with **escape-awareness** (a non-escaping local in
+  a per-message handler is reclaimed at the per-delivery method-scratch
+  destroy, so it isn't flagged), call-result escape tagging, and
+  **loop-ranking** (a `while v < N` const counter is proven bounded) — flags
+  a value allocated in a per-message handler / unbounded loop that escapes
+  and **accumulates until the locus dissolves**. A whole-value replace
+  (`self.f = Struct{…}`) genuinely leaks (the arena bump-allocates a fresh
+  value each time); the fix is **in-place mutation** (`self.f.x = v` /
+  `self.a[i] = v`), a capacity-bounded `@form` (`ring_buffer` / `lru_cache`
+  / a `capacity` slot), the bus (reclaims per dispatch), or a per-iteration
+  child locus. Zero corpus false positives. Type-aware String-concat sites
+  remain deferred. See `notes/memory-bound-proofs.md`.
 - **Resource-budget tracking (item 5)** — fully shipped, opt-in. A static
   **count** of pinned threads / cooperative pools / bus subjects /
   fd-acquisition sites (fd-opening calls *and* held-fd `Listener` /

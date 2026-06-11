@@ -6,6 +6,26 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **Memory-bound warnings on by default (GitHub #18 item 1).**
+  `hale check` now emits unbounded-allocation warnings without a flag.
+  They're **advisory** — they print but don't fail the build (only errors
+  do); `--no-warn-unbounded-alloc` opts out. The analysis reached zero
+  corpus false positives first: escape-awareness (a non-escaping local in a
+  per-message handler is reclaimed at the per-delivery method-scratch
+  destroy, so it isn't flagged) and loop-ranking (a `while v < N` const
+  counter is proven bounded). The warning flags a value that's allocated in
+  a per-message handler / unbounded loop, escapes, and accumulates until
+  the locus dissolves — e.g. a whole-value field replace
+  `self.f = Struct{…}`, which bump-allocates a fresh value each time. The
+  fix it points at is **in-place mutation** (`self.f.x = v` /
+  `self.a[i] = v`), a capacity-bounded `@form`, the bus, or a per-iteration
+  child locus. The `22-moving-average` and fitter examples were updated to
+  mutate in place.
+
+---
+
 ## v0.8.3 — verification track, SHM-ring interop, fast JSON
 
 The largest release since v0.8.0 (cumulative since v0.8.2). Four
