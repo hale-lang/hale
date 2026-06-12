@@ -299,6 +299,16 @@ int64_t lotus_tls_recv_into(int handle, void *builder, int64_t max_bytes) {
     int n = SSL_read(ssl, tail, (int)max_bytes);
     if (n < 0) {
         int err = SSL_get_error(ssl, n);
+        /* A `SO_RCVTIMEO` timeout on the underlying blocking fd surfaces as
+         * SSL_ERROR_WANT_READ (or WANT_WRITE during a renegotiation read).
+         * That is *retryable*, not fatal — distinguish it so a caller that
+         * set a recv timeout (e.g. a WebSocket liveness loop) can run its
+         * ping/pong check instead of tearing the connection down. Return -2
+         * for "would-block / timed out"; -1 stays "fatal". No error print on
+         * the timeout path (it's expected). See std::io::tls::recv_into. */
+        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+            return -2;
+        }
         fprintf(stderr,
                 "lotus_tls_recv_into: SSL_read failed (err=%d)\n",
                 err);
@@ -331,6 +341,32 @@ int lotus_tls_close(int handle) {
     }
     if (fd >= 0) close(fd);
     return 0;
+}
+
+/* SO_RCVTIMEO / SO_SNDTIMEO on a TLS connection's underlying socket fd.
+ * `std::io::tcp::set_recv_timeout` exists but takes a raw fd; a TLS
+ * connection is addressed by handle, so this is the handle-aware sibling.
+ * The underlying fd is an ordinary TCP socket, so the setsockopt is
+ * identical to the plain-TCP path — look the handle up to its raw_fd and
+ * reuse lotus_tcp_set_recv_timeout_ns (defined in lotus_arena.c). Used to
+ * bound a blocking SSL_read so a half-open connection is detected instead of
+ * hanging forever (the WsClient liveness fix). Returns 0 on success, -1 on a
+ * bad handle / setsockopt failure. */
+extern int lotus_tcp_set_recv_timeout_ns(int fd, int64_t ns);
+extern int lotus_tcp_set_send_timeout_ns(int fd, int64_t ns);
+
+int lotus_tls_set_recv_timeout_ns(int handle, int64_t ns) {
+    if (handle < 0 || (size_t)handle >= g_tls_count) return -1;
+    int fd = g_tls_entries[handle].raw_fd;
+    if (fd < 0) return -1;
+    return lotus_tcp_set_recv_timeout_ns(fd, ns);
+}
+
+int lotus_tls_set_send_timeout_ns(int handle, int64_t ns) {
+    if (handle < 0 || (size_t)handle >= g_tls_count) return -1;
+    int fd = g_tls_entries[handle].raw_fd;
+    if (fd < 0) return -1;
+    return lotus_tcp_set_send_timeout_ns(fd, ns);
 }
 
 /* ----------------------------------------------------------------

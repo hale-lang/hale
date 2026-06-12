@@ -1175,8 +1175,17 @@ zero_copy binding produces.
   headroom; bumps the builder's len by the count read.
   Return semantics mirror POSIX read(2): `> 0` bytes
   appended, `= 0` peer closed cleanly (TCP) / zero-length
-  datagram (UDP), `< 0` fatal error. EINTR retried
-  internally. No allocation in `g_bus_payload_arena` —
+  datagram (UDP), `< 0` error. EINTR retried internally.
+  **A `SO_RCVTIMEO` timeout is distinguished from a fatal
+  error: `-2` = "would-block / timed out, retryable"; `-1`
+  = fatal** (TCP: `EAGAIN`/`EWOULDBLOCK`; TLS: `SSL_read`
+  → `SSL_ERROR_WANT_READ`/`WANT_WRITE`). The `-2` only
+  arises when the caller has set a recv timeout (opt-in via
+  `set_recv_timeout`), so it's backward-compatible — a caller
+  that treats all `< 0` as error keeps working; a liveness
+  loop checks for `-2` to run its ping/pong instead of
+  tearing the connection down. No allocation in
+  `g_bus_payload_arena`. No allocation in `g_bus_payload_arena` —
   closes the residual ~80% of the pond/websocket recv-loop
   leak that Phase 0's in-place builder ops surfaced (the
   syscall layer's own `[i64 len][body]` blob per call).

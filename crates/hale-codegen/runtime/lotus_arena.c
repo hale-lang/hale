@@ -13618,6 +13618,11 @@ int64_t lotus_tcp_recv_into(int fd, void *builder, int64_t max_bytes) {
         n = read(fd, tail, (size_t)max_bytes);
         if (n >= 0) break;
         if (errno == EINTR) continue;
+        /* A SO_RCVTIMEO timeout surfaces as EAGAIN/EWOULDBLOCK — retryable,
+         * not fatal. Distinguish it (-2) so a caller that set a recv timeout
+         * can run a liveness check instead of treating it as a dead
+         * connection. -1 stays "fatal". See std::io::tcp::recv_into. */
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return -2;
         return -1;
     }
     lotus_bytes_builder_advance(builder, (int64_t)n);

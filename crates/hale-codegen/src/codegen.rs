@@ -16661,7 +16661,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | ["std", "io", "udp", "get_option_int"]
             | ["std", "io", "udp", "recv_with_source"]
             | ["std", "io", "udp", "set_recv_timeout"]
-            | ["std", "io", "udp", "set_send_timeout"] => {
+            | ["std", "io", "udp", "set_send_timeout"]
+            | ["std", "io", "tls", "set_recv_timeout"]
+            | ["std", "io", "tls", "set_send_timeout"] => {
                 Err(CodegenError::Unsupported(format!(
                     "`{}` returns a fallible value — address the error with \
                      `or raise`, `or <substitute>`, or `or self.handle(err)`",
@@ -17561,7 +17563,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | ["std", "io", "udp", "get_option_int"]
             | ["std", "io", "udp", "recv_with_source"]
             | ["std", "io", "udp", "set_recv_timeout"]
-            | ["std", "io", "udp", "set_send_timeout"] => {
+            | ["std", "io", "udp", "set_send_timeout"]
+            | ["std", "io", "tls", "set_recv_timeout"]
+            | ["std", "io", "tls", "set_send_timeout"] => {
                 Err(CodegenError::Unsupported(format!(
                     "`{}` returns a fallible value — address the error with \
                      `or raise`, `or <substitute>`, or `or self.handle(err)`",
