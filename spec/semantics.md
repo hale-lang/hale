@@ -62,9 +62,9 @@ discarded — semantically equivalent to having added the `;`.
 
 `if cond { ... } else { ... }` is dual-position:
 
-- **As statement** (`if` not at let-RHS / argument / arm-body):
-  no value; trailing expressions in either arm are evaluated
-  for side effects.
+- **As statement** (`if c { foo(); }` — no `else`, or any arm
+  whose block has no trailing expression): no value; trailing
+  expressions in either arm are evaluated for side effects.
 - **As expression** (e.g., `let x = if cond { i } else { j };`):
   the then- and else-arms' trailing expressions are
   phi-merged at the join basic block. The else branch is
@@ -72,12 +72,33 @@ discarded — semantically equivalent to having added the `;`.
   arms may carry their own let-bindings before the tail (the
   bindings are scoped to the arm).
 
+The two positions are distinguished by **shape, not syntactic
+context** (WS3.2, 2026-06-11). A trailing `if` — the last item
+of a block, with no `;` — becomes that block's tail expression
+when it is **value-producing**: every arm (then, else, and each
+`else if`) must end in a trailing expression. This is what lets
+an `if` nest as a block value:
+
+```hale
+let x = if a { if b { p } else { q } } else { r };
+//          \__ then-arm block whose tail is the inner if __/
+```
+
+The inner `if` is the then-arm block's tail, so the outer
+`if`'s then-value is the inner `if`'s value. A trailing `if`
+that is **not** value-producing (no `else`, or an arm with no
+tail) stays a statement — it has no value to carry, and forcing
+it into the value path would leave a tail-less arm with nothing
+to yield.
+
 `else if` chains carry through the value path —
 `ElseBranch::ElseIf` recurses and the innermost arm's tail
 feeds the phi at the outermost merge.
 
-Phase 2b (2026-05-11). See F.24 in `spec/design-rationale.md`
-and the Phase 2b entry in `spec/stdlib.md`.
+Phase 2b (2026-05-11) introduced `if`-as-expression; WS3.2
+(2026-06-11) made a value-producing trailing `if` compose as a
+block tail. See F.24 in `spec/design-rationale.md` and the
+Phase 2b entry in `spec/stdlib.md`.
 
 ## Binary data — Bytes and conversion
 
@@ -2412,11 +2433,14 @@ unblocks composition without leaking dependency identity. See
 `spec/projects.md` for the rationale and per-alias scoping rules.
 
 **`hale run` interaction.** `hale run` compiles through the same
-codegen path as `hale build`, so a single file's imports resolve
-identically. The ad-hoc directory form (`hale run ./dir`) bundles
-files without threading the per-build path-rename table, so
-programs with cross-seed imports should be built and executed via
-`hale build`.
+codegen path as `hale build`, and — as of WS3.3 (2026-06-11) —
+the same *import* path: both the single-file and directory forms
+(`hale run ./dir`) resolve cross-seed imports, build the per-build
+path-rename table, and rewrite qualified `alias::Name` references
+identically. A directory `run` produces the same resolved program
+as the corresponding `build` and execs it. (Previously the
+directory `run` form bundled files without the rename table, so
+cross-seed imports only worked under `build`; that gap is closed.)
 
 ## Region lifetime guarantees
 

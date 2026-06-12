@@ -1,0 +1,15 @@
+import "../lib-ws33-topic-split" as hb;
+
+locus Watcher {
+    params { count: Int = 0; last: Int = 0; }
+    bus { subscribe hb::Heartbeat as on_beat; }
+    fn on_beat(b: hb::Beat) { self.count = self.count + 1; self.last = b.n; println("got ", b.n); }
+}
+
+fn main() {
+    let w = Watcher { };
+    let e = hb::Emitter { };
+    e.emit(7);
+    e.emit(11);
+    println("done");
+}

@@ -8,6 +8,78 @@ behavior.
 
 ## Unreleased
 
+- **Docs-truth pass (post-audit WS5).** New book chapters: *Operations &
+  debugging* (the bus-drop / arena-residency / backpressure diagnostics with
+  two worked triage walkthroughs) and *Composition patterns* (the three-locus
+  gateway, demand-driven discovery, the hot-path-counter/CQRS-rejection
+  migration, the publish-policy gate, the view-lifetime rule) — the latter
+  also condensed into AGENTS.md. Catalog refresh: `libraries.md` adds
+  `http`/`term`/`tui`/`agent`/`ml`/`math` and corrects the stale `subprocess`
+  "placeholder" note. Corrected a stale "no-payload-only enums" comment in
+  codegen and a "deferred" enum-pattern note in design-rationale — payload-
+  bearing enum variants + exhaustiveness have shipped since (verified against
+  fixture 45-enum-payloads). (Modes were left un-bannered: the audit's "not
+  yet exercised by real workloads" premise is false — fathom's orderbook
+  declares `mode bulk/harmonic/resolution`.)
+
+- **SQLite stays a library, not a language primitive (post-audit WS4).** The
+  audit proposed shipping `std::db::sqlite::*`; on review that's the wrong
+  layer — a third-party database belongs in a library, and Hale already has
+  the general C-ABI binding surface for it (`@ffi("c")`, "no stdlib expansion
+  required to bind a new library"). No `std::db::*` was added. Verified the
+  one capability a driver leans on that lacked a test — a `String` *return*
+  from `@ffi` (C `const char *` → usable Hale String, for `column_text`) —
+  and gated it (`ffi_string_return`). The pond-side `@ffi` recipe to build
+  the driver (glue.c + extern decls + `link=["sqlite3"]` + fallible wrapper)
+  is in `notes/sqlite-via-ffi-recipe.md`; pond/sqlite is unblocked now, no
+  compiler change.
+
+- **Nested-param shm_ring subscribers verified + gated (post-audit WS3.5).**
+  An shm_ring subscriber instantiated as a nested locus param
+  (`params { sub: Sub = Sub { }; }`) — including as a param of the main
+  gateway locus — spawns its reader thread and dispatches correctly; it is
+  not the top-level-only silent no-op pond reported. A new regression test
+  (`shm_ring_nested_param_subscriber`) covers the gateway and
+  intermediate-parent shapes.
+
+- **Two-hop qualified-name literals verified + gated (post-audit WS3.4).**
+  A qualified struct/locus *literal* in expression or return position inside
+  an intermediate library — `b::Thing { ... }` / `b::SomeLocus { ... }` where
+  `app → b → c` and `b` instantiates `c`'s types — resolves correctly at HEAD
+  (the "G34" shape pond reported as blocking library composition). The
+  existing three-hop test only covered qualified *types* and *fn calls*; a
+  new regression test (`two_hop_qualified_literal`) locks in the literal
+  position, single- and multi-file intermediate libs, through both
+  `hale build` and `hale run`.
+
+- **`hale run <dir>` resolves cross-seed imports (post-audit WS3.3).** A
+  directory `hale run` now resolves `import "..." as ...;` directives and
+  threads the path-rename table into codegen, exactly as `hale build <dir>`
+  already did — previously it bundled the directory's files but silently
+  dropped every import, so a directory-seed app importing a vendored library
+  failed on `alias::Name` references (and a topic decl appeared to need to
+  live in the same file as its publisher). `run` and `build` no longer
+  diverge on imports. Cross-file bus topics (`publish T` / `T <- v` resolving
+  a `topic T` from a sibling file) work across both. See `spec/projects.md`
+  § `hale run` interaction.
+
+- **Nested `if` as a block tail value (post-audit WS3.2).** A
+  *value-producing* trailing `if` (every arm ends in a tail expression) is
+  now the block's tail expression, so `if` composes as a block value:
+  `let x = if a { if b { p } else { q } } else { r };` typechecks instead
+  of failing with `then=() else=Float`. A side-effect `if` (no `else`, or an
+  arm with no tail) stays a statement — behavior unchanged. Matches
+  docs/basics "if is an expression." See `spec/semantics.md` § Expressions —
+  `if` and block tails.
+
+- **`std::math::int_to_float` / `float_to_int` (post-audit WS3.1).** The two
+  named numeric conversions now lower in any expression position (`sitofp`
+  widening / `fptosi` narrowing, round-toward-zero) instead of erroring with
+  "unsupported in codegen v0." Previously numeric consumers round-tripped
+  through ASCII (`to_string` + `parse_*`) to change a value's type. They're
+  the same conversions as the `Int(x)` / `Float(x)` casts, just callable as
+  functions. See `spec/types.md` § Explicit numeric conversions.
+
 - **Bounded cooperative bus queue + backpressure (GitHub #125).** The
   cooperative bus dispatch queue no longer grows without bound. It's capped
   at `LOTUS_BUS_QUEUE_CAP` cells (default 8192 ≈ 4.5 MB; env-overridable,

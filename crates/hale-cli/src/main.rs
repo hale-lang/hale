@@ -976,17 +976,17 @@ fn compile_and_exec(
 }
 
 fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
-    // Single-file targets follow imports starting from the entry
-    // file's directory. Directory targets bundle every .lt under
-    // them as today (multi-file projects without import wiring
-    // — useful for ad-hoc test setups).
+    // Both single-file and directory targets resolve cross-seed
+    // imports and thread the per-build path-rename table into
+    // codegen — `run` and `build` agree (WS3.3). A single file
+    // follows `import "..."` from its own directory; a directory
+    // bundles its `.hl` files as one seed and resolves the union
+    // of their imports (see the directory branch below).
     if target.is_file() {
-        // `hale run` ignores the import_renames table — the
-        // interpreter doesn't currently resolve qualified-name
-        // paths (it already fails on `std::http::Request { ... }`
-        // per the known limitation). Cross-seed imports through
-        // `hale run` will likewise fail on `alias::Name` paths;
-        // use `hale build` for programs with imports.
+        // `compile_and_exec` passes `renames` to
+        // `build_executable_with_imports`, so qualified
+        // `alias::Name` references in the entry file resolve the
+        // same way `hale build` resolves them.
         let (program, renames, sources, file_bases, _ctx) = match parse_with_imports(target) {
             Ok(x) => x,
             Err(errors) => {
@@ -1022,15 +1022,88 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let (programs, sources, file_bases) = match parse_files(&files) {
+    let (programs, sources, mut file_bases) = match parse_files(&files) {
         Ok(x) => x,
         Err(code) => return code,
     };
 
-    let bundle_programs: BTreeMap<String, &Program> = programs
-        .iter()
-        .map(|(p, prog)| (p.display().to_string(), prog))
-        .collect();
+    // WS3.3 (2026-06-11): a directory `hale run` now resolves
+    // cross-seed imports the same way `hale build <dir>` does.
+    // Previously it bundled the directory's files but silently
+    // dropped every `import "..."`, so a dir-seed app importing a
+    // vendored library failed on `alias::Name` references — the
+    // exact pond/fathom "qualified type not in path-renames table"
+    // friction, and the reason a topic decl had to live in the same
+    // file as its publisher. `run` and `build` now produce the same
+    // merged-and-resolved program for a directory; `run` execs it
+    // instead of writing a binary.
+    let mut union_imports: Vec<hale_syntax::ast::Import> = Vec::new();
+    for prog in programs.values() {
+        for imp in &prog.imports {
+            union_imports.push(imp.clone());
+        }
+    }
+    let merged = match merge_programs(programs.values()) {
+        Some(m) => m,
+        None => {
+            eprintln!("no .hl files in {}", target.display());
+            return ExitCode::from(1);
+        }
+    };
+    let workspace_root = find_workspace_root(target);
+    let mut merged_items = merged.items;
+    let mut renames: ImportRenames = Vec::new();
+    let mut path_sources: BTreeMap<PathBuf, String> = sources.into_iter().collect();
+    let mut visited: std::collections::BTreeSet<PathBuf> =
+        std::collections::BTreeSet::new();
+    for f in &files {
+        match f.canonicalize() {
+            Ok(c) => visited.insert(c),
+            Err(_) => visited.insert(f.clone()),
+        };
+    }
+    let mut import_errors: Vec<(PathBuf, hale_syntax::Diag, String)> = Vec::new();
+    if resolve_imports(
+        &union_imports,
+        target,
+        workspace_root.as_deref(),
+        &mut visited,
+        &mut path_sources,
+        &mut file_bases,
+        &mut import_errors,
+        &mut merged_items,
+        &mut renames,
+    )
+    .is_err()
+        || !import_errors.is_empty()
+    {
+        for (path, d, src) in &import_errors {
+            eprintln!("{}:", path.display());
+            eprintln!("  {}", d.render(src));
+        }
+        return ExitCode::from(1);
+    }
+    let mut program = Program {
+        imports: Vec::new(),
+        items: merged_items,
+        span: merged.span,
+    };
+    // Rewrite qualified-path TypeExprs + synthesize JSON parsers +
+    // apply sync inference before typecheck — the same pre-passes
+    // `hale build <dir>` runs, so a directory `run` and `build`
+    // agree.
+    hale_codegen::mangle::apply_qualified_path_renames(&mut program, &renames);
+    hale_syntax::json_gen::generate_json_parsers(&mut program);
+    let pre_diags = hale_types::apply_sync_inference(&mut program);
+    if !pre_diags.is_empty() {
+        for d in &pre_diags {
+            eprintln!("{}", render_located(d, &file_bases, &path_sources));
+        }
+        return ExitCode::from(1);
+    }
+
+    let bundle_programs: BTreeMap<String, &Program> =
+        std::iter::once((target.display().to_string(), &program)).collect();
     let bundle = hale_types::Bundle {
         programs: bundle_programs,
     };
@@ -1039,25 +1112,14 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
     if !diags.is_empty() {
         for d in &diags {
-            eprintln!("{}", render_located(d, &file_bases, &sources));
+            eprintln!("{}", render_located(d, &file_bases, &path_sources));
         }
         // Warnings print but don't fail the build; only errors do.
         if diags.iter().any(|d| d.is_error()) {
             return ExitCode::from(1);
         }
     }
-
-    let merged = match merge_programs(programs.values()) {
-        Some(m) => m,
-        None => {
-            eprintln!("no .hl files in {}", target.display());
-            return ExitCode::from(1);
-        }
-    };
-    // Directory `hale run` is the ad-hoc multi-file path; like the
-    // pre-retirement interpreter behavior, it doesn't resolve
-    // cross-seed imports (use `hale build <dir>` for those).
-    compile_and_exec(&merged, &[], user_args)
+    compile_and_exec(&program, &renames, user_args)
 }
 
 fn run_build(target: &Path) -> ExitCode {

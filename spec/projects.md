@@ -273,6 +273,16 @@ to unblock the `pond/_util/*` retrofit (libraries that share
 internal helper libs without forcing every consumer to vendor
 them).
 
+"Reachable inside A's body" is full reach, including **expression
+and return position**: A may name a B type as a field/param/return
+type, call B's free fns, *and* instantiate B's types and loci by
+qualified literal — `b::Thing { ... }`, `b::SomeLocus { ... }` —
+inside A's own fns, even when A is itself only reached two hops
+down (`app → A → B`) and across A's multiple files. (This is the
+"G34" shape; verified at HEAD, WS3.4 2026-06-11. The re-export
+rule below still holds — the *app* cannot name `b::Thing` unless
+it imports B itself.)
+
 **No re-exports.** B's decls are not visible to A's importers
 unless they declare their own dependency on B. The `<lib_id>`
 in B's mangled prefix is derived from B's canonical path, NOT
@@ -347,14 +357,21 @@ sentinel for non-Cargo trees.
 
 ## `hale run` interaction
 
-`hale run` and `hale build` share the same codegen path, so a
-single source file's `import "..." as ...;` directives resolve
-identically under both. The gap is the *ad-hoc directory* form
-(`hale run ./dir`): it bundles the directory's files without
-threading the per-build path-rename table, so `alias::Name` paths
-across git-dependency seeds won't resolve. Use `hale build ./dir`
-(or `hale build` on the entry file) for a multi-seed project with
-cross-seed imports.
+`hale run` and `hale build` share the same codegen path, and as
+of WS3.3 (2026-06-11) they also share the same *import* path: both
+the single-file form and the directory form (`hale run ./dir`)
+resolve `import "..." as ...;` directives, build the per-build
+path-rename table, and rewrite qualified `alias::Name` references
+identically. A directory `hale run` now produces the same
+merged-and-resolved program as `hale build ./dir` — it execs it
+instead of writing a binary.
+
+(Previously the directory `hale run` form bundled the directory's
+files *without* threading the path-rename table, so cross-seed
+`alias::Name` references — and a topic decl referenced from a
+sibling file — failed under `run` though they worked under
+`build`. That gap is closed; the two commands no longer diverge on
+imports.)
 
 ## Git-based dependency fetching (`hale fetch`)
 

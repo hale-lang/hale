@@ -22,6 +22,17 @@ both arms must produce the same type:
 let grade = if score >= 90 { "A" } else { "B" };
 ```
 
+Because an `if` is an expression, it can be an arm of another
+`if` and the value flows out through both:
+
+```hale
+let band = if score >= 90 {
+    if score >= 97 { "A+" } else { "A" }
+} else {
+    "B"
+};
+```
+
 One small thing the compiler is strict about: an empty `if` body
 won't parse. If you genuinely want a branch that does nothing,
 put a comment in it or restructure the condition:

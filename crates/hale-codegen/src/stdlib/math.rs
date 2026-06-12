@@ -34,6 +34,18 @@ pub(crate) trait MathStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
+    fn lower_std_math_int_to_float(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
+    fn lower_std_math_float_to_int(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
 }
 
 impl<'ctx, 'p> MathStdlib<'ctx> for Cx<'ctx, 'p> {
@@ -191,5 +203,67 @@ impl<'ctx, 'p> MathStdlib<'ctx> for Cx<'ctx, 'p> {
             .left()
             .expect("libm binary returns f64");
         Ok((result, CodegenTy::Float))
+    }
+
+    /// std::math::int_to_float(i: Int) -> Float. Explicit widening
+    /// conversion (`sitofp`). Numeric consumers used to round-trip
+    /// Int→Float through ASCII (`to_string` + `parse_float`); this
+    /// is the direct lowering. Reuses `coerce_to_float`, which is
+    /// the Int→f64 `sitofp` already used at Float-arg sites — so an
+    /// already-Float arg passes through unchanged.
+    fn lower_std_math_int_to_float(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::math::int_to_float takes 1 argument, got {}",
+                args.len()
+            )));
+        }
+        let (v, ty) = self.lower_expr(&args[0], scope)?;
+        let f = self.coerce_to_float(v, &ty, "std::math::int_to_float")?;
+        Ok((f.into(), CodegenTy::Float))
+    }
+
+    /// std::math::float_to_int(f: Float) -> Int. Explicit narrowing
+    /// conversion (`fptosi`, round-toward-zero — the same semantics
+    /// as a C `(long)` cast). Int→Float widening is implicit at
+    /// Float-arg sites, but Float→Int narrowing stays explicit (no
+    /// silent truncation), so this is its blessed entry point. An
+    /// Int arg passes through unchanged.
+    fn lower_std_math_float_to_int(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::math::float_to_int takes 1 argument, got {}",
+                args.len()
+            )));
+        }
+        let (v, ty) = self.lower_expr(&args[0], scope)?;
+        let i64_t = self.context.i64_type();
+        let int_val = match ty {
+            CodegenTy::Float => self
+                .builder
+                .build_float_to_signed_int(
+                    v.into_float_value(),
+                    i64_t,
+                    "float.to.int",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
+            CodegenTy::Int => v.into_int_value(),
+            other => {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::math::float_to_int: expected Float (or Int \
+                     passthrough), got {:?}",
+                    other
+                )))
+            }
+        };
+        Ok((int_val.into(), CodegenTy::Int))
     }
 }

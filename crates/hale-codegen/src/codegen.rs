@@ -1267,9 +1267,13 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// been registered yet.
     pub(crate) pending_type_names: BTreeSet<String>,
     /// m47: user-defined enum declarations indexed by name. Each
-    /// entry carries the variant-name → tag-index map. v0.1
-    /// supports no-payload-only enums; an enum value is an i32
-    /// holding the variant's tag.
+    /// entry carries the variant-name → tag-index map. m47-payloads
+    /// added payload-bearing variants (`Trade(Decimal, Int)`): such
+    /// an enum is a pointer to a `{ i32 tag, [N x i8] body }` struct
+    /// sized to the largest variant. Pure no-payload enums keep the
+    /// value-semantics i32 (just the tag) — representation is
+    /// per-enum, decided at decl registration (see the EnumInfo /
+    /// layout comment below and fixture 45-enum-payloads).
     pub(crate) user_enums: BTreeMap<String, EnumInfo>,
     /// F.20: user-declared interface names. Phase A registers
     /// them here so `type_expr_to_codegen_ty` can resolve an
@@ -17445,6 +17449,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ),
             ["std", "math", "is_nan"] => {
                 self.lower_std_math_is_nan(args, scope)
+            }
+            // WS3.1 (2026-06-11): explicit numeric conversions in
+            // expression position. `int_to_float` is `sitofp`
+            // (widening); `float_to_int` is `fptosi` (narrowing,
+            // round-toward-zero). Before this, every numeric
+            // consumer round-tripped through ASCII (`to_string` +
+            // `parse_*`). See spec/types.md § Numeric conversions.
+            ["std", "math", "int_to_float"] => {
+                self.lower_std_math_int_to_float(args, scope)
+            }
+            ["std", "math", "float_to_int"] => {
+                self.lower_std_math_float_to_int(args, scope)
             }
             // 2026-05-16: std::text byte-class predicates. Each
             // takes a byte value (Int) and returns Bool. Inline

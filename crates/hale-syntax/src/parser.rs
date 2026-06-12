@@ -3171,9 +3171,33 @@ impl Parser {
             stmts.push(self.parse_violate_stmt()?);
             return Ok(None);
         }
+        // WS3.2 (2026-06-11): a *trailing* `if` (immediately before
+        // the block's `}`, with no `;`) becomes the block's tail
+        // expression *when it is value-producing* — i.e. every arm
+        // (then, else, and any `else if`) ends in a tail expression.
+        // That makes `{ if c { a } else { b } }` yield the arm value
+        // rather than `()`, matching docs/basics "if is an
+        // expression," without hoisting it into a `let x = if ...`.
+        //
+        // The value-producing guard is essential: a side-effect
+        // `if` (`if c { foo(); }`, no else, or arms with no tail)
+        // stays a `Stmt::If`. Routing those through `Expr::If` would
+        // make codegen's `lower_if_expr` lower a tail-less arm via
+        // `lower_block_as_expr`, which errors "block used as
+        // expression has no trailing expression" — and since every
+        // program bundles the stdlib (full of side-effect trailing
+        // ifs), that would break all compilation. (`match` keeps the
+        // old statement-only behavior — see WS3.2 note.)
+        if matches!(self.peek(), TokenKind::If) {
+            let if_stmt = self.parse_if_stmt()?;
+            if self.at(&TokenKind::RBrace) && if_is_value_producing(&if_stmt) {
+                return Ok(Some(Expr::If(Box::new(if_stmt))));
+            }
+            stmts.push(Stmt::If(if_stmt));
+            return Ok(None);
+        }
         match self.peek() {
             TokenKind::Let
-            | TokenKind::If
             | TokenKind::Match
             | TokenKind::While
             | TokenKind::For
@@ -4312,6 +4336,24 @@ impl Parser {
 /// (synthetic Ident with the name "self"). The downstream type
 /// checker is responsible for resolving the synthetic head against
 /// the enclosing locus's params.
+/// WS3.2: is this `if` value-producing — does every reachable arm
+/// end in a tail expression? Only such an `if` may become a block's
+/// tail `Expr::If`; a side-effect `if` (any arm tail-less, or no
+/// `else`) stays a statement so codegen never lowers a tail-less arm
+/// as a value. Walks the `else if` chain.
+fn if_is_value_producing(if_stmt: &IfStmt) -> bool {
+    if if_stmt.then_block.tail.is_none() {
+        return false;
+    }
+    match &if_stmt.else_block {
+        Some(b) => match b.as_ref() {
+            ElseBranch::Else(blk) => blk.tail.is_some(),
+            ElseBranch::ElseIf(nested) => if_is_value_producing(nested),
+        },
+        None => false,
+    }
+}
+
 fn expr_to_lvalue(expr: Expr, op_span: Span) -> Result<LValue, Diag> {
     match expr {
         Expr::Ident(i) => Ok(LValue {

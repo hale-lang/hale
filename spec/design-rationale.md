@@ -1398,8 +1398,12 @@ Permissive on `Ty::Unknown` scrutinees. The runtime previously
 fell through silently when no arm matched, so a typoed match
 became a hidden no-op. The check makes match safe by default.
 
-When enum-variant patterns land (deferred — requires enum
-typing surface), the rule extends to "every variant covered."
+Enum-variant patterns have since landed (m47 / m47-payloads): for
+a user-`enum` scrutinee, a match is covered iff every variant is
+present (unguarded) or a catch-all `_` arm exists — a missing
+variant errors `match is not exhaustive`. Payload-bearing variants
+(`Trade(Decimal, Int)`) bind their fields in the arm. See
+`crates/hale-codegen/tests/fixtures/examples/45-enum-payloads`.
 
 ### F.20 Structural interfaces (Go-shaped)
 

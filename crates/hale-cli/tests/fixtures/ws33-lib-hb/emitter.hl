@@ -1,0 +1,5 @@
+// Publisher in a different file, referencing the topic by bare name.
+locus Emitter {
+    bus { publish Heartbeat; }
+    fn emit(n: Int) { Heartbeat <- Beat { n: n }; }
+}

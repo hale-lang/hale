@@ -36,6 +36,7 @@
 - [Parents & children](./services/parents-children.md)
 - [When things fail](./services/failure.md)
 - [Across binaries](./services/multi-binary.md)
+- [Composition patterns](./services/patterns.md)
 
 # Systems control
 
@@ -45,6 +46,7 @@
 - [Zero-copy & the high-frequency bus](./systems/zero-copy-bus.md)
 - [Binding C](./systems/binding-c.md)
 - [Cross-process & hot-load](./systems/cross-process.md)
+- [Operations & debugging](./systems/operations.md)
 - [Modes](./systems/modes.md)
 
 ---

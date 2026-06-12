@@ -1,0 +1,18 @@
+// A directory-seed app that imports a vendored library. Before
+// WS3.3, `hale run <dir>` dropped this import and failed on the
+// qualified references; `hale build <dir>` already resolved them.
+import "../ws33-lib-hb" as hb;
+
+locus Watcher {
+    params { count: Int = 0; }
+    bus { subscribe hb::Heartbeat as on_beat; }
+    fn on_beat(b: hb::Beat) { self.count = self.count + 1; println("got ", b.n); }
+}
+
+fn main() {
+    let w = Watcher { };
+    let e = hb::Emitter { };
+    e.emit(7);
+    e.emit(11);
+    println("done");
+}

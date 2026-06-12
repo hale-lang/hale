@@ -1,0 +1,15 @@
+// lib-ws1-intent — seed `d`. A bus topic whose payload carries
+// Decimal (i128) fields. WS1#2 carrier: the payload is delivered
+// (deserialized into the handler's param) and then its Decimal
+// fields feed a cross-seed struct literal in another seed.
+
+type OrderIntent {
+    id:  Int;
+    px:  Decimal;
+    qty: Decimal;
+}
+
+topic Intents {
+    payload: OrderIntent;
+    subject: "d.intents";
+}

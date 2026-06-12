@@ -1,0 +1,7 @@
+// g34-lib-c — the deepest seed. A shape type + a locus, both
+// instantiated by *literal* from the middle layer.
+type Box { label: String; value: Int; }
+locus Holder {
+    params { tag: String = ""; }
+    fn tag_of() -> String { return self.tag; }
+}

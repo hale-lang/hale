@@ -1,0 +1,29 @@
+// lib-ws1-conn — a cross-seed locus that mimics pond's ws::WsClient:
+// a handle-like Int field plus String fields, all established in
+// birth(). WS1#4 carrier: whole-reassigning a nested param of this
+// imported type (`self.conn = wsx::Conn { ... }`) must produce a
+// fully-initialized instance — birth() re-runs, params land, the
+// handle is live — not the half-init fathom saw (url logged (null),
+// first read_msg() crashed).
+
+locus Conn {
+    params {
+        url:   String = "";
+        fd:    Int = 0;
+        ready: Int = 0;
+        seq:   Int = 0;
+    }
+    birth() {
+        self.fd = 7;
+        self.ready = 1;
+    }
+    fn describe() -> String { return self.url; }
+    fn handle() -> Int { return self.fd; }
+    fn rdy() -> Int { return self.ready; }
+    fn read_msg() -> Int {
+        // Uses both a param-set String and a birth-set handle, the
+        // way ws::WsClient.read_msg() touches url + the socket fd.
+        self.seq = self.seq + 1;
+        return self.fd + self.seq;
+    }
+}
