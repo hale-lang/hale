@@ -365,6 +365,25 @@ For `params` / locus state, the implicit rule is that fields
 are mutable through `self.x = ...` (per F.3). The locus's
 state is the locus's mutable bundle.
 
+**Reassigning a locus-typed field is a lifecycle transition.**
+A field that holds a child locus (`params { conn: WsClient =
+WsClient { … }; }`) can be whole-value reassigned from a member
+fn (`self.conn = WsClient { … }`). Because a locus is not a plain
+value — it owns a region and possibly `@ffi`-acquired resources —
+this is lowered as **dissolve-the-old + construct-the-new**, not a
+pointer store: the previous instance is reclaimed (its `drain` /
+`dissolve` run, releasing its resources) and the new instance is
+constructed into the owning locus's arena, owned by the field (so
+the parent's dissolve cascade reclaims it). The field always
+points at a fully-live instance. (Before this rule the new
+instance was a scope-bound temporary dissolved at the method's
+exit — a use-after-free; see WS1#4.) For "same instance,
+reconfigure," prefer **in-place mutation** (`self.conn.url = …`),
+which keeps the locus's identity and resources and is cheaper.
+v1 limitation: the reassigned instance inherits the owner's pool;
+reassigning a field with an explicit non-default `placement` does
+not re-apply that placement.
+
 ## k_max as a typing rule
 
 Per F.1 / F.3: the compiler computes

@@ -10451,6 +10451,45 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(BlockEnd::Open)
             }
             Stmt::Assign { target, op, value, .. } => {
+                // WS1#4: `self.<locusfield> = <LocusLiteral>` is a
+                // lifecycle transition (dissolve the old instance,
+                // construct a new one owned by the field), NOT a
+                // value store. Lowered normally the RHS locus literal
+                // is a scope-bound temporary dissolved at this
+                // method's exit, leaving the field pointing at a
+                // torn-down locus (closed @ffi handles / freed arena
+                // → use-after-free; fathom refgw-evm reconnect). Route
+                // it through the lifecycle-aware path instead.
+                if matches!(op, AssignOp::Eq)
+                    && target.head.name == "self"
+                    && target.tail.len() == 1
+                {
+                    if let LValueSeg::Field(fname) = &target.tail[0] {
+                        let field = self
+                            .current_self
+                            .as_ref()
+                            .and_then(|cs| cs.fields.get(&fname.name).cloned());
+                        if let (
+                            Some((field_idx, CodegenTy::LocusRef(field_locus))),
+                            Expr::Struct { path, inits, .. },
+                        ) = (field, value)
+                        {
+                            if path.segments.len() == 1
+                                && self
+                                    .user_loci
+                                    .contains_key(&path.segments[0].name)
+                            {
+                                return self.lower_locus_field_reassign(
+                                    field_idx,
+                                    &field_locus,
+                                    &path.segments[0].name,
+                                    inits,
+                                    scope,
+                                );
+                            }
+                        }
+                    }
+                }
                 // Resolve the target into a (slot_ptr, slot_ty)
                 // pair. Bare locals come from the scope; `self.X`
                 // GEPs into the current method's self-struct.
@@ -21229,6 +21268,109 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// there's no long-lived `self.__arena` to anchor into), so
     /// using it uniformly is always at least as correct as a bare
     /// store.
+    /// WS1#4 — lower `self.<field> = <LocusLiteral>` as a lifecycle
+    /// transition rather than a value store. The default lowering
+    /// treats the RHS locus literal as a scope-bound temporary
+    /// (dissolved at this method's exit), so the field ends up
+    /// pointing at a torn-down locus — closed `@ffi` handles, freed
+    /// arena, use-after-free on next use (the fathom refgw-evm
+    /// `self.conn = ws::WsClient { … }` reconnect crash). Instead:
+    ///   (1) reclaim the OLD instance (`__reclaim_<L>` runs its
+    ///       drain / dissolve so its resources are released);
+    ///   (2) construct the NEW instance into self's own arena, owned
+    ///       by the field and NOT scope-dissolved — the same
+    ///       `instantiating_for_parent_field` + arena-override path a
+    ///       field-default child takes in params-init, so the
+    ///       parent's dissolve cascade reclaims it through the field;
+    ///   (3) repoint the field at the live new instance.
+    /// In-place mutation (`self.conn.url = …`) stays the cheap path
+    /// for "same instance, reconfigure". (v1: the new instance
+    /// inherits the parent's pool; reassigning a *pinned*-placed
+    /// field doesn't re-apply the pinned placement — out of scope.)
+    fn lower_locus_field_reassign(
+        &mut self,
+        field_idx: u32,
+        field_locus: &str,
+        new_locus: &str,
+        inits: &[StructInit],
+        scope: &Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let cs = self.current_self.as_ref().cloned().ok_or_else(|| {
+            CodegenError::Unsupported(
+                "locus-field reassignment outside a locus method".to_string(),
+            )
+        })?;
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let field_slot = self
+            .builder
+            .build_struct_gep(
+                cs.struct_ty,
+                cs.self_ptr,
+                field_idx,
+                &format!("self.{}.reassign.slot", field_locus),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // (1) Reclaim the OLD value. `__reclaim_<L>` runs the full
+        // teardown spine (drain / release / dissolve + arena
+        // destroy) and is idempotent via its `__arena`-null latch.
+        let old_ptr = self
+            .builder
+            .build_load(
+                ptr_t,
+                field_slot,
+                &format!("self.{}.reassign.old", field_locus),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        if let Some(reclaim) = self.reclaim_fns.get(field_locus).copied() {
+            self.builder
+                .build_call(
+                    reclaim,
+                    &[old_ptr.into()],
+                    &format!("{}.reassign.reclaim_old", field_locus),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+
+        // (2) Construct the NEW value into self's arena, owned by the
+        // field. Load self.__arena; set the same overrides a
+        // field-default child gets in params-init.
+        let parent_info =
+            self.user_loci.get(&cs.locus_name).cloned().ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "no locus `{}` for field reassignment",
+                    cs.locus_name
+                ))
+            })?;
+        let arena_slot = self
+            .builder
+            .build_struct_gep(
+                parent_info.struct_ty,
+                cs.self_ptr,
+                parent_info.arena_field_idx,
+                "self.reassign.__arena.slot",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let self_arena = self
+            .builder
+            .build_load(ptr_t, arena_slot, "self.reassign.__arena")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+
+        let prev_arena = self.current_arena_override;
+        self.current_arena_override = Some(self_arena);
+        self.instantiating_for_parent_field = true;
+        let new_ptr = self.lower_locus_instantiation(new_locus, inits, scope)?;
+        self.current_arena_override = prev_arena;
+
+        // (3) Repoint the field at the live new instance.
+        self.builder
+            .build_store(field_slot, new_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(BlockEnd::Open)
+    }
+
     fn finish_lvalue_assign(
         &mut self,
         slot_ptr: PointerValue<'ctx>,
