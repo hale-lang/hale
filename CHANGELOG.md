@@ -8,6 +8,19 @@ behavior.
 
 ## Unreleased
 
+- **Whole-value reassignment of a locus-typed field is now a lifecycle
+  transition (post-audit WS1#4 — soundness fix).** `self.conn = WsClient
+  { … }` from a member fn previously lowered the RHS locus literal as a
+  scope-bound temporary: birth ran, the pointer was stored, then the
+  temporary was dissolved at the method's exit — leaving the field pointing
+  at a torn-down locus (closed `@ffi` handles / freed arena → use-after-free
+  on next use; the fathom refgw-evm reconnect crash), while the old value
+  leaked. It now reclaims the old instance (its `drain`/`dissolve` run) and
+  constructs the new one into the owning locus's arena, owned by the field
+  and not scope-dissolved. Clean-compile→segfault closed; regression-gated by
+  `ws1_ffi_handle_reassign`. In-place mutation (`self.conn.url = …`) remains
+  the cheaper path for "same instance, reconfigure." See `spec/types.md`.
+
 - **Docs-truth pass (post-audit WS5).** New book chapters: *Operations &
   debugging* (the bus-drop / arena-residency / backpressure diagnostics with
   two worked triage walkthroughs) and *Composition patterns* (the three-locus
