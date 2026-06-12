@@ -1,0 +1,29 @@
+// WS1#4 carrier: whole-reassignment of a nested locus param of an
+// IMPORTED (cross-seed) type. Mirrors fathom mdgw-evm
+// `self.conn = ws::WsClient { url: ..., ... }` reconnect.
+
+import "../lib-ws1-conn" as wsx;
+
+locus Gw {
+    params {
+        conn:    wsx::Conn = wsx::Conn { url: "wss://first" };
+        reconns: Int = 0;
+    }
+    fn reconnect() {
+        // The whole-value reassignment under test.
+        self.conn = wsx::Conn { url: "wss://second" };
+        self.reconns = self.reconns + 1;
+    }
+    run() {
+        println("init   url=", self.conn.describe(), " fd=", self.conn.handle(),
+                " ready=", self.conn.rdy(), " read=", self.conn.read_msg());
+        self.reconnect();
+        // After the reassignment: url must be the new value (not
+        // null), fd must be the birth()-set handle (not 0), and
+        // read_msg() must not crash.
+        println("reconn url=", self.conn.describe(), " fd=", self.conn.handle(),
+                " ready=", self.conn.rdy(), " read=", self.conn.read_msg());
+    }
+}
+
+fn main() { Gw { }; }

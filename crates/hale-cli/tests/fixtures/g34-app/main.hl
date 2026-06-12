@@ -1,0 +1,12 @@
+// g34-app — the top seed. Imports only the middle layer; the
+// build must resolve mid's own `import "../g34-lib-c"` so the
+// qualified literals in mid's body compile (two-hop).
+import "../g34-lib-b" as b;
+
+fn main() {
+    let w = b::make_wrapped("answer", 42, "v1");
+    println(b::describe(w));
+    let bx = b::make_box("direct", 7);
+    println(bx.label, "=", bx.value);
+    println(b::tag_holder("locus-ok"));
+}

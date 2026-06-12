@@ -17446,6 +17446,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "math", "is_nan"] => {
                 self.lower_std_math_is_nan(args, scope)
             }
+            // WS3.1 (2026-06-11): explicit numeric conversions in
+            // expression position. `int_to_float` is `sitofp`
+            // (widening); `float_to_int` is `fptosi` (narrowing,
+            // round-toward-zero). Before this, every numeric
+            // consumer round-tripped through ASCII (`to_string` +
+            // `parse_*`). See spec/types.md § Numeric conversions.
+            ["std", "math", "int_to_float"] => {
+                self.lower_std_math_int_to_float(args, scope)
+            }
+            ["std", "math", "float_to_int"] => {
+                self.lower_std_math_float_to_int(args, scope)
+            }
             // 2026-05-16: std::text byte-class predicates. Each
             // takes a byte value (Int) and returns Bool. Inline
             // range checks — no libc dependency, no C primitive,

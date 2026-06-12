@@ -1,0 +1,31 @@
+// g34-lib-b — the middle seed. Imports lib-c and instantiates
+// its types BY LITERAL in expression + return position. This is
+// the G34 shape the existing three-hop test did not cover: it
+// exercised qualified *types* (`c::Box` as a field/param) and
+// qualified *fn calls* (`c::make_box(...)`), but not a qualified
+// struct/locus *literal* (`c::Box { ... }`) inside an
+// intermediate lib — the pond/jobs §11 `db::Db { path: ... }`
+// shape.
+import "../g34-lib-c" as c;
+
+type Wrapped { inner: c::Box; note: String; }
+
+// Qualified struct literal in expression position.
+fn make_wrapped(label: String, value: Int, note: String) -> Wrapped {
+    return Wrapped { inner: c::Box { label: label, value: value }, note: note };
+}
+
+// Qualified struct literal in return position.
+fn make_box(label: String, value: Int) -> c::Box {
+    return c::Box { label: label, value: value };
+}
+
+// Qualified locus literal in expression position + a method call.
+fn tag_holder(t: String) -> String {
+    let h = c::Holder { tag: t };
+    return h.tag_of();
+}
+
+fn describe(w: Wrapped) -> String {
+    return w.inner.label + "=" + w.inner.value + " [" + w.note + "]";
+}

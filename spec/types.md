@@ -301,6 +301,27 @@ as part of the float-surface-gaps friction-log resolution; see
 F.23 in `spec/design-rationale.md` and the Phase 2c entry in
 `spec/stdlib.md`.
 
+#### Explicit numeric conversions
+
+Where the implicit widening above does not apply — most often a
+`Float → Int` narrowing, or an `Int → Float` conversion needed in
+the middle of an expression rather than at one of the coercion
+surfaces — there are two explicit forms, both round-toward-zero
+for the narrowing direction (LLVM `fptosi` / `sitofp`):
+
+- **The `Int(x)` / `Float(x)` casts** — the idiomatic in-language
+  form. `Int(f)` narrows a `Float` to an `Int` (truncates toward
+  zero); the cast is opt-in, so there is no silent `Float → Int`.
+- **`std::math::int_to_float(i: Int) -> Float` and
+  `std::math::float_to_int(f: Float) -> Int`** (WS3.1, 2026-06-11)
+  — the named-function spelling, callable in any expression
+  position. Semantically identical to the casts (`sitofp` /
+  `fptosi`, round-toward-zero); provided so numeric code does not
+  have to round-trip through ASCII (`to_string` + `parse_*`) and
+  so the conversions sit alongside the other `std::math` numeric
+  primitives. An already-correct-typed argument passes through
+  unchanged.
+
 ### Contract compatibility
 
 When parent declares `consume X: T` and child declares

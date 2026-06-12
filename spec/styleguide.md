@@ -610,10 +610,6 @@ underlying surface lands.
   § "Fallible call semantics").
 - **Empty `if` bodies parse-fail.** Put a `// note` comment
   inside, or refactor to a positive condition.
-- **`hale run` rejects qualified-name struct/locus literals**
-  (`std::http::Request { ... }`, `std::log::Logger { ... }`,
-  etc.). Use `hale build` and run the resulting binary
-  directly for programs that use path-qualified stdlib types.
 - **No char-level access on String** (no `s[i]` for a single
   char). Use `s[i..i+1]` for a 1-char slice; compare via `==` or
   `std::str::index_of`.

@@ -1,0 +1,11 @@
+// lib-ws1-grease — seed `gx`. A struct constructed downstream
+// from bus-deserialized Decimal fields. The qualified-seed
+// struct literal `gx::GreaseOrderRequest { px: oi.px, ... }` is
+// the exact riskgw P2.1 shape.
+
+type GreaseOrderRequest {
+    id:  Int;
+    px:  Decimal;
+    qty: Decimal;
+    tag: String;
+}

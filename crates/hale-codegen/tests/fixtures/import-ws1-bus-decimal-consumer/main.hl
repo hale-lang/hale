@@ -1,0 +1,47 @@
+// WS1#2 carrier: cross-seed struct literal whose Decimal fields
+// come from a bus-deserialized struct. Mirrors fathom riskgw
+// `gx::GreaseOrderRequest { px: oi.px, qty: oi.qty }` from a
+// bus-received `d::OrderIntent`.
+
+import "../lib-ws1-intent" as d;
+import "../lib-ws1-grease" as gx;
+
+locus Router {
+    params { seen: Int = 0; acc: Decimal = 0.0d; }
+    bus { subscribe d::Intents as on_intent; }
+    fn on_intent(oi: d::OrderIntent) {
+        // Cross-seed struct literal from bus-deserialized Decimal
+        // (i128) fields. If the literal's allocation is not
+        // 16-aligned the i128 store (movaps) traps; if the copy is
+        // wrong the read-back prints garbage.
+        let req = gx::GreaseOrderRequest {
+            id:  oi.id,
+            px:  oi.px,
+            qty: oi.qty,
+            tag: "grease",
+        };
+        println("req id=", req.id, " px=", req.px, " qty=", req.qty, " tag=", req.tag);
+        // Persist the Decimal into the locus's OWN arena (a distinct
+        // allocation site from the handler-local literal) and do
+        // arithmetic over it — partial corruption shows up as a
+        // wrong running sum, not just a garbled single read.
+        self.acc = self.acc + req.px;
+        self.seen = self.seen + 1;
+        if self.seen == 3 { println("acc=", self.acc); }
+    }
+}
+
+locus Feed {
+    bus { publish d::Intents; }
+    run() {
+        d::Intents <- d::OrderIntent { id: 1, px: 12345.67d,  qty: 0.5d };
+        d::Intents <- d::OrderIntent { id: 2, px: 99999.99d,  qty: 250.125d };
+        d::Intents <- d::OrderIntent { id: 3, px: 0.000001d,  qty: 1000000.0d };
+    }
+}
+
+fn main() {
+    let r = Router { };
+    Feed { };
+    println("done seen-loop");
+}
