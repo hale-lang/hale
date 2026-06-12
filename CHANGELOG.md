@@ -8,6 +8,20 @@ behavior.
 
 ## Unreleased
 
+- **Docs-truth pass (post-audit WS5).** New book chapters: *Operations &
+  debugging* (the bus-drop / arena-residency / backpressure diagnostics with
+  two worked triage walkthroughs) and *Composition patterns* (the three-locus
+  gateway, demand-driven discovery, the hot-path-counter/CQRS-rejection
+  migration, the publish-policy gate, the view-lifetime rule) — the latter
+  also condensed into AGENTS.md. Catalog refresh: `libraries.md` adds
+  `http`/`term`/`tui`/`agent`/`ml`/`math` and corrects the stale `subprocess`
+  "placeholder" note. Corrected a stale "no-payload-only enums" comment in
+  codegen and a "deferred" enum-pattern note in design-rationale — payload-
+  bearing enum variants + exhaustiveness have shipped since (verified against
+  fixture 45-enum-payloads). (Modes were left un-bannered: the audit's "not
+  yet exercised by real workloads" premise is false — fathom's orderbook
+  declares `mode bulk/harmonic/resolution`.)
+
 - **SQLite stays a library, not a language primitive (post-audit WS4).** The
   audit proposed shipping `std::db::sqlite::*`; on review that's the wrong
   layer — a third-party database belongs in a library, and Hale already has

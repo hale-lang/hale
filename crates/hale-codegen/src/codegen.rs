@@ -1267,9 +1267,13 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// been registered yet.
     pub(crate) pending_type_names: BTreeSet<String>,
     /// m47: user-defined enum declarations indexed by name. Each
-    /// entry carries the variant-name → tag-index map. v0.1
-    /// supports no-payload-only enums; an enum value is an i32
-    /// holding the variant's tag.
+    /// entry carries the variant-name → tag-index map. m47-payloads
+    /// added payload-bearing variants (`Trade(Decimal, Int)`): such
+    /// an enum is a pointer to a `{ i32 tag, [N x i8] body }` struct
+    /// sized to the largest variant. Pure no-payload enums keep the
+    /// value-semantics i32 (just the tag) — representation is
+    /// per-enum, decided at decl registration (see the EnumInfo /
+    /// layout comment below and fixture 45-enum-payloads).
     pub(crate) user_enums: BTreeMap<String, EnumInfo>,
     /// F.20: user-declared interface names. Phase A registers
     /// them here so `type_expr_to_codegen_ty` can resolve an

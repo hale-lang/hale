@@ -47,6 +47,7 @@ vendor both explicitly.
 
 | Library | Provides |
 |---|---|
+| `http` | HTTP client (`http/client`) over `std::io` — request/response building atop the socket primitives, for libraries that need an HTTP client without the full `std::http` server surface. |
 | `router` | HTTP router over `std::http` — method + path-param routes, middleware chain. |
 | `sessions` | Stateless, HMAC-signed cookie sessions (`session=<base64(payload)>.<base64(hmac)>`). |
 | `websocket` | Synchronous, owner-driven RFC 6455 WebSocket client (suggested alias `ws`); a passive wrapper your own `run()` loop drives. |
@@ -65,13 +66,28 @@ vendor both explicitly.
 | Library | Provides |
 |---|---|
 | `crypto` | SHA-256, HMAC-SHA256, hex encode/decode, constant-time compare, CSPRNG. |
+| `subprocess` | Spawn + manage child processes (suggested alias `sub`) — wraps the `std::process` spawn / wait / pipe primitives. |
 | `tower` | Run several independent locus trees ("towers") under one process, each with its own root and lifecycle. |
 
-> `subprocess` is present but a v1 placeholder — it can't ship a
-> real implementation until the stdlib exposes a spawn primitive.
-> `heron` (the tree-sitter grammar that drives editor tooling)
-> also lives in pond, but it's developer tooling, not a vendored
-> runtime library you `import`.
+**Terminal & UI**
+
+| Library | Provides |
+|---|---|
+| `term` | Tier-0 terminal infrastructure — capability/`is_tty` probes, SGR styling, raw-mode guard, cursor + screen control over `std::term`. |
+| `tui` | An Elm-shaped TUI runtime: write a locus with model/update/view, the runtime drives the frame loop, input, and rendering. |
+
+**AI & numeric**
+
+| Library | Provides |
+|---|---|
+| `agent` | LLM-agent toolkit — `agent/{llm, tools, conversation, embeddings, sandbox}`: a client surface, a tool-registry, conversation state, and a sandboxed execution path. |
+| `ml` | Neural-network primitives (`ml/neural`). |
+| `math` | Numeric helpers — `math/{matrix, stats}`. |
+
+> `heron` (the tree-sitter grammar that drives editor tooling) also
+> lives in pond, but it's developer tooling, not a vendored runtime
+> library you `import`. The `_util` directory holds internal helper
+> libs consumed by other pond libs, not imported directly by apps.
 
 Pond is where the ecosystem grows: if a protocol, parser, or
 shape is too useful to rewrite per project but doesn't belong in

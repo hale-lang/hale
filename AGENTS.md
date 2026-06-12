@@ -122,6 +122,28 @@ inventing.
    locus. When 3+ free fns form a coherent vocabulary, promote
    them to a namespace lotus (pattern 2).
 
+**Composition patterns** (one layer up — how the shapes combine in
+real services; full treatment in `docs/src/services/patterns.md`):
+
+- **Three-locus gateway** — pinned reader → cooperative manager that
+  `accept()`s → keyed per-entity children (`subscribe … where key ==
+  self.id`). The answer to "N dynamic keyed children with
+  lifecycle"; the bus *is* the keyed routing table, so you never
+  need a map of loci. Declare `release(c)` so children reclaim.
+- **Demand-driven discovery** — a subscription triggers the
+  `accept()`; topology grows from the data, zero hardcoded children.
+- **Hot-path counters/gauges** — locus methods returning locus
+  values are rejected (GH #18.6 "CQRS"). Migration: pre-allocate the
+  counter/gauge loci as `params` at boot and mutate fields in place,
+  or publish `MetricUpdate` to a single-writer collector. Never a
+  method that returns a locus.
+- **Publish-policy gate** — accumulate in place, publish behind a
+  `tick()` with a time/volume trigger, so publish volume is bounded
+  independently of input volume.
+- **View lifetime** — `StringView` / `BytesView` / `*_span` results
+  are valid only until the next recv/overwrite; `std::str::clone`
+  out to persist. Stale access is now panic-guarded.
+
 ## What's NOT in the language
 
 Filter these reflexes before they cost you time.
