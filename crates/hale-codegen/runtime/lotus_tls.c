@@ -125,6 +125,38 @@ static SSL_CTX *lotus_tls__ctx_get(void) {
     return ctx;
 }
 
+/* Resolve a handle to its SSL object / raw fd UNDER the table lock.
+ *
+ * `g_tls_entries` is realloc'd (and thus *moved*) when the handle table
+ * grows on connect; every connect/reconnect adds a never-reclaimed slot, so
+ * a long-lived program crosses the 8 → 16 → 32 … growth boundaries. A
+ * lock-free `g_tls_entries[handle]` read in recv/send racing a sibling's
+ * connect-time realloc would index a freed base — a use-after-free that
+ * surfaces as a wrong/garbage SSL object on the *other* connection (the
+ * "busy sibling silently kills the quiet connection after reconnect churn"
+ * shape). Same class as the udp remote-table relocation race fixed in #19.
+ *
+ * The lock is held only for the table read (a couple of loads) — NOT across
+ * the blocking SSL_read/SSL_write below; holding it there would serialize
+ * concurrent connections and reintroduce starvation. The SSL object / fd
+ * themselves are stable once registered (until close), so using them
+ * lock-free after the resolution is safe. */
+static SSL *lotus_tls__handle_ssl(int handle) {
+    if (handle < 0) return NULL;
+    pthread_mutex_lock(&g_tls_mutex);
+    SSL *ssl = ((size_t)handle < g_tls_count) ? g_tls_entries[handle].ssl : NULL;
+    pthread_mutex_unlock(&g_tls_mutex);
+    return ssl;
+}
+
+static int lotus_tls__handle_fd(int handle) {
+    if (handle < 0) return -1;
+    pthread_mutex_lock(&g_tls_mutex);
+    int fd = ((size_t)handle < g_tls_count) ? g_tls_entries[handle].raw_fd : -1;
+    pthread_mutex_unlock(&g_tls_mutex);
+    return fd;
+}
+
 int lotus_tls_connect(const char *host, uint16_t port) {
     if (!host) {
         errno = EINVAL;
@@ -204,15 +236,11 @@ int lotus_tls_connect(const char *host, uint16_t port) {
 }
 
 int lotus_tls_send_bytes(int handle, const void *bytes_ptr) {
-    if (handle < 0 || (size_t)handle >= g_tls_count) {
-        errno = EBADF;
-        return -1;
-    }
     if (!bytes_ptr) {
         errno = EINVAL;
         return -1;
     }
-    SSL *ssl = g_tls_entries[handle].ssl;
+    SSL *ssl = lotus_tls__handle_ssl(handle);
     if (!ssl) {
         errno = EBADF;
         return -1;
@@ -244,10 +272,10 @@ int lotus_tls_send_bytes(int handle, const void *bytes_ptr) {
 }
 
 void *lotus_tls_recv_bytes(int handle, int max_bytes) {
-    if (handle < 0 || (size_t)handle >= g_tls_count || max_bytes <= 0) {
+    if (max_bytes <= 0) {
         return lotus_tls__bytes_empty();
     }
-    SSL *ssl = g_tls_entries[handle].ssl;
+    SSL *ssl = lotus_tls__handle_ssl(handle);
     if (!ssl) return lotus_tls__bytes_empty();
 
     lotus_arena_t *parena = lotus_bus_payload_arena_get();
@@ -284,10 +312,8 @@ void *lotus_tls_recv_bytes(int handle, int max_bytes) {
  * g_bus_payload_arena. Return semantics: > 0 bytes read, 0 peer
  * closed cleanly, < 0 fatal error. */
 int64_t lotus_tls_recv_into(int handle, void *builder, int64_t max_bytes) {
-    if (handle < 0 || (size_t)handle >= g_tls_count || max_bytes <= 0) {
-        return -1;
-    }
-    SSL *ssl = g_tls_entries[handle].ssl;
+    if (max_bytes <= 0) return -1;
+    SSL *ssl = lotus_tls__handle_ssl(handle);
     if (!ssl) return -1;
     char *tail = (char *)lotus_bytes_builder_reserve(builder, max_bytes);
     if (!tail) return -1;
@@ -356,15 +382,13 @@ extern int lotus_tcp_set_recv_timeout_ns(int fd, int64_t ns);
 extern int lotus_tcp_set_send_timeout_ns(int fd, int64_t ns);
 
 int lotus_tls_set_recv_timeout_ns(int handle, int64_t ns) {
-    if (handle < 0 || (size_t)handle >= g_tls_count) return -1;
-    int fd = g_tls_entries[handle].raw_fd;
+    int fd = lotus_tls__handle_fd(handle);
     if (fd < 0) return -1;
     return lotus_tcp_set_recv_timeout_ns(fd, ns);
 }
 
 int lotus_tls_set_send_timeout_ns(int handle, int64_t ns) {
-    if (handle < 0 || (size_t)handle >= g_tls_count) return -1;
-    int fd = g_tls_entries[handle].raw_fd;
+    int fd = lotus_tls__handle_fd(handle);
     if (fd < 0) return -1;
     return lotus_tcp_set_send_timeout_ns(fd, ns);
 }

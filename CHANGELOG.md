@@ -8,6 +8,18 @@ behavior.
 
 ## Unreleased
 
+- **Fixed a use-after-free race in the TLS handle table.** `lotus_tls_connect`
+  `realloc`s (and thus *moves*) the global handle table when it grows on
+  connect, while `recv_into`/`recv_bytes`/`send_bytes` read
+  `g_tls_entries[handle]` lock-free. A connect on one connection that crossed
+  a growth boundary while a *sibling* connection was mid-recv/send indexed a
+  freed base → a wrong/garbage SSL object on the other connection (presents as
+  "a busy connection silently kills a quiet sibling after enough
+  reconnect churn"). The handle→SSL/fd resolution now happens under the table
+  lock — held only for the table read, never across the blocking
+  `SSL_read`/`SSL_write`, so concurrent connections still proceed in parallel.
+  Same class as the udp remote-table relocation race fixed in #19.
+
 - **TLS recv/send timeouts + a distinguishable recv-timeout sentinel.** Added
   `std::io::tls::set_recv_timeout(handle, d)` / `set_send_timeout` — the
   handle-aware siblings of the `std::io::tcp` timeout setters (TLS connections
