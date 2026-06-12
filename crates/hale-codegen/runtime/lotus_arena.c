@@ -4133,6 +4133,42 @@ lotus_bus_queue_t *lotus_bus_queue_create(void) {
     return q;
 }
 
+/* Bounded-queue backpressure (GH #125). The cooperative bus queue is
+ * bounded to a maximum cell capacity. Past it, a SINGLE-THREADED
+ * publisher that outruns its consumer BLOCKS — it drains one cell
+ * inline (runs the oldest handler) to free a slot, instead of growing
+ * the queue without bound. This is the only way to bound a flooding
+ * producer in a cooperative pool (no preemption): the producer is the
+ * only thread that can drain, so it drains itself.
+ *
+ * Multithreaded (cross-pool) backpressure is a follow-on: there the
+ * publisher would have to run a handler on a FOREIGN pool's thread,
+ * which the single-threaded-method invariant forbids — so the locked
+ * path keeps growing for now.
+ *
+ * Cap: `LOTUS_BUS_QUEUE_CAP` env (in cells), default 8192 (~4.5 MB of
+ * cells), read once. Floor 64. */
+#define LOTUS_BUS_QUEUE_MAX_CAP_DEFAULT 8192
+#define LOTUS_BUS_INLINE_DRAIN_MAX_DEPTH 32
+
+static size_t g_bus_queue_max_cap = 0;       /* 0 = unread; set once from env */
+static int    g_bus_inline_drain_depth = 0;  /* single-threaded inline-drain only */
+
+static size_t bus_queue_max_cap(void) {
+    size_t c = __atomic_load_n(&g_bus_queue_max_cap, __ATOMIC_ACQUIRE);
+    if (c == 0) {
+        const char *e = getenv("LOTUS_BUS_QUEUE_CAP");
+        long v = e ? strtol(e, NULL, 10) : LOTUS_BUS_QUEUE_MAX_CAP_DEFAULT;
+        c = (v < 64) ? 64 : (size_t)v;
+        __atomic_store_n(&g_bus_queue_max_cap, c, __ATOMIC_RELEASE);
+    }
+    return c;
+}
+
+/* Pop + run exactly one cell — single-threaded inline-drain for the
+ * block policy. Defined after the handler typedef below. */
+static void bus_inline_drain_one(lotus_bus_queue_t *q);
+
 /* Enqueue (handler, self, payload_src + payload_size). The
  * publisher's payload is memcpy'd into the cell's inline
  * buffer; the cell does NOT carry a pointer back to publisher
@@ -4163,18 +4199,29 @@ void lotus_bus_queue_enqueue(lotus_bus_queue_t *q,
     }
     int locked = __atomic_load_n(&g_bus_has_pinned, __ATOMIC_ACQUIRE);
     if (locked) pthread_mutex_lock(&q->lock);
-    if (q->tail == q->cap) {
-        /* Compact first: slide live cells to the front. */
-        size_t live = q->tail - q->head;
+    /* Ensure a free tail slot, applying the bounded-queue backpressure
+     * policy (GH #125). */
+    while (q->tail == q->cap) {
+        /* Compact: slide live cells to the front to reclaim popped slots. */
         if (q->head > 0) {
-            memmove(q->cells, q->cells + q->head,
-                    live * sizeof(lotus_bus_cell_t));
+            size_t live = q->tail - q->head;
+            if (live > 0) {
+                memmove(q->cells, q->cells + q->head,
+                        live * sizeof(lotus_bus_cell_t));
+            }
             q->head = 0;
             q->tail = live;
         }
-        if (q->tail == q->cap) {
-            /* Truly full — double the capacity. */
+        if (q->tail < q->cap) break;            /* compaction freed a slot */
+        size_t max_cap = bus_queue_max_cap();
+        if (q->cap < max_cap || locked ||
+            g_bus_inline_drain_depth >= LOTUS_BUS_INLINE_DRAIN_MAX_DEPTH) {
+            /* Grow: below the cap (clamp the double to the cap), or
+             * multithreaded (cross-pool backpressure is a follow-on), or
+             * inline-drain nested too deep (keep the cap a soft bound —
+             * never deadlock or lose a message). */
             size_t new_cap = q->cap * 2;
+            if (q->cap < max_cap && new_cap > max_cap) new_cap = max_cap;
             lotus_bus_cell_t *new_cells = (lotus_bus_cell_t *)
                 realloc(q->cells, new_cap * sizeof(lotus_bus_cell_t));
             if (!new_cells) {
@@ -4184,6 +4231,18 @@ void lotus_bus_queue_enqueue(lotus_bus_queue_t *q,
             }
             q->cells = new_cells;
             q->cap   = new_cap;
+            break;
+        }
+        /* At the cap, single-threaded — BLOCK by inline-draining a BATCH
+         * down to a low watermark (¼ cap), not one cell. Draining one + the
+         * loop's compaction per enqueue would memmove the whole live array
+         * every publish (O(cap) — a 350x regression). Draining ~¾ cap in one
+         * burst makes the next compaction amortize over the freed slots
+         * (~⅓ cell moved per enqueue). The handlers run interleaved with the
+         * flooding producer rather than buffering the entire backlog. */
+        size_t watermark = q->cap / 4;
+        while (q->head < q->tail && (q->tail - q->head) > watermark) {
+            bus_inline_drain_one(q);
         }
     }
     lotus_bus_cell_t *slot = &q->cells[q->tail++];
@@ -4234,6 +4293,36 @@ void lotus_bus_queue_enqueue(lotus_bus_queue_t *q,
  * cell. Recursive drain calls (via the handler's trailing
  * bus_drain) get their own stack frame and their own buffer. */
 typedef void (*lotus_handler_fn)(void *self, void *payload);
+
+/* Pop and run exactly one cell (single-threaded inline-drain for the
+ * bounded-queue block policy, GH #125). Mirrors one iteration of the
+ * single-threaded body of lotus_bus_queue_drain. The caller (enqueue)
+ * guarantees q->head < q->tail and the single-threaded context
+ * (g_bus_has_pinned == 0, so no lock is held). The payload is copied to
+ * a stack buffer before the handler runs, so a handler-side re-publish
+ * that realloc's q->cells can't dangle the cell pointer. The depth
+ * counter bounds re-entrant inline-drain (a handler that itself floods
+ * at the cap). */
+static void bus_inline_drain_one(lotus_bus_queue_t *q) {
+    lotus_bus_cell_t *cell = &q->cells[q->head++];
+    void  *handler_fn   = cell->handler;
+    void  *handler_self = cell->self_ptr;
+    size_t psize        = cell->payload_size;
+    void  *heap_ptr     = cell->payload_heap;
+    unsigned char stack_payload[LOTUS_PAYLOAD_INLINE]
+        __attribute__((aligned(16)));
+    void *payload_ptr = NULL;
+    if (heap_ptr) {
+        payload_ptr = heap_ptr;
+    } else if (psize > 0) {
+        memcpy(stack_payload, cell->payload_inline, psize);
+        payload_ptr = stack_payload;
+    }
+    g_bus_inline_drain_depth++;
+    ((lotus_handler_fn)handler_fn)(handler_self, payload_ptr);
+    g_bus_inline_drain_depth--;
+    if (heap_ptr) free(heap_ptr);
+}
 
 void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
     if (!q) return;

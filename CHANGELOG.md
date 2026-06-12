@@ -8,6 +8,18 @@ behavior.
 
 ## Unreleased
 
+- **Bounded cooperative bus queue + backpressure (GitHub #125).** The
+  cooperative bus dispatch queue no longer grows without bound. It's capped
+  at `LOTUS_BUS_QUEUE_CAP` cells (default 8192 ≈ 4.5 MB; env-overridable,
+  floor 64); once a single-threaded producer that outruns its consumer hits
+  the cap, it **back-pressures** — draining the queue inline (running the
+  oldest handlers) to make space — instead of buffering the whole backlog.
+  A `birth()` publishing 2M messages went from ~1 GB resident to ~54 MB,
+  every message still delivered. Side effect: the `bus_dispatch` microbench
+  got *faster* (8.7 → 3.0 ms) — the bounded queue is far more cache-friendly
+  than the old unbounded one. Cross-pool (multithreaded) backpressure is a
+  follow-on; that path still grows for now.
+
 - **Memory-bound warnings on by default (GitHub #18 item 1).**
   `hale check` now emits unbounded-allocation warnings without a flag.
   They're **advisory** — they print but don't fail the build (only errors
