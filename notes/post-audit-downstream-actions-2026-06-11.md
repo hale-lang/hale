@@ -9,8 +9,8 @@ a language-repo change shipping first. Nothing here is language work.
 
 | Consumer | Action | Unblocks when |
 |---|---|---|
-| pond/sqlite | Restore `Db.exec/query/...` from free-fn shims to locus **methods**; drop `conn_handle=0` stubs | WS4 ships `std::db::sqlite::*` |
-| pond/jobs, pond/migrations | Replace `JobError{kind:"unsupported"}` / `db_path: String` workarounds with real `db::Db` qualified types in params + bodies (§11, §2) | WS3.4 lifts the two-hop / qualified-type-in-signature codegen gap |
+| pond/sqlite | Build the driver as a **pure `@ffi` library** — `glue.c` (csrc) over `sqlite3_*`, `@ffi` extern decls, `hale.toml` `link=["sqlite3"]`, Hale wrapper for fallibility. Un-stub; drop `conn_handle=0`. **NOT** blocked on the language — F.1's "needs a stdlib primitive" premise is wrong (`@ffi` is the binding surface). Full recipe: `notes/sqlite-via-ffi-recipe.md`. | now (needs `libsqlite3-dev` on build box/CI) |
+| pond/jobs, pond/migrations | Replace `JobError{kind:"unsupported"}` / `db_path: String` workarounds with real `db::Db` qualified types in params + bodies (§11, §2) — the qualified two-hop codegen the §11 blocker described works at HEAD (see WS3.4) | now |
 | pond/logfmt, pond/tracing | Restore `import "../http/client"`; un-stub `OtlpSink.__post_batch` / `export_otlp` to real `http::post` | WS3.3 (file-locality) + the no-transitive-import rule decision |
 | pond/term, pond/tui, pond/_util | Collapse local copies (`paint`/`badge`, glue) into `term::Styler` imports | the "G34" two-hop qualified-name-struct-literal codegen gap lifts |
 | pond/router | Restore `use(m)` method name; collapse 3 parallel vecs into one `RouteEntry{handler: Handler}`; restore `Context{req: std::http::Request}` | LocusRef→Interface coercion at method-arg/struct-field sites + pass-A0 ordering fix |

@@ -8,6 +8,18 @@ behavior.
 
 ## Unreleased
 
+- **SQLite stays a library, not a language primitive (post-audit WS4).** The
+  audit proposed shipping `std::db::sqlite::*`; on review that's the wrong
+  layer — a third-party database belongs in a library, and Hale already has
+  the general C-ABI binding surface for it (`@ffi("c")`, "no stdlib expansion
+  required to bind a new library"). No `std::db::*` was added. Verified the
+  one capability a driver leans on that lacked a test — a `String` *return*
+  from `@ffi` (C `const char *` → usable Hale String, for `column_text`) —
+  and gated it (`ffi_string_return`). The pond-side `@ffi` recipe to build
+  the driver (glue.c + extern decls + `link=["sqlite3"]` + fallible wrapper)
+  is in `notes/sqlite-via-ffi-recipe.md`; pond/sqlite is unblocked now, no
+  compiler change.
+
 - **Nested-param shm_ring subscribers verified + gated (post-audit WS3.5).**
   An shm_ring subscriber instantiated as a nested locus param
   (`params { sub: Sub = Sub { }; }`) — including as a param of the main
