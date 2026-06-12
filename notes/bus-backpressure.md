@@ -1,8 +1,21 @@
 # Bounded bus queue + backpressure (GH #125)
 
-Status: **v1 landed** (2026-06-11). Design + the shipped first slice
-(global cap + block) for bounding the cooperative bus dispatch queue, so a
-producer that outruns its consumer can't grow resident memory without limit.
+Status: **v1 + cross-pool (mailbox) landed** (2026-06-11). Design + the
+shipped slices for bounding the bus dispatch paths, so a producer that
+outruns its consumer can't grow resident memory without limit.
+
+> **Cross-pool backpressure landed (any → pinned).** The per-pinned-locus
+> **mailbox** (`lotus_mailbox_*`) is now bounded at the same cap. It has a
+> *single consumer* (the pinned locus's own thread), so a cross-thread
+> producer that hits the cap **blocks on a `not_full` condvar** until the
+> consumer drains a slot — the clean textbook backpressure the scope
+> called for. The self-publish deadlock case (a handler publishing to its
+> own mailbox during its own drain) is detected via the existing
+> `g_current_pinned_mailbox` TLS and grows instead of blocking. An
+> any → pinned 2M flood: ~1 GB → **54 MB**, all delivered, no deadlock.
+> *Still remaining:* the cross-**cooperative**-pool path (F.31 per-pool
+> queues, multiple drainers) — harder, since there's no single consumer
+> thread to wait on; left growing for now.
 
 > **v1 shipped.** `lotus_bus_queue_enqueue` (lotus_arena.c) now bounds the
 > queue at `LOTUS_BUS_QUEUE_CAP` cells (default 8192 ≈ 4.5 MB, env-override,

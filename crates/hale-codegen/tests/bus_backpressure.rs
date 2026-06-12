@@ -57,6 +57,34 @@ const FLOOD: &str = r#"
     fn main() { Sink { n: 2000000 }; Source { n: 2000000 }; }
 "#;
 
+/// An `any -> pinned` flood: the main locus floods a **pinned** subscriber's
+/// mailbox cross-thread (different OS threads). The mailbox is bounded and
+/// the producer back-pressures — it blocks on the mailbox's `not_full`
+/// condvar until the pinned consumer drains — so RSS stays bounded. The
+/// `run()` waits for the count before printing, which also proves no
+/// deadlock and that every message was delivered.
+const PINNED_FLOOD: &str = r#"
+    type Tick { n: Int; }
+    locus Counter {
+        params { count: Int = 0; }
+        bus { subscribe "px" as on_tick of type Tick; }
+        fn on_tick(t: Tick) { self.count = self.count + 1; }
+    }
+    main locus App {
+        params { sub: Counter = Counter { }; }
+        placement { sub: pinned; }
+        bus { publish "px" of type Tick; }
+        run() {
+            let mut i = 0;
+            while i < 2000000 { "px" <- Tick { n: i }; i = i + 1; }
+            while self.sub.count < 2000000 { std::time::sleep(1ms); }
+            print("final_rss_mb=");
+            println(std::process::rss_bytes() / 1048576);
+        }
+    }
+    fn main() { App { }; }
+"#;
+
 #[test]
 fn flood_producer_does_not_grow_rss_unbounded() {
     let rss = build_and_rss("flood", FLOOD);
@@ -68,6 +96,20 @@ fn flood_producer_does_not_grow_rss_unbounded() {
         rss < 200,
         "flood RSS {} MB — the bus queue did not stay bounded (expected < 200; \
          unbounded would be ~1 GB)",
+        rss
+    );
+}
+
+#[test]
+fn cross_thread_flood_to_pinned_mailbox_is_bounded() {
+    let rss = build_and_rss("pinned_flood", PINNED_FLOOD);
+    // Unbounded the mailbox would flood to ~1 GB (2M cells × ~552 B).
+    // Bounded + back-pressured it stays bounded; reaching the print also
+    // proves no deadlock and all 2M messages delivered.
+    assert!(
+        rss < 200,
+        "any->pinned flood RSS {} MB — the mailbox did not back-pressure \
+         (expected < 200; unbounded would be ~1 GB)",
         rss
     );
 }

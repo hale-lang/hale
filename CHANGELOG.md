@@ -17,8 +17,12 @@ behavior.
   A `birth()` publishing 2M messages went from ~1 GB resident to ~54 MB,
   every message still delivered. Side effect: the `bus_dispatch` microbench
   got *faster* (8.7 → 3.0 ms) — the bounded queue is far more cache-friendly
-  than the old unbounded one. Cross-pool (multithreaded) backpressure is a
-  follow-on; that path still grows for now.
+  than the old unbounded one. **Cross-pool (any → pinned) backpressure** is
+  also in: each pinned locus's mailbox is bounded at the same cap, and a
+  cross-thread producer that hits it blocks on a condvar until the pinned
+  consumer drains (a 2M any → pinned flood: ~1 GB → 54 MB, no deadlock). The
+  cross-*cooperative*-pool path (multiple drainers) still grows — a
+  follow-on.
 
 - **Memory-bound warnings on by default (GitHub #18 item 1).**
   `hale check` now emits unbounded-allocation warnings without a flag.

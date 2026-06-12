@@ -4437,9 +4437,14 @@ typedef struct lotus_mailbox {
     int               shutdown;
     pthread_mutex_t   lock;
     pthread_cond_t    not_empty;
+    pthread_cond_t    not_full;   /* GH #125: cross-pool backpressure */
 } lotus_mailbox_t;
 
 #define LOTUS_MAILBOX_INITIAL_CAP 64
+
+/* Defined below; `post` uses it to detect a self-publish from the
+ * mailbox's own (pinned consumer) thread, which must not block. */
+lotus_mailbox_t *lotus_mailbox_get_current(void);
 
 lotus_mailbox_t *lotus_mailbox_create(void) {
     lotus_mailbox_t *mb =
@@ -4457,6 +4462,7 @@ lotus_mailbox_t *lotus_mailbox_create(void) {
     mb->shutdown = 0;
     pthread_mutex_init(&mb->lock, NULL);
     pthread_cond_init(&mb->not_empty, NULL);
+    pthread_cond_init(&mb->not_full, NULL);
     return mb;
 }
 
@@ -4477,16 +4483,35 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
         }
     }
     pthread_mutex_lock(&mb->lock);
-    if (mb->tail == mb->cap) {
-        size_t live = mb->tail - mb->head;
+    /* Ensure a free tail slot, with cross-pool backpressure (GH #125). The
+     * mailbox has a single consumer (the pinned locus's own thread), so a
+     * cross-thread producer that hits the cap can safely BLOCK until that
+     * consumer drains a slot. The exception is a self-publish from the
+     * consumer thread (a handler publishing to its own mailbox during its
+     * own drain) — detected via `g_current_pinned_mailbox`; blocking there
+     * would deadlock (nothing else drains this mailbox), so it grows. */
+    while (mb->tail == mb->cap) {
         if (mb->head > 0) {
-            memmove(mb->cells, mb->cells + mb->head,
-                    live * sizeof(lotus_bus_cell_t));
+            size_t live = mb->tail - mb->head;
+            if (live > 0) {
+                memmove(mb->cells, mb->cells + mb->head,
+                        live * sizeof(lotus_bus_cell_t));
+            }
             mb->head = 0;
             mb->tail = live;
         }
-        if (mb->tail == mb->cap) {
+        if (mb->tail < mb->cap) break;            /* compaction freed a slot */
+        if (mb->shutdown) {
+            pthread_mutex_unlock(&mb->lock);
+            if (heap_buf) free(heap_buf);
+            return;                               /* drop — shutting down */
+        }
+        size_t max_cap = bus_queue_max_cap();
+        if (mb->cap < max_cap || mb == lotus_mailbox_get_current()) {
+            /* Grow: below the cap (clamp to it), or a self-publish from the
+             * consumer thread (can't block on itself). */
             size_t new_cap = mb->cap * 2;
+            if (mb->cap < max_cap && new_cap > max_cap) new_cap = max_cap;
             lotus_bus_cell_t *new_cells = (lotus_bus_cell_t *)
                 realloc(mb->cells, new_cap * sizeof(lotus_bus_cell_t));
             if (!new_cells) {
@@ -4496,7 +4521,12 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
             }
             mb->cells = new_cells;
             mb->cap   = new_cap;
+            break;
         }
+        /* At the cap, cross-thread producer — BLOCK until the pinned
+         * consumer drains a slot (drain_one / drain_pending signal
+         * not_full). Re-check on wake. */
+        pthread_cond_wait(&mb->not_full, &mb->lock);
     }
     lotus_bus_cell_t *slot = &mb->cells[mb->tail++];
     slot->handler      = handler;
@@ -4528,6 +4558,7 @@ int lotus_mailbox_drain_one(lotus_mailbox_t *mb) {
         mb->head = 0;
         mb->tail = 0;
     }
+    pthread_cond_signal(&mb->not_full);   /* freed a slot (GH #125) */
     pthread_mutex_unlock(&mb->lock);
 
     /* Hand the dequeued cell's payload to the handler.
@@ -4558,12 +4589,14 @@ void lotus_mailbox_shutdown(lotus_mailbox_t *mb) {
     pthread_mutex_lock(&mb->lock);
     mb->shutdown = 1;
     pthread_cond_broadcast(&mb->not_empty);
+    pthread_cond_broadcast(&mb->not_full);   /* wake blocked producers → they drop (GH #125) */
     pthread_mutex_unlock(&mb->lock);
 }
 
 void lotus_mailbox_destroy(lotus_mailbox_t *mb) {
     if (!mb) return;
     pthread_cond_destroy(&mb->not_empty);
+    pthread_cond_destroy(&mb->not_full);
     pthread_mutex_destroy(&mb->lock);
     if (mb->cells) free(mb->cells);
     free(mb);
@@ -4629,6 +4662,7 @@ void lotus_mailbox_drain_pending(lotus_mailbox_t *mb) {
             mb->head = 0;
             mb->tail = 0;
         }
+        pthread_cond_signal(&mb->not_full);   /* freed a slot (GH #125) */
         pthread_mutex_unlock(&mb->lock);
         void *payload_ptr = NULL;
         if (cell_copy.payload_size > 0) {
