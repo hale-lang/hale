@@ -1,8 +1,26 @@
 # Bounded bus queue + backpressure (GH #125)
 
-Status: **scoped** (2026-06-11). Design for bounding the cooperative bus
-dispatch queue, so a producer that outruns its consumer can't grow resident
-memory without limit.
+Status: **v1 landed** (2026-06-11). Design + the shipped first slice
+(global cap + block) for bounding the cooperative bus dispatch queue, so a
+producer that outruns its consumer can't grow resident memory without limit.
+
+> **v1 shipped.** `lotus_bus_queue_enqueue` (lotus_arena.c) now bounds the
+> queue at `LOTUS_BUS_QUEUE_CAP` cells (default 8192 ≈ 4.5 MB, env-override,
+> floor 64). Past the cap, a **single-threaded** publisher BLOCKS by
+> inline-draining the queue (running the oldest handlers) to make space —
+> the only way to bound a flooding producer in a cooperative pool, since the
+> producer is the only thread that can drain. The multithreaded (locked)
+> path still grows (cross-pool backpressure = follow-on, since inline-drain
+> there would run a handler on a foreign pool's thread). #125 flood:
+> **1042 MB → 54 MB**, all 2M messages still delivered.
+>
+> **Perf lesson (the one trap):** draining *one* cell + the loop's
+> compaction per publish memmoves the whole live array every enqueue —
+> O(cap), a measured **350x** regression on `bus_dispatch`. Fixed by
+> inline-draining a **batch down to a ¼-cap watermark** so the compaction
+> amortizes (~⅓ cell/enqueue). Net: `bus_dispatch` went **8.7 ms → 3.0 ms**
+> (the bounded 4.5 MB queue is far more cache-friendly than the old 55 MB
+> one) and maxrss 57 → 9.6 MB. All other bus benches unchanged.
 
 ## The problem, precisely
 
@@ -92,11 +110,13 @@ is a pool attribute, not per-locus or per-subject. Staging the surface:
 
 ## Staging
 
-1. **Bounded queue + block, global default + env override.** `cap` field
-   already on `lotus_bus_queue_t`; add the cap check in
-   `lotus_bus_queue_enqueue` + the two block implementations (cross-pool
-   condvar; same-pool inline-drain with the re-entrancy guard). The
-   high-value slice — fixes #125 with no syntax change.
+1. **Bounded queue + block, global default + env override.** — **LANDED.**
+   Cap check + same-pool inline-drain (batched to a ¼-cap watermark) +
+   re-entrancy depth guard with grow-fallback, in `lotus_bus_queue_enqueue`.
+   Multithreaded keeps growing (the cross-pool condvar is deferred to a
+   follow-on, since inline-drain can't run a foreign pool's handler). Test:
+   `bus_backpressure.rs` (a 2M flood stays < 200 MB). Fixes #125, no syntax
+   change.
 2. **Drop + Fail policies** (env-selectable global), reusing the
    `on_overflow` vocabulary; drop-oldest (evict head) vs drop-newest
    (reject the publish) — default drop-newest (simpler, no consumer-visible
