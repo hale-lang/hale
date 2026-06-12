@@ -8,6 +8,20 @@ behavior.
 
 ## Unreleased
 
+- **TLS recv/send timeouts + a distinguishable recv-timeout sentinel.** Added
+  `std::io::tls::set_recv_timeout(handle, d)` / `set_send_timeout` — the
+  handle-aware siblings of the `std::io::tcp` timeout setters (TLS connections
+  are addressed by handle, not raw fd), wrapping `SO_RCVTIMEO`/`SO_SNDTIMEO`
+  on the underlying socket. And `recv_into` (TCP + TLS) now returns `-2`
+  ("timed out, retryable") rather than `-1` ("fatal") on a `SO_RCVTIMEO`
+  timeout (TCP `EAGAIN`; TLS `SSL_ERROR_WANT_READ`), so a long-lived client
+  can bound a blocking read and run connection-liveness work instead of
+  hanging forever on a half-open connection. Backward-compatible (`-2` only
+  arises once a recv timeout is set). This is the language-side prerequisite
+  for the pond `WsClient` liveness fix — see
+  `notes/ws-readmsg-liveness-handoff.md` and the corrected verdict in
+  `notes/tls-concurrent-recv-starvation.md`.
+
 - **Whole-value reassignment of a locus-typed field is now a lifecycle
   transition (post-audit WS1#4 — soundness fix).** `self.conn = WsClient
   { … }` from a member fn previously lowered the RHS locus literal as a

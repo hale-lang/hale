@@ -1078,6 +1078,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     "set_send_timeout",
                 )?,
             )),
+            // TLS siblings — same helper; the first arg is a TLS handle, the
+            // C side resolves it to the connection's underlying fd. Bounds a
+            // blocking SSL_read so a half-open connection is detected
+            // (WsClient liveness fix) rather than hanging forever.
+            ["std", "io", "tls", "set_recv_timeout"] => Ok(Some(
+                self.lower_std_io_udp_set_timeout_fallible(
+                    args, scope,
+                    "lotus_tls_set_recv_timeout_ns",
+                    "set_recv_timeout",
+                )?,
+            )),
+            ["std", "io", "tls", "set_send_timeout"] => Ok(Some(
+                self.lower_std_io_udp_set_timeout_fallible(
+                    args, scope,
+                    "lotus_tls_set_send_timeout_ns",
+                    "set_send_timeout",
+                )?,
+            )),
             // File primitives: only the `__`-prefixed forms map
             // here. The user-facing `open` / `write_bytes` / `seek`
             // resolve via STDLIB_FN_RENAMES to the Hale-level

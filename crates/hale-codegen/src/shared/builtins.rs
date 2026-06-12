@@ -1694,6 +1694,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             udp_set_timeout_ty,
             None,
         );
+        // TLS siblings (WsClient liveness fix). Same `i32 (i32, i64)`
+        // signature; the first arg is a TLS *handle* (the C side resolves it
+        // to the connection's underlying socket fd) rather than a raw fd.
+        self.module.add_function(
+            "lotus_tls_set_recv_timeout_ns",
+            udp_set_timeout_ty,
+            None,
+        );
+        self.module.add_function(
+            "lotus_tls_set_send_timeout_ns",
+            udp_set_timeout_ty,
+            None,
+        );
 
         // Held-open file substrate (std::io::file::File). Mirrors
         // the lotus_tcp_* split shape — primitives hand a raw fd
