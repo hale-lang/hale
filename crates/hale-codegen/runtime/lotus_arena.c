@@ -13772,6 +13772,99 @@ int64_t lotus_tcp_recv_into(int fd, void *builder, int64_t max_bytes) {
     return (int64_t)n;
 }
 
+/* 2026-06-13 — recv_stamped (#1 of the fast-protocol-I/O substrate
+ * plan). One recvmsg(2) that captures the kernel's SCM_TIMESTAMPNS RX
+ * timestamp alongside the payload, plus a userspace stamp taken at
+ * recvmsg return — the wire-arrival time every protocol wants, with no
+ * extra syscall on the hot path (SO_TIMESTAMPNS is a one-time setup
+ * opt-in via lotus_tcp_set_rx_timestamps). The stamps are stashed in
+ * thread-locals read immediately after the call via
+ * lotus_tcp_last_recv_{kernel,user}_ns — the same errno-style idiom as
+ * lotus_udp_last_source_*. kernel_ns stays 0 when the platform/socket
+ * delivered no timestamp (timestamps not enabled, or e.g. macOS). */
+static __thread int64_t g_last_recv_kernel_ns = 0;
+static __thread int64_t g_last_recv_user_ns   = 0;
+
+int lotus_tcp_set_rx_timestamps(int fd, int on) {
+    if (fd < 0) { errno = EINVAL; return -1; }
+#ifdef SO_TIMESTAMPNS
+    int v = on ? 1 : 0;
+    return setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPNS, &v, sizeof(v));
+#else
+    (void)on; errno = ENOTSUP; return -1;
+#endif
+}
+
+int64_t lotus_tcp_recv_stamped(int fd, void *builder, int64_t max_bytes) {
+    g_last_recv_kernel_ns = 0;
+    g_last_recv_user_ns = 0;
+    if (fd < 0 || max_bytes <= 0) return -1;
+    char *tail = (char *)lotus_bytes_builder_reserve(builder, max_bytes);
+    if (!tail) return -1;
+
+    struct iovec iov;
+    iov.iov_base = tail;
+    iov.iov_len = (size_t)max_bytes;
+    /* Control buffer sized for one timespec cmsg (SCM_TIMESTAMPNS),
+     * aligned via the union. */
+    union {
+        char buf[CMSG_SPACE(sizeof(struct timespec))];
+        struct cmsghdr align;
+    } cmsg_u;
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = cmsg_u.buf;
+    msg.msg_controllen = sizeof(cmsg_u.buf);
+
+    ssize_t n;
+    for (;;) {
+        n = recvmsg(fd, &msg, 0);
+        if (n >= 0) break;
+        if (errno == EINTR) continue;
+        /* SO_RCVTIMEO timeout → EAGAIN/EWOULDBLOCK: retryable (-2),
+         * not fatal (-1). Same contract as lotus_tcp_recv_into. */
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return -2;
+        return -1;
+    }
+
+    struct timespec ts_user;
+    if (clock_gettime(CLOCK_REALTIME, &ts_user) == 0) {
+        g_last_recv_user_ns =
+            (int64_t)ts_user.tv_sec * 1000000000LL + (int64_t)ts_user.tv_nsec;
+    }
+
+#ifdef SCM_TIMESTAMPNS
+    /* Defensive cmsg read: inspect ONLY the first control message and
+     * validate its length before touching the payload. We never walk
+     * with CMSG_NXTHDR — some libcs loop forever on a zero-length cmsg
+     * (ws-fast's socket.rs learned this the hard way) — and we only ever
+     * enable the single SCM_TIMESTAMPNS option, so the first cmsg is all
+     * there is to read. MSG_CTRUNC means the control data was truncated;
+     * skip rather than read a partial timespec. */
+    if (!(msg.msg_flags & MSG_CTRUNC)) {
+        struct cmsghdr *cm = CMSG_FIRSTHDR(&msg);
+        if (cm != NULL
+            && cm->cmsg_len >= CMSG_LEN(sizeof(struct timespec))
+            && cm->cmsg_level == SOL_SOCKET
+            && cm->cmsg_type == SCM_TIMESTAMPNS) {
+            struct timespec ts_k;
+            memcpy(&ts_k, CMSG_DATA(cm), sizeof(ts_k));
+            g_last_recv_kernel_ns =
+                (int64_t)ts_k.tv_sec * 1000000000LL + (int64_t)ts_k.tv_nsec;
+        }
+    }
+#endif
+
+    if (n == 0) return 0;  /* clean EOF */
+    lotus_bytes_builder_advance(builder, (int64_t)n);
+    return (int64_t)n;
+}
+
+int64_t lotus_tcp_last_recv_kernel_ns(void) { return g_last_recv_kernel_ns; }
+int64_t lotus_tcp_last_recv_user_ns(void)   { return g_last_recv_user_ns; }
+
 int64_t lotus_udp_recv_into(int fd, void *builder, int64_t max_bytes) {
     if (fd < 0 || max_bytes <= 0) return -1;
     char *tail = (char *)lotus_bytes_builder_reserve(builder, max_bytes);

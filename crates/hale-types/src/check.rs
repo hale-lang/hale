@@ -521,6 +521,7 @@ fn locus_has_nontrivial_run(l: &LocusDecl) -> bool {
 /// warning, so the residual incompleteness is acceptable.
 const BLOCKING_STDLIB_PATHS: &[&[&str]] = &[
     &["std", "io", "tcp", "recv_into"],
+    &["std", "io", "tcp", "recv_stamped_into"],
     &["std", "io", "tcp", "__recv"],
     &["std", "io", "tcp", "__recv_bytes"],
     &["std", "io", "tcp", "__accept_one"],
