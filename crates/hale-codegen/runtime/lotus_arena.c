@@ -308,6 +308,18 @@ typedef struct lotus_arena {
      * one anyway for the case they themselves become a parent
      * via a nested sub-region. */
     pthread_mutex_t      subregion_lock;
+    /* 2026-06-13: set to 1 only on the shared g_bus_payload_arena. That
+     * arena is reachable lock-free via lotus_caller_arena_or_global() (the
+     * fallback when the per-thread caller_arena TLS is unset) — e.g. a
+     * per-byte std::bytes::from_int in a hot send path on two pinned
+     * threads. lotus_arena_alloc's bump (c->used) is otherwise unlocked, so
+     * concurrent allocs into this one shared arena would race and corrupt
+     * each other's allocations (garbled WS frame bytes — the fathom
+     * two-TLS-reader subscribe-corruption). When set, lotus_arena_alloc
+     * serializes its body on subregion_lock (otherwise idle on this flat
+     * arena). Per-instance arenas leave this 0 and keep the single-thread
+     * lock-free fast path. */
+    int                  shared_concurrent;
 } lotus_arena_t;
 
 /* Per-thread freelist of default-sized chunks (2026-05-21
@@ -1267,6 +1279,7 @@ static lotus_arena_t *lotus_arena_alloc_struct(void) {
     a->free_cap   = 0;
     a->next_slot  = 0;
     a->fixed_size = 0;
+    a->shared_concurrent = 0;
     a->chunk_byte_total = 0;
     a->chunk_byte_cap   = 0;
     a->cap_diag_name    = NULL;
@@ -1501,7 +1514,7 @@ static inline size_t lotus_arena_off_for(
     return (size_t)(aligned - base);
 }
 
-void *lotus_arena_alloc(lotus_arena_t *a, size_t size, size_t align) {
+static void *lotus_arena_alloc_nolock(lotus_arena_t *a, size_t size, size_t align) {
     if (!a) return NULL;
     if (size == 0) size = 1;        /* every alloc gets a unique addr */
     if (align == 0) align = 8;      /* default 8-byte alignment */
@@ -1583,6 +1596,26 @@ void *lotus_arena_alloc(lotus_arena_t *a, size_t size, size_t align) {
     void *p    = base + off;
     c->used    = off + size;
     return p;
+}
+
+/* Public entry point. For the single shared arena flagged
+ * `shared_concurrent` (g_bus_payload_arena), serialize the bump on the
+ * arena's own subregion_lock — it's reachable lock-free from two pinned
+ * threads via lotus_caller_arena_or_global() and the unlocked bump above
+ * would race (garbled allocations). The lock is held only for the bump, not
+ * across any blocking work; per-instance arenas (the overwhelming common
+ * case) skip it and keep the single-thread fast path. No recursion into
+ * lotus_arena_alloc happens under the lock (the fresh-chunk path mallocs /
+ * pulls from the per-thread chunk pool), so the non-recursive mutex is
+ * safe. */
+void *lotus_arena_alloc(lotus_arena_t *a, size_t size, size_t align) {
+    if (a && a->shared_concurrent) {
+        pthread_mutex_lock(&a->subregion_lock);
+        void *p = lotus_arena_alloc_nolock(a, size, align);
+        pthread_mutex_unlock(&a->subregion_lock);
+        return p;
+    }
+    return lotus_arena_alloc_nolock(a, size, align);
 }
 
 void lotus_arena_destroy(lotus_arena_t *a) {
@@ -10449,6 +10482,10 @@ static pthread_mutex_t  g_bus_payload_arena_mutex = PTHREAD_MUTEX_INITIALIZER;
 static lotus_arena_t *lotus_bus_payload_arena_create_capped(void) {
     lotus_arena_t *a = lotus_arena_create_labeled("g_bus_payload_arena");
     if (!a) return NULL;
+    /* Shared across pinned threads via the lock-free
+     * lotus_caller_arena_or_global() fallback — make lotus_arena_alloc
+     * serialize its bump on this arena. (2026-06-13) */
+    a->shared_concurrent = 1;
     size_t cap = LOTUS_BUS_PAYLOAD_ARENA_DEFAULT_CAP_BYTES;
     const char *env = getenv("LOTUS_BUS_PAYLOAD_ARENA_CAP");
     if (env && env[0]) {
