@@ -296,6 +296,17 @@ makes M:N safe — without it, multi-pool deployments would
 silently race on locus arenas (which are unsynchronized bump
 allocators).
 
+The single shared **bus payload arena** is the deliberate
+exception to "one owning thread per arena": it is reachable
+concurrently from any pool, because some stdlib primitives
+allocate their result there directly rather than into a
+per-locus arena (e.g. `std::io::tls::recv_bytes`, which always
+targets it regardless of the caller's per-thread scratch). That
+arena therefore carries an internal lock on its bump — two
+pinned loci calling such a primitive at once do not corrupt each
+other's allocations. Per-locus arenas keep the lock-free bump;
+only this one shared arena pays for the lock.
+
 #### Why no "greedy" class
 
 A natural temptation is to want a third option: "shares a
