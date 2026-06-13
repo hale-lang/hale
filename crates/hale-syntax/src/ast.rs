@@ -1315,6 +1315,14 @@ pub enum PrimType {
     /// Coerces to `String` at fn-arg read positions, rejected
     /// at `String`-typed storage.
     StringView,
+    /// #3 (2026-06-13): a raw `{ptr, len}` writable/readable window —
+    /// the A1 zero-copy ring-write slot and a `MirrorRing` readable /
+    /// writable window. Runtime layout is the view struct `{ptr, i64}`
+    /// (here `{base, len}`, NOT the `[i64 len][data]` Bytes shape), so
+    /// `std::bytes::{read_*, at, find_byte, write_*}` read/write it
+    /// directly via their `_raw` siblings. Length is carried in the
+    /// struct, not a prefix.
+    BytesMut,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -128,6 +128,7 @@ pub fn prim_name(p: PrimType) -> &'static str {
         PrimType::Duration => "Duration",
         PrimType::Bytes => "Bytes",
         PrimType::BytesView => "BytesView",
+        PrimType::BytesMut => "BytesMut",
         PrimType::StringView => "StringView",
     }
 }
@@ -174,7 +175,8 @@ fn is_flat_shapeable_inner(
             PrimType::String
             | PrimType::Bytes
             | PrimType::BytesView
-            | PrimType::StringView => false,
+            | PrimType::StringView
+            | PrimType::BytesMut => false,
         },
         Ty::Unit => true,
         Ty::Array(elem, Some(_)) => is_flat_shapeable_inner(elem, scope, seen),

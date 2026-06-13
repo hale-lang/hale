@@ -3986,6 +3986,7 @@ fn ffi_type_unportable(ty: &Ty) -> Option<&'static str> {
             | PrimType::Bytes
             | PrimType::BytesView
             | PrimType::StringView
+            | PrimType::BytesMut
             | PrimType::Time
             | PrimType::Duration => None,
             PrimType::Decimal => Some(

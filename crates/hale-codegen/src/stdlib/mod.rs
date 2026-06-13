@@ -22,6 +22,7 @@ pub(crate) mod io_tcp;
 pub(crate) mod io_tls;
 pub(crate) mod io_udp;
 pub(crate) mod math;
+pub(crate) mod mirror;
 pub(crate) mod process;
 pub(crate) mod rand;
 pub(crate) mod sockopt;

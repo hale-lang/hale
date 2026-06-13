@@ -1881,6 +1881,85 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             bytes_read_uint_ty,
             None,
         );
+        // #3 (MirrorRing) — RAW {ptr,len} read siblings + the mirror ring.
+        // declare i64 @lotus_bytes_read_uint_raw(ptr base, i64 len, i64 off,
+        //   i32 width, i32 is_signed, i32 big_endian, ptr oob)
+        self.module.add_function(
+            "lotus_bytes_read_uint_raw",
+            i64_t.fn_type(
+                &[
+                    ptr_t.into(), i64_t.into(), i64_t.into(),
+                    i32_bru.into(), i32_bru.into(), i32_bru.into(),
+                    ptr_t.into(),
+                ],
+                false,
+            ),
+            None,
+        );
+        // declare i64 @lotus_bytes_at_raw(ptr base, i64 len, i64 i)
+        self.module.add_function(
+            "lotus_bytes_at_raw",
+            i64_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false),
+            None,
+        );
+        // declare i64 @lotus_bytes_find_byte_raw(ptr base, i64 len, i64 off, i64 needle)
+        self.module.add_function(
+            "lotus_bytes_find_byte_raw",
+            i64_t.fn_type(
+                &[ptr_t.into(), i64_t.into(), i64_t.into(), i64_t.into()],
+                false,
+            ),
+            None,
+        );
+        // MirrorRing runtime: new/free/readable/writable/commit/consume/
+        // len/capacity + recv-into-mirror. readable/writable return the
+        // {ptr,len} view struct (a BytesMut).
+        let mr_view_ty = self.view_struct_ty();
+        self.module.add_function(
+            "lotus_mirror_ring_new",
+            ptr_t.fn_type(&[i64_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_mirror_ring_free",
+            self.context.void_type().fn_type(&[ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_mirror_ring_readable",
+            mr_view_ty.fn_type(&[ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_mirror_ring_writable",
+            mr_view_ty.fn_type(&[ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_mirror_ring_commit",
+            self.context.void_type().fn_type(&[ptr_t.into(), i64_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_mirror_ring_consume",
+            self.context.void_type().fn_type(&[ptr_t.into(), i64_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_mirror_ring_len",
+            i64_t.fn_type(&[ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_mirror_ring_capacity",
+            i64_t.fn_type(&[ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_tcp_recv_into_mirror",
+            i64_t.fn_type(&[i32_bru.into(), ptr_t.into(), i64_t.into()], false),
+            None,
+        );
         // declare void @lotus_bytes_write_uint(ptr base, i64 cap, i64 off,
         //   i32 width, i64 val, i32 big_endian, ptr oob) — binary-pack
         // writer into a raw region (A1 zero-copy ring write).

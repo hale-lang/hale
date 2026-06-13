@@ -47,6 +47,7 @@ use crate::stdlib::process::ProcessStdlib;
 use crate::stdlib::rand::RandStdlib;
 use crate::stdlib::sockopt::SockoptStdlib;
 use crate::stdlib::diag::DiagStdlib;
+use crate::stdlib::mirror::MirrorStdlib;
 use crate::stdlib::str::StrStdlib;
 use crate::stdlib::term::TermStdlib;
 use crate::stdlib::text::TextStdlib;
@@ -955,6 +956,11 @@ const STDLIB_AP_SOURCE: &str = concat!(
     // only path-call primitives (`std::bytes::builder::__*`) that
     // resolve at codegen time; independent of order.
     include_str!("../runtime/stdlib/bytes_builder.hl"),
+    "\n",
+    // std::io::MirrorRing (#3): double-mmap wrap-free ring. Calls the
+    // std::io::mirror::__* path-call primitives; order-independent.
+    include_str!("../runtime/stdlib/mirror_ring.hl"),
+    "\n",
     // std::term::RawMode guard locus (pond P4 stage 3). Calls the
     // std::term::__raw_* path-call primitives; order-independent.
     include_str!("../runtime/stdlib/term.hl"),
@@ -1018,6 +1024,7 @@ const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "http", "Response"], "__StdHttpResponse"),
     (&["std", "http", "Server"], "__StdHttpServer"),
     (&["std", "io", "file", "File"], "__StdIoFileFile"),
+    (&["std", "io", "MirrorRing"], "__StdIoMirrorRing"),
     (&["std", "io", "file", "open"], "__std_io_file_open"),
     (&["std", "io", "file", "read_line"], "__std_io_file_read_line"),
     (&["std", "io", "file", "at_eof"], "__std_io_file_at_eof"),
@@ -16152,6 +16159,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_bytes_find_byte(args, scope)?;
                 Ok(())
             }
+            ["std", "io", "mirror", op] => {
+                let _ = self.lower_std_io_mirror(op, args, scope)?;
+                Ok(())
+            }
             ["std", "bytes", "builder", "__xor_mask_into"] => {
                 let _ = self.lower_std_bytes_builder_xor_mask_into(args, scope)?;
                 Ok(())
@@ -17050,6 +17061,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "diag", "syscall_count"] => {
                 self.lower_std_diag_syscall_count(args, scope)
+            }
+            // #3 MirrorRing primitives (backing the std::io::MirrorRing locus).
+            ["std", "io", "mirror", op] => {
+                self.lower_std_io_mirror(op, args, scope)
             }
             // 2026-05-26 — UDP P4: getters for the source IP +
             // port of the last `recv_with_source` on this thread.
