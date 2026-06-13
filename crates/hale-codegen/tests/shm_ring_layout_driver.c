@@ -146,8 +146,8 @@ static void on_raw(void *self, RawView v) {
     }
 }
 
-static void build_desc(uint64_t desc[21]) {
-    memset(desc, 0, 21 * sizeof(uint64_t));  /* [16..20]=0 → byte_records */
+static void build_desc(uint64_t desc[27]) {
+    memset(desc, 0, 27 * sizeof(uint64_t));  /* [16..20]=0 → byte_records */
     desc[0]  = MAGIC;        desc[1]  = 1;            /* magic, has_magic */
     desc[2]  = VERSION_OFF;  desc[3]  = VERSION_WIDTH;
     desc[4]  = VERSION_VAL;  desc[5]  = 1;            /* version_expect, has_version */
@@ -190,7 +190,7 @@ static int run(const char *name, uint64_t capacity, int n, int pace_us) {
 
     /* Consumer attaches after the header is valid; it starts reading
      * from the current cursor (0), so it sees every record below. */
-    uint64_t desc[21] = {0};
+    uint64_t desc[27] = {0};
     build_desc(desc);
     lotus_bus_register_subscriber_shm_ring_layout(
         "foreign.ticks", name, desc, NULL, on_record);
@@ -269,7 +269,7 @@ static int run(const char *name, uint64_t capacity, int n, int pace_us) {
  * framing symmetry end to end. `pace_us > 0` (with a small capacity)
  * forces the pad-at-wrap path on the producer side too. */
 static int run_producer(const char *name, uint64_t capacity, int n, int pace_us) {
-    uint64_t desc[21] = {0};
+    uint64_t desc[27] = {0};
     build_desc(desc);
 
     /* Producer creates + owns the ring. */
@@ -341,7 +341,7 @@ static int run_bad_bufsize(const char *name) {
     *(uint32_t *)(base + BUFSZ_OFF) = (uint32_t)capacity;
     atomic_store_explicit((_Atomic uint64_t *)(base + CURSOR_OFF), 0,
                           memory_order_release);
-    uint64_t desc[21] = {0};
+    uint64_t desc[27] = {0};
     build_desc(desc);
     /* Expected: open_layout rejects (cap % align != 0) → _exit(1). */
     lotus_bus_register_subscriber_shm_ring_layout(
@@ -372,7 +372,7 @@ static int run_short_record(const char *name) {
     _Atomic uint64_t *cursor = (_Atomic uint64_t *)(base + CURSOR_OFF);
     atomic_store_explicit(cursor, 0, memory_order_release);
 
-    uint64_t desc[21] = {0};
+    uint64_t desc[27] = {0};
     build_desc(desc);
     lotus_bus_register_subscriber_shm_ring_layout(
         "foreign.ticks", name, desc, NULL, on_record);
@@ -435,7 +435,7 @@ static int run_u64_lenprefix(const char *name) {
     _Atomic uint64_t *cursor = (_Atomic uint64_t *)(base + CURSOR_OFF);
     atomic_store_explicit(cursor, 0, memory_order_release);
 
-    uint64_t desc[21] = {0};
+    uint64_t desc[27] = {0};
     build_desc(desc);
     desc[11] = LW8;   /* len_prefix_width = 8 (u64) */
     lotus_bus_register_subscriber_shm_ring_layout(
@@ -493,7 +493,7 @@ static int run_heterogeneous(const char *name) {
     _Atomic uint64_t *cursor = (_Atomic uint64_t *)(base + CURSOR_OFF);
     atomic_store_explicit(cursor, 0, memory_order_release);
 
-    uint64_t desc[21] = {0};
+    uint64_t desc[27] = {0};
     build_desc(desc);
     desc[15] = 0;  /* value_size = 0 → raw BytesView path */
     lotus_bus_register_subscriber_shm_ring_layout(
@@ -594,6 +594,70 @@ static int run_produce_external(const char *name) {
     return 0;
 }
 
+/* record_header external producer (#5, fast-protocol-I/O). Writes
+ * ws-fast-shaped records: a fixed 32-byte header (len@0:u32, kind@4:u8
+ * — 0 Data, 1 Padding) then the payload, stride = 32 + align8(len).
+ * Records never straddle the wrap: when one won't fit before the
+ * boundary, a kind==1 pad record fills the remainder. No in-process
+ * consumer — a separate Hale process binds `layout:` with
+ * record_header_bytes/pad_field/recheck and reads the i64 payload.
+ * capacity 272 = 6*40 + 32: six 40-byte records then an exactly-32-byte
+ * pad header at the tail, so the kind==1 pad path is exercised every
+ * wrap. Paced 2ms/record (20x the reader's 100us poll) so it never
+ * laps. */
+#define RH_BYTES 32
+#define RH_LEN_OFF 0
+#define RH_KIND_OFF 4
+static int run_produce_record_header(const char *name) {
+    uint64_t capacity = 272;  /* multiple of ALIGN(8); 6*40 + 32 pad */
+    size_t total = DATA_AT + (size_t)capacity;
+    int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) { fprintf(stderr, "shm_open: %s\n", strerror(errno)); return 2; }
+    if (ftruncate(fd, (off_t)total) != 0) { shm_unlink(name); return 2; }
+    void *map = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) { shm_unlink(name); return 2; }
+    char *base = (char *)map;
+    *(uint64_t *)(base + 0) = MAGIC;
+    *(uint32_t *)(base + VERSION_OFF) = (uint32_t)VERSION_VAL;
+    *(uint32_t *)(base + BUFSZ_OFF) = (uint32_t)capacity;
+    _Atomic uint64_t *cursor = (_Atomic uint64_t *)(base + CURSOR_OFF);
+    atomic_store_explicit(cursor, 0, memory_order_release);
+
+    struct timespec attach_wait = {0, 250 * 1000 * 1000};  /* 250ms */
+    nanosleep(&attach_wait, NULL);
+
+    int n = 40;
+    uint64_t plen = 8;  /* one i64 payload */
+    uint64_t step = RH_BYTES + align_up(plen, ALIGN);  /* 40 */
+    uint64_t local = 0;
+    for (int i = 0; i < n; i++) {
+        if ((local % capacity) + step > capacity) {
+            /* Tail pad: a kind==1 header fills the remainder to the wrap. */
+            uint64_t off = DATA_AT + (local % capacity);
+            *(uint32_t *)(base + off + RH_LEN_OFF) = 0;
+            *(uint8_t *)(base + off + RH_KIND_OFF) = 1;  /* Padding */
+            uint64_t rem = capacity - (local % capacity);
+            local += rem;
+            atomic_store_explicit(cursor, local, memory_order_release);
+            struct timespec p = {0, 2 * 1000 * 1000};
+            nanosleep(&p, NULL);
+        }
+        uint64_t off = DATA_AT + (local % capacity);
+        *(uint32_t *)(base + off + RH_LEN_OFF) = (uint32_t)plen;
+        *(uint8_t *)(base + off + RH_KIND_OFF) = 0;       /* Data */
+        int64_t val = (int64_t)(i + 1) * 7;
+        memcpy(base + off + RH_BYTES, &val, sizeof(val));  /* payload @ 32 */
+        local += step;
+        atomic_store_explicit(cursor, local, memory_order_release);
+        struct timespec p = {0, 2 * 1000 * 1000};
+        nanosleep(&p, NULL);
+    }
+    struct timespec drain = {0, 400 * 1000 * 1000};
+    nanosleep(&drain, NULL);
+    munmap(map, total); close(fd); shm_unlink(name);
+    return 0;
+}
+
 /* Dogfood: the native LotusRing (LRSRNG1) slot ring, read through the
  * `ring_layout` abstraction. The NATIVE producer (lotus_shm_ring_open +
  * claim/commit) writes the ring; a layout-`slots` consumer attaches with
@@ -611,7 +675,7 @@ static int run_lotus_dogfood(const char *name) {
     /* A `ring_layout LotusRing` descriptor for the native LRSRNG1 header:
      * magic@0, slot_size@8, slot_count@16, seqno@24, slots@128. framing =
      * slots; geometry read from the header; cursor = the published seqno. */
-    uint64_t desc[21] = {0};
+    uint64_t desc[27] = {0};
     desc[0] = LOTUS_RING_MAGIC;
     desc[1] = 1;                  /* has_magic */
     desc[9] = 128;                /* data_at (header is two cache lines) */
@@ -691,7 +755,7 @@ static int run_produce_native_external(const char *name) {
  * the actual length. A raw (value_size == 0) consumer reads them back —
  * proving reserve/commit frames variable-length records correctly. */
 static int run_reserve_commit(const char *name) {
-    uint64_t desc[21] = {0};
+    uint64_t desc[27] = {0};
     build_desc(desc);
     desc[15] = 0;  /* value_size = 0 → raw consumer (variable records) */
     lotus_bus_register_shm_ring_layout("foreign.ticks", name, desc, 4096);
@@ -765,6 +829,9 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "produce_external") == 0) {
         return run_produce_external(argv[2]);
+    }
+    if (strcmp(argv[1], "produce_record_header") == 0) {
+        return run_produce_record_header(argv[2]);
     }
     if (strcmp(argv[1], "heterogeneous") == 0) {
         return run_heterogeneous(argv[2]);

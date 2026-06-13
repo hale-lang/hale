@@ -288,6 +288,27 @@ typedef struct {
     uint64_t slot_size_width;
     uint64_t slot_count_off;
     uint64_t slot_count_width;
+    /* 2026-06-13 (#5, fast-protocol-I/O): record_header support for
+     * byte_records. `record_header_bytes` is the fixed per-record
+     * header size before the payload (0 = the len_prefix-only model,
+     * where the prefix IS the whole header). ws-fast's record is a
+     * 32-byte header (len@0:u32, kind, opcode, seq, kernel_ns, user_ns)
+     * then payload, so the payload starts at record_header_bytes and the
+     * stride is align_up(record_header_bytes + len, align) — equal to
+     * record_header_bytes + align(len) because record_header_bytes is
+     * required to be a multiple of align. `len` is still read at record
+     * offset 0 with len_prefix_width. A producer that marks a tail pad
+     * with a header *field* (ws-fast: kind==1) rather than a len
+     * sentinel sets has_pad_field + pad_field_{off,width,value}. */
+    uint64_t record_header_bytes;
+    uint64_t pad_field_off;
+    uint64_t pad_field_width;
+    uint64_t pad_field_value;
+    int      has_pad_field;
+    /* Torn-read guard: when set, a record is copied out, an acquire
+     * fence taken, and the cursor re-read; if the producer lapped the
+     * record during the copy it is discarded rather than dispatched. */
+    int      post_copy_recheck;
 } lotus_shm_layout_t;
 
 #define LOTUS_RING_FRAMING_BYTE_RECORDS 0
@@ -328,7 +349,7 @@ static void shm_layout_write_uint(void *p, uint64_t width, uint64_t val) {
     memcpy(p, &val, (size_t)width);
 }
 
-/* Populate a descriptor from the flat 16-word array codegen emits.
+/* Populate a descriptor from the flat 27-word array codegen emits.
  * The slot contract is documented on
  * `lotus_bus_register_subscriber_shm_ring_layout`. */
 static void shm_layout_from_words(const uint64_t *w, lotus_shm_layout_t *d) {
@@ -354,6 +375,12 @@ static void shm_layout_from_words(const uint64_t *w, lotus_shm_layout_t *d) {
     d->slot_size_width   = w[18];
     d->slot_count_off    = w[19];
     d->slot_count_width  = w[20];
+    d->record_header_bytes = w[21];
+    d->pad_field_off     = w[22];
+    d->pad_field_width   = w[23];
+    d->pad_field_value   = w[24];
+    d->has_pad_field     = (int)w[25];
+    d->post_copy_recheck = (int)w[26];
 }
 
 /* Attach (read-only) to a foreign ring described by `desc`.
@@ -1250,6 +1277,17 @@ static void *shm_ring_layout_reader_thread(void *arg) {
      * experiments/foreign-ring-throughput. */
     uint64_t pos = 0;
     int initialized = 0;
+    /* Per-record header size before the payload. 0 (the len-prefix-only
+     * model) → the prefix IS the header. record_header_bytes is a
+     * multiple of align (validated at typecheck), so the existing
+     * align_up(hdr + len, align) stride equals hdr + align(len). */
+    uint64_t hdr = d->record_header_bytes ? d->record_header_bytes
+                                          : d->len_prefix_width;
+    /* Scratch for the post_copy torn-read guard: a record is memcpy'd
+     * here, then the cursor is re-read; if it was lapped during the copy
+     * the record is discarded. Grown on demand, freed at thread exit. */
+    char  *scratch = NULL;
+    size_t scratch_cap = 0;
     while (!atomic_load_explicit(&sub->should_stop,
                                   memory_order_acquire)) {
         uint64_t committed = atomic_load_explicit(
@@ -1273,17 +1311,41 @@ static void *shm_ring_layout_reader_thread(void *arg) {
             continue;
         }
         while (local < committed) {
-            /* The len-prefix read itself must stay within the data
-             * region. With a conforming ring (cap % align == 0,
-             * len_prefix_width <= align, pos always align-aligned) this
-             * always holds; the guard defends against a hostile cursor.
-             * pos < cap and len_prefix_width <= 8, so no overflow. */
-            if (pos + d->len_prefix_width > cap) {
+            /* The whole record header must stay within the data region
+             * before the physical wrap. With a conforming ring (cap %
+             * align == 0, hdr <= align or a multiple of it, pos always
+             * align-aligned) this always holds; the guard defends against
+             * a hostile cursor. pos < cap and hdr <= 8 (len-prefix) or a
+             * small fixed header, so no overflow. */
+            if (pos + hdr > cap) {
+                if (d->record_header_bytes) {
+                    /* record_header mode: records never straddle the wrap,
+                     * so "no room for a header at the tail" means the
+                     * producer left a gap — pad to the boundary. */
+                    local += cap - pos;
+                    pos = 0;
+                    continue;
+                }
+                /* len-prefix mode: a conforming ring keeps the prefix
+                 * inside the region; this is a hostile cursor — resync. */
                 local = committed;
                 pos = committed % cap;
                 break;
             }
             uint64_t phys = d->data_at + pos;
+            /* Header-field pad marker (e.g. ws-fast kind==1): the
+             * producer wrote a tail pad to avoid straddling the wrap.
+             * Jump to the next boundary. Checked before len so a pad
+             * record's len field is never interpreted as a real length. */
+            if (d->has_pad_field) {
+                uint64_t kv = shm_layout_read_uint(
+                    base + phys + d->pad_field_off, d->pad_field_width);
+                if (kv == d->pad_field_value) {
+                    local += cap - pos;
+                    pos = 0;
+                    continue;
+                }
+            }
             uint64_t len = shm_layout_read_uint(base + phys,
                                                 d->len_prefix_width);
             if (d->has_pad_sentinel && len == d->pad_sentinel) {
@@ -1305,17 +1367,54 @@ static void *shm_ring_layout_reader_thread(void *arg) {
                 break;
             }
             /* The record's payload must fit before the wrap. Overflow-
-             * safe: pos + len_prefix_width <= cap (checked above), so the
-             * room is `cap - pos - len_prefix_width`; compare `len`
-             * against it without adding the (attacker-controlled) len. */
-            uint64_t room = cap - pos - d->len_prefix_width;
+             * safe: pos + hdr <= cap (checked above), so the room is
+             * `cap - pos - hdr`; compare `len` against it without adding
+             * the (attacker-controlled) len. */
+            uint64_t room = cap - pos - hdr;
             if (len == 0 || len > room) {
                 local = committed;
                 pos = committed % cap;
                 break;
             }
-            char *payload = base + phys + d->len_prefix_width;
-            if (d->value_size == 0) {
+            char *payload = base + phys + hdr;
+            if (d->post_copy_recheck) {
+                /* Copy the record out, take an acquire fence, then re-read
+                 * the cursor. A record starting at monotonic `local` is
+                 * intact only while the producer hasn't yet written
+                 * `local + cap` (which would overwrite its first physical
+                 * byte). If the re-read shows it lapped during our copy,
+                 * the copied bytes may be torn — discard and resync rather
+                 * than hand a frankenrecord to the handler. */
+                if (scratch_cap < (size_t)len) {
+                    char *ns = (char *)realloc(scratch, (size_t)len);
+                    if (ns) { scratch = ns; scratch_cap = (size_t)len; }
+                }
+                if (scratch_cap >= (size_t)len) {
+                    memcpy(scratch, payload, (size_t)len);
+                    atomic_thread_fence(memory_order_acquire);
+                    uint64_t recommitted = atomic_load_explicit(
+                        (const _Atomic uint64_t *)(base + d->cursor_off),
+                        memory_order_acquire);
+                    if (recommitted - local > cap) {
+                        local = recommitted;
+                        pos = recommitted % cap;
+                        break;
+                    }
+                    if (d->value_size == 0) {
+                        shm_layout_dispatch_view(sub, scratch, len);
+                    } else {
+                        sub->handler_fn(sub->self_ptr, scratch);
+                    }
+                } else {
+                    /* realloc failed — fall back to a zero-copy dispatch
+                     * (no torn-read guard this once) rather than drop. */
+                    if (d->value_size == 0) {
+                        shm_layout_dispatch_view(sub, payload, len);
+                    } else {
+                        sub->handler_fn(sub->self_ptr, payload);
+                    }
+                }
+            } else if (d->value_size == 0) {
                 /* Raw-frame mode: the bound payload is a BytesView, so
                  * the consumer can't assume a fixed record size. Hand
                  * the handler a bounded BytesView over the record payload;
@@ -1327,7 +1426,7 @@ static void *shm_ring_layout_reader_thread(void *arg) {
                  * (len == value_size, checked above); hand its pointer. */
                 sub->handler_fn(sub->self_ptr, payload);
             }
-            uint64_t step = d->len_prefix_width + len;
+            uint64_t step = hdr + len;
             if (d->align > 1) {
                 step = (step + d->align - 1) & ~(d->align - 1);
             }
@@ -1336,6 +1435,7 @@ static void *shm_ring_layout_reader_thread(void *arg) {
             if (pos >= cap) pos -= cap;   /* step <= cap, no straddle */
         }
     }
+    free(scratch);
     return NULL;
 }
 

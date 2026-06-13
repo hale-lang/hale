@@ -4734,15 +4734,117 @@ impl<'a> Checker<'a> {
         if let Some(fr) = &r.framing {
             for a in &fr.attrs {
                 if !matches!(a.key.name.as_str(),
-                    "len_prefix" | "align" | "pad_sentinel" | "slot_size") {
+                    "len_prefix" | "align" | "pad_sentinel" | "slot_size"
+                    | "record_header_bytes" | "pad_field_offset"
+                    | "pad_field_width" | "pad_field_value" | "recheck") {
                     self.diags.push(Diag::warn(
                         a.span,
                         format!(
                             "ring_layout `{}`: unknown framing attribute `{}` \
-                             (recognized: len_prefix, align, pad_sentinel, slot_size)",
+                             (recognized: len_prefix, align, pad_sentinel, \
+                             slot_size, record_header_bytes, pad_field_offset, \
+                             pad_field_width, pad_field_value, recheck)",
                             r.name.name, a.key.name
                         ),
                     ));
+                }
+            }
+        }
+
+        // #5 (fast-protocol-I/O): validate the record_header / pad_field /
+        // recheck attrs (byte_records). record_header_bytes is the fixed
+        // per-record header before the payload; it must be a multiple of
+        // `align` (so the reader's align_up(hdr + len, align) stride equals
+        // header + align(len)) and at least len_prefix wide (the len field
+        // lives at record offset 0). A pad_field (a header discriminant
+        // marking a tail pad, e.g. ws-fast kind==1) must fit inside the
+        // header. `recheck` only knows `post_copy`.
+        if let Some(fr) = &r.framing {
+            let attr_int = |key: &str| -> Option<i64> {
+                fr.attrs.iter().find_map(|a| match (&a.key.name[..], &a.value) {
+                    (k, RingAttrValue::Int(n)) if k == key => Some(*n),
+                    _ => None,
+                })
+            };
+            let align = attr_int("align").unwrap_or(1).max(1) as u64;
+            let len_prefix_w = fr
+                .attrs
+                .iter()
+                .find(|a| a.key.name == "len_prefix")
+                .and_then(|a| match &a.value {
+                    RingAttrValue::Ident(id) => Some(match id.name.as_str() {
+                        "u8" | "i8" => 1u64,
+                        "u16" | "i16" => 2,
+                        "u32" | "i32" | "f32" => 4,
+                        "u64" | "i64" | "f64" => 8,
+                        _ => 0,
+                    }),
+                    RingAttrValue::Int(n) => Some(*n as u64),
+                })
+                .unwrap_or(0);
+            let rh = attr_int("record_header_bytes");
+            if let Some(rhv) = rh {
+                let span = fr.span;
+                if rhv <= 0 {
+                    self.diags.push(Diag::ty(span, format!(
+                        "ring_layout `{}`: record_header_bytes must be positive",
+                        r.name.name)));
+                } else {
+                    let rhu = rhv as u64;
+                    if align > 1 && rhu % align != 0 {
+                        self.diags.push(Diag::ty(span, format!(
+                            "ring_layout `{}`: record_header_bytes ({}) must be a \
+                             multiple of align ({}) — the record stride is \
+                             header + align(len)", r.name.name, rhu, align)));
+                    }
+                    if len_prefix_w != 0 && rhu < len_prefix_w {
+                        self.diags.push(Diag::ty(span, format!(
+                            "ring_layout `{}`: record_header_bytes ({}) is smaller \
+                             than len_prefix ({}) — the length field at record \
+                             offset 0 would not fit", r.name.name, rhu, len_prefix_w)));
+                    }
+                }
+            }
+            // pad_field: offset/width/value must be coherent and fit the header.
+            let pad_off = attr_int("pad_field_offset");
+            let pad_w = attr_int("pad_field_width");
+            let pad_v = attr_int("pad_field_value");
+            if pad_off.is_some() || pad_w.is_some() || pad_v.is_some() {
+                let span = fr.span;
+                match (pad_off, pad_w, pad_v) {
+                    (Some(off), Some(w), Some(_)) => {
+                        if !matches!(w, 1 | 2 | 4 | 8) {
+                            self.diags.push(Diag::ty(span, format!(
+                                "ring_layout `{}`: pad_field_width must be 1/2/4/8, got {}",
+                                r.name.name, w)));
+                        }
+                        if off < 0 {
+                            self.diags.push(Diag::ty(span, format!(
+                                "ring_layout `{}`: pad_field_offset must be non-negative",
+                                r.name.name)));
+                        } else if let Some(rhv) = rh {
+                            if rhv > 0 && (off + w) as i64 > rhv {
+                                self.diags.push(Diag::ty(span, format!(
+                                    "ring_layout `{}`: pad_field [{}, {}) falls outside \
+                                     the {}-byte record header",
+                                    r.name.name, off, off + w, rhv)));
+                            }
+                        }
+                    }
+                    _ => self.diags.push(Diag::ty(span, format!(
+                        "ring_layout `{}`: a pad_field needs all of pad_field_offset, \
+                         pad_field_width, pad_field_value", r.name.name))),
+                }
+            }
+            // recheck: only post_copy is known.
+            for a in &fr.attrs {
+                if a.key.name == "recheck" {
+                    let ok = matches!(&a.value, RingAttrValue::Ident(id) if id.name == "post_copy");
+                    if !ok {
+                        self.diags.push(Diag::ty(a.span, format!(
+                            "ring_layout `{}`: unknown recheck mode (only `post_copy`)",
+                            r.name.name)));
+                    }
                 }
             }
         }

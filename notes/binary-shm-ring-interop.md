@@ -260,6 +260,29 @@ runtime already does for `LRSRNG1`; this just parameterizes it.
 > Still out of scope: the producer path for foreign layouts (M3),
 > `slots` framing, historical replay, multi-cursor back-pressure.
 
+> **#5 (LANDED, 2026-06-13): record headers + post-copy recheck**
+> (fast-protocol-I/O substrate plan). Extends `byte_records` so a
+> producer with a fixed per-record header before the payload (ws-fast's
+> 32-byte `len/kind/opcode/seq/kernel_ns/user_ns`) can be consumed
+> correctly — without it the reader desyncs after one record. New
+> `byte_records` framing attributes (all `ring_attr`, no grammar
+> change): `record_header_bytes N` (payload starts at `N`, stride
+> `N + align(len)`, `N % align == 0`), `pad_field_offset/width/value`
+> (a header-field padding marker — ws-fast's `kind == 1` — instead of a
+> `len` sentinel), and `recheck post_copy` (copy → acquire fence →
+> reload cursor → discard-if-lapped torn-read guard). Descriptor grows
+> 21 → 27 words; the consumer loop substitutes `header_bytes` for
+> `len_prefix_width` in the payload offset / room / stride and adds the
+> pad-field + post-copy branches. Validated end-to-end by a C
+> producer writing ws-fast-shaped records through a small wrapping ring
+> (`shm_ring_layout_driver.c produce_record_header`) ↔ a Hale
+> `BytesView` subscriber (`shm_ring_layout_record_header.rs`), plus
+> typecheck tests. **Correctness slice only:** the payload is delivered
+> as a `BytesView`; surfacing the named header fields (`seq`,
+> `kernel_ns`) to the handler is the follow-on, decided to use the
+> **payload-struct-prefix** mechanism (the bound struct's leading
+> fields map to the header, reusing typed dispatch).
+
 The external stack's ring becomes a declaration:
 
 ```hale
