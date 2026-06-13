@@ -123,6 +123,11 @@ const IMPURE_STDLIB_PATHS: &[&[&str]] = &[
     &["std", "io", "tcp", "set_nodelay"],
     &["std", "io", "udp", "send_bytes"],
     &["std", "io", "udp", "recv_bytes"],
+    // Diagnostic gate counters: observe mutable process-wide runtime
+    // state, so reads are non-deterministic (impure) even though they
+    // have no effect of their own.
+    &["std", "diag", "heap_alloc_count"],
+    &["std", "diag", "syscall_count"],
     // Crypto with global state (rare; covered by random for now)
     &["std", "crypto", "random_bytes"],
     // Env (reads only; treat var() as pure since env is stable

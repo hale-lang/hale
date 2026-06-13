@@ -13,6 +13,7 @@ pub(crate) mod bus;
 pub(crate) mod bytes;
 pub(crate) mod crypto;
 pub(crate) mod decimal;
+pub(crate) mod diag;
 pub(crate) mod env;
 pub(crate) mod io_file;
 pub(crate) mod io_fs;
