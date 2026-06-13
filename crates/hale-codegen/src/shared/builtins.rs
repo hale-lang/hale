@@ -1636,6 +1636,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             tcp_set_nodelay_ty,
             None,
         );
+        // std::diag::* gate-counter readers (#7). Both return i64; -1
+        // when the wrap shim is absent (sanitizer builds).
+        // declare i64 @lotus_diag_heap_alloc_count()
+        self.module.add_function(
+            "lotus_diag_heap_alloc_count",
+            i64_t.fn_type(&[], false),
+            None,
+        );
+        // declare i64 @lotus_diag_syscall_count(ptr name)
+        self.module.add_function(
+            "lotus_diag_syscall_count",
+            i64_t.fn_type(&[ptr_t.into()], false),
+            None,
+        );
 
         // std::io::sockopt::* named-constant getters. Each is a
         // zero-arg int-returning fn that returns the platform's

@@ -843,8 +843,38 @@ extern void *__real_realloc(void *ptr, size_t size);
 extern void *__real_calloc(size_t nmemb, size_t size);
 extern void *__real_mmap(void *addr, size_t length, int prot,
                          int flags, int fd, off_t offset);
+extern ssize_t __real_recv(int fd, void *buf, size_t len, int flags);
+extern ssize_t __real_recvmsg(int fd, struct msghdr *msg, int flags);
+extern ssize_t __real_read(int fd, void *buf, size_t count);
+extern ssize_t __real_write(int fd, const void *buf, size_t count);
+extern ssize_t __real_send(int fd, const void *buf, size_t len, int flags);
+extern ssize_t __real_sendto(int fd, const void *buf, size_t len, int flags,
+                             const struct sockaddr *dest, socklen_t alen);
+
+/* 2026-06-13 — test-time gate counters (#7 of the fast-protocol-I/O
+ * substrate plan, notes/fast-protocol-io-substrate-2026-06-13.md).
+ * Cumulative process-wide counts of heap allocations and the wrapped
+ * I/O syscalls, bumped by the __wrap_* shims below. Exposed to Hale via
+ * `std::diag::{heap_alloc_count, syscall_count}` so a steady-state
+ * region can assert "this loop did zero heap allocs" / "exactly one
+ * read per poll" — the runtime/test-time complement to compile-time
+ * `--warn-unbounded-alloc`. Relaxed atomics: recv/read loops run
+ * concurrently on pinned / pool threads and we only need a consistent
+ * running total, not ordering. The counters live only when the wrap
+ * shim is compiled (default builds); sanitizer builds omit the wraps
+ * (their allocator/syscall interceptors collide with -Wl,--wrap), and
+ * the getters return -1 there to signal "gate unavailable in this
+ * build" rather than a misleading 0. */
+static unsigned long g_diag_heap_allocs   = 0;
+static unsigned long g_diag_recv_calls    = 0;
+static unsigned long g_diag_recvmsg_calls = 0;
+static unsigned long g_diag_read_calls    = 0;
+static unsigned long g_diag_write_calls   = 0;
+static unsigned long g_diag_send_calls    = 0;
+static unsigned long g_diag_sendto_calls  = 0;
 
 void *__wrap_malloc(size_t size) {
+    __atomic_fetch_add(&g_diag_heap_allocs, 1, __ATOMIC_RELAXED);
     size_t t = lotus_arena_big_chunk_threshold();
     if (t > 0 && size >= t) {
         lotus_log_big_alloc_event("malloc_big", size);
@@ -853,6 +883,7 @@ void *__wrap_malloc(size_t size) {
 }
 
 void *__wrap_realloc(void *ptr, size_t size) {
+    __atomic_fetch_add(&g_diag_heap_allocs, 1, __ATOMIC_RELAXED);
     size_t t = lotus_arena_big_chunk_threshold();
     if (t > 0 && size >= t) {
         lotus_log_big_alloc_event("realloc_big", size);
@@ -861,6 +892,7 @@ void *__wrap_realloc(void *ptr, size_t size) {
 }
 
 void *__wrap_calloc(size_t nmemb, size_t size) {
+    __atomic_fetch_add(&g_diag_heap_allocs, 1, __ATOMIC_RELAXED);
     size_t total = nmemb * size;
     size_t t = lotus_arena_big_chunk_threshold();
     if (t > 0 && total >= t) {
@@ -871,12 +903,70 @@ void *__wrap_calloc(size_t nmemb, size_t size) {
 
 void *__wrap_mmap(void *addr, size_t length, int prot,
                   int flags, int fd, off_t offset) {
+    __atomic_fetch_add(&g_diag_heap_allocs, 1, __ATOMIC_RELAXED);
     size_t t = lotus_arena_big_chunk_threshold();
     if (t > 0 && length >= t) {
         lotus_log_big_alloc_event("mmap_big", length);
     }
     return __real_mmap(addr, length, prot, flags, fd, offset);
 }
+
+/* I/O syscall shims — count then forward. Transparent: a relaxed
+ * atomic add per call, dwarfed by the syscall itself. Only our own
+ * objects' references are redirected by -Wl,--wrap; libc-internal and
+ * libssl-internal read/write are untouched, so the counter reflects
+ * the runtime's deliberate syscalls (the thing a gate cares about). */
+ssize_t __wrap_recv(int fd, void *buf, size_t len, int flags) {
+    __atomic_fetch_add(&g_diag_recv_calls, 1, __ATOMIC_RELAXED);
+    return __real_recv(fd, buf, len, flags);
+}
+ssize_t __wrap_recvmsg(int fd, struct msghdr *msg, int flags) {
+    __atomic_fetch_add(&g_diag_recvmsg_calls, 1, __ATOMIC_RELAXED);
+    return __real_recvmsg(fd, msg, flags);
+}
+ssize_t __wrap_read(int fd, void *buf, size_t count) {
+    __atomic_fetch_add(&g_diag_read_calls, 1, __ATOMIC_RELAXED);
+    return __real_read(fd, buf, count);
+}
+ssize_t __wrap_write(int fd, const void *buf, size_t count) {
+    __atomic_fetch_add(&g_diag_write_calls, 1, __ATOMIC_RELAXED);
+    return __real_write(fd, buf, count);
+}
+ssize_t __wrap_send(int fd, const void *buf, size_t len, int flags) {
+    __atomic_fetch_add(&g_diag_send_calls, 1, __ATOMIC_RELAXED);
+    return __real_send(fd, buf, len, flags);
+}
+ssize_t __wrap_sendto(int fd, const void *buf, size_t len, int flags,
+                      const struct sockaddr *dest, socklen_t alen) {
+    __atomic_fetch_add(&g_diag_sendto_calls, 1, __ATOMIC_RELAXED);
+    return __real_sendto(fd, buf, len, flags, dest, alen);
+}
+
+long lotus_diag_heap_alloc_count(void) {
+    return (long)__atomic_load_n(&g_diag_heap_allocs, __ATOMIC_RELAXED);
+}
+long lotus_diag_syscall_count(const char *name) {
+    if (!name) return -1;
+    if (!strcmp(name, "recv"))
+        return (long)__atomic_load_n(&g_diag_recv_calls, __ATOMIC_RELAXED);
+    if (!strcmp(name, "recvmsg"))
+        return (long)__atomic_load_n(&g_diag_recvmsg_calls, __ATOMIC_RELAXED);
+    if (!strcmp(name, "read"))
+        return (long)__atomic_load_n(&g_diag_read_calls, __ATOMIC_RELAXED);
+    if (!strcmp(name, "write"))
+        return (long)__atomic_load_n(&g_diag_write_calls, __ATOMIC_RELAXED);
+    if (!strcmp(name, "send"))
+        return (long)__atomic_load_n(&g_diag_send_calls, __ATOMIC_RELAXED);
+    if (!strcmp(name, "sendto"))
+        return (long)__atomic_load_n(&g_diag_sendto_calls, __ATOMIC_RELAXED);
+    return -1;  /* unknown syscall name */
+}
+#else
+/* Wrap shim absent (sanitizer builds): the gate is unavailable. Return
+ * -1 so a test reads a clear "no gate" sentinel rather than a 0 it
+ * might mistake for a real measurement. */
+long lotus_diag_heap_alloc_count(void) { return -1; }
+long lotus_diag_syscall_count(const char *name) { (void)name; return -1; }
 #endif /* LOTUS_ENABLE_WRAP_MALLOC */
 
 /* 2026-05-21 follow-up: glibc malloc tuning hook. The default
