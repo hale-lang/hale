@@ -11754,6 +11754,23 @@ int64_t lotus_bytes_at(const void *b, int64_t i) {
     return (int64_t)body[i];
 }
 
+/* 2026-06-13 — std::bytes::find_byte (#4 of the fast-protocol-I/O
+ * substrate plan). First index >= off where the body byte equals
+ * `needle` (low 8 bits), or -1 if absent. memchr does the word-at-a-
+ * time scan. Helps every length/delimiter-framed parser (HTTP header
+ * CRLF, etc.). off past the end → -1 (not an error). */
+int64_t lotus_bytes_find_byte(const void *b, int64_t off, int64_t needle) {
+    if (!b || off < 0) return -1;
+    int64_t len = lotus_bytes_len(b);
+    if (off >= len) return -1;
+    const unsigned char *body =
+        (const unsigned char *)b + sizeof(int64_t);
+    const void *hit =
+        memchr(body + off, (int)(needle & 0xFF), (size_t)(len - off));
+    if (!hit) return -1;
+    return (int64_t)((const unsigned char *)hit - body);
+}
+
 /* std::bytes binary-pack reader (GH #18 #4 / shm-ring-interop
  * Proposal A). Read `width` (1..8) bytes at byte offset `off` from a
  * Bytes blob, little- or big-endian, zero- or sign-extended into an
@@ -13750,6 +13767,49 @@ void lotus_bytes_builder_advance(void *handle, int64_t n) {
     lotus_bytes_builder_t *b = (lotus_bytes_builder_t *)handle;
     lotus_bb_set_len(b, lotus_bb_len(b) + n);
     b->mutation_epoch += 1;
+}
+
+/* 2026-06-13 — std::bytes::builder::__xor_mask_into (#4). Append
+ * `src` XOR'd with a repeating 4-byte key to the builder, in one
+ * reserve + word-at-a-time pass. The WebSocket masking primitive
+ * (masked[i] = src[i] ^ key[i % 4]); replaces a per-byte
+ * from_int + append loop. `key` packs the 4 key bytes little-endian:
+ * key[j] = (key >> (8*j)) & 0xFF for j in 0..3. Returns 1 on success,
+ * 0 on a reserve (alloc) failure — same 1/0 contract as
+ * lotus_bytes_builder_append_scalar, so the .hl wrapper can
+ * `violate alloc_failed` on 0. The key pattern is materialized into an
+ * 8-byte buffer and XOR'd 8 bytes at a time via memcpy, so the fast
+ * path is endian-independent (no integer reinterpretation of the
+ * payload) and the compiler still vectorizes it. */
+int lotus_bytes_builder_xor_mask_into(void *handle, const void *src,
+                                      int64_t key) {
+    if (!handle) return 0;
+    if (!src) return 1;
+    int64_t len = lotus_bytes_len(src);
+    if (len <= 0) return 1;  /* nothing to append */
+    unsigned char *dst =
+        (unsigned char *)lotus_bytes_builder_reserve(handle, len);
+    if (!dst) return 0;
+    const unsigned char *s = (const unsigned char *)src + sizeof(int64_t);
+    uint32_t k = (uint32_t)key;
+    unsigned char kb[8];
+    for (int j = 0; j < 8; j++) {
+        kb[j] = (unsigned char)((k >> (8 * (j & 3))) & 0xFFu);
+    }
+    uint64_t key64;
+    memcpy(&key64, kb, 8);
+    int64_t i = 0;
+    for (; i + 8 <= len; i += 8) {
+        uint64_t w;
+        memcpy(&w, s + i, 8);
+        w ^= key64;
+        memcpy(dst + i, &w, 8);
+    }
+    for (; i < len; i++) {
+        dst[i] = (unsigned char)(s[i] ^ kb[(size_t)(i & 3)]);
+    }
+    lotus_bytes_builder_advance(handle, len);
+    return 1;
 }
 
 int64_t lotus_tcp_recv_into(int fd, void *builder, int64_t max_bytes) {
