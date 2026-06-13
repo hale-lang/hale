@@ -121,6 +121,7 @@ const IMPURE_STDLIB_PATHS: &[&[&str]] = &[
     &["std", "io", "tcp", "set_recv_timeout"],
     &["std", "io", "tcp", "set_send_timeout"],
     &["std", "io", "tcp", "set_nodelay"],
+    &["std", "io", "tcp", "set_rx_timestamps"],
     &["std", "io", "udp", "send_bytes"],
     &["std", "io", "udp", "recv_bytes"],
     // Diagnostic gate counters: observe mutable process-wide runtime

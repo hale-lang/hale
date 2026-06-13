@@ -1084,6 +1084,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "io", "tcp", "set_nodelay"] => Ok(Some(
                 self.lower_std_io_tcp_set_nodelay(args, scope)?,
             )),
+            // 2026-06-13 — recv_stamped (#1): one-time SO_TIMESTAMPNS
+            // opt-in so recv_stamped_into reads the kernel RX timestamp
+            // with no per-recv syscall.
+            ["std", "io", "tcp", "set_rx_timestamps"] => Ok(Some(
+                self.lower_std_io_tcp_set_rx_timestamps(args, scope)?,
+            )),
             // TLS siblings — same helper; the first arg is a TLS handle, the
             // C side resolves it to the connection's underlying fd. Bounds a
             // blocking SSL_read so a half-open connection is detected

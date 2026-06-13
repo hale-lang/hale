@@ -1796,6 +1796,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_tcp_recv_into", tcp_recv_into_ty, None);
+        // 2026-06-13 — recv_stamped (#1): same signature as recv_into,
+        // plus the SO_TIMESTAMPNS setter and the thread-local stamp
+        // getters.
+        // declare i64 @lotus_tcp_recv_stamped(i32 fd, ptr builder, i64 max_bytes)
+        self.module
+            .add_function("lotus_tcp_recv_stamped", tcp_recv_into_ty, None);
+        // declare i32 @lotus_tcp_set_rx_timestamps(i32 fd, i32 on)
+        self.module.add_function(
+            "lotus_tcp_set_rx_timestamps",
+            i32_t.fn_type(&[i32_t.into(), i32_t.into()], false),
+            None,
+        );
+        // declare i64 @lotus_tcp_last_recv_kernel_ns()
+        self.module.add_function(
+            "lotus_tcp_last_recv_kernel_ns",
+            i64_t.fn_type(&[], false),
+            None,
+        );
+        // declare i64 @lotus_tcp_last_recv_user_ns()
+        self.module.add_function(
+            "lotus_tcp_last_recv_user_ns",
+            i64_t.fn_type(&[], false),
+            None,
+        );
         // declare i64 @lotus_tls_recv_into(i32 handle, ptr builder, i64 max_bytes)
         let tls_recv_into_ty = i64_t.fn_type(
             &[i32_t.into(), ptr_t.into(), i64_t.into()],

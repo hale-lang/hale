@@ -63,6 +63,17 @@ pub(crate) trait IoTcpStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_io_tcp_recv_stamped_into(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_io_tcp_last_recv_ns(
+        &mut self,
+        args: &[Expr],
+        c_fn: &str,
+        label: &str,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
     fn lower_std_io_tcp_close_fd(
         &mut self,
         args: &[Expr],
@@ -707,6 +718,58 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
             "lotus_tcp_recv_into",
             "std::io::tcp::recv_into",
         )
+    }
+
+    /// `std::io::tcp::recv_stamped_into(fd, buf, max) -> Int`
+    /// (2026-06-13). Identical contract to `recv_into` (same builder
+    /// destination + `>0` / `0` EOF / `-1` fatal / `-2` retryable
+    /// sentinels) but issues one `recvmsg(2)` that also captures the
+    /// kernel RX timestamp. Read it with `last_recv_kernel_ns()`
+    /// immediately after.
+    fn lower_std_io_tcp_recv_stamped_into(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        self.lower_recv_into_common(
+            args,
+            scope,
+            "lotus_tcp_recv_stamped",
+            "std::io::tcp::recv_stamped_into",
+        )
+    }
+
+    /// `std::io::tcp::last_recv_kernel_ns() -> Int` /
+    /// `last_recv_user_ns() -> Int` (2026-06-13). Zero-arg reads of the
+    /// thread-local stamps set by the most recent `recv_stamped_into`
+    /// on this thread (errno-style, same idiom as
+    /// `udp::last_source_*`). `kernel_ns` is 0 when no kernel timestamp
+    /// was delivered (timestamps not enabled, or the platform lacks
+    /// `SO_TIMESTAMPNS`).
+    fn lower_std_io_tcp_last_recv_ns(
+        &mut self,
+        args: &[Expr],
+        c_fn: &str,
+        label: &str,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if !args.is_empty() {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::{} takes 0 args, got {}",
+                label, args.len()
+            )));
+        }
+        let f = self
+            .module
+            .get_function(c_fn)
+            .expect("lotus_tcp_last_recv_*_ns declared");
+        let v = self
+            .builder
+            .build_call(f, &[], &format!("tcp.{}.ret", label))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((v, CodegenTy::Int))
     }
 
     /// Lower `std::io::tcp::__close_fd(fd: Int) -> Int`. Returns

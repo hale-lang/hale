@@ -16102,6 +16102,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_io_tcp_recv_into(args, scope)?;
                 Ok(())
             }
+            ["std", "io", "tcp", "recv_stamped_into"] => {
+                let _ = self.lower_std_io_tcp_recv_stamped_into(args, scope)?;
+                Ok(())
+            }
             ["std", "io", "tls", "recv_into"] => {
                 let _ = self.lower_std_io_tls_recv_into(args, scope)?;
                 Ok(())
@@ -16883,6 +16887,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "io", "tcp", "recv_into"] => {
                 self.lower_std_io_tcp_recv_into(args, scope)
             }
+            ["std", "io", "tcp", "recv_stamped_into"] => {
+                self.lower_std_io_tcp_recv_stamped_into(args, scope)
+            }
+            ["std", "io", "tcp", "last_recv_kernel_ns"] => self
+                .lower_std_io_tcp_last_recv_ns(
+                    args,
+                    "lotus_tcp_last_recv_kernel_ns",
+                    "last_recv_kernel_ns",
+                ),
+            ["std", "io", "tcp", "last_recv_user_ns"] => self
+                .lower_std_io_tcp_last_recv_ns(
+                    args,
+                    "lotus_tcp_last_recv_user_ns",
+                    "last_recv_user_ns",
+                ),
             ["std", "io", "tls", "recv_into"] => {
                 self.lower_std_io_tls_recv_into(args, scope)
             }

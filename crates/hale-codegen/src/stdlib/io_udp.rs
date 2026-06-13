@@ -41,6 +41,18 @@ pub(crate) trait IoUdpStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
+    fn lower_std_io_tcp_set_rx_timestamps(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
+    fn lower_tcp_set_bool_opt_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        c_fn: &str,
+        label: &str,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
     fn lower_std_io_udp_last_source_host(
         &mut self,
         args: &[Expr],
@@ -505,45 +517,76 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        self.lower_tcp_set_bool_opt_fallible(
+            args, scope, "lotus_tcp_set_nodelay", "set_nodelay",
+        )
+    }
+
+    /// 2026-06-13 — `std::io::tcp::set_rx_timestamps(fd: Int, on: Bool)
+    /// -> () fallible(IoError)`. One-time setup opt-in: enables
+    /// `SO_TIMESTAMPNS` so `recv_stamped_into` can read the kernel RX
+    /// timestamp out of the recvmsg control message — no per-recv
+    /// syscall. Same fd+Bool→fallible shape as `set_nodelay`.
+    fn lower_std_io_tcp_set_rx_timestamps(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        self.lower_tcp_set_bool_opt_fallible(
+            args, scope, "lotus_tcp_set_rx_timestamps", "set_rx_timestamps",
+        )
+    }
+
+    /// Shared body for the fd+Bool→`() fallible(IoError)` tcp option
+    /// setters (`set_nodelay`, `set_rx_timestamps`). `c_fn` is the
+    /// runtime primitive (returns 0 / -1+errno); `label` anchors the
+    /// IoError path field and the IR value names.
+    fn lower_tcp_set_bool_opt_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        c_fn: &str,
+        label: &str,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
         if args.len() != 2 {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::set_nodelay takes 2 args (fd, on), got {}",
-                args.len()
+                "std::io::tcp::{} takes 2 args (fd, on), got {}",
+                label, args.len()
             )));
         }
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::set_nodelay: fd must be Int, got {:?}",
-                fd_ty
+                "std::io::tcp::{}: fd must be Int, got {:?}",
+                label, fd_ty
             )));
         }
         let (on_val, on_ty) = self.lower_expr(&args[1], scope)?;
         if on_ty != CodegenTy::Bool {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::set_nodelay: on must be Bool, got {:?}",
-                on_ty
+                "std::io::tcp::{}: on must be Bool, got {:?}",
+                label, on_ty
             )));
         }
         let i32_t = self.context.i32_type();
         let fd_i32 = self
             .builder
-            .build_int_truncate(fd_val.into_int_value(), i32_t, "tcp.nodelay.fd.i32")
+            .build_int_truncate(fd_val.into_int_value(), i32_t, &format!("tcp.{}.fd.i32", label))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let on_i32 = self
             .builder
-            .build_int_z_extend(on_val.into_int_value(), i32_t, "tcp.nodelay.on.zext")
+            .build_int_z_extend(on_val.into_int_value(), i32_t, &format!("tcp.{}.on.zext", label))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let f = self
             .module
-            .get_function("lotus_tcp_set_nodelay")
-            .expect("lotus_tcp_set_nodelay declared");
+            .get_function(c_fn)
+            .expect("tcp bool-opt setter declared");
         let ret_i32 = self
             .builder
             .build_call(
                 f,
                 &[fd_i32.into(), on_i32.into()],
-                "tcp.set_nodelay.ret",
+                &format!("tcp.{}.ret", label),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .try_as_basic_value()
@@ -556,15 +599,15 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
                 inkwell::IntPredicate::SLT,
                 ret_i32,
                 i32_t.const_zero(),
-                "tcp.set_nodelay.is_err",
+                &format!("tcp.{}.is_err", label),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let path_anchor = self.global_string("set_nodelay");
+        let path_anchor = self.global_string(label);
         self.complete_io_fallible_call(
             is_err,
             path_anchor.into(),
             None,
-            "tcp.set_nodelay",
+            &format!("tcp.{}", label),
         )
     }
 
