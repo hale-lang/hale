@@ -381,9 +381,9 @@ fn ring_repr_width(repr: &str) -> u64 {
 fn ring_layout_descriptor_words(
     decl: &hale_syntax::ast::RingLayoutDecl,
     value_size: u64,
-) -> [u64; 21] {
+) -> [u64; 27] {
     use hale_syntax::ast::RingAttrValue;
-    let mut w = [0u64; 21];
+    let mut w = [0u64; 27];
 
     // [0..2] magic
     if let Some(m) = decl.magic {
@@ -425,7 +425,15 @@ fn ring_layout_descriptor_words(
     }
 
     // [11..15] framing: len_prefix width, align, pad_sentinel.
+    // [21..27] (#5, fast-protocol-I/O): record_header_bytes (fixed
+    // per-record header before the payload — ws-fast's 32-byte
+    // len/kind/opcode/seq/kernel_ns/user_ns), a header-field padding
+    // discriminant (pad_field_offset/width/value — ws-fast marks a
+    // tail pad with kind==1, not a len sentinel), and the post_copy
+    // lap re-check flag.
     w[12] = 1; // align default (no sub-record padding)
+    let (mut pad_off, mut pad_width, mut pad_val, mut has_pad_field) =
+        (0u64, 0u64, 0u64, 0u64);
     if let Some(f) = &decl.framing {
         for a in &f.attrs {
             match (a.key.name.as_str(), &a.value) {
@@ -442,10 +450,30 @@ fn ring_layout_descriptor_words(
                     w[13] = *n as u64;
                     w[14] = 1;
                 }
+                ("record_header_bytes", RingAttrValue::Int(n)) => {
+                    w[21] = *n as u64;
+                }
+                ("pad_field_offset", RingAttrValue::Int(n)) => {
+                    pad_off = *n as u64;
+                    has_pad_field = 1;
+                }
+                ("pad_field_width", RingAttrValue::Int(n)) => {
+                    pad_width = *n as u64;
+                }
+                ("pad_field_value", RingAttrValue::Int(n)) => {
+                    pad_val = *n as u64;
+                }
+                ("recheck", RingAttrValue::Ident(id)) if id.name == "post_copy" => {
+                    w[26] = 1;
+                }
                 _ => {}
             }
         }
     }
+    w[22] = pad_off;
+    w[23] = pad_width;
+    w[24] = pad_val;
+    w[25] = has_pad_field;
 
     // [15] value_size: the bound payload's fixed byte size. The consumer
     // requires each record's framed `len` to equal this before handing

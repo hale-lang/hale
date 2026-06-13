@@ -37,6 +37,51 @@ fn valid_layout_is_clean() {
 }
 
 #[test]
+fn record_header_clean_and_validated() {
+    // A valid record_header layout (ws-fast-ish: 32-byte header, kind-pad,
+    // post_copy recheck) typechecks clean.
+    let valid = r#"
+ring_layout WsFast {
+    magic 0x52494E47464D5431;
+    version 1 at 8 : u32;
+    buffer_size at 12 : u32;
+    data_at 128;
+    cursor published { at 64; repr atomic_u64; load acquire; unit bytes; }
+    framing byte_records {
+        len_prefix u32; align 8;
+        record_header_bytes 32;
+        pad_field_offset 4; pad_field_width 1; pad_field_value 1;
+        recheck post_copy;
+    }
+    overflow lap_detect;
+}
+"#;
+    assert!(check(valid).is_empty(), "valid record_header should be clean; got: {:?}", check(valid));
+
+    // record_header_bytes not a multiple of align → error (the stride
+    // formula header + align(len) would not hold).
+    let bad_align = valid.replace("record_header_bytes 32;", "record_header_bytes 30;");
+    assert!(
+        check(&bad_align).iter().any(|m| m.contains("must be a multiple of align")),
+        "got: {:?}", check(&bad_align)
+    );
+
+    // pad_field beyond the header → error.
+    let bad_pad = valid.replace("pad_field_offset 4;", "pad_field_offset 40;");
+    assert!(
+        check(&bad_pad).iter().any(|m| m.contains("outside the")),
+        "got: {:?}", check(&bad_pad)
+    );
+
+    // unknown recheck mode → error.
+    let bad_recheck = valid.replace("recheck post_copy;", "recheck seqlock;");
+    assert!(
+        check(&bad_recheck).iter().any(|m| m.contains("unknown recheck mode")),
+        "got: {:?}", check(&bad_recheck)
+    );
+}
+
+#[test]
 fn unknown_scalar_repr_errors() {
     let src = r#"
 ring_layout R {

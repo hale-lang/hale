@@ -959,6 +959,25 @@ The `layout:` reference must resolve to a declared `ring_layout`
 (else a typecheck diagnostic). A binding with no `layout:` is the
 native ring, unchanged.
 
+*Record headers (`record_header_bytes`).* The default `byte_records`
+shape is `[len_prefix][payload]` — the prefix is the whole per-record
+overhead. A real foreign producer often prepends a fixed header
+(sequence number, kernel timestamps, opcode) before the payload. Set
+`record_header_bytes N` on the `byte_records` framing to describe it:
+the payload then starts `N` bytes into the record and the stride is
+`N + align(len)` (the `len` field is still read at record offset 0 with
+`len_prefix`). `N` must be a multiple of `align`. A producer that marks
+a tail pad with a header *field* rather than a `len` sentinel (e.g. a
+`kind` byte where `1` means padding) declares
+`pad_field_offset` / `pad_field_width` / `pad_field_value`; a record
+whose field equals that value is skipped to the wrap. (Surfacing the
+named header fields to the handler is a follow-on; v1 delivers the
+payload as a `BytesView` with the header consumed by the framer.)
+`recheck post_copy` adds a torn-read guard: each record is copied out,
+an acquire fence taken, and the cursor re-read; if a free-running
+producer lapped the record during the copy it is discarded rather than
+handed to the handler.
+
 *Slot rings (`framing slots`).* The example above is a variable-length
 `byte_records` ring. A `slots` framing describes a fixed-stride slot
 ring instead — the shape of the native Lotus ring itself. The geometry
