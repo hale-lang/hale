@@ -1627,6 +1627,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             udp_getsockopt_ty,
             None,
         );
+        // declare i32 @lotus_tcp_set_nodelay(i32 fd, i32 on) — the
+        // std::io::tcp::set_nodelay convenience (TCP_NODELAY).
+        let tcp_set_nodelay_ty =
+            i32_t.fn_type(&[i32_t.into(), i32_t.into()], false);
+        self.module.add_function(
+            "lotus_tcp_set_nodelay",
+            tcp_set_nodelay_ty,
+            None,
+        );
 
         // std::io::sockopt::* named-constant getters. Each is a
         // zero-arg int-returning fn that returns the platform's

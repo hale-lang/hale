@@ -1078,6 +1078,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     "set_send_timeout",
                 )?,
             )),
+            // 2026-06-13 — TCP_NODELAY (Nagle off). The headline
+            // socket-option gap: latency-sensitive TCP protocols
+            // need to disable Nagle and could not from Hale before.
+            ["std", "io", "tcp", "set_nodelay"] => Ok(Some(
+                self.lower_std_io_tcp_set_nodelay(args, scope)?,
+            )),
             // TLS siblings — same helper; the first arg is a TLS handle, the
             // C side resolves it to the connection's underlying fd. Bounds a
             // blocking SSL_read so a half-open connection is detected

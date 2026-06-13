@@ -36,6 +36,11 @@ pub(crate) trait IoUdpStdlib<'ctx> {
         c_name: &str,
         label: &str,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
+    fn lower_std_io_tcp_set_nodelay(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
     fn lower_std_io_udp_last_source_host(
         &mut self,
         args: &[Expr],
@@ -486,6 +491,80 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
             path_anchor.into(),
             None,
             &format!("udp.{}", label),
+        )
+    }
+
+    /// 2026-06-13 — `std::io::tcp::set_nodelay(fd: Int, on: Bool)
+    /// -> () fallible(IoError)`. Disables (on=true) / enables Nagle
+    /// on a connected TCP fd via `lotus_tcp_set_nodelay`. Lives
+    /// beside the udp setsockopt helpers (shared setsockopt grain);
+    /// the fd-type discrimination is what gives it its own tcp
+    /// path-call site rather than a generic `std::io::sock` one.
+    fn lower_std_io_tcp_set_nodelay(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::set_nodelay takes 2 args (fd, on), got {}",
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        if fd_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::set_nodelay: fd must be Int, got {:?}",
+                fd_ty
+            )));
+        }
+        let (on_val, on_ty) = self.lower_expr(&args[1], scope)?;
+        if on_ty != CodegenTy::Bool {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::set_nodelay: on must be Bool, got {:?}",
+                on_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let fd_i32 = self
+            .builder
+            .build_int_truncate(fd_val.into_int_value(), i32_t, "tcp.nodelay.fd.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let on_i32 = self
+            .builder
+            .build_int_z_extend(on_val.into_int_value(), i32_t, "tcp.nodelay.on.zext")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_tcp_set_nodelay")
+            .expect("lotus_tcp_set_nodelay declared");
+        let ret_i32 = self
+            .builder
+            .build_call(
+                f,
+                &[fd_i32.into(), on_i32.into()],
+                "tcp.set_nodelay.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                ret_i32,
+                i32_t.const_zero(),
+                "tcp.set_nodelay.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let path_anchor = self.global_string("set_nodelay");
+        self.complete_io_fallible_call(
+            is_err,
+            path_anchor.into(),
+            None,
+            "tcp.set_nodelay",
         )
     }
 

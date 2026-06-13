@@ -7739,6 +7739,21 @@ int lotus_udp_setsockopt_bool(int fd, int level, int name, int enabled) {
     return setsockopt(fd, level, name, &on, sizeof(on));
 }
 
+/* 2026-06-13 — `std::io::tcp::set_nodelay(fd, on)`. Disabling
+ * Nagle (TCP_NODELAY=1) is the single most common TCP latency
+ * tune: it stops the kernel coalescing small writes, so a
+ * request/response or market-data send hits the wire
+ * immediately instead of waiting up to ~40 ms for more data or
+ * an ACK. A dedicated convenience over the generic setsockopt
+ * pass-through because it's the option every latency-sensitive
+ * TCP protocol reaches for first. Returns 0 / -1+errno like the
+ * other setsockopt primitives. */
+int lotus_tcp_set_nodelay(int fd, int on) {
+    if (fd < 0) { errno = EINVAL; return -1; }
+    int v = on ? 1 : 0;
+    return setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &v, sizeof(v));
+}
+
 /* Returns the int-typed option value on success; INT_MIN on
  * error (callers that need to distinguish a genuine INT_MIN
  * value from an error should use the upcoming
@@ -7779,6 +7794,7 @@ LOTUS_SOCKOPT_GETTER(IPPROTO_IP)
 LOTUS_SOCKOPT_GETTER(IPPROTO_IPV6)
 LOTUS_SOCKOPT_GETTER(IPPROTO_TCP)
 LOTUS_SOCKOPT_GETTER(IPPROTO_UDP)
+LOTUS_SOCKOPT_GETTER(TCP_NODELAY)
 LOTUS_SOCKOPT_GETTER(SO_REUSEADDR)
 LOTUS_SOCKOPT_GETTER(SO_REUSEPORT)
 LOTUS_SOCKOPT_GETTER(SO_RCVBUF)
