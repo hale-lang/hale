@@ -4737,7 +4737,10 @@ impl<'a> Checker<'a> {
                 if !matches!(a.key.name.as_str(),
                     "len_prefix" | "align" | "pad_sentinel" | "slot_size"
                     | "record_header_bytes" | "pad_field_offset"
-                    | "pad_field_width" | "pad_field_value" | "recheck") {
+                    | "pad_field_width" | "pad_field_value" | "recheck"
+                    | "seq_offset" | "seq_width"
+                    | "kernel_ns_offset" | "kernel_ns_width"
+                    | "user_ns_offset" | "user_ns_width") {
                     self.diags.push(Diag::warn(
                         a.span,
                         format!(
@@ -4846,6 +4849,45 @@ impl<'a> Checker<'a> {
                             "ring_layout `{}`: unknown recheck mode (only `post_copy`)",
                             r.name.name)));
                     }
+                }
+            }
+            // #5 follow-on: in-band header field offsets/widths
+            // (seq/kernel_ns/user_ns) must fit inside the record header.
+            for (off_key, w_key) in [
+                ("seq_offset", "seq_width"),
+                ("kernel_ns_offset", "kernel_ns_width"),
+                ("user_ns_offset", "user_ns_width"),
+            ] {
+                let off = attr_int(off_key);
+                let w = attr_int(w_key);
+                if off.is_none() && w.is_none() {
+                    continue;
+                }
+                let span = fr.span;
+                match (off, w) {
+                    (Some(o), Some(width)) => {
+                        if !matches!(width, 1 | 2 | 4 | 8) {
+                            self.diags.push(Diag::ty(span, format!(
+                                "ring_layout `{}`: {} must be 1/2/4/8, got {}",
+                                r.name.name, w_key, width)));
+                        }
+                        if o < 0 {
+                            self.diags.push(Diag::ty(span, format!(
+                                "ring_layout `{}`: {} must be non-negative",
+                                r.name.name, off_key)));
+                        } else if let Some(rhv) = rh {
+                            if rhv > 0 && (o + width) as i64 > rhv {
+                                self.diags.push(Diag::ty(span, format!(
+                                    "ring_layout `{}`: header field [{}, {}) falls \
+                                     outside the {}-byte record header",
+                                    r.name.name, o, o + width, rhv)));
+                            }
+                        }
+                    }
+                    _ => self.diags.push(Diag::ty(span, format!(
+                        "ring_layout `{}`: header field `{}` needs both {} and {}",
+                        r.name.name, off_key.trim_end_matches("_offset"),
+                        off_key, w_key))),
                 }
             }
         }

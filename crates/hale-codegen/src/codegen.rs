@@ -17066,6 +17066,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "io", "mirror", op] => {
                 self.lower_std_io_mirror(op, args, scope)
             }
+            // #5 follow-on: in-band record-header field getters — the
+            // decoded seq / kernel timestamp of the most recent
+            // foreign-ring record dispatched on this thread (errno-style,
+            // read immediately in the subscribe handler).
+            ["std", "shm", "last_record_seq"]
+            | ["std", "shm", "last_record_kernel_ns"]
+            | ["std", "shm", "last_record_user_ns"] => {
+                if !args.is_empty() {
+                    return Err(CodegenError::Unsupported(format!(
+                        "{}: takes 0 args, got {}", segs.join("::"), args.len()
+                    )));
+                }
+                let c_fn = format!("lotus_shm_{}", segs[2]);
+                let f = self
+                    .module
+                    .get_function(&c_fn)
+                    .expect("lotus_shm_last_record_* declared");
+                let v = self
+                    .builder
+                    .build_call(f, &[], "shm.last_record.ret")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("returns i64");
+                Ok((v, CodegenTy::Int))
+            }
             // 2026-05-26 — UDP P4: getters for the source IP +
             // port of the last `recv_with_source` on this thread.
             ["std", "io", "udp", "last_source_host"] => {

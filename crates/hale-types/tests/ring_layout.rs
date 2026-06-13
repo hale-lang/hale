@@ -51,12 +51,21 @@ ring_layout WsFast {
         len_prefix u32; align 8;
         record_header_bytes 32;
         pad_field_offset 4; pad_field_width 1; pad_field_value 1;
+        seq_offset 8; seq_width 8;
+        kernel_ns_offset 16; kernel_ns_width 8;
         recheck post_copy;
     }
     overflow lap_detect;
 }
 "#;
     assert!(check(valid).is_empty(), "valid record_header should be clean; got: {:?}", check(valid));
+
+    // A declared header field beyond the record header → error.
+    let bad_field = valid.replace("seq_offset 8;", "seq_offset 40;");
+    assert!(
+        check(&bad_field).iter().any(|m| m.contains("outside the")),
+        "got: {:?}", check(&bad_field)
+    );
 
     // record_header_bytes not a multiple of align → error (the stride
     // formula header + align(len) would not hold).
