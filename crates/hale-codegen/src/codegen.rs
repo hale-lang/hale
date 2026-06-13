@@ -995,6 +995,7 @@ pub(crate) const SOCKOPT_NAMES: &[&str] = &[
     "SO_REUSEPORT",
     "SO_SNDBUF",
     "SO_SNDTIMEO",
+    "TCP_NODELAY",
 ];
 
 const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
