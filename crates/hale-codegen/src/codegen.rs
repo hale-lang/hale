@@ -46,6 +46,7 @@ use crate::stdlib::math::MathStdlib;
 use crate::stdlib::process::ProcessStdlib;
 use crate::stdlib::rand::RandStdlib;
 use crate::stdlib::sockopt::SockoptStdlib;
+use crate::stdlib::diag::DiagStdlib;
 use crate::stdlib::str::StrStdlib;
 use crate::stdlib::term::TermStdlib;
 use crate::stdlib::text::TextStdlib;
@@ -720,7 +721,17 @@ pub fn build_executable_with_options(
             .arg("-Wl,--wrap=malloc")
             .arg("-Wl,--wrap=realloc")
             .arg("-Wl,--wrap=calloc")
-            .arg("-Wl,--wrap=mmap");
+            .arg("-Wl,--wrap=mmap")
+            // 2026-06-13 — gate counters (#7): route the runtime's I/O
+            // syscalls through the counting shims so std::diag::
+            // syscall_count can assert "exactly one read per poll".
+            // Same default-build-only gate as the malloc wraps.
+            .arg("-Wl,--wrap=recv")
+            .arg("-Wl,--wrap=recvmsg")
+            .arg("-Wl,--wrap=read")
+            .arg("-Wl,--wrap=write")
+            .arg("-Wl,--wrap=send")
+            .arg("-Wl,--wrap=sendto");
     }
     if let Some(p) = ts_shim_path.as_ref() {
         clang.arg(p);
@@ -16996,6 +17007,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if SOCKOPT_NAMES.contains(name) =>
             {
                 self.lower_std_io_sockopt_getter(name, args)
+            }
+            // 2026-06-13 — test-time gate counters (#7): read-only
+            // views over the runtime's heap-alloc / I/O-syscall
+            // counts for steady-state "did N allocs / syscalls"
+            // assertions.
+            ["std", "diag", "heap_alloc_count"] => {
+                self.lower_std_diag_heap_alloc_count(args)
+            }
+            ["std", "diag", "syscall_count"] => {
+                self.lower_std_diag_syscall_count(args, scope)
             }
             // 2026-05-26 — UDP P4: getters for the source IP +
             // port of the last `recv_with_source` on this thread.
