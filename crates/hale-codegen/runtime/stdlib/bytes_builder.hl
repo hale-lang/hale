@@ -142,6 +142,18 @@ locus __StdBytesBytesBuilder {
             violate alloc_failed;
         }
     }
+    // 2026-06-13 — append `src` XOR'd with a repeating 4-byte mask
+    // key in one reserve + word-at-a-time pass. The WebSocket masking
+    // primitive (masked[i] = src[i] ^ key[i % 4]); `key` packs the 4
+    // key bytes little-endian (key[j] = (key >> (8*j)) & 0xFF).
+    // Replaces a per-byte `from_int` + `append` loop — far fewer C
+    // calls and no per-byte intermediate Bytes in g_bus_payload_arena.
+    fn xor_mask(src: Bytes, key: Int) {
+        let ok = std::bytes::builder::__xor_mask_into(self.handle, src, key);
+        if ok == 0 {
+            violate alloc_failed;
+        }
+    }
     // pond P3: append a String's bytes (NUL-terminated) directly —
     // one strlen + memcpy in the runtime, vs byte-walking through
     // append_u8 (pond/tui's frame renderer did ~10k C calls per full

@@ -35,6 +35,16 @@ pub(crate) trait BytesStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_bytes_find_byte(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_bytes_builder_xor_mask_into(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
     fn lower_bytes_builder_handle_arg(
         &mut self,
         arg: &Expr,
@@ -1525,6 +1535,120 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
             .left()
             .expect("returns i64");
         Ok((ret, CodegenTy::Int))
+    }
+
+    /// `std::bytes::find_byte(b, off, needle) -> Int` (2026-06-13).
+    /// First index >= off whose byte equals `needle` (low 8 bits), or
+    /// -1 if absent. Non-fallible — `-1` is the not-found sentinel.
+    fn lower_std_bytes_find_byte(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 3 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::find_byte takes 3 args (b, off, needle), got {}",
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::find_byte: b must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
+        let (off_val, off_ty) = self.lower_expr(&args[1], scope)?;
+        if off_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::find_byte: off must be Int, got {:?}",
+                off_ty
+            )));
+        }
+        let (needle_val, needle_ty) = self.lower_expr(&args[2], scope)?;
+        if needle_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::find_byte: needle must be Int, got {:?}",
+                needle_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bytes_find_byte")
+            .expect("lotus_bytes_find_byte declared");
+        let ret = self
+            .builder
+            .build_call(
+                f,
+                &[b_val.into(), off_val.into(), needle_val.into()],
+                "bytes_find_byte.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((ret, CodegenTy::Int))
+    }
+
+    /// `std::bytes::builder::__xor_mask_into(handle, src, key) -> Int`
+    /// (2026-06-13). Appends `src` XOR'd with the repeating 4-byte
+    /// `key` to the builder. Returns 1 on success, 0 on alloc failure
+    /// (the `BytesBuilder.xor_mask` wrapper `violate`s on 0). The WS
+    /// masking primitive — replaces a per-byte `from_int` + append loop.
+    fn lower_std_bytes_builder_xor_mask_into(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 3 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder::__xor_mask_into takes 3 args \
+                 (handle, src, key), got {}",
+                args.len()
+            )));
+        }
+        let (_h, handle_ptr) = self.lower_bytes_builder_handle_arg(
+            &args[0],
+            scope,
+            "std::bytes::builder::__xor_mask_into",
+        )?;
+        let (src_val, src_ty) = self.lower_expr(&args[1], scope)?;
+        if !matches!(src_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder::__xor_mask_into: src must be Bytes, got {:?}",
+                src_ty
+            )));
+        }
+        let src_val = self.unpack_view_if_needed(src_val, &src_ty)?;
+        let (key_val, key_ty) = self.lower_expr(&args[2], scope)?;
+        if key_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::builder::__xor_mask_into: key must be Int, got {:?}",
+                key_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bytes_builder_xor_mask_into")
+            .expect("lotus_bytes_builder_xor_mask_into declared");
+        let ret_i32 = self
+            .builder
+            .build_call(
+                f,
+                &[handle_ptr.into(), src_val.into(), key_val.into()],
+                "bb.xor_mask.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let ret_i64 = self
+            .builder
+            .build_int_s_extend(ret_i32, self.context.i64_type(), "bb.xor_mask.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((ret_i64.into(), CodegenTy::Int))
     }
 
     /// Phase 2g: lower `std::bytes::slice(b: Bytes, lo: Int, hi: Int)

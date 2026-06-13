@@ -16148,6 +16148,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_bytes_at(args, scope)?;
                 Ok(())
             }
+            ["std", "bytes", "find_byte"] => {
+                let _ = self.lower_std_bytes_find_byte(args, scope)?;
+                Ok(())
+            }
+            ["std", "bytes", "builder", "__xor_mask_into"] => {
+                let _ = self.lower_std_bytes_builder_xor_mask_into(args, scope)?;
+                Ok(())
+            }
             ["std", "bytes", "slice"] => {
                 let _ = self.lower_std_bytes_slice(args, scope)?;
                 Ok(())
@@ -16919,6 +16927,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "bytes", "at"] => {
                 self.lower_std_bytes_at(args, scope)
+            }
+            ["std", "bytes", "find_byte"] => {
+                self.lower_std_bytes_find_byte(args, scope)
+            }
+            ["std", "bytes", "builder", "__xor_mask_into"] => {
+                self.lower_std_bytes_builder_xor_mask_into(args, scope)
             }
             ["std", "bytes", "slice"] => {
                 self.lower_std_bytes_slice(args, scope)

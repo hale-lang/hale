@@ -1849,6 +1849,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i64_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
         self.module
             .add_function("lotus_bytes_at", bytes_at_ty, None);
+        // 2026-06-13 — std::bytes word-scan + masked-XOR primitives (#4).
+        // declare i64 @lotus_bytes_find_byte(ptr b, i64 off, i64 needle)
+        self.module.add_function(
+            "lotus_bytes_find_byte",
+            i64_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false),
+            None,
+        );
+        // declare i32 @lotus_bytes_builder_xor_mask_into(ptr handle, ptr src, i64 key)
+        self.module.add_function(
+            "lotus_bytes_builder_xor_mask_into",
+            i32_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64_t.into()], false),
+            None,
+        );
         // declare i64 @lotus_bytes_read_uint(ptr b, i64 off, i32 width,
         //   i32 is_signed, i32 big_endian, ptr oob) — binary-pack reader.
         let i32_bru = self.context.i32_type();
