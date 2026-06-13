@@ -4761,7 +4761,7 @@ impl<'a> Checker<'a> {
         // `align` (so the reader's align_up(hdr + len, align) stride equals
         // header + align(len)) and at least len_prefix wide (the len field
         // lives at record offset 0). A pad_field (a header discriminant
-        // marking a tail pad, e.g. ws-fast kind==1) must fit inside the
+        // marking a tail pad, e.g. the reference crate kind==1) must fit inside the
         // header. `recheck` only knows `post_copy`.
         if let Some(fr) = &r.framing {
             let attr_int = |key: &str| -> Option<i64> {

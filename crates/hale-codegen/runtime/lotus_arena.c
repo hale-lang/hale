@@ -14089,7 +14089,7 @@ int64_t lotus_tcp_recv_stamped(int fd, void *builder, int64_t max_bytes) {
     /* Defensive cmsg read: inspect ONLY the first control message and
      * validate its length before touching the payload. We never walk
      * with CMSG_NXTHDR — some libcs loop forever on a zero-length cmsg
-     * (ws-fast's socket.rs learned this the hard way) — and we only ever
+     * (the reference crate's socket.rs learned this the hard way) — and we only ever
      * enable the single SCM_TIMESTAMPNS option, so the first cmsg is all
      * there is to read. MSG_CTRUNC means the control data was truncated;
      * skip rather than read a partial timespec. */

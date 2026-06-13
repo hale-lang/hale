@@ -2,13 +2,13 @@
 //! fast-protocol-I/O substrate plan).
 //!
 //! A foreign ring whose records have a fixed 32-byte header
-//! (len@0:u32, kind@4:u8 — ws-fast's shape) before the payload: stride is
+//! (len@0:u32, kind@4:u8 — the reference crate's shape) before the payload: stride is
 //! `record_header_bytes + align(len)`, the payload starts past the header,
 //! and a `kind == 1` header field marks a tail pad (not a len sentinel).
 //! Without `record_header_bytes` the reader would desync after one record.
 //!
 //! End-to-end: the C producer (`shm_ring_layout_driver.c
-//! produce_record_header`) writes 40 ws-fast-shaped records through a small
+//! produce_record_header`) writes 40 fixed-header records through a small
 //! ring (forcing repeated kind==1 tail pads at the wrap); a Hale BytesView
 //! subscriber bound with `record_header_bytes`/`pad_field`/`recheck
 //! post_copy` reads each i64 payload in order.
@@ -60,7 +60,7 @@ fn hale_subscriber_reads_record_header_ring_with_post_copy() {
 
     let src = format!(
         r#"
-        ring_layout WsFastish {{
+        ring_layout FixedHdrRing {{
             magic 0x52494E47464D5431;
             version 1 at 8 : u32;
             buffer_size at 12 : u32;
@@ -90,7 +90,7 @@ fn hale_subscriber_reads_record_header_ring_with_post_copy() {
 
         main locus App {{
             bindings {{
-                Recs: shm_ring("{shm_name}", on_overflow: drop, layout: WsFastish);
+                Recs: shm_ring("{shm_name}", on_overflow: drop, layout: FixedHdrRing);
             }}
         }}
 

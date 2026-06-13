@@ -291,14 +291,14 @@ typedef struct {
     /* 2026-06-13 (#5, fast-protocol-I/O): record_header support for
      * byte_records. `record_header_bytes` is the fixed per-record
      * header size before the payload (0 = the len_prefix-only model,
-     * where the prefix IS the whole header). ws-fast's record is a
+     * where the prefix IS the whole header). the reference crate's record is a
      * 32-byte header (len@0:u32, kind, opcode, seq, kernel_ns, user_ns)
      * then payload, so the payload starts at record_header_bytes and the
      * stride is align_up(record_header_bytes + len, align) — equal to
      * record_header_bytes + align(len) because record_header_bytes is
      * required to be a multiple of align. `len` is still read at record
      * offset 0 with len_prefix_width. A producer that marks a tail pad
-     * with a header *field* (ws-fast: kind==1) rather than a len
+     * with a header *field* (the reference crate: kind==1) rather than a len
      * sentinel sets has_pad_field + pad_field_{off,width,value}. */
     uint64_t record_header_bytes;
     uint64_t pad_field_off;
@@ -1361,7 +1361,7 @@ static void *shm_ring_layout_reader_thread(void *arg) {
                 break;
             }
             uint64_t phys = d->data_at + pos;
-            /* Header-field pad marker (e.g. ws-fast kind==1): the
+            /* Header-field pad marker (e.g. the reference crate kind==1): the
              * producer wrote a tail pad to avoid straddling the wrap.
              * Jump to the next boundary. Checked before len so a pad
              * record's len field is never interpreted as a real length. */
