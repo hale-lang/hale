@@ -1,0 +1,66 @@
+// std::io::MirrorRing (#3 of the fast-protocol-I/O substrate plan).
+//
+// A double-mapped "magic ring" wrap-free buffer: a memfd of `cap`
+// bytes is mapped twice back-to-back, so any window <= cap that
+// straddles the physical seam reads/writes as one contiguous slice — a
+// parser (or a recv) never copies or special-cases the wrap.
+//
+//   let ring = std::io::MirrorRing { cap: 65536 };  // pow2, page-multiple
+//   ring.recv_from(fd, 65536) or-loop;          // recv straight into the ring
+//   let w = ring.readable();                     // zero-copy {ptr,len} window
+//   let nl = std::bytes::find_byte(w, 0, 10);    // scan across the seam
+//   ... parse with std::bytes::read_* on w ...
+//   ring.skip(consumed);
+//
+// `readable()` / `writable()` hand out a `BytesMut` window over the live
+// / free region; `std::bytes::{read_*, at, find_byte}` read it directly
+// (its `_raw` siblings — length is the window length, no [len] prefix).
+// `commit(n)` / `skip(n)` advance the write / read cursors.
+//
+// Linux only (memfd_create); birth fails (alloc_failed) elsewhere or on a
+// non-power-of-two / non-page-multiple cap.
+locus __StdIoMirrorRing {
+    params {
+        cap: Int = 0;
+        handle: Int = 0;
+    }
+    closure alloc_failed { captures: cap; epoch inline; }
+
+    birth() {
+        self.handle = std::io::mirror::__new(self.cap);
+    }
+    birth_check { self.handle == 0 } -> violate alloc_failed;
+
+    dissolve() {
+        std::io::mirror::__free(self.handle);
+    }
+
+    // Live readable window [read, read+len) as a contiguous {ptr,len}
+    // BytesMut — valid until the next mutation (commit/consume/recv).
+    fn readable() -> BytesMut {
+        return std::io::mirror::__readable(self.handle);
+    }
+    // Free writable window [write, write+free) as a contiguous {ptr,len}
+    // BytesMut. Write with std::bytes::write_*, then commit(n).
+    fn writable() -> BytesMut {
+        return std::io::mirror::__writable(self.handle);
+    }
+    // Advance the write cursor by `n` bytes just written into writable().
+    fn commit(n: Int) {
+        std::io::mirror::__commit(self.handle, n);
+    }
+    // Advance the read cursor by `n` bytes consumed from readable().
+    fn skip(n: Int) {
+        std::io::mirror::__consume(self.handle, n);
+    }
+    // Buffered byte count (readable length).
+    fn len() -> Int {
+        return std::io::mirror::__len(self.handle);
+    }
+    // recv straight into the contiguous free window and commit the bytes
+    // read. Returns >0 bytes, 0 EOF/full, -1 fatal, -2 retryable (same
+    // contract as std::io::tcp::recv_into).
+    fn recv_from(fd: Int, max: Int) -> Int {
+        return std::io::mirror::__recv_into(self.handle, fd, max);
+    }
+}

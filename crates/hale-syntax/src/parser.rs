@@ -4493,7 +4493,7 @@ fn try_member_keyword_as_name(k: &TokenKind) -> Option<&'static str> {
 /// unreserved elsewhere.
 pub const PRIMITIVE_TYPE_NAMES: &[&str] = &[
     "Int", "Uint", "Float", "Decimal", "String", "Bool", "Time",
-    "Duration", "Bytes", "BytesView", "StringView",
+    "Duration", "Bytes", "BytesView", "StringView", "BytesMut",
 ];
 
 fn primitive_from_name(name: &str) -> Option<PrimType> {
@@ -4508,6 +4508,7 @@ fn primitive_from_name(name: &str) -> Option<PrimType> {
         "Duration" => PrimType::Duration,
         "Bytes" => PrimType::Bytes,
         "BytesView" => PrimType::BytesView,
+        "BytesMut" => PrimType::BytesMut,
         "StringView" => PrimType::StringView,
         _ => return None,
     })

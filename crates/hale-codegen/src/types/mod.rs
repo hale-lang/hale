@@ -39,6 +39,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 PrimType::Time => Ok(CodegenTy::Time),
                 PrimType::Bytes => Ok(CodegenTy::Bytes),
                 PrimType::BytesView => Ok(CodegenTy::BytesView),
+                PrimType::BytesMut => Ok(CodegenTy::BytesMut),
                 PrimType::StringView => Ok(CodegenTy::StringView),
                 other => Err(CodegenError::Unsupported(format!(
                     "type primitive `{:?}` in signature",

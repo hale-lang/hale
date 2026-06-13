@@ -2090,6 +2090,7 @@ fn prim_display(p: PrimType) -> &'static str {
         PrimType::Duration => "Duration",
         PrimType::Bytes => "Bytes",
         PrimType::BytesView => "BytesView",
+        PrimType::BytesMut => "BytesMut",
         PrimType::StringView => "StringView",
     }
 }

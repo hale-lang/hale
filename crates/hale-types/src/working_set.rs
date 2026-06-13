@@ -800,7 +800,8 @@ fn primitive_size_info(p: PrimType) -> TypeSizeInfo {
         PrimType::String
         | PrimType::Bytes
         | PrimType::StringView
-        | PrimType::BytesView => (16, 8),
+        | PrimType::BytesView
+        | PrimType::BytesMut => (16, 8),
     };
     TypeSizeInfo { size, align, unbounded: false }
 }

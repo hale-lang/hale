@@ -11845,6 +11845,51 @@ void lotus_bytes_write_uint(void *base, int64_t cap, int64_t off, int width,
     }
 }
 
+/* 2026-06-13 (#3, MirrorRing) — RAW-window read siblings of
+ * lotus_bytes_{read_uint,at,find_byte}. These read a `{base, len}`
+ * window directly (data at `base + off`, no `[i64 len]` prefix) so a
+ * BytesMut over a mirror-ring readable region (or any reserved slot)
+ * can be parsed zero-copy with the same std::bytes::{read_*,at,
+ * find_byte} surface. Bounds are checked against the passed `len`. */
+int64_t lotus_bytes_read_uint_raw(const void *base, int64_t len, int64_t off,
+                                  int width, int is_signed, int big_endian,
+                                  int64_t *oob) {
+    if (!base || off < 0 || width < 1 || width > 8 ||
+        off > len - (int64_t)width) {
+        if (oob) *oob = 1;
+        return 0;
+    }
+    if (oob) *oob = 0;
+    const unsigned char *p = (const unsigned char *)base + off;
+    uint64_t v = 0;
+    if (big_endian) {
+        for (int i = 0; i < width; i++) v = (v << 8) | p[i];
+    } else {
+        for (int i = width - 1; i >= 0; i--) v = (v << 8) | p[i];
+    }
+    if (is_signed && width < 8) {
+        uint64_t sign_bit = (uint64_t)1 << (width * 8 - 1);
+        if (v & sign_bit) {
+            v |= ~(((uint64_t)1 << (width * 8)) - 1);
+        }
+    }
+    return (int64_t)v;
+}
+
+int64_t lotus_bytes_at_raw(const void *base, int64_t len, int64_t i) {
+    if (!base || i < 0 || i >= len) return -1;
+    return (int64_t)((const unsigned char *)base)[i];
+}
+
+int64_t lotus_bytes_find_byte_raw(const void *base, int64_t len, int64_t off,
+                                  int64_t needle) {
+    if (!base || off < 0 || off >= len) return -1;
+    const void *hit = memchr((const unsigned char *)base + off,
+                             (int)(needle & 0xFF), (size_t)(len - off));
+    if (!hit) return -1;
+    return (int64_t)((const unsigned char *)hit - (const unsigned char *)base);
+}
+
 /*
  * JSON Tier-3 Level-A — SIMD scan primitives.
  *
@@ -13369,6 +13414,151 @@ lotus_view_t lotus_view_from_static_data(void *data) {
     v.src = data;
     v.epoch = LOTUS_VIEW_EPOCH_STATIC;
     return v;
+}
+
+/* 2026-06-13 (#3) — MirrorRing: a double-mapped "magic ring" wrap-free
+ * buffer. A `memfd` of `cap` bytes is reserved as `2*cap` PROT_NONE then
+ * mapped twice (offsets 0 and cap, MAP_FIXED), so the physical byte at
+ * ring offset `o` is also visible at `o + cap`. Any window of <= cap
+ * bytes that straddles the physical seam is therefore one contiguous
+ * virtual slice — a parser (or a recv) never copies or special-cases
+ * the wrap. SPSC within one locus: `head` is the read offset in
+ * [0, cap), `count` the buffered byte count in [0, cap]. readable() is
+ * the contiguous window [head, head+count); writable() is the free
+ * window [tail, tail+free) where tail = (head+count) % cap. Both are
+ * returned as a `{ptr, len}` BytesMut (the view-struct ABI). Linux-only
+ * (memfd_create); the open returns NULL elsewhere. */
+typedef struct {
+    char  *base;     /* start of the 2*cap double mapping */
+    size_t cap;
+    size_t head;     /* read offset in [0, cap) */
+    size_t count;    /* buffered bytes in [0, cap] */
+    int    fd;       /* memfd */
+} lotus_mirror_ring_t;
+
+void *lotus_mirror_ring_new(int64_t capacity) {
+#if defined(__linux__)
+    if (capacity <= 0) return NULL;
+    uint64_t cap = (uint64_t)capacity;
+    /* power-of-two and a multiple of the page size. */
+    long ps = sysconf(_SC_PAGESIZE);
+    if (ps <= 0) ps = 4096;
+    if ((cap & (cap - 1)) != 0 || (cap % (uint64_t)ps) != 0) return NULL;
+
+    int fd = memfd_create("lotus_mirror_ring", 0);
+    if (fd < 0) return NULL;
+    if (ftruncate(fd, (off_t)cap) != 0) { close(fd); return NULL; }
+
+    /* Reserve 2*cap of address space, then map the memfd over both
+     * halves at fixed addresses. */
+    void *region = mmap(NULL, (size_t)(cap * 2), PROT_NONE,
+                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (region == MAP_FAILED) { close(fd); return NULL; }
+    char *base = (char *)region;
+    void *m0 = mmap(base, (size_t)cap, PROT_READ | PROT_WRITE,
+                    MAP_SHARED | MAP_FIXED, fd, 0);
+    void *m1 = mmap(base + cap, (size_t)cap, PROT_READ | PROT_WRITE,
+                    MAP_SHARED | MAP_FIXED, fd, 0);
+    if (m0 == MAP_FAILED || m1 == MAP_FAILED) {
+        munmap(region, (size_t)(cap * 2));
+        close(fd);
+        return NULL;
+    }
+    lotus_mirror_ring_t *r =
+        (lotus_mirror_ring_t *)calloc(1, sizeof(*r));
+    if (!r) { munmap(region, (size_t)(cap * 2)); close(fd); return NULL; }
+    r->base = base;
+    r->cap = (size_t)cap;
+    r->head = 0;
+    r->count = 0;
+    r->fd = fd;
+    return r;
+#else
+    (void)capacity;
+    return NULL;
+#endif
+}
+
+void lotus_mirror_ring_free(void *handle) {
+    lotus_mirror_ring_t *r = (lotus_mirror_ring_t *)handle;
+    if (!r) return;
+    if (r->base) munmap(r->base, r->cap * 2);
+    if (r->fd >= 0) close(r->fd);
+    free(r);
+}
+
+/* Readable window [head, head+count) as a {ptr, len} BytesMut. */
+lotus_view_t lotus_mirror_ring_readable(void *handle) {
+    lotus_mirror_ring_t *r = (lotus_mirror_ring_t *)handle;
+    lotus_view_t v;
+    if (!r) { v.src = NULL; v.epoch = 0; return v; }
+    v.src = r->base + r->head;
+    v.epoch = (int64_t)r->count;   /* the {ptr,len} ABI: field2 = len */
+    return v;
+}
+
+/* Writable free window [tail, tail+free) as a {ptr, len} BytesMut. */
+lotus_view_t lotus_mirror_ring_writable(void *handle) {
+    lotus_mirror_ring_t *r = (lotus_mirror_ring_t *)handle;
+    lotus_view_t v;
+    if (!r) { v.src = NULL; v.epoch = 0; return v; }
+    size_t tail = (r->head + r->count) % r->cap;
+    v.src = r->base + tail;
+    v.epoch = (int64_t)(r->cap - r->count);
+    return v;
+}
+
+/* Advance the write cursor by `n` bytes just written into writable(). */
+void lotus_mirror_ring_commit(void *handle, int64_t n) {
+    lotus_mirror_ring_t *r = (lotus_mirror_ring_t *)handle;
+    if (!r || n <= 0) return;
+    size_t free_bytes = r->cap - r->count;
+    if ((uint64_t)n > free_bytes) n = (int64_t)free_bytes;
+    r->count += (size_t)n;
+}
+
+/* Advance the read cursor by `n` bytes consumed from readable(). */
+void lotus_mirror_ring_consume(void *handle, int64_t n) {
+    lotus_mirror_ring_t *r = (lotus_mirror_ring_t *)handle;
+    if (!r || n <= 0) return;
+    if ((uint64_t)n > r->count) n = (int64_t)r->count;
+    r->head = (r->head + (size_t)n) % r->cap;
+    r->count -= (size_t)n;
+}
+
+int64_t lotus_mirror_ring_len(void *handle) {
+    lotus_mirror_ring_t *r = (lotus_mirror_ring_t *)handle;
+    return r ? (int64_t)r->count : 0;
+}
+
+int64_t lotus_mirror_ring_capacity(void *handle) {
+    lotus_mirror_ring_t *r = (lotus_mirror_ring_t *)handle;
+    return r ? (int64_t)r->cap : 0;
+}
+
+/* recv directly into the mirror ring's contiguous free window and
+ * commit the bytes read — the wrap-free receive loop. Returns >0 bytes,
+ * 0 EOF, -1 fatal, -2 retryable (same contract as lotus_tcp_recv_into).
+ * `max` bounds the read; the free window already bounds it to the ring. */
+int64_t lotus_tcp_recv_into_mirror(int fd, void *handle, int64_t max) {
+    lotus_mirror_ring_t *r = (lotus_mirror_ring_t *)handle;
+    if (fd < 0 || !r) return -1;
+    size_t free_bytes = r->cap - r->count;
+    if (free_bytes == 0) return 0;        /* ring full — caller must consume */
+    size_t want = (max > 0 && (uint64_t)max < free_bytes)
+                      ? (size_t)max : free_bytes;
+    size_t tail = (r->head + r->count) % r->cap;
+    ssize_t n;
+    for (;;) {
+        n = read(fd, r->base + tail, want);
+        if (n >= 0) break;
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return -2;
+        return -1;
+    }
+    if (n == 0) return 0;
+    r->count += (size_t)n;
+    return (int64_t)n;
 }
 
 /* Returns 1 on success, 0 on hard failure (null handle or realloc

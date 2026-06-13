@@ -40,6 +40,10 @@ pub(crate) trait BytesStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn bytesmut_base_len(
+        &mut self,
+        v: BasicValueEnum<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, BasicValueEnum<'ctx>), CodegenError>;
     fn lower_std_bytes_builder_xor_mask_into(
         &mut self,
         args: &[Expr],
@@ -180,15 +184,6 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
-            return Err(CodegenError::Unsupported(format!(
-                "std::bytes::at: b must be Bytes, got {:?}. To read \
-                 a byte from a String, convert first via \
-                 `std::bytes::from_string(s)`.",
-                b_ty
-            )));
-        }
-        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         let (i_val, i_ty) = self.lower_expr(&args[1], scope)?;
         if i_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -196,22 +191,59 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
                 i_ty
             )));
         }
-        let at_fn = self
-            .module
-            .get_function("lotus_bytes_at")
-            .expect("lotus_bytes_at declared");
-        let raw = self
-            .builder
-            .build_call(
-                at_fn,
-                &[b_val.into(), i_val.into()],
-                "bytes.at.ret",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("lotus_bytes_at returns i64")
-            .into_int_value();
+        // Source dispatch: Bytes/BytesView via the handle `at`; BytesMut
+        // (a raw {ptr,len} window — MirrorRing.readable() etc.) via the
+        // _raw `at`. `bm_cap` carries the window length for the IndexError
+        // `len` field (Bytes/BytesView fetch it lazily on the err path).
+        let mut bm_cap: Option<inkwell::values::IntValue<'ctx>> = None;
+        let b_handle = match b_ty {
+            CodegenTy::Bytes | CodegenTy::BytesView => {
+                Some(self.unpack_view_if_needed(b_val, &b_ty)?)
+            }
+            CodegenTy::BytesMut => {
+                let (_b, cap) = self.bytesmut_base_len(b_val)?;
+                bm_cap = Some(cap.into_int_value());
+                None
+            }
+            _ => {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::bytes::at: b must be Bytes, got {:?}. To read \
+                     a byte from a String, convert first via \
+                     `std::bytes::from_string(s)`.",
+                    b_ty
+                )))
+            }
+        };
+        let raw = if let Some(bh) = b_handle {
+            let at_fn = self
+                .module
+                .get_function("lotus_bytes_at")
+                .expect("lotus_bytes_at declared");
+            self.builder
+                .build_call(at_fn, &[bh.into(), i_val.into()], "bytes.at.ret")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_bytes_at returns i64")
+                .into_int_value()
+        } else {
+            let (base, cap) = self.bytesmut_base_len(b_val)?;
+            let at_fn = self
+                .module
+                .get_function("lotus_bytes_at_raw")
+                .expect("lotus_bytes_at_raw declared");
+            self.builder
+                .build_call(
+                    at_fn,
+                    &[base.into(), cap.into(), i_val.into()],
+                    "bytes.at_raw.ret",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_bytes_at_raw returns i64")
+                .into_int_value()
+        };
         // -1 sentinel from the C primitive.
         let neg_one = self
             .context
@@ -251,18 +283,25 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         self.builder.position_at_end(lazy_err_bb);
-        let len_fn = self
-            .module
-            .get_function("lotus_bytes_len")
-            .expect("lotus_bytes_len declared");
-        let len_ssa = self
-            .builder
-            .build_call(len_fn, &[b_val.into()], "bytes.len.for_err")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("returns i64")
-            .into_int_value();
+        let len_ssa = if let Some(cap) = bm_cap {
+            cap
+        } else {
+            let len_fn = self
+                .module
+                .get_function("lotus_bytes_len")
+                .expect("lotus_bytes_len declared");
+            self.builder
+                .build_call(
+                    len_fn,
+                    &[b_handle.expect("Bytes/BytesView handle").into()],
+                    "bytes.len.for_err",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("returns i64")
+                .into_int_value()
+        };
         let ie_ptr = self.emit_index_error_alloc(
             "out_of_bounds",
             i_val.into_int_value(),
@@ -330,13 +369,6 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
-            return Err(CodegenError::Unsupported(format!(
-                "std::bytes::{}: first arg must be Bytes, got {:?}",
-                name, b_ty
-            )));
-        }
-        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         let (off_val, off_ty) = self.lower_expr(&args[1], scope)?;
         if off_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -350,24 +382,40 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let i64_t = self.context.i64_type();
         // oob out-param (i64 *) — entry-block alloca so it's hoisted.
         let oob_slot = self.alloca_for(&CodegenTy::Int, "bytes.read.oob")?;
+        // Source dispatch: Bytes/BytesView → the handle reader (len from
+        // the `[i64 len]` prefix); BytesMut → the raw {ptr,len} reader (a
+        // MirrorRing.readable() window or any reserved slot, zero-copy).
+        let (read_fn_name, mut call_args): (
+            &str,
+            Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>,
+        ) = match b_ty {
+            CodegenTy::Bytes | CodegenTy::BytesView => {
+                let bv = self.unpack_view_if_needed(b_val, &b_ty)?;
+                ("lotus_bytes_read_uint", vec![bv.into()])
+            }
+            CodegenTy::BytesMut => {
+                let (base, len) = self.bytesmut_base_len(b_val)?;
+                ("lotus_bytes_read_uint_raw", vec![base.into(), len.into()])
+            }
+            _ => {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::bytes::{}: first arg must be Bytes, got {:?}",
+                    name, b_ty
+                )))
+            }
+        };
+        call_args.push(off_ssa.into());
+        call_args.push(i32_t.const_int(width as u64, false).into());
+        call_args.push(i32_t.const_int(is_signed as u64, false).into());
+        call_args.push(i32_t.const_int(big_endian as u64, false).into());
+        call_args.push(oob_slot.into());
         let read_fn = self
             .module
-            .get_function("lotus_bytes_read_uint")
-            .expect("lotus_bytes_read_uint declared");
+            .get_function(read_fn_name)
+            .expect("bytes read fn declared");
         let raw = self
             .builder
-            .build_call(
-                read_fn,
-                &[
-                    b_val.into(),
-                    off_ssa.into(),
-                    i32_t.const_int(width as u64, false).into(),
-                    i32_t.const_int(is_signed as u64, false).into(),
-                    i32_t.const_int(big_endian as u64, false).into(),
-                    oob_slot.into(),
-                ],
-                "bytes.read.raw",
-            )
+            .build_call(read_fn, &call_args, "bytes.read.raw")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .try_as_basic_value()
             .left()
@@ -1503,6 +1551,30 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        let (i_val, i_ty) = self.lower_expr(&args[1], scope)?;
+        if i_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::at: i must be Int, got {:?}",
+                i_ty
+            )));
+        }
+        // BytesMut (a raw {ptr,len} window — e.g. MirrorRing.readable())
+        // reads via the _raw sibling; Bytes/BytesView via the handle path.
+        if b_ty == CodegenTy::BytesMut {
+            let (base, cap) = self.bytesmut_base_len(b_val)?;
+            let f = self
+                .module
+                .get_function("lotus_bytes_at_raw")
+                .expect("lotus_bytes_at_raw declared");
+            let ret = self
+                .builder
+                .build_call(f, &[base.into(), cap.into(), i_val.into()], "bytes_at_raw.ret")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("returns i64");
+            return Ok((ret, CodegenTy::Int));
+        }
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             let hint = if matches!(b_ty, CodegenTy::String) {
                 " — use `std::bytes::from_string(s)` to convert"
@@ -1515,13 +1587,6 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
             )));
         }
         let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
-        let (i_val, i_ty) = self.lower_expr(&args[1], scope)?;
-        if i_ty != CodegenTy::Int {
-            return Err(CodegenError::Unsupported(format!(
-                "std::bytes::at: i must be Int, got {:?}",
-                i_ty
-            )));
-        }
         let f = self
             .module
             .get_function("lotus_bytes_at")
@@ -1535,6 +1600,25 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
             .left()
             .expect("returns i64");
         Ok((ret, CodegenTy::Int))
+    }
+
+    /// Extract `{base ptr, len i64}` from a BytesMut struct value (the
+    /// raw {ptr,len} window shape shared by `Topic.write` slots and
+    /// MirrorRing readable/writable windows).
+    fn bytesmut_base_len(
+        &mut self,
+        v: BasicValueEnum<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, BasicValueEnum<'ctx>), CodegenError> {
+        let s = v.into_struct_value();
+        let base = self
+            .builder
+            .build_extract_value(s, 0, "bm.base")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let len = self
+            .builder
+            .build_extract_value(s, 1, "bm.len")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((base, len))
     }
 
     /// `std::bytes::find_byte(b, off, needle) -> Int` (2026-06-13).
@@ -1552,13 +1636,6 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
-        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
-            return Err(CodegenError::Unsupported(format!(
-                "std::bytes::find_byte: b must be Bytes, got {:?}",
-                b_ty
-            )));
-        }
-        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         let (off_val, off_ty) = self.lower_expr(&args[1], scope)?;
         if off_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -1573,6 +1650,32 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
                 needle_ty
             )));
         }
+        if b_ty == CodegenTy::BytesMut {
+            let (base, len) = self.bytesmut_base_len(b_val)?;
+            let f = self
+                .module
+                .get_function("lotus_bytes_find_byte_raw")
+                .expect("lotus_bytes_find_byte_raw declared");
+            let ret = self
+                .builder
+                .build_call(
+                    f,
+                    &[base.into(), len.into(), off_val.into(), needle_val.into()],
+                    "bytes_find_byte_raw.ret",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("returns i64");
+            return Ok((ret, CodegenTy::Int));
+        }
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bytes::find_byte: b must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
         let f = self
             .module
             .get_function("lotus_bytes_find_byte")
