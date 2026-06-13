@@ -426,9 +426,9 @@ fn ring_layout_descriptor_words(
 
     // [11..15] framing: len_prefix width, align, pad_sentinel.
     // [21..27] (#5, fast-protocol-I/O): record_header_bytes (fixed
-    // per-record header before the payload — ws-fast's 32-byte
+    // per-record header before the payload — the reference crate's 32-byte
     // len/kind/opcode/seq/kernel_ns/user_ns), a header-field padding
-    // discriminant (pad_field_offset/width/value — ws-fast marks a
+    // discriminant (pad_field_offset/width/value — the reference crate marks a
     // tail pad with kind==1, not a len sentinel), and the post_copy
     // lap re-check flag.
     w[12] = 1; // align default (no sub-record padding)

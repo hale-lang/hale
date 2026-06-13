@@ -595,7 +595,7 @@ static int run_produce_external(const char *name) {
 }
 
 /* record_header external producer (#5, fast-protocol-I/O). Writes
- * ws-fast-shaped records: a fixed 32-byte header (len@0:u32, kind@4:u8
+ * fixed-header records: a fixed 32-byte header (len@0:u32, kind@4:u8
  * — 0 Data, 1 Padding) then the payload, stride = 32 + align8(len).
  * Records never straddle the wrap: when one won't fit before the
  * boundary, a kind==1 pad record fills the remainder. No in-process
@@ -645,7 +645,7 @@ static int run_produce_record_header(const char *name) {
         uint64_t off = DATA_AT + (local % capacity);
         *(uint32_t *)(base + off + RH_LEN_OFF) = (uint32_t)plen;
         *(uint8_t *)(base + off + RH_KIND_OFF) = 0;       /* Data */
-        /* In-band header fields (ws-fast shape): seq@8, kernel_ns@16,
+        /* In-band header fields (the reference crate shape): seq@8, kernel_ns@16,
          * user_ns@24 — surfaced to the consumer via std::shm::last_record_*. */
         *(uint64_t *)(base + off + 8)  = (uint64_t)(i + 1);
         *(uint64_t *)(base + off + 16) = (uint64_t)((i + 1) * 1000);

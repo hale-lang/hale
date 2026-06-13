@@ -20,11 +20,11 @@ the design rationale; the syntax that shipped differs in spots — e.g. the
 header fields are surfaced via thread-local getters rather than a
 payload-struct prefix; see `spec/` for the shipped surface).
 
-**Provenance.** Prompted by a teardown of `sorcery-labs/ws-fast` (MIT, Rust,
+**Provenance.** Prompted by a teardown of a reference low-latency WebSocket ingress crate (MIT, Rust,
 ~6.9k LOC) — a sync, caller-driven WebSocket *ingress* crate for HFT
 market-data. We compared it against `pond/websocket` to ask "can we beat it?"
 The useful answer turned out to be a substrate question, not a library one,
-and it generalizes well past WebSocket. Credit to ws-fast for the design; the
+and it generalizes well past WebSocket. Credit to the reference crate for the design; the
 techniques below are largely theirs, recast as Hale substrate work.
 
 ---
@@ -40,7 +40,7 @@ should own. If they live in `std::*` + codegen + runtime, then `pond/http`,
 `pond/pq`, `pond/websocket`, and every future protocol get them for free, and
 the libraries stay thin — which is the whole Hale bet.
 
-A speed story that lives in a library (the ws-fast model) is the anti-Hale
+A speed story that lives in a library (the reference-crate model) is the anti-Hale
 outcome. The Hale outcome is a fast substrate that makes the library trivial.
 
 This note enumerates the gaps, sketches the stdlib shape and the codegen/
@@ -50,7 +50,7 @@ two specific places.
 
 ---
 
-## Where ws-fast's speed actually comes from
+## Where the reference crate's speed actually comes from
 
 Categorized as **(A)** substrate gap absent from Hale today, **(B)** a
 codegen/runtime property Hale's model targets but must be shown to achieve, or
@@ -101,7 +101,7 @@ std::io::tcp::last_recv_user_ns()   -> Int;   // clock_gettime(CLOCK_REALTIME) a
 Runtime: a `lotus_tcp_recv_stamped` that builds the `msghdr`/cmsg buffer, does
 one `recvmsg`, and walks control messages **defensively** (refuse zero-length
 or short cmsg headers; do not use `CMSG_NXTHDR` macros — some libcs infinite-
-loop on a zero-length cmsg; ws-fast's `socket.rs` learned this). One setsockopt
+loop on a zero-length cmsg; the reference crate's `socket.rs` learned this). One setsockopt
 (`SO_TIMESTAMPNS`) at socket setup. Benefits: every protocol gets wire-arrival
 time with no extra syscall. This is the first thing to ship.
 
@@ -148,18 +148,18 @@ every length/delimiter-framed parser (HTTP header CRLF, etc.).
 
 ### 5. `ring_layout`: a per-record header + post-copy lap re-check  ·  MEDIUM leverage, MEDIUM cost
 
-`ring_layout` (Proposal B) already consumes foreign SPMC rings — and ws-fast's
-bus (`ws_fast_bus.h`) is exactly such a ring with a published C ABI. But it
+`ring_layout` (Proposal B) already consumes foreign SPMC rings — and the reference crate's
+bus (`the foreign bus ABI header`) is exactly such a ring with a published C ABI. But it
 **cannot be consumed today**, for two precise reasons (byte-level detail in the
 appendix):
 
 - `byte_records` assumes the only per-record overhead is the length prefix:
-  stride = `align_up(len_prefix + len, align)`. ws-fast's record header is
+  stride = `align_up(len_prefix + len, align)`. The reference crate's record header is
   **32 bytes** (`len, kind, opcode, seq, kernel_ns, user_ns`), so its stride is
   `32 + align8(len)`. A Hale reader computes the wrong stride and desyncs after
   one record, and has no way to read `seq`/timestamps.
 - Hale's `lap_detect` (per `spec/semantics.md` ~L1140) is a **pre-read** resync.
-  ws-fast's correctness rests on a **post-copy** re-check (copy → acquire fence
+  the reference crate's correctness rests on a **post-copy** re-check (copy → acquire fence
   → reload cursor → re-verify the window still exceeds the stride) that proves
   the copied bytes were not clobbered *during* the copy by the free-running
   writer. Without it, a fast foreign producer can hand a torn record to the
@@ -169,13 +169,13 @@ Proposed: a `record_header N { name at off : repr; ... }` block inside
 `framing byte_records` (reusing the segment-header scalar mechanism), so stride
 = `record_header_bytes + align(len)` and the named fields are delivered
 alongside the payload view; plus an `overflow lap_detect { recheck post_copy; }`
-knob. This single change is where "consume ws-fast" and "fix the substrate"
+knob. This single change is where "consume the reference crate" and "fix the substrate"
 become the *same* work — and it also enriches Hale's own producer side.
 
 ### 6. Audit + bound `std::io::tls` plaintext allocation  ·  MEDIUM leverage, MEDIUM–HIGH cost
 
 Every TLS protocol pays whatever `std::io::tls`'s OpenSSL binding allocates per
-record. ws-fast measured rustls at exactly one alloc + one copy per app-data
+record. The reference crate measured rustls at exactly one alloc + one copy per app-data
 record and *pinned it with a test*. We should measure `lotus_tls.c`'s behavior,
 drive `recv_into` toward bounded/zero per-record allocation, and gate it (§7).
 `SSL_MODE_RELEASE_BUFFERS` is already set (good); the open question is the
@@ -183,16 +183,16 @@ per-record plaintext copy.
 
 ### 7. Test-time guarantees: the rigor that *keeps* the wins  ·  MEDIUM leverage, MEDIUM cost
 
-The wins above regress silently without gates. ws-fast's real moat is its test
+The wins above regress silently without gates. The reference crate's real moat is its test
 harness, and the disciplines port even if the code doesn't:
 
 - **Allocation gate** — a global-allocator shim that counts alloc/dealloc, with
   a `window { ... }` helper asserting *zero* (or an exact pinned count) inside
   a steady-state region. Hale has `--warn-unbounded-alloc` at compile time;
   this is the runtime/test-time complement ("this loop did zero allocs").
-- **Syscall gate** — assert "exactly one `recvmsg` per poll" (ws-fast re-execs
+- **Syscall gate** — assert "exactly one `recvmsg` per poll" (the reference crate re-execs
   under `strace -c -e trace=recvmsg`; an interposed counter works too).
-- **Conformance-as-pinned-regression** — adopt ws-fast's autobahn rule: pin the
+- **Conformance-as-pinned-regression** — adopt the reference crate's autobahn rule: pin the
   per-case verdict, and treat a *new pass* as a regression-until-justified, not
   just a new failure. It caught two real bugs for them.
 
@@ -208,7 +208,7 @@ harness, and the disciplines port even if the code doesn't:
 
 2. **We are not chasing hand-tuned-Rust ns-per-syscall on a single socket.**
    Every Hale syscall crosses the managed FFI boundary with arena-snapshot
-   semantics; ws-fast's `recvmsg` is a direct libc call. Substrate work shrinks
+   semantics; the reference crate's `recvmsg` is a direct libc call. Substrate work shrinks
    the per-call overhead but does not erase it. And kernel timestamps measure
    wire arrival — if a cooperative pool then schedules the handler behind other
    work, end-to-end latency includes jitter the stamp can't see. The target is
@@ -220,11 +220,11 @@ harness, and the disciplines port even if the code doesn't:
    `recvmsg`-for-WebSocket. The parse hot loop stays in the library and is
    written to the grain — and a *general* parser (fragmentation, HTTP/2,
    compression negotiation) inherently pays more branches than a deliberately
-   narrow one like ws-fast's. The I/O floor generalizes cleanly; the parse loop
+   narrow one like the reference crate's. The I/O floor generalizes cleanly; the parse loop
    generalizes only as *primitives*.
 
 4. **No hidden async runtime, no compression in the hot path** — these are
-   ws-fast's non-goals too, and for the same reason (zero-copy + predictability).
+   the reference crate's non-goals too, and for the same reason (zero-copy + predictability).
 
 ---
 
@@ -235,7 +235,7 @@ harness, and the disciplines port even if the code doesn't:
    `pond/websocket`. Land first.
 2. **#4 (byte primitives)** — cheap, isolated.
 3. **#3 (MirrorRing) and #5 (ring_layout record header)** — the two structural
-   items; #5 unblocks foreign-ring interop (incl. consuming ws-fast).
+   items; #5 unblocks foreign-ring interop (incl. consuming the reference crate).
 4. **#6 (TLS audit) and #7 (gates)** — ongoing; #7 should land alongside #1 so
    the first wins are pinned from day one.
 
@@ -249,20 +249,20 @@ harness, and the disciplines port even if the code doesn't:
   same pass (reuse a cork buffer instead of a fresh `BytesBuilder` per frame;
   pre-buffer `getrandom` entropy instead of one syscall per frame; block-XOR
   masking via #4 instead of byte-by-byte `from_int`).
-- A `ring_layout WsFastBus` (appendix) consuming a live ws-fast segment
+- A `ring_layout RefBus` (appendix) consuming a live reference-crate segment
   zero-copy with in-band kernel timestamps — the concrete interop proof.
 
 ---
 
-## Appendix — the exact `ring_layout` gap vs `ws_fast_bus.h`
+## Appendix — the exact `ring_layout` gap vs `the foreign bus ABI header`
 
-**ws-fast segment** (little-endian, 64-bit): `magic@0` (`"WSFBUS01"` =
+**the reference crate segment** (little-endian, 64-bit): `magic@0` (`"WSFBUS01"` =
 `0x5753464255533031`, written last at init), `version@8:u32`, `capacity@16:u64`
 (power of two), `generation@24:u64`, `write_cursor@128` (atomic u64, *alone on
 its cache line* — the 128-byte isolation matters on both 64 B x86 and 128 B
 Apple lines), `data@256`.
 
-**ws-fast record** (8-byte aligned, never wraps; stride = `32 + ((len+7)&~7)`):
+**the reference crate record** (8-byte aligned, never wraps; stride = `32 + ((len+7)&~7)`):
 
 | off | field | repr | note |
 |---|---|---|---|
@@ -285,7 +285,7 @@ offers no way to surface `seq`/`kernel_ns`/`user_ns`.
 settle):
 
 ```hale
-ring_layout WsFastBus {
+ring_layout RefBus {
     magic 0x5753464255533031;
     version    1  at 8  : u32;
     buffer_size   at 16 : u64;            // capacity
@@ -311,10 +311,10 @@ ring_layout WsFastBus {
 
 Delivered-record access: the handler receives the payload `BytesView` plus
 generated accessors for the named header fields (`rec.seq()`, `rec.kernel_ns()`,
-`rec.opcode()`), so a Hale market-data consumer reads ws-fast's output
+`rec.opcode()`), so a Hale market-data consumer reads the reference crate's output
 zero-copy *with* wire-arrival timestamps and never makes a syscall to get them.
 
-References: `ws_fast_bus.h` (the ABI + the literate reader proof),
+References: `the foreign bus ABI header` (the ABI + the literate reader proof),
 `src/bus.rs` (Rust side + layout test against the header), `src/ring.rs`
 (MirrorRing), `src/socket.rs` (recvmsg + cmsg walk), `tests/{no_alloc,
 syscall_gate,bus_layout}.rs` (the rigor bar).

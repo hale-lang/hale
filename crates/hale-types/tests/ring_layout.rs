@@ -38,10 +38,10 @@ fn valid_layout_is_clean() {
 
 #[test]
 fn record_header_clean_and_validated() {
-    // A valid record_header layout (ws-fast-ish: 32-byte header, kind-pad,
+    // A valid record_header layout (fixed-header: 32-byte header, kind-pad,
     // post_copy recheck) typechecks clean.
     let valid = r#"
-ring_layout WsFast {
+ring_layout FixedHdrRing {
     magic 0x52494E47464D5431;
     version 1 at 8 : u32;
     buffer_size at 12 : u32;

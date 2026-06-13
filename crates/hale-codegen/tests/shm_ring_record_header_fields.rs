@@ -9,7 +9,7 @@
 //! BytesView; this surfaces the in-band sequence number + kernel/user
 //! timestamps a market-data consumer wants.
 //!
-//! End-to-end: the C producer (`produce_record_header`) writes ws-fast-shaped
+//! End-to-end: the C producer (`produce_record_header`) writes fixed-header
 //! records with seq@8 / kernel_ns@16 / user_ns@24, and a Hale BytesView
 //! subscriber reads both the payload and the three header fields per record.
 
@@ -60,7 +60,7 @@ fn hale_subscriber_reads_in_band_header_fields() {
 
     let src = format!(
         r#"
-        ring_layout WsFastish {{
+        ring_layout FixedHdrRing {{
             magic 0x52494E47464D5431;
             version 1 at 8 : u32;
             buffer_size at 12 : u32;
@@ -94,7 +94,7 @@ fn hale_subscriber_reads_in_band_header_fields() {
 
         main locus App {{
             bindings {{
-                Recs: shm_ring("{shm_name}", on_overflow: drop, layout: WsFastish);
+                Recs: shm_ring("{shm_name}", on_overflow: drop, layout: FixedHdrRing);
             }}
         }}
 
