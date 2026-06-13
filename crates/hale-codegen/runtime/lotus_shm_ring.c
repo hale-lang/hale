@@ -309,7 +309,29 @@ typedef struct {
      * fence taken, and the cursor re-read; if the producer lapped the
      * record during the copy it is discarded rather than dispatched. */
     int      post_copy_recheck;
+    /* 2026-06-13 (#5 field-delivery follow-on): per-record header field
+     * offsets/widths. When width != 0, the byte_records reader decodes
+     * the field from each record's header (at off, `width` bytes LE,
+     * zero-extended) into a thread-local just before dispatch; the
+     * handler reads it via std::shm::last_record_{seq,kernel_ns,
+     * user_ns}() — the errno-style idiom of recv_stamped's
+     * last_recv_*_ns. The payload itself is still delivered as the
+     * BytesView / typed value; these surface the in-band header. */
+    uint64_t seq_off;        uint64_t seq_width;
+    uint64_t kernel_ns_off;  uint64_t kernel_ns_width;
+    uint64_t user_ns_off;    uint64_t user_ns_width;
 } lotus_shm_layout_t;
+
+/* Decoded header fields of the most recent record dispatched on this
+ * (reader) thread — read immediately in the handler via the
+ * std::shm::last_record_* getters. */
+static __thread int64_t g_last_record_seq       = 0;
+static __thread int64_t g_last_record_kernel_ns = 0;
+static __thread int64_t g_last_record_user_ns   = 0;
+
+int64_t lotus_shm_last_record_seq(void)       { return g_last_record_seq; }
+int64_t lotus_shm_last_record_kernel_ns(void) { return g_last_record_kernel_ns; }
+int64_t lotus_shm_last_record_user_ns(void)   { return g_last_record_user_ns; }
 
 #define LOTUS_RING_FRAMING_BYTE_RECORDS 0
 #define LOTUS_RING_FRAMING_SLOTS        1
@@ -349,7 +371,7 @@ static void shm_layout_write_uint(void *p, uint64_t width, uint64_t val) {
     memcpy(p, &val, (size_t)width);
 }
 
-/* Populate a descriptor from the flat 27-word array codegen emits.
+/* Populate a descriptor from the flat 33-word array codegen emits.
  * The slot contract is documented on
  * `lotus_bus_register_subscriber_shm_ring_layout`. */
 static void shm_layout_from_words(const uint64_t *w, lotus_shm_layout_t *d) {
@@ -381,6 +403,12 @@ static void shm_layout_from_words(const uint64_t *w, lotus_shm_layout_t *d) {
     d->pad_field_value   = w[24];
     d->has_pad_field     = (int)w[25];
     d->post_copy_recheck = (int)w[26];
+    d->seq_off           = w[27];
+    d->seq_width         = w[28];
+    d->kernel_ns_off     = w[29];
+    d->kernel_ns_width   = w[30];
+    d->user_ns_off       = w[31];
+    d->user_ns_width     = w[32];
 }
 
 /* Attach (read-only) to a foreign ring described by `desc`.
@@ -1377,6 +1405,23 @@ static void *shm_ring_layout_reader_thread(void *arg) {
                 break;
             }
             char *payload = base + phys + hdr;
+            /* Surface the in-band header fields (#5 follow-on): decode the
+             * declared scalars from this record's header into thread-locals
+             * the handler reads via std::shm::last_record_*. Cheap when
+             * unused (widths are 0). Read before any post_copy copy so they
+             * reflect this record. */
+            if (d->seq_width) {
+                g_last_record_seq = (int64_t)shm_layout_read_uint(
+                    base + phys + d->seq_off, d->seq_width);
+            }
+            if (d->kernel_ns_width) {
+                g_last_record_kernel_ns = (int64_t)shm_layout_read_uint(
+                    base + phys + d->kernel_ns_off, d->kernel_ns_width);
+            }
+            if (d->user_ns_width) {
+                g_last_record_user_ns = (int64_t)shm_layout_read_uint(
+                    base + phys + d->user_ns_off, d->user_ns_width);
+            }
             if (d->post_copy_recheck) {
                 /* Copy the record out, take an acquire fence, then re-read
                  * the cursor. A record starting at monotonic `local` is

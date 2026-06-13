@@ -1650,6 +1650,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i64_t.fn_type(&[ptr_t.into()], false),
             None,
         );
+        // #5 follow-on: std::shm::last_record_* getters — the decoded
+        // in-band header fields of the most recent foreign-ring record
+        // dispatched on this thread (0 if the field isn't declared).
+        for g in ["seq", "kernel_ns", "user_ns"] {
+            self.module.add_function(
+                &format!("lotus_shm_last_record_{}", g),
+                i64_t.fn_type(&[], false),
+                None,
+            );
+        }
 
         // std::io::sockopt::* named-constant getters. Each is a
         // zero-arg int-returning fn that returns the platform's

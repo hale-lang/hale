@@ -381,9 +381,9 @@ fn ring_repr_width(repr: &str) -> u64 {
 fn ring_layout_descriptor_words(
     decl: &hale_syntax::ast::RingLayoutDecl,
     value_size: u64,
-) -> [u64; 27] {
+) -> [u64; 33] {
     use hale_syntax::ast::RingAttrValue;
-    let mut w = [0u64; 27];
+    let mut w = [0u64; 33];
 
     // [0..2] magic
     if let Some(m) = decl.magic {
@@ -466,6 +466,15 @@ fn ring_layout_descriptor_words(
                 ("recheck", RingAttrValue::Ident(id)) if id.name == "post_copy" => {
                     w[26] = 1;
                 }
+                // #5 follow-on: in-band header field offsets/widths,
+                // decoded per record into thread-locals read by
+                // std::shm::last_record_{seq,kernel_ns,user_ns}.
+                ("seq_offset", RingAttrValue::Int(n)) => w[27] = *n as u64,
+                ("seq_width", RingAttrValue::Int(n)) => w[28] = *n as u64,
+                ("kernel_ns_offset", RingAttrValue::Int(n)) => w[29] = *n as u64,
+                ("kernel_ns_width", RingAttrValue::Int(n)) => w[30] = *n as u64,
+                ("user_ns_offset", RingAttrValue::Int(n)) => w[31] = *n as u64,
+                ("user_ns_width", RingAttrValue::Int(n)) => w[32] = *n as u64,
                 _ => {}
             }
         }

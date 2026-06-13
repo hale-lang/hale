@@ -970,9 +970,14 @@ the payload then starts `N` bytes into the record and the stride is
 a tail pad with a header *field* rather than a `len` sentinel (e.g. a
 `kind` byte where `1` means padding) declares
 `pad_field_offset` / `pad_field_width` / `pad_field_value`; a record
-whose field equals that value is skipped to the wrap. (Surfacing the
-named header fields to the handler is a follow-on; v1 delivers the
-payload as a `BytesView` with the header consumed by the framer.)
+whose field equals that value is skipped to the wrap. The in-band
+header scalars are surfaced to the handler by declaring their offsets
+(`seq_offset` / `seq_width`, `kernel_ns_offset` / `kernel_ns_width`,
+`user_ns_offset` / `user_ns_width`): the reader decodes them per record
+into thread-locals the subscribe handler reads via
+`std::shm::last_record_{seq, kernel_ns, user_ns}()` — the errno-style
+idiom of `recv_stamped`'s `last_recv_*_ns`. The payload itself is still
+delivered as the `BytesView` / typed value.
 `recheck post_copy` adds a torn-read guard: each record is copied out,
 an acquire fence taken, and the cursor re-read; if a free-running
 producer lapped the record during the copy it is discarded rather than
