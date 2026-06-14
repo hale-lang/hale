@@ -166,7 +166,7 @@ locus Sub {{
 }}
 main locus App {{
     bindings {{
-        Recs: shm_ring("/foreign.ticks", on_overflow: drop, layout: MagusRing);
+        Recs: shm_ring("/foreign.ticks", on_overflow: drop, layout: ForeignRing);
     }}
 }}
 fn main() {{ App {{ }}; Sub {{ }}; }}
