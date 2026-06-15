@@ -363,6 +363,19 @@ static __thread lotus_arena_chunk_t *
     g_chunk_pool[LOTUS_CHUNK_POOL_CAP];
 static __thread int g_chunk_pool_count = 0;
 
+/* 2026-06-15: per-thread free-list of arena STRUCTS, mirroring the chunk
+ * pool above. lotus_arena_create_subregion mallocs a fresh lotus_arena_t
+ * per call; the data chunk was already pooled, but the struct was the
+ * remaining allocation on the hot path — every locus method call opens +
+ * closes a scratch subregion, so that's one malloc + free per method call
+ * (measured: 1 alloc/call). Pooling the struct removes it. The
+ * subregion_lock mutex is created once (on the malloc path) and kept valid
+ * across reuse; every other field is reset on take (lotus_arena_alloc_struct).
+ * Freed on thread exit by the pool dtor. */
+#define LOTUS_STRUCT_POOL_CAP 256
+static __thread lotus_arena_t *g_struct_pool[LOTUS_STRUCT_POOL_CAP];
+static __thread int g_struct_pool_count = 0;
+
 /* LOTUS_CHUNK_POOL_STATS — when set, every chunk
  * acquire / release tallies into per-thread counters that
  * dump to stderr at process exit. Useful for diagnosing
@@ -459,6 +472,12 @@ static void lotus_chunk_pool_free_thread_dtor(void *unused) {
      * so __thread g_chunk_pool refers to that thread's own pool. */
     while (g_chunk_pool_count > 0) {
         free(g_chunk_pool[--g_chunk_pool_count]);
+    }
+    /* Same for the pooled arena structs (their subregion_lock is a
+     * static-init mutex, never pthread_mutex_init'd — free is the correct
+     * reclaim, no destroy needed). Runs on the exiting thread. */
+    while (g_struct_pool_count > 0) {
+        free(g_struct_pool[--g_struct_pool_count]);
     }
 }
 
@@ -1347,8 +1366,24 @@ static const pthread_mutex_t LOTUS_SUBREGION_MUTEX_INIT =
     PTHREAD_MUTEX_INITIALIZER;
 
 static lotus_arena_t *lotus_arena_alloc_struct(void) {
-    lotus_arena_t *a = (lotus_arena_t *)malloc(sizeof(lotus_arena_t));
-    if (!a) return NULL;
+    lotus_arena_t *a;
+    if (g_struct_pool_count > 0) {
+        /* Reuse a pooled struct — its subregion_lock is already a valid,
+         * unlocked mutex (kept across pooling), so skip re-init. */
+        a = g_struct_pool[--g_struct_pool_count];
+    } else {
+        a = (lotus_arena_t *)malloc(sizeof(lotus_arena_t));
+        if (!a) return NULL;
+        /* 2026-05-26 substrate-race fix: subregion freelist mutex.
+         * Used by create_subregion / destroy via the PARENT arena's
+         * pointer; arenas with no children never acquire the lock.
+         * Init via a const PTHREAD_MUTEX_INITIALIZER copy rather than
+         * pthread_mutex_init() — a plain store of a constant, no libc
+         * call — since arena create is a hot-path op. Initialized once
+         * here on the malloc path and kept valid across struct-pool
+         * reuse (perf opt, 2026-05-29; pooled 2026-06-15). */
+        a->subregion_lock = LOTUS_SUBREGION_MUTEX_INIT;
+    }
     a->default_chunk_size = lotus_arena_default_chunk_bytes();
     /* 2026-05-21: defer the initial chunk to the first
      * `lotus_arena_alloc` call. Per-method scratch reclaim
@@ -1373,16 +1408,8 @@ static lotus_arena_t *lotus_arena_alloc_struct(void) {
     a->chunk_byte_total = 0;
     a->chunk_byte_cap   = 0;
     a->cap_diag_name    = NULL;
-    /* 2026-05-26 substrate-race fix: subregion freelist mutex.
-     * Used by create_subregion / destroy via the PARENT arena's
-     * pointer; arenas with no children never acquire the lock.
-     * Init via a const PTHREAD_MUTEX_INITIALIZER copy rather than
-     * pthread_mutex_init() — a plain store of a constant, no libc
-     * call — since arena create is a hot-path op (every method
-     * scratch + every locus). The result is a usable default
-     * mutex, lockable later if the program goes multithreaded.
-     * (perf opt, 2026-05-29.) */
-    a->subregion_lock = LOTUS_SUBREGION_MUTEX_INIT;
+    /* subregion_lock is NOT reset here — it's initialized once on the
+     * malloc path above and kept valid across struct-pool reuse. */
     return a;
 }
 
@@ -1777,14 +1804,19 @@ void lotus_arena_destroy(lotus_arena_t *a) {
     a->free_list = NULL;
     if (mt_barrier) pthread_mutex_unlock(&a->subregion_lock);
     if (fl) free(fl);
-    /* Tear down the per-arena subregion lock. By the time we
-     * reach here the parent's lock (if any) has already been
-     * released and no future caller can reach this arena's
-     * lock — the destroying thread is exclusive on its own
-     * arena struct. Skip when single-threaded: the mutex was
-     * statically initialized and never locked, so a default
-     * mutex holds no resources to release (perf opt, 2026-05-29;
-     * reuses mt_barrier read above). */
+    /* Pool the struct for reuse (mirrors the chunk pool) instead of
+     * freeing it — removes the malloc/free per scratch open/close, the
+     * remaining per-method-call allocation. subregion_lock is unlocked
+     * here (the barrier above released it) and kept valid for the next
+     * lotus_arena_alloc_struct; it is NOT destroyed on the pool path.
+     * Freed at thread exit by the pool dtor. */
+    if (g_struct_pool_count < LOTUS_STRUCT_POOL_CAP) {
+        lotus_mark_thread_for_pool_dtor();
+        g_struct_pool[g_struct_pool_count++] = a;
+        return;
+    }
+    /* Pool full — tear down the lock (mt only; a static-init mutex never
+     * locked holds no resources) and free. */
     if (mt_barrier) pthread_mutex_destroy(&a->subregion_lock);
     free(a);
 }
