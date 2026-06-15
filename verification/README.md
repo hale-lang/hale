@@ -34,6 +34,7 @@ GenMC v0.17.0 builds against the project's LLVM 18. See
 | `lockfree_hashmap_model.c` | `lotus_hashmap_*_lockfree` in `crates/hale-codegen/runtime/lotus_arena.c` — the enter/exit writer-counter protocol, single-grower grow phase, writers-in-flight drain, and EMPTY→CLAIMED→COMMITTED set state machine | ✅ verified: **42 executions, no errors** |
 | `mailbox_model.c` | `lotus_mailbox_*` in `lotus_arena.c` — the pinned-locus mailbox monitor: mutex-protected post/drain/shutdown, the `while (empty && !shutdown)` wait predicate, and "drain pending even after shutdown" | ✅ verified: **10 executions, no errors** |
 | `bus_queue_model.c` | `lotus_bus_queue_*` in `lotus_arena.c` — the cooperative-pool queue's `g_bus_has_pinned`-gated **conditional lock** on enqueue/drain (concurrent enqueues under the lock; drain snapshots under the lock) | ✅ verified: **2 executions, no errors** |
+| `arena_subregion_model.c` | `lotus_arena_create_subregion` / `lotus_arena_destroy` in `lotus_arena.c` — the per-parent `subregion_lock` guarding the child-slot freelist (`free_list` / `free_count` / `next_slot`): concurrent create (pop-or-bump) + destroy (push) on the same parent must never hand the same slot to two live children. The per-thread chunk pool itself is `__thread` (no cross-thread surface); this is the real "arena locks" surface. | ✅ verified: **6 executions, no errors** |
 
 ## How to run
 
@@ -93,12 +94,16 @@ would need a different tool (e.g. a TLA+ spec of the monitor).
 
 ## Roadmap
 
-Three primitives modeled (lockfree hashmap, mailbox, bus queue).
-Remaining, by model-checking value (see the inventory in the issue
-thread):
-
-1. **Chunk pool / arena locks** — lower interleaving risk; model if a
-   regression appears.
+Four primitives modeled: lockfree hashmap, mailbox, bus queue, and the
+arena subregion-slot lock. That covers the inventory in the issue thread
+— the last entry, **"chunk pool / arena locks,"** resolved to the
+`arena_subregion_model.c` above: the chunk pool proper is `__thread`
+(thread-local, no cross-thread interleaving to check — its one historical
+race, the env-driven prefill lazy-init, is a `pthread_once` and raceless
+by construction), so the meaningful surface is the parent arena's
+child-slot freelist lock, now modeled. No primitive with a cross-thread
+synchronization surface is left unmodeled; add a model alongside any new
+one.
 
 **CI gate (live).** The `genmc` job in `.github/workflows/tests.yml`
 builds GenMC (cached on `build_genmc.sh`, ~3 min on a cold cache) and
