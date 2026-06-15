@@ -813,15 +813,156 @@ static int run_reserve_commit(const char *name) {
     return 0;
 }
 
+/* ---- torn-read regression: deterministic danger-band delivery ----
+ *
+ * The pre-fix post_copy guard resynced only after the producer had lapped by
+ * a full `cap` (`recommitted - local > cap`); the proof (the foreign bus ABI header)
+ * requires resyncing at the safe window `cap - S` (S = min(cap/4, 1 MiB)),
+ * because a producer within S of lapping can already be overwriting the
+ * record the reader is copying. So the bug is precisely: the reader delivers
+ * a record whose lag behind the cursor lies in the danger band (cap-S, cap),
+ * where a correct reader must resync instead.
+ *
+ * Rather than race two free-running threads (flaky — and the throttling
+ * needed to keep the reader off the live edge deadlocks the *fixed* reader,
+ * which resyncs past the backlog), this drives the window decision DIRECTLY
+ * and deterministically: plant one record at a lag in the danger band whose
+ * header seq disagrees with its payload (the shape a real mid-copy tear
+ * produces) and observe whether the reader delivers it.
+ *
+ *   correct reader (window = cap - S): resyncs past it → never delivered.
+ *   pre-fix reader (window = cap):     delivers it    → handler flags torn.
+ *
+ * A consistent control record at low lag is delivered first by BOTH readers,
+ * so a fixed reader's zero danger-band deliveries read as "correctly
+ * skipped", not "never ran". */
+#define CLOBBER_PLEN 60000   /* multiple of 16: word-wise scan + half split */
+#define CLOBBER_CAP  (1 << 20)
+static _Atomic long g_clobber_delivered = 0;
+static _Atomic long g_clobber_torn = 0;
+
+extern int64_t lotus_shm_last_record_seq(void);
+
+static void on_clobber(void *self, void *slot) {
+    (void)self;
+    /* A conforming record has every payload byte equal to (seq & 0xff), with
+     * seq taken from the same record's header — true only if the read was
+     * untorn. Word-wise compare (PLEN/8 u64s). */
+    const uint64_t *q = (const uint64_t *)slot;
+    int64_t seq = lotus_shm_last_record_seq();
+    uint64_t wantw = (uint64_t)(unsigned char)(seq & 0xff) * 0x0101010101010101ULL;
+    int torn = 0;
+    for (int i = 0; i < CLOBBER_PLEN / 8; i++) {
+        if (q[i] != wantw) { torn = 1; break; }
+    }
+    atomic_fetch_add_explicit(&g_clobber_delivered, 1, memory_order_relaxed);
+    if (torn) atomic_fetch_add_explicit(&g_clobber_torn, 1, memory_order_relaxed);
+}
+
+/* Plant one record at ring offset `pos`: header seq + a payload whose first
+ * half is byte `b0` and second half `b1`. b0 == b1 == seq&0xff is a
+ * conforming record; b1 != seq&0xff is a torn-looking one. */
+static void clobber_plant(char *base, uint64_t pos, uint64_t seq,
+                          unsigned char b0, unsigned char b1) {
+    uint64_t off = DATA_AT + pos;
+    *(uint32_t *)(base + off + RH_LEN_OFF) = (uint32_t)CLOBBER_PLEN;
+    *(uint8_t *)(base + off + RH_KIND_OFF) = 0;            /* Data */
+    *(uint64_t *)(base + off + 8) = seq;                   /* seq @ 8 */
+    memset(base + off + RH_BYTES, b0, CLOBBER_PLEN / 2);
+    memset(base + off + RH_BYTES + CLOBBER_PLEN / 2, b1, CLOBBER_PLEN / 2);
+}
+
+static int run_clobber(const char *name) {
+    uint64_t capacity = CLOBBER_CAP;
+    uint64_t S = capacity / 4;                                /* matches the reader */
+    uint64_t step = RH_BYTES + align_up(CLOBBER_PLEN, ALIGN); /* 32 + 60000 */
+    size_t total = DATA_AT + (size_t)capacity;
+    int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) { fprintf(stderr, "shm_open: %s\n", strerror(errno)); return 2; }
+    if (ftruncate(fd, (off_t)total) != 0) { shm_unlink(name); return 2; }
+    void *map = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) { shm_unlink(name); return 2; }
+    char *base = (char *)map;
+    *(uint64_t *)(base + 0) = MAGIC;
+    *(uint32_t *)(base + VERSION_OFF) = (uint32_t)VERSION_VAL;
+    *(uint32_t *)(base + BUFSZ_OFF) = (uint32_t)capacity;
+    _Atomic uint64_t *cursor = (_Atomic uint64_t *)(base + CURSOR_OFF);
+    atomic_store_explicit(cursor, 0, memory_order_release);
+
+    /* record_header(32) + value_size(PLEN) + seq@8 + pad kind@4==1 +
+     * recheck post_copy. */
+    uint64_t desc[33] = {0};
+    desc[0]  = MAGIC;       desc[1]  = 1;
+    desc[2]  = VERSION_OFF; desc[3]  = VERSION_WIDTH; desc[4] = VERSION_VAL; desc[5] = 1;
+    desc[6]  = BUFSZ_OFF;   desc[7]  = BUFSZ_WIDTH;   desc[8] = 1;
+    desc[9]  = DATA_AT;     desc[10] = CURSOR_OFF;
+    desc[11] = LEN_WIDTH;   desc[12] = ALIGN;
+    desc[15] = CLOBBER_PLEN;                          /* value_size (typed) */
+    desc[21] = RH_BYTES;                              /* record_header_bytes */
+    desc[22] = RH_KIND_OFF; desc[23] = 1; desc[24] = 1; desc[25] = 1;  /* pad kind==1 */
+    desc[26] = 1;                                     /* post_copy_recheck */
+    desc[27] = 8;           desc[28] = 8;             /* seq @ 8, u64 */
+
+    lotus_bus_register_subscriber_shm_ring_layout(
+        "clobber.ticks", name, desc, NULL, on_clobber);
+    struct timespec warmup = {0, 5 * 1000 * 1000};  /* 5ms to attach + park at 0 */
+    nanosleep(&warmup, NULL);
+
+    /* Phase A — a CONSISTENT control record at low lag (1 record behind).
+     * Both readers deliver it; proves the reader thread is alive. */
+    clobber_plant(base, 0, /*seq*/ 1, /*b0*/ 1, /*b1*/ 1);
+    atomic_store_explicit(cursor, step, memory_order_release);
+    struct timespec settle = {0, 200 * 1000 * 1000};  /* 200ms */
+    nanosleep(&settle, NULL);
+
+    /* Phase B — a deliberately TORN record (header seq=2 but its second
+     * payload half is 99, not 2) planted at lag `danger` in the band
+     * (cap - S, cap). The reader, now parked at local=step, must decide:
+     * a correct window (cap - S) resyncs past it (never delivered); the
+     * pre-fix window (cap) delivers it and the handler flags the tear. */
+    clobber_plant(base, step, /*seq*/ 2, /*b0*/ 2, /*b1*/ 99);
+    uint64_t danger = capacity - S / 2;                /* in (cap - S, cap) */
+    atomic_store_explicit(cursor, step + danger, memory_order_release);
+    nanosleep(&settle, NULL);
+
+    long delivered = atomic_load_explicit(&g_clobber_delivered, memory_order_acquire);
+    long torn = atomic_load_explicit(&g_clobber_torn, memory_order_acquire);
+
+    /* The reader holds its own mapping; the atexit teardown stops + joins
+     * it. Drop the producer mapping + name. */
+    munmap(map, total); close(fd); shm_unlink(name);
+
+    fprintf(stderr, "clobber: delivered=%ld torn=%ld (lag=%llu band=(%llu,%llu))\n",
+            delivered, torn, (unsigned long long)danger,
+            (unsigned long long)(capacity - S), (unsigned long long)capacity);
+    if (delivered < 1) {
+        fprintf(stderr, "clobber: the reader never delivered the control "
+                "record — it is not reading; inconclusive\n");
+        return 4;
+    }
+    if (torn != 0) {
+        fprintf(stderr,
+                "clobber: a record at lag %llu in the danger band (cap-S, cap) "
+                "was delivered — the post_copy window is `cap`, not `cap-S`, so "
+                "the reader hands out records a free-running producer can be "
+                "overwriting mid-copy\n", (unsigned long long)danger);
+        return 3;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr,
                 "usage: %s <roundtrip|wrap|producer|producer_wrap|"
                 "bad_bufsize|short_record|u64_lenprefix|heterogeneous|"
                 "produce_external|lotus_dogfood|produce_native_external|"
-                "reserve_commit> <shm_name>\n",
+                "reserve_commit|clobber> <shm_name>\n",
                 argv[0]);
         return 1;
+    }
+    if (strcmp(argv[1], "clobber") == 0) {
+        return run_clobber(argv[2]);
     }
     if (strcmp(argv[1], "reserve_commit") == 0) {
         return run_reserve_commit(argv[2]);

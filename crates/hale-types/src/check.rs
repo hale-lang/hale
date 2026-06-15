@@ -4891,6 +4891,50 @@ impl<'a> Checker<'a> {
                         off_key, w_key))),
                 }
             }
+            // A declared in-band header field requires a record_header_bytes
+            // (otherwise the reader's header is only the length prefix and
+            // the field reads past the record — silent corruption), and no
+            // two header fields (or a field and the length prefix at offset
+            // 0) may overlap.
+            let mut intervals: Vec<(&str, i64, i64)> = Vec::new();
+            if len_prefix_w > 0 {
+                intervals.push(("len_prefix", 0, len_prefix_w as i64));
+            }
+            let mut any_header_field = false;
+            for (name, off_key, w_key) in [
+                ("pad_field", "pad_field_offset", "pad_field_width"),
+                ("seq", "seq_offset", "seq_width"),
+                ("kernel_ns", "kernel_ns_offset", "kernel_ns_width"),
+                ("user_ns", "user_ns_offset", "user_ns_width"),
+            ] {
+                if let (Some(o), Some(w)) = (attr_int(off_key), attr_int(w_key)) {
+                    any_header_field = true;
+                    if o >= 0 && matches!(w, 1 | 2 | 4 | 8) {
+                        intervals.push((name, o, o + w));
+                    }
+                }
+            }
+            if any_header_field && rh.map_or(true, |v| v <= 0) {
+                self.diags.push(Diag::ty(fr.span, format!(
+                    "ring_layout `{}`: record_header_bytes must be declared \
+                     (and positive) when in-band header fields (pad_field / \
+                     seq / kernel_ns / user_ns) are used — without it the \
+                     reader's header is only the length prefix and the field \
+                     would read past the record",
+                    r.name.name)));
+            }
+            for i in 0..intervals.len() {
+                for j in (i + 1)..intervals.len() {
+                    let (an, a0, a1) = intervals[i];
+                    let (bn, b0, b1) = intervals[j];
+                    if a0 < b1 && b0 < a1 {
+                        self.diags.push(Diag::ty(fr.span, format!(
+                            "ring_layout `{}`: header fields `{}` [{}, {}) and \
+                             `{}` [{}, {}) overlap",
+                            r.name.name, an, a0, a1, bn, b0, b1)));
+                    }
+                }
+            }
         }
     }
 
