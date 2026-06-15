@@ -979,6 +979,12 @@ int lotus_bus_publish_shm_ring_layout(const char *subject,
                     (unsigned long long)cap);
             _exit(1);
         }
+        /* Release fence before this record's body stores, ordering the
+         * PREVIOUS record's cursor publish ahead of them (proof part (a),
+         * the foreign bus ABI header). Without it, on a weakly-ordered CPU (ARM) a
+         * reader could observe a body clobber before the cursor advance
+         * that proves it, and accept a torn record. A no-op on x86-TSO. */
+        atomic_thread_fence(memory_order_release);
         /* Tail-pad if the record would straddle the wrap. `p->pos`
          * tracks `p->local % cap` incrementally — no per-record modulo. */
         uint64_t pos = p->pos;
@@ -1055,6 +1061,11 @@ void *lotus_bus_reserve_shm_ring_layout(const char *subject, uint64_t max) {
         }
         p->reserved_max = max;
         p->has_reservation = 1;
+        /* Release fence before the caller's body stores into the reserved
+         * slot, ordering the previous publish ahead of them (proof part
+         * (a), the foreign bus ABI header). The matching publish is the release store
+         * in lotus_bus_commit_shm_ring_layout. */
+        atomic_thread_fence(memory_order_release);
         return base + d->data_at + pos + d->len_prefix_width;
     }
     fprintf(stderr,
@@ -1311,9 +1322,22 @@ static void *shm_ring_layout_reader_thread(void *arg) {
      * align_up(hdr + len, align) stride equals hdr + align(len). */
     uint64_t hdr = d->record_header_bytes ? d->record_header_bytes
                                           : d->len_prefix_width;
-    /* Scratch for the post_copy torn-read guard: a record is memcpy'd
-     * here, then the cursor is re-read; if it was lapped during the copy
-     * the record is discarded. Grown on demand, freed at thread exit. */
+    /* Torn-read slack S and the safe window — matches the reference crate's
+     * bus proof (the foreign bus ABI header). A reader's copy of the record at logical
+     * `local` is provably untorn only while the producer has not advanced
+     * to within S bytes of lapping it, i.e. while `cursor - local <=
+     * cap - S`. S also bounds the largest record the reader will accept.
+     * S = min(cap/4, 1 MiB), the same expression the producer uses. */
+    uint64_t S = cap / 4;
+    if (S > (1ull << 20)) S = 1ull << 20;
+    if (S == 0) S = cap;                       /* degenerate tiny ring */
+    uint64_t window = (S < cap) ? cap - S : 0;
+    /* Scratch for the post_copy torn-read guard: the whole record (header
+     * + payload, <= S bytes) is memcpy'd here, then the cursor is re-read
+     * behind an acquire fence; the record is discarded if the producer
+     * lapped into it during the copy. Sized once to S — no per-record
+     * realloc, and never an unguarded fallback dispatch. Allocated lazily
+     * below, only when the layout asks for the recheck. */
     char  *scratch = NULL;
     size_t scratch_cap = 0;
     while (!atomic_load_explicit(&sub->should_stop,
@@ -1331,9 +1355,12 @@ static void *shm_ring_layout_reader_thread(void *arg) {
             nanosleep(&ts, NULL);
             continue;
         }
-        /* Lapped: missed bytes are gone — resync to a commit
-         * boundary and drop the gap. */
-        if (committed - local > cap) {
+        /* Lapped: missed bytes are gone — resync to a commit boundary and
+         * drop the gap. With the recheck on, resync at the safe window
+         * (cap - S) rather than a full cap, so we never even begin copying
+         * a record the producer has already reached. */
+        uint64_t lap_threshold = d->post_copy_recheck ? window : cap;
+        if (committed - local > lap_threshold) {
             local = committed;
             pos = committed % cap;
             continue;
@@ -1361,55 +1388,134 @@ static void *shm_ring_layout_reader_thread(void *arg) {
                 break;
             }
             uint64_t phys = d->data_at + pos;
-            /* Header-field pad marker (e.g. the reference crate kind==1): the
-             * producer wrote a tail pad to avoid straddling the wrap.
-             * Jump to the next boundary. Checked before len so a pad
-             * record's len field is never interpreted as a real length. */
+
+            if (d->post_copy_recheck) {
+                /* ---- Two-stage torn-read proof (the foreign bus ABI header) ----
+                 * A free-running producer can overwrite this record while
+                 * we read it. So: copy the HEADER, acquire-fence, re-read
+                 * the cursor — if the producer advanced past the safe
+                 * window (cap - S) during the copy, the header may be torn
+                 * and MUST NOT be parsed. Then parse `len` from the COPY,
+                 * bound it, copy the PAYLOAD, fence, and re-read again.
+                 * Only a record that survives both window checks is
+                 * authentic; its header fields AND payload are then read
+                 * from the stable copy, never from live (racing) memory. */
+                if (!scratch) {
+                    /* Size scratch once to S (the max record). On OOM, never
+                     * dispatch unguarded — back off and re-snapshot. */
+                    scratch = (char *)malloc((size_t)S);
+                    scratch_cap = scratch ? (size_t)S : 0;
+                    if (!scratch) {
+                        struct timespec ts = {0, 100 * 1000};  /* 100us */
+                        nanosleep(&ts, NULL);
+                        break;
+                    }
+                }
+                /* A conforming layout has hdr <= the smallest record <= S;
+                 * a hostile hdr that won't fit scratch can't be guarded. */
+                if ((uint64_t)hdr > (uint64_t)scratch_cap) {
+                    local = committed; pos = committed % cap; break;
+                }
+                memcpy(scratch, base + phys, (size_t)hdr);
+                atomic_thread_fence(memory_order_acquire);
+                uint64_t w1 = atomic_load_explicit(
+                    (const _Atomic uint64_t *)(base + d->cursor_off),
+                    memory_order_acquire);
+                if (w1 - local > window) {     /* header copy torn / lapped */
+                    local = w1; pos = w1 % cap; break;
+                }
+                /* All header decisions are made from the COPY (never live):
+                 * pad marker first, so a pad record's len field is never
+                 * read as a real length. */
+                if (d->has_pad_field) {
+                    uint64_t kv = shm_layout_read_uint(
+                        scratch + d->pad_field_off, d->pad_field_width);
+                    if (kv == d->pad_field_value) {
+                        local += cap - pos; pos = 0; continue;
+                    }
+                }
+                uint64_t len = shm_layout_read_uint(scratch,
+                                                    d->len_prefix_width);
+                if (d->has_pad_sentinel && len == d->pad_sentinel) {
+                    local += cap - pos; pos = 0; continue;
+                }
+                if (d->value_size != 0 && len != d->value_size) {
+                    local = committed; pos = committed % cap; break;
+                }
+                uint64_t room = cap - pos - hdr;
+                if (len == 0 || len > room) {
+                    local = committed; pos = committed % cap; break;
+                }
+                uint64_t step = hdr + len;
+                if (d->align > 1) {
+                    step = (step + d->align - 1) & ~(d->align - 1);
+                }
+                /* A record larger than the slack can never be proven
+                 * untorn (cap - S would be unsatisfiable) — treat an
+                 * over-large frame as corruption and resync. The second
+                 * clause guards the scratch payload write. */
+                if (step > S || (size_t)len > scratch_cap - (size_t)hdr) {
+                    local = committed; pos = committed % cap; break;
+                }
+                memcpy(scratch + hdr, base + phys + hdr, (size_t)len);
+                atomic_thread_fence(memory_order_acquire);
+                uint64_t w2 = atomic_load_explicit(
+                    (const _Atomic uint64_t *)(base + d->cursor_off),
+                    memory_order_acquire);
+                if (w2 - local > window) {     /* payload copy torn / lapped */
+                    local = w2; pos = w2 % cap; break;
+                }
+                /* Authentic. Surface the in-band header fields from the
+                 * STABLE COPY (so a torn/discarded record never leaks
+                 * stale seq/timestamps), then dispatch from the copy. */
+                if (d->seq_width) {
+                    g_last_record_seq = (int64_t)shm_layout_read_uint(
+                        scratch + d->seq_off, d->seq_width);
+                }
+                if (d->kernel_ns_width) {
+                    g_last_record_kernel_ns = (int64_t)shm_layout_read_uint(
+                        scratch + d->kernel_ns_off, d->kernel_ns_width);
+                }
+                if (d->user_ns_width) {
+                    g_last_record_user_ns = (int64_t)shm_layout_read_uint(
+                        scratch + d->user_ns_off, d->user_ns_width);
+                }
+                if (d->value_size == 0) {
+                    shm_layout_dispatch_view(sub, scratch + hdr, len);
+                } else {
+                    sub->handler_fn(sub->self_ptr, scratch + hdr);
+                }
+                local += step;
+                pos += step;
+                if (pos >= cap) pos -= cap;
+                continue;
+            }
+
+            /* ---- Non-recheck path: zero-copy live dispatch. Lossy + safe
+             * for an attach-after, non-free-running in-process producer
+             * (the consumer resyncs on a full-cap lap). Unchanged behavior;
+             * a free-running foreign producer should set `recheck
+             * post_copy` to get the torn-read proof above. ---- */
             if (d->has_pad_field) {
                 uint64_t kv = shm_layout_read_uint(
                     base + phys + d->pad_field_off, d->pad_field_width);
                 if (kv == d->pad_field_value) {
-                    local += cap - pos;
-                    pos = 0;
-                    continue;
+                    local += cap - pos; pos = 0; continue;
                 }
             }
             uint64_t len = shm_layout_read_uint(base + phys,
                                                 d->len_prefix_width);
             if (d->has_pad_sentinel && len == d->pad_sentinel) {
-                /* Tail pad — jump to the next wrap boundary. */
-                local += cap - pos;
-                pos = 0;
-                continue;
+                local += cap - pos; pos = 0; continue;
             }
-            /* The handler reads exactly `value_size` bytes; a conforming
-             * producer frames `len == value_size`. A non-conforming /
-             * hostile producer with a short (or long) record would let
-             * the handler read past the framed bytes — treat any
-             * mismatch as corruption and resync rather than dispatch.
-             * (Checking this first also pins `len` to a known-small
-             * value before the arithmetic below.) */
             if (d->value_size != 0 && len != d->value_size) {
-                local = committed;
-                pos = committed % cap;
-                break;
+                local = committed; pos = committed % cap; break;
             }
-            /* The record's payload must fit before the wrap. Overflow-
-             * safe: pos + hdr <= cap (checked above), so the room is
-             * `cap - pos - hdr`; compare `len` against it without adding
-             * the (attacker-controlled) len. */
             uint64_t room = cap - pos - hdr;
             if (len == 0 || len > room) {
-                local = committed;
-                pos = committed % cap;
-                break;
+                local = committed; pos = committed % cap; break;
             }
             char *payload = base + phys + hdr;
-            /* Surface the in-band header fields (#5 follow-on): decode the
-             * declared scalars from this record's header into thread-locals
-             * the handler reads via std::shm::last_record_*. Cheap when
-             * unused (widths are 0). Read before any post_copy copy so they
-             * reflect this record. */
             if (d->seq_width) {
                 g_last_record_seq = (int64_t)shm_layout_read_uint(
                     base + phys + d->seq_off, d->seq_width);
@@ -1422,53 +1528,9 @@ static void *shm_ring_layout_reader_thread(void *arg) {
                 g_last_record_user_ns = (int64_t)shm_layout_read_uint(
                     base + phys + d->user_ns_off, d->user_ns_width);
             }
-            if (d->post_copy_recheck) {
-                /* Copy the record out, take an acquire fence, then re-read
-                 * the cursor. A record starting at monotonic `local` is
-                 * intact only while the producer hasn't yet written
-                 * `local + cap` (which would overwrite its first physical
-                 * byte). If the re-read shows it lapped during our copy,
-                 * the copied bytes may be torn — discard and resync rather
-                 * than hand a frankenrecord to the handler. */
-                if (scratch_cap < (size_t)len) {
-                    char *ns = (char *)realloc(scratch, (size_t)len);
-                    if (ns) { scratch = ns; scratch_cap = (size_t)len; }
-                }
-                if (scratch_cap >= (size_t)len) {
-                    memcpy(scratch, payload, (size_t)len);
-                    atomic_thread_fence(memory_order_acquire);
-                    uint64_t recommitted = atomic_load_explicit(
-                        (const _Atomic uint64_t *)(base + d->cursor_off),
-                        memory_order_acquire);
-                    if (recommitted - local > cap) {
-                        local = recommitted;
-                        pos = recommitted % cap;
-                        break;
-                    }
-                    if (d->value_size == 0) {
-                        shm_layout_dispatch_view(sub, scratch, len);
-                    } else {
-                        sub->handler_fn(sub->self_ptr, scratch);
-                    }
-                } else {
-                    /* realloc failed — fall back to a zero-copy dispatch
-                     * (no torn-read guard this once) rather than drop. */
-                    if (d->value_size == 0) {
-                        shm_layout_dispatch_view(sub, payload, len);
-                    } else {
-                        sub->handler_fn(sub->self_ptr, payload);
-                    }
-                }
-            } else if (d->value_size == 0) {
-                /* Raw-frame mode: the bound payload is a BytesView, so
-                 * the consumer can't assume a fixed record size. Hand
-                 * the handler a bounded BytesView over the record payload;
-                 * it decodes (discriminator + std::bytes::read_*) itself.
-                 * The framed `len` is already validated to fit above. */
+            if (d->value_size == 0) {
                 shm_layout_dispatch_view(sub, payload, len);
             } else {
-                /* Typed-flat mode: the record IS the payload struct
-                 * (len == value_size, checked above); hand its pointer. */
                 sub->handler_fn(sub->self_ptr, payload);
             }
             uint64_t step = hdr + len;

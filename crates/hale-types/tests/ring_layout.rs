@@ -91,6 +91,56 @@ ring_layout FixedHdrRing {
 }
 
 #[test]
+fn record_header_missing_size_and_overlap_error() {
+    // A header field declared WITHOUT record_header_bytes: the reader's
+    // header would be only the length prefix and the field would read past
+    // the record (silent corruption) — must be rejected.
+    let no_size = r#"
+ring_layout NoSize {
+    magic 0x52494E47464D5431;
+    version 1 at 8 : u32;
+    buffer_size at 12 : u32;
+    data_at 128;
+    cursor published { at 64; repr atomic_u64; load acquire; unit bytes; }
+    framing byte_records {
+        len_prefix u32; align 8;
+        seq_offset 8; seq_width 8;
+    }
+    overflow lap_detect;
+}
+"#;
+    assert!(
+        check(no_size).iter().any(|m| m.contains("record_header_bytes must be declared")),
+        "a header field without record_header_bytes must error; got: {:?}",
+        check(no_size)
+    );
+
+    // Two header fields whose byte ranges overlap (seq [8,16), kernel_ns
+    // [12,20)) — silently mis-reads one over the other — must be rejected.
+    let overlap = r#"
+ring_layout Overlap {
+    magic 0x52494E47464D5431;
+    version 1 at 8 : u32;
+    buffer_size at 12 : u32;
+    data_at 128;
+    cursor published { at 64; repr atomic_u64; load acquire; unit bytes; }
+    framing byte_records {
+        len_prefix u32; align 8;
+        record_header_bytes 32;
+        seq_offset 8; seq_width 8;
+        kernel_ns_offset 12; kernel_ns_width 8;
+    }
+    overflow lap_detect;
+}
+"#;
+    assert!(
+        check(overlap).iter().any(|m| m.contains("overlap")),
+        "overlapping header fields must error; got: {:?}",
+        check(overlap)
+    );
+}
+
+#[test]
 fn unknown_scalar_repr_errors() {
     let src = r#"
 ring_layout R {
