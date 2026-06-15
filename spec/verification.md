@@ -132,7 +132,10 @@ build-failing gate; the item-1 warnings are advisory.
 
 Item 2 (race-completeness for substrate primitives) is a *substrate*
 quality bar, not a user-facing check: it model-checks the runtime's own
-concurrent primitives under all C11 interleavings. A proof-of-concept
-has landed (the lockfree hashmap's enter/drain/grow protocol, verified
-exhaustively with GenMC) — see `verification/`. It is not yet a CI gate
-across every primitive.
+concurrent primitives under all C11 interleavings with GenMC, run as a
+standing CI gate (the `genmc` job). Every substrate primitive with a
+cross-thread synchronization surface is now modeled: the lockfree
+hashmap's enter/drain/grow protocol, the pinned-locus mailbox monitor,
+the cooperative-pool bus queue's conditional lock, and the arena
+subregion-slot freelist lock. (The per-thread chunk pool needs no model
+— it is `__thread`, with no cross-thread access.) See `verification/`.
