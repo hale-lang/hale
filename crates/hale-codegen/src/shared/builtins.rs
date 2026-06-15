@@ -1837,6 +1837,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_tls_recv_into", tls_recv_into_ty, None);
+        // 2026-06-14 — TLS fast-path siblings (handle-addressed): nodelay,
+        // SO_TIMESTAMPNS opt-in, recv_stamped + the stamp getters.
+        self.module
+            .add_function("lotus_tls_recv_stamped_into", tls_recv_into_ty, None);
+        let tls_bool_setter_ty =
+            i32_t.fn_type(&[i32_t.into(), i32_t.into()], false);
+        self.module.add_function("lotus_tls_set_nodelay", tls_bool_setter_ty, None);
+        self.module.add_function("lotus_tls_set_rx_timestamps", tls_bool_setter_ty, None);
+        self.module.add_function(
+            "lotus_tls_last_recv_kernel_ns", i64_t.fn_type(&[], false), None);
+        self.module.add_function(
+            "lotus_tls_last_recv_user_ns", i64_t.fn_type(&[], false), None);
         // declare i64 @lotus_udp_recv_into(i32 fd, ptr builder, i64 max_bytes)
         let udp_recv_into_ty = i64_t.fn_type(
             &[i32_t.into(), ptr_t.into(), i64_t.into()],

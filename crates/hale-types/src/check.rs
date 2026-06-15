@@ -526,6 +526,7 @@ const BLOCKING_STDLIB_PATHS: &[&[&str]] = &[
     &["std", "io", "tcp", "__recv_bytes"],
     &["std", "io", "tcp", "__accept_one"],
     &["std", "io", "tls", "recv_into"],
+    &["std", "io", "tls", "recv_stamped_into"],
     &["std", "io", "tls", "recv_bytes"],
     &["std", "process", "run"],
     &["std", "process", "wait"],

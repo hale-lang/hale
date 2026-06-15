@@ -1090,6 +1090,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "io", "tcp", "set_rx_timestamps"] => Ok(Some(
                 self.lower_std_io_tcp_set_rx_timestamps(args, scope)?,
             )),
+            // TLS fast-path siblings — same fd+Bool helper; the C side
+            // resolves the handle to the underlying socket fd (2026-06-14).
+            ["std", "io", "tls", "set_nodelay"] => Ok(Some(
+                self.lower_tcp_set_bool_opt_fallible(
+                    args, scope, "lotus_tls_set_nodelay", "set_nodelay",
+                )?,
+            )),
+            ["std", "io", "tls", "set_rx_timestamps"] => Ok(Some(
+                self.lower_tcp_set_bool_opt_fallible(
+                    args, scope, "lotus_tls_set_rx_timestamps", "set_rx_timestamps",
+                )?,
+            )),
             // TLS siblings — same helper; the first arg is a TLS handle, the
             // C side resolves it to the connection's underlying fd. Bounds a
             // blocking SSL_read so a half-open connection is detected

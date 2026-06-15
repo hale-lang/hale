@@ -45,9 +45,16 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <limits.h>
+#include <sys/socket.h>   /* SO_TIMESTAMPNS, setsockopt, SOL_SOCKET */
+#include <sys/ioctl.h>    /* ioctl */
+#include <time.h>         /* clock_gettime, struct timespec */
+#if defined(__linux__)
+#include <linux/sockios.h>  /* SIOCGSTAMPNS */
+#endif
 
 /* Forward decls — bodies live in lotus_arena.c. */
 int   lotus_tcp_connect(const char *host, uint16_t port);
+int   lotus_tcp_set_nodelay(int fd, int on);
 int64_t lotus_bytes_len(const void *b);
 void *lotus_bytes_data(void *b);
 /* Phase 1: builder-reserve helpers for recv_into. Keep the
@@ -391,6 +398,86 @@ int lotus_tls_set_send_timeout_ns(int handle, int64_t ns) {
     int fd = lotus_tls__handle_fd(handle);
     if (fd < 0) return -1;
     return lotus_tcp_set_send_timeout_ns(fd, ns);
+}
+
+/* 2026-06-14 — TLS siblings of the tcp fast-path knobs. The handle's
+ * underlying fd is an ordinary TCP socket, so both reuse the plain-tcp
+ * primitives after resolving handle -> raw_fd. */
+int lotus_tls_set_nodelay(int handle, int on) {
+    int fd = lotus_tls__handle_fd(handle);
+    if (fd < 0) return -1;
+    return lotus_tcp_set_nodelay(fd, on);
+}
+
+int lotus_tls_set_rx_timestamps(int handle, int on) {
+    int fd = lotus_tls__handle_fd(handle);
+    if (fd < 0) return -1;
+#ifdef SO_TIMESTAMPNS
+    int v = on ? 1 : 0;
+    return setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPNS, &v, sizeof(v));
+#else
+    (void)on; errno = ENOTSUP; return -1;
+#endif
+}
+
+/* Kernel/user RX timestamps of the most recent record read on this thread
+ * via lotus_tls_recv_stamped_into. Read immediately after the call. */
+static __thread int64_t g_tls_last_recv_kernel_ns = 0;
+static __thread int64_t g_tls_last_recv_user_ns   = 0;
+
+int64_t lotus_tls_last_recv_kernel_ns(void) { return g_tls_last_recv_kernel_ns; }
+int64_t lotus_tls_last_recv_user_ns(void)   { return g_tls_last_recv_user_ns; }
+
+/* recv_stamped_into: identical to recv_into (SSL_read straight into the
+ * caller's builder, same >0/0/-1/-2 contract), plus it captures the wire-
+ * arrival timestamp. The kernel SCM_TIMESTAMPNS stamp rides the *socket*
+ * recvmsg, but SSL_read sits in front of the socket — so rather than swap
+ * OpenSSL's BIO for a recvmsg one (which would touch every TLS read), we
+ * let SSL_read do its ordinary socket read (the kernel records the stamp
+ * because SO_TIMESTAMPNS is enabled via set_rx_timestamps) and then pull
+ * the last segment's stamp with SIOCGSTAMPNS. user_ns is a CLOCK_REALTIME
+ * stamp at SSL_read return; kernel_ns is 0 when the platform/path delivered
+ * none (loopback, or a NIC without RX timestamping). Caveat: if SSL_read
+ * returns buffered plaintext without a fresh socket read, kernel_ns reflects
+ * the previous segment — fine for a steady stream. */
+int64_t lotus_tls_recv_stamped_into(int handle, void *builder, int64_t max_bytes) {
+    g_tls_last_recv_kernel_ns = 0;
+    g_tls_last_recv_user_ns = 0;
+    if (max_bytes <= 0) return -1;
+    SSL *ssl = lotus_tls__handle_ssl(handle);
+    if (!ssl) return -1;
+    char *tail = (char *)lotus_bytes_builder_reserve(builder, max_bytes);
+    if (!tail) return -1;
+    int n = SSL_read(ssl, tail, (int)max_bytes);
+    if (n < 0) {
+        int err = SSL_get_error(ssl, n);
+        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+            return -2;
+        }
+        fprintf(stderr,
+                "lotus_tls_recv_stamped_into: SSL_read failed (err=%d)\n", err);
+        ERR_print_errors_fp(stderr);
+        return -1;
+    }
+    if (n > 0) {
+        lotus_bytes_builder_advance(builder, (int64_t)n);
+        struct timespec tu;
+        if (clock_gettime(CLOCK_REALTIME, &tu) == 0) {
+            g_tls_last_recv_user_ns =
+                (int64_t)tu.tv_sec * 1000000000LL + (int64_t)tu.tv_nsec;
+        }
+#ifdef SIOCGSTAMPNS
+        int fd = lotus_tls__handle_fd(handle);
+        if (fd >= 0) {
+            struct timespec tk;
+            if (ioctl(fd, SIOCGSTAMPNS, &tk) == 0) {
+                g_tls_last_recv_kernel_ns =
+                    (int64_t)tk.tv_sec * 1000000000LL + (int64_t)tk.tv_nsec;
+            }
+        }
+#endif
+    }
+    return (int64_t)n;
 }
 
 /* ----------------------------------------------------------------
