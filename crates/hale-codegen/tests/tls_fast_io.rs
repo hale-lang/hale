@@ -5,9 +5,11 @@
 //! resolves to the underlying socket fd, so `set_nodelay` / SO_TIMESTAMPNS
 //! reuse the plain-tcp primitives, and `recv_stamped_into` is `recv_into`
 //! plus a kernel-timestamp capture. The kernel stamp rides the *socket*
-//! recvmsg but `SSL_read` sits in front, so rather than swap OpenSSL's BIO
-//! (which would touch every TLS read), the stamp is pulled with
-//! `SIOCGSTAMPNS` after the ordinary `SSL_read` socket read.
+//! recvmsg but `SSL_read` sits in front, so the connection uses a custom BIO
+//! whose read does `recvmsg` + the `SCM_TIMESTAMPNS` cmsg walk, capturing the
+//! stamp on the socket fill that feeds `SSL_read`. (An earlier `SIOCGSTAMPNS`
+//! shortcut was wrong — that ioctl reads `sk_stamp`, which `SO_TIMESTAMPNS`
+//! does not populate; it must come through the recvmsg cmsg.)
 //!
 //! A real TLS connection needs network + a trusted cert (loopback TLS is
 //! blocked by mandatory `SSL_VERIFY_PEER`), so the CI test only proves the
@@ -54,9 +56,11 @@ fn tls_fast_io_surface_compiles_and_links() {
 #[ignore = "requires network + DNS + system trust store; real TLS recv_stamped probe"]
 fn tls_recv_stamped_over_real_host() {
     // Connect to a real HTTPS host, enable nodelay + RX timestamps, GET, and
-    // recv_stamped the response. Confirms the recv_stamped path doesn't break
-    // TLS (decrypts the response) and captures the userspace stamp; the
-    // kernel stamp is best-effort (0 unless the path supports RX timestamping).
+    // recv_stamped the response. Confirms the recvmsg-BIO path doesn't break
+    // TLS (decrypts the response) and captures BOTH the userspace stamp and
+    // the kernel SCM_TIMESTAMPNS wire-arrival stamp. (`kernel_ok` requires the
+    // path to deliver SW RX timestamps — true on a normal NIC; verified
+    // against example.com during development.)
     let src = r#"
         fn main() {
             let h = std::io::tls::connect("example.com", 443) or { println("connect_fail"); return; };
@@ -66,13 +70,15 @@ fn tls_recv_stamped_over_real_host() {
             let _ = std::io::tls::send_bytes(h, req);
             let bld = std::bytes::BytesBuilder { initial_cap: 65536 };
             let n = std::io::tls::recv_stamped_into(h, bld, 16384);
+            let k = std::io::tls::last_recv_kernel_ns();
             let u = std::io::tls::last_recv_user_ns();
             std::io::tls::close(h);
-            println("recv_n=", n, " user_ok=", u > 0);
+            println("recv_n=", n, " kernel_ok=", k > 0, " user_ok=", u > 0);
         }
     "#;
     let (out, status) = build_and_run_argv("realhost", src, &[]);
     assert!(status.success(), "exit {:?}\n{}", status, out);
     assert!(out.contains("recv_n="), "got: {:?}", out);
     assert!(out.contains("user_ok=true"), "userspace stamp must be captured; got: {:?}", out);
+    assert!(out.contains("kernel_ok=true"), "kernel SCM_TIMESTAMPNS stamp must be captured via the recvmsg BIO; got: {:?}", out);
 }

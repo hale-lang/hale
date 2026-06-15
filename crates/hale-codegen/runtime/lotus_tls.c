@@ -45,12 +45,9 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <limits.h>
-#include <sys/socket.h>   /* SO_TIMESTAMPNS, setsockopt, SOL_SOCKET */
-#include <sys/ioctl.h>    /* ioctl */
+#include <sys/socket.h>   /* recvmsg, send, setsockopt, SO_TIMESTAMPNS, cmsg */
+#include <sys/uio.h>      /* struct iovec */
 #include <time.h>         /* clock_gettime, struct timespec */
-#if defined(__linux__)
-#include <linux/sockios.h>  /* SIOCGSTAMPNS */
-#endif
 
 /* Forward decls — bodies live in lotus_arena.c. */
 int   lotus_tcp_connect(const char *host, uint16_t port);
@@ -164,6 +161,116 @@ static int lotus_tls__handle_fd(int handle) {
     return fd;
 }
 
+/* 2026-06-14 (TLS recv_stamped fix) — a custom socket BIO whose read does
+ * recvmsg(2) and captures the kernel SCM_TIMESTAMPNS control message, so the
+ * socket fill that feeds SSL_read records the wire-arrival timestamp. The
+ * earlier SIOCGSTAMPNS-after-SSL_read shortcut was wrong: SO_TIMESTAMPNS is
+ * delivered through the recvmsg cmsg, not via sk_stamp (which SIOCGSTAMP{,NS}
+ * reads) — the ioctl returns ENOENT, so kernel_ns was always 0 (confirmed by
+ * the market-data gateway against a live feed). Every TLS connection uses
+ * this BIO: recvmsg is equivalent to recv for a stream socket, and the cmsg
+ * is present only when SO_TIMESTAMPNS is enabled (set_rx_timestamps), so
+ * non-stamped reads are unaffected. */
+static __thread int64_t g_tls_last_recv_kernel_ns = 0;
+static __thread int64_t g_tls_last_recv_user_ns   = 0;
+
+static int lotus_tls__bio_read(BIO *b, char *buf, int len) {
+    if (!buf || len <= 0) return 0;
+    int fd = (int)(intptr_t)BIO_get_data(b);
+    struct iovec iov;
+    iov.iov_base = buf;
+    iov.iov_len  = (size_t)len;
+    union {
+        char ctl[CMSG_SPACE(sizeof(struct timespec))];
+        struct cmsghdr align;
+    } cu;
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = cu.ctl;
+    msg.msg_controllen = sizeof(cu.ctl);
+    BIO_clear_retry_flags(b);
+    ssize_t n = recvmsg(fd, &msg, 0);
+    if (n < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+            BIO_set_retry_read(b);
+        }
+        return -1;
+    }
+#ifdef SCM_TIMESTAMPNS
+    /* Defensive cmsg read: first control message only, length-validated, no
+     * CMSG_NXTHDR walk (some libcs loop forever on a zero-length cmsg). */
+    if (n > 0 && !(msg.msg_flags & MSG_CTRUNC)) {
+        struct cmsghdr *cm = CMSG_FIRSTHDR(&msg);
+        if (cm != NULL
+            && cm->cmsg_len >= CMSG_LEN(sizeof(struct timespec))
+            && cm->cmsg_level == SOL_SOCKET
+            && cm->cmsg_type == SCM_TIMESTAMPNS) {
+            struct timespec ts;
+            memcpy(&ts, CMSG_DATA(cm), sizeof(ts));
+            g_tls_last_recv_kernel_ns =
+                (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+        }
+    }
+#endif
+    return (int)n;
+}
+
+static int lotus_tls__bio_write(BIO *b, const char *buf, int len) {
+    int fd = (int)(intptr_t)BIO_get_data(b);
+    BIO_clear_retry_flags(b);
+    ssize_t n = send(fd, buf, (size_t)len, MSG_NOSIGNAL);
+    if (n < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+            BIO_set_retry_write(b);
+        }
+        return -1;
+    }
+    return (int)n;
+}
+
+static long lotus_tls__bio_ctrl(BIO *b, int cmd, long num, void *ptr) {
+    (void)ptr;
+    switch (cmd) {
+        case BIO_CTRL_FLUSH:     return 1;
+        case BIO_CTRL_DUP:       return 1;
+        case BIO_CTRL_GET_CLOSE: return BIO_get_shutdown(b);
+        case BIO_CTRL_SET_CLOSE: BIO_set_shutdown(b, (int)num); return 1;
+        default:                 return 0;
+    }
+}
+
+static int lotus_tls__bio_create(BIO *b) {
+    BIO_set_init(b, 0);
+    BIO_set_data(b, NULL);
+    return 1;
+}
+static int lotus_tls__bio_destroy(BIO *b) { (void)b; return 1; }
+
+static BIO_METHOD *g_tls_recvmsg_bio_method = NULL;
+
+/* Lazily build the BIO_METHOD singleton (guarded by g_tls_mutex). Called
+ * from connect after the ctx lock is released, so no recursive lock. */
+static const BIO_METHOD *lotus_tls__recvmsg_bio(void) {
+    pthread_mutex_lock(&g_tls_mutex);
+    if (!g_tls_recvmsg_bio_method) {
+        BIO_METHOD *m = BIO_meth_new(
+            BIO_get_new_index() | BIO_TYPE_SOURCE_SINK, "lotus recvmsg socket");
+        if (m) {
+            BIO_meth_set_write(m, lotus_tls__bio_write);
+            BIO_meth_set_read(m, lotus_tls__bio_read);
+            BIO_meth_set_ctrl(m, lotus_tls__bio_ctrl);
+            BIO_meth_set_create(m, lotus_tls__bio_create);
+            BIO_meth_set_destroy(m, lotus_tls__bio_destroy);
+            g_tls_recvmsg_bio_method = m;
+        }
+    }
+    const BIO_METHOD *r = g_tls_recvmsg_bio_method;
+    pthread_mutex_unlock(&g_tls_mutex);
+    return r;
+}
+
 int lotus_tls_connect(const char *host, uint16_t port) {
     if (!host) {
         errno = EINVAL;
@@ -200,7 +307,18 @@ int lotus_tls_connect(const char *host, uint16_t port) {
         fprintf(stderr, "lotus_tls_connect: SSL_set1_host failed\n");
         ERR_print_errors_fp(stderr);
     }
-    SSL_set_fd(ssl, raw_fd);
+    /* Use the recvmsg BIO so the kernel SCM_TIMESTAMPNS stamp is captured on
+     * the socket fill (see lotus_tls__recvmsg_bio). Falls back to the default
+     * socket BIO if the method/alloc fails. */
+    const BIO_METHOD *biom = lotus_tls__recvmsg_bio();
+    BIO *bio = biom ? BIO_new(biom) : NULL;
+    if (bio) {
+        BIO_set_data(bio, (void *)(intptr_t)raw_fd);
+        BIO_set_init(bio, 1);
+        SSL_set_bio(ssl, bio, bio);
+    } else {
+        SSL_set_fd(ssl, raw_fd);
+    }
 
     int r = SSL_connect(ssl);
     if (r != 1) {
@@ -420,26 +538,19 @@ int lotus_tls_set_rx_timestamps(int handle, int on) {
 #endif
 }
 
-/* Kernel/user RX timestamps of the most recent record read on this thread
- * via lotus_tls_recv_stamped_into. Read immediately after the call. */
-static __thread int64_t g_tls_last_recv_kernel_ns = 0;
-static __thread int64_t g_tls_last_recv_user_ns   = 0;
-
+/* RX timestamps of the most recent record read on this thread via
+ * lotus_tls_recv_stamped_into. kernel_ns is set by the recvmsg BIO on the
+ * socket fill; user_ns at SSL_read return. Read immediately after the call. */
 int64_t lotus_tls_last_recv_kernel_ns(void) { return g_tls_last_recv_kernel_ns; }
 int64_t lotus_tls_last_recv_user_ns(void)   { return g_tls_last_recv_user_ns; }
 
 /* recv_stamped_into: identical to recv_into (SSL_read straight into the
- * caller's builder, same >0/0/-1/-2 contract), plus it captures the wire-
- * arrival timestamp. The kernel SCM_TIMESTAMPNS stamp rides the *socket*
- * recvmsg, but SSL_read sits in front of the socket — so rather than swap
- * OpenSSL's BIO for a recvmsg one (which would touch every TLS read), we
- * let SSL_read do its ordinary socket read (the kernel records the stamp
- * because SO_TIMESTAMPNS is enabled via set_rx_timestamps) and then pull
- * the last segment's stamp with SIOCGSTAMPNS. user_ns is a CLOCK_REALTIME
- * stamp at SSL_read return; kernel_ns is 0 when the platform/path delivered
- * none (loopback, or a NIC without RX timestamping). Caveat: if SSL_read
- * returns buffered plaintext without a fresh socket read, kernel_ns reflects
- * the previous segment — fine for a steady stream. */
+ * caller's builder, same >0/0/-1/-2 contract), plus the wire-arrival stamp.
+ * The kernel SCM_TIMESTAMPNS stamp is captured by the recvmsg BIO during
+ * SSL_read's underlying socket fill (lotus_tls__recvmsg_bio) — reset here
+ * first so it reflects this call. user_ns is a CLOCK_REALTIME stamp at
+ * SSL_read return; kernel_ns is 0 when the platform/path delivered none
+ * (needs SO_TIMESTAMPNS via set_rx_timestamps + an RX-timestamping path). */
 int64_t lotus_tls_recv_stamped_into(int handle, void *builder, int64_t max_bytes) {
     g_tls_last_recv_kernel_ns = 0;
     g_tls_last_recv_user_ns = 0;
@@ -466,16 +577,7 @@ int64_t lotus_tls_recv_stamped_into(int handle, void *builder, int64_t max_bytes
             g_tls_last_recv_user_ns =
                 (int64_t)tu.tv_sec * 1000000000LL + (int64_t)tu.tv_nsec;
         }
-#ifdef SIOCGSTAMPNS
-        int fd = lotus_tls__handle_fd(handle);
-        if (fd >= 0) {
-            struct timespec tk;
-            if (ioctl(fd, SIOCGSTAMPNS, &tk) == 0) {
-                g_tls_last_recv_kernel_ns =
-                    (int64_t)tk.tv_sec * 1000000000LL + (int64_t)tk.tv_nsec;
-            }
-        }
-#endif
+        /* kernel_ns already captured by the recvmsg BIO during SSL_read. */
     }
     return (int64_t)n;
 }
