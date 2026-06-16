@@ -156,6 +156,14 @@ pub fn check_bundle(
 ) -> Vec<Diag> {
     let mut diags = Vec::new();
     let known = collect_known_names(top);
+    // WASM plan: the bundle targets wasm if any program declares
+    // `target wasm` / `target browser_js`. Drives stdlib gating below.
+    let wasm_target = bundle.programs.values().any(|p| {
+        p.items.iter().any(|it| {
+            matches!(it, TopDecl::Target(t)
+                if matches!(t.name.name.as_str(), "wasm" | "browser_js"))
+        })
+    });
     for program in bundle.programs.values() {
         let mut cx = Checker {
             top,
@@ -167,6 +175,7 @@ pub fn check_bundle(
             in_closure: false,
             in_on_failure: false,
             fallible_ctx: None,
+            wasm_target,
         };
         for item in &program.items {
             cx.check_top_decl(item);
@@ -4043,6 +4052,47 @@ fn ffi_type_unportable(ty: &Ty) -> Option<&'static str> {
     }
 }
 
+/// WASM plan — stdlib portability table. Returns a one-line reason +
+/// browser alternative for a `std::` path unavailable under `target
+/// wasm` (no syscalls in the browser sandbox), or `None` for the
+/// portable surface (str/bytes/json/text/math/crypto/rand/decimal/bus/
+/// diag/time/env/iter/...). Keyed on the leading namespace so every
+/// call under it is covered.
+fn wasm_unavailable_stdlib(segs: &[&str]) -> Option<&'static str> {
+    match segs {
+        ["std", "io", "tcp", ..] => Some(
+            "raw TCP sockets don't exist in the browser; use a WebSocket \
+             bus adapter (`ws://`) for networking",
+        ),
+        ["std", "io", "udp", ..] => {
+            Some("raw UDP sockets don't exist in the browser")
+        }
+        ["std", "io", "tls", ..] => Some(
+            "raw TLS isn't available; the browser performs TLS transparently \
+             for `wss://` / `https://`",
+        ),
+        ["std", "io", "fs", ..] | ["std", "io", "file", ..] => Some(
+            "filesystem access isn't available in the browser sandbox; use \
+             `fetch` (via an `@ffi(\"js\")` host import) or a bus message",
+        ),
+        ["std", "io", "stdin", ..] | ["std", "io", "stdout", ..] => Some(
+            "raw terminal I/O isn't available; use `println(...)` (the loader \
+             routes it to the host console)",
+        ),
+        ["std", "term", ..] => {
+            Some("terminal control (`std::term`) isn't available in the browser")
+        }
+        ["std", "process", ..] => Some(
+            "OS process control (`std::process`) isn't available in the browser",
+        ),
+        ["std", "http", ..] => Some(
+            "the `std::http` server is built on raw TCP and isn't available \
+             in the browser",
+        ),
+        _ => None,
+    }
+}
+
 struct Checker<'a> {
     top: &'a TopScope,
     known: &'a BTreeMap<String, Span>,
@@ -4061,6 +4111,10 @@ struct Checker<'a> {
     /// payload type, and to gate the `err` implicit binding on
     /// `or`-substitute RHS scopes.
     fallible_ctx: Option<(Ty, Ty)>,
+    /// WASM plan: true when the bundle declares `target wasm` /
+    /// `target browser_js`. Gates the POSIX-only stdlib (no syscalls in
+    /// the browser sandbox) at typecheck — see `wasm_unavailable_stdlib`.
+    wasm_target: bool,
 }
 
 #[derive(Default)]
@@ -7539,6 +7593,29 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::Call { callee, args, .. } => {
+                // WASM plan — stdlib target-gating. Under `target wasm`
+                // the browser sandbox has no syscalls, so reject a
+                // POSIX-only `std::` call at compile time with guidance
+                // (rather than letting it become an inert host import).
+                // Typecheck runs on USER code before the stdlib is merged
+                // in codegen, so this never flags the stdlib's own
+                // internals — only the program's calls.
+                if self.wasm_target {
+                    if let Expr::Path(qn) = callee.as_ref() {
+                        let segs: Vec<&str> =
+                            qn.segments.iter().map(|s| s.name.as_str()).collect();
+                        if let Some(why) = wasm_unavailable_stdlib(&segs) {
+                            self.diags.push(Diag::ty(
+                                qn.span,
+                                format!(
+                                    "`std::{}` is unavailable under `target wasm`: {}",
+                                    segs[1..].join("::"),
+                                    why
+                                ),
+                            ));
+                        }
+                    }
+                }
                 // m47-payloads: enum-variant construction with
                 // args. `EnumName::Variant(..)` resolves to the
                 // enum's named type. We still walk the args to
