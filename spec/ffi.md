@@ -26,8 +26,9 @@ absent — the declaration terminates with `;`. The compiler
 synthesizes an empty body internally so downstream passes keep
 the same `FnDecl` shape; user code MAY NOT write a `{...}` block.
 
-The ABI string is the literal `"c"`. Other ABI strings are
-reserved for future extensions and are rejected at parse time.
+The ABI string is the literal `"c"` (native C-ABI binding) or
+`"js"` (a WASM host import — see [§ WASM host interface](#wasm-host-interface)).
+Any other ABI string is rejected at parse time.
 
 ## Position
 
@@ -313,6 +314,9 @@ Parser errors:
   return an error sentinel, the Hale wrapper above translates
   to \`fallible(E)\` if needed`
 - `expected \`fn\` after \`@ffi(...)\` annotation`
+- `expected \`fn\` after \`@export\` annotation`
+- `\`@export\` and \`@ffi\` are mutually exclusive — an FFI import
+  is not a module export`
 
 Typecheck errors:
 
@@ -329,6 +333,88 @@ Codegen errors:
   etc. fall here.
 - `@ffi fn \`<name>\`: parameter defaults are not supported
   across the C-ABI boundary`
+- `@export fn \`<name>\`: fallible exports are not supported yet
+  (wasm entry-inversion v1)`
+
+## WASM host interface
+
+On the `wasm32` target (`hale build --target wasm32`; the program
+declares `target wasm { }`) the foreign boundary is the JavaScript
+host rather than a C library. The same `@ffi` machinery serves the
+inbound direction, and a dual annotation `@export` serves the
+outbound direction.
+
+### `@ffi("js")` — host imports (host → into Hale's callees)
+
+`@ffi("js") fn name(...);` declares a function the **JS loader**
+provides at instantiation (a wasm `env` import), e.g.:
+
+```
+target wasm { }
+@ffi("js") fn console_log(msg: String);
+@ffi("js") fn draw_line(x1: Float, y1: Float, z1: Float,
+                        x2: Float, y2: Float, z2: Float);
+```
+
+Marshalling mirrors `@ffi("c")`: scalars pass directly (`Int` is an
+i64 → a JS `BigInt` at the boundary; `Float` is an f64 → a plain JS
+number, so `Float` is the friction-free numeric type for host
+imports), and `String`/`Bytes` pass as a pointer into wasm linear
+memory (the loader reads them with a `TextDecoder` over the module's
+`memory`). The generated `.mjs` loader supplies a built-in
+`console_log` plus the libm set (`sin`/`cos`/`tan`/`sqrt`/… mapped to
+JS `Math.*`, so `std::math` works under wasm with no app glue); an
+app wires its own imports through `run(glue)`. Position and the
+generic / defaulted restrictions are the same as `@ffi("c")`.
+
+### `@export` — exports (Hale → callable by the host)
+
+Two forms; both are wasm-only (a **no-op on the native target**) and
+both produce a wasm module export the host calls by its literal name.
+
+**`@export fn name(...) { ... }`** — a top-level free fn. Unlike
+`@ffi` it has a real Hale body. It is valid only on top-level free fns
+(same position rule as `@ffi`), is **not** `@ffi` (mutually exclusive
+— an import is not an export), and is **not** `fallible(E)` (v1 — the
+host has no error channel).
+
+**`@export locus L { ... }`** — the persistent singleton "app." At
+most one per program. It is instantiated **once** (birth runs; it is
+never dissolved), and each of its non-fallible `fn` methods becomes a
+wasm export the host calls (`inst.exports.<method>()`). State lives in
+the locus's params — ordinary Hale fields that survive across calls
+because the singleton persists. The locus **must not define `run()`**
+(it is host-driven via its methods, not a cooperative run loop);
+`fallible` methods stay internal (not exported).
+
+### Entry-inversion run-model
+
+A program built with `@export` runs **inverted**: instead of a
+blocking `main`, the host drives the exports. The compiler synthesizes
+and exports **`_hale_start()`**, which creates a **persistent** program
+arena (and bus queue) that is *not* torn down — and, for an `@export
+locus`, instantiates the singleton there and stashes its pointer. The
+generated loader calls `_hale_start` once at instantiation and then the
+host calls the exports (e.g. one per `requestAnimationFrame`). A
+program with no `fn main` is valid when it has any `@export`; if
+`_hale_start` is present the loader does **not** call `main` (its
+create-then-destroy of the arena would clobber the persistent one).
+
+Holding state across calls:
+
+- **`@export locus` (preferred):** state is the locus's fields,
+  mutated in one method and read in another — plain Hale, no
+  marshalling. This is the natural shape for a browser client.
+- **`@export fn` (lower-level):** each call's allocations are released
+  on return, so cross-call state goes through the runtime **host seam**
+  — `@ffi("c") fn lotus_wasm_state_set(b: Bytes);` /
+  `lotus_wasm_state_get() -> Bytes;` deep-copies a packed `Bytes` blob
+  into its own arena so it survives.
+
+Inbound messages use the seam in either model:
+`lotus_wasm_alloc(n)` / `lotus_wasm_set_inbox(len)` (wasm exports the
+host calls to write bytes in) + `@ffi("c") fn lotus_wasm_inbox() ->
+Bytes;` (Hale reads them and parses with `std::json` / `std::bytes`).
 
 ## Cross-references
 

@@ -332,6 +332,7 @@ impl Parser {
         // (for `main locus`) — locus path — or `Fn` (for `@ffi`).
         let mut form: Option<FormAnnotation> = None;
         let mut locality: Option<LocalityAnnotation> = None;
+        let mut export_locus = false;
         let mut leading_span: Option<Span> = None;
         loop {
             if !matches!(self.peek(), TokenKind::At) {
@@ -342,6 +343,49 @@ impl Parser {
             let is_form = matches!(&kind_tok, TokenKind::Ident(s) if s == "form");
             let is_locality =
                 matches!(&kind_tok, TokenKind::Ident(s) if s == "locality");
+            let is_export = matches!(&kind_tok, TokenKind::Export);
+            if is_export {
+                // WASM entry-inversion. `@export fn …` is a free-fn
+                // module export; `@export locus …` is the persistent
+                // singleton "app" whose methods are exported. Peek past
+                // `@export` to decide which.
+                let at = self.expect(TokenKind::At, "@")?;
+                self.bump(); // consume `export`
+                if matches!(self.peek(), TokenKind::Fn) {
+                    if form.is_some() || locality.is_some() || export_locus {
+                        return Err(Diag::parse(
+                            at.span,
+                            "`@export fn` can't stack with `@form(...)` / \
+                             `@locality(...)` / `@export locus`",
+                        ));
+                    }
+                    let mut fn_decl = self.parse_fn_decl_with_ffi(None)?;
+                    if fn_decl.ffi.is_some() {
+                        return Err(Diag::parse(
+                            at.span,
+                            "`@export` and `@ffi` are mutually exclusive — an \
+                             FFI import is not a module export",
+                        ));
+                    }
+                    fn_decl.export = true;
+                    fn_decl.span = at.span.merge(fn_decl.span);
+                    return Ok(TopDecl::Fn(fn_decl));
+                }
+                // `@export locus …` — mark and fall through to the
+                // locus parse at the end of the annotation loop.
+                if export_locus {
+                    return Err(Diag::parse(
+                        at.span,
+                        "duplicate `@export` annotation",
+                    ));
+                }
+                export_locus = true;
+                leading_span = Some(match leading_span {
+                    Some(s) => s.merge(at.span),
+                    None => at.span,
+                });
+                continue;
+            }
             if is_ffi {
                 if form.is_some() || locality.is_some() {
                     return Err(Diag::parse(
@@ -399,7 +443,7 @@ impl Parser {
                 "expected `form`, `locality`, or `ffi` after `@`",
             ));
         }
-        if form.is_some() || locality.is_some() {
+        if form.is_some() || locality.is_some() || export_locus {
             // Verify a `locus` (or contextual `main locus`)
             // follows.
             let next_is_locus = matches!(self.peek(), TokenKind::Locus);
@@ -411,7 +455,7 @@ impl Parser {
                 return Err(Diag::parse(
                     self.peek_token().span,
                     "expected `locus` (or `main locus`) after `@form(...)` \
-                     / `@locality(...)` annotation",
+                     / `@locality(...)` / `@export` annotation",
                 ));
             }
             let mut locus = self.parse_locus_decl()?;
@@ -420,6 +464,7 @@ impl Parser {
             }
             locus.form = form;
             locus.locality = locality;
+            locus.export = export_locus;
             return Ok(TopDecl::Locus(locus));
         }
         match self.peek() {
@@ -1079,6 +1124,7 @@ impl Parser {
         Ok(LocusDecl {
             name,
             is_main,
+            export: false,
             generics,
             annotations,
             form: None,
@@ -2927,6 +2973,7 @@ impl Parser {
                 ret,
                 fallible,
                 ffi,
+                export: false,
                 span: kw.span.merge(semi.span),
                 body,
             });
@@ -2945,6 +2992,7 @@ impl Parser {
             ret,
             fallible,
             ffi,
+            export: false,
             span: kw.span.merge(body.span),
             body,
         })

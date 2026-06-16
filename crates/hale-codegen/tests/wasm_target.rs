@@ -65,6 +65,130 @@ fn wasm_ffi_js_host_import() {
     );
 }
 
+/// WASM entry-inversion: `@export fn` + the synthesized `_hale_start` +
+/// the runtime state cell give a wasm module PERSISTENT state across
+/// separate host calls. A program with only `@export` fns (no `fn main`)
+/// builds; the loader auto-calls `_hale_start` (persistent arena) and the
+/// host then drives the exports. Here `bump()` increments a counter
+/// packed into a Bytes blob parked in the state cell, and `get()` reads
+/// it back — three separate `bump()` calls must accumulate to 3, proving
+/// the state survived across calls (not reset per call like `main`).
+#[test]
+fn wasm_export_entry_inversion_persists_state() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_export_entry_inversion_persists_state: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        @ffi("c") fn lotus_wasm_state_set(b: Bytes);
+        @ffi("c") fn lotus_wasm_state_get() -> Bytes;
+        fn current() -> Int {
+            let s = lotus_wasm_state_get();
+            if len(s) >= 4 { return std::bytes::read_u32_le(s, 0) or 0; }
+            return 0;
+        }
+        @export fn bump() {
+            let n = current() + 1;
+            let b = std::bytes::BytesBuilder { };
+            b.append_u32_le(n);
+            lotus_wasm_state_set(b.snapshot());
+        }
+        @export fn get() -> Int { return current(); }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse @export program");
+    let wasm = tmp("export_ei.wasm");
+    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
+        .expect("wasm codegen + link");
+    let loader = wasm.with_extension("mjs");
+    // Drive the exports from a harness: _hale_start runs at load, then
+    // three bumps, then read the accumulated counter.
+    let harness = wasm.with_extension("harness.mjs");
+    let loader_name = loader.file_name().unwrap().to_str().unwrap();
+    std::fs::write(
+        &harness,
+        format!(
+            r#"import {{ run }} from "./{loader_name}";
+const inst = await run(() => ({{}}));
+if (inst.exports.get() !== 0n) {{ console.log("BAD_INIT"); process.exit(1); }}
+inst.exports.bump(); inst.exports.bump(); inst.exports.bump();
+const v = inst.exports.get();
+console.log(v === 3n ? "EXPORT_STATE_OK" : ("EXPORT_STATE_FAIL:" + v));
+"#
+        ),
+    )
+    .expect("write harness");
+    let run = Command::new(&node).arg(&harness).output().expect("run node harness");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    let _ = std::fs::remove_file(&harness);
+    assert!(
+        run.status.success() && stdout.contains("EXPORT_STATE_OK"),
+        "@export persistent state should accumulate to 3:\nstdout: {}\nstderr: {}",
+        stdout,
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+/// WASM entry-inversion, persistent-locus model: `@export locus L`
+/// designates a singleton instantiated once by `_hale_start` and never
+/// dissolved; its `fn` methods become exports, and state lives in the
+/// locus's own fields (not packed Bytes). `bump()` increments a field,
+/// `get()` reads it — three `bump()` calls accumulate to 3, proving the
+/// singleton (and its `self.n`) persisted across host calls.
+#[test]
+fn wasm_export_locus_persists_field_state() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_export_locus_persists_field_state: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        @export locus Counter {
+            params { n: Int = 0; }
+            birth() { }
+            fn bump() { self.n = self.n + 1; }
+            fn get() -> Int { return self.n; }
+        }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse @export locus");
+    let wasm = tmp("export_locus.wasm");
+    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
+        .expect("wasm codegen + link");
+    let loader = wasm.with_extension("mjs");
+    let harness = wasm.with_extension("harness.mjs");
+    let loader_name = loader.file_name().unwrap().to_str().unwrap();
+    std::fs::write(
+        &harness,
+        format!(
+            r#"import {{ run }} from "./{loader_name}";
+const inst = await run(() => ({{}}));   // _hale_start instantiates Counter
+if (inst.exports.get() !== 0n) {{ console.log("BAD_INIT"); process.exit(1); }}
+inst.exports.bump(); inst.exports.bump(); inst.exports.bump();
+const v = inst.exports.get();
+console.log(v === 3n ? "LOCUS_STATE_OK" : ("LOCUS_STATE_FAIL:" + v));
+"#
+        ),
+    )
+    .expect("write harness");
+    let run = Command::new(&node).arg(&harness).output().expect("run node harness");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    let _ = std::fs::remove_file(&harness);
+    assert!(
+        run.status.success() && stdout.contains("LOCUS_STATE_OK"),
+        "@export locus field state should accumulate to 3:\nstdout: {}\nstderr: {}",
+        stdout,
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 fn tool(name: &str) -> Option<String> {
     for cand in [name, &format!("{}-18", name)] {
         if Command::new(cand).arg("--version").output().is_ok() {

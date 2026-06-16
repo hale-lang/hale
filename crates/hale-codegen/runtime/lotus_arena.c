@@ -6714,6 +6714,69 @@ void *lotus_bytes_from_buf(lotus_arena_t *a, const void *src, int64_t len) {
     return blob;
 }
 
+/* ---- WASM host seam: an inbound-message inbox --------------------
+ * Lets the JS loader hand bytes (a WebSocket frame, a fetch body) into a
+ * wasm-compiled Hale program without a JS-side parser. The flow:
+ *   1. JS calls `lotus_wasm_alloc(n)` to get a pointer into wasm memory
+ *      and writes its n message bytes there (via `instance.exports.memory`).
+ *   2. JS calls `lotus_wasm_set_inbox(n)` to publish that as the current
+ *      message.
+ *   3. The Hale side reads it each frame via `lotus_wasm_inbox()`, which
+ *      returns a standard Bytes blob ([int64 len | data]); Hale parses it
+ *      with std::json. Re-reading is free (a static buffer, no alloc).
+ * The inbox is a single fixed-capacity slot (latest message wins) — a
+ * snapshot/command is tiny, and the client only needs the freshest state.
+ * `lotus_wasm_alloc`/`lotus_wasm_set_inbox` are exported by `link_wasm`;
+ * `lotus_wasm_inbox` is reached from Hale via `@ffi("c")`. All plain C
+ * with no POSIX deps — inert (and unreferenced -> gc'd) on native. */
+#define LOTUS_WASM_INBOX_CAP (64 * 1024)
+/* Bytes-blob layout in place: [int64 len][data...]; the int64[] element
+ * type forces the 8-byte alignment the length prefix needs. */
+static int64_t g_wasm_inbox_buf[(LOTUS_WASM_INBOX_CAP / 8) + 2];
+
+void *lotus_wasm_alloc(int32_t n) {
+    (void)n; /* fixed-cap slot; JS writes straight into the data region */
+    return (uint8_t *)g_wasm_inbox_buf + sizeof(int64_t);
+}
+
+void lotus_wasm_set_inbox(int32_t len) {
+    if (len < 0) len = 0;
+    if (len > LOTUS_WASM_INBOX_CAP) len = LOTUS_WASM_INBOX_CAP;
+    g_wasm_inbox_buf[0] = (int64_t)len;
+}
+
+void *lotus_wasm_inbox(void) {
+    return g_wasm_inbox_buf[0] > 0 ? (void *)g_wasm_inbox_buf : (void *)0;
+}
+
+/* ---- WASM persistent state cell ---------------------------------
+ * Entry-inversion needs Hale to hold state ACROSS exported calls, but
+ * an `@export` fn allocates in a per-call subregion that's freed on
+ * return — so a value built in `on_message` would dangle by the time
+ * `frame` runs. This cell owns its own arena and deep-copies whatever
+ * Bytes Hale hands it, so the stored value outlives the call. The app
+ * packs its state into a Bytes blob (std::bytes builders) and reads it
+ * back via the binary-pack readers. set() replaces (destroy+recreate
+ * the arena → bounded; latest state wins). A stopgap until a persistent
+ * stateful-locus model lands; reached from Hale via @ffi("c"). */
+static lotus_arena_t *g_wasm_state_arena = NULL;
+static void *g_wasm_state_blob = NULL;
+
+void lotus_wasm_state_set(void *bytes) {
+    if (g_wasm_state_arena) {
+        lotus_arena_destroy(g_wasm_state_arena);
+    }
+    g_wasm_state_arena = lotus_arena_create_labeled("lotus.wasm.state");
+    if (bytes) {
+        g_wasm_state_blob = lotus_bytes_from_buf(
+            g_wasm_state_arena, lotus_bytes_data(bytes), lotus_bytes_len(bytes));
+    } else {
+        g_wasm_state_blob = (void *)0;
+    }
+}
+
+void *lotus_wasm_state_get(void) { return g_wasm_state_blob; }
+
 /* F.30 (2026-05-20): deep-copy a Bytes blob (length-prefixed,
  * may contain embedded NULs) into `a`. The companion to
  * `lotus_str_clone` for the binary path; needed for
@@ -6941,6 +7004,32 @@ static int lotus__transport_set_addr(struct sockaddr_un *addr,
     return 0;
 }
 
+/* Mark a runtime-created fd close-on-exec. Without this, a fork+exec
+ * via std::process::spawn (e.g. a daemon spawning game-runner children)
+ * leaks every open listen/accept/connect socket into the child: the
+ * child inherits a copy, so a peer that waits for EOF (HTTP read-to-
+ * close, etc.) never sees the connection fully close even after the
+ * parent closes its own copy, and the child also pins the parent's
+ * listen ports alive past the parent's death. Sockets are never meant
+ * to survive an exec here (the child opens its own); stdin/out/err and
+ * the std::process stdout/stderr pipes are inherited via dup2, which
+ * clears CLOEXEC on the duped fd, so this doesn't disturb them. Applied
+ * at every socket()/accept() site below. F_SETFD is a cheap, race-free
+ * (post-creation, pre-publish) toggle; best-effort — a failure leaves
+ * the pre-existing inherit-on-exec behavior rather than failing the fd. */
+static void lotus_set_cloexec(int fd) {
+#ifndef __wasm__
+    if (fd < 0) return;
+    int fl = fcntl(fd, F_GETFD, 0);
+    if (fl < 0) return;
+    (void)fcntl(fd, F_SETFD, fl | FD_CLOEXEC);
+#else
+    /* No fork/exec under wasm — close-on-exec is meaningless, and the
+     * bundled wasm libc declares neither F_SETFD nor FD_CLOEXEC. */
+    (void)fd;
+#endif
+}
+
 lotus_transport_t *lotus_transport_create(const char *path, int role) {
     if (!path) {
         errno = EINVAL;
@@ -6957,6 +7046,7 @@ lotus_transport_t *lotus_transport_create(const char *path, int role) {
         perror("lotus_transport_create: socket");
         return NULL;
     }
+    lotus_set_cloexec(sock);
 
     if (role == LOTUS_TRANSPORT_LISTEN) {
         /* Best-effort: clear any stale socket file so bind succeeds
@@ -6980,6 +7070,7 @@ lotus_transport_t *lotus_transport_create(const char *path, int role) {
             unlink(path);
             return NULL;
         }
+        lotus_set_cloexec(conn);
         lotus_transport_t *t = (lotus_transport_t *)calloc(1, sizeof(*t));
         if (!t) {
             close(conn);
@@ -7228,6 +7319,7 @@ lotus_tcp_t *lotus_tcp_create(const char *host, uint16_t port, int role) {
         perror("lotus_tcp_create: socket");
         return NULL;
     }
+    lotus_set_cloexec(sock);
 
     if (role == LOTUS_TCP_LISTEN) {
         int one = 1;
@@ -7260,6 +7352,7 @@ lotus_tcp_t *lotus_tcp_create(const char *host, uint16_t port, int role) {
             close(sock);
             return NULL;
         }
+        lotus_set_cloexec(conn);
         int nodelay = 1;
         (void)setsockopt(conn, IPPROTO_TCP, TCP_NODELAY,
                          &nodelay, sizeof(nodelay));
@@ -7424,6 +7517,7 @@ int lotus_tcp_listen_socket(const char *host, uint16_t port) {
         perror("lotus_tcp_listen_socket: socket");
         return -1;
     }
+    lotus_set_cloexec(sock);
     int one = 1;
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) < 0) {
         perror("lotus_tcp_listen_socket: SO_REUSEADDR");
@@ -7536,6 +7630,7 @@ int lotus_tcp_accept_one(int listen_fd) {
         }
         int conn = accept(listen_fd, NULL, NULL);
         if (conn >= 0) {
+            lotus_set_cloexec(conn);
             int nodelay = 1;
             (void)setsockopt(conn, IPPROTO_TCP, TCP_NODELAY,
                              &nodelay, sizeof(nodelay));
@@ -7611,6 +7706,7 @@ int lotus_tcp_connect(const char *host, uint16_t port) {
         perror("lotus_tcp_connect: socket");
         return -1;
     }
+    lotus_set_cloexec(sock);
     struct timespec backoff = { 0, 5L * 1000L * 1000L };
     int attempts = 200;
     while (attempts-- > 0) {
@@ -7706,6 +7802,7 @@ int lotus_udp_bind(const char *host, uint16_t port) {
         perror("lotus_udp_bind: socket");
         return -1;
     }
+    lotus_set_cloexec(sock);
     int one = 1;
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) < 0) {
         perror("lotus_udp_bind: SO_REUSEADDR");
@@ -9810,6 +9907,7 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
         free(args);
         return NULL;
     }
+    lotus_set_cloexec(fd);
     int one = 1;
     /* SO_REUSEADDR so multiple subscribers on the same multicast
      * group can bind the same port. Required for multicast;
@@ -10075,6 +10173,7 @@ void lotus_bus_register_remote(const char *subject,
                 perror("lotus_bus_register_remote: udp socket");
                 return;
             }
+            lotus_set_cloexec(fd);
             /* Bind to an ephemeral local port so the kernel picks
              * a source addr for our sendto's. INADDR_ANY lets the
              * kernel select the route-appropriate interface. */

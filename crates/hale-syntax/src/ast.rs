@@ -259,6 +259,14 @@ pub struct LocusDecl {
     /// non-main locus carrying a `bindings { }` block is a
     /// parse error.
     pub is_main: bool,
+    /// WASM entry-inversion (2026-06-16): `@export locus L { ... }`
+    /// marks the persistent singleton "app" of a wasm program. It is
+    /// instantiated once by the synthesized `_hale_start` (birth only,
+    /// never dissolved), its self-pointer stashed in a global, and its
+    /// non-fallible `fn` methods emitted as wasm export wrappers so the
+    /// JS host can drive it. State lives in the locus's params and
+    /// survives across calls. A no-op on native builds.
+    pub export: bool,
     /// m63: optional generic param list on the locus
     /// declaration. `locus Cache<K, V> { ... }` parses to a
     /// non-empty Vec; non-generic loci leave this empty.
@@ -1220,6 +1228,13 @@ pub struct FnDecl {
     /// codegen) take the FFI-specific code paths. See
     /// `notes/ffi-design.md` and `spec/ffi.md`.
     pub ffi: Option<FfiAnnotation>,
+    /// WASM entry-inversion (2026-06-16): `@export fn` marks a free
+    /// function as a wasm module export, callable from the JS host.
+    /// On a wasm build codegen emits an arena-less wrapper under the
+    /// literal name (supplying the persistent program arena that
+    /// `_hale_start` sets up) and passes the name to `wasm-ld
+    /// --export=`. A no-op on native builds.
+    pub export: bool,
     pub body: Block,
     pub span: Span,
 }
