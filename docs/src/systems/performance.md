@@ -150,6 +150,32 @@ smaps-diff over a window → if it's `[heap]`, check 30s deltas →
 bursty 64KB steps mean chunk-pool overflow (a loop accumulator)
 → fix with `BytesBuilder`.
 
+## Hot-path I/O primitives
+
+For latency-sensitive sockets, the stdlib exposes the knobs you'd
+reach for in C, without an FFI shim:
+
+- **Disable Nagle** — `std::io::tcp::set_nodelay(fd, true)` (and the
+  `std::io::tls` sibling) so small writes hit the wire immediately
+  instead of waiting ~40ms to coalesce. The first thing a
+  request/response or market-data socket wants.
+- **Wire-arrival timestamps** — `recv_stamped_into` is `recv_into`
+  plus a kernel RX timestamp captured in the same `recvmsg`; read it
+  with `last_recv_kernel_ns()` right after. True wire time, not the
+  post-scheduling receipt clock — for measuring real I/O latency.
+- **Wrap-free parsing** — `std::io::MirrorRing` double-maps a buffer
+  so any window is one contiguous slice even across the wrap point; a
+  stream parser never special-cases the seam. Opt-in (it costs 2×
+  address space) — for the ordinary case a `BytesBuilder` accumulator
+  is the right tool.
+
+And the run-time complement to the compile-time
+`--warn-unbounded-alloc` check: `std::diag::heap_alloc_count()` and
+`std::diag::syscall_count(name)` let a test *assert* a steady-state
+region did what you think — read the counter before and after and
+check the delta is zero ("this loop allocated nothing", "exactly one
+`recv` per poll").
+
 ## Where Hale earns its overhead
 
 Hale is shaped to pay *coordination* cost well — bus dispatch,

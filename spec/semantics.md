@@ -680,6 +680,37 @@ The handler may:
 Default on_failure: `bubble(err)`. The runtime root's default
 is process exit with stack trace.
 
+### Reassigning a locus-typed field (WS1#4)
+
+Assigning a fresh locus literal to a locus-typed field —
+`self.<field> = SomeLocus { … };` — is a **lifecycle
+transition**, not a value store. It is lowered **break-before-make**:
+
+1. The instance currently in the field is reclaimed — its full
+   teardown spine runs (drain → dissolve → arena freed), so its
+   resources are released: `@ffi` handles closed, child loci
+   cascaded, region returned. This is the same teardown a child
+   gets when its parent dissolves.
+2. A new instance is constructed from the literal **into self's
+   own arena**, owned by the field (not scope-bound) — so it
+   outlives the enclosing method and is reclaimed through the
+   field when self later dissolves, exactly like a field-default
+   child from params-init.
+3. The field is repointed at the live new instance.
+
+The old and new instances do not coexist: the old is fully torn
+down before the new is constructed. (Treating the assignment as a
+plain value store — the naive lowering — would leave the field
+pointing at a scope-dissolved temporary: closed handles, freed
+arena, use-after-free on next use. The transition lowering exists
+to prevent exactly that.)
+
+For "same instance, reconfigure," use **in-place mutation**
+(`self.<field>.<x> = v;`), which stays the cheap path and triggers
+no teardown. v1 scope: the new instance inherits the parent's pool;
+reassigning a *pinned*-placed field does not re-apply the pinned
+placement.
+
 ## Mode invocation
 
 `self.bulk()` / `self.harmonic()` / `self.resolution()` invoke
@@ -1169,9 +1200,12 @@ handling is lossy + safe: if the producer runs more than `capacity`
 bytes ahead, the missed bytes are gone, so the reader resyncs to the
 producer's cursor (a commit boundary) and resumes rather than
 reading a torn record. Handlers run on the reader thread (same
-constraint as the native subscriber). The `slots` framing kind, the
-zero-copy writable producer view (A1 — the producer copies the
-payload once today), and multi-cursor back-pressure are post-v1.
+constraint as the native subscriber). The `slots` (fixed-stride)
+framing kind ships for *consumers*, and the zero-copy writable
+producer view ships as `Topic.write(max) { w => … }` (A1 — fields
+written directly into the reserved slot, no intermediate copy). What
+remains post-v1: a `slots` *producer* with parameterized slot
+geometry, and multi-cursor back-pressure.
 
 **In-memory delivery is absence-of-entry.** A topic with no
 binding entry is delivered same-process via the cooperative

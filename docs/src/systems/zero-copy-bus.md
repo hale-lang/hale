@@ -249,6 +249,32 @@ for a padded foreign format with `repr:"u32_le,at=4"`. The tag itself is
 general `key:"value"` metadata — `repr:` is the binary-pack consumer;
 other keys (e.g. `json:`) are free for later tools.
 
+### Per-record headers and wire timestamps
+
+Real external feeds often prefix each record with a small fixed
+header — a sequence number, a producer-side wire-arrival timestamp —
+before the variable payload. Declare it in the `ring_layout` with
+`record_header_bytes` (and `pad_field` for any alignment padding),
+and the subscriber reads those header fields *for the record it's
+currently handling* through `std::shm`:
+
+```hale
+fn on_rec(v: BytesView) {
+    let seq = std::shm::last_record_seq();        // header sequence no.
+    let wire_ns = std::shm::last_record_kernel_ns(); // producer wire time
+    // ... decode v as before ...
+}
+```
+
+These read like the errno-style timestamp getters on a socket recv:
+call them inside the handler, and they describe the record being
+delivered. Each returns `0` when the layout declares no such field.
+The layout's `recheck post_copy` guard re-validates the header after
+the copy, so a record torn by a producer lapping the ring is never
+surfaced with a half-written header. (A native fixed-stride ring uses
+`framing slots` instead of length-prefixed `byte_records` — same
+`layout:` machinery, a different framing kind.)
+
 ## The same shape, one tier down
 
 Notice this is the same move as everything else at this level: an
