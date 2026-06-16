@@ -1311,6 +1311,13 @@ fn run_build(target: &Path) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // WASM plan: a wasm build emits `<stem>.wasm` (a relocatable wasm
+    // object at this stage) rather than the extension-less native binary.
+    let output = if options.target == hale_codegen::CompileTarget::Wasm32 {
+        output.with_extension("wasm")
+    } else {
+        output
+    };
     // F.32-2 (2026-05-25): operator-facing per-locus working-set
     // report + budget gate.
     //
@@ -1558,6 +1565,25 @@ fn parse_build_options() -> Result<hale_codegen::BuildOptions, String> {
             }
             "--strict" => {
                 i += 1;
+            }
+            // WASM plan: select the compilation backend. Distinct from
+            // `--target-cache` (a working-set gate). `wasm32` emits the
+            // relocatable wasm object for the browser/full-stack-web target.
+            "--target" => {
+                let v = args.get(i + 1).ok_or_else(|| {
+                    "--target requires a value (native|wasm32)".to_string()
+                })?;
+                opts.target = match v.as_str() {
+                    "native" => hale_codegen::CompileTarget::Native,
+                    "wasm32" | "wasm" => hale_codegen::CompileTarget::Wasm32,
+                    other => {
+                        return Err(format!(
+                            "--target: unknown target `{}` (expected native|wasm32)",
+                            other
+                        ));
+                    }
+                };
+                i += 2;
             }
             other => {
                 return Err(format!(

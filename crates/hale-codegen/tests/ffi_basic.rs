@@ -34,6 +34,7 @@ fn build_with_csrc(
     let options = BuildOptions {
         link_libs: Vec::new(),
         csrc_files: vec![csrc_path.clone()],
+        ..Default::default()
     };
     build_executable_with_options(&program, &bin, &[], &options)
         .expect("build");

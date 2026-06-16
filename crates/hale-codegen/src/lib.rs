@@ -41,5 +41,5 @@ pub(crate) mod types;
 
 pub use codegen::{
     build_executable, build_executable_with_imports,
-    build_executable_with_options, BuildOptions, CodegenError,
+    build_executable_with_options, BuildOptions, CodegenError, CompileTarget,
 };

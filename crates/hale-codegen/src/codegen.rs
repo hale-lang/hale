@@ -231,6 +231,23 @@ impl std::error::Error for CodegenError {}
 pub struct BuildOptions {
     pub link_libs: Vec<String>,
     pub csrc_files: Vec<std::path::PathBuf>,
+    /// Compilation target. Selects the LLVM triple + the link
+    /// strategy. Defaults to the host native target.
+    pub target: CompileTarget,
+}
+
+/// The compilation backend. `Native` is the host ELF/Mach-O path
+/// (LLVM host triple + clang link against the POSIX lotus runtime).
+/// `Wasm32` targets `wasm32-unknown-unknown` for the browser/full-stack
+/// web initiative (WASM plan). At this stage the wasm path emits the
+/// relocatable wasm OBJECT and stops before linking — the runtime core
+/// is ported under `#ifdef __wasm__` in a following step, after which
+/// the link is completed by `wasm-ld`.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompileTarget {
+    #[default]
+    Native,
+    Wasm32,
 }
 
 /// Read a `LOTUS_*` boolean build flag from the environment.
@@ -415,8 +432,15 @@ pub fn build_executable_with_options(
     hale_syntax::desugar::desugar_repr_accessors(&mut program_owned);
     let program = &program_owned;
 
-    Target::initialize_native(&InitializationConfig::default())
-        .map_err(|e| CodegenError::LlvmInit(e.to_string()))?;
+    let is_wasm = options.target == CompileTarget::Wasm32;
+    if is_wasm {
+        // Register the WebAssembly backend (the native path only
+        // initializes the host target).
+        Target::initialize_webassembly(&InitializationConfig::default());
+    } else {
+        Target::initialize_native(&InitializationConfig::default())
+            .map_err(|e| CodegenError::LlvmInit(e.to_string()))?;
+    }
 
     // m73a: parse the bundled stdlib source and merge its decls
     // into the user program before lowering. Stdlib loci land in
@@ -448,7 +472,11 @@ pub fn build_executable_with_options(
     // offset 32 (i128 aligned to 16). Writes to the third field
     // landed past the allocation. Set the layout now so every
     // sizeof / GEP downstream agrees.
-    let triple = TargetMachine::get_default_triple();
+    let triple = if is_wasm {
+        TargetTriple::create("wasm32-unknown-unknown")
+    } else {
+        TargetMachine::get_default_triple()
+    };
     let target = Target::from_triple(&triple)
         .map_err(|e| CodegenError::LlvmInit(e.to_string()))?;
     let machine = target
@@ -472,6 +500,7 @@ pub fn build_executable_with_options(
         module,
         builder,
         target_data,
+        is_wasm,
         program: &merged,
         current_fn: None,
         current_user_fn_ret: None,
@@ -576,6 +605,15 @@ pub fn build_executable_with_options(
     machine
         .write_to_file(&cx.module, FileType::Object, &obj_path)
         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+    if is_wasm {
+        // Compile the self-contained wasm runtime (arena core + bundled
+        // libc) and link it into the user object with wasm-ld, producing
+        // a runnable `.wasm`. No native libs / no clang link line.
+        link_wasm(&obj_path, output_path)?;
+        let _ = std::fs::remove_file(&obj_path);
+        return Ok(());
+    }
 
     // The lotus runtime C (lotus_arena.c is ~13k lines) used to be
     // recompiled by clang on EVERY `hale build` — the dominant build
@@ -791,6 +829,220 @@ const RUNTIME_TLS_C_SOURCE: &str = include_str!("../runtime/lotus_tls.c");
 /// zero_copy route link cleanly. Symbol names are `lotus_shm_ring_*`.
 const RUNTIME_SHM_RING_C_SOURCE: &str =
     include_str!("../runtime/lotus_shm_ring.c");
+
+/// WASM plan: the self-contained wasm runtime support, bundled into the
+/// binary so a wasm build needs no external sysroot. The arena core
+/// (RUNTIME_C_SOURCE) compiles for wasm32 via these under `#ifdef __wasm__`.
+const RUNTIME_WASM_LIBC_SOURCE: &str =
+    include_str!("../runtime/wasm/lotus_wasm_libc.c");
+const RUNTIME_WASM_SHIM_H: &str =
+    include_str!("../runtime/wasm/lotus_wasm_shim.h");
+const RUNTIME_WASM_POSIX_H: &str =
+    include_str!("../runtime/wasm/lotus_wasm_posix.h");
+
+/// Compile the wasm runtime (arena core + bundled libc) and link it into
+/// `user_obj` with `wasm-ld`, writing a runnable `.wasm` to `output`.
+/// Self-contained: no wasi-sdk / no external sysroot. WASM plan Phase 2.
+///
+/// The arena source `#include "wasm/lotus_wasm_*.h"` relatively, so the
+/// sources are staged into a temp dir with a `wasm/` subdir before
+/// compiling. `--allow-undefined` keeps any still-unported POSIX syscall
+/// references (reachable only from gated-out IO) as imports the host can
+/// stub; a pure compute/bus program resolves with zero imports.
+/// Resolve an LLVM tool name: prefer the bare name, fall back to the
+/// LLVM-18 versioned name (`<name>-18`). CI images (and some distros)
+/// install only the versioned binaries — e.g. `wasm-ld-18` with no bare
+/// `wasm-ld` — so the fallback keeps the wasm build working wherever
+/// LLVM 18 is present, regardless of naming.
+fn resolve_tool(base: &str) -> String {
+    for cand in [base.to_string(), format!("{base}-18")] {
+        if Command::new(&cand).arg("--version").output().is_ok() {
+            return cand;
+        }
+    }
+    base.to_string()
+}
+
+fn link_wasm(user_obj: &Path, output: &Path) -> Result<(), CodegenError> {
+    let mkerr = |m: String| CodegenError::Link(m);
+    // Unique temp dir for the staged runtime sources.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static WASM_NONCE: AtomicU64 = AtomicU64::new(0);
+    let nonce = WASM_NONCE.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir()
+        .join(format!("hale-wasm-{}-{}", std::process::id(), nonce));
+    let wasm_sub = dir.join("wasm");
+    std::fs::create_dir_all(&wasm_sub)
+        .map_err(|e| mkerr(format!("wasm staging dir: {e}")))?;
+    let arena_c = dir.join("lotus_arena.c");
+    let libc_c = dir.join("lotus_wasm_libc.c");
+    std::fs::write(&arena_c, RUNTIME_C_SOURCE)
+        .and_then(|_| std::fs::write(&libc_c, RUNTIME_WASM_LIBC_SOURCE))
+        .and_then(|_| std::fs::write(wasm_sub.join("lotus_wasm_shim.h"), RUNTIME_WASM_SHIM_H))
+        .and_then(|_| std::fs::write(wasm_sub.join("lotus_wasm_posix.h"), RUNTIME_WASM_POSIX_H))
+        .map_err(|e| mkerr(format!("stage wasm runtime sources: {e}")))?;
+
+    // Compile arena core + bundled libc to wasm32 objects. The libc uses
+    // -fno-builtin so its byte-loop mem*/str* aren't re-emitted as
+    // recursive calls; -mbulk-memory lowers mem* to wasm intrinsics.
+    let arena_o = dir.join("arena.o");
+    let libc_o = dir.join("libc.o");
+    // Resolve the toolchain binaries (bare or `-18`).
+    let clang = resolve_tool("clang");
+    let wasm_ld = resolve_tool("wasm-ld");
+    let cc = |src: &Path, out: &Path, extra: &[&str]| -> Result<(), CodegenError> {
+        let status = Command::new(&clang)
+            .args(["--target=wasm32", "-mbulk-memory", "-O2", "-c"])
+            .args(extra)
+            .arg(src)
+            .arg("-o")
+            .arg(out)
+            .status()
+            .map_err(|e| mkerr(format!(
+                "clang --target=wasm32 (is clang installed?): {e}"
+            )))?;
+        if !status.success() {
+            return Err(mkerr(format!("clang failed compiling {:?} for wasm32", src)));
+        }
+        Ok(())
+    };
+    cc(&arena_c, &arena_o, &[])?;
+    cc(&libc_c, &libc_o, &["-fno-builtin"])?;
+
+    // Link with wasm-ld, exporting `main` as the program entry (+ memory
+    // and the heap base for the loader). --gc-sections then strips the
+    // entire unreachable stdlib (tcp/http/term/ts/...) and its syscalls,
+    // so a compute/bus program reduces to its actual reachable code.
+    // --allow-undefined keeps the remaining libc-output references
+    // (println -> printf/puts) as host imports the JS loader provides.
+    // (A richer export policy — @export, plus the _hale_start/_hale_tick
+    // entry inversion for run()-driven programs — is the next slice.)
+    let status = Command::new(&wasm_ld)
+        .arg(user_obj)
+        .arg(&arena_o)
+        .arg(&libc_o)
+        .arg("--no-entry")
+        .arg("--export=main")
+        .arg("--export=__heap_base")
+        .arg("--export-if-defined=memory")
+        .arg("--gc-sections")
+        .arg("--allow-undefined")
+        .arg("-o")
+        .arg(output)
+        .status()
+        .map_err(|e| mkerr(format!("wasm-ld (is lld/wasm-ld installed?): {e}")))?;
+    let _ = std::fs::remove_dir_all(&dir);
+    if !status.success() {
+        return Err(mkerr(format!("wasm-ld failed: {status}")));
+    }
+
+    // Generate the JS loader next to the .wasm: it instantiates the
+    // module, wires the libc-output imports (puts/printf/...) to the
+    // console, stubs every other host import as a no-op, and runs `main`.
+    // Works in Node (`node prog.mjs`) and the browser (`import { run }`).
+    let loader_path = output.with_extension("mjs");
+    let wasm_name = output
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("module.wasm");
+    let loader = WASM_JS_LOADER.replace("__WASM_FILE__", wasm_name);
+    std::fs::write(&loader_path, loader)
+        .map_err(|e| mkerr(format!("write JS loader: {e}")))?;
+    Ok(())
+}
+
+/// JS loader template emitted beside a wasm build (`__WASM_FILE__` is
+/// substituted with the module's filename). Console-backed libc output
+/// + a mini-printf over the wasm vararg buffer (Hale's println emits
+/// %lld / %g / %s); all other host imports are inert no-ops.
+const WASM_JS_LOADER: &str = r#"// Generated by hale (`--target wasm32`). Loads and runs the module.
+// Node:    node THISFILE
+// Browser: import { run } from "./THISFILE"; run(canvas?, opts?);
+const WASM_FILE = "__WASM_FILE__";
+
+export async function run(glue) {
+  let mem = null;
+  const u8 = () => new Uint8Array(mem.buffer);
+  const dv = () => new DataView(mem.buffer);
+  const cstr = (p) => {
+    const m = u8(); let e = p >>> 0; while (m[e]) e++;
+    return new TextDecoder().decode(m.subarray(p >>> 0, e));
+  };
+  // Line-buffered console output.
+  let buf = "";
+  const emit = (s) => {
+    buf += s; let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) { console.log(buf.slice(0, nl)); buf = buf.slice(nl + 1); }
+  };
+  const flush = () => { if (buf.length) { console.log(buf); buf = ""; } };
+  const align = (o, n) => (o + n - 1) & ~(n - 1);
+  // Minimal printf over the wasm vararg buffer (printf(fmt, va)).
+  const fmtprintf = (fmtPtr, vaPtr) => {
+    const fmt = cstr(fmtPtr); const d = dv(); let off = vaPtr >>> 0; let out = "";
+    for (let i = 0; i < fmt.length; i++) {
+      if (fmt[i] !== "%") { out += fmt[i]; continue; }
+      if (fmt[i + 1] === "%") { out += "%"; i++; continue; }
+      if (fmt.startsWith("%lld", i)) { off = align(off, 8); out += d.getBigInt64(off, true).toString(); off += 8; i += 3; continue; }
+      if (fmt.startsWith("%g", i))  { off = align(off, 8); out += String(d.getFloat64(off, true)); off += 8; i += 1; continue; }
+      if (fmt.startsWith("%s", i))  { off = align(off, 4); const sp = d.getUint32(off, true); off += 4; out += cstr(sp); i += 1; continue; }
+      out += fmt[i]; // unrecognized specifier: pass through
+    }
+    return out;
+  };
+  const writers = {
+    puts:    (p) => { emit(cstr(p) + "\n"); return 0; },
+    printf:  (f, va) => { emit(fmtprintf(f, va)); return 0; },
+    fputs:   (p) => { emit(cstr(p)); return 0; },
+    putchar: (c) => { emit(String.fromCharCode(c & 0xff)); return 0; },
+    // Built-in @ffi("js") host import: console debug from Hale.
+    console_log: (p) => { console.log(cstr(p)); return 0; },
+  };
+  // User-supplied @ffi("js") host imports (canvas, input, ws, ...). The
+  // factory receives helpers for reading wasm memory; its functions
+  // override the built-ins above. `run(glue)` is how an app wires its
+  // host surface.
+  if (typeof glue === "function") {
+    const helpers = {
+      cstr,
+      mem: () => mem,
+      u8, dv,
+      str: cstr,
+    };
+    Object.assign(writers, glue(helpers));
+  }
+
+  // Load bytes (Node fs / browser fetch), relative to this module.
+  let bytes;
+  const isNode = typeof process !== "undefined" && process.versions && process.versions.node;
+  if (isNode) {
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const { dirname, join } = await import("node:path");
+    bytes = readFileSync(join(dirname(fileURLToPath(import.meta.url)), WASM_FILE));
+  } else {
+    bytes = await (await fetch(new URL(WASM_FILE, import.meta.url))).arrayBuffer();
+  }
+
+  // Provide every host import the module declares: console writers for
+  // the libc-output set, inert no-ops for the rest (gated-out IO/thread
+  // teardown residue that never executes on the compute path).
+  const mod = await WebAssembly.compile(bytes);
+  const env = {};
+  for (const im of WebAssembly.Module.imports(mod)) {
+    if (im.kind !== "function") continue;
+    env[im.name] = writers[im.name] || (() => 0);
+  }
+  const instance = await WebAssembly.instantiate(mod, { env });
+  mem = instance.exports.memory;
+  if (instance.exports.main) instance.exports.main(0, 0);
+  flush();
+  return instance;
+}
+
+if (typeof process !== "undefined" && process.versions && process.versions.node) {
+  run().catch((e) => { console.error(e); process.exit(1); });
+}
+"#;
 
 /// m96: find `libhale_ts_shim.a`, the staticlib produced by the
 /// sibling `hale-ts-shim` workspace crate. Returns `None` if the
@@ -1241,6 +1493,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// where `Type::size_of()` (a constant-expression) can't be folded to
     /// an integer. E.g. the foreign-ring descriptor's `value_size`.
     pub(crate) target_data: inkwell::targets::TargetData,
+    /// WASM plan: true when compiling for wasm32. Gates the wasm-incompatible
+    /// `main` startup (transport/pool/thread bring-up) for entry inversion.
+    pub(crate) is_wasm: bool,
     pub(crate) program: &'p Program,
     /// Set while lowering a function's body so that `if` / `while`
     /// can `append_basic_block` onto it.
@@ -4341,6 +4596,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// WASM plan: the target's `size_t`-width integer — i64 on the
+    /// 64-bit native targets, i32 on wasm32. Runtime functions whose
+    /// C signatures take `size_t` (lengths/sizes passed to libc such as
+    /// `memcpy`) must use this so the IR matches the wasm32 ABI. On
+    /// native it is i64, so this is a no-op there.
+    pub(crate) fn usize_type(&self) -> inkwell::types::IntType<'ctx> {
+        self.context.ptr_sized_int_type(&self.target_data, None)
+    }
+
+    /// Narrow an i64 byte-count to the target `size_t` width for passing
+    /// to a `size_t`-param runtime/libc function. Identity on 64-bit
+    /// native (i64 == usize); truncates i64 -> i32 on wasm32.
+    pub(crate) fn size_to_usize(
+        &self,
+        v: inkwell::values::IntValue<'ctx>,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        let u = self.usize_type();
+        if v.get_type() == u {
+            return Ok(v);
+        }
+        self.builder
+            .build_int_truncate(v, u, "to_usize")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))
+    }
+
     /// m70: emit a memcpy(dst, src, n) call without consuming
     /// the result. Centralizes the symbol lookup so callers
     /// don't repeat the `get_function("memcpy").expect(...)`
@@ -4356,6 +4636,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .get_function("memcpy")
             .expect("memcpy declared");
+        // `memcpy`'s `n` is `size_t` — narrow to the target width so the
+        // call matches the wasm32 ABI (no-op on 64-bit native).
+        let n = self.size_to_usize(n)?;
         self.builder
             .build_call(
                 memcpy_fn,
@@ -5029,13 +5312,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // or fills the buffer. Critical for any program that
         // printlns then blocks (servers waiting for accept(),
         // any long-running loop with periodic progress).
-        let io_init = self
-            .module
-            .get_function("lotus_io_init")
-            .expect("lotus_io_init declared");
-        self.builder
-            .build_call(io_init, &[], "")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // WASM plan (entry inversion): skip on wasm — `lotus_io_init`
+        // calls `setvbuf` (a host import) to line-buffer stdout, which is
+        // a no-op concept in the browser. The host loader owns output.
+        if !self.is_wasm {
+            let io_init = self
+                .module
+                .get_function("lotus_io_init")
+                .expect("lotus_io_init declared");
+            self.builder
+                .build_call(io_init, &[], "")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
 
         // Prelude: spin up the program-wide arena. Every
         // `arena_alloc` call site loads `@lotus.arena.global`, so
@@ -5196,37 +5484,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // get their cross-process bus routes opened before any
         // user code runs (so `<- "subj" | ...` calls reach remote
         // subscribers from the very first publish).
-        let load_cfg_fn = self
-            .module
-            .get_function("lotus_bus_load_config")
-            .expect("lotus_bus_load_config declared");
-        let getenv_fn = self
-            .module
-            .get_function("getenv")
-            .expect("getenv declared");
-        let env_var_name = self
-            .builder
-            .build_global_string_ptr("LOTUS_BUS_CONFIG", "lotus.bus_config.envname")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .as_pointer_value();
-        let cfg_path_ptr = self
-            .builder
-            .build_call(
-                getenv_fn,
-                &[env_var_name.into()],
-                "lotus.bus_config.path",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("getenv returns ptr");
-        self.builder
-            .build_call(
-                load_cfg_fn,
-                &[cfg_path_ptr.into()],
-                "lotus.bus_config.load",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // WASM plan (entry inversion): skip the cross-process transport
+        // loader on wasm. `lotus_bus_load_config` opens unix/udp sockets
+        // and spawns reader threads for `listen` routes — its body
+        // references socket/bind/connect/pthread_create, which (being
+        // reachable from `main`) would otherwise survive gc-sections and
+        // become host imports. The browser bus is in-memory / WebSocket-
+        // adapter-driven (a later slice), never cross-process sockets.
+        if !self.is_wasm {
+            let load_cfg_fn = self
+                .module
+                .get_function("lotus_bus_load_config")
+                .expect("lotus_bus_load_config declared");
+            let getenv_fn = self
+                .module
+                .get_function("getenv")
+                .expect("getenv declared");
+            let env_var_name = self
+                .builder
+                .build_global_string_ptr("LOTUS_BUS_CONFIG", "lotus.bus_config.envname")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .as_pointer_value();
+            let cfg_path_ptr = self
+                .builder
+                .build_call(
+                    getenv_fn,
+                    &[env_var_name.into()],
+                    "lotus.bus_config.path",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("getenv returns ptr");
+            self.builder
+                .build_call(
+                    load_cfg_fn,
+                    &[cfg_path_ptr.into()],
+                    "lotus.bus_config.load",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
 
         // Pure-cooperative fast path: when no thread crosses the
         // bus boundary, the queue mutex is dead weight (~20-40ns/
@@ -5281,7 +5578,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // from freed memory (observed: core dump). Joining first
             // also preserves the prior invariant (workers joined
             // before arena_destroy — the F.32-1γ-v2 TSAN fix).
-            self.emit_coop_pool_shutdown_all()?;
+            // WASM plan (entry inversion): no worker threads on wasm, so
+            // skip the pool join/cancel (its body references
+            // pthread_join + the wake-fd close, which would otherwise
+            // survive as host imports).
+            if !self.is_wasm {
+                self.emit_coop_pool_shutdown_all()?;
+            }
             self.flush_dissolve_frame()?;
             // Tear down the arena before exit. exit(0) via `ret`
             // would drop the chunk linked list either way (process
@@ -13283,7 +13586,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // `lower_program`'s main-exit path (2026-05-30, extends
             // the 2026-05-26 substrate-race fix). Then flush the
             // dissolve frame, then tear down the arena.
-            self.emit_coop_pool_shutdown_all()?;
+            // WASM plan (entry inversion): no worker threads on wasm, so
+            // skip the pool join/cancel (its body references
+            // pthread_join + the wake-fd close, which would otherwise
+            // survive as host imports).
+            if !self.is_wasm {
+                self.emit_coop_pool_shutdown_all()?;
+            }
             self.flush_dissolve_frame()?;
             self.emit_arena_destroy()?;
             self.emit_bus_queue_destroy()?;
