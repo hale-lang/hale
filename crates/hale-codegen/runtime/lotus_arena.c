@@ -6223,10 +6223,13 @@ void lotus_bus_dispatch_keyed(lotus_bus_queue_t *queue,
         queue, subject, struct_payload, struct_size, key_lo, key_hi);
 }
 
+/* size/len params across the FFI surface are fixed-width uint64_t (not
+ * size_t) so codegen's i64 matches on every target — see lotus_arena_alloc.
+ * WASM plan size_t-ABI sweep. */
 void lotus_bus_dispatch(lotus_bus_queue_t *queue,
                         const char *subject,
                         const void *struct_payload,
-                        size_t struct_size,
+                        uint64_t struct_size,
                         lotus_serialize_fn serialize_fn) {
     /* Phase-3 Task 11 (2026-05-20): per-subscriber arena routing
      * for the intra-process path. Previously this enqueued the
@@ -7659,7 +7662,7 @@ int lotus_tcp_shutdown_listen_socket(int fd) {
 /* Forward decl — defined later (next to lotus_bus_payload_arena
  * proper). Lets the UDP block below build Bytes blobs in the
  * payload arena. */
-void *lotus_bus_payload_arena_alloc(size_t size, size_t align);
+void *lotus_bus_payload_arena_alloc(uint64_t size, uint64_t align);
 
 /*
  * Raw UDP primitives. Datagram socket (SOCK_DGRAM) — preserves
@@ -8154,7 +8157,7 @@ void *lotus_udp_recv_bytes_global(int fd, int max_bytes) {
  */
 
 /* Forward decl — defined later in this file. */
-void *lotus_bus_payload_arena_alloc(size_t size, size_t align);
+void *lotus_bus_payload_arena_alloc(uint64_t size, uint64_t align);
 
 int lotus_tcp_send_str(int fd, const char *msg) {
     if (fd < 0) {
@@ -8575,7 +8578,7 @@ const char *lotus_fs_list_dir(lotus_arena_t *a, const char *path) {
  * any existing file. Returns 0 on success, -1 on error. */
 int lotus_fs_write_file(const char *path,
                         const void *buf,
-                        size_t len) {
+                        uint64_t len) {
     if (!path || (!buf && len > 0)) {
         errno = EINVAL;
         return -1;
@@ -8613,7 +8616,7 @@ int lotus_fs_write_file(const char *path,
  * primitive forces buffer-everything-then-flush at dissolve". */
 int lotus_fs_write_file_append(const char *path,
                                const void *buf,
-                               size_t len) {
+                               uint64_t len) {
     if (!path || (!buf && len > 0)) {
         errno = EINVAL;
         return -1;
@@ -8911,7 +8914,7 @@ int lotus_file_seek(int fd, int64_t offset) {
 
 /* Write all `len` bytes from `buf` to `fd`, looping over short
  * writes. Returns 0 on success, -1 on error. */
-int lotus_file_write_all(int fd, const void *buf, size_t len) {
+int lotus_file_write_all(int fd, const void *buf, uint64_t len) {
     if (fd < 0 || (!buf && len > 0)) {
         errno = EINVAL;
         return -1;
@@ -10689,7 +10692,7 @@ void *lotus_caller_or_global_bytes_create(int64_t len) {
     return blob;
 }
 
-void *lotus_bus_payload_arena_alloc(size_t size, size_t align) {
+void *lotus_bus_payload_arena_alloc(uint64_t size, uint64_t align) {
     /* Phase-3: route through the caller_arena TLS when set so
      * stdlib primitives that go through this helper (str_lower /
      * str_upper / pad_left / etc.) get caller-scoped allocation
@@ -14172,7 +14175,7 @@ int64_t lotus_udp_recv_into(int fd, void *builder, int64_t max_bytes) {
  */
 void lotus_root_panic(
     const void *payload,
-    size_t payload_size,
+    uint64_t payload_size,
     const char *payload_typename
 ) {
     (void)payload;
