@@ -849,6 +849,20 @@ const RUNTIME_WASM_POSIX_H: &str =
 /// compiling. `--allow-undefined` keeps any still-unported POSIX syscall
 /// references (reachable only from gated-out IO) as imports the host can
 /// stub; a pure compute/bus program resolves with zero imports.
+/// Resolve an LLVM tool name: prefer the bare name, fall back to the
+/// LLVM-18 versioned name (`<name>-18`). CI images (and some distros)
+/// install only the versioned binaries — e.g. `wasm-ld-18` with no bare
+/// `wasm-ld` — so the fallback keeps the wasm build working wherever
+/// LLVM 18 is present, regardless of naming.
+fn resolve_tool(base: &str) -> String {
+    for cand in [base.to_string(), format!("{base}-18")] {
+        if Command::new(&cand).arg("--version").output().is_ok() {
+            return cand;
+        }
+    }
+    base.to_string()
+}
+
 fn link_wasm(user_obj: &Path, output: &Path) -> Result<(), CodegenError> {
     let mkerr = |m: String| CodegenError::Link(m);
     // Unique temp dir for the staged runtime sources.
@@ -873,8 +887,11 @@ fn link_wasm(user_obj: &Path, output: &Path) -> Result<(), CodegenError> {
     // recursive calls; -mbulk-memory lowers mem* to wasm intrinsics.
     let arena_o = dir.join("arena.o");
     let libc_o = dir.join("libc.o");
+    // Resolve the toolchain binaries (bare or `-18`).
+    let clang = resolve_tool("clang");
+    let wasm_ld = resolve_tool("wasm-ld");
     let cc = |src: &Path, out: &Path, extra: &[&str]| -> Result<(), CodegenError> {
-        let status = Command::new("clang")
+        let status = Command::new(&clang)
             .args(["--target=wasm32", "-mbulk-memory", "-O2", "-c"])
             .args(extra)
             .arg(src)
@@ -900,7 +917,7 @@ fn link_wasm(user_obj: &Path, output: &Path) -> Result<(), CodegenError> {
     // (println -> printf/puts) as host imports the JS loader provides.
     // (A richer export policy — @export, plus the _hale_start/_hale_tick
     // entry inversion for run()-driven programs — is the next slice.)
-    let status = Command::new("wasm-ld")
+    let status = Command::new(&wasm_ld)
         .arg(user_obj)
         .arg(&arena_o)
         .arg(&libc_o)
