@@ -103,10 +103,6 @@ fn wasm_struct_runs_self_contained() {
         return;
     };
 
-    // The struct computation runs in wasm; correctness is decided there
-    // and signalled with a LITERAL marker string, so capturing printf's
-    // format pointer (println formats Int args as varargs we can't read
-    // from JS) reliably carries the verdict.
     let src = r#"
         type Point { a: Int; b: Int; c: Int; }
         fn struct_sum() -> Int {
@@ -120,60 +116,30 @@ fn wasm_struct_runs_self_contained() {
             }
             return p.a + p.b + p.c;   // 330
         }
-        fn main() {
-            if struct_sum() == 330 { println("STRUCTSUM_OK"); }
-            else { println("STRUCTSUM_BAD"); }
-        }
+        fn main() { println("STRUCTSUM=", struct_sum()); }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let linked = tmp("sc.wasm");
-    // The wasm path now compiles + links the runtime in codegen (link_wasm).
-    build_executable_with_options(&program, &linked, &[], &wasm_opts())
+    let wasm = tmp("sc.wasm");
+    // The wasm path compiles + links the runtime AND emits a `.mjs` loader.
+    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
         .expect("wasm codegen + link");
-    assert!(linked.exists(), "link_wasm should produce a .wasm at the output path");
+    let loader = wasm.with_extension("mjs");
+    assert!(wasm.exists(), "link_wasm should produce a .wasm");
+    assert!(loader.exists(), "link_wasm should emit a .mjs loader beside the .wasm");
 
-    // Run `main`, dynamically stubbing every host import the module
-    // declares; printf captures its (literal) format string.
-    let js = format!(
-        r#"
-        import {{ readFileSync }} from 'node:fs';
-        const buf = readFileSync({:?});
-        const mod = await WebAssembly.compile(buf);
-        const holder = {{ inst: null }};
-        let out = "";
-        const cstr = (p) => {{
-            const m = new Uint8Array(holder.inst.exports.memory.buffer);
-            let e = p; while (m[e]) e++;
-            return new TextDecoder().decode(m.subarray(p, e));
-        }};
-        const env = {{}};
-        const captures = ['puts', 'printf', 'fputs'];   // println(literal) -> puts
-        for (const im of WebAssembly.Module.imports(mod)) {{
-            if (im.kind !== 'function') continue;
-            env[im.name] = captures.includes(im.name)
-                ? (p) => {{ out += cstr(p); return 0; }}
-                : () => 0;
-        }}
-        // instantiate(Module, imports) resolves to the Instance directly.
-        const instance = await WebAssembly.instantiate(mod, {{ env }});
-        holder.inst = instance;
-        instance.exports.main(0, 0);
-        if (!out.includes('STRUCTSUM_OK')) {{ console.error('FAIL: output was', JSON.stringify(out)); process.exit(1); }}
-        process.exit(0);
-        "#,
-        linked.to_string_lossy()
-    );
-    let run = Command::new(&node)
-        .arg("--input-type=module")
-        .arg("-e")
-        .arg(&js)
-        .output()
-        .expect("run node");
-    let _ = std::fs::remove_file(&linked);
+    // Run the program through the GENERATED loader (the real CLI artifact):
+    // `node sc.mjs` instantiates the module, wires console output, and runs
+    // `main`, which prints the struct-computed value via the loader's
+    // mini-printf (%lld vararg). Asserts the formatted value reaches stdout.
+    let run = Command::new(&node).arg(&loader).output().expect("run node loader");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
     assert!(
-        run.status.success(),
-        "self-contained wasm run failed (expected main to print 330):\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&run.stdout),
+        run.status.success() && stdout.contains("STRUCTSUM=330"),
+        "self-contained wasm run via the generated loader should print STRUCTSUM=330:\n\
+         stdout: {}\nstderr: {}",
+        stdout,
         String::from_utf8_lossy(&run.stderr)
     );
 }
