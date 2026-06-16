@@ -68,6 +68,17 @@ fn wasm_build_emits_valid_module() {
     assert!(bytes.len() > 8, "wasm module too small: {} bytes", bytes.len());
     assert_eq!(&bytes[0..4], b"\0asm", "missing wasm magic");
     assert_eq!(&bytes[4..8], &[1, 0, 0, 0], "unexpected wasm version");
+    // Entry-inversion regression guard: the wasm `main` must NOT drag in
+    // the cross-process transport/thread startup. Import names live as
+    // literal strings in the import section, so a byte search suffices.
+    for forbidden in ["socket", "bind", "connect", "pthread_create", "lotus_bus_load_config"] {
+        assert!(
+            !bytes.windows(forbidden.len()).any(|w| w == forbidden.as_bytes()),
+            "entry inversion regressed: wasm module imports `{}` (the socket/thread \
+             startup should be gated out of `main` on wasm)",
+            forbidden
+        );
+    }
 }
 
 /// End-to-end via the real CLI link path: `build_executable_with_options`

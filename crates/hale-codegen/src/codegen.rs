@@ -500,6 +500,7 @@ pub fn build_executable_with_options(
         module,
         builder,
         target_data,
+        is_wasm,
         program: &merged,
         current_fn: None,
         current_user_fn_ret: None,
@@ -1369,6 +1370,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// where `Type::size_of()` (a constant-expression) can't be folded to
     /// an integer. E.g. the foreign-ring descriptor's `value_size`.
     pub(crate) target_data: inkwell::targets::TargetData,
+    /// WASM plan: true when compiling for wasm32. Gates the wasm-incompatible
+    /// `main` startup (transport/pool/thread bring-up) for entry inversion.
+    pub(crate) is_wasm: bool,
     pub(crate) program: &'p Program,
     /// Set while lowering a function's body so that `if` / `while`
     /// can `append_basic_block` onto it.
@@ -5185,13 +5189,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // or fills the buffer. Critical for any program that
         // printlns then blocks (servers waiting for accept(),
         // any long-running loop with periodic progress).
-        let io_init = self
-            .module
-            .get_function("lotus_io_init")
-            .expect("lotus_io_init declared");
-        self.builder
-            .build_call(io_init, &[], "")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // WASM plan (entry inversion): skip on wasm — `lotus_io_init`
+        // calls `setvbuf` (a host import) to line-buffer stdout, which is
+        // a no-op concept in the browser. The host loader owns output.
+        if !self.is_wasm {
+            let io_init = self
+                .module
+                .get_function("lotus_io_init")
+                .expect("lotus_io_init declared");
+            self.builder
+                .build_call(io_init, &[], "")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
 
         // Prelude: spin up the program-wide arena. Every
         // `arena_alloc` call site loads `@lotus.arena.global`, so
@@ -5352,37 +5361,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // get their cross-process bus routes opened before any
         // user code runs (so `<- "subj" | ...` calls reach remote
         // subscribers from the very first publish).
-        let load_cfg_fn = self
-            .module
-            .get_function("lotus_bus_load_config")
-            .expect("lotus_bus_load_config declared");
-        let getenv_fn = self
-            .module
-            .get_function("getenv")
-            .expect("getenv declared");
-        let env_var_name = self
-            .builder
-            .build_global_string_ptr("LOTUS_BUS_CONFIG", "lotus.bus_config.envname")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .as_pointer_value();
-        let cfg_path_ptr = self
-            .builder
-            .build_call(
-                getenv_fn,
-                &[env_var_name.into()],
-                "lotus.bus_config.path",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("getenv returns ptr");
-        self.builder
-            .build_call(
-                load_cfg_fn,
-                &[cfg_path_ptr.into()],
-                "lotus.bus_config.load",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // WASM plan (entry inversion): skip the cross-process transport
+        // loader on wasm. `lotus_bus_load_config` opens unix/udp sockets
+        // and spawns reader threads for `listen` routes — its body
+        // references socket/bind/connect/pthread_create, which (being
+        // reachable from `main`) would otherwise survive gc-sections and
+        // become host imports. The browser bus is in-memory / WebSocket-
+        // adapter-driven (a later slice), never cross-process sockets.
+        if !self.is_wasm {
+            let load_cfg_fn = self
+                .module
+                .get_function("lotus_bus_load_config")
+                .expect("lotus_bus_load_config declared");
+            let getenv_fn = self
+                .module
+                .get_function("getenv")
+                .expect("getenv declared");
+            let env_var_name = self
+                .builder
+                .build_global_string_ptr("LOTUS_BUS_CONFIG", "lotus.bus_config.envname")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .as_pointer_value();
+            let cfg_path_ptr = self
+                .builder
+                .build_call(
+                    getenv_fn,
+                    &[env_var_name.into()],
+                    "lotus.bus_config.path",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("getenv returns ptr");
+            self.builder
+                .build_call(
+                    load_cfg_fn,
+                    &[cfg_path_ptr.into()],
+                    "lotus.bus_config.load",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
 
         // Pure-cooperative fast path: when no thread crosses the
         // bus boundary, the queue mutex is dead weight (~20-40ns/
@@ -5437,7 +5455,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // from freed memory (observed: core dump). Joining first
             // also preserves the prior invariant (workers joined
             // before arena_destroy — the F.32-1γ-v2 TSAN fix).
-            self.emit_coop_pool_shutdown_all()?;
+            // WASM plan (entry inversion): no worker threads on wasm, so
+            // skip the pool join/cancel (its body references
+            // pthread_join + the wake-fd close, which would otherwise
+            // survive as host imports).
+            if !self.is_wasm {
+                self.emit_coop_pool_shutdown_all()?;
+            }
             self.flush_dissolve_frame()?;
             // Tear down the arena before exit. exit(0) via `ret`
             // would drop the chunk linked list either way (process
@@ -13439,7 +13463,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // `lower_program`'s main-exit path (2026-05-30, extends
             // the 2026-05-26 substrate-race fix). Then flush the
             // dissolve frame, then tear down the arena.
-            self.emit_coop_pool_shutdown_all()?;
+            // WASM plan (entry inversion): no worker threads on wasm, so
+            // skip the pool join/cancel (its body references
+            // pthread_join + the wake-fd close, which would otherwise
+            // survive as host imports).
+            if !self.is_wasm {
+                self.emit_coop_pool_shutdown_all()?;
+            }
             self.flush_dissolve_frame()?;
             self.emit_arena_destroy()?;
             self.emit_bus_queue_destroy()?;
