@@ -502,6 +502,7 @@ pub fn build_executable_with_options(
         target_data,
         is_wasm,
         wasm_exports: Vec::new(),
+        instantiating_persistent_singleton: false,
         program: &merged,
         current_fn: None,
         current_user_fn_ret: None,
@@ -1532,6 +1533,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// arena-less wrappers were emitted; passed to `wasm-ld
     /// --export=`. Empty on native builds.
     pub(crate) wasm_exports: Vec<String>,
+    /// WASM entry-inversion: set while `_hale_start` instantiates the
+    /// `@export locus` singleton, so `lower_locus_instantiation`
+    /// allocates its struct in the persistent program arena (not a
+    /// stack alloca — the singleton outlives `_hale_start`).
+    pub(crate) instantiating_persistent_singleton: bool,
     pub(crate) program: &'p Program,
     /// Set while lowering a function's body so that `if` / `while`
     /// can `append_basic_block` onto it.
@@ -8835,8 +8841,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.current_fn = Some(start_fn);
             self.deferred_dissolves.push(Vec::new());
             self.defer_next_locus_dissolve = true;
+            // Allocate the singleton in the persistent global arena, not
+            // a stack alloca — it must outlive _hale_start.
+            self.instantiating_persistent_singleton = true;
             let scope = Scope::default();
             let self_ptr = self.lower_locus_instantiation(lname, &[], &scope)?;
+            self.instantiating_persistent_singleton = false;
             self.defer_next_locus_dissolve = false;
             // Drop the frame WITHOUT flushing → no dissolve IR emitted.
             let _ = self.deferred_dissolves.pop();

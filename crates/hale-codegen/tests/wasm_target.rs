@@ -189,6 +189,87 @@ console.log(v === 3n ? "LOCUS_STATE_OK" : ("LOCUS_STATE_FAIL:" + v));
     );
 }
 
+/// Regression: an `@export locus` with MULTIPLE mixed-type fixed-array
+/// fields must not alias under wasm. The singleton is instantiated in
+/// `_hale_start` but outlives it, so its struct must be heap-allocated
+/// in the persistent program arena — a stack alloca dangled, and O2's
+/// dead-store elimination then dropped the array-pointer field stores,
+/// making the Float arrays read the Int array's bits. Here `fill()`
+/// writes distinct values to three Float arrays + one Int array in a
+/// loop; reading them back across a separate call must return exactly
+/// what was written.
+#[test]
+fn wasm_export_locus_multiple_array_fields_no_alias() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_export_locus_multiple_array_fields_no_alias: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        @export locus T {
+            params {
+                ax:[Float;8]=[0.0;8]; ay:[Float;8]=[0.0;8];
+                az:[Float;8]=[0.0;8]; owner:[Int;8]=[0;8];
+            }
+            birth() { }
+            fn fill() {
+                let mut i = 0;
+                while i < 3 {
+                    self.ax[i] = 100.0 + std::math::int_to_float(i);
+                    self.ay[i] = 200.0 + std::math::int_to_float(i);
+                    self.az[i] = 300.0 + std::math::int_to_float(i);
+                    self.owner[i] = i * 10;
+                    i = i + 1;
+                }
+            }
+            fn rx(k:Int)->Float{return self.ax[k];}
+            fn ry(k:Int)->Float{return self.ay[k];}
+            fn rz(k:Int)->Float{return self.az[k];}
+            fn ro(k:Int)->Int{return self.owner[k];}
+        }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let wasm = tmp("export_locus_arrays.wasm");
+    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
+        .expect("wasm codegen + link");
+    let loader = wasm.with_extension("mjs");
+    let harness = wasm.with_extension("harness.mjs");
+    let loader_name = loader.file_name().unwrap().to_str().unwrap();
+    std::fs::write(
+        &harness,
+        format!(
+            r#"import {{ run }} from "./{loader_name}";
+const inst = await run(() => ({{}}));
+inst.exports.fill();
+let ok = true;
+for (let k = 0; k < 3; k++) {{
+  const x = inst.exports.rx(BigInt(k)), y = inst.exports.ry(BigInt(k));
+  const z = inst.exports.rz(BigInt(k)), o = inst.exports.ro(BigInt(k));
+  if (x !== 100+k || y !== 200+k || z !== 300+k || o !== BigInt(k*10)) {{
+    ok = false; console.log(`MISMATCH k=${{k}}: x=${{x}} y=${{y}} z=${{z}} o=${{o}}`);
+  }}
+}}
+console.log(ok ? "ARRAYS_OK" : "ARRAYS_FAIL");
+"#
+        ),
+    )
+    .expect("write harness");
+    let run = Command::new(&node).arg(&harness).output().expect("run node harness");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    let _ = std::fs::remove_file(&harness);
+    assert!(
+        run.status.success() && stdout.contains("ARRAYS_OK"),
+        "multiple mixed-type array fields on an @export locus must not alias \
+         under wasm:\nstdout: {}\nstderr: {}",
+        stdout,
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 fn tool(name: &str) -> Option<String> {
     for cand in [name, &format!("{}-18", name)] {
         if Command::new(cand).arg("--version").output().is_ok() {
