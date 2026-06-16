@@ -41,6 +41,7 @@ fn build_with_csrc(name: &str, hale_src: &str, csrc_body: &str) -> std::path::Pa
     let options = BuildOptions {
         link_libs: Vec::new(),
         csrc_files: vec![csrc_path.clone()],
+        ..Default::default()
     };
     build_executable_with_options(&program, &bin, &[], &options).expect("build");
     let _ = std::fs::remove_file(&csrc_path);

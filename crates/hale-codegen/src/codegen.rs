@@ -231,6 +231,23 @@ impl std::error::Error for CodegenError {}
 pub struct BuildOptions {
     pub link_libs: Vec<String>,
     pub csrc_files: Vec<std::path::PathBuf>,
+    /// Compilation target. Selects the LLVM triple + the link
+    /// strategy. Defaults to the host native target.
+    pub target: CompileTarget,
+}
+
+/// The compilation backend. `Native` is the host ELF/Mach-O path
+/// (LLVM host triple + clang link against the POSIX lotus runtime).
+/// `Wasm32` targets `wasm32-unknown-unknown` for the browser/full-stack
+/// web initiative (WASM plan). At this stage the wasm path emits the
+/// relocatable wasm OBJECT and stops before linking — the runtime core
+/// is ported under `#ifdef __wasm__` in a following step, after which
+/// the link is completed by `wasm-ld`.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompileTarget {
+    #[default]
+    Native,
+    Wasm32,
 }
 
 /// Read a `LOTUS_*` boolean build flag from the environment.
@@ -415,8 +432,15 @@ pub fn build_executable_with_options(
     hale_syntax::desugar::desugar_repr_accessors(&mut program_owned);
     let program = &program_owned;
 
-    Target::initialize_native(&InitializationConfig::default())
-        .map_err(|e| CodegenError::LlvmInit(e.to_string()))?;
+    let is_wasm = options.target == CompileTarget::Wasm32;
+    if is_wasm {
+        // Register the WebAssembly backend (the native path only
+        // initializes the host target).
+        Target::initialize_webassembly(&InitializationConfig::default());
+    } else {
+        Target::initialize_native(&InitializationConfig::default())
+            .map_err(|e| CodegenError::LlvmInit(e.to_string()))?;
+    }
 
     // m73a: parse the bundled stdlib source and merge its decls
     // into the user program before lowering. Stdlib loci land in
@@ -448,7 +472,11 @@ pub fn build_executable_with_options(
     // offset 32 (i128 aligned to 16). Writes to the third field
     // landed past the allocation. Set the layout now so every
     // sizeof / GEP downstream agrees.
-    let triple = TargetMachine::get_default_triple();
+    let triple = if is_wasm {
+        TargetTriple::create("wasm32-unknown-unknown")
+    } else {
+        TargetMachine::get_default_triple()
+    };
     let target = Target::from_triple(&triple)
         .map_err(|e| CodegenError::LlvmInit(e.to_string()))?;
     let machine = target
@@ -576,6 +604,18 @@ pub fn build_executable_with_options(
     machine
         .write_to_file(&cx.module, FileType::Object, &obj_path)
         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+    if is_wasm {
+        // Emit the relocatable wasm object to the output path and stop.
+        // Until the runtime core is ported under `#ifdef __wasm__`, the
+        // module references the lotus runtime as undefined symbols; a
+        // harness links with `wasm-ld` (`--gc-sections`, exporting the
+        // entry of interest) and supplies the runtime — either as imports
+        // or, once ported, as the compiled-in wasm runtime object.
+        std::fs::copy(&obj_path, output_path)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        return Ok(());
+    }
 
     // The lotus runtime C (lotus_arena.c is ~13k lines) used to be
     // recompiled by clang on EVERY `hale build` — the dominant build
