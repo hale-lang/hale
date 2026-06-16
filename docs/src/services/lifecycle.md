@@ -93,6 +93,30 @@ fire-and-forget. When several `let`-bound loci share a scope,
 they dissolve in reverse order of creation (the later one, which
 may depend on the earlier, goes first).
 
+### Replacing a locus held in a field
+
+If a locus holds another locus in a field — say a server that
+keeps its current connection in `self.conn` — assigning a fresh
+one **replaces a live thing**, so it's a lifecycle event, not a
+plain store:
+
+```hale
+self.conn = Connection { url: next };   // reconnect
+```
+
+Hale tears the old `self.conn` down first (drain → dissolve, so
+its socket and any children are released), *then* builds the new
+one into this locus's arena and points the field at it. The old
+and new never overlap, and the new instance lives until the
+parent dissolves — no manual close, no leak. This is
+**break-before-make**: if you need make-before-break (hold the old
+connection open while the new one warms up), keep both in
+separate fields and swap explicitly.
+
+To *reconfigure the same instance* instead of replacing it, mutate
+in place — `self.conn.url = next;` — which keeps the connection
+and triggers no teardown.
+
 ## Shutdown cascades
 
 `drain()` is always **depth-first cascading**. Calling it on a

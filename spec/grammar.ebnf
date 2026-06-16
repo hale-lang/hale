@@ -673,6 +673,7 @@ block             = "{" , { statement } , [ expression ] , "}" ;
 statement         = let_stmt
                   | assign_stmt
                   | send_stmt
+                  | shm_write_stmt
                   | if_stmt
                   | match_stmt
                   | for_stmt
@@ -705,6 +706,19 @@ lvalue            = ( IDENTIFIER | "self" ) ,
    subject is declared and the type matches at each call site.
    See F.12 in design-rationale.md. *)
 send_stmt         = expression , "<-" , expression , ";" ;
+
+(* Zero-copy ring producer: `Recs.write(max) { w => ... ; len }`.
+   Reserves up to `max` bytes in the ring, binds a writable
+   `BytesMut` view `w` over the reserved slot, runs the body
+   (which writes record fields directly into the slot with
+   `std::bytes::write_*`), and commits the byte count the body's
+   tail expression yields. The reserve/commit are scoped to the
+   block, so the view cannot escape and the commit cannot be
+   forgotten. The left side names an shm-ring-bound subject. See
+   the foreign-ring producer path in semantics.md. *)
+shm_write_stmt    = expression , "." , "write" , "(" , expression , ")" ,
+                    "{" , IDENTIFIER , "=>" , { statement } ,
+                    [ expression ] , "}" ;
 
 if_stmt           = "if" , expression , block ,
                     { "else" , "if" , expression , block } ,
