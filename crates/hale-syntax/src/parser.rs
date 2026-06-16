@@ -944,16 +944,20 @@ impl Parser {
             _ => {
                 return Err(Diag::parse(
                     abi_tok.span,
-                    "expected ABI string literal — `@ffi(\"c\")` is the only \
-                     form accepted at Stage 1",
+                    "expected ABI string literal — `@ffi(\"c\")` (native) or \
+                     `@ffi(\"js\")` (wasm host import)",
                 ));
             }
         };
-        if abi != "c" {
+        // `"c"` = a linked native C symbol; `"js"` = a browser/wasm host
+        // import (WASM plan), provided by the JS loader. Both lower to an
+        // LLVM `declare`; under wasm an undefined import becomes a host
+        // import in the `env` module.
+        if abi != "c" && abi != "js" {
             return Err(Diag::parse(
                 abi_tok.span,
                 format!(
-                    "unsupported FFI ABI {:?} — Stage 1 accepts only `\"c\"`",
+                    "unsupported FFI ABI {:?} — expected `\"c\"` or `\"js\"`",
                     abi
                 ),
             ));

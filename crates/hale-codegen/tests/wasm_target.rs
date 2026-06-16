@@ -30,6 +30,41 @@ fn tmp(name: &str) -> PathBuf {
     p
 }
 
+/// `@ffi("js")` host imports — the games-stdlib enabler. A Hale program
+/// declares a host import; the wasm build turns it into an `env` import
+/// the JS loader provides (here the built-in `console_log`). Proves the
+/// whole chain: parse `@ffi("js")` -> lower to a wasm import -> loader
+/// wires it -> visible output.
+#[test]
+fn wasm_ffi_js_host_import() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_ffi_js_host_import: clang/wasm-ld/node not all found");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        @ffi("js") fn console_log(msg: String);
+        fn main() { console_log("FFIJS_OK"); }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse @ffi(\"js\")");
+    let wasm = tmp("ffijs.wasm");
+    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
+        .expect("wasm codegen + link");
+    let loader = wasm.with_extension("mjs");
+    let run = Command::new(&node).arg(&loader).output().expect("run node loader");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    assert!(
+        run.status.success() && stdout.contains("FFIJS_OK"),
+        "@ffi(\"js\") host import should print via the loader:\nstdout: {}\nstderr: {}",
+        stdout,
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 fn tool(name: &str) -> Option<String> {
     for cand in [name, &format!("{}-18", name)] {
         if Command::new(cand).arg("--version").output().is_ok() {
