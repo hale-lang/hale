@@ -329,6 +329,51 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                 .left()
                 .expect("lotus_arena_alloc returns ptr")
                 .into_pointer_value()
+        } else if self.instantiating_persistent_singleton {
+            // WASM entry-inversion: the `@export locus` singleton is
+            // instantiated in `_hale_start` but OUTLIVES it — the host
+            // calls its methods long after _hale_start returns. A stack
+            // alloca would be a dangle (and O2's DSE drops the now-"dead"
+            // field stores, so reads see garbage / aliased arrays — the
+            // multi-array-field bug). Allocate it in the program-global
+            // arena, which `_hale_start` creates and never destroys.
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let arena_global = self
+                .module
+                .get_global("lotus.arena.global")
+                .expect("arena global declared");
+            let global_arena = self
+                .builder
+                .build_load(
+                    ptr_t,
+                    arena_global.as_pointer_value(),
+                    &format!("{}.singleton.arena", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let alloc_fn = self
+                .module
+                .get_function("lotus_arena_alloc")
+                .expect("lotus_arena_alloc declared");
+            let i64_t = self.context.i64_type();
+            let size = info
+                .struct_ty
+                .size_of()
+                .expect("locus struct ty has known size");
+            self.builder
+                .build_call(
+                    alloc_fn,
+                    &[
+                        global_arena.into(),
+                        size.into(),
+                        i64_t.const_int(16, false).into(),
+                    ],
+                    &format!("{}.self.singleton", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_arena_alloc returns ptr")
+                .into_pointer_value()
         } else if self.current_fn.is_some() {
             // Always hoist the locus-struct alloca to the fn's entry
             // block when we have one. A `build_alloca` placed at the
