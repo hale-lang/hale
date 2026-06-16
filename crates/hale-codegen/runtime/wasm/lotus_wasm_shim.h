@@ -105,19 +105,75 @@ static inline int snprintf(char *buf, size_t n, const char *fmt, ...) {
     (void)fmt; if (buf && n) buf[0] = 0; return 0;
 }
 
-/* env parsing helpers (dead on wasm: getenv() returns NULL). */
-static inline unsigned long strtoul(const char *s, char **e, int base) {
-    (void)s; (void)base; if (e) *e = (char *)s; return 0;
+/* Numeric string parsing. Self-contained (no syscalls), so std::str::parse_int
+ * / parse_float work under wasm just as they do natively — the portable
+ * stdlib promise. Not bit-exact IEEE rounding for strtod, but correct for
+ * the decimal magnitudes app/protocol data uses. */
+static inline int lotus_wasm_isspace_(int c) {
+    return c == ' ' || (c >= '\t' && c <= '\r');
+}
+static inline long long strtoll(const char *s, char **e, int base) {
+    const char *p = s;
+    while (lotus_wasm_isspace_((unsigned char)*p)) p++;
+    int neg = 0;
+    if (*p == '+' || *p == '-') { neg = (*p == '-'); p++; }
+    if ((base == 0 || base == 16) && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2; base = 16;
+    } else if (base == 0 && p[0] == '0') {
+        base = 8;
+    } else if (base == 0) {
+        base = 10;
+    }
+    long long acc = 0; int any = 0;
+    for (;;) {
+        int c = (unsigned char)*p, d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'z') d = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'Z') d = c - 'A' + 10;
+        else break;
+        if (d >= base) break;
+        acc = acc * base + d; any = 1; p++;
+    }
+    if (e) *e = (char *)(any ? p : s);
+    return neg ? -acc : acc;
+}
+static inline unsigned long long strtoull(const char *s, char **e, int b) {
+    return (unsigned long long)strtoll(s, e, b);
 }
 static inline long strtol(const char *s, char **e, int base) {
-    (void)s; (void)base; if (e) *e = (char *)s; return 0;
+    return (long)strtoll(s, e, base);
 }
-/* NB: numeric string parsing is stubbed for v1 — std::str::parse_* would
- * return 0 on wasm until real impls land. Inert for compute/bus programs;
- * a known limitation tracked for the runtime port. */
-static inline unsigned long long strtoull(const char *s, char **e, int b) { (void)b; if (e) *e = (char *)s; return 0; }
-static inline long long strtoll(const char *s, char **e, int b) { (void)b; if (e) *e = (char *)s; return 0; }
-static inline double strtod(const char *s, char **e) { if (e) *e = (char *)s; return 0.0; }
+static inline unsigned long strtoul(const char *s, char **e, int base) {
+    return (unsigned long)strtoull(s, e, base);
+}
+static inline double strtod(const char *s, char **e) {
+    const char *p = s;
+    while (lotus_wasm_isspace_((unsigned char)*p)) p++;
+    int neg = 0;
+    if (*p == '+' || *p == '-') { neg = (*p == '-'); p++; }
+    double v = 0.0; int any = 0;
+    while (*p >= '0' && *p <= '9') { v = v * 10.0 + (*p - '0'); p++; any = 1; }
+    if (*p == '.') {
+        p++;
+        double frac = 0.0, scale = 1.0;
+        while (*p >= '0' && *p <= '9') { frac = frac * 10.0 + (*p - '0'); scale *= 10.0; p++; any = 1; }
+        v += frac / scale;
+    }
+    if (any && (*p == 'e' || *p == 'E')) {
+        const char *ep = p + 1; int eneg = 0;
+        if (*ep == '+' || *ep == '-') { eneg = (*ep == '-'); ep++; }
+        if (*ep >= '0' && *ep <= '9') {
+            int exp = 0;
+            while (*ep >= '0' && *ep <= '9') { exp = exp * 10 + (*ep - '0'); ep++; }
+            double pw = 1.0;
+            for (int i = 0; i < exp; i++) pw *= 10.0;
+            if (eneg) v /= pw; else v *= pw;
+            p = ep;
+        }
+    }
+    if (e) *e = (char *)(any ? p : s);
+    return neg ? -v : v;
+}
 static inline char *strerror(int e) { (void)e; return (char *)""; }
 
 /* math + format constants (math.h / inttypes.h are gated out). */

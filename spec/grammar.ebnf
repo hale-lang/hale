@@ -174,8 +174,13 @@ locality_tier     = "L1" | "L2" | "L3" | "any" ;
 locus_decl        = { locus_decorator } , [ "main" ] , "locus" , IDENTIFIER ,
                     [ locus_annotations ] ,
                     "{" , { locus_member } , "}" ;
+(* `@export locus` (export_annotation, defined in § 13) marks the
+   persistent singleton "app" of a wasm program — instantiated once,
+   never dissolved, its `fn` methods exported. See `spec/ffi.md`
+   § "WASM host interface". *)
 locus_decorator   = form_annotation
                   | locality_annotation
+                  | export_annotation
                   ;
 
 (* F.31 (2026-05-23): `schedule` removed from locus_annotation.
@@ -617,9 +622,23 @@ function_type     = "fn" , "(" , [ type_expr , { "," , type_expr } ] , ")" ,
 const_decl        = "const" , IDENTIFIER , ":" , type_expr , "=" ,
                     expression , ";" ;
 
-function_decl     = "fn" , IDENTIFIER , [ generic_params ] ,
+function_decl     = [ function_decorator ] ,
+                    "fn" , IDENTIFIER , [ generic_params ] ,
                     "(" , [ param_list ] , ")" ,
-                    [ "->" , type_expr ] , [ fallible_marker ] , block ;
+                    [ "->" , type_expr ] , [ fallible_marker ] ,
+                    ( block | ";" ) ;
+
+(* A free fn may carry one fn-level decorator. `@ffi("c"|"js")`
+   marks an external binding — a native C-ABI symbol ("c") or a
+   WASM host import ("js"); the body is absent (terminates with
+   `;`). `@export` marks a wasm module export the JS host calls by
+   name — a real-bodied top-level free fn, no-op on the native
+   target. `export` is a reserved keyword; the two decorators are
+   mutually exclusive (an import is not an export). See
+   `spec/ffi.md` § "WASM host interface". *)
+function_decorator = ffi_annotation | export_annotation ;
+ffi_annotation    = "@" , "ffi" , "(" , STRING_LIT , ")" ;
+export_annotation = "@" , "export" ;
 
 (* v1.x-FORM-1: a fallible fn's return type is "value of T, or
    an error has occurred with payload P." Callers MUST address

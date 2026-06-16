@@ -501,6 +501,7 @@ pub fn build_executable_with_options(
         builder,
         target_data,
         is_wasm,
+        wasm_exports: Vec::new(),
         program: &merged,
         current_fn: None,
         current_user_fn_ret: None,
@@ -610,7 +611,7 @@ pub fn build_executable_with_options(
         // Compile the self-contained wasm runtime (arena core + bundled
         // libc) and link it into the user object with wasm-ld, producing
         // a runnable `.wasm`. No native libs / no clang link line.
-        link_wasm(&obj_path, output_path)?;
+        link_wasm(&obj_path, output_path, &cx.wasm_exports)?;
         let _ = std::fs::remove_file(&obj_path);
         return Ok(());
     }
@@ -863,7 +864,11 @@ fn resolve_tool(base: &str) -> String {
     base.to_string()
 }
 
-fn link_wasm(user_obj: &Path, output: &Path) -> Result<(), CodegenError> {
+fn link_wasm(
+    user_obj: &Path,
+    output: &Path,
+    extra_exports: &[String],
+) -> Result<(), CodegenError> {
     let mkerr = |m: String| CodegenError::Link(m);
     // Unique temp dir for the staged runtime sources.
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -917,14 +922,26 @@ fn link_wasm(user_obj: &Path, output: &Path) -> Result<(), CodegenError> {
     // (println -> printf/puts) as host imports the JS loader provides.
     // (A richer export policy — @export, plus the _hale_start/_hale_tick
     // entry inversion for run()-driven programs — is the next slice.)
-    let status = Command::new(&wasm_ld)
-        .arg(user_obj)
+    let mut cmd = Command::new(&wasm_ld);
+    cmd.arg(user_obj)
         .arg(&arena_o)
         .arg(&libc_o)
         .arg("--no-entry")
-        .arg("--export=main")
+        .arg("--export-if-defined=main")
         .arg("--export=__heap_base")
         .arg("--export-if-defined=memory")
+        // WASM host seam: the JS loader writes an inbound message into wasm
+        // memory via lotus_wasm_alloc, then publishes it with
+        // lotus_wasm_set_inbox; the Hale side reads it with lotus_wasm_inbox
+        // (reached via @ffi("c"), so kept without an explicit export).
+        .arg("--export=lotus_wasm_alloc")
+        .arg("--export=lotus_wasm_set_inbox");
+    // Entry-inversion: `@export` fn wrappers + `_hale_start` (collected
+    // by synthesize_wasm_export_wrappers).
+    for name in extra_exports {
+        cmd.arg(format!("--export={name}"));
+    }
+    let status = cmd
         .arg("--gc-sections")
         .arg("--allow-undefined")
         .arg("-o")
@@ -996,6 +1013,15 @@ export async function run(glue) {
     putchar: (c) => { emit(String.fromCharCode(c & 0xff)); return 0; },
     // Built-in @ffi("js") host import: console debug from Hale.
     console_log: (p) => { console.log(cstr(p)); return 0; },
+    // libm: std::math lowers sin/cos/tan/... to these libm symbols, which
+    // a self-contained wasm build has no library for. JS `Math` is the
+    // natural host provider in the browser/node, so std::math works under
+    // wasm with no app glue. (sqrt/fabs usually lower to native wasm
+    // instructions and won't appear as imports; harmless to provide.)
+    sin: Math.sin, cos: Math.cos, tan: Math.tan,
+    asin: Math.asin, acos: Math.acos, atan: Math.atan, atan2: Math.atan2,
+    sqrt: Math.sqrt, exp: Math.exp, log: Math.log, pow: Math.pow,
+    tanh: Math.tanh, floor: Math.floor, ceil: Math.ceil, fabs: Math.abs,
   };
   // User-supplied @ffi("js") host imports (canvas, input, ws, ...). The
   // factory receives helpers for reading wasm memory; its functions
@@ -1034,7 +1060,13 @@ export async function run(glue) {
   }
   const instance = await WebAssembly.instantiate(mod, { env });
   mem = instance.exports.memory;
-  if (instance.exports.main) instance.exports.main(0, 0);
+  // Entry-inversion: if the module exports `_hale_start`, it sets up a
+  // PERSISTENT program arena and the host then drives the `@export` fns
+  // (e.g. per requestAnimationFrame). `main` is NOT called in that mode
+  // — its create+destroy of the arena would clobber the persistent one.
+  // A classic program (no `_hale_start`) runs `main` once as before.
+  if (instance.exports._hale_start) instance.exports._hale_start();
+  else if (instance.exports.main) instance.exports.main(0, 0);
   flush();
   return instance;
 }
@@ -1496,6 +1528,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// WASM plan: true when compiling for wasm32. Gates the wasm-incompatible
     /// `main` startup (transport/pool/thread bring-up) for entry inversion.
     pub(crate) is_wasm: bool,
+    /// WASM entry-inversion: names of `@export` free fns whose
+    /// arena-less wrappers were emitted; passed to `wasm-ld
+    /// --export=`. Empty on native builds.
+    pub(crate) wasm_exports: Vec<String>,
     pub(crate) program: &'p Program,
     /// Set while lowering a function's body so that `if` / `while`
     /// can `append_basic_block` onto it.
@@ -4747,17 +4783,52 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     fn lower_program(&mut self) -> Result<(), CodegenError> {
         // Locate fn main.
-        let main_decl = self
+        let main_found = self
             .program
             .items
             .iter()
             .find_map(|item| match item {
                 TopDecl::Fn(f) if f.name.name == "main" => Some(f.clone()),
                 _ => None,
-            })
-            .ok_or_else(|| {
-                CodegenError::Unsupported("program has no `fn main()`".to_string())
-            })?;
+            });
+        let main_decl = match main_found {
+            Some(m) => m,
+            None => {
+                // WASM entry-inversion: a program of only `@export` fns
+                // needs no `fn main` — the loader drives `_hale_start` +
+                // the exports. Synthesize an empty `main` to satisfy the
+                // rest of lowering; it's emitted but never called.
+                let has_exports = self.is_wasm
+                    && self.program.items.iter().any(|item| {
+                        matches!(item, TopDecl::Fn(f) if f.export)
+                            || matches!(item, TopDecl::Locus(l) if l.export)
+                    });
+                if !has_exports {
+                    return Err(CodegenError::Unsupported(
+                        "program has no `fn main()`".to_string(),
+                    ));
+                }
+                let sp = self.program.span.clone();
+                FnDecl {
+                    name: Ident {
+                        name: "main".to_string(),
+                        span: sp.clone(),
+                    },
+                    generics: Vec::new(),
+                    params: Vec::new(),
+                    ret: None,
+                    fallible: None,
+                    ffi: None,
+                    export: false,
+                    body: Block {
+                        stmts: Vec::new(),
+                        tail: None,
+                        span: sp.clone(),
+                    },
+                    span: sp,
+                }
+            }
+        };
 
         // Pre-pass: register the built-in `ClosureViolation` type.
         // The interpreter exposes this as a Value::Struct with
@@ -5260,6 +5331,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Pass D: lower bodies of user-defined fns.
         for f in &user_fn_decls {
             self.lower_user_fn_body(f)?;
+        }
+
+        // WASM entry-inversion: emit the arena-less export wrappers for
+        // `@export` fns + the `_hale_start` setup entry. No-op on native.
+        if self.is_wasm {
+            self.synthesize_wasm_export_wrappers(&user_fn_decls)?;
         }
 
         // Pass 3: the C entry point — i32 @main(i32 argc, ptr argv).
@@ -7543,6 +7620,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 span: template.name.span.clone(),
             },
             is_main: template.is_main,
+            export: template.export,
             generics: Vec::new(),
             annotations: template.annotations.clone(),
             form: template.form.clone(),
@@ -7650,6 +7728,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // Stage 1, never on locus members — but copy the
                 // field through for shape uniformity.
                 ffi: fd.ffi.clone(),
+                export: fd.export,
                 body: Self::substitute_block_type_ascriptions(
                     &fd.body, subst,
                 ),
@@ -7893,6 +7972,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // annotation; @ffi + generics is rejected at parse
             // time so in practice this is always None here.
             ffi: template.ffi.clone(),
+            export: template.export,
             body: new_body,
             span: template.span.clone(),
         })
@@ -8605,7 +8685,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .fn_type(&llvm_param_tys, false),
             }
         };
-        let func = self.module.add_function(&f.name.name, fn_ty, None);
+        // WASM entry-inversion: an `@export` fn's real (arena-ABI)
+        // implementation takes an internal symbol; the literal name is
+        // claimed by the arena-less export wrapper emitted later
+        // (synthesize_wasm_export_wrappers). Internal Hale callers
+        // resolve through `user_fns[name].func` (the SSA value), so the
+        // symbol rename is invisible to them. Native builds keep the
+        // literal name (no wrapper, `@export` is a no-op).
+        let impl_symbol = if self.is_wasm && f.export {
+            format!("__hale_impl_{}", f.name.name)
+        } else {
+            f.name.name.clone()
+        };
+        let func = self.module.add_function(&impl_symbol, fn_ty, None);
         // FORM-3: classify the body. Conservative — only catches
         // bodies that provably don't touch the arena allocator.
         // Fallible fns inherit `false` because the `fail E { ... }`
@@ -8627,6 +8719,299 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 is_ffi: false,
             },
         );
+        Ok(())
+    }
+
+    /// WASM entry-inversion (2026-06-16). Emit:
+    ///   * `_hale_start()` — a once-at-load setup entry that creates the
+    ///     PERSISTENT program arena + bus queue and stores them in the
+    ///     usual globals. Unlike `main`, nothing is torn down, so values
+    ///     an export allocates (or parks via the runtime state cell) live
+    ///     for the module's lifetime. The JS loader calls it before any
+    ///     export, and (in entry-inversion mode) does NOT call `main` —
+    ///     so `main`'s own create+destroy of the arena can't clobber it.
+    ///   * one arena-less wrapper per `@export fn`, under the literal fn
+    ///     name, that loads that persistent arena and tail-calls the real
+    ///     implementation (`__hale_impl_<name>`, arena-ABI). The JS host
+    ///     calls these with just the declared args.
+    /// Collected names are handed to `wasm-ld --export=`.
+    fn synthesize_wasm_export_wrappers(
+        &mut self,
+        user_fn_decls: &[FnDecl],
+    ) -> Result<(), CodegenError> {
+        let has_export_fn = user_fn_decls.iter().any(|f| f.export);
+        // The persistent singleton: `@export locus L { ... }` (at most one).
+        let export_locus_name: Option<String> = self
+            .program
+            .items
+            .iter()
+            .find_map(|it| match it {
+                TopDecl::Locus(l) if l.export => Some(l.name.name.clone()),
+                _ => None,
+            });
+        if !has_export_fn && export_locus_name.is_none() {
+            return Ok(());
+        }
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let void_t = self.context.void_type();
+        let emit = |s: &str| CodegenError::LlvmEmit(s.to_string());
+
+        // ---- _hale_start(): persistent arena + bus queue -------------
+        let start_fn =
+            self.module
+                .add_function("_hale_start", void_t.fn_type(&[], false), None);
+        let entry = self.context.append_basic_block(start_fn, "entry");
+        self.builder.position_at_end(entry);
+        let arena_create = self
+            .module
+            .get_function("lotus_arena_create_labeled")
+            .expect("lotus_arena_create_labeled declared");
+        let label = self
+            .builder
+            .build_global_string_ptr("lotus.arena.global", "hale_start.arena.label")
+            .map_err(|e| emit(&e.to_string()))?
+            .as_pointer_value();
+        let arena_ptr = self
+            .builder
+            .build_call(arena_create, &[label.into()], "hale_start.arena")
+            .map_err(|e| emit(&e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("arena ptr");
+        let arena_global = self
+            .module
+            .get_global("lotus.arena.global")
+            .expect("arena global declared");
+        self.builder
+            .build_store(arena_global.as_pointer_value(), arena_ptr)
+            .map_err(|e| emit(&e.to_string()))?;
+        let q_create = self
+            .module
+            .get_function("lotus_bus_queue_create")
+            .expect("lotus_bus_queue_create declared");
+        let q_ptr = self
+            .builder
+            .build_call(q_create, &[], "hale_start.queue")
+            .map_err(|e| emit(&e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("queue ptr");
+        let q_global = self
+            .module
+            .get_global("lotus.bus_queue.global")
+            .expect("bus queue global declared");
+        self.builder
+            .build_store(q_global.as_pointer_value(), q_ptr)
+            .map_err(|e| emit(&e.to_string()))?;
+        let set_q = self
+            .module
+            .get_function("lotus_bus_set_queue")
+            .expect("lotus_bus_set_queue declared");
+        self.builder
+            .build_call(set_q, &[q_ptr.into()], "")
+            .map_err(|e| emit(&e.to_string()))?;
+
+        // Persistent singleton: instantiate the `@export locus` here.
+        // birth() runs now; the dissolve is registered in a frame we
+        // then DISCARD (pop, never flush) so it never fires — the app
+        // lives for the module's lifetime. self-ptr → `@lotus.app.self`.
+        if let Some(ref lname) = export_locus_name {
+            if self
+                .user_loci
+                .get(lname)
+                .map_or(false, |i| i.methods.contains_key("run"))
+            {
+                return Err(CodegenError::Unsupported(format!(
+                    "@export locus `{}` must not define `run()` — a wasm \
+                     singleton is host-driven via its `@export` methods, not \
+                     a cooperative run loop",
+                    lname
+                )));
+            }
+            let app_self_global =
+                self.module.add_global(ptr_t, None, "lotus.app.self");
+            app_self_global.set_initializer(&ptr_t.const_null());
+            app_self_global.set_linkage(inkwell::module::Linkage::Internal);
+            self.current_fn = Some(start_fn);
+            self.deferred_dissolves.push(Vec::new());
+            self.defer_next_locus_dissolve = true;
+            let scope = Scope::default();
+            let self_ptr = self.lower_locus_instantiation(lname, &[], &scope)?;
+            self.defer_next_locus_dissolve = false;
+            // Drop the frame WITHOUT flushing → no dissolve IR emitted.
+            let _ = self.deferred_dissolves.pop();
+            self.builder
+                .build_store(app_self_global.as_pointer_value(), self_ptr)
+                .map_err(|e| emit(&e.to_string()))?;
+            self.current_fn = None;
+        }
+        self.builder
+            .build_return(None)
+            .map_err(|e| emit(&e.to_string()))?;
+        self.wasm_exports.push("_hale_start".to_string());
+
+        // ---- one wrapper per @export fn ------------------------------
+        for f in user_fn_decls {
+            if !f.export {
+                continue;
+            }
+            let name = &f.name.name;
+            let sig = self
+                .user_fns
+                .get(name)
+                .cloned()
+                .expect("@export fn declared in pass B");
+            if sig.fallible.is_some() {
+                return Err(CodegenError::Unsupported(format!(
+                    "@export fn `{}`: fallible exports are not supported \
+                     yet (wasm entry-inversion v1)",
+                    name
+                )));
+            }
+            let mut wparam_tys: Vec<inkwell::types::BasicMetadataTypeEnum> =
+                Vec::with_capacity(sig.params.len());
+            for p in &sig.params {
+                wparam_tys.push(self.llvm_basic_type(p).into());
+            }
+            let wrapper_ty = match &sig.ret {
+                Some(rt) => self.llvm_basic_type(rt).fn_type(&wparam_tys, false),
+                None => void_t.fn_type(&wparam_tys, false),
+            };
+            let wrapper = self.module.add_function(name, wrapper_ty, None);
+            let wentry = self.context.append_basic_block(wrapper, "entry");
+            self.builder.position_at_end(wentry);
+            let arena_ld = self
+                .builder
+                .build_load(ptr_t, arena_global.as_pointer_value(), "export.arena")
+                .map_err(|e| emit(&e.to_string()))?;
+            let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum> =
+                Vec::with_capacity(sig.params.len() + 1);
+            call_args.push(arena_ld.into());
+            for i in 0..sig.params.len() {
+                call_args.push(
+                    wrapper
+                        .get_nth_param(i as u32)
+                        .expect("wrapper param")
+                        .into(),
+                );
+            }
+            let call = self
+                .builder
+                .build_call(sig.func, &call_args, "export.call")
+                .map_err(|e| emit(&e.to_string()))?;
+            match &sig.ret {
+                Some(_) => {
+                    let rv = call
+                        .try_as_basic_value()
+                        .left()
+                        .expect("non-void export returns a value");
+                    self.builder
+                        .build_return(Some(&rv))
+                        .map_err(|e| emit(&e.to_string()))?;
+                }
+                None => {
+                    self.builder
+                        .build_return(None)
+                        .map_err(|e| emit(&e.to_string()))?;
+                }
+            }
+            self.wasm_exports.push(name.clone());
+        }
+
+        // ---- export wrappers for the @export locus's methods ---------
+        // Each non-fallible `fn` method becomes a wasm export under its
+        // bare name: load the singleton self-ptr, call the method
+        // (`[self_ptr, host args...]`), return the result. State lives in
+        // the locus's fields, so it persists across these calls.
+        if let Some(lname) = export_locus_name {
+            let methods: Vec<(String, inkwell::values::FunctionValue<'ctx>)> = self
+                .user_loci
+                .get(&lname)
+                .map(|i| {
+                    i.user_methods.iter().map(|(k, v)| (k.clone(), *v)).collect()
+                })
+                .unwrap_or_default();
+            // Methods declared `fallible(E)` can't be exported (v1 — the
+            // host has no error channel); they stay internal.
+            let fallible_methods: std::collections::BTreeSet<String> = self
+                .program
+                .items
+                .iter()
+                .find_map(|it| match it {
+                    TopDecl::Locus(l) if l.name.name == lname => Some(
+                        l.members
+                            .iter()
+                            .filter_map(|m| match m {
+                                LocusMember::Fn(fd) if fd.fallible.is_some() => {
+                                    Some(fd.name.name.clone())
+                                }
+                                _ => None,
+                            })
+                            .collect(),
+                    ),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let app_self_global = self
+                .module
+                .get_global("lotus.app.self")
+                .expect("app self global declared in _hale_start");
+            for (mname, mfunc) in methods {
+                if fallible_methods.contains(&mname) {
+                    continue;
+                }
+                // Defensive: skip a bare-name collision with an existing
+                // symbol (method symbols are `Locus.method`, so the bare
+                // name is normally free).
+                if self.module.get_function(&mname).is_some() {
+                    continue;
+                }
+                let fnty = mfunc.get_type();
+                let ptys = fnty.get_param_types(); // [self_ptr, args...]
+                let wparams: Vec<inkwell::types::BasicMetadataTypeEnum> =
+                    ptys.iter().skip(1).map(|t| (*t).into()).collect();
+                let wrapper_ty = match fnty.get_return_type() {
+                    Some(rt) => rt.fn_type(&wparams, false),
+                    None => void_t.fn_type(&wparams, false),
+                };
+                let wrapper = self.module.add_function(&mname, wrapper_ty, None);
+                let wentry = self.context.append_basic_block(wrapper, "entry");
+                self.builder.position_at_end(wentry);
+                let self_ld = self
+                    .builder
+                    .build_load(ptr_t, app_self_global.as_pointer_value(), "app.self")
+                    .map_err(|e| emit(&e.to_string()))?;
+                let mut args: Vec<inkwell::values::BasicMetadataValueEnum> =
+                    Vec::with_capacity(wparams.len() + 1);
+                args.push(self_ld.into());
+                for i in 0..wparams.len() {
+                    args.push(
+                        wrapper.get_nth_param(i as u32).expect("wrapper param").into(),
+                    );
+                }
+                let call = self
+                    .builder
+                    .build_call(mfunc, &args, "method.export.call")
+                    .map_err(|e| emit(&e.to_string()))?;
+                match fnty.get_return_type() {
+                    Some(_) => {
+                        let rv = call
+                            .try_as_basic_value()
+                            .left()
+                            .expect("non-void method returns a value");
+                        self.builder
+                            .build_return(Some(&rv))
+                            .map_err(|e| emit(&e.to_string()))?;
+                    }
+                    None => {
+                        self.builder
+                            .build_return(None)
+                            .map_err(|e| emit(&e.to_string()))?;
+                    }
+                }
+                self.wasm_exports.push(mname.clone());
+            }
+        }
         Ok(())
     }
 
