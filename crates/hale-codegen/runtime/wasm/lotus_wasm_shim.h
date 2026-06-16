@@ -112,6 +112,18 @@ static inline unsigned long strtoul(const char *s, char **e, int base) {
 static inline long strtol(const char *s, char **e, int base) {
     (void)s; (void)base; if (e) *e = (char *)s; return 0;
 }
+/* NB: numeric string parsing is stubbed for v1 — std::str::parse_* would
+ * return 0 on wasm until real impls land. Inert for compute/bus programs;
+ * a known limitation tracked for the runtime port. */
+static inline unsigned long long strtoull(const char *s, char **e, int b) { (void)b; if (e) *e = (char *)s; return 0; }
+static inline long long strtoll(const char *s, char **e, int b) { (void)b; if (e) *e = (char *)s; return 0; }
+static inline double strtod(const char *s, char **e) { if (e) *e = (char *)s; return 0.0; }
+static inline char *strerror(int e) { (void)e; return (char *)""; }
+
+/* math + format constants (math.h / inttypes.h are gated out). */
+#define INFINITY (__builtin_inff())
+#define NAN      (__builtin_nanf(""))
+#define PRIu64   "llu"
 
 /* atexit: browser teardown happens at page unload via the host, not a C
  * atexit table. No-op for v1 (cleanup handlers are a later phase). */
@@ -171,5 +183,69 @@ static inline int pthread_rwlock_rdlock(pthread_rwlock_t *l) { (void)l; return 0
 static inline int pthread_rwlock_wrlock(pthread_rwlock_t *l) { (void)l; return 0; }
 static inline int pthread_rwlock_unlock(pthread_rwlock_t *l) { (void)l; return 0; }
 static inline int pthread_rwlock_destroy(pthread_rwlock_t *l) { (void)l; return 0; }
+
+/* ---- errno + POSIX constants + typedefs ---------------------------
+ * errno-based error handling and POSIX integer constants are referenced
+ * pervasively (including in core-adjacent code). errno is a real global;
+ * the constants are plain integer #defines. The IO FUNCTIONS that use
+ * sockets/fs/etc. are gated out with #ifndef __wasm__; these values just
+ * let the remaining code compile. */
+extern int errno;
+#define EPERM 1
+#define ENOENT 2
+#define ESRCH 3
+#define EINTR 4
+#define EIO 5
+#define EBADF 9
+#define ECHILD 10
+#define EAGAIN 11
+#define EWOULDBLOCK EAGAIN
+#define ENOMEM 12
+#define EACCES 13
+#define EEXIST 17
+#define ENOTDIR 20
+#define EISDIR 21
+#define EINVAL 22
+#define ENOSPC 28
+#define EFBIG 27
+#define ENAMETOOLONG 36
+#define ENOTEMPTY 39
+#define ENOTSUP 95
+#define EADDRINUSE 98
+#define ENETUNREACH 101
+#define ECONNABORTED 103
+#define ECONNRESET 104
+#define ETIMEDOUT 110
+#define ECONNREFUSED 111
+#define EHOSTUNREACH 113
+#define EPIPE 32
+#define EMSGSIZE 90
+#define E2BIG 7
+#define ENOTSUP 95
+
+typedef int   pid_t;
+typedef long  off_t;
+typedef long  time_t;
+typedef long  suseconds_t;
+typedef unsigned int socklen_t;
+typedef unsigned int tcflag_t;
+
+/* ---- time: stubbed (a host clock import replaces these later) ----- */
+struct timespec { time_t tv_sec; long tv_nsec; };
+struct timeval  { time_t tv_sec; suseconds_t tv_usec; };
+#define CLOCK_REALTIME  0
+#define CLOCK_MONOTONIC 1
+typedef int clockid_t;
+static inline int clock_gettime(clockid_t c, struct timespec *t) {
+    (void)c; if (t) { t->tv_sec = 0; t->tv_nsec = 0; } return 0;
+}
+static inline int nanosleep(const struct timespec *r, struct timespec *rem) {
+    (void)r; (void)rem; return 0;
+}
+
+/* POSIX declaration stubs for the gated-out IO/threading/coroutine
+ * function families (compile-only; gc-stripped at link). Included last
+ * so it sees the FILE define + pthread/typedef declarations above. */
+#include "lotus_wasm_posix.h"
 
 #endif /* LOTUS_WASM_SHIM_H */

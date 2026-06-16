@@ -1,10 +1,10 @@
 /* lotus-wasm bundled libc (self-contained, no external sysroot).
  * WASM plan, Phase 1. Compiled ONLY for the wasm32 target, with
- * `-fno-builtin` so the byte-loop mem*/str* below aren't re-recognized
- * into recursive memcpy/memset calls. memcpy/memset/memmove are also
- * lowered to wasm `memory.copy`/`memory.fill` intrinsics under
- * `-mbulk-memory`; these definitions are the fallback + cover the
- * libc-name call sites the runtime makes.
+ * `-fno-builtin` so the byte-loop mem and str functions below aren't
+ * re-recognized into recursive memcpy/memset calls. memcpy/memset/
+ * memmove also lower to wasm `memory.copy`/`memory.fill` intrinsics
+ * under `-mbulk-memory`; these definitions are the fallback and cover
+ * the libc-name call sites the runtime makes.
  *
  * Allocator: a bump allocator over wasm linear memory growing from
  * `__heap_base` (provided by wasm-ld). `free` is a no-op — adequate for
@@ -24,10 +24,12 @@ static size_t g_brk = 0;
  * sentinels (see runtime/wasm/lotus_wasm_shim.h). */
 void *lotus_wasm_tls_slots[64] = {0};
 unsigned lotus_wasm_tls_next = 0;
+int errno = 0;
 struct lotus_wasm_FILE { int _; };
-static struct lotus_wasm_FILE g_stderr_file, g_stdout_file;
+static struct lotus_wasm_FILE g_stderr_file, g_stdout_file, g_stdin_file;
 struct lotus_wasm_FILE *const stderr = &g_stderr_file;
 struct lotus_wasm_FILE *const stdout = &g_stdout_file;
+struct lotus_wasm_FILE *const stdin = &g_stdin_file;
 
 static size_t wasm_mem_bytes(void) {
     return (size_t)__builtin_wasm_memory_size(0) * 65536u;
@@ -129,3 +131,41 @@ int strncmp(const char *a, const char *b, size_t n) {
     }
     return 0;
 }
+
+void *memchr(const void *s, int c, size_t n) {
+    const u8 *p = (const u8 *)s;
+    for (size_t i = 0; i < n; i++) if (p[i] == (u8)c) return (void *)(p + i);
+    return 0;
+}
+
+char *strchr(const char *s, int c) {
+    for (;; s++) { if (*s == (char)c) return (char *)s; if (!*s) return 0; }
+}
+
+char *strrchr(const char *s, int c) {
+    const char *last = 0;
+    for (;; s++) { if (*s == (char)c) last = s; if (!*s) break; }
+    return (char *)last;
+}
+
+char *strstr(const char *h, const char *n) {
+    if (!*n) return (char *)h;
+    for (; *h; h++) {
+        const char *a = h, *b = n;
+        while (*a && *b && *a == *b) { a++; b++; }
+        if (!*b) return (char *)h;
+    }
+    return 0;
+}
+
+char *strdup(const char *s) {
+    size_t n = strlen(s) + 1;
+    char *p = (char *)malloc(n);
+    if (p) for (size_t i = 0; i < n; i++) p[i] = s[i];
+    return p;
+}
+
+/* No host process to exit in v1: trap the module (a host-driven clean
+ * shutdown replaces this in a later phase). */
+__attribute__((noreturn)) void exit(int code) { (void)code; __builtin_trap(); }
+__attribute__((noreturn)) void _exit(int code) { (void)code; __builtin_trap(); }
