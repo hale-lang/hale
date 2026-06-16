@@ -4381,6 +4381,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// WASM plan: the target's `size_t`-width integer — i64 on the
+    /// 64-bit native targets, i32 on wasm32. Runtime functions whose
+    /// C signatures take `size_t` (lengths/sizes passed to libc such as
+    /// `memcpy`) must use this so the IR matches the wasm32 ABI. On
+    /// native it is i64, so this is a no-op there.
+    pub(crate) fn usize_type(&self) -> inkwell::types::IntType<'ctx> {
+        self.context.ptr_sized_int_type(&self.target_data, None)
+    }
+
+    /// Narrow an i64 byte-count to the target `size_t` width for passing
+    /// to a `size_t`-param runtime/libc function. Identity on 64-bit
+    /// native (i64 == usize); truncates i64 -> i32 on wasm32.
+    pub(crate) fn size_to_usize(
+        &self,
+        v: inkwell::values::IntValue<'ctx>,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        let u = self.usize_type();
+        if v.get_type() == u {
+            return Ok(v);
+        }
+        self.builder
+            .build_int_truncate(v, u, "to_usize")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))
+    }
+
     /// m70: emit a memcpy(dst, src, n) call without consuming
     /// the result. Centralizes the symbol lookup so callers
     /// don't repeat the `get_function("memcpy").expect(...)`
@@ -4396,6 +4421,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .get_function("memcpy")
             .expect("memcpy declared");
+        // `memcpy`'s `n` is `size_t` — narrow to the target width so the
+        // call matches the wasm32 ABI (no-op on 64-bit native).
+        let n = self.size_to_usize(n)?;
         self.builder
             .build_call(
                 memcpy_fn,

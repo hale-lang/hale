@@ -1367,7 +1367,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let fflush_ty = i32_t.fn_type(&[ptr_t.into()], false);
         self.module.add_function("fflush", fflush_ty, None);
 
-        // declare ptr @memcpy(ptr dest, ptr src, i64 n)
+        // declare ptr @memcpy(ptr dest, ptr src, size_t n)
         //
         // Used by `bus_dispatch` to copy the publisher's payload
         // into a fresh allocation in the subscriber's arena before
@@ -1376,9 +1376,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // pointer." Standard libc surface; we don't use LLVM's
         // intrinsic memcpy because clang lowers it through the
         // libc symbol anyway and a normal call is easier to
-        // reason about.
+        // reason about. `n` is `size_t` — target-pointer-width
+        // (i64 native / i32 wasm32) so the call matches the libc ABI.
         let memcpy_ty =
-            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64_t.into()], false);
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), self.usize_type().into()], false);
         self.module.add_function("memcpy", memcpy_ty, None);
 
         // ---- Phase 1 stdlib builtins (m71+) ----

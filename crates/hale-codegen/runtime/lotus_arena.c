@@ -1713,7 +1713,11 @@ static void *lotus_arena_alloc_nolock(lotus_arena_t *a, size_t size, size_t alig
  * lotus_arena_alloc happens under the lock (the fresh-chunk path mallocs /
  * pulls from the per-thread chunk pool), so the non-recursive mutex is
  * safe. */
-void *lotus_arena_alloc(lotus_arena_t *a, size_t size, size_t align) {
+/* size/align are fixed-width uint64_t (not size_t) so the FFI ABI is
+ * uniform across targets — codegen always passes i64, which matches on
+ * 64-bit native (uint64_t == size_t) AND on wasm32 (where size_t is
+ * 32-bit but the declared param stays 64-bit). WASM plan. */
+void *lotus_arena_alloc(lotus_arena_t *a, uint64_t size, uint64_t align) {
     if (a && a->shared_concurrent) {
         pthread_mutex_lock(&a->subregion_lock);
         void *p = lotus_arena_alloc_nolock(a, size, align);
