@@ -40,8 +40,15 @@ fn tool(name: &str) -> Option<String> {
 }
 
 /// Emitting a wasm object is pure codegen — always exercised.
+/// The wasm build path produces a valid, well-formed wasm module via
+/// codegen's link_wasm (compile runtime + wasm-ld). Gated on the wasm
+/// toolchain (link_wasm shells out to clang + wasm-ld).
 #[test]
-fn wasm_object_emits_valid_module() {
+fn wasm_build_emits_valid_module() {
+    if tool("clang").is_none() || tool("wasm-ld").is_none() {
+        eprintln!("SKIP wasm_build_emits_valid_module: clang/wasm-ld not found");
+        return;
+    }
     let src = r#"
         fn compute() -> Int {
             let mut acc = 0;
@@ -54,60 +61,41 @@ fn wasm_object_emits_valid_module() {
     let program = hale_syntax::parse_source(src).expect("parse");
     let obj = tmp("obj.wasm");
     build_executable_with_options(&program, &obj, &[], &wasm_opts())
-        .expect("wasm codegen");
-    let bytes = std::fs::read(&obj).expect("read wasm object");
+        .expect("wasm codegen + link");
+    let bytes = std::fs::read(&obj).expect("read wasm module");
     let _ = std::fs::remove_file(&obj);
     // WebAssembly module header: "\0asm" + version 1.
-    assert!(bytes.len() > 8, "wasm object too small: {} bytes", bytes.len());
+    assert!(bytes.len() > 8, "wasm module too small: {} bytes", bytes.len());
     assert_eq!(&bytes[0..4], b"\0asm", "missing wasm magic");
     assert_eq!(&bytes[4..8], &[1, 0, 0, 0], "unexpected wasm version");
 }
 
-/// Compile a runtime C source to a wasm32 object with clang.
-fn clang_wasm(clang: &str, src: &str, out: &std::path::Path, extra: &[&str]) -> bool {
-    Command::new(clang)
-        .args(["--target=wasm32", "-mbulk-memory", "-O2", "-c"])
-        .args(extra)
-        .arg(src)
-        .arg("-o")
-        .arg(out)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-/// End-to-end, SELF-CONTAINED: compile the real lotus runtime + bundled
-/// libc for wasm32, link them into a Hale program with NO undefined
-/// symbols / NO JS stubs, and run it under Node. Proves the size_t-width
-/// ABI fix: an allocating program (struct alloc + field GEP) runs against
-/// the actual compiled-in runtime on the wasm32 ABI. Skips (passing) when
-/// the wasm toolchain (clang / wasm-ld / node) isn't installed.
+/// End-to-end via the real CLI link path: `build_executable_with_options`
+/// with `CompileTarget::Wasm32` now COMPILES + LINKS the self-contained
+/// wasm runtime (arena core + bundled libc) into a runnable `.wasm` (the
+/// codegen `link_wasm` step — no manual wasm-ld). The module exports
+/// `main`; `--gc-sections` strips the unreachable stdlib. We run `main`
+/// and capture its `println` output, asserting the allocating program
+/// (struct alloc + field GEP) computes 330 on the wasm32 ABI.
+///
+/// `main`'s startup still references libc-output + (gated-out) IO/thread
+/// syscalls as host imports — those become the JS host surface a proper
+/// loader will provide; here we stub them (no-ops; printf captures its
+/// format string). Skips (passing) when clang/wasm-ld/node aren't found
+/// (link_wasm shells out to clang + wasm-ld).
 #[test]
 fn wasm_struct_runs_self_contained() {
-    let (Some(clang), Some(wasm_ld), Some(node)) =
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
         (tool("clang"), tool("wasm-ld"), tool("node"))
     else {
         eprintln!("SKIP wasm_struct_runs_self_contained: clang/wasm-ld/node not all found");
         return;
     };
-    let rt = concat!(env!("CARGO_MANIFEST_DIR"), "/runtime");
-    let arena_src = format!("{}/lotus_arena.c", rt);
-    let libc_src = format!("{}/wasm/lotus_wasm_libc.c", rt);
 
-    // Compile the runtime core + bundled libc for wasm (libc needs
-    // -fno-builtin so its byte-loop mem*/str* aren't re-emitted as
-    // recursive calls).
-    let arena_o = tmp("rt_arena.o");
-    let libc_o = tmp("rt_libc.o");
-    if !clang_wasm(&clang, &arena_src, &arena_o, &[]) {
-        eprintln!("SKIP: clang could not compile lotus_arena.c for wasm32");
-        return;
-    }
-    assert!(
-        clang_wasm(&clang, &libc_src, &libc_o, &["-fno-builtin"]),
-        "bundled libc must compile for wasm32"
-    );
-
+    // The struct computation runs in wasm; correctness is decided there
+    // and signalled with a LITERAL marker string, so capturing printf's
+    // format pointer (println formats Int args as varargs we can't read
+    // from JS) reliably carries the verdict.
     let src = r#"
         type Point { a: Int; b: Int; c: Int; }
         fn struct_sum() -> Int {
@@ -121,43 +109,45 @@ fn wasm_struct_runs_self_contained() {
             }
             return p.a + p.b + p.c;   // 330
         }
-        fn main() { println(struct_sum()); }
+        fn main() {
+            if struct_sum() == 330 { println("STRUCTSUM_OK"); }
+            else { println("STRUCTSUM_BAD"); }
+        }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let obj = tmp("sc_obj.wasm");
-    let linked = tmp("sc_linked.wasm");
-    build_executable_with_options(&program, &obj, &[], &wasm_opts())
-        .expect("wasm codegen");
+    let linked = tmp("sc.wasm");
+    // The wasm path now compiles + links the runtime in codegen (link_wasm).
+    build_executable_with_options(&program, &linked, &[], &wasm_opts())
+        .expect("wasm codegen + link");
+    assert!(linked.exists(), "link_wasm should produce a .wasm at the output path");
 
-    // Link user + runtime + libc. NO --allow-undefined: the runtime is
-    // compiled in, so a successful link proves zero unresolved symbols.
-    // --gc-sections strips `main` + the unreachable IO/threading families.
-    let link = Command::new(&wasm_ld)
-        .arg(&obj)
-        .arg(&arena_o)
-        .arg(&libc_o)
-        .arg("--no-entry")
-        .arg("--export=struct_sum")
-        .arg("--export=__heap_base")
-        .arg("--gc-sections")
-        .arg("-o")
-        .arg(&linked)
-        .output()
-        .expect("run wasm-ld");
-    assert!(
-        link.status.success(),
-        "wasm-ld failed: {}",
-        String::from_utf8_lossy(&link.stderr)
-    );
-
-    // Run with an EMPTY import object — fully self-contained.
+    // Run `main`, dynamically stubbing every host import the module
+    // declares; printf captures its (literal) format string.
     let js = format!(
         r#"
         import {{ readFileSync }} from 'node:fs';
         const buf = readFileSync({:?});
-        const {{ instance }} = await WebAssembly.instantiate(buf, {{}});
-        const got = Number(instance.exports.struct_sum(1));   // arg = __caller_arena
-        if (got !== 330) {{ console.error('FAIL: got', got); process.exit(1); }}
+        const mod = await WebAssembly.compile(buf);
+        const holder = {{ inst: null }};
+        let out = "";
+        const cstr = (p) => {{
+            const m = new Uint8Array(holder.inst.exports.memory.buffer);
+            let e = p; while (m[e]) e++;
+            return new TextDecoder().decode(m.subarray(p, e));
+        }};
+        const env = {{}};
+        const captures = ['puts', 'printf', 'fputs'];   // println(literal) -> puts
+        for (const im of WebAssembly.Module.imports(mod)) {{
+            if (im.kind !== 'function') continue;
+            env[im.name] = captures.includes(im.name)
+                ? (p) => {{ out += cstr(p); return 0; }}
+                : () => 0;
+        }}
+        // instantiate(Module, imports) resolves to the Instance directly.
+        const instance = await WebAssembly.instantiate(mod, {{ env }});
+        holder.inst = instance;
+        instance.exports.main(0, 0);
+        if (!out.includes('STRUCTSUM_OK')) {{ console.error('FAIL: output was', JSON.stringify(out)); process.exit(1); }}
         process.exit(0);
         "#,
         linked.to_string_lossy()
@@ -168,12 +158,10 @@ fn wasm_struct_runs_self_contained() {
         .arg(&js)
         .output()
         .expect("run node");
-    for f in [&obj, &linked, &arena_o, &libc_o] {
-        let _ = std::fs::remove_file(f);
-    }
+    let _ = std::fs::remove_file(&linked);
     assert!(
         run.status.success(),
-        "self-contained wasm run failed (expected struct_sum()==330):\nstdout: {}\nstderr: {}",
+        "self-contained wasm run failed (expected main to print 330):\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&run.stdout),
         String::from_utf8_lossy(&run.stderr)
     );

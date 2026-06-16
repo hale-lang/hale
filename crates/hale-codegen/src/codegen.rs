@@ -606,14 +606,11 @@ pub fn build_executable_with_options(
         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
     if is_wasm {
-        // Emit the relocatable wasm object to the output path and stop.
-        // Until the runtime core is ported under `#ifdef __wasm__`, the
-        // module references the lotus runtime as undefined symbols; a
-        // harness links with `wasm-ld` (`--gc-sections`, exporting the
-        // entry of interest) and supplies the runtime — either as imports
-        // or, once ported, as the compiled-in wasm runtime object.
-        std::fs::copy(&obj_path, output_path)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // Compile the self-contained wasm runtime (arena core + bundled
+        // libc) and link it into the user object with wasm-ld, producing
+        // a runnable `.wasm`. No native libs / no clang link line.
+        link_wasm(&obj_path, output_path)?;
+        let _ = std::fs::remove_file(&obj_path);
         return Ok(());
     }
 
@@ -831,6 +828,97 @@ const RUNTIME_TLS_C_SOURCE: &str = include_str!("../runtime/lotus_tls.c");
 /// zero_copy route link cleanly. Symbol names are `lotus_shm_ring_*`.
 const RUNTIME_SHM_RING_C_SOURCE: &str =
     include_str!("../runtime/lotus_shm_ring.c");
+
+/// WASM plan: the self-contained wasm runtime support, bundled into the
+/// binary so a wasm build needs no external sysroot. The arena core
+/// (RUNTIME_C_SOURCE) compiles for wasm32 via these under `#ifdef __wasm__`.
+const RUNTIME_WASM_LIBC_SOURCE: &str =
+    include_str!("../runtime/wasm/lotus_wasm_libc.c");
+const RUNTIME_WASM_SHIM_H: &str =
+    include_str!("../runtime/wasm/lotus_wasm_shim.h");
+const RUNTIME_WASM_POSIX_H: &str =
+    include_str!("../runtime/wasm/lotus_wasm_posix.h");
+
+/// Compile the wasm runtime (arena core + bundled libc) and link it into
+/// `user_obj` with `wasm-ld`, writing a runnable `.wasm` to `output`.
+/// Self-contained: no wasi-sdk / no external sysroot. WASM plan Phase 2.
+///
+/// The arena source `#include "wasm/lotus_wasm_*.h"` relatively, so the
+/// sources are staged into a temp dir with a `wasm/` subdir before
+/// compiling. `--allow-undefined` keeps any still-unported POSIX syscall
+/// references (reachable only from gated-out IO) as imports the host can
+/// stub; a pure compute/bus program resolves with zero imports.
+fn link_wasm(user_obj: &Path, output: &Path) -> Result<(), CodegenError> {
+    let mkerr = |m: String| CodegenError::Link(m);
+    // Unique temp dir for the staged runtime sources.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static WASM_NONCE: AtomicU64 = AtomicU64::new(0);
+    let nonce = WASM_NONCE.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir()
+        .join(format!("hale-wasm-{}-{}", std::process::id(), nonce));
+    let wasm_sub = dir.join("wasm");
+    std::fs::create_dir_all(&wasm_sub)
+        .map_err(|e| mkerr(format!("wasm staging dir: {e}")))?;
+    let arena_c = dir.join("lotus_arena.c");
+    let libc_c = dir.join("lotus_wasm_libc.c");
+    std::fs::write(&arena_c, RUNTIME_C_SOURCE)
+        .and_then(|_| std::fs::write(&libc_c, RUNTIME_WASM_LIBC_SOURCE))
+        .and_then(|_| std::fs::write(wasm_sub.join("lotus_wasm_shim.h"), RUNTIME_WASM_SHIM_H))
+        .and_then(|_| std::fs::write(wasm_sub.join("lotus_wasm_posix.h"), RUNTIME_WASM_POSIX_H))
+        .map_err(|e| mkerr(format!("stage wasm runtime sources: {e}")))?;
+
+    // Compile arena core + bundled libc to wasm32 objects. The libc uses
+    // -fno-builtin so its byte-loop mem*/str* aren't re-emitted as
+    // recursive calls; -mbulk-memory lowers mem* to wasm intrinsics.
+    let arena_o = dir.join("arena.o");
+    let libc_o = dir.join("libc.o");
+    let cc = |src: &Path, out: &Path, extra: &[&str]| -> Result<(), CodegenError> {
+        let status = Command::new("clang")
+            .args(["--target=wasm32", "-mbulk-memory", "-O2", "-c"])
+            .args(extra)
+            .arg(src)
+            .arg("-o")
+            .arg(out)
+            .status()
+            .map_err(|e| mkerr(format!(
+                "clang --target=wasm32 (is clang installed?): {e}"
+            )))?;
+        if !status.success() {
+            return Err(mkerr(format!("clang failed compiling {:?} for wasm32", src)));
+        }
+        Ok(())
+    };
+    cc(&arena_c, &arena_o, &[])?;
+    cc(&libc_c, &libc_o, &["-fno-builtin"])?;
+
+    // Link with wasm-ld, exporting `main` as the program entry (+ memory
+    // and the heap base for the loader). --gc-sections then strips the
+    // entire unreachable stdlib (tcp/http/term/ts/...) and its syscalls,
+    // so a compute/bus program reduces to its actual reachable code.
+    // --allow-undefined keeps the remaining libc-output references
+    // (println -> printf/puts) as host imports the JS loader provides.
+    // (A richer export policy — @export, plus the _hale_start/_hale_tick
+    // entry inversion for run()-driven programs — is the next slice.)
+    let status = Command::new("wasm-ld")
+        .arg(user_obj)
+        .arg(&arena_o)
+        .arg(&libc_o)
+        .arg("--no-entry")
+        .arg("--export=main")
+        .arg("--export=__heap_base")
+        .arg("--export-if-defined=memory")
+        .arg("--gc-sections")
+        .arg("--allow-undefined")
+        .arg("-o")
+        .arg(output)
+        .status()
+        .map_err(|e| mkerr(format!("wasm-ld (is lld/wasm-ld installed?): {e}")))?;
+    let _ = std::fs::remove_dir_all(&dir);
+    if !status.success() {
+        return Err(mkerr(format!("wasm-ld failed: {status}")));
+    }
+    Ok(())
+}
 
 /// m96: find `libhale_ts_shim.a`, the staticlib produced by the
 /// sibling `hale-ts-shim` workspace crate. Returns `None` if the
