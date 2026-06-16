@@ -28,6 +28,16 @@
  */
 
 #define _GNU_SOURCE
+#ifdef __wasm__
+/* WASM plan, Phase 1: the browser/full-stack-web target has no POSIX
+ * and no external libc sysroot. Replace the hosted/POSIX include block
+ * with the self-contained shim (freestanding headers + the bundled
+ * libc declarations). The POSIX function families below (sockets,
+ * epoll, pthread, fs, tls, ucontext, process, termios) are gated out
+ * with `#ifndef __wasm__`; the arena + single-threaded bus core
+ * remains and links against runtime/wasm/lotus_wasm_libc.c. */
+#include "wasm/lotus_wasm_shim.h"
+#else
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -78,6 +88,7 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <ucontext.h>
+#endif /* __wasm__ */
 
 /* F.32-1γ-v2 session 2 (2026-05-26): TSAN suppressions.
  *
@@ -151,7 +162,9 @@ const char *__tsan_default_suppressions(void) {
  * process's resident-set high-water mark. Backs the
  * observability primitive used to verify
  * the Phase-4 method-scratch reclaim actually bounds memory. */
+#ifndef __wasm__
 #include <sys/resource.h>
+#endif
 /* F.32-4a/4c (2026-05-24): mlockall (locking pages against
  * paging) and mmap with MAP_HUGETLB (huge-page-backed arena
  * chunks) for latency-critical workloads. Linux-only — the
@@ -160,7 +173,9 @@ const char *__tsan_default_suppressions(void) {
  * <sys/mman.h>; define it locally when missing so we don't
  * have to depend on the kernel headers. The value comes from
  * the Linux ABI: MAP_HUGE_SHIFT = 26, MAP_HUGE_2MB = 21 << 26. */
+#ifndef __wasm__
 #include <sys/mman.h>
+#endif
 #ifndef MAP_HUGE_SHIFT
 #  define MAP_HUGE_SHIFT 26
 #endif
@@ -1830,7 +1845,12 @@ void lotus_arena_destroy(lotus_arena_t *a) {
  * Spec: spec/recognition.md (v1.x-3 PR6 ships the canonical doc).
  */
 
+#ifdef __wasm__
+/* Freestanding: no <assert.h>. Map assert() to a trap (no fprintf). */
+#define assert(c) do { if (!(c)) __builtin_trap(); } while (0)
+#else
 #include <assert.h>
+#endif
 
 typedef struct lotus_recpool_fixed {
     size_t    cap_count;     /* number of cells */
