@@ -898,7 +898,12 @@ fn link_wasm(
     let wasm_ld = resolve_tool("wasm-ld");
     let cc = |src: &Path, out: &Path, extra: &[&str]| -> Result<(), CodegenError> {
         let status = Command::new(&clang)
-            .args(["--target=wasm32", "-mbulk-memory", "-O2", "-c"])
+            // -Wno-builtin-requires-header: the freestanding wasm shim
+            // intentionally forward-declares libc (fopen/etc.) instead of
+            // pulling in headers; clang's builtin-header note is a false
+            // positive here.
+            .args(["--target=wasm32", "-mbulk-memory", "-O2", "-c",
+                   "-Wno-builtin-requires-header"])
             .args(extra)
             .arg(src)
             .arg("-o")
