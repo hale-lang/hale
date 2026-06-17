@@ -84,6 +84,11 @@ pub(crate) trait IoTcpStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_io_tcp_set_recv_timeout(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
 }
 
 impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
@@ -815,6 +820,68 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let ret_i64 = self
             .builder
             .build_int_s_extend(ret_i32, i64_t, "close.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((ret_i64.into(), CodegenTy::Int))
+    }
+
+    /// `std::io::tcp::__set_recv_timeout_ns(fd: Int, ns: Int) -> Int`.
+    /// SO_RCVTIMEO on the socket; on a main-thread blocking accept()
+    /// this bounds the idle wait (accept returns -1 after `ns`).
+    /// Returns the setsockopt result (0 / -1).
+    fn lower_std_io_tcp_set_recv_timeout(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__set_recv_timeout_ns takes 2 args \
+                 (fd, ns), got {}",
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        if fd_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__set_recv_timeout_ns: fd must be Int, \
+                 got {:?}",
+                fd_ty
+            )));
+        }
+        let (ns_val, ns_ty) = self.lower_expr(&args[1], scope)?;
+        if ns_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__set_recv_timeout_ns: ns must be Int, \
+                 got {:?}",
+                ns_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let fd_i32 = self
+            .builder
+            .build_int_truncate(fd_val.into_int_value(), i32_t, "to.fd.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_tcp_set_recv_timeout_ns")
+            .expect("lotus_tcp_set_recv_timeout_ns declared");
+        let call = self
+            .builder
+            .build_call(
+                f,
+                &[fd_i32.into(), ns_val.into_int_value().into()],
+                "to.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ret_i32 = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let ret_i64 = self
+            .builder
+            .build_int_s_extend(ret_i32, i64_t, "to.i64")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok((ret_i64.into(), CodegenTy::Int))
     }

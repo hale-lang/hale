@@ -118,6 +118,7 @@ const IMPURE_STDLIB_PATHS: &[&[&str]] = &[
     &["std", "io", "tcp", "__accept_one"],
     &["std", "io", "tcp", "__connect"],
     &["std", "io", "tcp", "__close_fd"],
+    &["std", "io", "tcp", "__set_recv_timeout_ns"],
     &["std", "io", "tcp", "set_recv_timeout"],
     &["std", "io", "tcp", "set_send_timeout"],
     &["std", "io", "tcp", "set_nodelay"],

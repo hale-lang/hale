@@ -1507,6 +1507,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             tcp_shutdown_listen_ty,
             None,
         );
+        // declare i32 @lotus_tcp_set_recv_timeout_ns(i32 fd, i64 ns)
+        // SO_RCVTIMEO on the socket. On a main-thread blocking
+        // accept() this bounds the wait (accept returns -1 after
+        // `ns`), letting a server give up an idle listen instead of
+        // blocking forever. ns <= 0 clears the timeout.
+        let tcp_set_timeout_ty =
+            i32_t.fn_type(&[i32_t.into(), i64_t.into()], false);
+        self.module.add_function(
+            "lotus_tcp_set_recv_timeout_ns",
+            tcp_set_timeout_ty,
+            None,
+        );
 
         // TLS substrate (std::io::tls::*). Client-only at v1:
         // a handshaked connection identified by an opaque int
