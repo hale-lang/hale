@@ -16764,6 +16764,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_io_tcp_shutdown_listen_socket(args, scope)?;
                 Ok(())
             }
+            ["std", "io", "tcp", "__set_recv_timeout_ns"] => {
+                let _ = self.lower_std_io_tcp_set_recv_timeout(args, scope)?;
+                Ok(())
+            }
             ["std", "io", "udp", "__close"]
             | ["std", "io", "udp", "close"] => {
                 let _ = self.lower_std_io_udp_close(args, scope)?;
@@ -17571,6 +17575,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "io", "tcp", "__shutdown_listen_socket"] => {
                 self.lower_std_io_tcp_shutdown_listen_socket(args, scope)
+            }
+            ["std", "io", "tcp", "__set_recv_timeout_ns"] => {
+                self.lower_std_io_tcp_set_recv_timeout(args, scope)
             }
             ["std", "io", "udp", "__close"]
             | ["std", "io", "udp", "close"] => {
