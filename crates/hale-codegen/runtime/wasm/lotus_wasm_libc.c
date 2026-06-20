@@ -169,3 +169,106 @@ char *strdup(const char *s) {
  * shutdown replaces this in a later phase). */
 __attribute__((noreturn)) void exit(int code) { (void)code; __builtin_trap(); }
 __attribute__((noreturn)) void _exit(int code) { (void)code; __builtin_trap(); }
+
+/* ---- 128-bit integer builtins (compiler-rt) ----------------------
+ * clang lowers __int128 multiply / divide / int->double to these
+ * libcalls, and Ubuntu's clang ships no wasm32 builtins archive — so the
+ * runtime's Decimal path (i128 mantissa at scale 9: arithmetic +
+ * to_string + to_float) linked __multi3 / __udivti3 / __umodti3 /
+ * __floatuntidf as undefined imports that the JS loader stubbed to 0,
+ * making every Decimal on wasm garbage. Provide real implementations.
+ *
+ * The bodies use ONLY 64-bit operations (plus *constant* 128-bit
+ * shift/or to split & join the halves, which LLVM inlines to register
+ * moves) — never a 128-bit multiply, divide, or variable shift — so they
+ * cannot recurse into the very builtins they define. -fno-builtin (this
+ * TU) also keeps the loops from being re-recognized into libcalls. */
+typedef unsigned long long lotus_u64;
+#define LOTUS_LO64(x) ((lotus_u64)(x))
+#define LOTUS_HI64(x) ((lotus_u64)((unsigned __int128)(x) >> 64))
+#define LOTUS_MK128(hi, lo) \
+    (((unsigned __int128)(lotus_u64)(hi) << 64) | (unsigned __int128)(lotus_u64)(lo))
+
+unsigned __int128 __multi3(unsigned __int128 a, unsigned __int128 b) {
+    lotus_u64 alo = LOTUS_LO64(a), ahi = LOTUS_HI64(a);
+    lotus_u64 blo = LOTUS_LO64(b), bhi = LOTUS_HI64(b);
+    /* 64x64 -> 128 for alo*blo via 32-bit partial products. */
+    lotus_u64 a0 = (unsigned)alo, a1 = alo >> 32;
+    lotus_u64 b0 = (unsigned)blo, b1 = blo >> 32;
+    lotus_u64 t = a0 * b0;
+    lotus_u64 w0 = (unsigned)t;
+    lotus_u64 t1 = a1 * b0 + (t >> 32);
+    lotus_u64 w1 = (unsigned)t1;
+    lotus_u64 w2 = t1 >> 32;
+    lotus_u64 t2 = a0 * b1 + w1;
+    w1 = (unsigned)t2;
+    lotus_u64 lo_ll = (w1 << 32) | w0;
+    lotus_u64 hi_ll = a1 * b1 + w2 + (t2 >> 32);
+    /* + cross terms (only their low 64 bits land in the result's hi). */
+    lotus_u64 res_hi = hi_ll + alo * bhi + ahi * blo;
+    return LOTUS_MK128(res_hi, lo_ll);
+}
+
+/* Unsigned 128/128 divmod, shift-subtract over 64-bit halves. */
+static unsigned __int128 lotus_udivmod128(unsigned __int128 n,
+                                          unsigned __int128 d,
+                                          unsigned __int128 *rem) {
+    lotus_u64 n_hi = LOTUS_HI64(n), n_lo = LOTUS_LO64(n);
+    lotus_u64 d_hi = LOTUS_HI64(d), d_lo = LOTUS_LO64(d);
+    if ((d_hi | d_lo) == 0) __builtin_trap();   /* divide by zero */
+    lotus_u64 q_hi = 0, q_lo = 0;
+    lotus_u64 r_hi = 0, r_lo = 0;
+    for (int i = 127; i >= 0; i--) {
+        r_hi = (r_hi << 1) | (r_lo >> 63);      /* r <<= 1 */
+        r_lo = r_lo << 1;
+        lotus_u64 bit = (i < 64) ? ((n_lo >> i) & 1u)
+                                 : ((n_hi >> (i - 64)) & 1u);
+        r_lo |= bit;
+        if (r_hi > d_hi || (r_hi == d_hi && r_lo >= d_lo)) {  /* r >= d */
+            lotus_u64 borrow = (r_lo < d_lo) ? 1u : 0u;
+            r_lo = r_lo - d_lo;
+            r_hi = r_hi - d_hi - borrow;
+            if (i < 64) q_lo |= ((lotus_u64)1 << i);
+            else        q_hi |= ((lotus_u64)1 << (i - 64));
+        }
+    }
+    if (rem) *rem = LOTUS_MK128(r_hi, r_lo);
+    return LOTUS_MK128(q_hi, q_lo);
+}
+
+unsigned __int128 __udivti3(unsigned __int128 a, unsigned __int128 b) {
+    return lotus_udivmod128(a, b, 0);
+}
+unsigned __int128 __umodti3(unsigned __int128 a, unsigned __int128 b) {
+    unsigned __int128 r;
+    lotus_udivmod128(a, b, &r);
+    return r;
+}
+__int128 __divti3(__int128 a, __int128 b) {
+    int neg = 0;
+    unsigned __int128 ua = (a < 0) ? (neg ^= 1, (unsigned __int128)(-a))
+                                   : (unsigned __int128)a;
+    unsigned __int128 ub = (b < 0) ? (neg ^= 1, (unsigned __int128)(-b))
+                                   : (unsigned __int128)b;
+    unsigned __int128 q = lotus_udivmod128(ua, ub, 0);
+    return neg ? -(__int128)q : (__int128)q;
+}
+__int128 __modti3(__int128 a, __int128 b) {
+    int neg = (a < 0);
+    unsigned __int128 ua = (a < 0) ? (unsigned __int128)(-a) : (unsigned __int128)a;
+    unsigned __int128 ub = (b < 0) ? (unsigned __int128)(-b) : (unsigned __int128)b;
+    unsigned __int128 r;
+    lotus_udivmod128(ua, ub, &r);
+    return neg ? -(__int128)r : (__int128)r;
+}
+
+/* i128 -> double. u64 -> double is native wasm (f64.convert_i64_u). */
+double __floatuntidf(unsigned __int128 a) {
+    double hi = (double)LOTUS_HI64(a);
+    double lo = (double)LOTUS_LO64(a);
+    return hi * 18446744073709551616.0 + lo;   /* hi * 2^64 + lo */
+}
+double __floattidf(__int128 a) {
+    if (a < 0) return -__floatuntidf((unsigned __int128)(-a));
+    return __floatuntidf((unsigned __int128)a);
+}

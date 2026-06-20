@@ -2217,6 +2217,15 @@ pub(crate) struct FnSig<'ctx> {
     /// `lower_user_fn_call` — direct call with the user-visible
     /// args only.
     pub(crate) is_ffi: bool,
+    /// True when this is an `@ffi("js")` host import (wasm). The JS
+    /// boundary speaks f64 (JS `number`), not i64 (which marshals as
+    /// a `BigInt` and forces callers to `Number(x)`), so Int /
+    /// Duration params + return are marshaled as f64 at the boundary
+    /// (`sitofp` before the call, `fptosi` after). Distinct from
+    /// `@ffi("c")`, which keeps i64 even on wasm (those resolve to
+    /// linked C symbols that genuinely expect i64). 2^53 precision
+    /// caveat — see `spec/ffi.md` § WASM host interface.
+    pub(crate) ffi_js: bool,
 }
 
 /// FORM-3 (2026-05-13): syntactic classifier for fn bodies that
@@ -8728,6 +8737,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 fallible: fallible_payload_ty,
                 non_allocating,
                 is_ffi: false,
+                ffi_js: false,
             },
         );
         Ok(())
@@ -9042,6 +9052,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Result: LLVM emits `declare <ret> @<name>(<args>)` and the
     /// final link line picks up the implementation.
     fn declare_ffi_fn(&mut self, f: &FnDecl) -> Result<(), CodegenError> {
+        // `@ffi("js")` host imports marshal i64-class scalars as f64
+        // (JS `number`) instead of i64 (JS `BigInt`). `@ffi("c")`
+        // keeps i64 — on wasm those resolve to linked runtime C
+        // symbols that expect i64, not the JS boundary.
+        let ffi_js = f
+            .ffi
+            .as_ref()
+            .map(|a| a.abi == "js")
+            .unwrap_or(false);
         let mut param_tys = Vec::with_capacity(f.params.len());
         let mut llvm_param_tys: Vec<inkwell::types::BasicMetadataTypeEnum> =
             Vec::with_capacity(f.params.len());
@@ -9055,7 +9074,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 )));
             }
             let lt = self.type_expr_to_codegen_ty(&p.ty)?;
-            let llvm_ty = self.llvm_ffi_param_type(&lt, &f.name.name, &p.name.name)?;
+            let llvm_ty = self.llvm_ffi_param_type(&lt, ffi_js, &f.name.name, &p.name.name)?;
             llvm_param_tys.push(llvm_ty);
             param_tys.push(lt);
             defaults.push(None);
@@ -9092,7 +9111,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             match &ret_ty {
                 Some(rt) => {
                     let llvm_ret =
-                        self.llvm_ffi_return_type(rt, &f.name.name)?;
+                        self.llvm_ffi_return_type(rt, ffi_js, &f.name.name)?;
                     llvm_ret.fn_type(&llvm_param_tys, false)
                 }
                 None => self
@@ -9112,6 +9131,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 fallible: None,
                 non_allocating: true,
                 is_ffi: true,
+                ffi_js,
             },
         );
         Ok(())
@@ -9126,11 +9146,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn llvm_ffi_param_type(
         &self,
         ty: &CodegenTy,
+        is_js: bool,
         fn_name: &str,
         param_name: &str,
     ) -> Result<inkwell::types::BasicMetadataTypeEnum<'ctx>, CodegenError> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         match ty {
+            // `@ffi("js")`: i64-class scalars cross as f64 (JS number),
+            // not i64 (BigInt). The call site sitofp's before the call.
+            CodegenTy::Int | CodegenTy::Duration if is_js => {
+                Ok(self.context.f64_type().into())
+            }
             CodegenTy::Int
             | CodegenTy::Duration
             | CodegenTy::Time => Ok(self.context.i64_type().into()),
@@ -9194,10 +9220,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn llvm_ffi_return_type(
         &self,
         ty: &CodegenTy,
+        is_js: bool,
         fn_name: &str,
     ) -> Result<inkwell::types::BasicTypeEnum<'ctx>, CodegenError> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         match ty {
+            // `@ffi("js")`: i64-class scalars return as f64 (JS number);
+            // the call site fptosi's the result back to i64.
+            CodegenTy::Int | CodegenTy::Duration if is_js => {
+                Ok(self.context.f64_type().into())
+            }
             CodegenTy::Int
             | CodegenTy::Duration
             | CodegenTy::Time => Ok(self.context.i64_type().into()),
@@ -10123,6 +10155,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             let coerced: inkwell::values::BasicValueEnum<'ctx> =
                 match expected {
+                    CodegenTy::Int | CodegenTy::Duration if sig.ffi_js => {
+                        // `@ffi("js")`: marshal the i64 as f64 (JS
+                        // number) so the host handler doesn't receive
+                        // a BigInt. Exact for |n| < 2^53.
+                        let f64_t = self.context.f64_type();
+                        let f = self
+                            .builder
+                            .build_signed_int_to_float(
+                                val.into_int_value(),
+                                f64_t,
+                                "ffi.js.int.to_f64",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        f.into()
+                    }
                     CodegenTy::Bool => {
                         // Hale Bool lowers to LLVM i1; the C ABI
                         // table uses i32. Zero-extend at the call.
@@ -10174,6 +10221,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         ))
                     })?;
                 let coerced = match &ret_ty {
+                    CodegenTy::Int | CodegenTy::Duration if sig.ffi_js => {
+                        // `@ffi("js")` returned an f64 (JS number);
+                        // narrow back to i64 (round toward zero).
+                        let i64_t = self.context.i64_type();
+                        let n = self
+                            .builder
+                            .build_float_to_signed_int(
+                                raw.into_float_value(),
+                                i64_t,
+                                "ffi.js.f64.to_int",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        n.into()
+                    }
                     CodegenTy::Bool => {
                         // C-side returned i32; truncate back to i1
                         // for Hale's Bool ABI internally.

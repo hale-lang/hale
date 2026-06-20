@@ -25,14 +25,36 @@ behavior.
   (`p += snprintf(...)`). Test:
   `tests/wasm_target.rs::wasm_string_int_concat_formats`.
 
-  **Known separate limitation (NOT this fix):** `to_string(Decimal)` is still
-  wrong under wasm32 — the i128 decimal *value* is corrupted before it reaches
-  the formatter (same `(hi, lo)` pair miscompiles for both `to_string` and
-  `std::decimal::to_float`; the codegen i128→(hi,lo) split is correct, so the
-  fault is in i128 storage/representation on the wasm32 target, the i128-
-  alignment class noted in `spec/memory.md`). It was hidden by the empty stub
-  before; this fix surfaces it as garbage. Decimal→string on wasm needs its
-  own fix; Int/Float are correct.
+  (A follow-up — see the next entry — fixed `Decimal` on wasm too, which
+  this fix had surfaced as garbage.)
+
+- **Fixed `Decimal` under `--target wasm32` (i128 builtins).** clang lowers
+  `__int128` multiply / divide / →double to compiler-rt libcalls
+  (`__multi3` / `__udivti3` / `__umodti3` / `__divti3` / `__modti3` /
+  `__floatuntidf`), and Ubuntu's clang ships no `libclang_rt.builtins-wasm32.a`,
+  so `wasm-ld --allow-undefined` turned them into imports the JS loader stubbed
+  to 0 — every `Decimal` (the i128 mantissa at scale 9: arithmetic *and*
+  `to_string` *and* `std::decimal::to_float`) came out garbage. The bundled
+  wasm libc (`runtime/wasm/lotus_wasm_libc.c`) now **defines** those builtins,
+  with bodies that use only 64-bit ops (32-bit partial-product multiply,
+  shift-subtract divmod, `f64.convert_i64_u`-based i128→double) so they never
+  recurse into the very builtins they provide. Decimal on wasm now matches
+  native byte-for-byte (`5.0d`→`5`, `19.99d * 3.0d`→`59.97`, `10.0d / 4.0d`→
+  `2.5`, `to_float(19.99d)`→`19.99`). Test:
+  `tests/wasm_target.rs::wasm_decimal_i128_builtins`.
+
+- **`@ffi("js")` marshals `Int` / `Duration` as a JS `number` (f64), not a
+  `BigInt` (i64).** A Hale `Int` passed to a host import used to arrive in JS
+  as a `BigInt`, forcing every handler to `Number(x)` before using it (and a
+  host import returning `Int` had to hand back a `BigInt`). Now i64-class
+  scalars cross the `@ffi("js")` boundary as f64: the runtime `sitofp`s args
+  before the call and `fptosi`s the return, the import's wasm signature uses
+  f64, and the JS handler sees a plain `number`. Trade-off: f64's 53-bit
+  integer range — an `Int` beyond 2^53 loses precision across the boundary
+  (pass it as a `String`/`Bytes` payload instead). Scoped to `@ffi("js")`;
+  `@ffi("c")` keeps i64 (those resolve to linked C symbols expecting i64).
+  Test: `tests/wasm_target.rs::wasm_ffi_js_int_marshals_as_number`. See
+  `spec/ffi.md` § WASM host interface.
 
 - **`std::math::round` / `std::math::trunc` — Float→Int with a chosen
   rounding mode.** Both return an `Int` directly: `round(f)` is round-half-
