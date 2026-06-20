@@ -65,6 +65,59 @@ fn wasm_ffi_js_host_import() {
     );
 }
 
+/// `String + Int` (and `Int + String`) must format the integer's
+/// decimal digits under wasm32, matching native. Regression: the
+/// wasm libc shim's `snprintf` was a no-op stub, so `lotus_str_from_int`
+/// (the to_string/`+` Int path) emitted nothing — every interpolated
+/// Int vanished (`"n=" + 5` → `"n="`), while native was correct. The
+/// shim now carries a real minimal `(v)snprintf`. A Float arg
+/// (`"f=" + 3.5`) goes through the same `%g` path and is checked too.
+#[test]
+fn wasm_string_int_concat_formats() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_string_int_concat_formats: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        @ffi("js") fn console_log(msg: String);
+        fn main() {
+            console_log("n=" + 5);
+            console_log("neg=" + (0 - 42));
+            console_log(7 + "=seven");
+            console_log("{\"kind\":" + 3 + ",\"ref\":" + 11 + "}");
+            console_log("f=" + 3.5);
+        }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let wasm = tmp("concat.wasm");
+    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
+        .expect("wasm codegen + link");
+    let loader = wasm.with_extension("mjs");
+    let run = Command::new(&node).arg(&loader).output().expect("run node loader");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    for expect in [
+        "n=5",
+        "neg=-42",
+        "7=seven",
+        "{\"kind\":3,\"ref\":11}",
+        "f=3.5",
+    ] {
+        assert!(
+            stdout.contains(expect),
+            "wasm String+Int concat dropped a value (expected line {:?}):\n\
+             stdout: {}\nstderr: {}",
+            expect,
+            stdout,
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
 /// WASM entry-inversion: `@export fn` + the synthesized `_hale_start` +
 /// the runtime state cell give a wasm module PERSISTENT state across
 /// separate host calls. A program with only `@export` fns (no `fn main`)

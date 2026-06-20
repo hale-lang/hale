@@ -8,6 +8,32 @@ behavior.
 
 ## Unreleased
 
+- **Fixed `String + Int` (and `to_string(Int)` / `to_string(Float)`) emitting
+  empty under `--target wasm32`.** The wasm libc shim's `snprintf` was a
+  no-op stub (`buf[0] = 0; return 0;`) on the assumption it only built
+  diagnostic labels — but `lotus_str_from_int` / `lotus_str_from_float` /
+  `lotus_str_from_duration` (the `to_string` / `+`-concat paths) format their
+  result through it, so every interpolated Int/Float vanished on wasm while
+  native was correct (`"n=" + 5` → `"n="`). Replaced the stub with a real
+  minimal `(v)snprintf` (the wasm-only shim — native uses libc, untouched):
+  `%d/%i %u %x/%X %c %s %p`, the `l`/`ll`/`z` length modifiers, zero-pad width
+  (`%018llu`), and `%g/%f/%e` for doubles matching glibc's default `%g`
+  (6 sig digits, `%e`/`%f` selection, trailing zeros stripped) — verified
+  byte-identical to native for the decimal magnitudes app/protocol data uses
+  (`1e-05`, `1e+06`, `0.0001`, … all match). It also returns the would-be
+  length (C semantics), which the Decimal formatter relies on
+  (`p += snprintf(...)`). Test:
+  `tests/wasm_target.rs::wasm_string_int_concat_formats`.
+
+  **Known separate limitation (NOT this fix):** `to_string(Decimal)` is still
+  wrong under wasm32 — the i128 decimal *value* is corrupted before it reaches
+  the formatter (same `(hi, lo)` pair miscompiles for both `to_string` and
+  `std::decimal::to_float`; the codegen i128→(hi,lo) split is correct, so the
+  fault is in i128 storage/representation on the wasm32 target, the i128-
+  alignment class noted in `spec/memory.md`). It was hidden by the empty stub
+  before; this fix surfaces it as garbage. Decimal→string on wasm needs its
+  own fix; Int/Float are correct.
+
 - **`std::math::round` / `std::math::trunc` — Float→Int with a chosen
   rounding mode.** Both return an `Int` directly: `round(f)` is round-half-
   away-from-zero (`3.7 → 4`, `2.5 → 3`, `-2.5 → -3`), `trunc(f)` is round-
