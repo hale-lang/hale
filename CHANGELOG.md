@@ -34,6 +34,22 @@ behavior.
   before; this fix surfaces it as garbage. Decimal→string on wasm needs its
   own fix; Int/Float are correct.
 
+- **`std::math::round` / `std::math::trunc` — Float→Int with a chosen
+  rounding mode.** Both return an `Int` directly: `round(f)` is round-half-
+  away-from-zero (`3.7 → 4`, `2.5 → 3`, `-2.5 → -3`), `trunc(f)` is round-
+  toward-zero (an alias of the existing `float_to_int`). `round` is the
+  spelling numeric code wants when building an integer field from a Float
+  quantity — previously there was a toward-zero conversion (`Int(f)` /
+  `std::math::float_to_int`) but no rounding one, forcing the round into the
+  caller (e.g. JS, for a wasm client). Both lower to pure LLVM — `fptosi`,
+  plus a compare/select half-shift for `round` (no `llvm.round` intrinsic) —
+  so they need **no libm symbol and no host import on the `wasm32` target**
+  (unlike `floor`/`ceil`, which stay libm and return `Float`). Native +
+  wasm32 covered by `tests/ws3_int_float_conversion.rs` and
+  `tests/wasm_target.rs::wasm_round_trunc_host_free`. See `spec/types.md`
+  § "Explicit numeric conversions" and the `std::math` row in
+  `spec/stdlib.md`.
+
 - **Fixed a use-after-free race in the TLS handle table.** `lotus_tls_connect`
   `realloc`s (and thus *moves*) the global handle table when it grows on
   connect, while `recv_into`/`recv_bytes`/`send_bytes` read

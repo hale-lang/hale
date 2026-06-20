@@ -323,6 +323,63 @@ console.log(ok ? "ARRAYS_OK" : "ARRAYS_FAIL");
     );
 }
 
+/// `std::math::round` / `trunc` on wasm32 must lower host-free —
+/// pure LLVM `fptosi` (+ compare/select shift for round), NOT a
+/// libm `round`/`trunc` libcall that would become an undefined
+/// `env` import (the way `sin`/`cos` need host glue). The harness
+/// instantiates with an EMPTY glue object: if the module imported
+/// `round`/`trunc`, instantiation would throw. round(3.7)=4,
+/// round(-2.5)=-3 (half away from zero), trunc(9.9)=9.
+#[test]
+fn wasm_round_trunc_host_free() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_round_trunc_host_free: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        @export locus M {
+            params { _x: Int = 0; }
+            birth() { }
+            fn r_pos() -> Int { return std::math::round(3.7); }
+            fn r_neg() -> Int { return std::math::round(0.0 - 2.5); }
+            fn t() -> Int { return std::math::trunc(9.9); }
+        }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let wasm = tmp("round_trunc.wasm");
+    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
+        .expect("wasm codegen + link");
+    let loader = wasm.with_extension("mjs");
+    let harness = wasm.with_extension("harness.mjs");
+    let loader_name = loader.file_name().unwrap().to_str().unwrap();
+    std::fs::write(
+        &harness,
+        format!(
+            r#"import {{ run }} from "./{loader_name}";
+const inst = await run(() => ({{}}));   // EMPTY glue — no host import allowed
+const a = inst.exports.r_pos(), b = inst.exports.r_neg(), c = inst.exports.t();
+console.log((a === 4n && b === -3n && c === 9n)
+  ? "ROUND_TRUNC_OK" : `ROUND_TRUNC_FAIL:${{a}},${{b}},${{c}}`);
+"#
+        ),
+    )
+    .expect("write harness");
+    let run = Command::new(&node).arg(&harness).output().expect("run node harness");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    let _ = std::fs::remove_file(&harness);
+    assert!(
+        run.status.success() && stdout.contains("ROUND_TRUNC_OK"),
+        "round/trunc must run host-free on wasm32:\nstdout: {}\nstderr: {}",
+        stdout,
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 fn tool(name: &str) -> Option<String> {
     for cand in [name, &format!("{}-18", name)] {
         if Command::new(cand).arg("--version").output().is_ok() {

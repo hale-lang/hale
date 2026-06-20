@@ -321,6 +321,17 @@ for the narrowing direction (LLVM `fptosi` / `sitofp`):
   so the conversions sit alongside the other `std::math` numeric
   primitives. An already-correct-typed argument passes through
   unchanged.
+- **`std::math::round(f: Float) -> Int` and
+  `std::math::trunc(f: Float) -> Int`** — the Float→Int
+  conversions that round at a chosen mode. `trunc` is round-
+  toward-zero (an alias of `float_to_int`); `round` is round-
+  half-away-from-zero (`3.7 → 4`, `2.5 → 3`, `-2.5 → -3`),
+  computed as `fptosi(f + copysign(0.5, f))` via a compare/select
+  half-shift (no `llvm.round` intrinsic, so the path needs no
+  libm libcall — it lowers host-free on `wasm32`). `round` is the
+  spelling numeric code wants when building an integer field from
+  a Float quantity; `Int(f)` / `float_to_int` / `trunc` all
+  truncate.
 
 ### Contract compatibility
 
