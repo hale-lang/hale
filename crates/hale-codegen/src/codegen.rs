@@ -18340,6 +18340,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "math", "float_to_int"] => {
                 self.lower_std_math_float_to_int(args, scope)
             }
+            // Float→Int with explicit rounding mode → Int result.
+            // `trunc` truncates toward zero (alias of float_to_int);
+            // `round` rounds half away from zero. Both lower to
+            // `fptosi` (+ a compare/select shift for round) — pure
+            // LLVM, so they need no libm symbol on wasm32 (unlike
+            // `floor`/`ceil`, which are libm and return Float).
+            ["std", "math", "trunc"] => {
+                self.lower_std_math_to_int("trunc", false, args, scope)
+            }
+            ["std", "math", "round"] => {
+                self.lower_std_math_to_int("round", true, args, scope)
+            }
             // 2026-05-16: std::text byte-class predicates. Each
             // takes a byte value (Int) and returns Bool. Inline
             // range checks — no libc dependency, no C primitive,
