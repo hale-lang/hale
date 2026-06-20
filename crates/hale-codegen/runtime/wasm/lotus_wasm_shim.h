@@ -99,10 +99,198 @@ static inline int fprintf(lotus_wasm_FILE *f, const char *fmt, ...) { (void)f; (
 static inline int printf(const char *fmt, ...) { (void)fmt; return 0; }
 static inline int fflush(lotus_wasm_FILE *f) { (void)f; return 0; }
 static inline int fputs(const char *s, lotus_wasm_FILE *f) { (void)s; (void)f; return 0; }
-/* snprintf: names built with it (e.g. diag labels) become empty — fine
- * for v1 (no console). Always NUL-terminate; report 0 written. */
+/* snprintf: a real minimal implementation. The runtime builds
+ * user-facing value strings with it — `lotus_str_from_int`
+ * (`%lld`), `lotus_str_from_float` (`%g`), the Decimal formatter
+ * (`%llu` / `%018llu` / `%09llu`), `lotus_str_from_duration`
+ * (`%lldns`), plus arena diag labels — so it must actually format,
+ * not no-op (a no-op stub made every `to_string(Int)` /
+ * `String + Int` emit empty under wasm while native was correct).
+ * It also returns the would-be length (C semantics): the Decimal
+ * formatter advances a cursor with `p += snprintf(...)`.
+ *
+ * Supported conversions: %d/%i %u %x/%X %c %s %p, the l/ll/z length
+ * modifiers, `0`/width zero-padding (e.g. %018llu), and %g/%f/%e for
+ * doubles. The %g path matches glibc's default (6 significant
+ * digits, %e/%f selection, trailing zeros stripped) for the decimal
+ * magnitudes app/protocol data uses — same "correct, not bit-exact"
+ * bar as the strtod shim above. */
+typedef struct { char *buf; size_t cap; size_t len; } lotus_wasm_sb_;
+static inline void lotus_wasm_sb_putc_(lotus_wasm_sb_ *s, char c) {
+    if (s->cap && s->len + 1 < s->cap) s->buf[s->len] = c;
+    s->len++;
+}
+static inline void lotus_wasm_sb_puts_(lotus_wasm_sb_ *s, const char *p) {
+    while (*p) lotus_wasm_sb_putc_(s, *p++);
+}
+/* Unsigned integer in `base`, min `width`, optional zero-fill. */
+static inline void lotus_wasm_sb_uint_(lotus_wasm_sb_ *s, unsigned long long v,
+                                       int base, int upper, int width, int zero) {
+    char tmp[24];
+    int n = 0;
+    const char *digs = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    if (v == 0) tmp[n++] = '0';
+    while (v) { tmp[n++] = digs[v % (unsigned)base]; v /= (unsigned)base; }
+    for (int i = n; i < width; i++) lotus_wasm_sb_putc_(s, zero ? '0' : ' ');
+    while (n) lotus_wasm_sb_putc_(s, tmp[--n]);
+}
+/* Fixed-point: v >= 0 finite, `fd` fraction digits, trailing zeros
+ * stripped when `strip`. Used by the %g %f branch — v there is
+ * bounded to < 1e6, so v*10^fd stays well inside double precision. */
+static inline void lotus_wasm_sb_fixed_(lotus_wasm_sb_ *s, double v, int fd, int strip) {
+    unsigned long long scale = 1;
+    for (int i = 0; i < fd; i++) scale *= 10ull;
+    unsigned long long iv = (unsigned long long)(v * (double)scale + 0.5);
+    unsigned long long ip = iv / scale;
+    unsigned long long fp = iv % scale;
+    lotus_wasm_sb_uint_(s, ip, 10, 0, 0, 0);
+    if (fd == 0) return;
+    char frac[24];
+    int n = fd;
+    for (int i = fd - 1; i >= 0; i--) { frac[i] = (char)('0' + (int)(fp % 10ull)); fp /= 10ull; }
+    if (strip) { while (n > 0 && frac[n - 1] == '0') n--; }
+    if (n > 0) { lotus_wasm_sb_putc_(s, '.'); for (int i = 0; i < n; i++) lotus_wasm_sb_putc_(s, frac[i]); }
+}
+/* glibc-default %g for a double: 6 significant digits, %e when the
+ * decimal exponent is < -4 or >= 6, trailing zeros stripped. */
+static inline void lotus_wasm_sb_g_(lotus_wasm_sb_ *s, double v, int prec) {
+    if (__builtin_isnan(v)) { lotus_wasm_sb_puts_(s, "nan"); return; }
+    int neg = __builtin_signbit(v);
+    if (neg) v = -v;
+    if (__builtin_isinf(v)) { if (neg) lotus_wasm_sb_putc_(s, '-'); lotus_wasm_sb_puts_(s, "inf"); return; }
+    if (neg) lotus_wasm_sb_putc_(s, '-');
+    if (prec <= 0) prec = 1;
+    if (v == 0.0) { lotus_wasm_sb_putc_(s, '0'); return; }
+    int x = 0;
+    double t = v;
+    while (t >= 10.0) { t /= 10.0; x++; }
+    while (t < 1.0)  { t *= 10.0; x--; }
+    if (x >= -4 && x < prec) {
+        int fd = prec - 1 - x;
+        if (fd < 0) fd = 0;
+        lotus_wasm_sb_fixed_(s, v, fd, 1);
+    } else {
+        /* %e: round the [1,10) mantissa to prec-1 digits, carry to
+         * 10.0 -> bump the exponent. */
+        unsigned long long scale = 1;
+        for (int i = 0; i < prec - 1; i++) scale *= 10ull;
+        unsigned long long mi = (unsigned long long)(t * (double)scale + 0.5);
+        if (mi >= 10ull * scale) { mi /= 10ull; x++; }
+        unsigned long long ip = mi / scale;
+        unsigned long long fp = mi % scale;
+        lotus_wasm_sb_uint_(s, ip, 10, 0, 0, 0);
+        int n = prec - 1;
+        if (n > 0) {
+            char frac[24];
+            for (int i = n - 1; i >= 0; i--) { frac[i] = (char)('0' + (int)(fp % 10ull)); fp /= 10ull; }
+            while (n > 0 && frac[n - 1] == '0') n--;
+            if (n > 0) { lotus_wasm_sb_putc_(s, '.'); for (int i = 0; i < n; i++) lotus_wasm_sb_putc_(s, frac[i]); }
+        }
+        lotus_wasm_sb_putc_(s, 'e');
+        lotus_wasm_sb_putc_(s, x < 0 ? '-' : '+');
+        int ax = x < 0 ? -x : x;
+        lotus_wasm_sb_uint_(s, (unsigned long long)ax, 10, 0, 2, 1);
+    }
+}
+static inline int vsnprintf(char *buf, size_t cap, const char *fmt, va_list ap) {
+    lotus_wasm_sb_ s; s.buf = buf; s.cap = cap; s.len = 0;
+    for (const char *p = fmt; *p; p++) {
+        if (*p != '%') { lotus_wasm_sb_putc_(&s, *p); continue; }
+        p++;
+        if (*p == '%') { lotus_wasm_sb_putc_(&s, '%'); continue; }
+        int zero = 0;
+        while (*p == '0' || *p == '-' || *p == '+' || *p == ' ' || *p == '#') {
+            if (*p == '0') zero = 1;
+            p++;
+        }
+        int width = 0;
+        while (*p >= '0' && *p <= '9') { width = width * 10 + (*p - '0'); p++; }
+        int prec = -1;
+        if (*p == '.') { p++; prec = 0; while (*p >= '0' && *p <= '9') { prec = prec * 10 + (*p - '0'); p++; } }
+        int lng = 0; /* 0=int 1=long 2=long long (z folds to long long) */
+        while (*p == 'l' || *p == 'z' || *p == 'h' || *p == 'j' || *p == 't') {
+            if (*p == 'l') lng++;
+            else if (*p == 'z' || *p == 'j' || *p == 't') lng = 2;
+            p++;
+        }
+        char c = *p;
+        if (!c) break;
+        switch (c) {
+        case 'd': case 'i': {
+            long long v = (lng >= 2) ? va_arg(ap, long long)
+                        : (lng == 1) ? (long long)va_arg(ap, long)
+                                     : (long long)va_arg(ap, int);
+            unsigned long long uv;
+            if (v < 0) { lotus_wasm_sb_putc_(&s, '-'); if (width > 0) width--; uv = (unsigned long long)(-(v + 1)) + 1ull; }
+            else uv = (unsigned long long)v;
+            lotus_wasm_sb_uint_(&s, uv, 10, 0, width, zero);
+            break;
+        }
+        case 'u': {
+            unsigned long long v = (lng >= 2) ? va_arg(ap, unsigned long long)
+                                 : (lng == 1) ? (unsigned long long)va_arg(ap, unsigned long)
+                                              : (unsigned long long)va_arg(ap, unsigned int);
+            lotus_wasm_sb_uint_(&s, v, 10, 0, width, zero);
+            break;
+        }
+        case 'x': case 'X': {
+            unsigned long long v = (lng >= 2) ? va_arg(ap, unsigned long long)
+                                 : (lng == 1) ? (unsigned long long)va_arg(ap, unsigned long)
+                                              : (unsigned long long)va_arg(ap, unsigned int);
+            lotus_wasm_sb_uint_(&s, v, 16, c == 'X', width, zero);
+            break;
+        }
+        case 'p': {
+            lotus_wasm_sb_puts_(&s, "0x");
+            lotus_wasm_sb_uint_(&s, (unsigned long long)(uintptr_t)va_arg(ap, void *), 16, 0, 0, 0);
+            break;
+        }
+        case 'c': {
+            lotus_wasm_sb_putc_(&s, (char)va_arg(ap, int));
+            break;
+        }
+        case 's': {
+            const char *str = va_arg(ap, const char *);
+            if (!str) str = "(null)";
+            int n = 0;
+            while (str[n] && (prec < 0 || n < prec)) n++;
+            for (int i = n; i < width; i++) lotus_wasm_sb_putc_(&s, ' ');
+            for (int i = 0; i < n; i++) lotus_wasm_sb_putc_(&s, str[i]);
+            break;
+        }
+        case 'g': case 'G':
+            lotus_wasm_sb_g_(&s, va_arg(ap, double), prec < 0 ? 6 : prec);
+            break;
+        case 'f': case 'F': {
+            double v = va_arg(ap, double);
+            if (__builtin_isnan(v)) { lotus_wasm_sb_puts_(&s, "nan"); break; }
+            int neg = __builtin_signbit(v); if (neg) v = -v;
+            if (neg) lotus_wasm_sb_putc_(&s, '-');
+            if (__builtin_isinf(v)) { lotus_wasm_sb_puts_(&s, "inf"); break; }
+            lotus_wasm_sb_fixed_(&s, v, prec < 0 ? 6 : prec, 0);
+            break;
+        }
+        case 'e': case 'E': {
+            /* Routed through the %g machinery's %e branch by forcing
+             * the high-exponent path is awkward; %e is unused by the
+             * runtime, so format as %g (close enough, never reached). */
+            lotus_wasm_sb_g_(&s, va_arg(ap, double), prec < 0 ? 7 : prec + 1);
+            break;
+        }
+        default:
+            lotus_wasm_sb_putc_(&s, '%');
+            lotus_wasm_sb_putc_(&s, c);
+            break;
+        }
+    }
+    if (s.cap) s.buf[s.len < s.cap ? s.len : s.cap - 1] = 0;
+    return (int)s.len;
+}
 static inline int snprintf(char *buf, size_t n, const char *fmt, ...) {
-    (void)fmt; if (buf && n) buf[0] = 0; return 0;
+    va_list ap; va_start(ap, fmt);
+    int r = vsnprintf(buf, n, fmt, ap);
+    va_end(ap);
+    return r;
 }
 
 /* Numeric string parsing. Self-contained (no syscalls), so std::str::parse_int
