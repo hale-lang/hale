@@ -46,6 +46,14 @@ pub(crate) trait MathStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
+    fn lower_std_math_to_int(
+        &mut self,
+        surface_name: &str,
+        do_round: bool,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
 }
 
 impl<'ctx, 'p> MathStdlib<'ctx> for Cx<'ctx, 'p> {
@@ -238,29 +246,76 @@ impl<'ctx, 'p> MathStdlib<'ctx> for Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        self.lower_std_math_to_int("float_to_int", false, args, scope)
+    }
+
+    /// Shared Float→Int narrowing. `do_round == false` truncates
+    /// toward zero (`fptosi`, C `(long)` semantics) — the
+    /// `float_to_int` / `trunc` surface. `do_round == true` rounds
+    /// half away from zero, the conventional `round()`: shift by
+    /// `copysign(0.5, f)` before the `fptosi`, so `3.7 -> 4`,
+    /// `2.5 -> 3`, `-2.5 -> -3`. The shift is computed with a
+    /// compare + select (no `llvm.round` / `llvm.copysign`
+    /// intrinsic), so the whole path is native LLVM that lowers to
+    /// `f64.lt` / `select` / `f64.add` / `i64.trunc_f64_s` on
+    /// wasm32 — no libm symbol, no host import (unlike sin / cos).
+    /// An Int arg passes through unchanged for generic callers.
+    fn lower_std_math_to_int(
+        &mut self,
+        surface_name: &str,
+        do_round: bool,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         if args.len() != 1 {
             return Err(CodegenError::Unsupported(format!(
-                "std::math::float_to_int takes 1 argument, got {}",
+                "std::math::{} takes 1 argument, got {}",
+                surface_name,
                 args.len()
             )));
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         let i64_t = self.context.i64_type();
         let int_val = match ty {
-            CodegenTy::Float => self
-                .builder
-                .build_float_to_signed_int(
-                    v.into_float_value(),
-                    i64_t,
-                    "float.to.int",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
+            CodegenTy::Float => {
+                let mut f = v.into_float_value();
+                if do_round {
+                    let f64_t = self.context.f64_type();
+                    let zero = f64_t.const_zero();
+                    let is_neg = self
+                        .builder
+                        .build_float_compare(
+                            inkwell::FloatPredicate::OLT,
+                            f,
+                            zero,
+                            "round.is_neg",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let offset = self
+                        .builder
+                        .build_select(
+                            is_neg,
+                            f64_t.const_float(-0.5),
+                            f64_t.const_float(0.5),
+                            "round.offset",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_float_value();
+                    f = self
+                        .builder
+                        .build_float_add(f, offset, "round.shifted")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                self.builder
+                    .build_float_to_signed_int(f, i64_t, "float.to.int")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            }
             CodegenTy::Int => v.into_int_value(),
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::math::float_to_int: expected Float (or Int \
+                    "std::math::{}: expected Float (or Int \
                      passthrough), got {:?}",
-                    other
+                    surface_name, other
                 )))
             }
         };

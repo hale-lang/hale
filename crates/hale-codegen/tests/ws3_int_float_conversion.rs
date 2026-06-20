@@ -66,6 +66,47 @@ fn float_to_int_truncates_toward_zero() {
 }
 
 #[test]
+fn round_half_away_from_zero() {
+    // std::math::round(Float) -> Int. Conventional rounding: half
+    // rounds away from zero (3.5 -> 4, -3.5 -> -4), distinct from
+    // the truncating float_to_int / trunc. Pure-LLVM lowering
+    // (compare + select + fadd + fptosi), no libm symbol.
+    let src = r#"
+        fn main() {
+            let a: Int = std::math::round(3.7);
+            let b: Int = std::math::round(3.2);
+            let c: Int = std::math::round(2.5);
+            let d: Int = std::math::round(0.0 - 2.5);
+            let e: Int = std::math::round(0.0 - 3.7);
+            println("a=", a, " b=", b, " c=", c, " d=", d, " e=", e);
+        }
+    "#;
+    let (stdout, status) = build_and_run("round", src);
+    assert!(status.success(), "exit: {:?}", status);
+    assert!(
+        stdout.contains("a=4 b=3 c=3 d=-3 e=-4"),
+        "round half-away-from-zero: {:?}",
+        stdout
+    );
+}
+
+#[test]
+fn trunc_toward_zero() {
+    // std::math::trunc(Float) -> Int — the friendlier-named alias
+    // of float_to_int (round toward zero).
+    let src = r#"
+        fn main() {
+            let a: Int = std::math::trunc(3.9);
+            let b: Int = std::math::trunc(0.0 - 3.9);
+            println("a=", a, " b=", b);
+        }
+    "#;
+    let (stdout, status) = build_and_run("trunc", src);
+    assert!(status.success(), "exit: {:?}", status);
+    assert!(stdout.contains("a=3 b=-3"), "trunc toward zero: {:?}", stdout);
+}
+
+#[test]
 fn round_trip_is_exact_for_small_integers() {
     let src = r#"
         fn main() {
