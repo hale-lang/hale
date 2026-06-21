@@ -356,16 +356,24 @@ target wasm { }
                         x2: Float, y2: Float, z2: Float);
 ```
 
-Marshalling mirrors `@ffi("c")`: scalars pass directly (`Int` is an
-i64 → a JS `BigInt` at the boundary; `Float` is an f64 → a plain JS
-number, so `Float` is the friction-free numeric type for host
-imports), and `String`/`Bytes` pass as a pointer into wasm linear
-memory (the loader reads them with a `TextDecoder` over the module's
-`memory`). The generated `.mjs` loader supplies a built-in
-`console_log` plus the libm set (`sin`/`cos`/`tan`/`sqrt`/… mapped to
-JS `Math.*`, so `std::math` works under wasm with no app glue); an
-app wires its own imports through `run(glue)`. Position and the
-generic / defaulted restrictions are the same as `@ffi("c")`.
+Marshalling: `Float` passes directly as a JS `number` (f64). `Int`
+and `Duration` are i64 internally, but at the **`@ffi("js")`** boundary
+they marshal as **f64 (JS `number`), not i64 (which crosses as a JS
+`BigInt`)** — the host handler receives a plain number, with no
+`Number(x)` dance, and an `Int`-returning host import accepts a plain
+JS number back (the runtime `sitofp`s before the call and `fptosi`s the
+return). The trade-off is f64's 53-bit integer range: an `Int` whose
+magnitude exceeds 2^53 loses precision across this boundary — pass such
+values as a `String`/`Bytes` payload instead. (This is **only**
+`@ffi("js")`. `@ffi("c")` keeps i64 — on wasm those resolve to linked
+runtime C symbols that genuinely expect i64.) `String`/`Bytes` pass as
+a pointer into wasm linear memory (the loader reads them with a
+`TextDecoder` over the module's `memory`). The generated `.mjs` loader
+supplies a built-in `console_log` plus the libm set
+(`sin`/`cos`/`tan`/`sqrt`/… mapped to JS `Math.*`, so `std::math` works
+under wasm with no app glue); an app wires its own imports through
+`run(glue)`. Position and the generic / defaulted restrictions are the
+same as `@ffi("c")`.
 
 ### `@export` — exports (Hale → callable by the host)
 

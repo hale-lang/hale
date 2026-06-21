@@ -42,12 +42,16 @@ target wasm { }
                         x2: Float, y2: Float, z2: Float);
 ```
 
-Marshalling matches the C boundary: `Float` is a JS number (the
-easy case), `Int` is an i64 → a JS `BigInt` (prefer `Float` for
-host-facing numbers), and `String`/`Bytes` arrive as a pointer the
-loader reads out of wasm memory. The loader ships a built-in
-`console_log` and the libm set (so `std::math` just works); your
-page supplies the rest through `run(glue)`:
+Marshalling: `Float` and `Int` both arrive as a plain JS `number` —
+an `@ffi("js")` `Int` crosses as f64, *not* a `BigInt`, so your host
+handler gets a number with no `Number(x)` step, and an `Int`-returning
+import takes a plain number back. (The one caveat is f64's range:
+`Int`s beyond 2^53 lose precision across this boundary — send those as
+a `String`/`Bytes` payload. And this applies to `@ffi("js")` only;
+`@ffi("c")` keeps i64.) `String`/`Bytes` arrive as a pointer the loader
+reads out of wasm memory. The loader ships a built-in `console_log` and
+the libm set (so `std::math` just works); your page supplies the rest
+through `run(glue)`:
 
 ```js
 import { run } from "./main.mjs";

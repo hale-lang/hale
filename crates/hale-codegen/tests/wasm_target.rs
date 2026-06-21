@@ -118,6 +118,121 @@ fn wasm_string_int_concat_formats() {
     }
 }
 
+/// `@ffi("js")` marshals Hale `Int` as a JS `number` (f64), not a
+/// `BigInt` (i64). Before, a host handler `(n) => ...` received a
+/// BigInt and had to `Number(n)` everywhere — a recurring sharp edge.
+/// Now `typeof n === "number"` on the way out, and an `Int`-returning
+/// host import accepts a plain JS number on the way back (f64→i64).
+/// `@ffi("c")` keeps i64 (those are linked C symbols). 2^53 caveat.
+#[test]
+fn wasm_ffi_js_int_marshals_as_number() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_ffi_js_int_marshals_as_number: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        @ffi("js") fn want_number(n: Int);
+        @ffi("js") fn next_id() -> Int;
+        @export locus M {
+            params { _x: Int = 0; }
+            birth() { }
+            fn go() {
+                want_number(42);
+                want_number(0 - 7);
+                let id = next_id();
+                want_number(id + 1);
+            }
+        }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let wasm = tmp("ffijs_int.wasm");
+    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
+        .expect("wasm codegen + link");
+    let loader = wasm.with_extension("mjs");
+    let harness = wasm.with_extension("harness.mjs");
+    let loader_name = loader.file_name().unwrap().to_str().unwrap();
+    std::fs::write(
+        &harness,
+        format!(
+            r#"import {{ run }} from "./{loader_name}";
+const seen = [];
+const inst = await run(() => ({{
+  want_number: (n) => seen.push([typeof n, Number(n)]),
+  next_id: () => 1000,
+}}));
+inst.exports.go();
+const ok = seen.length === 3 && seen.every(([t]) => t === "number")
+  && seen[0][1] === 42 && seen[1][1] === -7 && seen[2][1] === 1001;
+console.log(ok ? "FFIJS_NUMBER_OK" : ("FFIJS_NUMBER_FAIL:" + JSON.stringify(seen)));
+"#
+        ),
+    )
+    .expect("write harness");
+    let run = Command::new(&node).arg(&harness).output().expect("run node harness");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    let _ = std::fs::remove_file(&harness);
+    assert!(
+        run.status.success() && stdout.contains("FFIJS_NUMBER_OK"),
+        "@ffi(\"js\") Int should cross as a JS number both ways:\n\
+         stdout: {}\nstderr: {}",
+        stdout,
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+/// Decimal (i128 mantissa, scale 9) must format and compute correctly
+/// under wasm32. Regression: clang lowers i128 multiply/divide/→double
+/// to compiler-rt libcalls (`__multi3` / `__udivti3` / `__umodti3` /
+/// `__floatuntidf`), Ubuntu's clang ships no wasm32 builtins archive, so
+/// `--allow-undefined` turned them into imports the loader stubbed to 0 —
+/// every Decimal came out garbage. The bundled wasm libc now defines
+/// those builtins (64-bit-only bodies). Checks formatting, negatives,
+/// `*`, `/`, `+`, and `std::decimal::to_float`.
+#[test]
+fn wasm_decimal_i128_builtins() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_decimal_i128_builtins: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        @ffi("js") fn console_log(msg: String);
+        fn main() {
+            console_log("a=" + 5.0d);
+            console_log("b=" + 19.99d);
+            console_log("neg=" + (0.0d - 2.5d));
+            console_log("mul=" + (19.99d * 3.0d));
+            console_log("div=" + (10.0d / 4.0d));
+            console_log("tf=" + std::decimal::to_float(19.99d));
+        }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let wasm = tmp("decimal.wasm");
+    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
+        .expect("wasm codegen + link");
+    let loader = wasm.with_extension("mjs");
+    let run = Command::new(&node).arg(&loader).output().expect("run node loader");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    for expect in ["a=5", "b=19.99", "neg=-2.5", "mul=59.97", "div=2.5", "tf=19.99"] {
+        assert!(
+            stdout.contains(expect),
+            "wasm Decimal wrong (expected line {:?}):\nstdout: {}\nstderr: {}",
+            expect,
+            stdout,
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
 /// WASM entry-inversion: `@export fn` + the synthesized `_hale_start` +
 /// the runtime state cell give a wasm module PERSISTENT state across
 /// separate host calls. A program with only `@export` fns (no `fn main`)
