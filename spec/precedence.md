@@ -19,8 +19,8 @@ same precedence; their associativity is given in the right column.
 | 4 | `~~` | non-assoc | Approximate equality (closure context only) |
 | 3 | `&&` | left | Logical and |
 | 2 | `\|\|` | left | Logical or |
-| 1 | `..` `..=` | non-assoc | Range (reserved; not yet permitted) |
-| 1 | `or` | right | Fallible disposition (v1.x-FORM-1; contextual). RHS is `raise` or another expression. |
+| 1 | `..` `..=` | non-assoc | Range (parsed everywhere; *use* restricted to `for x in lo..hi` at typecheck) |
+| 1 | `or` | right | Fallible disposition (v1.x-FORM-1; contextual). RHS is `raise` / `discard` / `fail <expr>` / another expression. |
 | 0 | `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` | right | Assignment |
 | -1 | `<-` | non-assoc | Bus send (statement-shape only) |
 
@@ -82,9 +82,13 @@ a() or b() or raise
 // parses as: a() or (b() or raise)
 ```
 
-The RHS of `or` is either:
+The RHS of `or` is one of:
 - the contextual keyword `raise` (diverges via closure
   violation routing), or
+- `discard` (swallow the error, substitute Unit; rejected at
+  typecheck when the success type is non-Unit), or
+- `fail <expr>` (diverge like `raise`, but with a fresh payload
+  of the enclosing fallible fn's declared error type), or
 - any expression of the success type (the substitute path;
   `err` is implicitly bound to the payload in this scope).
 
@@ -142,14 +146,18 @@ a < b == c                 // parse error: < is non-assoc with ==
 foo<T>(x)                  // generic instantiation, not (foo < T) > (x)
 ```
 
-## Reserved precedence levels
+## Range and reserved precedence levels
+
+- `..` / `..=` (range) — level 1, non-assoc. These **parse in any
+  expression position**; v1 restricts their *use* to `for x in
+  lo..hi`, so a range elsewhere is a typecheck error, not a parse
+  error. `..` is exclusive, `..=` inclusive.
 
 Future operators expected to land at specific levels:
 
-- `..` / `..=` (range) — level 1, non-assoc
 - `??` (nil-coalesce) — level 2, right-assoc
 
-These are reserved tokens; using them in v0 is a parse error.
+`??` is a reserved token; using it in v0 is a parse error.
 
 Note: `?` (try-propagation) was previously reserved at level
 13 but has been **cut** from the roadmap. The fallible-

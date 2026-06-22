@@ -20,7 +20,7 @@ diagnostic's meaning, go there.
 | The always-loaded runtime | [`spec/runtime.md`](../../spec/runtime.md) |
 | The standard library surface | [`spec/stdlib.md`](../../spec/stdlib.md) |
 | Idiomatic patterns & the six shapes | [`spec/styleguide.md`](../../spec/styleguide.md) |
-| The C FFI contract | [`spec/ffi.md`](../../spec/ffi.md) |
+| The FFI contract — C (`@ffi("c")`) and the WASM host interface (`@ffi("js")` / `@export`) | [`spec/ffi.md`](../../spec/ffi.md) |
 | Dependencies & vendoring | [`spec/packages.md`](../../spec/packages.md) |
 | Project layout & imports | [`spec/projects.md`](../../spec/projects.md) |
 | How tests are written and run | [`spec/testing.md`](../../spec/testing.md) |

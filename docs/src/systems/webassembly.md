@@ -157,5 +157,5 @@ parked in the runtime **state cell**, packed into `Bytes`:
 The `@export locus` model is preferred for anything with state; the
 state cell exists for the free-fn path and for hand-rolled layouts.
 
-See [`spec/ffi.md` § WASM host interface](../reference.md) for the
+See [`spec/ffi.md` § WASM host interface](../../../spec/ffi.md) for the
 exact marshalling and diagnostic rules.

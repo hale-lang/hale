@@ -344,6 +344,37 @@ host rather than a C library. The same `@ffi` machinery serves the
 inbound direction, and a dual annotation `@export` serves the
 outbound direction.
 
+### The `target` declaration + stdlib gating
+
+The program opts into the wasm backend with a top-level `target`
+declaration whose name is **`wasm`** (or the alias **`browser_js`** —
+both select the same backend and gating):
+
+```
+target wasm { }
+```
+
+The portable stdlib (`std::str`, `std::bytes`, `std::json`,
+`std::math`, `std::text`, …) works unchanged. The **POSIX-backed
+namespaces are rejected at typecheck** under this target — the browser
+sandbox has no syscalls — with the diagnostic ``error: `std::...` is
+unavailable under `target wasm`: <reason>``. The gated set
+(`wasm_unavailable_stdlib`) is exactly:
+
+| Rejected path | Browser substitute |
+|---|---|
+| `std::io::tcp` | a WebSocket bus adapter (`ws://`) |
+| `std::io::udp` | (no raw UDP in the browser) |
+| `std::io::tls` | the browser does TLS transparently for `wss://` / `https://` |
+| `std::io::fs`, `std::io::file` | `fetch` via an `@ffi("js")` host import, or a bus message |
+| `std::io::stdin`, `std::io::stdout` | `println(...)` (the loader routes it to the host console) |
+| `std::term` | (no terminal in the browser) |
+| `std::process` | (no OS process control) |
+| `std::http` | (server is built on raw TCP) |
+
+Reach the outside world through `@ffi("js")` host imports and the
+inbox/state seam below instead.
+
 ### `@ffi("js")` — host imports (host → into Hale's callees)
 
 `@ffi("js") fn name(...);` declares a function the **JS loader**
@@ -434,3 +465,6 @@ Bytes;` (Hale reads them and parses with `std::json` / `std::bytes`).
 - `spec/runtime.md` — the C-runtime helpers (`lotus_bytes_*`,
   `lotus_arena_alloc`, `lotus_caller_arena_or_global`, etc.)
   that library authors typically call from C glue.
+- `docs/src/systems/webassembly.md` — the pedagogical companion to
+  the WASM host interface above (the browser-client walkthrough:
+  loader `run(glue)`, the inbox, the `@export locus` game loop).
