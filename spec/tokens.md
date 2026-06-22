@@ -63,10 +63,17 @@ coercion design (same gap as tuple-of-`LocusRef` escape).
 
 ```
 params          contract        bus             capacity
+as_parent_for   indexed_by
 ```
 
 `capacity` introduces an F.22 `capacity { ... }` block carrying
 zero or more `pool X of T;` / `heap Y of T;` slot declarations.
+`as_parent_for` and `indexed_by` are **hard keywords** used only
+in slot-clause position inside a capacity block: `pool P of T
+as_parent_for ChildL;` (v1.x-4 — share the slot's allocator with
+a child locus's same-named slot at accept time) and `pool P of T
+indexed_by field;` (v1.x-FORM-4 — names the hashmap key field on
+a `@form(hashmap)` cell type).
 The slot-kind words `pool` and `heap` are **contextual idents** —
 they lex as ordinary Idents and the parser recognizes them only
 in slot-decl head position inside a capacity block. So
@@ -206,8 +213,13 @@ parse error.
 ```
 Int             Uint            Float           Decimal
 String          Bool            Time            Duration
-Bytes
+Bytes           BytesView       StringView      BytesMut
 ```
+
+`BytesView` / `StringView` (F.30) are non-owning views over a
+`BytesBuilder`'s buffer; `BytesMut` (#3) is a raw `{ptr, len}`
+writable/readable window (a `Topic.write` ring slot or a
+`MirrorRing` window). See `spec/types.md`.
 
 PascalCase per the type-name convention. The lexer emits these
 as `Ident` tokens; the parser recognizes them by name in **type
@@ -276,10 +288,14 @@ admissible.
   path, attaching the expression as the typed payload.
   Symmetric to `return`.
 - **`or`** — recognized as a postfix on any expression of
-  fallible type (the `or_clause` production). Three RHS forms:
+  fallible type (the `or_clause` production). Four RHS forms:
   `or raise` (propagate one frame up the call stack),
-  `or <expression>` (substitute), `or <handler-call>` (hand
-  off).
+  `or discard` (swallow the error and substitute Unit —
+  rejected at typecheck on calls whose success type is non-Unit;
+  sugar for the old `or noop(err)`), `or fail <expr>` (B3 / G6 —
+  diverge like `raise` but with a fresh payload of the enclosing
+  fallible fn's declared error type), `or <expression>`
+  (substitute), `or <handler-call>` (hand off).
 - **`raise`** — recognized only as the immediate RHS of `or`.
   Diverges the expression by re-entering the fallible-return
   shape of the enclosing `fallible(E)` fn, with the payload

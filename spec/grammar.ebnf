@@ -601,6 +601,9 @@ primitive_type    = "Int"
                   | "Time"
                   | "Duration"
                   | "Bytes"
+                  | "BytesView"     (* F.30: non-owning view over a BytesBuilder buffer *)
+                  | "StringView"    (* F.30: non-owning C-string view over a BytesBuilder *)
+                  | "BytesMut"      (* #3: raw {ptr,len} writable/readable window — ring slot / MirrorRing *)
                   ;
 
 named_type        = qualified_name , [ generic_args ] ;
@@ -822,7 +825,14 @@ expr_stmt         = expression , ";" ;
    readability; an LL(*) or PEG implementation will encode
    precedence via separate non-terminals per level. *)
 
-expression        = assignment_expr ;
+expression        = range_expr ;
+
+(* Range is the lowest-precedence expression form, non-associative
+   (one `..` / `..=` per chain). It parses in ANY expression
+   position; v1 restricts its *use* to `for x in lo..hi` at
+   typecheck / codegen, so a range elsewhere is a typecheck error,
+   NOT a parse error. `..` is exclusive, `..=` inclusive. *)
+range_expr        = assignment_expr , [ ( ".." | "..=" ) , assignment_expr ] ;
 
 assignment_expr   = or_disposition_expr , [ assign_op , assignment_expr ] ;
 

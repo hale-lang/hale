@@ -112,6 +112,35 @@ slot. Every message is still delivered — only the timing and memory
 profile change. Lower the cap to tighten the memory bound; raise it
 to reduce drain bursts. (See GH #125 for the full mechanism.)
 
+## Shelling out to other programs
+
+Ops glue often means running another tool. `std::process::run`
+does a synchronous fork + exec + wait and captures the result. The
+argument vector is **newline-separated** (no shell, no word
+splitting — each line is one `argv` entry):
+
+```hale
+let out = std::process::run("git\nstatus\n--short") or raise;
+println("exit ", to_string(out.code));
+println(out.stdout);
+if len(out.stderr) > 0 { println("stderr: ", out.stderr); }
+```
+
+The returned `ProcessOutput` carries `code: Int` (the exit code,
+or `-1` if killed by a signal), `signal: Int` (the killing signal,
+`0` if it exited normally), and `stdout` / `stderr` as captured
+`String`s. `run` is `fallible(IoError)` — a missing binary or a
+fork failure raises rather than returning a bogus output.
+
+For a long-running child you drive incrementally, the lower-level
+`spawn` / `wait` / `kill` / `write_stdin` / `read_stdout` /
+`read_stderr` surface over a `Child` handle is in
+[`spec/stdlib.md`](../../../spec/stdlib.md).
+
+Other process self-introspection: `std::process::pid()`,
+`std::process::exit(code)`, and `std::process::rss_bytes()` (peak
+RSS — see [Memory](#memory-my-rss-is-growing) above).
+
 ## Worked triage
 
 **"My subscriber's handler never runs."**

@@ -95,7 +95,7 @@ or seeking around — use `std::io::file::File`, a locus that holds
 the open descriptor for its lifetime:
 
 ```hale
-let f = std::io::file::open("log.txt") or raise;
+let f = std::io::file::open("log.txt", "r") or raise;
 let line = f.read_line() or "";
 // ... f closes when it goes out of scope
 ```

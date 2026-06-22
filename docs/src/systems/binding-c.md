@@ -95,5 +95,11 @@ conventionally live in [pond](../libraries.md); the
 `agents/binding-packages.md` brief covers the recommended file
 layout.
 
+> **On the wasm target,** `@ffi("c")` has a sibling: `@ffi("js")`
+> declares a function the JavaScript loader provides instead of a
+> linked C symbol, and `@export` sends Hale functions *out* to the
+> host. Same declare-and-bind shape, different boundary — see
+> [WebAssembly & the browser](./webassembly.md).
+
 Next: state that outlives one process — [Cross-process &
 hot-load](./cross-process.md).

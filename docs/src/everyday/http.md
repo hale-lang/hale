@@ -90,4 +90,4 @@ above doesn't change when you get there. The server *code* is
 already complete; the surrounding tier just gives it more ways to
 be deployed and supervised.
 
-Next: reading configuration — [CLI & config](./cli-config.md).
+Next: the transports below HTTP — [UDP & TLS](./sockets.md).

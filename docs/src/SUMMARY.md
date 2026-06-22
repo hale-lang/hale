@@ -25,6 +25,8 @@
 - [Files](./everyday/files.md)
 - [JSON](./everyday/json.md)
 - [HTTP](./everyday/http.md)
+- [UDP & TLS](./everyday/sockets.md)
+- [Hashing, encoding & randomness](./everyday/crypto.md)
 - [CLI & config](./everyday/cli-config.md)
 - [Logging](./everyday/logging.md)
 
