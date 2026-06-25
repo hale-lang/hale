@@ -82,6 +82,12 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
         let i32_t = self.context.i32_type();
         let i8_t = self.context.i8_type();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
+        // The C `lotus_serialize_fn` / `lotus_deserialize_fn` ABIs return
+        // `ssize_t` and take `size_t` lengths — both target-pointer-width
+        // (i64 native, i32 wasm32). The synthesized fns MUST match, or the
+        // C runtime's `call_indirect` (typed from the typedef) traps with a
+        // signature mismatch under wasm32. No-op on native (usize == i64).
+        let usize_t = self.usize_type();
 
         // Decide the synthesis strategy. Two shapes:
         //   - Struct payload (struct_layout = Some): per-field
@@ -140,9 +146,9 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
 
         let saved_block = self.builder.get_insert_block();
 
-        // i64 @__serialize_T(ptr src, ptr dst, i64 cap)
-        let ser_ty = i64_t.fn_type(
-            &[ptr_t.into(), ptr_t.into(), i64_t.into()],
+        // ssize_t @__serialize_T(ptr src, ptr dst, size_t cap)
+        let ser_ty = usize_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), usize_t.into()],
             false,
         );
         let ser_fn = self.module.add_function(
@@ -182,13 +188,16 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 )?;
                 size_iv
             };
+        // The body computes the byte count in i64; narrow to the ssize_t
+        // return width (no-op native, i64->i32 trunc on wasm32).
+        let total_written = self.size_to_usize(total_written)?;
         self.builder
             .build_return(Some(&total_written))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // i64 @__deserialize_T(ptr src, i64 n, ptr dst, i64 cap)
-        let de_ty = i64_t.fn_type(
-            &[ptr_t.into(), i64_t.into(), ptr_t.into(), i64_t.into()],
+        // ssize_t @__deserialize_T(ptr src, size_t n, ptr dst, size_t cap)
+        let de_ty = usize_t.fn_type(
+            &[ptr_t.into(), usize_t.into(), ptr_t.into(), usize_t.into()],
             false,
         );
         let de_fn = self.module.add_function(
@@ -211,7 +220,9 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
         // cap-hit / NULL-deref symptom fathom reported.
         let de_fail = self.context.append_basic_block(de_fn, "wire.fail");
         self.builder.position_at_end(de_fail);
-        let neg_one = i64_t.const_int((-1i64) as u64, true);
+        // -1 in the ssize_t return width (i32 0xFFFFFFFF on wasm32); the
+        // C caller checks `<= 0` to drop the datagram.
+        let neg_one = usize_t.const_int((-1i64) as u64, true);
         self.builder
             .build_return(Some(&neg_one))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -224,6 +235,15 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
             .get_nth_param(1)
             .expect("de n arg")
             .into_int_value();
+        // The body's bound checks are i64; widen the size_t `n` (i32 on
+        // wasm32) to i64 (no-op native).
+        let de_n = if de_n.get_type() == i64_t {
+            de_n
+        } else {
+            self.builder
+                .build_int_z_extend(de_n, i64_t, "de_n.i64")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
         let de_dst = de_fn
             .get_nth_param(2)
             .expect("de dst arg")
@@ -252,6 +272,8 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 )?;
                 size_iv
             };
+        // Narrow the i64 struct size to the ssize_t return width.
+        let de_struct_size = self.size_to_usize(de_struct_size)?;
         self.builder
             .build_return(Some(&de_struct_size))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

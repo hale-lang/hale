@@ -495,6 +495,58 @@ console.log((a === 4n && b === -3n && c === 9n)
     );
 }
 
+/// Regression: an in-process typed bus (`subscribe` / `publish` across
+/// loci) must DELIVER under wasm32. The synthesized `__serialize_T` /
+/// `__deserialize_T` hardcoded an i64 return + i64 `size_t`-shaped params,
+/// but the C runtime's `lotus_serialize_fn` / `lotus_deserialize_fn` are
+/// `ssize_t(const void*, …, size_t)` — both i32 on wasm32 — so
+/// `lotus_bus_dispatch`'s `call_indirect` trapped with "null function or
+/// function signature mismatch". The codecs now use the target-pointer-
+/// width type (`usize_type()`), so they match the wasm32 ABI; native was
+/// always correct (i64 == usize). `Demo.birth` runs at `_hale_start`,
+/// instantiates Receiver+Sender, and the publish must reach `on_ping` and
+/// print `got 1`. (The first — and motivating — `target wasm` + bus run
+/// fixture; the rest of this file covers @ffi/@export/compute, not the bus.)
+#[test]
+fn wasm_in_process_bus_dispatch_delivers() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_in_process_bus_dispatch_delivers: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        type Ping { n: Int; }
+        locus Receiver {
+            bus { subscribe "ping" as on_ping of type Ping; }
+            fn on_ping(p: Ping) { println("got ", p.n); }
+        }
+        locus Sender {
+            bus { publish "ping" of type Ping; }
+            birth() { "ping" <- Ping { n: 1 }; }
+        }
+        @export locus Demo { birth() { Receiver { }; Sender { }; } }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse target-wasm bus program");
+    let wasm = tmp("bus.wasm");
+    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
+        .expect("wasm codegen + link");
+    let loader = wasm.with_extension("mjs");
+    let run = Command::new(&node).arg(&loader).output().expect("run node loader");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    assert!(
+        run.status.success() && stdout.contains("got 1"),
+        "in-process typed bus must deliver under wasm32 (was a \
+         lotus_bus_dispatch call_indirect signature-mismatch trap):\n\
+         stdout: {}\nstderr: {}",
+        stdout,
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 fn tool(name: &str) -> Option<String> {
     for cand in [name, &format!("{}-18", name)] {
         if Command::new(cand).arg("--version").output().is_ok() {

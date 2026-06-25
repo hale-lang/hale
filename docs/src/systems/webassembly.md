@@ -11,7 +11,7 @@
 ## Building for wasm
 
 ```sh
-hale build --target wasm32 client/main.hl
+hale build client/main.hl --target wasm32
 ```
 
 This emits `client/main.wasm` (self-contained — a tiny bundled
@@ -29,6 +29,15 @@ Under `target wasm`, the portable stdlib works as usual
 POSIX-backed namespaces (`std::io::tcp`, `std::process`,
 `std::http`, …) are rejected at typecheck — the browser sandbox has
 no syscalls. Reach the outside world through host functions instead.
+
+The **in-process typed bus** — `topic` / `bus { publish … }` /
+`bus { subscribe … }` across loci — runs under wasm exactly as it
+does natively: a `Subject <- payload` is delivered to every matching
+subscriber's handler in the same module, payload-copied through the
+synthesized wire codec. Only the *cross-process / network* transports
+(`shm_ring`, `unix`, CONNECT-role bindings) are unavailable in the
+sandbox — those need syscalls. So the idiomatic locus + topic + bus
+shape is fully available client-side.
 
 ## Calling the host: `@ffi("js")`
 

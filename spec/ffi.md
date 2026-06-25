@@ -372,6 +372,19 @@ unavailable under `target wasm`: <reason>``. The gated set
 | `std::process` | (no OS process control) |
 | `std::http` | (server is built on raw TCP) |
 
+The **in-process typed bus is fully available** under `target wasm`:
+`topic` declarations and `bus { publish … }` / `bus { subscribe … }`
+across loci lower the same way they do natively — a `Subject <-
+payload` is delivered to every matching in-module subscriber's handler,
+payload-copied through the synthesized `__serialize_T` / `__deserialize_T`
+wire codec. Those codecs follow the `lotus_serialize_fn` /
+`lotus_deserialize_fn` ABI (`ssize_t(const void *, …, size_t)`), whose
+`ssize_t` / `size_t` widths are **target-pointer-width** — i32 on wasm32,
+i64 on the native 64-bit targets — so the runtime's `lotus_bus_dispatch`
+indirect call matches the codec on both. Only the *cross-process /
+network* transports (`shm_ring`, `unix`, and CONNECT-role bindings) are
+unavailable in the sandbox, since they need syscalls.
+
 Reach the outside world through `@ffi("js")` host imports and the
 inbox/state seam below instead.
 
