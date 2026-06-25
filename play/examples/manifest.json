@@ -9,9 +9,27 @@
     {
       "name": "sim",
       "title": "Live lobby (paced)",
-      "blurb": "Same idea, animated: an @export locus whose frame() the page drives ~60×/sec. Players trickle in over real time and matches start live — press Run, watch it tick, press Stop. State lives in the locus and persists across frames.",
+      "blurb": "Same idea, animated: an @export locus whose frame() the page drives ~60x/sec. Players trickle in over real time and matches start live — press Run, watch it tick, press Stop. State lives in the locus and persists across frames.",
       "mode": "loop",
       "entry": "frame"
+    },
+    {
+      "name": "decimal",
+      "title": "Exact money",
+      "blurb": "Decimal is a primitive in Hale — exact fixed-point arithmetic, no floating-point dust. Real d-suffixed Decimal math (subtraction, division, compound interest), in your browser.",
+      "mode": "batch"
+    },
+    {
+      "name": "enums",
+      "title": "Enums & match",
+      "blurb": "Sum types with exhaustive pattern matching: drop a case from the match and the compiler refuses to build. Here a traffic light cycles through its states.",
+      "mode": "batch"
+    },
+    {
+      "name": "fallible",
+      "title": "Errors in the type",
+      "blurb": "No exceptions — a call that can fail returns fallible(E), and you must address it right at the call site with `or` (a default, `or raise` to propagate, or hand it off). Parsing numbers, with defaults and a fallback chain.",
+      "mode": "batch"
     }
   ]
 }

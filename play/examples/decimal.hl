@@ -1,0 +1,17 @@
+// Decimal is a primitive in Hale: exact fixed-point math, no float dust.
+// A `d` suffix makes a Decimal literal (`0.1`, without it, is a Float).
+fn main() {
+    let dust: Decimal = 0.1d - 0.05d;
+    println("0.1 - 0.05       = ", dust, "   (a Float would drift to 0.0499...)");
+
+    let third: Decimal = 1d / 3d;
+    println("1 / 3            = ", third);
+
+    let principal: Decimal = 1000.00d;
+    let rate: Decimal = 0.05d;
+    let total: Decimal = principal * (1d + rate) * (1d + rate);
+    println("$1000 at 5%, 2yr = ", total);
+
+    let owed: Decimal = 1.5d - 10.25d;
+    println("1.50 - 10.25     = ", owed);
+}

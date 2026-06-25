@@ -1,0 +1,22 @@
+// Fallibility lives in the type, not in exceptions. A call that can fail
+// returns `fallible(E)`, and the caller must address it at the call site
+// with `or` — a default, `or raise` to propagate, or hand it off.
+type ParseError { kind: String; input: String; }
+
+fn parse_count(s: String) -> Int fallible(ParseError) {
+    if !std::str::can_parse_int(s) {
+        fail ParseError { kind: "not a number", input: s };
+    }
+    return std::str::parse_int(s) or 0;
+}
+
+fn main() {
+    let good: Int = parse_count("42") or 0;
+    println("parse_count 42      = ", good);
+
+    let bad: Int = parse_count("oops") or -1;
+    println("parse_count oops    = ", bad, "   (failed, defaulted via or -1)");
+
+    let port: Int = parse_count("not set") or parse_count("8080") or 0;
+    println("first that parses   = ", port);
+}
