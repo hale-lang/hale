@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      - "play/**"
       - ".github/workflows/docs.yml"
   pull_request:
     paths:
       - "docs/**"
+      - "play/**"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -24,13 +26,17 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+env:
+  LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
+
 jobs:
   build:
-    name: Build mdbook
+    name: Build site (docs + playground)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      # --- docs (mdBook) ---
       - name: Cache cargo binaries
         uses: actions/cache@v4
         with:
@@ -51,6 +57,45 @@ jobs:
       - name: Build docs
         run: mdbook build docs
 
+      # --- playground: compile the examples + the Hale UI to wasm ---
+      # Heavy (LLVM 18 + a compiler build), so skip it on PRs — it runs
+      # only on main / manual dispatch, i.e. when we actually deploy.
+      - name: Install Rust toolchain
+        if: github.event_name != 'pull_request'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install LLVM 18 + clang
+        if: github.event_name != 'pull_request'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            llvm-18-dev libpolly-18-dev libzstd-dev \
+            clang-18 libclang-18-dev zlib1g-dev
+
+      - name: Cache cargo (compiler build)
+        if: github.event_name != 'pull_request'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-pages-${{ runner.os }}-llvm18-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-pages-${{ runner.os }}-llvm18-
+
+      - name: Build the hale compiler
+        if: github.event_name != 'pull_request'
+        run: cargo build --release -p hale-cli
+
+      - name: Build the playground (examples + UI -> wasm)
+        if: github.event_name != 'pull_request'
+        run: bash play/build.sh
+
+      - name: Stage the playground under the docs site (/play)
+        if: github.event_name != 'pull_request'
+        run: cp -r play/site docs/book/play
+
+      # --- publish the combined site ---
       - name: Configure Pages
         if: github.event_name != 'pull_request'
         uses: actions/configure-pages@v5

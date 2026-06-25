@@ -1,0 +1,31 @@
+// A paced matchmaking lobby. There is no `main` — instead the page drives
+// `frame()` once per animation frame (~60×/sec), and the locus keeps its own
+// clock in `self.countdown`. So players trickle into the queue over real time
+// and matches start live; it runs until you press Stop. State lives in the
+// locus's params and persists across frames, exactly as it would natively.
+@export locus Lobby {
+    params {
+        countdown: Int = 40;   // frames until the next player joins
+        queued:    Int = 0;
+        target:    Int = 4;
+        player_no: Int = 0;
+        matches:   Int = 0;
+    }
+    birth() {
+        println("lobby open — waiting for players...");
+    }
+    fn frame() {
+        self.countdown = self.countdown - 1;
+        if self.countdown <= 0 {
+            self.countdown = 40;
+            self.player_no = self.player_no + 1;
+            self.queued = self.queued + 1;
+            println("player ", self.player_no, " joined  (", self.queued, "/", self.target, " queued)");
+            if self.queued >= self.target {
+                self.matches = self.matches + 1;
+                println(">> match #", self.matches, " starting with ", self.target, " players!");
+                self.queued = 0;
+            }
+        }
+    }
+}

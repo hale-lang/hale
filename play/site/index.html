@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hale — run it in your browser</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #0d1117; color: #c9d1d9;
+    font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 14px; line-height: 1.5;
+  }
+  header { padding: 22px 28px 14px; border-bottom: 1px solid #21262d; }
+  header h1 { margin: 0; font-size: 19px; color: #e6edf3; }
+  header h1 .dot { color: #d2a8ff; }
+  header .sub { color: #8b949e; font-size: 13px; margin-top: 4px; }
+  header .sub b { color: #7ee787; }
+  .wrap { display: grid; grid-template-columns: 230px 1fr; min-height: calc(100vh - 78px); }
+  nav { border-right: 1px solid #21262d; padding: 14px 10px; }
+  nav .ex {
+    display: block; width: 100%; text-align: left; background: none; border: 0;
+    color: #c9d1d9; font: inherit; padding: 8px 12px; border-radius: 6px; cursor: pointer;
+  }
+  nav .ex:hover { background: #161b22; }
+  nav .ex.active { background: #1f6feb22; color: #e6edf3; }
+  main { padding: 22px 28px; max-width: 900px; }
+  main h2 { margin: 0 0 6px; font-size: 16px; color: #e6edf3; }
+  main .blurb { color: #8b949e; font-size: 13px; margin: 0 0 16px; max-width: 70ch; }
+  pre.src {
+    background: #010409; border: 1px solid #21262d; border-radius: 8px;
+    padding: 16px; overflow: auto; margin: 0; white-space: pre; max-height: 46vh;
+  }
+  .bar { display: flex; align-items: center; gap: 14px; margin: 16px 0 10px; }
+  button.run {
+    background: #238636; color: #fff; border: 0; border-radius: 6px;
+    padding: 8px 18px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button.run:disabled { opacity: .6; cursor: default; }
+  .note { color: #6e7681; font-size: 12px; }
+  .note a { color: #58a6ff; }
+  pre.out {
+    background: #010409; border: 1px solid #21262d; border-radius: 8px;
+    padding: 16px; margin: 0; min-height: 96px; max-height: 34vh; overflow: auto;
+    white-space: pre-wrap; color: #c9d1d9;
+  }
+  .ok { color: #7ee787; }
+  .err { color: #ff7b72; }
+  .made { color: #6e7681; font-size: 12px; padding: 8px 28px 20px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Hale<span class="dot">.</span> — run it in your browser</h1>
+    <div class="sub">Real Hale, compiled to WebAssembly, running client-side — <b>no install, no server</b>.</div>
+  </header>
+  <div class="wrap">
+    <nav id="nav"></nav>
+    <main>
+      <h2 id="title"></h2>
+      <p class="blurb" id="blurb"></p>
+      <pre class="src"><code id="src"></code></pre>
+      <div class="bar">
+        <button class="run" id="run">▶ Run</button>
+        <span class="note">Runs the compiled <code>.wasm</code>. To edit &amp; recompile,
+          <a href="https://github.com/hale-lang/hale#try-it">install Hale</a>.</span>
+      </div>
+      <pre class="out" id="out"></pre>
+    </main>
+  </div>
+  <div class="made">The UI itself is a Hale <code>@export locus</code> (<code>ui.hl</code>) compiled to wasm;
+    JavaScript here is only the DOM/loader platform it calls through <code>@ffi("js")</code>.</div>
+
+<script type="module">
+const DIST = "./dist";
+const $ = (id) => document.getElementById(id);
+const elNav = $("nav"), elTitle = $("title"), elBlurb = $("blurb");
+const elSrc = $("src"), elOut = $("out"), btn = $("run");
+
+// --- syntax highlighting (display only) ---
+const KW = new Set(("target locus type fn params bus subscribe publish as of birth run drain " +
+  "dissolve accept on_failure mode closure contract perspective let mut if else while for in " +
+  "match return self true false and or").split(" "));
+const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;" }[c]));
+function highlight(code) {
+  const re = /(\/\/[^\n]*)|("(?:[^"\\]|\\.)*")|([0-9][0-9_]*(?:\.[0-9]+)?[a-zA-Z]*)|([A-Za-z_][A-Za-z0-9_]*)|([\s\S])/g;
+  let out = "", m;
+  while ((m = re.exec(code))) {
+    if (m[1]) out += `<span style="color:#8b949e">${esc(m[1])}</span>`;
+    else if (m[2]) out += `<span style="color:#a5d6ff">${esc(m[2])}</span>`;
+    else if (m[3]) out += `<span style="color:#79c0ff">${esc(m[3])}</span>`;
+    else if (m[4]) {
+      const w = m[4];
+      if (KW.has(w)) out += `<span style="color:#ff7b72">${w}</span>`;
+      else if (/^[A-Z]/.test(w)) out += `<span style="color:#ffa657">${esc(w)}</span>`;
+      else out += esc(w);
+    } else out += esc(m[5]);
+  }
+  return out;
+}
+
+// --- example data (what the Hale controller asks the page to render) ---
+const { examples } = await (await fetch(`${DIST}/manifest.json`)).json();
+for (const ex of examples) ex.source = await (await fetch(`${DIST}/${ex.name}.hl`)).text();
+
+// --- example execution: load + run an example's own wasm module ---
+let ui = null, raf = null;
+const realLog = console.log;
+const captureOn  = () => { console.log = (...a) => {
+  const t = new Date().toTimeString().slice(0, 8);
+  elOut.textContent += `[${t}] ` + a.join(" ") + "\n"; elOut.scrollTop = elOut.scrollHeight;
+}; };
+const captureOff = () => { console.log = realLog; };
+function stopLoop() { if (raf) { cancelAnimationFrame(raf); raf = null; } captureOff(); btn.textContent = "▶ Run"; }
+
+async function runExample(idx) {
+  const ex = examples[idx];
+  elOut.textContent = ""; captureOn();
+  let mod;
+  try { mod = await import(`${DIST}/${ex.name}.mjs`); }
+  catch (e) { captureOff(); elOut.innerHTML = `<span class="err">load error: ${esc(String(e))}</span>`; ui.exports.on_done(); return; }
+
+  if (ex.mode === "loop") {
+    let inst;
+    try { inst = await mod.run(); }
+    catch (e) { captureOff(); elOut.innerHTML += `<span class="err">${esc(String(e))}</span>`; ui.exports.on_done(); return; }
+    btn.textContent = "■ Stop";
+    let frames = 0; const MAX = 1500;
+    const tick = () => {
+      try { inst.exports[ex.entry || "frame"](); }
+      catch (e) { elOut.innerHTML += `<span class="err">${esc(String(e))}</span>`; stopLoop(); ui.exports.on_done(); return; }
+      if (++frames < MAX) raf = requestAnimationFrame(tick);
+      else { stopLoop(); elOut.innerHTML += '<span class="ok">■ stopped</span>'; ui.exports.on_done(); }
+    };
+    raf = requestAnimationFrame(tick);
+  } else {
+    btn.disabled = true;
+    try { await mod.run(); elOut.innerHTML += '<span class="ok">✓ done</span>'; }
+    catch (e) { elOut.innerHTML += `<span class="err">${esc(String(e))}</span>`; }
+    finally { captureOff(); btn.disabled = false; ui.exports.on_done(); }
+  }
+}
+
+// --- DOM/run primitives the Hale @export locus calls via @ffi("js") ---
+const glue = () => ({
+  js_select: (idx) => {
+    const ex = examples[idx];
+    [...elNav.children].forEach((b, i) => b.classList.toggle("active", i === idx));
+    elTitle.textContent = ex.title;
+    elBlurb.textContent = ex.blurb;
+    elSrc.innerHTML = highlight(ex.source.replace(/\s+$/, ""));
+    elOut.textContent = "";
+  },
+  js_run:  (idx) => { runExample(idx); },
+  js_stop: ()    => { stopLoop(); },
+});
+
+// --- build the tab list, then hand control to the Hale locus ---
+examples.forEach((ex, i) => {
+  const b = document.createElement("button");
+  b.className = "ex"; b.textContent = ex.title;
+  b.onclick = () => ui.exports.select(BigInt(i));   // Int export args are i64 -> BigInt
+  elNav.appendChild(b);
+});
+ui = await (await import(`${DIST}/ui.mjs`)).run(glue);   // birth() -> js_select(0)
+btn.onclick = () => ui.exports.toggle();
+if (examples.length && examples[0].mode !== "loop") ui.exports.toggle();  // auto-run the first (batch) example
+</script>
+</body>
+</html>

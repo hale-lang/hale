@@ -1,0 +1,17 @@
+{
+  "examples": [
+    {
+      "name": "matchmaker",
+      "title": "Matchmaker",
+      "blurb": "Three loci wired through the typed bus: a Lobby publishes players onto a queue topic, the Matchmaker counts joins and publishes a match, a MatchLog prints it. The whole pub/sub chain runs as WebAssembly in your browser.",
+      "mode": "batch"
+    },
+    {
+      "name": "sim",
+      "title": "Live lobby (paced)",
+      "blurb": "Same idea, animated: an @export locus whose frame() the page drives ~60×/sec. Players trickle in over real time and matches start live — press Run, watch it tick, press Stop. State lives in the locus and persists across frames.",
+      "mode": "loop",
+      "entry": "frame"
+    }
+  ]
+}

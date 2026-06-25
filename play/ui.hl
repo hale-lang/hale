@@ -1,0 +1,50 @@
+// The tour UI, as a Hale @export locus.
+//
+// This locus IS the page's controller. It owns the interaction state — which
+// example is selected, and whether one is running — and drives the page
+// through a few DOM/run primitives the host exposes via @ffi("js") (the
+// browser analog of @ffi("c") syscalls). The host calls into select() /
+// toggle() / on_done() when the user acts; this locus calls back out to
+// render and run. No `main`: the host instantiates it once (running birth)
+// and then drives its methods, exactly like a native long-lived locus.
+
+@ffi("js") fn js_select(idx: Int);   // render example idx + highlight its tab
+@ffi("js") fn js_run(idx: Int);      // load + run example idx's wasm
+@ffi("js") fn js_stop();             // stop a running (looping) example
+
+@export locus Tour {
+    params {
+        selected: Int  = 0;
+        running:  Bool = false;
+    }
+
+    birth() {
+        js_select(self.selected);
+    }
+
+    // The user clicked a tab.
+    fn select(idx: Int) {
+        if self.running {
+            js_stop();
+            self.running = false;
+        }
+        self.selected = idx;
+        js_select(idx);
+    }
+
+    // The user clicked Run / Stop.
+    fn toggle() {
+        if self.running {
+            js_stop();
+            self.running = false;
+        } else {
+            js_run(self.selected);
+            self.running = true;
+        }
+    }
+
+    // The host calls this when a (batch) example finished on its own.
+    fn on_done() {
+        self.running = false;
+    }
+}

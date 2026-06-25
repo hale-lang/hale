@@ -1,0 +1,41 @@
+type Player    { name: String; }
+type MatchInfo { size: Int; }
+
+locus Matchmaker {
+    params { target_size: Int = 4; waiting: Int = 0; }
+    bus {
+        subscribe "queue.join"  as on_join of type Player;
+        publish   "match.ready"            of type MatchInfo;
+    }
+    fn on_join(p: Player) {
+        self.waiting = self.waiting + 1;
+        println(p.name, " joined  (", self.waiting, "/", self.target_size, ")");
+        if self.waiting >= self.target_size {
+            "match.ready" <- MatchInfo { size: self.target_size };
+            self.waiting = 0;
+        }
+    }
+}
+
+locus MatchLog {
+    bus { subscribe "match.ready" as on_match of type MatchInfo; }
+    fn on_match(m: MatchInfo) {
+        println(">> Match ready with ", m.size, " players!");
+    }
+}
+
+locus Lobby {
+    bus { publish "queue.join" of type Player; }
+    birth() {
+        "queue.join" <- Player { name: "Ada" };
+        "queue.join" <- Player { name: "Linus" };
+        "queue.join" <- Player { name: "Grace" };
+        "queue.join" <- Player { name: "Dennis" };
+    }
+}
+
+fn main() {
+    Matchmaker { };
+    MatchLog { };
+    Lobby { };
+}
