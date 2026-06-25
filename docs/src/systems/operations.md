@@ -83,15 +83,19 @@ flags report on allocation shape:
 
 | Flag | Reports |
 |---|---|
+| `--warn-unbounded-alloc` | flag an allocation that escapes into an unbounded context and accumulates until its locus dissolves (advisory warnings) |
 | `--dump-alloc-summary` | every allocation site, escape-tagged (local / returned / stored-to-self / sent), with the bounded-vs-unbounded verdict |
 | `--dump-resource-budget` | per-locus resource counts (allocations, held fds) against declared ceilings |
 | `--locality-report` | per-locus working-set size against cache-tier budgets |
 
-The memory-bound warnings these surface are **on by default** in
-`hale check` (advisory — they print but don't fail the build);
-`--no-warn-unbounded-alloc` opts out. A warning here is the
-compile-time complement to the residency dump: it tells you *which
-site* can grow before you've watched it grow.
+The memory-bound warnings are **opt-in** — you switch them on with
+`--warn-unbounded-alloc` (advisory; they print but don't fail the
+build). The proof is opt-in by design: a bound *per epoch* only means
+something for a long-lived process, so a script that allocates and
+exits pays nothing by default — the same stance as the `@locality`
+cache-tier budgets. A warning here is the compile-time complement to
+the residency dump: it tells you *which site* can grow before you've
+watched it grow.
 
 ## Bus backpressure: bounding a flood
 

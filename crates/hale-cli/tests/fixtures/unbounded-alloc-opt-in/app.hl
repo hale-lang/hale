@@ -1,0 +1,29 @@
+// A per-message handler that does a whole-value replace into `self`
+// each message — the canonical unbounded-accumulation shape the
+// memory-bound proof (GH #18 item 1) flags. Used to pin that the
+// warning is OPT-IN: silent by default, emitted under
+// `--warn-unbounded-alloc`, never a build failure either way.
+type Sample { value: Int; }
+type Holder { items: [Int; 4]; }
+
+locus Acc {
+    params {
+        latest: Holder = Holder { items: [0, 0, 0, 0] };
+    }
+    bus {
+        subscribe "sample" as on_sample of type Sample;
+    }
+    fn on_sample(s: Sample) {
+        self.latest = Holder { items: [s.value, s.value, s.value, s.value] };
+    }
+}
+
+locus Src {
+    bus { publish "sample" of type Sample; }
+    birth() { "sample" <- Sample { value: 1 }; }
+}
+
+fn main() {
+    Acc { };
+    Src { };
+}

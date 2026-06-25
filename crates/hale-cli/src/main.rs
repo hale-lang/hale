@@ -918,11 +918,15 @@ fn run_check(target: &Path) -> ExitCode {
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
     let mut diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
-    // GH #18 item 1: unbounded-allocation warnings, ON BY DEFAULT.
-    // `--no-warn-unbounded-alloc` opts out; `--warn-unbounded-alloc` is
-    // still accepted (now a no-op) for back-compat. The warnings are
-    // advisory — they print but don't fail the build (only errors do).
-    if !std::env::args().any(|a| a == "--no-warn-unbounded-alloc") {
+    // GH #18 item 1: unbounded-allocation warnings — OPT-IN, like the
+    // `--warn-resource-leak` / `@locality` budget surfaces. A memory-bound
+    // proof only means something for long-lived processes (daemons, bus
+    // handlers, persistent loci); a script that allocates and exits owes it
+    // nothing, so it pays nothing by default. `--warn-unbounded-alloc`
+    // requests the whole-program advisory survey; the warnings print but
+    // never fail the build (only errors do). `--no-warn-unbounded-alloc` is
+    // accepted-and-ignored for back-compat with the former default-on flag.
+    if std::env::args().any(|a| a == "--warn-unbounded-alloc") {
         diags.extend(hale_types::unbounded_alloc_warnings(&bundle));
     }
     // GH #18 item 5: opt-in fd-resource-leak warnings.

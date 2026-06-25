@@ -41,8 +41,21 @@ reuse.
 > per-handler flags). *Still deferred:* the `@unbounded` escape valve and
 > type-aware String-concat sites.
 >
-> **Default-on deliberately held (2026-06-10).** Considered promoting
-> `--warn-unbounded-alloc` to fire by default; kept opt-in. The 4 flags are
+> **Reverted to opt-in (2026-06-25).** The warning was promoted to
+> default-on (#122) but later reversed: per Hale's descent-curve stance,
+> a bound *per epoch* only means something for a long-lived process, so a
+> script that allocates and exits owes the proof nothing and pays nothing
+> by default. The warning is now opt-in via `--warn-unbounded-alloc`
+> (advisory; never fails the build), mirroring how `@locality` cache-tier
+> budgets are flag/annotation-gated. `--no-warn-unbounded-alloc` is an
+> accepted no-op for back-compat. Next: a `@bounded` locus/module
+> annotation opts a scope into the proof as a hard *error* contract, with
+> `@unbounded` as the in-scope carve-out. The opt-in semantics are pinned
+> by `hale-cli` `unbounded_alloc_opt_in.rs`.
+>
+> **Default-on deliberately held, then shipped, then reverted.** The
+> 2026-06-10 reasoning below is retained for context; the conclusion
+> (kept opt-in) is once again the shipped behavior. The 4 flags are
 > *true* positives but include legitimately bounded-by-design patterns —
 > `22-moving-average`'s `Window::on_sample` keeps a fixed 4-elem window;
 > per the reclamation model the *replaced* arrays aren't freed until

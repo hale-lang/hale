@@ -79,15 +79,23 @@ diagnostic. See `spec/semantics.md § Locus method dispatch`.
 
 ## Default-on & opt-in analyses
 
-Two GitHub issue #18 analyses run **by default**: item 4 (bus-graph property
-checks — *errors*, fail the build) and item 1 (memory-bound — *advisory
-warnings*, print but don't fail). The rest are **opt-in** (behind a flag) or
-deferred. Only item 4 is a build gate; don't assume the others in a build:
+One GitHub issue #18 analysis runs **by default**: item 4 (bus-graph property
+checks — *errors*, fail the build). The rest, including item 1 (memory-bound),
+are **opt-in** (behind a flag) or deferred. Only item 4 is a build gate; don't
+assume the others in a build:
 
-- **Memory-bound proofs (item 1)** — **on by default** in `hale check`
-  (advisory warnings; they print but don't fail the build).
-  `--no-warn-unbounded-alloc` opts out; `--dump-alloc-summary` prints the
-  raw per-fn summary. A per-method allocation summary + call-graph
+- **Memory-bound proofs (item 1)** — **opt-in** in `hale check` via
+  `--warn-unbounded-alloc` (advisory warnings; they print but don't fail the
+  build). The proof is opt-in by design: "bounded per epoch" only means
+  something for a long-lived process (a daemon, a bus handler, a persistent
+  locus), so a script that allocates and exits owes it nothing and pays
+  nothing by default — the same descent-curve stance as the `@locality`
+  cache-tier budgets (annotation/flag-gated, never automatic). A future
+  `@bounded` locus/module annotation will opt a scope into the proof as a
+  hard *error* contract, with `@unbounded` as the in-scope carve-out.
+  `--dump-alloc-summary` prints the raw per-fn summary.
+  `--no-warn-unbounded-alloc` is accepted-and-ignored for back-compat with
+  the former default-on flag. A per-method allocation summary + call-graph
   escape/loop dataflow — with **escape-awareness** (a non-escaping local in
   a per-message handler is reclaimed at the per-delivery method-scratch
   destroy, so it isn't flagged), call-result escape tagging, and
