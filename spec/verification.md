@@ -115,8 +115,15 @@ assume the others in a build:
   value each time); the fix is **in-place mutation** (`self.f.x = v` /
   `self.a[i] = v`), a capacity-bounded `@form` (`ring_buffer` / `lru_cache`
   / a `capacity` slot), the bus (reclaims per dispatch), or a per-iteration
-  child locus. Zero corpus false positives. Type-aware String-concat sites
-  remain deferred. See `notes/memory-bound-proofs.md`.
+  child locus. It also flags an **insert into a growing collection** —
+  `v.push(x)` / `m.set(x)` where the receiver's declared type is a
+  `@form(vec)` / `@form(hashmap)` locus — in an unbounded context; the
+  backing buffer grows with population and frees only at dissolve. A
+  `@form(ring_buffer)` / `@form(lru_cache)` is cap-bounded and excluded.
+  (Detection reads *declared* receiver types — params, typed `let`s, locus
+  param fields — not inferred ones.) Zero corpus false positives. Type-aware
+  String-concat sites and untyped-receiver collection inserts remain
+  deferred. See `notes/memory-bound-proofs.md`.
 - **Resource-budget tracking (item 5)** — fully shipped, opt-in. A static
   **count** of pinned threads / cooperative pools / bus subjects /
   fd-acquisition sites (fd-opening calls *and* held-fd `Listener` /

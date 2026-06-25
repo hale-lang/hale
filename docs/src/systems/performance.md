@@ -108,6 +108,15 @@ These are advisory warnings, not build failures:
   `@bounded` to get the check on every `hale check` without the flag,
   and `@unbounded` (on a `fn` or a lifecycle hook) to acknowledge an
   intentional accumulation and silence it.
+- The same check flags an **insert into a growing collection** —
+  `v.push(x)` / `m.set(x)` where `v` / `m` is a `@form(vec)` or
+  `@form(hashmap)` — when it runs in an unbounded context. The backing
+  buffer grows with population and frees only at dissolve, so a push
+  per message accumulates. A `@form(ring_buffer)` / `@form(lru_cache)`
+  is cap-bounded and never flagged; switching to one (or bounding the
+  loop) is the fix. (Detection reads the receiver's *declared* type, so
+  it sees `fn f(v: IntVec)` and `self.buf: IntVec` but not an untyped
+  `let`.)
 - `hale check app.hl --warn-resource-leak` is the same idea for file
   descriptors: an `open` / `connect` / `accept` whose result is
   stored resident in an unbounded context, so fds pile up.

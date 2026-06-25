@@ -324,13 +324,28 @@ store-latest assertion.
      The reusable infra for D2. Discovery finding: the walker previously
      tagged slot-insert *arguments* `Local`, so collection growth
      (`self.items.push(X{})`) is currently **undetected** — D2's job.
-   - **D2 — model the slot-insert allocation channel + bound it.** Treat
-     `acquire`/`alloc`/`push`/`set` into a capacity data slot as an
-     allocation tagged with that slot's discipline; flag unbounded
-     (`heap`/`vec`/`hashmap`) inserts in unbounded contexts; leave
-     `ring_buffer` (cap) and balanced `pool` alone. Warning, opt-in-gated,
-     RSS-validated. (Recognition `cap=N` bounds *entity* count, fed by
-     `accept` — a separate analysis the value-alloc walker doesn't track.)
+   - **D2 (LANDED 2026-06-25) — growing-collection inserts.** A discovery
+     pass found the corpus inserts via `v.push(x)` on a *typed* receiver
+     (`v: IntVec`, `self.buf: IntVec`), not direct `self.<slot>.alloc()` —
+     so detection is **type-aware**, the same class as the deferred
+     String-concat. Chosen approach: **D2-lite** — a lightweight var→
+     *declared*-type map (fn params, typed `let`s, locus param fields)
+     matched against `locus_shapes[T].form`. A `push`/`set`/`insert`/`add`
+     whose receiver type is a `@form(vec | hashmap)` becomes a
+     `CollectionInsert` site (escape=self-store, reclaim@dissolve), so it
+     flows through the existing verdict path: flagged in an unbounded
+     context, bounded by a const loop, suppressed by `@unbounded`. A
+     `@form(ring_buffer | lru_cache)` is cap-bounded → not flagged; a user
+     `push` method on a *non-form* locus → not flagged (the
+     `54-geom-leading-edge` `Segment` shape, confirmed). **Zero corpus
+     false positives** (68 fixtures). RSS-validated: a 3M `@form(vec)`
+     push-of-32B-struct hits 210 MB vs a 55 MB no-push control (`lotus_vec_
+     push` grows a geometric `cap*2` buffer; `rss_bytes()` is peak/maxrss).
+     *Misses (deferred to a type-aware stage):* untyped `let`, reassignment,
+     return-of-form, and the clear/reset balance case (a vec cleared each
+     iteration is bounded-by-peak — opt-in gating + `@unbounded` absorb it).
+     (Recognition `cap=N` bounds *entity* count, fed by `accept` — a
+     separate analysis the value-alloc walker doesn't track.)
    - **D3 — per-cell field bounds** (a bounded cell with a growing `String`
      field). Optional; can defer.
 

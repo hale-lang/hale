@@ -235,3 +235,78 @@ fn store_latest_field_replace_grows_inplace_stays_flat() {
         inplace_rss
     );
 }
+
+// === Phase D / D2 (2026-06-25): a growing @form(vec) insert accumulates ===
+//
+// D2 flags `v.push(x)` where `v`'s declared type is a growing `@form(vec |
+// hashmap)` locus, in an unbounded context. `lotus_vec_push` grows a
+// geometric doubling buffer (cap*2) with the element memcpy'd in, so the
+// vec genuinely accumulates with the push count. This ties that verdict to
+// measured RSS so a future change that wrongly treats a vec insert as
+// bounded gets a red test. (Element is a 32-byte struct for a clean signal
+// above the test build's ~50 MB baseline; the loop bound `self.n` is
+// runtime, so loop-ranking can't prove it bounded.)
+
+const VEC_PUSH_GROWS: &str = r#"
+    type Cell { a: Int; b: Int; c: Int; d: Int; }
+    @form(vec) locus CellVec { capacity { heap items of Cell; } }
+    locus W {
+        params { buf: CellVec = CellVec { }; n: Int = 3000000; }
+        run() {
+            let mut i = 0;
+            while i < self.n {
+                self.buf.push(Cell { a: i, b: i, c: i, d: i });
+                i = i + 1;
+            }
+            print("len="); println(self.buf.len());
+            print("final_rss_mb="); println(std::process::rss_bytes() / 1048576);
+        }
+    }
+    fn main() { W { }; }
+"#;
+
+/// The control: the identical loop and vec, but no push — RSS stays at the
+/// runtime floor and the model finds no collection-insert site.
+const VEC_PUSH_CONTROL: &str = r#"
+    type Cell { a: Int; b: Int; c: Int; d: Int; }
+    @form(vec) locus CellVec { capacity { heap items of Cell; } }
+    locus W {
+        params { buf: CellVec = CellVec { }; n: Int = 3000000; sink: Int = 0; }
+        run() {
+            let mut i = 0;
+            while i < self.n { self.sink = self.sink + i; i = i + 1; }
+            print("sum="); println(self.sink);
+            print("final_rss_mb="); println(std::process::rss_bytes() / 1048576);
+        }
+    }
+    fn main() { W { }; }
+"#;
+
+#[test]
+fn collection_insert_growth_matches_rss() {
+    // Model side: the vec push is an unbounded collection-insert site; the
+    // control (no push) has none.
+    assert!(
+        model_has_unbounded_site(VEC_PUSH_GROWS),
+        "a vec push in an unbounded loop should be flagged unbounded"
+    );
+    assert!(
+        !model_has_unbounded_site(VEC_PUSH_CONTROL),
+        "the no-push control must not be flagged"
+    );
+
+    // Runtime side: the vec accumulates ~150 MB over 3M pushes of a 32-byte
+    // cell; the control sits at the floor. Assert relative to the control.
+    let grow_rss = build_and_rss("vec_push_grows", VEC_PUSH_GROWS);
+    let ctrl_rss = build_and_rss("vec_push_control", VEC_PUSH_CONTROL);
+
+    assert!(
+        grow_rss >= ctrl_rss + 80,
+        "a growing @form(vec) insert should add >80MB over the no-push \
+         control: grow={}MB, ctrl={}MB. If the gap collapsed, vec pushes no \
+         longer accumulate where the model says they do — the D2 \
+         collection-insert verdict must be revisited.",
+        grow_rss,
+        ctrl_rss
+    );
+}
