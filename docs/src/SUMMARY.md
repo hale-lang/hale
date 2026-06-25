@@ -56,4 +56,5 @@
 
 - [Reference](./reference.md)
 - [Libraries (pond)](./libraries.md)
+- [Verification](./verification.md)
 - [The design](./the-design.md)

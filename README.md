@@ -1,7 +1,6 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hale-banner-dark.svg">
-  <img alt="Hale — hypergraph programming" src="docs/assets/hale-banner-light.svg" width="100%">
-</picture>
+# Hale
+
+**A concurrent systems language with a model-checked, GC-free runtime** — typed message-bus concurrency, data-race-free by design.
 
 [![Tests](https://github.com/hale-lang/hale/actions/workflows/tests.yml/badge.svg)](https://github.com/hale-lang/hale/actions/workflows/tests.yml)
 [![Docs](https://github.com/hale-lang/hale/actions/workflows/docs.yml/badge.svg)](https://hale-lang.github.io/hale/)
@@ -131,6 +130,19 @@ The choices that are easy to get wrong — which lock, which
 container, which transport — stop being choices you make at the call
 site. That's also why the language is unusually pleasant to write
 *with* an LLM: the things models hallucinate on aren't in the code.
+
+## Verified by construction
+
+The substrate you stand on is checked, not hoped. Every concurrent
+primitive in the runtime — the lock-free map, the mailbox, the bus
+queue, the arena — is **model-checked under every interleaving**
+([GenMC](https://github.com/MPI-SWS/genmc)) on each CI run. Above it,
+the bus topology is a typed graph the compiler walks at build time:
+orphaned topics, re-entrant cycles, unbounded backpressure, and
+payload type-mismatches are caught before the program runs. You don't
+get a "verified" sticker on your whole program — you get a foundation
+whose coordination can't silently race. See
+[Verification](https://hale-lang.github.io/hale/verification.html).
 
 ## Wire the whole system in `main`
 

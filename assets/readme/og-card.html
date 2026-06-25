@@ -1,0 +1,44 @@
+<!doctype html>
+<!-- Social-preview / OG card source. Render to og-card.png with:
+     google-chrome --headless --no-sandbox --disable-gpu --hide-scrollbars \
+       --force-device-scale-factor=1 --window-size=1280,640 \
+       --screenshot=og-card.png file://$PWD/og-card.html
+     Upload the PNG at GitHub → repo Settings → Social preview. -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1280px; height: 640px; }
+  body {
+    background: #0d1117; color: #c9d1d9;
+    font-family: -apple-system, 'Segoe UI', Roboto, 'DejaVu Sans', sans-serif;
+    padding: 84px 88px; position: relative; overflow: hidden;
+  }
+  .mono { font-family: ui-monospace, 'DejaVu Sans Mono', 'Liberation Mono', monospace; }
+  .accent {
+    position: absolute; right: -140px; top: -160px; width: 560px; height: 560px;
+    background: radial-gradient(circle, rgba(210,168,255,0.18), transparent 70%);
+  }
+  .wordmark { font-size: 136px; font-weight: 800; letter-spacing: -4px; color: #e6edf3; line-height: 1; }
+  .wordmark .dot { color: #d2a8ff; }
+  .tag { margin-top: 30px; font-size: 41px; font-weight: 600; color: #c9d1d9; max-width: 1040px; line-height: 1.25; }
+  .tag b { color: #7ee787; }
+  .chips { position: absolute; left: 88px; bottom: 168px; display: flex; gap: 40px; line-height: 1; }
+  .chip { font-size: 27px; color: #8b949e; }
+  .chip .b { color: #79c0ff; font-weight: 700; }
+  .foot { position: absolute; left: 88px; bottom: 104px; font-size: 26px; line-height: 1; color: #6e7681; }
+</style>
+</head>
+<body>
+  <div class="accent"></div>
+  <div class="wordmark">Hale<span class="dot">.</span></div>
+  <div class="tag">A concurrent systems language with a <b>model-checked</b>, GC-free runtime.</div>
+  <div class="chips">
+    <span class="chip"><span class="b">›</span> typed message bus</span>
+    <span class="chip"><span class="b">›</span> no GC, no async coloring</span>
+    <span class="chip"><span class="b">›</span> data-race-free by design</span>
+  </div>
+  <div class="foot mono">github.com/hale-lang/hale</div>
+</body>
+</html>
