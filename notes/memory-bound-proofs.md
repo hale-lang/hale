@@ -48,10 +48,24 @@ reuse.
 > by default. The warning is now opt-in via `--warn-unbounded-alloc`
 > (advisory; never fails the build), mirroring how `@locality` cache-tier
 > budgets are flag/annotation-gated. `--no-warn-unbounded-alloc` is an
-> accepted no-op for back-compat. Next: a `@bounded` locus/module
-> annotation opts a scope into the proof as a hard *error* contract, with
-> `@unbounded` as the in-scope carve-out. The opt-in semantics are pinned
-> by `hale-cli` `unbounded_alloc_opt_in.rs`.
+> accepted no-op for back-compat. The opt-in semantics are pinned by
+> `hale-cli` `unbounded_alloc_opt_in.rs`.
+>
+> **Phase B landed — `@bounded` / `@unbounded` (2026-06-25).** The
+> in-source opt-in: `@bounded locus L { … }` opts that locus into the
+> proof on every `hale check` (no flag); `@unbounded` on a `fn` or a
+> lifecycle hook (`@unbounded run { … }`) is the greppable carve-out that
+> silences one body's sites, in scoped mode AND under the survey flag.
+> `unbounded_alloc_diags(programs, include_all)` gates scope:
+> `include_all=false` reports only `@bounded`-locus sites (default check),
+> `true` is the whole-program survey (`--warn-unbounded-alloc`).
+> Implementation: `bounded: bool` on `LocusDecl`, `unbounded: bool` on
+> `FnDecl` + `LifecycleDecl`; `AllocSummary.{bounded_loci, unbounded_fns}`;
+> parser handles both as bare `@`-flags. **Severity is warning** — the
+> hard *error* contract for `@bounded` waits on the precision phases
+> (store-latest vs. append, `@form(cap)`) reaching zero in-scope FP.
+> Pinned by `hale-syntax` parser tests + `hale-cli` `bounded_annotation.rs`.
+> *Next: Phase C* — replace-vs-append refinement (RSS-validated).
 >
 > **Default-on deliberately held, then shipped, then reverted.** The
 > 2026-06-10 reasoning below is retained for context; the conclusion

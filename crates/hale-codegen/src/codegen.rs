@@ -4840,6 +4840,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     fallible: None,
                     ffi: None,
                     export: false,
+                    unbounded: false,
                     body: Block {
                         stmts: Vec::new(),
                         tail: None,
@@ -7645,6 +7646,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             annotations: template.annotations.clone(),
             form: template.form.clone(),
             locality: template.locality.clone(),
+            bounded: template.bounded,
             members: new_members,
             span: template.span.clone(),
         })
@@ -7717,6 +7719,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .ret
                         .as_ref()
                         .map(|t| Self::substitute_type_expr(t, subst)),
+                    unbounded: lc.unbounded,
                     body: Self::substitute_block_type_ascriptions(
                         &lc.body, subst,
                     ),
@@ -7749,6 +7752,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // field through for shape uniformity.
                 ffi: fd.ffi.clone(),
                 export: fd.export,
+                unbounded: fd.unbounded,
                 body: Self::substitute_block_type_ascriptions(
                     &fd.body, subst,
                 ),
@@ -7993,6 +7997,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // time so in practice this is always None here.
             ffi: template.ffi.clone(),
             export: template.export,
+            unbounded: template.unbounded,
             body: new_body,
             span: template.span.clone(),
         })

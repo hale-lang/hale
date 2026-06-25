@@ -104,7 +104,10 @@ These are advisory warnings, not build failures:
   per-iteration child. A `while i < N { … }` counter with a constant
   bound is *proven* bounded and left alone. It's opt-in because a bound
   *per epoch* only matters for a long-lived process — a script that
-  allocates and exits owes it nothing.
+  allocates and exits owes it nothing. Annotate the long-lived locus
+  `@bounded` to get the check on every `hale check` without the flag,
+  and `@unbounded` (on a `fn` or a lifecycle hook) to acknowledge an
+  intentional accumulation and silence it.
 - `hale check app.hl --warn-resource-leak` is the same idea for file
   descriptors: an `open` / `connect` / `accept` whose result is
   stored resident in an unbounded context, so fds pile up.

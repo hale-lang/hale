@@ -88,14 +88,35 @@ flags report on allocation shape:
 | `--dump-resource-budget` | per-locus resource counts (allocations, held fds) against declared ceilings |
 | `--locality-report` | per-locus working-set size against cache-tier budgets |
 
-The memory-bound warnings are **opt-in** — you switch them on with
-`--warn-unbounded-alloc` (advisory; they print but don't fail the
-build). The proof is opt-in by design: a bound *per epoch* only means
-something for a long-lived process, so a script that allocates and
-exits pays nothing by default — the same stance as the `@locality`
-cache-tier budgets. A warning here is the compile-time complement to
-the residency dump: it tells you *which site* can grow before you've
-watched it grow.
+The memory-bound warnings are **opt-in** — a bound *per epoch* only
+means something for a long-lived process, so a script that allocates
+and exits pays nothing by default (the same stance as the `@locality`
+cache-tier budgets). There are two ways to opt in:
+
+- **Annotate the locus.** `@bounded locus L { … }` asks for the proof
+  on that locus specifically — its leak sites are reported on every
+  `hale check`, no flag. This is the in-source opt-in: the locus that
+  took on long-lived state requests the check on itself.
+
+  ```hale
+  @bounded locus Aggregator {
+      // ... handlers checked for unbounded accumulation ...
+
+      @unbounded fn on_snapshot(s: Snapshot) {
+          // acknowledged: this cache is operator-sized on purpose.
+          // @unbounded silences this body's sites — the greppable
+          // carve-out. Valid on a `fn` or a lifecycle hook (`@unbounded
+          // run { … }`).
+      }
+  }
+  ```
+
+- **Survey the whole program.** `--warn-unbounded-alloc` flags every
+  site regardless of `@bounded` (a `@unbounded` fn is still suppressed).
+
+Either way the warnings are advisory — they print but don't fail the
+build. A warning here is the compile-time complement to the residency
+dump: it tells you *which site* can grow before you've watched it grow.
 
 ## Bus backpressure: bounding a flood
 

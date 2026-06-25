@@ -102,10 +102,13 @@ pub fn dump_resource_budget(bundle: &Bundle<'_>) -> String {
 }
 
 /// Bound-solver warnings: one per unbounded-accumulation allocation site
-/// (GH #18 item 1, step 3). Opt-in via `--warn-unbounded-alloc`.
-pub fn unbounded_alloc_warnings(bundle: &Bundle<'_>) -> Vec<Diag> {
+/// (GH #18 item 1). `include_all = false` reports only sites inside a
+/// `@bounded` locus (the always-on in-source opt-in); `true` is the
+/// whole-program survey behind `--warn-unbounded-alloc`. `@unbounded`-fn
+/// sites are suppressed in both modes.
+pub fn unbounded_alloc_warnings(bundle: &Bundle<'_>, include_all: bool) -> Vec<Diag> {
     let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    alloc_summary::unbounded_alloc_diags(&progs)
+    alloc_summary::unbounded_alloc_diags(&progs, include_all)
 }
 
 /// Resource-leak warnings: an fd-acquiring call whose result is stored

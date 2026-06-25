@@ -285,6 +285,15 @@ pub struct LocusDecl {
     /// tier's budget (or, for `any`, explicitly opts out of the
     /// global `--target-cache` gate).
     pub locality: Option<LocalityAnnotation>,
+    /// GH #18 item 1 (memory-bound proofs): `@bounded locus L { ... }`
+    /// opts this locus into the memory-bound proof. Its bodies are
+    /// checked for unbounded allocations regardless of the
+    /// `--warn-unbounded-alloc` flag — the in-source opt-in, the
+    /// descent-curve dual of the whole-program survey flag. A method
+    /// inside a `@bounded` locus may carry `@unbounded` to acknowledge
+    /// an intentional accumulation and silence its site. A no-op on
+    /// loci that allocate nothing unboundedly.
+    pub bounded: bool,
     pub members: Vec<LocusMember>,
     pub span: Span,
 }
@@ -1051,6 +1060,11 @@ pub struct LifecycleDecl {
     pub kind: LifecycleKind,
     pub params: Vec<Param>,
     pub ret: Option<TypeExpr>,
+    /// GH #18 item 1: `@unbounded run { ... }` (or any lifecycle hook)
+    /// acknowledges an intentionally-unbounded allocation in the hook
+    /// body — the carve-out for a `run`-loop accumulation inside a
+    /// `@bounded` locus, paralleling `@unbounded fn`.
+    pub unbounded: bool,
     pub body: Block,
     pub span: Span,
 }
@@ -1235,6 +1249,14 @@ pub struct FnDecl {
     /// `_hale_start` sets up) and passes the name to `wasm-ld
     /// --export=`. A no-op on native builds.
     pub export: bool,
+    /// GH #18 item 1 (memory-bound proofs): `@unbounded fn` acknowledges
+    /// that this fn intentionally allocates without a static bound (a
+    /// cache, an operator-sized accumulator). It suppresses the
+    /// memory-bound warning for every allocation site this fn owns — the
+    /// greppable carve-out inside a `@bounded` locus, and an explicit
+    /// silence under `--warn-unbounded-alloc`. Applies to free fns and
+    /// locus methods alike.
+    pub unbounded: bool,
     pub body: Block,
     pub span: Span,
 }

@@ -336,6 +336,25 @@ pub struct FnSummary {
 #[derive(Debug, Clone, Default)]
 pub struct AllocSummary {
     pub fns: BTreeMap<FnKey, FnSummary>,
+    /// GH #18 item 1: loci carrying `@bounded` — their leak sites are
+    /// reported even without the `--warn-unbounded-alloc` survey flag
+    /// (the in-source opt-in).
+    pub bounded_loci: BTreeSet<String>,
+    /// Fns carrying `@unbounded` — an acknowledged-intentional
+    /// accumulation. Their leak sites are dropped entirely (the
+    /// greppable carve-out), even under the survey flag.
+    pub unbounded_fns: BTreeSet<FnKey>,
+}
+
+impl AllocSummary {
+    /// Is this site's owning fn inside a `@bounded` locus? Drives
+    /// "report by default" without the survey flag.
+    pub fn owner_is_bounded_scope(&self, owner: &FnKey) -> bool {
+        owner
+            .locus
+            .as_ref()
+            .is_some_and(|l| self.bounded_loci.contains(l))
+    }
 }
 
 /// Why a site's final verdict is unbounded — the diagnostic anchor.
@@ -424,6 +443,12 @@ impl AllocSummary {
         let unbounded = self.unbounded_invoked();
         let mut out = Vec::new();
         for f in self.fns.values() {
+            // `@unbounded` is the acknowledged carve-out — its sites never
+            // surface, with or without the survey flag, in or out of a
+            // `@bounded` locus.
+            if self.unbounded_fns.contains(&f.key) {
+                continue;
+            }
             for s in &f.sites {
                 if self.final_verdict(&f.key, s, &unbounded) == SiteVerdict::AccumulatesUnbounded {
                     let reason = if matches!(s.verdict(), SiteVerdict::AccumulatesUnbounded) {
@@ -525,6 +550,9 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
     // method referenced by `subscribe ... -> handler` is tagged BusHandler.
     let mut bodies: Vec<(FnKey, Block, Option<EntryKind>, Option<String>)> = Vec::new();
     let mut known: BTreeSet<FnKey> = BTreeSet::new();
+    // GH #18 item 1 — the `@bounded` / `@unbounded` opt-in/carve-out sets.
+    let mut bounded_loci: BTreeSet<String> = BTreeSet::new();
+    let mut unbounded_fns: BTreeSet<FnKey> = BTreeSet::new();
 
     for program in programs {
         for item in &program.items {
@@ -532,11 +560,17 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
                 TopDecl::Fn(decl) => {
                     let key = FnKey::free_fn(decl.name.name.clone());
                     let entry = if decl.name.name == "main" { Some(EntryKind::Main) } else { None };
+                    if decl.unbounded {
+                        unbounded_fns.insert(key.clone());
+                    }
                     known.insert(key.clone());
                     bodies.push((key, decl.body.clone(), entry, None));
                 }
                 TopDecl::Locus(l) => {
                     let locus = l.name.name.clone();
+                    if l.bounded {
+                        bounded_loci.insert(locus.clone());
+                    }
                     let handlers = bus_handler_names(l);
                     for member in &l.members {
                         match member {
@@ -547,12 +581,18 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
                                 } else {
                                     None
                                 };
+                                if decl.unbounded {
+                                    unbounded_fns.insert(key.clone());
+                                }
                                 known.insert(key.clone());
                                 bodies.push((key, decl.body.clone(), entry, Some(locus.clone())));
                             }
                             LocusMember::Lifecycle(lc) => {
                                 let (name, entry) = lifecycle_key(lc.kind);
                                 let key = FnKey::method(locus.clone(), name);
+                                if lc.unbounded {
+                                    unbounded_fns.insert(key.clone());
+                                }
                                 known.insert(key.clone());
                                 bodies.push((key, lc.body.clone(), Some(entry), Some(locus.clone())));
                             }
@@ -591,17 +631,26 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
             },
         );
     }
+    summary.bounded_loci = bounded_loci;
+    summary.unbounded_fns = unbounded_fns;
     summary
 }
 
 /// Bound-solver diagnostics: a warning per unbounded-accumulation site.
-/// Opt-in (the corpus shows zero false positives, but allocation patterns
-/// are common enough that this is gated until validated for default-on).
-pub fn unbounded_alloc_diags(programs: &[&Program]) -> Vec<Diag> {
+///
+/// `include_all` selects the scope (GH #18 item 1, Phase B):
+/// - `false` (default `hale check`): only sites inside a `@bounded` locus —
+///   the in-source opt-in. A program with no `@bounded` locus is silent.
+/// - `true` (`--warn-unbounded-alloc`): every site, the whole-program
+///   survey.
+///
+/// Either way, `@unbounded`-fn sites are already dropped at `leak_sites()`.
+pub fn unbounded_alloc_diags(programs: &[&Program], include_all: bool) -> Vec<Diag> {
     let summary = summarize_programs(programs);
     summary
         .leak_sites()
         .iter()
+        .filter(|ls| include_all || summary.owner_is_bounded_scope(&ls.owner))
         .map(|ls| {
             let where_ = match ls.reason {
                 LeakReason::InUnboundedLoop => "inside an unbounded loop",
@@ -1487,8 +1536,47 @@ mod tests {
             fn main() { }
         "#;
         let program = hale_syntax::parse_source(src).expect("parse");
-        let diags = unbounded_alloc_diags(&[&program]);
+        // Survey mode (`--warn-unbounded-alloc`) reports the leak even
+        // though locus `C` carries no `@bounded` opt-in.
+        let diags = unbounded_alloc_diags(&[&program], true);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("unbounded allocation"));
+    }
+
+    #[test]
+    fn bounded_locus_reports_without_the_survey_flag() {
+        // The same leak, but the locus opts in with `@bounded`. Now the
+        // default (non-survey) scope reports it.
+        let src = r#"
+            type Q { a: Int; }
+            @bounded locus C { run { while true { let q = Q { a: 1 }; } } }
+            fn main() { }
+        "#;
+        let program = hale_syntax::parse_source(src).expect("parse");
+        let scoped = unbounded_alloc_diags(&[&program], false);
+        assert_eq!(scoped.len(), 1, "@bounded locus reports by default");
+        assert!(scoped[0].message.contains("unbounded allocation"));
+    }
+
+    #[test]
+    fn unbounded_fn_carves_out_even_in_a_bounded_locus() {
+        // `@bounded` on the locus opts in; `@unbounded` on the method opts
+        // that one method back out — silent in survey mode AND scoped mode.
+        let src = r#"
+            type Q { a: Int; }
+            @bounded locus C {
+                @unbounded run { while true { let q = Q { a: 1 }; } }
+            }
+            fn main() { }
+        "#;
+        let program = hale_syntax::parse_source(src).expect("parse");
+        assert!(
+            unbounded_alloc_diags(&[&program], true).is_empty(),
+            "@unbounded suppresses the site under the survey flag"
+        );
+        assert!(
+            unbounded_alloc_diags(&[&program], false).is_empty(),
+            "@unbounded suppresses the site in @bounded scope too"
+        );
     }
 }

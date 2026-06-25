@@ -922,13 +922,18 @@ fn run_check(target: &Path) -> ExitCode {
     // `--warn-resource-leak` / `@locality` budget surfaces. A memory-bound
     // proof only means something for long-lived processes (daemons, bus
     // handlers, persistent loci); a script that allocates and exits owes it
-    // nothing, so it pays nothing by default. `--warn-unbounded-alloc`
-    // requests the whole-program advisory survey; the warnings print but
-    // never fail the build (only errors do). `--no-warn-unbounded-alloc` is
+    // nothing, so it pays nothing by default.
+    //
+    // Two opt-in surfaces (Phase B):
+    //  - `@bounded locus { … }` — the in-source opt-in. Its sites are
+    //    reported on every `hale check`, no flag needed.
+    //  - `--warn-unbounded-alloc` — the whole-program advisory survey
+    //    (every site, regardless of `@bounded`).
+    // `@unbounded fn` carves a fn out of both. The warnings print but never
+    // fail the build (only errors do). `--no-warn-unbounded-alloc` is
     // accepted-and-ignored for back-compat with the former default-on flag.
-    if std::env::args().any(|a| a == "--warn-unbounded-alloc") {
-        diags.extend(hale_types::unbounded_alloc_warnings(&bundle));
-    }
+    let survey_all = std::env::args().any(|a| a == "--warn-unbounded-alloc");
+    diags.extend(hale_types::unbounded_alloc_warnings(&bundle, survey_all));
     // GH #18 item 5: opt-in fd-resource-leak warnings.
     if std::env::args().any(|a| a == "--warn-resource-leak") {
         diags.extend(hale_types::resource_leak_warnings(&bundle));

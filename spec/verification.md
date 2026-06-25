@@ -84,15 +84,24 @@ checks — *errors*, fail the build). The rest, including item 1 (memory-bound),
 are **opt-in** (behind a flag) or deferred. Only item 4 is a build gate; don't
 assume the others in a build:
 
-- **Memory-bound proofs (item 1)** — **opt-in** in `hale check` via
-  `--warn-unbounded-alloc` (advisory warnings; they print but don't fail the
-  build). The proof is opt-in by design: "bounded per epoch" only means
-  something for a long-lived process (a daemon, a bus handler, a persistent
-  locus), so a script that allocates and exits owes it nothing and pays
-  nothing by default — the same descent-curve stance as the `@locality`
-  cache-tier budgets (annotation/flag-gated, never automatic). A future
-  `@bounded` locus/module annotation will opt a scope into the proof as a
-  hard *error* contract, with `@unbounded` as the in-scope carve-out.
+- **Memory-bound proofs (item 1)** — **opt-in**, two ways. The proof is
+  opt-in by design: "bounded per epoch" only means something for a
+  long-lived process (a daemon, a bus handler, a persistent locus), so a
+  script that allocates and exits owes it nothing and pays nothing by
+  default — the same descent-curve stance as the `@locality` cache-tier
+  budgets (annotation/flag-gated, never automatic). The two opt-in surfaces:
+  - **`@bounded locus L { … }`** — the in-source opt-in. A locus annotated
+    `@bounded` is checked on every `hale check` (no flag), and a
+    `@unbounded fn`/`@unbounded run { … }` inside it is the greppable
+    carve-out that silences one body's sites. This is the descent marker:
+    the locus that took on long-lived state asks for the proof on itself.
+    *(Currently advisory warnings; the intended end state is a hard
+    **error** contract once the precision refinements — store-latest vs.
+    append, `@form(cap)` composition — drive in-scope false positives to
+    zero.)*
+  - **`--warn-unbounded-alloc`** — the whole-program advisory survey. Flags
+    every site regardless of `@bounded` (a `@unbounded` fn is still
+    suppressed). Warnings print but never fail the build.
   `--dump-alloc-summary` prints the raw per-fn summary.
   `--no-warn-unbounded-alloc` is accepted-and-ignored for back-compat with
   the former default-on flag. A per-method allocation summary + call-graph

@@ -1,0 +1,33 @@
+// GH #18 item 1 Phase B — a @bounded locus opts into the memory-bound
+// proof; @unbounded carves one handler out.
+type Sample { value: Int; }
+type Holder { items: [Int; 4]; }
+
+@bounded locus Acc {
+    params {
+        latest: Holder = Holder { items: [0, 0, 0, 0] };
+        cache:  Holder = Holder { items: [0, 0, 0, 0] };
+    }
+    bus {
+        subscribe "sample"  as on_sample of type Sample;
+        subscribe "sample2" as on_other  of type Sample;
+    }
+    // flagged: whole-value replace each message accumulates in `self`.
+    fn on_sample(s: Sample) {
+        self.latest = Holder { items: [s.value, s.value, s.value, s.value] };
+    }
+    // carved out: an acknowledged intentional accumulation.
+    @unbounded fn on_other(s: Sample) {
+        self.cache = Holder { items: [s.value, s.value, s.value, s.value] };
+    }
+}
+
+locus Src {
+    bus { publish "sample" of type Sample; }
+    birth() { "sample" <- Sample { value: 1 }; }
+}
+
+fn main() {
+    Acc { };
+    Src { };
+}
