@@ -79,15 +79,32 @@ diagnostic. See `spec/semantics.md § Locus method dispatch`.
 
 ## Default-on & opt-in analyses
 
-Two GitHub issue #18 analyses run **by default**: item 4 (bus-graph property
-checks — *errors*, fail the build) and item 1 (memory-bound — *advisory
-warnings*, print but don't fail). The rest are **opt-in** (behind a flag) or
-deferred. Only item 4 is a build gate; don't assume the others in a build:
+One GitHub issue #18 analysis runs **by default**: item 4 (bus-graph property
+checks — *errors*, fail the build). The rest, including item 1 (memory-bound),
+are **opt-in** (behind a flag) or deferred. Only item 4 is a build gate; don't
+assume the others in a build:
 
-- **Memory-bound proofs (item 1)** — **on by default** in `hale check`
-  (advisory warnings; they print but don't fail the build).
-  `--no-warn-unbounded-alloc` opts out; `--dump-alloc-summary` prints the
-  raw per-fn summary. A per-method allocation summary + call-graph
+- **Memory-bound proofs (item 1)** — **opt-in**, two ways. The proof is
+  opt-in by design: "bounded per epoch" only means something for a
+  long-lived process (a daemon, a bus handler, a persistent locus), so a
+  script that allocates and exits owes it nothing and pays nothing by
+  default — the same descent-curve stance as the `@locality` cache-tier
+  budgets (annotation/flag-gated, never automatic). The two opt-in surfaces:
+  - **`@bounded locus L { … }`** — the in-source opt-in. A locus annotated
+    `@bounded` is checked on every `hale check` (no flag), and a
+    `@unbounded fn`/`@unbounded run { … }` inside it is the greppable
+    carve-out that silences one body's sites. This is the descent marker:
+    the locus that took on long-lived state asks for the proof on itself.
+    *(Currently advisory warnings; the intended end state is a hard
+    **error** contract once the precision refinements — store-latest vs.
+    append, `@form(cap)` composition — drive in-scope false positives to
+    zero.)*
+  - **`--warn-unbounded-alloc`** — the whole-program advisory survey. Flags
+    every site regardless of `@bounded` (a `@unbounded` fn is still
+    suppressed). Warnings print but never fail the build.
+  `--dump-alloc-summary` prints the raw per-fn summary.
+  `--no-warn-unbounded-alloc` is accepted-and-ignored for back-compat with
+  the former default-on flag. A per-method allocation summary + call-graph
   escape/loop dataflow — with **escape-awareness** (a non-escaping local in
   a per-message handler is reclaimed at the per-delivery method-scratch
   destroy, so it isn't flagged), call-result escape tagging, and
@@ -98,8 +115,15 @@ deferred. Only item 4 is a build gate; don't assume the others in a build:
   value each time); the fix is **in-place mutation** (`self.f.x = v` /
   `self.a[i] = v`), a capacity-bounded `@form` (`ring_buffer` / `lru_cache`
   / a `capacity` slot), the bus (reclaims per dispatch), or a per-iteration
-  child locus. Zero corpus false positives. Type-aware String-concat sites
-  remain deferred. See `notes/memory-bound-proofs.md`.
+  child locus. It also flags an **insert into a growing collection** —
+  `v.push(x)` / `m.set(x)` where the receiver's declared type is a
+  `@form(vec)` / `@form(hashmap)` locus — in an unbounded context; the
+  backing buffer grows with population and frees only at dissolve. A
+  `@form(ring_buffer)` / `@form(lru_cache)` is cap-bounded and excluded.
+  (Detection reads *declared* receiver types — params, typed `let`s, locus
+  param fields — not inferred ones.) Zero corpus false positives. Type-aware
+  String-concat sites and untyped-receiver collection inserts remain
+  deferred. See `notes/memory-bound-proofs.md`.
 - **Resource-budget tracking (item 5)** — fully shipped, opt-in. A static
   **count** of pinned threads / cooperative pools / bus subjects /
   fd-acquisition sites (fd-opening calls *and* held-fd `Listener` /

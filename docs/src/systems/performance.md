@@ -92,7 +92,7 @@ into `self`, a connection child left resident — have a static
 shape, and `hale check` flags them before you ever measure RSS.
 These are advisory warnings, not build failures:
 
-- **On by default**, `hale check` flags an allocation that
+- `hale check app.hl --warn-unbounded-alloc` flags an allocation that
   accumulates without bound: a struct / array / bytes value created
   in a per-message bus handler (or a runtime-bounded loop) that
   escapes into `self`, where it lives until the locus dissolves —
@@ -102,8 +102,21 @@ These are advisory warnings, not build failures:
   instead of replacing the whole value, or the moves from this
   chapter — a capacity-bounded `@form`, route it over the bus, or a
   per-iteration child. A `while i < N { … }` counter with a constant
-  bound is *proven* bounded and left alone. `--no-warn-unbounded-alloc`
-  opts out.
+  bound is *proven* bounded and left alone. It's opt-in because a bound
+  *per epoch* only matters for a long-lived process — a script that
+  allocates and exits owes it nothing. Annotate the long-lived locus
+  `@bounded` to get the check on every `hale check` without the flag,
+  and `@unbounded` (on a `fn` or a lifecycle hook) to acknowledge an
+  intentional accumulation and silence it.
+- The same check flags an **insert into a growing collection** —
+  `v.push(x)` / `m.set(x)` where `v` / `m` is a `@form(vec)` or
+  `@form(hashmap)` — when it runs in an unbounded context. The backing
+  buffer grows with population and frees only at dissolve, so a push
+  per message accumulates. A `@form(ring_buffer)` / `@form(lru_cache)`
+  is cap-bounded and never flagged; switching to one (or bounding the
+  loop) is the fix. (Detection reads the receiver's *declared* type, so
+  it sees `fn f(v: IntVec)` and `self.buf: IntVec` but not an untyped
+  `let`.)
 - `hale check app.hl --warn-resource-leak` is the same idea for file
   descriptors: an `open` / `connect` / `accept` whose result is
   stored resident in an unbounded context, so fds pile up.
