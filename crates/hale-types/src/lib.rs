@@ -308,10 +308,13 @@ mod flat_shapeable_tests {
     }
 
     #[test]
-    fn flat_for_fixed_size_array_of_flat() {
+    fn not_flat_for_fixed_size_array() {
+        // A fixed-size array is stored out-of-line (the field is a pointer,
+        // not inline bytes), so it is NOT memcpy-flat — a raw copy across a
+        // zero-copy / shm boundary would share a dangling pointer.
         with_scope("fn main() {}", |s| {
             let ty = Ty::Array(Box::new(Ty::Prim(PrimType::Int)), Some(8));
-            assert!(is_flat_shapeable(&ty, s));
+            assert!(!is_flat_shapeable(&ty, s));
         });
     }
 

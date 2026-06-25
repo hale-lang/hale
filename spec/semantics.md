@@ -1255,10 +1255,21 @@ The typechecker validates three classes of constraint issue
 
 3. **Payload-shape compatibility.** `zero_copy` requires the
    topic's payload to satisfy `is_flat_shapeable` — every
-   leaf must be a fixed-layout primitive, fixed-size array of
-   flat-shapeable, or struct whose fields are all
-   flat-shapeable. String, Bytes, BytesView, StringView, and
-   unbounded arrays are variadic and fail the predicate.
+   leaf must be a fixed-layout primitive or a struct whose
+   fields are all flat-shapeable. String, Bytes, BytesView,
+   StringView fail the predicate (heap-shaped / fat-pointer),
+   and so do **arrays — fixed- or unbounded-size**: codegen
+   stores an array field out-of-line (the field is a pointer,
+   not the inline bytes), so a raw memcpy of the value would
+   share a pointer that dangles across the zero-copy / shm
+   boundary — a cross-process use-after-free. The binding is
+   rejected at typecheck with a diagnostic naming the offending
+   shape, rather than compiling to a runtime segfault. (Inlining
+   array fields for flat payloads — which would let fixed-size
+   arrays be `zero_copy`-eligible again — is a future codegen
+   change; until then, use only fixed-size scalar fields in a
+   `zero_copy` payload, or send variable data as `Bytes`/a
+   `layout:`-bound `BytesView` raw frame.)
 
 Slot-locus codegen and the `shm_ring(...)` transport variant
 that actually satisfies `zero_copy` land in subsequent K

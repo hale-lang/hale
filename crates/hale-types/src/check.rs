@@ -2484,8 +2484,12 @@ fn check_binding_constraints(
                     span,
                     format!(
                         "binding for topic `{}` requires `zero_copy` but \
-                         payload type `{}` is not flat-shapeable (contains \
-                         String, Bytes, or other variable-size fields)",
+                         payload type `{}` is not flat-shapeable — it \
+                         contains a String, Bytes, or fixed-size array \
+                         field, whose storage is out-of-line (a pointer), \
+                         so a raw memcpy would share a pointer that dangles \
+                         across the zero-copy boundary. Use only fixed-size \
+                         scalar fields in a `zero_copy` payload",
                         entry.topic.name,
                         topic.payload.display()
                     ),
