@@ -30,6 +30,12 @@
       "title": "Errors in the type",
       "blurb": "No exceptions — a call that can fail returns fallible(E), and you must address it right at the call site with `or` (a default, `or raise` to propagate, or hand it off). Parsing numbers, with defaults and a fallback chain.",
       "mode": "batch"
+    },
+    {
+      "name": "collections",
+      "title": "Collections (@form)",
+      "blurb": "No Vec<T> ceremony — a collection is a locus with a @form annotation, and @form(vec) synthesizes push/get/pop/len/is_empty on it. `get` is fallible (out-of-range), addressed with `or`. Running as WebAssembly in your browser.",
+      "mode": "batch"
     }
   ]
 }
