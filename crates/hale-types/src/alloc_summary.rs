@@ -69,6 +69,12 @@ pub enum AllocKind {
     ArrayLit,
     ArrayRepeat,
     BytesLit,
+    /// Phase D / D2: an insert into a growing `@form(vec | hashmap)` slot
+    /// (`v.push(x)` / `m.set(x)`). Detected when the receiver's *declared*
+    /// type resolves to such a form locus. The collection's backing buffer
+    /// grows with population and frees only at dissolve — so an insert in
+    /// an unbounded context accumulates. The string is the form name.
+    CollectionInsert(String),
 }
 
 impl AllocKind {
@@ -78,7 +84,31 @@ impl AllocKind {
             AllocKind::ArrayLit => "array-literal".to_string(),
             AllocKind::ArrayRepeat => "array-repeat".to_string(),
             AllocKind::BytesLit => "bytes-literal".to_string(),
+            AllocKind::CollectionInsert(form) => format!("{}-insert", form),
         }
+    }
+}
+
+/// Phase D / D2: the `@form(...)` names whose inserts grow without bound
+/// (backing buffer grows with population, frees only at dissolve). A
+/// `ring_buffer` / `lru_cache` is cap-bounded and excluded.
+fn form_grows(form_name: &str) -> bool {
+    matches!(form_name, "vec" | "hashmap")
+}
+
+/// Phase D / D2: the method names that *insert* into a collection (vs read
+/// it). Gated by `form_grows` on the receiver's form, so a `get`/`len`/`pop`
+/// never counts.
+fn is_insert_method(method: &str) -> bool {
+    matches!(method, "push" | "set" | "insert" | "add")
+}
+
+/// The unqualified name of a `Named` type expression (`SegVec` from
+/// `path::to::SegVec`), or `None` for primitives / arrays / etc.
+fn type_expr_name(te: &TypeExpr) -> Option<String> {
+    match te {
+        TypeExpr::Named { path, .. } => path.segments.last().map(|s| s.name.clone()),
+        _ => None,
     }
 }
 
@@ -208,6 +238,11 @@ pub struct AllocSite {
     /// trip count.
     pub in_unbounded_loop: bool,
     pub reclaim: ReclaimScope,
+    /// Phase D / D1: when this allocation is stored straight into a
+    /// `self.<field>` (a whole-value replace, `StoredToSelf`), the field
+    /// name. `None` for non-self escapes and for indexed in-place writes.
+    /// The solver (D2) uses it to ask whether `<field>` is a capacity slot.
+    pub target_field: Option<String>,
     pub span: Span,
 }
 
@@ -251,6 +286,12 @@ pub struct CallEdge {
     /// notes/resource-budgets.md; also lets #1 see a factory call whose
     /// result escapes when the callee body is external/unresolved.)
     pub escape: Escape,
+    /// Phase D / D1: when the call is a method on a `self.<slot>` receiver
+    /// (`self.entries.acquire()`, `self.items.alloc()`), the slot name.
+    /// `None` for free fns, `self`-methods, and form methods (`self.push`,
+    /// where the slot is implicit from `@form`). The solver (D2) pairs this
+    /// with the method name + `LocusShape` to classify a slot insert.
+    pub receiver_slot: Option<String>,
     pub span: Span,
 }
 
@@ -332,10 +373,70 @@ pub struct FnSummary {
     pub loops: Vec<LoopInfo>,
 }
 
+/// A distilled view of a locus's storage shape (GH #18 item 1, Phase D —
+/// D1 infra). The bound solver reads this to decide which storage slot an
+/// escaping allocation lands in and how that slot bounds it:
+///
+/// - **slot 0** — the locus's own bump Arena (no entry here; the default).
+/// - **slots 1..N** — `capacity { pool/heap … }` slots, optionally fronted
+///   by a `@form`. `pool` recycles (bounded-by-balanced-release); `heap`
+///   grows; `@form(ring_buffer)` is cap-bounded; `@form(vec)` /
+///   `@form(hashmap)` grow.
+///
+/// D1 only *captures* this — no verdict reads it yet (that's D2).
+#[derive(Debug, Clone, Default)]
+pub struct LocusShape {
+    pub name: String,
+    pub capacity_slots: Vec<SlotShape>,
+    pub form: Option<FormShape>,
+    /// `: projection recognition(cap = N, …)` — a hard static cap on
+    /// *child-entity* count (fed by `accept`). Recorded for completeness;
+    /// the value-allocation proof reads the capacity-data slots, not this
+    /// (entity-count bounding is a separate analysis).
+    pub recognition_cap: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SlotShape {
+    pub name: String,
+    pub kind: CapacitySlotKind,
+}
+
+#[derive(Debug, Clone)]
+pub struct FormShape {
+    pub name: String,
+    /// A `cap = N` form-arg, if a literal int. NOTE: per `spec/forms.md`
+    /// this is an *initial-size hint* for vec/hashmap (not a bound); it is
+    /// a real cap for ring_buffer. The solver (D2) interprets it per form.
+    pub cap: Option<i64>,
+}
+
 /// The bundle-wide allocation summary + call graph.
 #[derive(Debug, Clone, Default)]
 pub struct AllocSummary {
     pub fns: BTreeMap<FnKey, FnSummary>,
+    /// GH #18 item 1: loci carrying `@bounded` — their leak sites are
+    /// reported even without the `--warn-unbounded-alloc` survey flag
+    /// (the in-source opt-in).
+    pub bounded_loci: BTreeSet<String>,
+    /// Fns carrying `@unbounded` — an acknowledged-intentional
+    /// accumulation. Their leak sites are dropped entirely (the
+    /// greppable carve-out), even under the survey flag.
+    pub unbounded_fns: BTreeSet<FnKey>,
+    /// Per-locus storage shape (Phase D / D1) — capacity slots, `@form`,
+    /// projection cap. Keyed by locus name.
+    pub locus_shapes: BTreeMap<String, LocusShape>,
+}
+
+impl AllocSummary {
+    /// Is this site's owning fn inside a `@bounded` locus? Drives
+    /// "report by default" without the survey flag.
+    pub fn owner_is_bounded_scope(&self, owner: &FnKey) -> bool {
+        owner
+            .locus
+            .as_ref()
+            .is_some_and(|l| self.bounded_loci.contains(l))
+    }
 }
 
 /// Why a site's final verdict is unbounded — the diagnostic anchor.
@@ -424,6 +525,12 @@ impl AllocSummary {
         let unbounded = self.unbounded_invoked();
         let mut out = Vec::new();
         for f in self.fns.values() {
+            // `@unbounded` is the acknowledged carve-out — its sites never
+            // surface, with or without the survey flag, in or out of a
+            // `@bounded` locus.
+            if self.unbounded_fns.contains(&f.key) {
+                continue;
+            }
             for s in &f.sites {
                 if self.final_verdict(&f.key, s, &unbounded) == SiteVerdict::AccumulatesUnbounded {
                     let reason = if matches!(s.verdict(), SiteVerdict::AccumulatesUnbounded) {
@@ -448,7 +555,7 @@ impl AllocSummary {
     pub fn render(&self) -> String {
         let unbounded = self.unbounded_invoked();
         let mut out = String::new();
-        out.push_str("# allocation summary (GH #18 item 1, steps 1-3)\n");
+        out.push_str("# allocation summary (GH #18 item 1, steps 1-3 + D1 slot shape)\n");
         let entries: Vec<&FnSummary> = self.fns.values().filter(|f| f.entry.is_some()).collect();
         out.push_str(&format!(
             "# {} fns, {} entry points, {} invoked-unboundedly\n\n",
@@ -456,6 +563,36 @@ impl AllocSummary {
             entries.len(),
             unbounded.len()
         ));
+        // D1: per-locus storage shape — the capacity slots, `@form`, and
+        // projection cap the bound solver (D2) will read.
+        for shape in self.locus_shapes.values() {
+            if shape.capacity_slots.is_empty()
+                && shape.form.is_none()
+                && shape.recognition_cap.is_none()
+            {
+                continue;
+            }
+            out.push_str(&format!("locus {} [shape]\n", shape.name));
+            for slot in &shape.capacity_slots {
+                let kind = match slot.kind {
+                    CapacitySlotKind::Pool => "pool",
+                    CapacitySlotKind::Heap => "heap",
+                };
+                out.push_str(&format!("    slot  {} ({})\n", slot.name, kind));
+            }
+            if let Some(form) = &shape.form {
+                let cap = form.cap.map(|c| format!(", cap={}", c)).unwrap_or_default();
+                out.push_str(&format!("    form  @form({}{})\n", form.name, cap));
+            }
+            if let Some(cap) = shape.recognition_cap {
+                out.push_str(&format!("    proj  recognition(cap={})\n", cap));
+            }
+        }
+        if !self.locus_shapes.values().all(|s| {
+            s.capacity_slots.is_empty() && s.form.is_none() && s.recognition_cap.is_none()
+        }) {
+            out.push('\n');
+        }
         for f in self.fns.values() {
             let mut tags = Vec::new();
             if let Some(e) = f.entry {
@@ -489,14 +626,20 @@ impl AllocSummary {
                 } else {
                     ""
                 };
+                let field = s
+                    .target_field
+                    .as_ref()
+                    .map(|f| format!(" ->self.{}", f))
+                    .unwrap_or_default();
                 out.push_str(&format!(
-                    "    alloc {:<16} {:<20} {:<22} {:<22} @{}..{}{}\n",
+                    "    alloc {:<16} {:<20} {:<22} {:<22} @{}..{}{}{}\n",
                     s.kind.label(),
                     s.escape.label(),
                     v.label(),
                     s.reclaim.label(),
                     s.span.start.0,
                     s.span.end.0,
+                    field,
                     flag
                 ));
             }
@@ -505,11 +648,17 @@ impl AllocSummary {
                     Callee::Resolved(k) => k.display(),
                     Callee::Unresolved(n) => format!("<unresolved: {}>", n),
                 };
+                let slot = c
+                    .receiver_slot
+                    .as_ref()
+                    .map(|s| format!(" recv=self.{}", s))
+                    .unwrap_or_default();
                 out.push_str(&format!(
-                    "    call  {} loop_depth={} result={}\n",
+                    "    call  {} loop_depth={} result={}{}\n",
                     tgt,
                     c.loop_depth,
-                    c.escape.label()
+                    c.escape.label(),
+                    slot
                 ));
             }
         }
@@ -523,8 +672,18 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
     // Phase 1 — collect every body with its key + entry classification.
     // For loci we first gather the set of bus-handler method names so a
     // method referenced by `subscribe ... -> handler` is tagged BusHandler.
-    let mut bodies: Vec<(FnKey, Block, Option<EntryKind>, Option<String>)> = Vec::new();
+    // The trailing `Vec<(String, String)>` seeds each body's var→type map
+    // from its params (D2).
+    type BodyEntry = (FnKey, Block, Option<EntryKind>, Option<String>, Vec<(String, String)>);
+    let mut bodies: Vec<BodyEntry> = Vec::new();
     let mut known: BTreeSet<FnKey> = BTreeSet::new();
+    // GH #18 item 1 — the `@bounded` / `@unbounded` opt-in/carve-out sets.
+    let mut bounded_loci: BTreeSet<String> = BTreeSet::new();
+    let mut unbounded_fns: BTreeSet<FnKey> = BTreeSet::new();
+    // Phase D / D1 — the per-locus storage shape.
+    let mut locus_shapes: BTreeMap<String, LocusShape> = BTreeMap::new();
+    // Phase D / D2 — per-locus param field → declared type name.
+    let mut locus_field_types: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
 
     for program in programs {
         for item in &program.items {
@@ -532,11 +691,19 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
                 TopDecl::Fn(decl) => {
                     let key = FnKey::free_fn(decl.name.name.clone());
                     let entry = if decl.name.name == "main" { Some(EntryKind::Main) } else { None };
+                    if decl.unbounded {
+                        unbounded_fns.insert(key.clone());
+                    }
                     known.insert(key.clone());
-                    bodies.push((key, decl.body.clone(), entry, None));
+                    bodies.push((key, decl.body.clone(), entry, None, param_var_types(&decl.params)));
                 }
                 TopDecl::Locus(l) => {
                     let locus = l.name.name.clone();
+                    if l.bounded {
+                        bounded_loci.insert(locus.clone());
+                    }
+                    locus_shapes.insert(locus.clone(), locus_shape_of(l));
+                    locus_field_types.insert(locus.clone(), locus_param_field_types(l));
                     let handlers = bus_handler_names(l);
                     for member in &l.members {
                         match member {
@@ -547,14 +714,32 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
                                 } else {
                                     None
                                 };
+                                if decl.unbounded {
+                                    unbounded_fns.insert(key.clone());
+                                }
                                 known.insert(key.clone());
-                                bodies.push((key, decl.body.clone(), entry, Some(locus.clone())));
+                                bodies.push((
+                                    key,
+                                    decl.body.clone(),
+                                    entry,
+                                    Some(locus.clone()),
+                                    param_var_types(&decl.params),
+                                ));
                             }
                             LocusMember::Lifecycle(lc) => {
                                 let (name, entry) = lifecycle_key(lc.kind);
                                 let key = FnKey::method(locus.clone(), name);
+                                if lc.unbounded {
+                                    unbounded_fns.insert(key.clone());
+                                }
                                 known.insert(key.clone());
-                                bodies.push((key, lc.body.clone(), Some(entry), Some(locus.clone())));
+                                bodies.push((
+                                    key,
+                                    lc.body.clone(),
+                                    Some(entry),
+                                    Some(locus.clone()),
+                                    param_var_types(&lc.params),
+                                ));
                             }
                             _ => {}
                         }
@@ -565,10 +750,21 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
         }
     }
 
+    // D2: type name → `@form(...)` name, for receiver-form lookup.
+    let form_of: BTreeMap<String, String> = locus_shapes
+        .iter()
+        .filter_map(|(name, shape)| shape.form.as_ref().map(|f| (name.clone(), f.name.clone())))
+        .collect();
+    let empty_fields: BTreeMap<String, String> = BTreeMap::new();
+
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
-    for (key, body, entry, enclosing_locus) in &bodies {
+    for (key, body, entry, enclosing_locus, param_types) in &bodies {
         let escaping = collect_escaping_names(body);
+        let field_types = enclosing_locus
+            .as_ref()
+            .and_then(|l| locus_field_types.get(l))
+            .unwrap_or(&empty_fields);
         let mut w = Walker {
             sites: Vec::new(),
             calls: Vec::new(),
@@ -578,6 +774,10 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
             known: &known,
             loop_stack: Vec::new(),
             fn_body: body,
+            store_target: None,
+            var_types: param_types.iter().cloned().collect(),
+            field_types,
+            form_of: &form_of,
         };
         w.walk_block(body, 0, Escape::Local);
         summary.fns.insert(
@@ -591,17 +791,90 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
             },
         );
     }
+    summary.bounded_loci = bounded_loci;
+    summary.unbounded_fns = unbounded_fns;
+    summary.locus_shapes = locus_shapes;
     summary
 }
 
+/// D2: a fn's params as (name, declared-type-name) pairs — the seed for
+/// the var→type map (only `Named` types; primitives/arrays are skipped).
+fn param_var_types(params: &[Param]) -> Vec<(String, String)> {
+    params
+        .iter()
+        .filter_map(|p| type_expr_name(&p.ty).map(|t| (p.name.name.clone(), t)))
+        .collect()
+}
+
+/// D2: a locus's `params { … }` fields as field → declared-type-name, so a
+/// `self.<field>.push(x)` can resolve `<field>`'s form.
+fn locus_param_field_types(l: &LocusDecl) -> BTreeMap<String, String> {
+    let mut m = BTreeMap::new();
+    for member in &l.members {
+        if let LocusMember::Params(pb) = member {
+            for pd in &pb.params {
+                if let Some(tn) = pd.ty.as_ref().and_then(type_expr_name) {
+                    m.insert(pd.name.name.clone(), tn);
+                }
+            }
+        }
+    }
+    m
+}
+
+/// Phase D / D1: distill a `LocusDecl` into the storage shape the bound
+/// solver reads — capacity slots, `@form`, and the recognition projection
+/// cap. Pure AST read; no type inference.
+fn locus_shape_of(l: &LocusDecl) -> LocusShape {
+    let mut capacity_slots = Vec::new();
+    for m in &l.members {
+        if let LocusMember::Capacity(cb) = m {
+            for slot in &cb.slots {
+                capacity_slots.push(SlotShape {
+                    name: slot.name.name.clone(),
+                    kind: slot.kind,
+                });
+            }
+        }
+    }
+    let form = l.form.as_ref().map(|f| FormShape {
+        name: f.name.name.clone(),
+        cap: f.args.iter().find_map(|a| {
+            if a.name.name == "cap" {
+                if let Expr::Literal(Literal::Int(n), _) = &a.value {
+                    return Some(*n);
+                }
+            }
+            None
+        }),
+    });
+    let recognition_cap = l.annotations.iter().find_map(|a| match a {
+        LocusAnnotation::Projection(ProjectionClass::Recognition(Some(p))) => Some(p.cap),
+        _ => None,
+    });
+    LocusShape {
+        name: l.name.name.clone(),
+        capacity_slots,
+        form,
+        recognition_cap,
+    }
+}
+
 /// Bound-solver diagnostics: a warning per unbounded-accumulation site.
-/// Opt-in (the corpus shows zero false positives, but allocation patterns
-/// are common enough that this is gated until validated for default-on).
-pub fn unbounded_alloc_diags(programs: &[&Program]) -> Vec<Diag> {
+///
+/// `include_all` selects the scope (GH #18 item 1, Phase B):
+/// - `false` (default `hale check`): only sites inside a `@bounded` locus —
+///   the in-source opt-in. A program with no `@bounded` locus is silent.
+/// - `true` (`--warn-unbounded-alloc`): every site, the whole-program
+///   survey.
+///
+/// Either way, `@unbounded`-fn sites are already dropped at `leak_sites()`.
+pub fn unbounded_alloc_diags(programs: &[&Program], include_all: bool) -> Vec<Diag> {
     let summary = summarize_programs(programs);
     summary
         .leak_sites()
         .iter()
+        .filter(|ls| include_all || summary.owner_is_bounded_scope(&ls.owner))
         .map(|ls| {
             let where_ = match ls.reason {
                 LeakReason::InUnboundedLoop => "inside an unbounded loop",
@@ -670,16 +943,75 @@ struct Walker<'a> {
     /// `while v < N` counter is const-bounded (const init + only positive
     /// const increments anywhere in the fn).
     fn_body: &'a Block,
+    /// Phase D / D1: the `self.<field>` currently being assigned, set around
+    /// the RHS walk of a `self.<field> = …` statement so an escaping
+    /// allocation in that RHS records which field it lands in.
+    store_target: Option<String>,
+    /// Phase D / D2 (lite): local var / param name → declared type *name*,
+    /// seeded from this fn's params and grown by typed `let`s. Lets a
+    /// `v.push(x)` resolve `v`'s type to ask whether it is a growing form.
+    var_types: BTreeMap<String, String>,
+    /// The enclosing locus's param fields → declared type name, so a
+    /// `self.<field>.push(x)` resolves `<field>`'s type the same way.
+    field_types: &'a BTreeMap<String, String>,
+    /// Every locus's `@form(...)` name, keyed by locus type name — the
+    /// lookup `var_types`/`field_types` feed into `form_grows`.
+    form_of: &'a BTreeMap<String, String>,
 }
 
 impl<'a> Walker<'a> {
     fn push_site(&mut self, kind: AllocKind, escape: Escape, depth: u32, span: Span) {
+        // Only a StoredToSelf escape carries a target field — that's the
+        // `self.<field> = <alloc>` whole-value replace the solver bounds.
+        let target_field = if escape == Escape::StoredToSelf {
+            self.store_target.clone()
+        } else {
+            None
+        };
         self.sites.push(AllocSite {
             kind,
             escape,
             loop_depth: depth,
             in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
             reclaim: ReclaimScope::of(escape),
+            target_field,
+            span,
+        });
+    }
+
+    /// D2: if `recv` is a value whose *declared* type is a growing
+    /// `@form(vec | hashmap)` locus, the form name. Resolves a bare var via
+    /// `var_types` and a `self.<field>` via `field_types`.
+    fn growing_form_of_receiver(&self, recv: &Expr) -> Option<String> {
+        let ty_name = match recv {
+            Expr::Ident(v) => self.var_types.get(&v.name)?,
+            Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. }
+                if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
+            {
+                self.field_types.get(&name.name)?
+            }
+            _ => return None,
+        };
+        let form = self.form_of.get(ty_name)?;
+        if form_grows(form) {
+            Some(form.clone())
+        } else {
+            None
+        }
+    }
+
+    /// D2: record a growing-collection insert as an accumulating site. It
+    /// persists into the collection (reclaim at the owner's dissolve), so
+    /// in an unbounded context it accumulates — same verdict path as a
+    /// `StoredToSelf` value alloc.
+    fn push_collection_insert(&mut self, form: String, depth: u32, span: Span) {
+        self.sites.push(AllocSite {
+            kind: AllocKind::CollectionInsert(form),
+            escape: Escape::StoredToSelf,
+            loop_depth: depth,
+            in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
+            reclaim: ReclaimScope::EnclosingLocus,
+            target_field: None,
             span,
         });
     }
@@ -697,7 +1029,12 @@ impl<'a> Walker<'a> {
 
     fn walk_stmt(&mut self, stmt: &Stmt, depth: u32) {
         match stmt {
-            Stmt::Let { name, value, .. } => {
+            Stmt::Let { name, ty, value, .. } => {
+                // D2: a typed `let v: T = …` extends the var→type map so a
+                // later `v.push(x)` can resolve `v`'s form.
+                if let Some(tn) = ty.as_ref().and_then(type_expr_name) {
+                    self.var_types.insert(name.name.clone(), tn);
+                }
                 let esc = self.escaping.get(&name.name).copied().unwrap_or(Escape::Local);
                 self.walk_expr(value, depth, esc);
             }
@@ -708,7 +1045,16 @@ impl<'a> Walker<'a> {
                 } else {
                     self.escaping.get(&target.head.name).copied().unwrap_or(Escape::Local)
                 };
+                // D1: record the `self.<field>` being assigned for the RHS
+                // walk — but only for a whole-field replace (`self.f = …`),
+                // not an indexed in-place write (`self.f[i] = …`, which has
+                // a trailing `Index` segment and allocates nothing new).
+                let prev = self.store_target.take();
+                if esc == Escape::StoredToSelf {
+                    self.store_target = self_replace_field(target);
+                }
                 self.walk_expr(value, depth, esc);
+                self.store_target = prev;
             }
             Stmt::Return(Some(e), _) => self.walk_expr(e, depth, Escape::Returned),
             Stmt::Return(None, _) => {}
@@ -828,6 +1174,17 @@ impl<'a> Walker<'a> {
             Expr::Unary { operand, .. } => self.walk_expr(operand, depth, Escape::Local),
             Expr::Call { callee, args, span } => {
                 self.record_call(callee, *span, depth, escape);
+                // D2: a `recv.<insert>(x)` where `recv`'s declared type is a
+                // growing form is itself an accumulating allocation.
+                if let Expr::Field { receiver, name, .. }
+                | Expr::Path2 { receiver, name, .. } = callee.as_ref()
+                {
+                    if is_insert_method(&name.name) {
+                        if let Some(form) = self.growing_form_of_receiver(receiver) {
+                            self.push_collection_insert(form, depth, *span);
+                        }
+                    }
+                }
                 // The callee receiver may itself allocate; its result
                 // doesn't escape via this site.
                 match callee.as_ref() {
@@ -906,8 +1263,40 @@ impl<'a> Walker<'a> {
             loop_depth: depth,
             in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
             escape,
+            receiver_slot: self_slot_receiver(callee),
             span,
         });
+    }
+}
+
+/// D1: the `self.<field>` field name of a whole-value replace
+/// (`self.f = …`), or `None` for an indexed in-place write (`self.f[i] = …`)
+/// or a nested store (`self.f.g = …`). A clean top-level whole-field
+/// replace is `tail == [Field(name)]`.
+fn self_replace_field(target: &LValue) -> Option<String> {
+    if target.head.name != "self" {
+        return None;
+    }
+    match target.tail.as_slice() {
+        [LValueSeg::Field(f)] => Some(f.name.clone()),
+        _ => None,
+    }
+}
+
+/// D1: for a call whose callee is `self.<slot>.<method>(…)`, the slot name.
+/// `None` for free fns, `self`-methods, and form methods (`self.push`).
+fn self_slot_receiver(callee: &Expr) -> Option<String> {
+    let (Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. }) = callee else {
+        return None;
+    };
+    match receiver.as_ref() {
+        Expr::Field { receiver: inner, name, .. }
+        | Expr::Path2 { receiver: inner, name, .. }
+            if matches!(inner.as_ref(), Expr::KwSelf(_)) =>
+        {
+            Some(name.name.clone())
+        }
+        _ => None,
     }
 }
 
@@ -1487,8 +1876,273 @@ mod tests {
             fn main() { }
         "#;
         let program = hale_syntax::parse_source(src).expect("parse");
-        let diags = unbounded_alloc_diags(&[&program]);
+        // Survey mode (`--warn-unbounded-alloc`) reports the leak even
+        // though locus `C` carries no `@bounded` opt-in.
+        let diags = unbounded_alloc_diags(&[&program], true);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("unbounded allocation"));
+    }
+
+    #[test]
+    fn bounded_locus_reports_without_the_survey_flag() {
+        // The same leak, but the locus opts in with `@bounded`. Now the
+        // default (non-survey) scope reports it.
+        let src = r#"
+            type Q { a: Int; }
+            @bounded locus C { run { while true { let q = Q { a: 1 }; } } }
+            fn main() { }
+        "#;
+        let program = hale_syntax::parse_source(src).expect("parse");
+        let scoped = unbounded_alloc_diags(&[&program], false);
+        assert_eq!(scoped.len(), 1, "@bounded locus reports by default");
+        assert!(scoped[0].message.contains("unbounded allocation"));
+    }
+
+    #[test]
+    fn unbounded_fn_carves_out_even_in_a_bounded_locus() {
+        // `@bounded` on the locus opts in; `@unbounded` on the method opts
+        // that one method back out — silent in survey mode AND scoped mode.
+        let src = r#"
+            type Q { a: Int; }
+            @bounded locus C {
+                @unbounded run { while true { let q = Q { a: 1 }; } }
+            }
+            fn main() { }
+        "#;
+        let program = hale_syntax::parse_source(src).expect("parse");
+        assert!(
+            unbounded_alloc_diags(&[&program], true).is_empty(),
+            "@unbounded suppresses the site under the survey flag"
+        );
+        assert!(
+            unbounded_alloc_diags(&[&program], false).is_empty(),
+            "@unbounded suppresses the site in @bounded scope too"
+        );
+    }
+
+    // === Phase D / D1: storage-shape + slot/field identity capture =====
+
+    #[test]
+    fn d1_captures_capacity_slots_and_form() {
+        let src = r#"
+            type Entry { k: Int; }
+            @form(hashmap, cap = 1024)
+            locus Reg { capacity { pool entries of Entry indexed_by k; } }
+            locus Plain { capacity { heap log of Entry; } }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let reg = s.locus_shapes.get("Reg").expect("Reg shape");
+        assert_eq!(reg.capacity_slots.len(), 1);
+        assert_eq!(reg.capacity_slots[0].name, "entries");
+        assert!(matches!(reg.capacity_slots[0].kind, CapacitySlotKind::Pool));
+        let form = reg.form.as_ref().expect("@form captured");
+        assert_eq!(form.name, "hashmap");
+        assert_eq!(form.cap, Some(1024), "cap form-arg captured as a literal");
+
+        let plain = s.locus_shapes.get("Plain").expect("Plain shape");
+        assert!(matches!(plain.capacity_slots[0].kind, CapacitySlotKind::Heap));
+        assert!(plain.form.is_none());
+    }
+
+    #[test]
+    fn d1_captures_recognition_cap() {
+        let src = r#"
+            type Leaf { v: Int; }
+            locus Coord : projection recognition(cap = 64, fixed_cell) {
+                contract { consume value: Int; }
+                accept(c: Leaf) { }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let coord = s.locus_shapes.get("Coord").expect("Coord shape");
+        assert_eq!(coord.recognition_cap, Some(64));
+    }
+
+    #[test]
+    fn d1_store_latest_records_target_field() {
+        let src = r#"
+            type Q { a: Int; }
+            locus C {
+                params { latest: Q = Q { a: 0 }; }
+                run { while true { self.latest = Q { a: 1 }; } }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::method("C", "run"));
+        let st = f.sites.iter().find(|s| matches!(s.kind, AllocKind::StructLit(_))).expect("struct");
+        assert_eq!(st.escape, Escape::StoredToSelf);
+        assert_eq!(
+            st.target_field.as_deref(),
+            Some("latest"),
+            "whole-value `self.latest = …` replace records the field"
+        );
+        // The verdict is unchanged by D1 — this is still a slot-0 leak.
+        assert_eq!(st.verdict(), SiteVerdict::AccumulatesUnbounded);
+    }
+
+    #[test]
+    fn d1_indexed_inplace_write_has_no_target_field() {
+        // An indexed in-place write allocates nothing; a *local* struct in
+        // the same body must not pick up a target field.
+        let src = r#"
+            type Q { a: Int; }
+            locus C {
+                params { recent: [Int; 4] = [0,0,0,0]; }
+                run {
+                    while true {
+                        self.recent[0] = 1;
+                        let q = Q { a: 2 };
+                    }
+                }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::method("C", "run"));
+        let st = f.sites.iter().find(|s| matches!(s.kind, AllocKind::StructLit(_))).expect("struct");
+        assert_eq!(st.escape, Escape::Local);
+        assert_eq!(st.target_field, None, "a local alloc has no self-field target");
+    }
+
+    #[test]
+    fn d1_slot_insert_records_receiver_slot() {
+        let src = r#"
+            type Q { a: Int; }
+            locus C {
+                capacity { heap log of Q; }
+                run { let c = self.log.alloc(); }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::method("C", "run"));
+        let call = f.calls.iter().find(|c| c.receiver_slot.is_some()).expect("slot call");
+        assert_eq!(call.receiver_slot.as_deref(), Some("log"));
+    }
+
+    // === Phase D / D2: growing-collection (@form vec/hashmap) inserts =====
+
+    fn insert_site(f: &FnSummary) -> Option<&AllocSite> {
+        f.sites.iter().find(|s| matches!(s.kind, AllocKind::CollectionInsert(_)))
+    }
+
+    #[test]
+    fn d2_vec_field_push_in_handler_is_unbounded() {
+        let src = r#"
+            @form(vec) locus IntVec { capacity { heap items of Int; } }
+            locus W {
+                params { buf: IntVec = IntVec { }; }
+                bus { subscribe "ev" as on_ev of type Int; }
+                fn on_ev(x: Int) { self.buf.push(x); }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::method("W", "on_ev"));
+        let site = insert_site(&f).expect("vec-insert site");
+        assert_eq!(site.kind, AllocKind::CollectionInsert("vec".into()));
+        // A per-message handler is an unbounded-invocation context.
+        let leaks = s.leak_sites();
+        assert!(
+            leaks.iter().any(|l| matches!(l.kind, AllocKind::CollectionInsert(_))),
+            "vec push in a per-message handler should be flagged"
+        );
+    }
+
+    #[test]
+    fn d2_vec_param_push_called_once_is_not_flagged() {
+        let src = r#"
+            @form(vec) locus IntVec { capacity { heap items of Int; } }
+            fn double_push(v: IntVec, n: Int) { v.push(n); v.push(n); }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::free_fn("double_push"));
+        // The insert is recorded (typed param resolved)…
+        assert!(insert_site(&f).is_some(), "param-typed vec push is detected");
+        // …but called once, not in a loop → not a leak.
+        assert_eq!(insert_site(&f).unwrap().verdict(), SiteVerdict::OncePerInvocation);
+        assert!(s.leak_sites().is_empty(), "a call-once push is bounded");
+    }
+
+    #[test]
+    fn d2_ring_buffer_push_is_not_flagged() {
+        // ring_buffer is cap-bounded — its push is not a growing insert.
+        let src = r#"
+            @form(ring_buffer, cap = 16) locus Ring { capacity { pool slots of Int; } }
+            locus W {
+                params { r: Ring = Ring { }; }
+                bus { subscribe "ev" as on_ev of type Int; }
+                fn on_ev(x: Int) { self.r.push(x); }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::method("W", "on_ev"));
+        assert!(insert_site(&f).is_none(), "ring_buffer push must not flag");
+        assert!(s.leak_sites().is_empty());
+    }
+
+    #[test]
+    fn d2_bounded_loop_push_is_not_a_leak() {
+        let src = r#"
+            @form(vec) locus IntVec { capacity { heap items of Int; } }
+            locus W {
+                params { buf: IntVec = IntVec { }; }
+                run { let mut i = 0; while i < 4 { self.buf.push(i); i = i + 1; } }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::method("W", "run"));
+        let site = insert_site(&f).expect("insert detected");
+        assert_eq!(
+            site.verdict(),
+            SiteVerdict::AccumulatesBoundedLoop,
+            "a const-bounded loop bounds the inserts"
+        );
+        assert!(s.leak_sites().is_empty());
+    }
+
+    #[test]
+    fn d2_user_method_named_push_on_non_form_locus_is_not_flagged() {
+        // `Segment` is a plain locus with a user `push` method — not a form.
+        // (The `54-geom-leading-edge` corpus shape.) Must not flag.
+        let src = r#"
+            locus Segment {
+                fn push(t: Int) { }
+            }
+            locus W {
+                params { seg: Segment = Segment { }; }
+                run { while true { self.seg.push(1); } }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::method("W", "run"));
+        assert!(insert_site(&f).is_none(), "user push on a non-form locus is not an insert");
+        assert!(s.leak_sites().is_empty());
+    }
+
+    #[test]
+    fn d2_typed_let_receiver_resolves() {
+        let src = r#"
+            @form(hashmap) locus Map { capacity { pool entries of Int; } }
+            locus W {
+                run {
+                    let m: Map = Map { };
+                    while true { m.set(1); }
+                }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::method("W", "run"));
+        let site = insert_site(&f).expect("typed-let hashmap insert detected");
+        assert_eq!(site.kind, AllocKind::CollectionInsert("hashmap".into()));
+        assert_eq!(site.verdict(), SiteVerdict::AccumulatesUnbounded);
     }
 }

@@ -181,7 +181,18 @@ locus_decl        = { locus_decorator } , [ "main" ] , "locus" , IDENTIFIER ,
 locus_decorator   = form_annotation
                   | locality_annotation
                   | export_annotation
+                  | bounded_annotation
                   ;
+
+(* GH #18 item 1 (memory-bound proofs): `@bounded` opts a locus into
+   the memory-bound proof — its bodies are checked for unbounded
+   allocations on every `hale check`, without the
+   `--warn-unbounded-alloc` survey flag. The in-source opt-in; the
+   `@unbounded` carve-out (see `fn_decorator` / `locus_member`)
+   silences a single fn or lifecycle hook inside it. `bounded` is a
+   contextual word recognized only after `@` in decorator position.
+   See `spec/verification.md`. *)
+bounded_annotation = "@" , "bounded" ;
 
 (* F.31 (2026-05-23): `schedule` removed from locus_annotation.
    Placement is a deployment seam; it lives in a `placement { }`
@@ -437,7 +448,10 @@ slot_kind         = "pool" | "heap" ;
    frees the locus. None are required; missing transitions use
    compiler-supplied defaults. *)
 
-lifecycle_decl    = lifecycle_keyword , [ "(" , [ param_list ] , ")" ] ,
+(* The optional `@unbounded` prefix (unbounded_annotation, § 13) is
+   the memory-bound-proof carve-out on a `run`-loop accumulation. *)
+lifecycle_decl    = [ unbounded_annotation ] ,
+                    lifecycle_keyword , [ "(" , [ param_list ] , ")" ] ,
                     [ "->" , type_expr ] , block ;
 lifecycle_keyword = "birth"
                   | "accept"
@@ -638,10 +652,20 @@ function_decl     = [ function_decorator ] ,
    name — a real-bodied top-level free fn, no-op on the native
    target. `export` is a reserved keyword; the two decorators are
    mutually exclusive (an import is not an export). See
-   `spec/ffi.md` § "WASM host interface". *)
-function_decorator = ffi_annotation | export_annotation ;
+   `spec/ffi.md` § "WASM host interface".
+
+   `@unbounded` (GH #18 item 1) acknowledges an intentionally-
+   unbounded fn, suppressing its memory-bound warnings (the
+   carve-out for a `@bounded` locus or the `--warn-unbounded-alloc`
+   survey). It also prefixes a locus member — a `function_decl` or a
+   `lifecycle_decl` (e.g. `@unbounded run { … }`) — inside a locus
+   body; `unbounded` is contextual, recognized only after `@`. See
+   `spec/verification.md`. *)
+function_decorator = ffi_annotation | export_annotation
+                   | unbounded_annotation ;
 ffi_annotation    = "@" , "ffi" , "(" , STRING_LIT , ")" ;
 export_annotation = "@" , "export" ;
+unbounded_annotation = "@" , "unbounded" ;
 
 (* v1.x-FORM-1: a fallible fn's return type is "value of T, or
    an error has occurred with payload P." Callers MUST address

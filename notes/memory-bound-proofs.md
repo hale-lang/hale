@@ -41,8 +41,35 @@ reuse.
 > per-handler flags). *Still deferred:* the `@unbounded` escape valve and
 > type-aware String-concat sites.
 >
-> **Default-on deliberately held (2026-06-10).** Considered promoting
-> `--warn-unbounded-alloc` to fire by default; kept opt-in. The 4 flags are
+> **Reverted to opt-in (2026-06-25).** The warning was promoted to
+> default-on (#122) but later reversed: per Hale's descent-curve stance,
+> a bound *per epoch* only means something for a long-lived process, so a
+> script that allocates and exits owes the proof nothing and pays nothing
+> by default. The warning is now opt-in via `--warn-unbounded-alloc`
+> (advisory; never fails the build), mirroring how `@locality` cache-tier
+> budgets are flag/annotation-gated. `--no-warn-unbounded-alloc` is an
+> accepted no-op for back-compat. The opt-in semantics are pinned by
+> `hale-cli` `unbounded_alloc_opt_in.rs`.
+>
+> **Phase B landed — `@bounded` / `@unbounded` (2026-06-25).** The
+> in-source opt-in: `@bounded locus L { … }` opts that locus into the
+> proof on every `hale check` (no flag); `@unbounded` on a `fn` or a
+> lifecycle hook (`@unbounded run { … }`) is the greppable carve-out that
+> silences one body's sites, in scoped mode AND under the survey flag.
+> `unbounded_alloc_diags(programs, include_all)` gates scope:
+> `include_all=false` reports only `@bounded`-locus sites (default check),
+> `true` is the whole-program survey (`--warn-unbounded-alloc`).
+> Implementation: `bounded: bool` on `LocusDecl`, `unbounded: bool` on
+> `FnDecl` + `LifecycleDecl`; `AllocSummary.{bounded_loci, unbounded_fns}`;
+> parser handles both as bare `@`-flags. **Severity is warning** — the
+> hard *error* contract for `@bounded` waits on the precision phases
+> (store-latest vs. append, `@form(cap)`) reaching zero in-scope FP.
+> Pinned by `hale-syntax` parser tests + `hale-cli` `bounded_annotation.rs`.
+> *Next: Phase C* — replace-vs-append refinement (RSS-validated).
+>
+> **Default-on deliberately held, then shipped, then reverted.** The
+> 2026-06-10 reasoning below is retained for context; the conclusion
+> (kept opt-in) is once again the shipped behavior. The 4 flags are
 > *true* positives but include legitimately bounded-by-design patterns —
 > `22-moving-average`'s `Window::on_sample` keeps a fixed 4-elem window;
 > per the reclamation model the *replaced* arrays aren't freed until
@@ -185,14 +212,71 @@ and validated against the corpus (the inverse check: every program the
 pass says is bounded should show flat RSS under the
 `high_volume_walk_bounded_rss`-style harness).
 
-## `@form(hashmap)` interaction (the issue's open question)
+## Bounded sinks live on the capacity/projection axis, NOT `@form` (2026-06-25)
 
-A `@form(hashmap, cap = N)` is a *bounded* sink for the cells themselves
-(fixed cap), but a cell with a `String`/array field is unbounded if that
-field grows per update (leak class 2). So the pass composes: the cell
-count is bounded by `cap`; the per-cell field allocations must themselves
-be bounded (a fixed-width scalar field is; an appended-to `String` field
-is not). The `@form` cap is an input to the solver, not a free pass.
+An earlier draft framed this as "`@form(hashmap, cap = N)` composition" —
+the `@form` cap as a bound the solver reads. **That is wrong**, and the
+spec says so plainly: `@form` is an *access discipline* (vec / hashmap /
+ring_buffer — picks a lowering + synthesizes methods), and
+`spec/forms.md` is explicit that *"discipline goes on the capacity slot,
+not in the annotation."* The `cap = N` that appears on
+`@form(hashmap, …, cap = N)` is *"an optional initial-size hint"*
+(forms.md), **not a bound** — the map still lazily grows. So `@form`
+bounds nothing; reading it for a bound is a category error.
+
+The bound lives on the **capacity/projection axis**, in three tiers:
+
+| Construct | Bound character |
+|---|---|
+| `: projection recognition(cap = N, fixed_cell)` | **Hard static cap.** N cells; overflow is a *runtime error*. `spec/memory.md` calls it "the one real cap." The clean bounded sink. |
+| `capacity { pool X of T; }` | Recyclable cells (chunked free-list, geometric growth capped at 4096/chunk). Bounded **iff** acquire/release is balanced — high-water tracks peak population, not a static N. |
+| `capacity { heap Y of T; }` / `@form(vec)` / `@form(hashmap)` | Individually freed at dissolve; grows with total population. Unbounded unless population is bounded. |
+
+### The organizing insight: bound model is per storage slot
+
+A locus's storage is an N-tuple of slots (`spec/memory.md` §"capacity
+slots"). The proof must route each *escaping* allocation to the slot it
+lands in and apply that slot's bound model:
+
+- **Slot 0 — the locus's own bump Arena.** Where `self.field = X{}`
+  value allocations land. Bump-allocated, reclaimed only at dissolve, so
+  a per-iteration store-latest **accumulates** — measured, see the Phase
+  C finding below. This slot is the `@bounded`/`@unbounded` story and the
+  store-latest (A/B) fork. No capacity construct governs it.
+- **Slots 1..N — capacity pool/heap + projection.** Where collections /
+  accepted-child entities live. Bound = the table above: `recognition`
+  cap is a hard static bound; `pool` is bounded-by-balanced-release;
+  `heap`/`vec`/`hashmap` grow with population.
+
+This also lines up with the entity-vs-data taxonomy: `recognition`
+(accept'd entities, hard `fixed_cell` cap) vs `@form`/`capacity` (data).
+
+### Phase C finding — store-latest is unbounded (measured 2026-06-25)
+
+The note had hypothesized a "replace-vs-append refinement" treating a
+store-latest (`self.x = …`) as *bounded*. **RSS measurement falsified
+it.** A `run()` loop doing a whole-value field replace each iteration
+(3M trips, runtime bound) over a baseline of ~55 MB:
+
+| variant | RSS | grows? |
+|---|---|---|
+| `self.recent[i] = v` (in-place indexed) | 55 MB | no — baseline |
+| `self.recent = [i,i,i,i]` (fixed `[Int;4]` replace) | 188 MB | **+133 MB** |
+| `self.h = Holder{…}` (flat all-scalar struct replace) | 96 MB | **+41 MB** |
+
+Whole-value field replacement bump-allocates a fresh value each iteration
+into slot 0; the replaced value is **not** reclaimed until dissolve —
+even for a fixed-size `[Int;4]`. The current model already flags exactly
+the growing cases and leaves in-place writes alone, so **the model is
+sound and there is no false positive to fix.** The "store-latest is
+bounded" refinement is **dropped as unsound.** Two follow-on directions
+remain open (the slot-0 fork): **(A)** lock the soundness with RSS
+regression tests + redirect precision effort to the capacity/projection
+axis; or **(B)** a *codegen* change making fixed-size value-type field
+assignment an in-place memcpy (no bump-alloc) so store-latest becomes
+genuinely bounded, then teach the model. A is analysis-faithful and
+cheap; B is a larger codegen-correctness effort that supersedes A's
+store-latest assertion.
 
 ## Scope boundaries
 
@@ -218,8 +302,52 @@ is not). The `@form` cap is an input to the solver, not a free pass.
 3. **Bound solver + `@unbounded`** — the escape-into-unbounded-context
    obligation, bounded loops/sinks, the diagnostic. Warning first (like
    the bus-graph checks shipped), error once the false-positive rate on
-   the corpus is zero.
-4. **`@form` composition** — the cap-as-input + per-cell-field bounds.
+   the corpus is zero. *(Shipped. Phase A made it opt-in via
+   `--warn-unbounded-alloc`; Phase B added the `@bounded` locus opt-in +
+   `@unbounded` carve-out — see the status block at the top.)*
+4. **Capacity/projection-aware slot bounding** *(was mislabeled "`@form`
+   composition")* — route each escaping allocation to the storage slot it
+   lands in and apply that slot's bound model: `recognition(cap = N)` is a
+   hard static bound; a `pool` slot is bounded-by-balanced-release; a
+   `heap` slot / `vec` / `hashmap` grows with population; slot 0 (the bump
+   Arena) accumulates a store-latest. Then compose per-cell field bounds
+   (a fixed-scalar cell field is bounded; an appended-to `String` field is
+   not). The bound is read from the **capacity block + projection class**,
+   never from `@form` (an access discipline that bounds nothing). See
+   "Bounded sinks live on the capacity/projection axis" above. Staged:
+   - **D1 (LANDED 2026-06-25) — the slot-shape scaffold.** A `LocusShape`
+     (capacity slots `[(name, kind)]`, `@form` + cap-arg, recognition cap)
+     distilled from each `LocusDecl` onto `AllocSummary.locus_shapes`;
+     `AllocSite.target_field` records the `self.<field>` of a whole-value
+     replace; `CallEdge.receiver_slot` records the `self.<slot>` of a slot
+     method call. Surfaced in `--dump-alloc-summary`. **No verdict change.**
+     The reusable infra for D2. Discovery finding: the walker previously
+     tagged slot-insert *arguments* `Local`, so collection growth
+     (`self.items.push(X{})`) is currently **undetected** — D2's job.
+   - **D2 (LANDED 2026-06-25) — growing-collection inserts.** A discovery
+     pass found the corpus inserts via `v.push(x)` on a *typed* receiver
+     (`v: IntVec`, `self.buf: IntVec`), not direct `self.<slot>.alloc()` —
+     so detection is **type-aware**, the same class as the deferred
+     String-concat. Chosen approach: **D2-lite** — a lightweight var→
+     *declared*-type map (fn params, typed `let`s, locus param fields)
+     matched against `locus_shapes[T].form`. A `push`/`set`/`insert`/`add`
+     whose receiver type is a `@form(vec | hashmap)` becomes a
+     `CollectionInsert` site (escape=self-store, reclaim@dissolve), so it
+     flows through the existing verdict path: flagged in an unbounded
+     context, bounded by a const loop, suppressed by `@unbounded`. A
+     `@form(ring_buffer | lru_cache)` is cap-bounded → not flagged; a user
+     `push` method on a *non-form* locus → not flagged (the
+     `54-geom-leading-edge` `Segment` shape, confirmed). **Zero corpus
+     false positives** (68 fixtures). RSS-validated: a 3M `@form(vec)`
+     push-of-32B-struct hits 210 MB vs a 55 MB no-push control (`lotus_vec_
+     push` grows a geometric `cap*2` buffer; `rss_bytes()` is peak/maxrss).
+     *Misses (deferred to a type-aware stage):* untyped `let`, reassignment,
+     return-of-form, and the clear/reset balance case (a vec cleared each
+     iteration is bounded-by-peak — opt-in gating + `@unbounded` absorb it).
+     (Recognition `cap=N` bounds *entity* count, fed by `accept` — a
+     separate analysis the value-alloc walker doesn't track.)
+   - **D3 — per-cell field bounds** (a bounded cell with a growing `String`
+     field). Optional; can defer.
 
 ## Risks
 

@@ -333,6 +333,7 @@ impl Parser {
         let mut form: Option<FormAnnotation> = None;
         let mut locality: Option<LocalityAnnotation> = None;
         let mut export_locus = false;
+        let mut bounded_locus = false;
         let mut leading_span: Option<Span> = None;
         loop {
             if !matches!(self.peek(), TokenKind::At) {
@@ -344,6 +345,13 @@ impl Parser {
             let is_locality =
                 matches!(&kind_tok, TokenKind::Ident(s) if s == "locality");
             let is_export = matches!(&kind_tok, TokenKind::Export);
+            // GH #18 item 1: `@bounded locus …` opts a locus into the
+            // memory-bound proof; `@unbounded fn …` carves a free fn
+            // out of it. Both are bare `@`-flags (no arglist).
+            let is_bounded =
+                matches!(&kind_tok, TokenKind::Ident(s) if s == "bounded");
+            let is_unbounded =
+                matches!(&kind_tok, TokenKind::Ident(s) if s == "unbounded");
             if is_export {
                 // WASM entry-inversion. `@export fn …` is a free-fn
                 // module export; `@export locus …` is the persistent
@@ -406,6 +414,52 @@ impl Parser {
                 fn_decl.span = ffi.span.merge(fn_decl.span);
                 return Ok(TopDecl::Fn(fn_decl));
             }
+            if is_bounded {
+                if bounded_locus {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "duplicate `@bounded` annotation",
+                    ));
+                }
+                let at = self.expect(TokenKind::At, "@")?;
+                self.bump(); // consume `bounded`
+                bounded_locus = true;
+                leading_span = Some(match leading_span {
+                    Some(s) => s.merge(at.span),
+                    None => at.span,
+                });
+                continue;
+            }
+            if is_unbounded {
+                // fn-only carve-out. Mirrors `@ffi` / `@export fn`: consume
+                // the marker, parse the fn, tag it. It can't sit on a locus
+                // (a locus opts *in* with `@bounded`; `@unbounded` opts a
+                // single fn *out*).
+                if form.is_some() || locality.is_some() || export_locus
+                    || bounded_locus
+                {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "`@unbounded` is fn-only; it can't stack with \
+                         `@form(...)` / `@locality(...)` / `@bounded` / \
+                         `@export locus` (those precede `locus`)",
+                    ));
+                }
+                let at = self.expect(TokenKind::At, "@")?;
+                self.bump(); // consume `unbounded`
+                if !matches!(self.peek(), TokenKind::Fn) {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "expected `fn` after `@unbounded` — it acknowledges an \
+                         intentionally-unbounded fn, so a `locus` opts in with \
+                         `@bounded` instead",
+                    ));
+                }
+                let mut fn_decl = self.parse_fn_decl_with_ffi(None)?;
+                fn_decl.unbounded = true;
+                fn_decl.span = at.span.merge(fn_decl.span);
+                return Ok(TopDecl::Fn(fn_decl));
+            }
             if is_form {
                 if form.is_some() {
                     return Err(Diag::parse(
@@ -440,10 +494,11 @@ impl Parser {
             }
             return Err(Diag::parse(
                 self.peek_token().span,
-                "expected `form`, `locality`, or `ffi` after `@`",
+                "expected `form`, `locality`, `bounded`, `unbounded`, or \
+                 `ffi` after `@`",
             ));
         }
-        if form.is_some() || locality.is_some() || export_locus {
+        if form.is_some() || locality.is_some() || export_locus || bounded_locus {
             // Verify a `locus` (or contextual `main locus`)
             // follows.
             let next_is_locus = matches!(self.peek(), TokenKind::Locus);
@@ -455,7 +510,7 @@ impl Parser {
                 return Err(Diag::parse(
                     self.peek_token().span,
                     "expected `locus` (or `main locus`) after `@form(...)` \
-                     / `@locality(...)` / `@export` annotation",
+                     / `@locality(...)` / `@bounded` / `@export` annotation",
                 ));
             }
             let mut locus = self.parse_locus_decl()?;
@@ -465,6 +520,7 @@ impl Parser {
             locus.form = form;
             locus.locality = locality;
             locus.export = export_locus;
+            locus.bounded = bounded_locus;
             return Ok(TopDecl::Locus(locus));
         }
         match self.peek() {
@@ -1129,6 +1185,7 @@ impl Parser {
             annotations,
             form: None,
             locality: None,
+            bounded: false,
             members,
             span: kw.span.merge(close.span),
         })
@@ -1341,6 +1398,48 @@ impl Parser {
             TokenKind::OnFailure => self.parse_failure_decl().map(LocusMember::Failure),
             TokenKind::Closure => self.parse_closure_decl().map(LocusMember::Closure),
             TokenKind::Fn => self.parse_fn_decl().map(LocusMember::Fn),
+            // GH #18 item 1: `@unbounded` carve-out on a locus member —
+            // either a method (`@unbounded fn`, the common case: silence
+            // one handler) or a lifecycle hook (`@unbounded run { … }`, a
+            // `run`-loop accumulation). The only `@`-annotation valid on a
+            // member.
+            TokenKind::At => {
+                let kind_tok = self.peek_at(1);
+                if !matches!(&kind_tok, TokenKind::Ident(s) if s == "unbounded") {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "the only `@` annotation valid on a locus member is \
+                         `@unbounded` (on a `fn` or a lifecycle hook — \
+                         acknowledge an intentionally-unbounded body)",
+                    ));
+                }
+                let at = self.expect(TokenKind::At, "@")?;
+                self.bump(); // consume `unbounded`
+                match self.peek() {
+                    TokenKind::Fn => {
+                        let mut fn_decl = self.parse_fn_decl()?;
+                        fn_decl.unbounded = true;
+                        fn_decl.span = at.span.merge(fn_decl.span);
+                        Ok(LocusMember::Fn(fn_decl))
+                    }
+                    TokenKind::Birth
+                    | TokenKind::Accept
+                    | TokenKind::Release
+                    | TokenKind::Run
+                    | TokenKind::Drain
+                    | TokenKind::Dissolve => {
+                        let mut lc = self.parse_lifecycle_decl()?;
+                        lc.unbounded = true;
+                        lc.span = at.span.merge(lc.span);
+                        Ok(LocusMember::Lifecycle(lc))
+                    }
+                    _ => Err(Diag::parse(
+                        self.peek_token().span,
+                        "expected `fn` or a lifecycle hook (`run`, `birth`, \
+                         …) after `@unbounded`",
+                    )),
+                }
+            }
             TokenKind::Const => self.parse_const_decl().map(LocusMember::Const),
             TokenKind::Type => self.parse_type_decl().map(LocusMember::Type),
             // Phase 2 contextual keyword — `bindings { ... }`.
@@ -2401,6 +2500,7 @@ impl Parser {
             kind,
             params,
             ret,
+            unbounded: false,
             span: kw_tok.span.merge(body.span),
             body,
         })
@@ -2974,6 +3074,7 @@ impl Parser {
                 fallible,
                 ffi,
                 export: false,
+                unbounded: false,
                 span: kw.span.merge(semi.span),
                 body,
             });
@@ -2993,6 +3094,7 @@ impl Parser {
             fallible,
             ffi,
             export: false,
+            unbounded: false,
             span: kw.span.merge(body.span),
             body,
         })
@@ -4808,6 +4910,111 @@ main locus App {
             }
             _ => panic!("expected locus"),
         }
+    }
+
+    // === GH #18 item 1: @bounded / @unbounded =============
+
+    #[test]
+    fn parse_bounded_locus() {
+        let src = "@bounded locus L { run() { } }";
+        let prog = parse_str(src).expect("parse failed");
+        match &prog.items[0] {
+            TopDecl::Locus(l) => assert!(l.bounded, "@bounded not recorded"),
+            _ => panic!("expected locus"),
+        }
+    }
+
+    #[test]
+    fn parse_bounded_stacks_with_form() {
+        // Order-independent stacking, like @locality + @form.
+        let src = "@form(vec) @bounded locus L { }";
+        let prog = parse_str(src).expect("parse failed");
+        match &prog.items[0] {
+            TopDecl::Locus(l) => {
+                assert!(l.bounded);
+                assert!(l.form.is_some());
+            }
+            _ => panic!("expected locus"),
+        }
+    }
+
+    #[test]
+    fn parse_bounded_rejects_duplicate() {
+        let err = parse_str("@bounded @bounded locus L { }")
+            .expect_err("expected parse error");
+        assert!(format!("{:?}", err).contains("duplicate `@bounded"));
+    }
+
+    #[test]
+    fn parse_unbounded_free_fn() {
+        let src = "@unbounded fn build() { }";
+        let prog = parse_str(src).expect("parse failed");
+        match &prog.items[0] {
+            TopDecl::Fn(f) => assert!(f.unbounded, "@unbounded not recorded"),
+            _ => panic!("expected fn"),
+        }
+    }
+
+    #[test]
+    fn parse_unbounded_method_and_lifecycle() {
+        let src = r#"
+@bounded locus L {
+    @unbounded fn handle() { }
+    @unbounded run() { }
+    fn plain() { }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let TopDecl::Locus(l) = &prog.items[0] else {
+            panic!("expected locus");
+        };
+        let mut saw_unbounded_fn = false;
+        let mut saw_unbounded_run = false;
+        let mut saw_plain_fn = false;
+        for m in &l.members {
+            match m {
+                LocusMember::Fn(f) if f.name.name == "handle" => {
+                    assert!(f.unbounded);
+                    saw_unbounded_fn = true;
+                }
+                LocusMember::Fn(f) if f.name.name == "plain" => {
+                    assert!(!f.unbounded);
+                    saw_plain_fn = true;
+                }
+                LocusMember::Lifecycle(lc)
+                    if matches!(lc.kind, LifecycleKind::Run) =>
+                {
+                    assert!(lc.unbounded);
+                    saw_unbounded_run = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_unbounded_fn && saw_unbounded_run && saw_plain_fn);
+    }
+
+    #[test]
+    fn parse_unbounded_rejects_non_fn_target() {
+        // `@unbounded` is fn/lifecycle-only — on a locus it's rejected and
+        // the diagnostic points at `@bounded` as the opt-in instead.
+        let err = parse_str("@unbounded locus L { }")
+            .expect_err("expected parse error");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("opts in with `@bounded`"),
+            "wrong error: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_unbounded_rejects_stacking_with_form() {
+        // Stacked after another locus annotation, the fn-only guard fires.
+        let err = parse_str("@form(vec) @unbounded locus L { }")
+            .expect_err("expected parse error");
+        assert!(
+            format!("{:?}", err).contains("@unbounded` is fn-only"),
+            "wrong error"
+        );
     }
 
     #[test]
