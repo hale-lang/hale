@@ -2067,6 +2067,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
         self.module
             .add_function("lotus_crypto_hmac_sha256", hmac_sha256_ty, None);
+        // 2026-06-25 (fathom Kraken/Gate.io): SHA-512 + HMAC-SHA512.
+        // declare ptr @lotus_crypto_sha512(ptr bytes)
+        let sha512_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_crypto_sha512", sha512_ty, None);
+        // declare ptr @lotus_crypto_hmac_sha512(ptr key, ptr msg)
+        let hmac_sha512_ty =
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        self.module
+            .add_function("lotus_crypto_hmac_sha512", hmac_sha512_ty, None);
         // 2026-05-27: declare i64 @lotus_crypto_crc32(ptr bytes)
         let crc32_ty = i64_t.fn_type(&[ptr_t.into()], false);
         self.module

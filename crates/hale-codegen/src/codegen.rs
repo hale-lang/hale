@@ -16978,6 +16978,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_crypto_hmac_sha256(args, scope)?;
                 Ok(())
             }
+            ["std", "crypto", "sha512"] => {
+                let _ = self.lower_std_crypto_sha512(args, scope)?;
+                Ok(())
+            }
+            ["std", "crypto", "hmac_sha512"] => {
+                let _ = self.lower_std_crypto_hmac_sha512(args, scope)?;
+                Ok(())
+            }
             ["std", "crypto", "crc32"] => {
                 let _ = self.lower_std_crypto_crc32(args, scope)?;
                 Ok(())
@@ -17769,6 +17777,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "crypto", "hmac_sha256"] => {
                 self.lower_std_crypto_hmac_sha256(args, scope)
+            }
+            ["std", "crypto", "sha512"] => {
+                self.lower_std_crypto_sha512(args, scope)
+            }
+            ["std", "crypto", "hmac_sha512"] => {
+                self.lower_std_crypto_hmac_sha512(args, scope)
             }
             ["std", "crypto", "crc32"] => {
                 self.lower_std_crypto_crc32(args, scope)

@@ -26,6 +26,18 @@ pub(crate) trait CryptoStdlib<'ctx> {
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
 
+    fn lower_std_crypto_sha512(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
+    fn lower_std_crypto_hmac_sha512(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
     fn lower_std_crypto_crc32(
         &mut self,
         args: &[Expr],
@@ -172,6 +184,93 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
                 f,
                 &[key_val.into(), msg_val.into()],
                 "hmac_sha256.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::Bytes))
+    }
+
+    /// `std::crypto::sha512(b: Bytes) -> Bytes`. Returns a 64-byte digest
+    /// per FIPS 180-4 — the 64-bit-word sibling of `sha256`. Hand-rolled in
+    /// the C runtime (no libcrypto), anchored in the payload arena.
+    fn lower_std_crypto_sha512(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::sha512 takes 1 arg (b), got {}",
+                args.len()
+            )));
+        }
+        let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::sha512: b must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let b_val = self.unpack_view_if_needed(b_val, &b_ty)?;
+        let f = self
+            .module
+            .get_function("lotus_crypto_sha512")
+            .expect("lotus_crypto_sha512 declared");
+        let call = self
+            .builder
+            .build_call(f, &[b_val.into()], "sha512.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((ptr, CodegenTy::Bytes))
+    }
+
+    /// 2026-06-25 (fathom Kraken/Gate.io): lower
+    /// `std::crypto::hmac_sha512(key: Bytes, msg: Bytes) -> Bytes`.
+    /// Returns the 64-byte HMAC tag per RFC 2104 — the sibling of
+    /// `hmac_sha256`, with SHA-512 as the inner hash (128-byte block).
+    fn lower_std_crypto_hmac_sha512(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::hmac_sha512 takes 2 args (key, msg), got {}",
+                args.len()
+            )));
+        }
+        let (key_val, key_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(key_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::hmac_sha512: key must be Bytes, got {:?}",
+                key_ty
+            )));
+        }
+        let key_val = self.unpack_view_if_needed(key_val, &key_ty)?;
+        let (msg_val, msg_ty) = self.lower_expr(&args[1], scope)?;
+        if !matches!(msg_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::hmac_sha512: msg must be Bytes, got {:?}",
+                msg_ty
+            )));
+        }
+        let msg_val = self.unpack_view_if_needed(msg_val, &msg_ty)?;
+        let f = self
+            .module
+            .get_function("lotus_crypto_hmac_sha512")
+            .expect("lotus_crypto_hmac_sha512 declared");
+        let call = self
+            .builder
+            .build_call(
+                f,
+                &[key_val.into(), msg_val.into()],
+                "hmac_sha512.ret",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let ptr = call
