@@ -240,6 +240,10 @@ line of Hale.
 
 ## Try it
 
+**No install — [run Hale in your browser](https://hale-lang.github.io/hale/play/).** The
+playground runs real Hale compiled to WebAssembly, right on the page (the UI itself is a
+Hale `@export locus`). To build it locally:
+
 ```sh
 git clone https://github.com/hale-lang/hale
 cd hale
