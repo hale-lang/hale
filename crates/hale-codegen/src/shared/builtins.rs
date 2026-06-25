@@ -87,6 +87,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // linked alongside the generated object file. From LLVM IR
         // we just see the C-ABI surface.
         let i64_t = self.context.i64_type();
+        // Target-pointer-width int for C `size_t` / `ssize_t` params and
+        // returns — i64 native, i32 wasm32. Any lotus_* runtime symbol whose
+        // C signature uses `size_t`/`ssize_t` MUST declare that slot with
+        // this, or the wasm `call` signature mismatches the definition and
+        // traps (the bus-codec / @form-collection bug class, 69925dc et al).
+        // `int64_t`/`uint64_t` params stay i64; `int` stays i32.
+        let usize_t = self.usize_type();
         let arena_create_ty = ptr_t.fn_type(&[], false);
         self.module
             .add_function("lotus_arena_create", arena_create_ty, None);
@@ -112,8 +119,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // pool count and passes it as the second arg. C side
         // clamps to [4096, env-default] and rounds; out-of-range
         // hints fall back to the env default silently.
+        // `initial_chunk_bytes` is size_t (i32 wasm32).
         let arena_create_labeled_sized_ty =
-            ptr_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
+            ptr_t.fn_type(&[ptr_t.into(), usize_t.into()], false);
         self.module.add_function(
             "lotus_arena_create_labeled_sized",
             arena_create_labeled_sized_ty,
@@ -165,8 +173,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // declare ptr  @lotus_recpool_slab_acquire(ptr pool)
         // declare void @lotus_recpool_slab_release(ptr pool, ptr arena)
         // declare void @lotus_recpool_slab_destroy(ptr pool)
+        // recpool_*_create(size_t cap_count, size_t cell_bytes/slab_bytes).
         let recpool_create_ty =
-            ptr_t.fn_type(&[i64_t.into(), i64_t.into()], false);
+            ptr_t.fn_type(&[usize_t.into(), usize_t.into()], false);
         let recpool_acquire_ty = ptr_t.fn_type(&[ptr_t.into()], false);
         let recpool_release_ty =
             void_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
@@ -217,10 +226,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // cell pointer; release puts it back on the free-list.
         // Heap of T: individually-freed cells; destroy frees all
         // still-live cells wholesale. Both type-erased at the C
-        // ABI — codegen passes cell_size and cell_align as i64
-        // params at create time, computed from T's struct layout.
+        // ABI — codegen passes cell_size and cell_align (both `size_t`,
+        // hence usize_t — i32 wasm32) at create time, computed from T's
+        // struct layout.
         let pool_create_ty =
-            ptr_t.fn_type(&[i64_t.into(), i64_t.into()], false);
+            ptr_t.fn_type(&[usize_t.into(), usize_t.into()], false);
         self.module
             .add_function("lotus_pool_create", pool_create_ty, None);
         let pool_acquire_ty = ptr_t.fn_type(&[ptr_t.into()], false);
@@ -234,7 +244,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_pool_destroy", pool_destroy_ty, None);
         let heap_create_ty =
-            ptr_t.fn_type(&[i64_t.into(), i64_t.into()], false);
+            ptr_t.fn_type(&[usize_t.into(), usize_t.into()], false);
         self.module
             .add_function("lotus_heap_create", heap_create_ty, None);
         let heap_alloc_ty = ptr_t.fn_type(&[ptr_t.into()], false);
@@ -264,15 +274,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // boundary. The fallible methods (get, pop) invert this at
         // codegen time to match Hale's i1 (true = err) ABI.
         let i32_t = self.context.i32_type();
-        // 2026-06-25 (wasm): the collection primitives' `size_t` params
-        // (elem_size / key_size / value_size / fixed_cap) are target-
-        // pointer-width — i64 native, i32 wasm32 — so the declarations must
-        // match the C runtime's `size_t`, or the wasm `call`'s signature
-        // mismatches the definition (same class as the bus-codec fix
-        // 69925dc). The `int64_t` index/len params + the `int` key-type tag
-        // are unaffected (i64 / i32 on both targets). Call sites narrow the
-        // size value with `size_to_usize` (a no-op on native).
-        let usize_t = self.usize_type();
+        // The collection primitives' `size_t` params (elem_size / key_size
+        // / value_size / fixed_cap) use `usize_t` (declared above); call
+        // sites narrow the size value with `size_to_usize` (no-op native).
         let vec_init_ty = void_t.fn_type(&[ptr_t.into()], false);
         self.module
             .add_function("lotus_vec_init", vec_init_ty, None);

@@ -610,6 +610,60 @@ fn wasm_form_collections_run() {
     }
 }
 
+/// Regression: the F.22 capacity allocators (`lotus_pool_create` /
+/// `lotus_heap_create`), the sized arena create
+/// (`lotus_arena_create_labeled_sized`), and the Recognition recpool
+/// creators (`lotus_recpool_fixed_create` / `_slab_create`) all took `size_t`
+/// params declared as i64 — the same wasm32 ABI mismatch class as the bus
+/// codecs / @form collections (found by the preventive sweep). They now use
+/// the target-pointer-width type. This exercises a `capacity { pool …; heap
+/// …; }` locus AND a `projection recognition(…, fixed_cell)` locus under
+/// wasm; instantiating each calls the swept allocators.
+#[test]
+fn wasm_capacity_and_recognition_run() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_capacity_and_recognition_run: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        locus Reg { capacity { pool entries of Int; heap log of Int; } }
+        locus Leaf {
+            params { value: Int = 0; }
+            contract { expose value: Int; }
+        }
+        locus Coord : projection recognition(cap = 4, fixed_cell) {
+            contract { consume value: Int; }
+            accept(c: Leaf) { }
+        }
+        @export locus Demo {
+            birth() {
+                let r = Reg { };       // lotus_pool_create + lotus_heap_create
+                let co = Coord { };    // lotus_recpool_fixed_create
+                println("alloc-ok");
+            }
+        }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse target-wasm capacity/recognition");
+    let wasm = tmp("capreg.wasm");
+    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
+        .expect("wasm codegen + link");
+    let loader = wasm.with_extension("mjs");
+    let run = Command::new(&node).arg(&loader).output().expect("run node loader");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    assert!(
+        run.status.success() && stdout.contains("alloc-ok"),
+        "F.22 capacity allocators + the Recognition recpool must run under \
+         wasm32 (were size_t-as-i64 ABI mismatches):\nstdout: {}\nstderr: {}",
+        stdout,
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 fn tool(name: &str) -> Option<String> {
     for cand in [name, &format!("{}-18", name)] {
         if Command::new(cand).arg("--version").output().is_ok() {

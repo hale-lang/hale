@@ -562,10 +562,10 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                             .module
                             .get_function("lotus_arena_create_labeled_sized")
                             .expect("lotus_arena_create_labeled_sized declared");
-                        let hint_val = self
-                            .context
-                            .i64_type()
-                            .const_int(hint, false);
+                        // initial_chunk_bytes is `size_t` — build at the
+                        // target size_t width (i32 wasm32).
+                        let hint_val =
+                            self.usize_type().const_int(hint, false);
                         self.builder
                             .build_call(
                                 sized_fn,
@@ -1128,12 +1128,14 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     // lotus_pool_create / lotus_heap_create and
                     // store the returned allocator pointer in the
                     // slot's ptr field.
-                    let cell_size = self
-                        .llvm_basic_type(&slot.elem_ty)
-                        .size_of()
-                        .expect("cell type has known size at LLVM level");
-                    let align_const =
-                        self.context.i64_type().const_int(8, false);
+                    // cell_size + cell_align are both `size_t` — narrow /
+                    // build at the target size_t width (i32 wasm32).
+                    let cell_size = self.size_to_usize(
+                        self.llvm_basic_type(&slot.elem_ty)
+                            .size_of()
+                            .expect("cell type has known size at LLVM level"),
+                    )?;
+                    let align_const = self.usize_type().const_int(8, false);
                     let create_fn_name = match slot.kind {
                         CapacitySlotKind::Pool => "lotus_pool_create",
                         CapacitySlotKind::Heap => "lotus_heap_create",
@@ -1743,10 +1745,10 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     .module
                     .get_function(create_fn_name)
                     .expect("recpool create extern declared");
-                let cap_const = self
-                    .context
-                    .i64_type()
-                    .const_int(params.cap, false);
+                // cap_count + cell_bytes are both `size_t` — build/narrow at
+                // the target size_t width (i32 wasm32).
+                let cap_const =
+                    self.usize_type().const_int(params.cap, false);
                 // Cell stride is derived from the parent's accept-
                 // method param type. v1 ships single-accept-per-
                 // locus; when multi-accept lands, this becomes a
@@ -1768,6 +1770,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     }
                     None => self.context.i64_type().const_zero(),
                 };
+                let bytes_const = self.size_to_usize(bytes_const)?;
                 let pool = self
                     .builder
                     .build_call(
