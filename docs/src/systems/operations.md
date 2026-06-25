@@ -84,7 +84,7 @@ flags report on allocation shape:
 | Flag | Reports |
 |---|---|
 | `--warn-unbounded-alloc` | flag an allocation that escapes into an unbounded context and accumulates until its locus dissolves (advisory warnings) |
-| `--dump-alloc-summary` | every allocation site, escape-tagged (local / returned / stored-to-self / sent), with the bounded-vs-unbounded verdict |
+| `--dump-alloc-summary` | every allocation site, escape-tagged (local / returned / stored-to-self / sent), with the bounded-vs-unbounded verdict; plus each locus's storage shape (capacity slots, `@form`, projection cap) and the `self.<field>` / `self.<slot>` an allocation targets |
 | `--dump-resource-budget` | per-locus resource counts (allocations, held fds) against declared ceilings |
 | `--locality-report` | per-locus working-set size against cache-tier budgets |
 

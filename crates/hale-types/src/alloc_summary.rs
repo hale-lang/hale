@@ -208,6 +208,11 @@ pub struct AllocSite {
     /// trip count.
     pub in_unbounded_loop: bool,
     pub reclaim: ReclaimScope,
+    /// Phase D / D1: when this allocation is stored straight into a
+    /// `self.<field>` (a whole-value replace, `StoredToSelf`), the field
+    /// name. `None` for non-self escapes and for indexed in-place writes.
+    /// The solver (D2) uses it to ask whether `<field>` is a capacity slot.
+    pub target_field: Option<String>,
     pub span: Span,
 }
 
@@ -251,6 +256,12 @@ pub struct CallEdge {
     /// notes/resource-budgets.md; also lets #1 see a factory call whose
     /// result escapes when the callee body is external/unresolved.)
     pub escape: Escape,
+    /// Phase D / D1: when the call is a method on a `self.<slot>` receiver
+    /// (`self.entries.acquire()`, `self.items.alloc()`), the slot name.
+    /// `None` for free fns, `self`-methods, and form methods (`self.push`,
+    /// where the slot is implicit from `@form`). The solver (D2) pairs this
+    /// with the method name + `LocusShape` to classify a slot insert.
+    pub receiver_slot: Option<String>,
     pub span: Span,
 }
 
@@ -332,6 +343,44 @@ pub struct FnSummary {
     pub loops: Vec<LoopInfo>,
 }
 
+/// A distilled view of a locus's storage shape (GH #18 item 1, Phase D —
+/// D1 infra). The bound solver reads this to decide which storage slot an
+/// escaping allocation lands in and how that slot bounds it:
+///
+/// - **slot 0** — the locus's own bump Arena (no entry here; the default).
+/// - **slots 1..N** — `capacity { pool/heap … }` slots, optionally fronted
+///   by a `@form`. `pool` recycles (bounded-by-balanced-release); `heap`
+///   grows; `@form(ring_buffer)` is cap-bounded; `@form(vec)` /
+///   `@form(hashmap)` grow.
+///
+/// D1 only *captures* this — no verdict reads it yet (that's D2).
+#[derive(Debug, Clone, Default)]
+pub struct LocusShape {
+    pub name: String,
+    pub capacity_slots: Vec<SlotShape>,
+    pub form: Option<FormShape>,
+    /// `: projection recognition(cap = N, …)` — a hard static cap on
+    /// *child-entity* count (fed by `accept`). Recorded for completeness;
+    /// the value-allocation proof reads the capacity-data slots, not this
+    /// (entity-count bounding is a separate analysis).
+    pub recognition_cap: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SlotShape {
+    pub name: String,
+    pub kind: CapacitySlotKind,
+}
+
+#[derive(Debug, Clone)]
+pub struct FormShape {
+    pub name: String,
+    /// A `cap = N` form-arg, if a literal int. NOTE: per `spec/forms.md`
+    /// this is an *initial-size hint* for vec/hashmap (not a bound); it is
+    /// a real cap for ring_buffer. The solver (D2) interprets it per form.
+    pub cap: Option<i64>,
+}
+
 /// The bundle-wide allocation summary + call graph.
 #[derive(Debug, Clone, Default)]
 pub struct AllocSummary {
@@ -344,6 +393,9 @@ pub struct AllocSummary {
     /// accumulation. Their leak sites are dropped entirely (the
     /// greppable carve-out), even under the survey flag.
     pub unbounded_fns: BTreeSet<FnKey>,
+    /// Per-locus storage shape (Phase D / D1) — capacity slots, `@form`,
+    /// projection cap. Keyed by locus name.
+    pub locus_shapes: BTreeMap<String, LocusShape>,
 }
 
 impl AllocSummary {
@@ -473,7 +525,7 @@ impl AllocSummary {
     pub fn render(&self) -> String {
         let unbounded = self.unbounded_invoked();
         let mut out = String::new();
-        out.push_str("# allocation summary (GH #18 item 1, steps 1-3)\n");
+        out.push_str("# allocation summary (GH #18 item 1, steps 1-3 + D1 slot shape)\n");
         let entries: Vec<&FnSummary> = self.fns.values().filter(|f| f.entry.is_some()).collect();
         out.push_str(&format!(
             "# {} fns, {} entry points, {} invoked-unboundedly\n\n",
@@ -481,6 +533,36 @@ impl AllocSummary {
             entries.len(),
             unbounded.len()
         ));
+        // D1: per-locus storage shape — the capacity slots, `@form`, and
+        // projection cap the bound solver (D2) will read.
+        for shape in self.locus_shapes.values() {
+            if shape.capacity_slots.is_empty()
+                && shape.form.is_none()
+                && shape.recognition_cap.is_none()
+            {
+                continue;
+            }
+            out.push_str(&format!("locus {} [shape]\n", shape.name));
+            for slot in &shape.capacity_slots {
+                let kind = match slot.kind {
+                    CapacitySlotKind::Pool => "pool",
+                    CapacitySlotKind::Heap => "heap",
+                };
+                out.push_str(&format!("    slot  {} ({})\n", slot.name, kind));
+            }
+            if let Some(form) = &shape.form {
+                let cap = form.cap.map(|c| format!(", cap={}", c)).unwrap_or_default();
+                out.push_str(&format!("    form  @form({}{})\n", form.name, cap));
+            }
+            if let Some(cap) = shape.recognition_cap {
+                out.push_str(&format!("    proj  recognition(cap={})\n", cap));
+            }
+        }
+        if !self.locus_shapes.values().all(|s| {
+            s.capacity_slots.is_empty() && s.form.is_none() && s.recognition_cap.is_none()
+        }) {
+            out.push('\n');
+        }
         for f in self.fns.values() {
             let mut tags = Vec::new();
             if let Some(e) = f.entry {
@@ -514,14 +596,20 @@ impl AllocSummary {
                 } else {
                     ""
                 };
+                let field = s
+                    .target_field
+                    .as_ref()
+                    .map(|f| format!(" ->self.{}", f))
+                    .unwrap_or_default();
                 out.push_str(&format!(
-                    "    alloc {:<16} {:<20} {:<22} {:<22} @{}..{}{}\n",
+                    "    alloc {:<16} {:<20} {:<22} {:<22} @{}..{}{}{}\n",
                     s.kind.label(),
                     s.escape.label(),
                     v.label(),
                     s.reclaim.label(),
                     s.span.start.0,
                     s.span.end.0,
+                    field,
                     flag
                 ));
             }
@@ -530,11 +618,17 @@ impl AllocSummary {
                     Callee::Resolved(k) => k.display(),
                     Callee::Unresolved(n) => format!("<unresolved: {}>", n),
                 };
+                let slot = c
+                    .receiver_slot
+                    .as_ref()
+                    .map(|s| format!(" recv=self.{}", s))
+                    .unwrap_or_default();
                 out.push_str(&format!(
-                    "    call  {} loop_depth={} result={}\n",
+                    "    call  {} loop_depth={} result={}{}\n",
                     tgt,
                     c.loop_depth,
-                    c.escape.label()
+                    c.escape.label(),
+                    slot
                 ));
             }
         }
@@ -553,6 +647,8 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
     // GH #18 item 1 — the `@bounded` / `@unbounded` opt-in/carve-out sets.
     let mut bounded_loci: BTreeSet<String> = BTreeSet::new();
     let mut unbounded_fns: BTreeSet<FnKey> = BTreeSet::new();
+    // Phase D / D1 — the per-locus storage shape.
+    let mut locus_shapes: BTreeMap<String, LocusShape> = BTreeMap::new();
 
     for program in programs {
         for item in &program.items {
@@ -571,6 +667,7 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
                     if l.bounded {
                         bounded_loci.insert(locus.clone());
                     }
+                    locus_shapes.insert(locus.clone(), locus_shape_of(l));
                     let handlers = bus_handler_names(l);
                     for member in &l.members {
                         match member {
@@ -618,6 +715,7 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
             known: &known,
             loop_stack: Vec::new(),
             fn_body: body,
+            store_target: None,
         };
         w.walk_block(body, 0, Escape::Local);
         summary.fns.insert(
@@ -633,7 +731,46 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
     }
     summary.bounded_loci = bounded_loci;
     summary.unbounded_fns = unbounded_fns;
+    summary.locus_shapes = locus_shapes;
     summary
+}
+
+/// Phase D / D1: distill a `LocusDecl` into the storage shape the bound
+/// solver reads — capacity slots, `@form`, and the recognition projection
+/// cap. Pure AST read; no type inference.
+fn locus_shape_of(l: &LocusDecl) -> LocusShape {
+    let mut capacity_slots = Vec::new();
+    for m in &l.members {
+        if let LocusMember::Capacity(cb) = m {
+            for slot in &cb.slots {
+                capacity_slots.push(SlotShape {
+                    name: slot.name.name.clone(),
+                    kind: slot.kind,
+                });
+            }
+        }
+    }
+    let form = l.form.as_ref().map(|f| FormShape {
+        name: f.name.name.clone(),
+        cap: f.args.iter().find_map(|a| {
+            if a.name.name == "cap" {
+                if let Expr::Literal(Literal::Int(n), _) = &a.value {
+                    return Some(*n);
+                }
+            }
+            None
+        }),
+    });
+    let recognition_cap = l.annotations.iter().find_map(|a| match a {
+        LocusAnnotation::Projection(ProjectionClass::Recognition(Some(p))) => Some(p.cap),
+        _ => None,
+    });
+    LocusShape {
+        name: l.name.name.clone(),
+        capacity_slots,
+        form,
+        recognition_cap,
+    }
 }
 
 /// Bound-solver diagnostics: a warning per unbounded-accumulation site.
@@ -719,16 +856,28 @@ struct Walker<'a> {
     /// `while v < N` counter is const-bounded (const init + only positive
     /// const increments anywhere in the fn).
     fn_body: &'a Block,
+    /// Phase D / D1: the `self.<field>` currently being assigned, set around
+    /// the RHS walk of a `self.<field> = …` statement so an escaping
+    /// allocation in that RHS records which field it lands in.
+    store_target: Option<String>,
 }
 
 impl<'a> Walker<'a> {
     fn push_site(&mut self, kind: AllocKind, escape: Escape, depth: u32, span: Span) {
+        // Only a StoredToSelf escape carries a target field — that's the
+        // `self.<field> = <alloc>` whole-value replace the solver bounds.
+        let target_field = if escape == Escape::StoredToSelf {
+            self.store_target.clone()
+        } else {
+            None
+        };
         self.sites.push(AllocSite {
             kind,
             escape,
             loop_depth: depth,
             in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
             reclaim: ReclaimScope::of(escape),
+            target_field,
             span,
         });
     }
@@ -757,7 +906,16 @@ impl<'a> Walker<'a> {
                 } else {
                     self.escaping.get(&target.head.name).copied().unwrap_or(Escape::Local)
                 };
+                // D1: record the `self.<field>` being assigned for the RHS
+                // walk — but only for a whole-field replace (`self.f = …`),
+                // not an indexed in-place write (`self.f[i] = …`, which has
+                // a trailing `Index` segment and allocates nothing new).
+                let prev = self.store_target.take();
+                if esc == Escape::StoredToSelf {
+                    self.store_target = self_replace_field(target);
+                }
                 self.walk_expr(value, depth, esc);
+                self.store_target = prev;
             }
             Stmt::Return(Some(e), _) => self.walk_expr(e, depth, Escape::Returned),
             Stmt::Return(None, _) => {}
@@ -955,8 +1113,40 @@ impl<'a> Walker<'a> {
             loop_depth: depth,
             in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
             escape,
+            receiver_slot: self_slot_receiver(callee),
             span,
         });
+    }
+}
+
+/// D1: the `self.<field>` field name of a whole-value replace
+/// (`self.f = …`), or `None` for an indexed in-place write (`self.f[i] = …`)
+/// or a nested store (`self.f.g = …`). A clean top-level whole-field
+/// replace is `tail == [Field(name)]`.
+fn self_replace_field(target: &LValue) -> Option<String> {
+    if target.head.name != "self" {
+        return None;
+    }
+    match target.tail.as_slice() {
+        [LValueSeg::Field(f)] => Some(f.name.clone()),
+        _ => None,
+    }
+}
+
+/// D1: for a call whose callee is `self.<slot>.<method>(…)`, the slot name.
+/// `None` for free fns, `self`-methods, and form methods (`self.push`).
+fn self_slot_receiver(callee: &Expr) -> Option<String> {
+    let (Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. }) = callee else {
+        return None;
+    };
+    match receiver.as_ref() {
+        Expr::Field { receiver: inner, name, .. }
+        | Expr::Path2 { receiver: inner, name, .. }
+            if matches!(inner.as_ref(), Expr::KwSelf(_)) =>
+        {
+            Some(name.name.clone())
+        }
+        _ => None,
     }
 }
 
@@ -1578,5 +1768,108 @@ mod tests {
             unbounded_alloc_diags(&[&program], false).is_empty(),
             "@unbounded suppresses the site in @bounded scope too"
         );
+    }
+
+    // === Phase D / D1: storage-shape + slot/field identity capture =====
+
+    #[test]
+    fn d1_captures_capacity_slots_and_form() {
+        let src = r#"
+            type Entry { k: Int; }
+            @form(hashmap, cap = 1024)
+            locus Reg { capacity { pool entries of Entry indexed_by k; } }
+            locus Plain { capacity { heap log of Entry; } }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let reg = s.locus_shapes.get("Reg").expect("Reg shape");
+        assert_eq!(reg.capacity_slots.len(), 1);
+        assert_eq!(reg.capacity_slots[0].name, "entries");
+        assert!(matches!(reg.capacity_slots[0].kind, CapacitySlotKind::Pool));
+        let form = reg.form.as_ref().expect("@form captured");
+        assert_eq!(form.name, "hashmap");
+        assert_eq!(form.cap, Some(1024), "cap form-arg captured as a literal");
+
+        let plain = s.locus_shapes.get("Plain").expect("Plain shape");
+        assert!(matches!(plain.capacity_slots[0].kind, CapacitySlotKind::Heap));
+        assert!(plain.form.is_none());
+    }
+
+    #[test]
+    fn d1_captures_recognition_cap() {
+        let src = r#"
+            type Leaf { v: Int; }
+            locus Coord : projection recognition(cap = 64, fixed_cell) {
+                contract { consume value: Int; }
+                accept(c: Leaf) { }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let coord = s.locus_shapes.get("Coord").expect("Coord shape");
+        assert_eq!(coord.recognition_cap, Some(64));
+    }
+
+    #[test]
+    fn d1_store_latest_records_target_field() {
+        let src = r#"
+            type Q { a: Int; }
+            locus C {
+                params { latest: Q = Q { a: 0 }; }
+                run { while true { self.latest = Q { a: 1 }; } }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::method("C", "run"));
+        let st = f.sites.iter().find(|s| matches!(s.kind, AllocKind::StructLit(_))).expect("struct");
+        assert_eq!(st.escape, Escape::StoredToSelf);
+        assert_eq!(
+            st.target_field.as_deref(),
+            Some("latest"),
+            "whole-value `self.latest = …` replace records the field"
+        );
+        // The verdict is unchanged by D1 — this is still a slot-0 leak.
+        assert_eq!(st.verdict(), SiteVerdict::AccumulatesUnbounded);
+    }
+
+    #[test]
+    fn d1_indexed_inplace_write_has_no_target_field() {
+        // An indexed in-place write allocates nothing; a *local* struct in
+        // the same body must not pick up a target field.
+        let src = r#"
+            type Q { a: Int; }
+            locus C {
+                params { recent: [Int; 4] = [0,0,0,0]; }
+                run {
+                    while true {
+                        self.recent[0] = 1;
+                        let q = Q { a: 2 };
+                    }
+                }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::method("C", "run"));
+        let st = f.sites.iter().find(|s| matches!(s.kind, AllocKind::StructLit(_))).expect("struct");
+        assert_eq!(st.escape, Escape::Local);
+        assert_eq!(st.target_field, None, "a local alloc has no self-field target");
+    }
+
+    #[test]
+    fn d1_slot_insert_records_receiver_slot() {
+        let src = r#"
+            type Q { a: Int; }
+            locus C {
+                capacity { heap log of Q; }
+                run { let c = self.log.alloc(); }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::method("C", "run"));
+        let call = f.calls.iter().find(|c| c.receiver_slot.is_some()).expect("slot call");
+        assert_eq!(call.receiver_slot.as_deref(), Some("log"));
     }
 }

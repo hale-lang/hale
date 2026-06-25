@@ -314,8 +314,25 @@ store-latest assertion.
    (a fixed-scalar cell field is bounded; an appended-to `String` field is
    not). The bound is read from the **capacity block + projection class**,
    never from `@form` (an access discipline that bounds nothing). See
-   "Bounded sinks live on the capacity/projection axis" above.
-   *Pre-req decision: the slot-0 store-latest (A/B) fork.*
+   "Bounded sinks live on the capacity/projection axis" above. Staged:
+   - **D1 (LANDED 2026-06-25) — the slot-shape scaffold.** A `LocusShape`
+     (capacity slots `[(name, kind)]`, `@form` + cap-arg, recognition cap)
+     distilled from each `LocusDecl` onto `AllocSummary.locus_shapes`;
+     `AllocSite.target_field` records the `self.<field>` of a whole-value
+     replace; `CallEdge.receiver_slot` records the `self.<slot>` of a slot
+     method call. Surfaced in `--dump-alloc-summary`. **No verdict change.**
+     The reusable infra for D2. Discovery finding: the walker previously
+     tagged slot-insert *arguments* `Local`, so collection growth
+     (`self.items.push(X{})`) is currently **undetected** — D2's job.
+   - **D2 — model the slot-insert allocation channel + bound it.** Treat
+     `acquire`/`alloc`/`push`/`set` into a capacity data slot as an
+     allocation tagged with that slot's discipline; flag unbounded
+     (`heap`/`vec`/`hashmap`) inserts in unbounded contexts; leave
+     `ring_buffer` (cap) and balanced `pool` alone. Warning, opt-in-gated,
+     RSS-validated. (Recognition `cap=N` bounds *entity* count, fed by
+     `accept` — a separate analysis the value-alloc walker doesn't track.)
+   - **D3 — per-cell field bounds** (a bounded cell with a growing `String`
+     field). Optional; can defer.
 
 ## Risks
 
