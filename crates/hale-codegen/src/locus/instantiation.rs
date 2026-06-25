@@ -962,14 +962,14 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                             locus_name, slot.name
                         ))
                     })?;
-                    let elem_size = self
-                        .llvm_basic_type(&slot.elem_ty)
-                        .size_of()
-                        .expect("ring_buffer cell type has known size");
-                    let cap_const = self
-                        .context
-                        .i64_type()
-                        .const_int(cap, false);
+                    // cap + elem_size are both `size_t` — build/narrow at
+                    // the target size_t width (i32 wasm32 / i64 native).
+                    let elem_size = self.size_to_usize(
+                        self.llvm_basic_type(&slot.elem_ty)
+                            .size_of()
+                            .expect("ring_buffer cell type has known size"),
+                    )?;
+                    let cap_const = self.usize_type().const_int(cap, false);
                     let init_fn = self
                         .module
                         .get_function("lotus_ring_buffer_init")
@@ -1050,13 +1050,18 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     };
                     let key_llvm_ty =
                         self.llvm_basic_type(&key_codegen_ty);
-                    let key_size = key_llvm_ty
-                        .size_of()
-                        .expect("key type has known size");
-                    let value_size = cell_info
-                        .struct_ty
-                        .size_of()
-                        .expect("cell struct has known size");
+                    // The lotus_hashmap_init* `size_t` params are target-
+                    // pointer-width (i32 wasm32); `size_of()` is i64 — narrow
+                    // to match (no-op native). See the builtins note.
+                    let key_size = self.size_to_usize(
+                        key_llvm_ty.size_of().expect("key type has known size"),
+                    )?;
+                    let value_size = self.size_to_usize(
+                        cell_info
+                            .struct_ty
+                            .size_of()
+                            .expect("cell struct has known size"),
+                    )?;
                     let key_type_tag_const = self
                         .context
                         .i32_type()
@@ -1074,10 +1079,10 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                                 .module
                                 .get_function("lotus_hashmap_init_lockfree")
                                 .expect("lotus_hashmap_init_lockfree extern declared");
-                            let cap_const = self
-                                .context
-                                .i64_type()
-                                .const_int(fixed_cap, false);
+                            // fixed_cap is size_t — build it at the target
+                            // size_t width (i32 wasm32 / i64 native).
+                            let cap_const =
+                                self.usize_type().const_int(fixed_cap, false);
                             self.builder
                                 .build_call(
                                     init_fn,

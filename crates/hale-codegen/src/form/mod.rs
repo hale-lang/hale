@@ -89,7 +89,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         )?;
 
         let llvm_elem_ty = self.llvm_basic_type(&elem_ty);
-        let elem_size = llvm_elem_ty.size_of().expect("elem size known");
+        // `size_of()` is i64; the lotus_vec_* `size_t` params are
+        // target-pointer-width (i32 on wasm32), so narrow to match (no-op
+        // native). See the builtins declaration note.
+        let elem_size =
+            self.size_to_usize(llvm_elem_ty.size_of().expect("elem size known"))?;
         let i32_t = self.context.i32_type();
         let i64_t = self.context.i64_type();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
@@ -1095,9 +1099,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| {
                         CodegenError::LlvmEmit(e.to_string())
                     })?;
-                let elem_size = llvm_elem_ty
-                    .size_of()
-                    .expect("cell type has known size");
+                let elem_size = self.size_to_usize(
+                    llvm_elem_ty.size_of().expect("cell type has known size"),
+                )?;
                 let push_fn = self
                     .module
                     .get_function("lotus_vec_push")
@@ -1294,9 +1298,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_store(cmp_field, cmp_fn_ptr)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 let llvm_elem_ty = self.llvm_basic_type(&slot.elem_ty);
-                let elem_size = llvm_elem_ty
-                    .size_of()
-                    .expect("cell type has known size");
+                let elem_size = self.size_to_usize(
+                    llvm_elem_ty.size_of().expect("cell type has known size"),
+                )?;
                 let sort_by_fn = self
                     .module
                     .get_function("lotus_vec_sort_by")

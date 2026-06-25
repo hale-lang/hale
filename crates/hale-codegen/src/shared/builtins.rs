@@ -264,28 +264,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // boundary. The fallible methods (get, pop) invert this at
         // codegen time to match Hale's i1 (true = err) ABI.
         let i32_t = self.context.i32_type();
+        // 2026-06-25 (wasm): the collection primitives' `size_t` params
+        // (elem_size / key_size / value_size / fixed_cap) are target-
+        // pointer-width — i64 native, i32 wasm32 — so the declarations must
+        // match the C runtime's `size_t`, or the wasm `call`'s signature
+        // mismatches the definition (same class as the bus-codec fix
+        // 69925dc). The `int64_t` index/len params + the `int` key-type tag
+        // are unaffected (i64 / i32 on both targets). Call sites narrow the
+        // size value with `size_to_usize` (a no-op on native).
+        let usize_t = self.usize_type();
         let vec_init_ty = void_t.fn_type(&[ptr_t.into()], false);
         self.module
             .add_function("lotus_vec_init", vec_init_ty, None);
         let vec_push_ty =
-            void_t.fn_type(&[ptr_t.into(), i64_t.into(), ptr_t.into()], false);
+            void_t.fn_type(&[ptr_t.into(), usize_t.into(), ptr_t.into()], false);
         self.module
             .add_function("lotus_vec_push", vec_push_ty, None);
         let vec_get_ty = i32_t.fn_type(
-            &[ptr_t.into(), i64_t.into(), i64_t.into(), ptr_t.into()],
+            &[ptr_t.into(), usize_t.into(), i64_t.into(), ptr_t.into()],
             false,
         );
         self.module.add_function("lotus_vec_get", vec_get_ty, None);
-        // declare i32 @lotus_vec_set(ptr vec, i64 elem_size, i64 i, ptr elem)
+        // declare i32 @lotus_vec_set(ptr vec, size_t elem_size, i64 i, ptr elem)
         // Same C ABI as lotus_vec_get, opposite direction: caller
         // hands a pointer to the new element. Returns 1=OK, 0=OOB.
         let vec_set_ty = i32_t.fn_type(
-            &[ptr_t.into(), i64_t.into(), i64_t.into(), ptr_t.into()],
+            &[ptr_t.into(), usize_t.into(), i64_t.into(), ptr_t.into()],
             false,
         );
         self.module.add_function("lotus_vec_set", vec_set_ty, None);
         let vec_pop_ty =
-            i32_t.fn_type(&[ptr_t.into(), i64_t.into(), ptr_t.into()], false);
+            i32_t.fn_type(&[ptr_t.into(), usize_t.into(), ptr_t.into()], false);
         self.module.add_function("lotus_vec_pop", vec_pop_ty, None);
         let vec_len_ty = i64_t.fn_type(&[ptr_t.into()], false);
         self.module.add_function("lotus_vec_len", vec_len_ty, None);
@@ -312,7 +321,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_vec_sort_string", vec_sort_prim_ty, None);
         let vec_sort_by_ty = void_t.fn_type(
-            &[ptr_t.into(), i64_t.into(), ptr_t.into(), ptr_t.into()],
+            &[ptr_t.into(), usize_t.into(), ptr_t.into(), ptr_t.into()],
             false,
         );
         self.module
@@ -340,7 +349,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // methods (get, remove) invert this at codegen time to
         // match Hale's i1 (true = err) ABI.
         let hashmap_init_ty = void_t.fn_type(
-            &[ptr_t.into(), i64_t.into(), i64_t.into(), i32_t.into()],
+            &[ptr_t.into(), usize_t.into(), usize_t.into(), i32_t.into()],
             false,
         );
         self.module
@@ -360,7 +369,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Takes an extra `fixed_cap` i64 arg (user-declared
         // via `cap = N` on the form annotation; no grow).
         let hashmap_init_lockfree_ty = void_t.fn_type(
-            &[ptr_t.into(), i64_t.into(), i64_t.into(), i32_t.into(), i64_t.into()],
+            &[ptr_t.into(), usize_t.into(), usize_t.into(), i32_t.into(), usize_t.into()],
             false,
         );
         self.module
@@ -424,8 +433,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // declare i64  @lotus_ring_buffer_len(ptr rb)
         // declare i32  @lotus_ring_buffer_is_full(ptr rb)
         // declare void @lotus_ring_buffer_destroy(ptr rb)
+        // `cap` and `elem_size` are both `size_t` in the C runtime —
+        // target-pointer-width (i32 wasm32 / i64 native).
         let rb_init_ty =
-            void_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false);
+            void_t.fn_type(&[ptr_t.into(), usize_t.into(), usize_t.into()], false);
         self.module
             .add_function("lotus_ring_buffer_init", rb_init_ty, None);
         let rb_push_ty = i32_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);

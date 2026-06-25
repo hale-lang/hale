@@ -547,6 +547,69 @@ fn wasm_in_process_bus_dispatch_delivers() {
     );
 }
 
+/// Regression: `@form` collections (`vec` / `hashmap` / `ring_buffer`)
+/// must run under wasm32. The `lotus_vec_*` / `lotus_hashmap_*` /
+/// `lotus_ring_buffer_*` runtime primitives take `size_t` params
+/// (`elem_size` / `key_size` / `value_size` / `cap`), but codegen declared
+/// them as i64 — so on wasm32 (where `size_t` is i32) the `call`'s
+/// signature mismatched the C definition and trapped
+/// (`signature_mismatch:lotus_vec_push`). Same class as the bus-codec fix:
+/// the declarations now use the target-pointer-width type. (And
+/// `lotus_ring_buffer_len` returned `size_t` in C — changed to `int64_t` to
+/// match `lotus_vec_len` / `lotus_hashmap_len` and the i64 accessor ABI.)
+/// `Demo.birth` runs at `_hale_start`, exercises all three forms, and the
+/// printed values are asserted.
+#[test]
+fn wasm_form_collections_run() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_form_collections_run: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        type Entry { k: Int; v: Int; }
+        @form(vec) locus Nums { capacity { heap items of Int; } }
+        @form(hashmap) locus Reg { capacity { pool entries of Entry indexed_by k; } }
+        @form(ring_buffer, cap = 4) locus Buf { capacity { pool slots of Int; } }
+        @export locus Demo {
+            birth() {
+                let n = Nums { };
+                n.push(10); n.push(20); n.push(30);
+                println("vec=", n.len(), ",", n.get(1) or -1);
+                let r = Reg { };
+                r.set(Entry { k: 5, v: 50 });
+                r.set(Entry { k: 6, v: 60 });
+                println("map=", r.len(), ",", r.has(5), ",", (r.get(6) or Entry{k:0,v:-1}).v);
+                let b = Buf { };
+                b.push(1); b.push(2);
+                println("rb=", b.len());
+            }
+        }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse target-wasm @form program");
+    let wasm = tmp("form.wasm");
+    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
+        .expect("wasm codegen + link");
+    let loader = wasm.with_extension("mjs");
+    let run = Command::new(&node).arg(&loader).output().expect("run node loader");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    for expect in ["vec=3,20", "map=2,true,60", "rb=2"] {
+        assert!(
+            run.status.success() && stdout.contains(expect),
+            "@form collections must run under wasm32 (was a \
+             lotus_vec_*/lotus_hashmap_* call signature-mismatch trap); \
+             missing {:?}:\nstdout: {}\nstderr: {}",
+            expect,
+            stdout,
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
 fn tool(name: &str) -> Option<String> {
     for cand in [name, &format!("{}-18", name)] {
         if Command::new(cand).arg("--version").output().is_ok() {

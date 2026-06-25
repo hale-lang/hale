@@ -39,6 +39,11 @@ synthesized wire codec. Only the *cross-process / network* transports
 sandbox — those need syscalls. So the idiomatic locus + topic + bus
 shape is fully available client-side.
 
+The **`@form` collections** — `@form(vec)`, `@form(hashmap)`, and
+`@form(ring_buffer)` — run under wasm too; their runtime primitives use
+the target-pointer-width `size_t` ABI, so a `push` / `set` / `get` / `len`
+behaves identically to native.
+
 ## Calling the host: `@ffi("js")`
 
 `@ffi("js")` is the wasm sibling of [`@ffi("c")`](./binding-c.md):

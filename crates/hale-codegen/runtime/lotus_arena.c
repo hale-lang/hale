@@ -4113,9 +4113,13 @@ int lotus_ring_buffer_pop(void *rb_ptr, void *out) {
     return 1;
 }
 
-size_t lotus_ring_buffer_len(void *rb_ptr) {
+/* Returns int64_t (a Hale `Int`) to match lotus_vec_len /
+ * lotus_hashmap_len — NOT size_t, whose target-pointer width (i32 on
+ * wasm32) would mismatch the i64 codegen declaration of the `len()`
+ * accessor. The count is bounded by `cap`, so it fits int64_t trivially. */
+int64_t lotus_ring_buffer_len(void *rb_ptr) {
     if (!rb_ptr) return 0;
-    return ((lotus_ring_buffer_t *)rb_ptr)->len;
+    return (int64_t)((lotus_ring_buffer_t *)rb_ptr)->len;
 }
 
 int lotus_ring_buffer_is_full(void *rb_ptr) {
