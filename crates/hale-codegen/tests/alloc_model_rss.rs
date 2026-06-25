@@ -145,3 +145,93 @@ fn model_unbounded_verdict_matches_growing_rss() {
         flat_rss
     );
 }
+
+// === Phase C (2026-06-25): store-latest into a locus field is UNBOUNDED ===
+//
+// The note had hypothesized a "replace-vs-append refinement" treating a
+// whole-value field store (`self.f = X{}`) as *bounded*. RSS falsified it:
+// in Hale's bump arena a replaced value is not reclaimed until dissolve, so
+// a per-iteration whole-value replace accumulates — even for a fixed-size
+// `[Int; 4]`. These tests LOCK that finding so a future "optimization" that
+// wrongly suppresses store-latest gets a red test (and so the model's
+// flagging of it stays tied to measured RSS). See
+// `notes/memory-bound-proofs.md` §"Phase C finding".
+//
+// All three loops share the runtime bound `self.n` (not a const literal),
+// so loop-ranking can't prove them bounded — the genuine unbounded case.
+
+/// In-place indexed write into a fixed array field. No allocation: the slot
+/// is overwritten in existing inline storage. The model must NOT flag it,
+/// and RSS stays at the runtime floor. This is the *fix* the diagnostic
+/// steers toward.
+const INPLACE_FIELD_WRITE: &str = r#"
+    locus Acc {
+        params { recent: [Int; 4] = [0,0,0,0]; n: Int = 3000000; sink: Int = 0; }
+        run() {
+            let mut i = 0;
+            while i < self.n {
+                self.recent[i % 4] = i;
+                self.sink = self.sink + self.recent[0];
+                i = i + 1;
+            }
+            print("sum="); println(self.sink);
+            print("final_rss_mb="); println(std::process::rss_bytes() / 1048576);
+        }
+    }
+    fn main() { Acc { }; }
+"#;
+
+/// Whole-value replace of a fixed-size `[Int; 4]` field each iteration. The
+/// array literal bump-allocates a fresh 4-int array into the locus arena
+/// every trip; the prior one is not reclaimed until dissolve. The model
+/// flags it, and RSS climbs steeply with the trip count.
+const ARRAY_FIELD_REPLACE: &str = r#"
+    locus Acc {
+        params { recent: [Int; 4] = [0,0,0,0]; n: Int = 3000000; sink: Int = 0; }
+        run() {
+            let mut i = 0;
+            while i < self.n {
+                self.recent = [i, i, i, i];
+                self.sink = self.sink + self.recent[0];
+                i = i + 1;
+            }
+            print("sum="); println(self.sink);
+            print("final_rss_mb="); println(std::process::rss_bytes() / 1048576);
+        }
+    }
+    fn main() { Acc { }; }
+"#;
+
+#[test]
+fn store_latest_field_replace_grows_inplace_stays_flat() {
+    // Model side: the whole-value replace is an unbounded site; the
+    // in-place indexed write has no allocation site at all.
+    assert!(
+        model_has_unbounded_site(ARRAY_FIELD_REPLACE),
+        "whole-value `self.recent = [..]` replace must be flagged unbounded"
+    );
+    assert!(
+        !model_has_unbounded_site(INPLACE_FIELD_WRITE),
+        "in-place `self.recent[i] = v` writes allocate nothing — no false \
+         unbounded"
+    );
+
+    // Runtime side: RSS confirms the verdicts. The replace accumulates ~130
+    // MB over 3M trips; the in-place write sits at the runtime floor. Assert
+    // relative to the in-place baseline — the absolute floor varies with
+    // build config (see the model-vs-RSS test above).
+    let inplace_rss = build_and_rss("inplace_field_write", INPLACE_FIELD_WRITE);
+    let replace_rss = build_and_rss("array_field_replace", ARRAY_FIELD_REPLACE);
+
+    assert!(
+        replace_rss >= inplace_rss + 60,
+        "store-latest field replace should add >60MB over the in-place \
+         baseline: replace={}MB, inplace={}MB. If the gap collapsed, \
+         whole-value field assignment now reclaims per iteration — the \
+         'store-latest is unbounded' verdict (and the model that flags it) \
+         must be revisited before trusting any store-latest-is-bounded \
+         refinement.",
+        replace_rss,
+        inplace_rss
+    );
+}
