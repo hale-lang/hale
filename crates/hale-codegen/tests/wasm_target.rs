@@ -725,6 +725,47 @@ fn wasm_free_fn_in_bus_handler_preserves_order() {
     );
 }
 
+/// End-to-end `--wrap-main`: a bare `fn main` program, run through the
+/// `wrap_main_as_wasm_export` AST transform (what the CLI does for
+/// `--wrap-main`), compiles to a wasm module whose `_hale_start`
+/// instantiates the synthesized `@export locus __Main` and runs main's body
+/// at startup. The browser-playground on-ramp: raw `fn main` source →
+/// runnable wasm, no source-text rewrite.
+#[test]
+fn wasm_wrap_main_runs_bare_main_body() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_wrap_main_runs_bare_main_body: toolchain missing");
+        return;
+    };
+    // Raw source — NO `target wasm`, NO `@export`, just `fn main`.
+    let src = r#"
+        fn main() {
+            let msg: String = "wrapped-main-ran";
+            println(msg);
+        }
+    "#;
+    let mut program = hale_syntax::parse_source(src).expect("parse bare main");
+    let wrapped = hale_syntax::desugar::wrap_main_as_wasm_export(&mut program);
+    assert!(wrapped, "bare `fn main` should be wrapped");
+    let wasm = tmp("wrapmain.wasm");
+    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
+        .expect("wasm codegen of the wrapped program");
+    let loader = wasm.with_extension("mjs");
+    let run = Command::new(&node).arg(&loader).output().expect("run node loader");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    assert!(
+        run.status.success() && stdout.contains("wrapped-main-ran"),
+        "wrapped `fn main` body must run at _hale_start under wasm:\n\
+         stdout: {}\nstderr: {}",
+        stdout,
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 fn tool(name: &str) -> Option<String> {
     for cand in [name, &format!("{}-18", name)] {
         if Command::new(cand).arg("--version").output().is_ok() {

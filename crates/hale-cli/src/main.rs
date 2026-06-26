@@ -1283,6 +1283,30 @@ fn run_build(target: &Path) -> ExitCode {
     // F.32-0 cross-pool diagnostic stays quiet for auto-
     // inferable cases. Loci with existing sync kwarg or
     // single-pool use are left alone.
+
+    // `--wrap-main` (browser playground): synthesize the wasm `@export`
+    // entry from a bare `fn main` on the AST, BEFORE typecheck — so the
+    // checker sees the synthesized `target wasm` gate + `@export` locus,
+    // and every diagnostic keeps the user's original line/col (no textual
+    // wrap, no offset). Wasm-only: there is no native entry inversion to
+    // wrap, so on a native build it is a hard error rather than a silent
+    // no-op (which would mask a misconfigured playground build).
+    if std::env::args().any(|a| a == "--wrap-main") {
+        let args: Vec<String> = std::env::args().collect();
+        let target_wasm = args.windows(2).any(|w| {
+            w[0] == "--target" && (w[1] == "wasm32" || w[1] == "wasm")
+        });
+        if !target_wasm {
+            eprintln!(
+                "error: --wrap-main requires --target wasm32 — it \
+                 synthesizes the wasm @export entry from `fn main`, and \
+                 there is no native entry-inversion to wrap"
+            );
+            return ExitCode::from(2);
+        }
+        hale_syntax::desugar::wrap_main_as_wasm_export(&mut program);
+    }
+
     hale_syntax::json_gen::generate_json_parsers(&mut program);
     let pre_diags = hale_types::apply_sync_inference(&mut program);
     if !pre_diags.is_empty() {
@@ -1573,6 +1597,12 @@ fn parse_build_options() -> Result<hale_codegen::BuildOptions, String> {
                 }
             }
             "--strict" => {
+                i += 1;
+            }
+            // Browser-playground entry synthesis (handled in the build
+            // flow, before typecheck — see `wrap_main_as_wasm_export`).
+            // Accepted here so it isn't an "unknown flag".
+            "--wrap-main" => {
                 i += 1;
             }
             // WASM plan: select the compilation backend. Distinct from

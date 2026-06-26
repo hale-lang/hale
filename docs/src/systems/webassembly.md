@@ -122,6 +122,46 @@ requestAnimationFrame(tick);
 
 A program made of `@export` declarations needs no `fn main` at all.
 
+## Quick wasm from a bare `fn main`: `--wrap-main`
+
+A wasm program needs an `@export` entry — but a script, a tutorial
+snippet, or anything pasted into the browser playground is just a
+`fn main`. The `--wrap-main` build flag bridges that gap:
+
+```sh
+hale build snippet.hl --target wasm32 --wrap-main
+```
+
+When the program has a top-level `fn main()` and no `@export` entry,
+`--wrap-main` synthesizes — *on the parsed AST*, before typecheck — the
+equivalent of:
+
+```hale
+target wasm { }
+@export locus __Main { birth() { <main's body> } }
+```
+
+so `main`'s body runs once at `_hale_start`, exactly as it would run
+once natively. Because it works on the AST, not the source text:
+
+- **diagnostics keep the user's line/col** — the synthesized locus
+  borrows `main`'s spans and the body is moved intact, so a type error
+  on the user's line 3 is reported on line 3 (a textual wrap would shift
+  every following line);
+- it's **string/comment-safe** — the real lexer found the body, so a
+  `{` or `}` inside a string literal or comment can't mis-wrap it;
+- the **`target wasm` gate is injected too**, so the syscall-backed
+  stdlib (`std::io::tcp`, `std::process`, …) is rejected with a precise
+  diagnostic, on untouched source.
+
+It is **wasm-only and opt-in**: it requires `--target wasm32` (there is
+no native entry-inversion to wrap, so it errors on a native build), and
+it's never implied — a normal wasm program may legitimately keep a bare
+`fn main` exported as `main`. If the program already declares an
+`@export` entry, `--wrap-main` leaves it untouched (prefer-explicit).
+This is the one flag the browser playground passes so it can hand the
+compiler raw user source and surface errors on the exact line.
+
 ## Inbound messages
 
 The page hands network bytes to Hale through the **inbox**: write

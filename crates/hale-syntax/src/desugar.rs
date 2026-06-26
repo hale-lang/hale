@@ -60,6 +60,98 @@ pub fn desugar_topics(program: &mut Program) {
     desugar_binding_roles(program);
 }
 
+/// `--wrap-main` (browser playground): turn a bare-`main` program into a
+/// wasm browser-entry program *on the AST*, span-preservingly. A wasm
+/// program needs an `@export` locus entry (so codegen emits the
+/// `_hale_start` persistent-arena path the JS loader drives) — a plain
+/// `fn main` is not that shape. The playground used to rewrite the source
+/// text (`fn main() { BODY }` → `@export locus __Tour { birth() { BODY } }`
+/// + a `target wasm { }` header) with a brace-matching sed, which is not
+/// lexer-aware (a `{`/`}` in a string or comment fools it) and shifts every
+/// line so a parse/type error on the user's line 2 is reported on line 7.
+///
+/// This does the same wrap on the parsed AST instead. When the program has
+/// a top-level `fn main()` and no `@export` entry it:
+///   - replaces the `fn main` decl with a synthesized
+///     `@export locus __Main { birth() { <main's body> } }` — routing
+///     main's body through the same entry-inversion / `_hale_start` path an
+///     `@export locus` birth already uses; and
+///   - prepends a `target wasm { }` decl if none is present, so the
+///     typechecker gates the syscall-backed stdlib (`std::io::tcp`, …).
+///
+/// Both synthesized nodes BORROW main's span, and main's body is MOVED
+/// intact — so every statement keeps its original span and diagnostics
+/// point at the user's real line/col with zero offset.
+///
+/// Prefer-explicit: if the program already declares an `@export` entry
+/// (locus or fn) it is left untouched; no `fn main` ⇒ nothing to do. The
+/// caller restricts this to wasm builds — on native there is no entry
+/// inversion to wrap, so it would be meaningless. Returns whether it
+/// wrapped a `main`.
+pub fn wrap_main_as_wasm_export(program: &mut Program) -> bool {
+    // Prefer-explicit: an existing @export entry means the program is
+    // already in the wasm entry shape — don't touch it.
+    let has_export_entry = program.items.iter().any(|it| match it {
+        TopDecl::Locus(l) => l.export,
+        TopDecl::Fn(f) => f.export,
+        _ => false,
+    });
+    if has_export_entry {
+        return false;
+    }
+    // Find the top-level `fn main`. No main ⇒ nothing to wrap.
+    let Some(main_idx) = program.items.iter().position(
+        |it| matches!(it, TopDecl::Fn(f) if f.name.name == "main"),
+    ) else {
+        return false;
+    };
+    let TopDecl::Fn(main_fn) = &program.items[main_idx] else {
+        unreachable!("position matched a TopDecl::Fn")
+    };
+    // Borrow main's span; MOVE its body (statement spans preserved).
+    let main_span = main_fn.span;
+    let body = main_fn.body.clone();
+
+    let birth = LifecycleDecl {
+        kind: LifecycleKind::Birth,
+        params: Vec::new(),
+        ret: None,
+        unbounded: false,
+        body,
+        span: main_span,
+    };
+    let locus = LocusDecl {
+        name: Ident { name: "__Main".to_string(), span: main_span },
+        is_main: false,
+        export: true,
+        generics: Vec::new(),
+        annotations: Vec::new(),
+        form: None,
+        locality: None,
+        bounded: false,
+        members: vec![LocusMember::Lifecycle(birth)],
+        span: main_span,
+    };
+    program.items[main_idx] = TopDecl::Locus(locus);
+
+    // Inject `target wasm { }` if the program doesn't already gate.
+    let has_target = program.items.iter().any(|it| {
+        matches!(it, TopDecl::Target(t)
+            if matches!(t.name.name.as_str(), "wasm" | "browser_js"))
+    });
+    if !has_target {
+        program.items.insert(
+            0,
+            TopDecl::Target(TargetDecl {
+                name: Ident { name: "wasm".to_string(), span: main_span },
+                capabilities: Vec::new(),
+                span: main_span,
+            }),
+        );
+    }
+    true
+}
+
 /// Fill in `TransportSpec::Unix { role: None, .. }` with the
 /// role inferred from the bus block's publish/subscribe
 /// declarations on the topic. Typecheck already emitted a diag
