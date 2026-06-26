@@ -107,9 +107,10 @@ for (const ex of examples) ex.source = await (await fetch(`${DIST}/${ex.name}.hl
 // --- example execution: load + run an example's own wasm module ---
 let ui = null, raf = null;
 const realLog = console.log;
+// Host functions an example can call via @ffi("js") (e.g. the matchmaker's clock).
+const host = (h) => ({ now_ms: () => Date.now() });
 const captureOn  = () => { console.log = (...a) => {
-  const t = new Date().toTimeString().slice(0, 8);
-  elOut.textContent += `[${t}] ` + a.join(" ") + "\n"; elOut.scrollTop = elOut.scrollHeight;
+  elOut.textContent += a.join(" ") + "\n"; elOut.scrollTop = elOut.scrollHeight;
 }; };
 const captureOff = () => { console.log = realLog; };
 function stopLoop() { if (raf) { cancelAnimationFrame(raf); raf = null; } captureOff(); btn.textContent = "▶ Run"; }
@@ -123,7 +124,7 @@ async function runExample(idx) {
 
   if (ex.mode === "loop") {
     let inst;
-    try { inst = await mod.run(); }
+    try { inst = await mod.run(host); }
     catch (e) { captureOff(); elOut.innerHTML += `<span class="err">${esc(String(e))}</span>`; ui.exports.on_done(); return; }
     btn.textContent = "■ Stop";
     let frames = 0; const MAX = 1500;
@@ -136,7 +137,7 @@ async function runExample(idx) {
     raf = requestAnimationFrame(tick);
   } else {
     btn.disabled = true;
-    try { await mod.run(); elOut.innerHTML += '<span class="ok">✓ done</span>'; }
+    try { await mod.run(host); elOut.innerHTML += '<span class="ok">✓ done</span>'; }
     catch (e) { elOut.innerHTML += `<span class="err">${esc(String(e))}</span>`; }
     finally { captureOff(); btn.disabled = false; ui.exports.on_done(); }
   }

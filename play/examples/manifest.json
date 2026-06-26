@@ -3,7 +3,7 @@
     {
       "name": "matchmaker",
       "title": "Matchmaker",
-      "blurb": "Three loci wired through the typed bus: a Lobby publishes players onto a queue topic, the Matchmaker counts joins and publishes a match, a MatchLog prints it. The whole pub/sub chain runs as WebAssembly in your browser.",
+      "blurb": "Three loci wired through the typed bus: a Lobby publishes players onto a queue topic, the Matchmaker counts joins and publishes a match, a MatchLog prints it — each line timestamped by Hale calling JavaScript's Date.now() through @ffi(\"js\"). The whole chain runs as WebAssembly in your browser.",
       "mode": "batch"
     },
     {

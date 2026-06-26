@@ -1,3 +1,15 @@
+// A matchmaker, wired through the typed bus — and a taste of @ffi("js"):
+// Hale calls out to JavaScript's Date.now() (provided by the page) to put a
+// live wall-clock timestamp on each log line.
+@ffi("js") fn now_ms() -> Int;
+
+fn modi(a: Int, b: Int) -> Int { return a - (a / b) * b; }
+fn pad2(n: Int) -> String { if n < 10 { return "0" + to_string(n); } return to_string(n); }
+fn clock() -> String {
+    let day = modi(now_ms() / 1000, 86400);
+    return pad2(day / 3600) + ":" + pad2(modi(day / 60, 60)) + ":" + pad2(modi(day, 60));
+}
+
 type Player    { name: String; }
 type MatchInfo { size: Int; }
 
@@ -9,7 +21,7 @@ locus Matchmaker {
     }
     fn on_join(p: Player) {
         self.waiting = self.waiting + 1;
-        println(p.name, " joined  (", self.waiting, "/", self.target_size, ")");
+        println(clock(), "  ", p.name, " joined  (", self.waiting, "/", self.target_size, ")");
         if self.waiting >= self.target_size {
             "match.ready" <- MatchInfo { size: self.target_size };
             self.waiting = 0;
@@ -20,7 +32,7 @@ locus Matchmaker {
 locus MatchLog {
     bus { subscribe "match.ready" as on_match of type MatchInfo; }
     fn on_match(m: MatchInfo) {
-        println(">> Match ready with ", m.size, " players!");
+        println(clock(), "  >> Match ready with ", m.size, " players!");
     }
 }
 

@@ -3,8 +3,8 @@
 This page is the canonical catalog of the compile-time **checks** the
 toolchain runs beyond ordinary type-checking — the structural and
 semantic guarantees a program earns at `hale build` / `hale check`
-time. It describes shipped behavior; the roadmap of *candidate* future
-checks lives in GitHub issue #18, not here.
+time. It describes shipped behavior; the verification roadmap that drove
+these checks — now delivered — is recorded in GitHub issue #18 (closed).
 
 Two severity levels exist:
 
