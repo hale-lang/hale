@@ -4228,6 +4228,15 @@ typedef struct lotus_bus_queue {
     size_t            head;     /* next slot to pop */
     size_t            tail;     /* next slot to fill */
     size_t            cap;
+    /* Re-entrancy guard: set while this queue is draining. A nested
+     * lotus_bus_queue_drain on the same queue (a free fn — or any
+     * synchronously-called body — invoked from inside a handler, whose
+     * tail flush would otherwise drain again) is a no-op; the outer
+     * for-loop already pumps the queue to empty in FIFO order. Without
+     * it, the nested drain pops the NEXT cell first, so handlers nest and
+     * delivery comes out reversed with stale self. Set/cleared only by the
+     * single draining thread, so a plain int suffices. */
+    int               draining;
     pthread_mutex_t   lock;
 } lotus_bus_queue_t;
 
@@ -4280,6 +4289,7 @@ lotus_bus_queue_t *lotus_bus_queue_create(void) {
     }
     q->head = 0;
     q->tail = 0;
+    q->draining = 0;
     pthread_mutex_init(&q->lock, NULL);
     return q;
 }
@@ -4477,6 +4487,14 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q) {
 
 void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
     if (!q) return;
+    /* Re-entrancy guard (see lotus_bus_queue's `draining` field): a nested
+     * drain on the same queue — a free fn or other synchronously-called
+     * body whose tail flush drains while a drain is already in flight — is
+     * a no-op. The in-flight outer for-loop pumps the queue to empty in
+     * FIFO order; a nested drain would pop the NEXT cell first, reversing
+     * delivery and reading stale self. */
+    if (q->draining) return;
+    q->draining = 1;
     int locked = __atomic_load_n(&g_bus_has_pinned, __ATOMIC_ACQUIRE);
     if (locked) {
         /* Concurrent producers possible — must snapshot each cell
@@ -4488,6 +4506,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             if (q->head >= q->tail) {
                 q->head = 0;
                 q->tail = 0;
+                q->draining = 0;
                 pthread_mutex_unlock(&q->lock);
                 return;
             }
@@ -4515,6 +4534,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             if (q->head >= q->tail) {
                 q->head = 0;
                 q->tail = 0;
+                q->draining = 0;
                 return;
             }
             lotus_bus_cell_t *cell = &q->cells[q->head++];

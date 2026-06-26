@@ -664,6 +664,67 @@ fn wasm_capacity_and_recognition_run() {
     );
 }
 
+/// Regression: a bus handler that calls a free fn must deliver messages in
+/// order under wasm32 too. The free-fn tail flush drained the bus queue
+/// re-entrantly mid-dispatch, reversing delivery (30/20/10) and reading
+/// stale self — silent, native AND wasm (the real cause of the earlier
+/// "wasm timestamp scramble", where `clock()` was a free fn). Fixed by the
+/// `lotus_bus_queue_drain` re-entrancy guard. Here `Demo.birth` runs at
+/// `_hale_start`; the three publishes must reach `on_ping` as 10/20/30.
+#[test]
+fn wasm_free_fn_in_bus_handler_preserves_order() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_free_fn_in_bus_handler_preserves_order: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        type Ping { n: Int; }
+        fn label(n: Int, c: Int) -> String {
+            return "ping " + to_string(n) + " count " + to_string(c);
+        }
+        locus Echo {
+            params { count: Int = 0; }
+            bus { subscribe "pings" as on_ping of type Ping; }
+            fn on_ping(p: Ping) {
+                self.count = self.count + 1;
+                println(label(p.n, self.count));
+            }
+        }
+        locus Pinger {
+            bus { publish "pings" of type Ping; }
+            birth() {
+                "pings" <- Ping { n: 10 };
+                "pings" <- Ping { n: 20 };
+                "pings" <- Ping { n: 30 };
+            }
+        }
+        @export locus Demo { birth() { Echo { }; Pinger { }; } }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse target-wasm bus+freefn");
+    let wasm = tmp("busfreefn.wasm");
+    build_executable_with_options(&program, &wasm, &[], &wasm_opts())
+        .expect("wasm codegen + link");
+    let loader = wasm.with_extension("mjs");
+    let run = Command::new(&node).arg(&loader).output().expect("run node loader");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    // Order matters: the first delivered line must be `ping 10 count 1`,
+    // not the reversed `ping 30 count 3`.
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(
+        run.status.success()
+            && lines == ["ping 10 count 1", "ping 20 count 2", "ping 30 count 3"],
+        "free-fn call in a bus handler must keep FIFO delivery under wasm32:\n\
+         stdout: {}\nstderr: {}",
+        stdout,
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 fn tool(name: &str) -> Option<String> {
     for cand in [name, &format!("{}-18", name)] {
         if Command::new(cand).arg("--version").output().is_ok() {
