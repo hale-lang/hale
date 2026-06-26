@@ -1,0 +1,41 @@
+// A job queue, as a service. `Jobs` and `Results` are typed topics on the
+// bus; a Worker reacts to each Job, does the work, and publishes a Result; a
+// Reporter prints results; a Submitter feeds jobs in. Nobody calls anybody —
+// they publish and subscribe. (This is step 3 of the "Build a job queue"
+// tutorial; the same loci deploy across processes by changing only `main`.)
+type Job    { id: Int; work: Int; }
+type Result { id: Int; out: Int; }
+
+topic Jobs    { payload: Job; }
+topic Results { payload: Result; }
+
+locus Worker {
+    bus {
+        subscribe Jobs as on_job;
+        publish   Results;
+    }
+    fn on_job(j: Job) {
+        let out: Int = j.work * j.work;
+        Results <- Result { id: j.id, out: out };
+    }
+}
+
+locus Reporter {
+    bus { subscribe Results as on_result; }
+    fn on_result(r: Result) { println("job ", r.id, " done -> ", r.out); }
+}
+
+locus Submitter {
+    bus { publish Jobs; }
+    birth() {
+        Jobs <- Job { id: 1, work: 7 };
+        Jobs <- Job { id: 2, work: 3 };
+        Jobs <- Job { id: 3, work: 9 };
+    }
+}
+
+fn main() {
+    Worker { };
+    Reporter { };
+    Submitter { };
+}

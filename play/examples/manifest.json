@@ -14,6 +14,12 @@
       "entry": "frame"
     },
     {
+      "name": "jobqueue",
+      "title": "Job queue (bus)",
+      "blurb": "A job queue as a service: typed Jobs/Results topics on the bus, a Worker that reacts to each job, a Reporter, and a Submitter. Nobody calls anybody — they publish and subscribe. (Step 3 of the Build a job queue tutorial.)",
+      "mode": "batch"
+    },
+    {
       "name": "decimal",
       "title": "Exact money",
       "blurb": "Decimal is a primitive in Hale — exact fixed-point arithmetic, no floating-point dust. Real d-suffixed Decimal math (subtraction, division, compound interest), in your browser.",

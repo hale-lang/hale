@@ -163,9 +163,14 @@ examples.forEach((ex, i) => {
   b.onclick = () => ui.exports.select(BigInt(i));   // Int export args are i64 -> BigInt
   elNav.appendChild(b);
 });
-ui = await (await import(`${DIST}/ui.mjs`)).run(glue);   // birth() -> js_select(0)
+ui = await (await import(`${DIST}/ui.mjs`)).run(glue);   // birth() selects index 0
 btn.onclick = () => ui.exports.toggle();
-if (examples.length && examples[0].mode !== "loop") ui.exports.toggle();  // auto-run the first (batch) example
+
+// Optional deep link: /play/?example=<name>
+const want = new URLSearchParams(location.search).get("example");
+const startIdx = Math.max(0, examples.findIndex((e) => e.name === want));
+if (startIdx > 0) ui.exports.select(BigInt(startIdx));
+if (examples[startIdx] && examples[startIdx].mode !== "loop") ui.exports.toggle();  // auto-run if batch
 </script>
 </body>
 </html>

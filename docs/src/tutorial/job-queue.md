@@ -132,6 +132,9 @@ job 2 done -> 9
 job 3 done -> 81
 ```
 
+> **Run it:** this exact program is live in the
+> [playground](https://hale-lang.github.io/hale/play/?example=jobqueue) — no install.
+
 Notice what you *didn't* write. The `Submitter` never calls the `Worker` —
 it publishes to a topic, and whoever subscribes gets the message. There's no
 mutex, no channel type to choose, no `async`/`await` colouring a single
