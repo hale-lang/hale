@@ -575,36 +575,72 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     );
                     let (sub_v, sub_ty) = if call.success_ty.is_none() {
                         // v1.x-FORM-4: Unit-success fallible (e.g.
-                        // hashmap.remove). The substitute RHS is
-                        // Unit-typed — lower it as a statement so
-                        // Unit-returning fn calls (`ignore(err)`,
-                        // `noop()`) work without the expression-
-                        // position "fn returns no value" reject.
-                        let s = Stmt::Expr((**rhs).clone());
+                        // hashmap.remove / write_file). The substitute RHS
+                        // is Unit-typed.
                         let mut sub_mut_scope = Scope {
                             locals: sub_scope.locals.clone(),
                         };
-                        self.lower_stmt(&s, &mut sub_mut_scope)?;
+                        match rhs.as_ref() {
+                            // A `{ block }` disposer — `… or { println(…); }`
+                            // or `… or { return; }`. Lower the block body
+                            // directly: `lower_stmt` has no
+                            // `Stmt::Expr(Block)` form, so wrapping it as a
+                            // statement hits the "expression statement other
+                            // than locus literal or builtin call" reject
+                            // (this is the `or { block }`-in-statement-
+                            // position gap; it bit the `let _: ()` form too).
+                            Expr::Block(b) => {
+                                self.lower_block(b, &mut sub_mut_scope)?;
+                            }
+                            // Any other Unit-typed RHS — `ignore(err)`,
+                            // `noop()` — lower as a statement so a Unit-
+                            // returning fn call works without the
+                            // expression-position "fn returns no value"
+                            // reject.
+                            _ => {
+                                let s = Stmt::Expr((**rhs).clone());
+                                self.lower_stmt(&s, &mut sub_mut_scope)?;
+                            }
+                        }
                         (None, None)
                     } else {
                         self.lower_expr_opt(rhs, &sub_scope)?
                     };
-                    if sub_ty != call.success_ty {
-                        return Err(CodegenError::Unsupported(format!(
-                            "`or` substitute type mismatch: expected {:?}, \
-                             got {:?}",
-                            call.success_ty, sub_ty
-                        )));
-                    }
-                    // The rhs lowering may have created intermediate
-                    // blocks; the current insert block is where we
-                    // need to br from for the phi to see the right
-                    // predecessor.
-                    let sub_end_bb = self
+                    // A disposer that always diverges — `or { return …; }`
+                    // or `or { fail …; }` — terminates the err branch and
+                    // produces NO substitute value: `lower_block_as_expr`
+                    // hands back a placeholder `(undef, Int)` for the
+                    // unreachable fall-through. Detect the terminator and
+                    // treat it like `or raise`: the err branch is closed,
+                    // only the ok value reaches the join, and the
+                    // placeholder type is irrelevant (so the fallible's
+                    // success type may be String / Bytes / a struct, not
+                    // just the spurious Int).
+                    let diverged = self
                         .builder
                         .get_insert_block()
-                        .expect("substitute branch open");
-                    Some((sub_v, sub_end_bb))
+                        .and_then(|bb| bb.get_terminator())
+                        .is_some();
+                    if diverged {
+                        None
+                    } else {
+                        if sub_ty != call.success_ty {
+                            return Err(CodegenError::Unsupported(format!(
+                                "`or` substitute type mismatch: expected \
+                                 {:?}, got {:?}",
+                                call.success_ty, sub_ty
+                            )));
+                        }
+                        // The rhs lowering may have created intermediate
+                        // blocks; the current insert block is where we
+                        // need to br from for the phi to see the right
+                        // predecessor.
+                        let sub_end_bb = self
+                            .builder
+                            .get_insert_block()
+                            .expect("substitute branch open");
+                        Some((sub_v, sub_end_bb))
+                    }
                 }
             };
 

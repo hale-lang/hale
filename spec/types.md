@@ -762,6 +762,26 @@ emits `error: error not addressed` at:
   a call (`or handler(err)`), making `err` a regular
   expression-position binding inside the fallback.
 
+  The fallback may be a **`{ block }`** — `or { … }`, with `err`
+  in scope — for multi-statement recovery. Two cases:
+
+  - A block that **always diverges** (`return` / `fail` on every
+    path) produces no substitute value, so it imposes no
+    constraint on T and is accepted for **any** success type —
+    `let s = read_file(p) or { return "fallback"; };` where the
+    fallible's success type is `String`, `Bytes`, a struct, etc.
+    (It disposes like `or raise`: the err branch is closed and
+    only the success value reaches the continuation.)
+  - A non-diverging block substitutes its **tail expression** as
+    the fallback value, whose type must be assignable to T:
+    `let s = read_file(p) or { log(err); "default" };`.
+
+  On a **Unit-success** fallible (`() fallible(E)`, e.g.
+  `std::io::fs::write_file`), `or { block }` runs the block for
+  effect — including in **statement position**:
+  `write_file(p, s) or { println("failed"); };` — the same as
+  `or raise` / `or discard` there.
+
 The `or` operator is right-associative: `a() or b() or raise`
 parses as `a() or (b() or raise)`, so each level disposes one
 fallible in turn until a non-fallible value remains.
