@@ -42,6 +42,12 @@
       "title": "Collections (@form)",
       "blurb": "No Vec<T> ceremony — a collection is a locus with a @form annotation, and @form(vec) synthesizes push/get/pop/len/is_empty on it. `get` is fallible (out-of-range), addressed with `or`. Running as WebAssembly in your browser.",
       "mode": "batch"
+    },
+    {
+      "name": "closure",
+      "title": "Closure assertions",
+      "blurb": "Hale's verification flavor: a `closure` is a runtime-audited invariant declared on the locus. This Ledger asserts its books balance (credits ~~ debits) at dissolve; an unbalanced one 'explodes' and the parent's on_failure receives a structured ClosureViolation — the discrepancy, caught, not a crash.",
+      "mode": "batch"
     }
   ]
 }

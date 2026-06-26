@@ -1,0 +1,27 @@
+// Closures are runtime-audited invariants, declared right on the locus. This
+// Ledger asserts its books balance (credits ~~ debits) when it dissolves. If
+// they don't, the locus "explodes" and the parent's on_failure gets a
+// structured ClosureViolation — the discrepancy, not a crash.
+locus Ledger {
+    params { credits: Int = 0; debits: Int = 0; }
+    closure balanced {
+        self.credits ~~ self.debits within 0;
+    }
+}
+
+locus Bank {
+    on_failure(c: Ledger, err: ClosureViolation) {
+        println("  ! closure '", err.closure, "' failed on ", err.locus, " — off by ", err.diff);
+    }
+    run() {
+        println("posting a balanced ledger   (100 / 100) ...");
+        Ledger { credits: 100, debits: 100 };
+        println("posting an unbalanced ledger (100 /  95) ...");
+        Ledger { credits: 100, debits: 95 };
+        println("done.");
+    }
+}
+
+fn main() {
+    Bank { };
+}
