@@ -144,6 +144,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Time
             | CodegenTy::Duration
             | CodegenTy::BytesMut
+            | CodegenTy::Drain(_)
             | CodegenTy::FnPtr { .. } => Ok(value),
             CodegenTy::Enum(name) => {
                 let info = self

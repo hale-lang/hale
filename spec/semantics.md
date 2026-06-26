@@ -900,6 +900,36 @@ Transport surface:
   directly into the ring slot (no memcpy on the subscriber
   side).
 
+  **Batch / drain dispatch (`Drain<T>`, 2026-06-26).** The
+  dispatch mode is selected by the handler's PARAMETER TYPE,
+  using the *same* `subscribe Topic as on_x;` keyword:
+
+  - `fn on_x(t: T)` — per-record (above). The reader thread
+    calls the handler once per committed slot.
+  - `fn on_x(feed: Drain<T>)` — BATCH. The reader thread calls
+    the handler ONCE per available batch, passing a `Drain<T>`
+    handle. The handler consumes the batch with an inline
+    `for t in feed { ... }` loop — there is NO per-record
+    function call, and no per-call handler arena scratch. This
+    is the throughput path for high-rate cross-process feeds,
+    where the per-record call + scratch overhead is what loses
+    to a bare consumer loop.
+
+  `Drain<T>` is a built-in 1-arg type constructor (not a user
+  generic). It is only spellable as a batch handler's single
+  param and as the iterable of `for t in feed`; the loop binds
+  `t` to each record read zero-copy through the ring slot —
+  `t.field` accesses GEP directly into the mapped slot, exactly
+  like the per-record handler's payload param. A batch handler
+  registers through
+  `lotus_bus_register_subscriber_shm_ring_batch(...)` (which
+  spawns `shm_ring_batch_reader_thread`) instead of the
+  per-record registration; the handle's runtime ABI is
+  `{ void* ring, int64_t start_seqno, int64_t end_seqno }`. The
+  consumer cursor is release-stored once per batch (not per
+  record). Batch handlers on a `layout:`-bound (foreign) ring
+  are not supported yet — use a per-record handler there.
+
   **Threading constraint.** The handler runs on the reader
   thread, NOT the cooperative scheduler. Handlers must be
   thread-safe and avoid touching shared scheduler state.

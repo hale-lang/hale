@@ -1014,6 +1014,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 release_param: None,
                 user_methods: BTreeMap::new(),
                 subscriptions: Vec::new(),
+                batch_handlers: std::collections::BTreeSet::new(),
                 closures: Vec::new(),
                 accumulators_per_closure,
                 persists_through_per_closure,
@@ -1090,6 +1091,10 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             BTreeMap::new();
         let mut subscriptions: Vec<(String, String, String, Option<KeyFilter>)> =
             Vec::new();
+        // shm_ring batch consumers (2026-06-26): handler names whose
+        // single param is `Drain<T>` → register through the batch path.
+        let mut batch_handlers: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
         let mut closures: Vec<(String, ClosureAssertion, EpochSpec)> =
             Vec::new();
         let mut failure_handler: Option<(String, FunctionValue<'ctx>)> = None;
@@ -1360,6 +1365,13 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                             )));
                         }
                         let lt = self.type_expr_to_codegen_ty(&p.ty)?;
+                        // Drain<T> as a bus-handler's single param marks
+                        // a batch consumer. The LLVM type is `ptr` (the
+                        // handle), so the fn signature is unchanged; only
+                        // the registration path differs.
+                        if is_bus_handler && matches!(lt, CodegenTy::Drain(_)) {
+                            batch_handlers.insert(fd.name.name.clone());
+                        }
                         llvm_param_tys.push(self.llvm_basic_type(&lt).into());
                     }
                     // Open-question #24 MVP: fallible-method ABI
@@ -1464,7 +1476,8 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                 | CodegenTy::Tuple(_)
                                 | CodegenTy::FnPtr { .. }
                                 | CodegenTy::Interface(_)
-                                | CodegenTy::Cell(_, _) => self
+                                | CodegenTy::Cell(_, _)
+                                | CodegenTy::Drain(_) => self
                                     .context
                                     .ptr_type(AddressSpace::default())
                                     .fn_type(&llvm_param_tys, false),
@@ -1649,7 +1662,8 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                 | CodegenTy::Tuple(_)
                                 | CodegenTy::FnPtr { .. }
                                 | CodegenTy::Interface(_)
-                                | CodegenTy::Cell(_, _) => self
+                                | CodegenTy::Cell(_, _)
+                                | CodegenTy::Drain(_) => self
                                     .context
                                     .ptr_type(AddressSpace::default())
                                     .fn_type(&llvm_param_tys, false),
@@ -1811,6 +1825,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         info.release_param = release_param;
         info.user_methods = user_methods;
         info.subscriptions = subscriptions;
+        info.batch_handlers = batch_handlers;
         info.closures = closures;
         info.birth_closures_fn = birth_closures_fn;
         info.dissolve_closures_fn = dissolve_closures_fn;

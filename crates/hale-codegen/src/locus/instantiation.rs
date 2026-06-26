@@ -2074,10 +2074,16 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                 // thread spawned by the C runtime invokes the
                 // handler with the slot pointer.
                 if self.shm_ring_subjects.contains_key(subject) {
+                    // Drain<T> batch consumer (2026-06-26): if this
+                    // handler's param is `Drain<T>`, register the batch
+                    // reader (one handler call per batch) rather than
+                    // the per-record reader.
+                    let is_batch = info.batch_handlers.contains(handler_name);
                     self.emit_bus_register_shm_ring(
                         subject,
                         self_ptr,
                         handler_fn,
+                        is_batch,
                     )?;
                 } else {
                     // 2026-06-01: register the handler-reclaim wrapper

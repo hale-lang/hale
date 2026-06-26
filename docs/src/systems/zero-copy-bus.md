@@ -42,6 +42,46 @@ The `subscribe L2Updates as on_update;` handler is the *same line
 of source* it would be over a Unix socket — the substrate picks
 the zero-copy lowering from the binding, not from the locus code.
 
+## Per-record vs. batch: the handler's param picks the mode
+
+By default the substrate calls your handler once per record:
+
+```hale
+fn on_update(u: Update) {   // per-record
+    self.total = self.total + u.px;
+}
+```
+
+On a high-rate cross-process feed that per-record call — plus the
+per-call handler scratch — is exactly the overhead that loses to a
+bare consumer loop in C or Go. Hale's fix is the **drain** handler:
+change the parameter type to `Drain<T>` and the substrate calls the
+handler **once per available batch**, handing you a handle you
+consume with a tight inline loop.
+
+```hale
+locus Agg {
+    params { total: Int = 0; }
+    bus { subscribe Quotes as on_quotes; }   // SAME subscribe line
+    fn on_quotes(feed: Drain<Tick>) {         // param type → batch mode
+        for t in feed {                       // zero-copy inline loop
+            self.total = self.total + t.px;   // no per-record call
+        }
+    }
+}
+```
+
+There is no new keyword — the `subscribe` clause is unchanged; the
+parameter type alone selects the dispatch mode. Inside `for t in
+feed`, each `t` is read straight through the ring slot (so `t.px`
+reads the mapped shared memory in place, never a copy), and the
+consumer cursor advances once per batch instead of once per record.
+
+`Drain<T>` is only spellable as a batch handler's parameter and as
+the thing you iterate; it is not a general value type. Batch
+handlers on a foreign (`layout:`) ring aren't supported yet — use a
+per-record handler there.
+
 ## The `where` clause is a checked contract
 
 `where intra_machine, zero_copy` is two things at once: your

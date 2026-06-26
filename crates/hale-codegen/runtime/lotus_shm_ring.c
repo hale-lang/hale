@@ -1218,6 +1218,54 @@ static void *shm_ring_reader_thread(void *arg) {
     return NULL;
 }
 
+/* Drain<T> batch consumer (2026-06-26) ------------------------------
+ *
+ * Handle passed by reference to a batch handler. The codegen ABI is
+ * `{ void* ring, int64_t start_seqno, int64_t end_seqno }` — field
+ * order/types MUST match the LLVM handle struct in lower_for_drain.
+ * The handler loops `start_seqno ..= end_seqno` inline, reading each
+ * record zero-copy through lotus_shm_ring_read_slot — no per-record
+ * call. */
+typedef struct {
+    void *ring;
+    int64_t start_seqno;
+    int64_t end_seqno;
+} lotus_drain_handle_t;
+
+/* Mirror of shm_ring_reader_thread, but dispatches ONE handler call
+ * per available batch (with a Drain<T> handle) instead of one call per
+ * record. The handler's inline `for t in feed` does the per-record
+ * walk. This removes the per-record function-call + per-call arena
+ * scratch that loses to a bare consumer loop on cross-process feeds. */
+static void *shm_ring_batch_reader_thread(void *arg) {
+    shm_ring_subscriber_t *sub = (shm_ring_subscriber_t *)arg;
+    uint64_t last_seen = 0;
+    while (!atomic_load_explicit(&sub->should_stop,
+                                  memory_order_acquire)) {
+        uint64_t pub = lotus_shm_ring_published(sub->ring);
+        if (pub > last_seen) {
+            /* One handler call for the whole [last_seen+1, pub] batch.
+             * The handler reads each slot via lotus_shm_ring_read_slot,
+             * which NULL-skips any seqno the producer has lapped. */
+            lotus_drain_handle_t h = {
+                sub->ring,
+                (int64_t)(last_seen + 1),
+                (int64_t)pub,
+            };
+            ((void (*)(void *, void *))sub->handler_fn)(sub->self_ptr, &h);
+            last_seen = pub;
+            /* Form K7: release-publish the consumer cursor after the
+             * batch (back-pressure policies read it with acquire). */
+            atomic_store_explicit(&sub->ring->header->consumer_seqno,
+                                    last_seen, memory_order_release);
+        } else {
+            struct timespec ts = {0, 100 * 1000};  /* 100us */
+            nanosleep(&ts, NULL);
+        }
+    }
+    return NULL;
+}
+
 /* Proposal B (2026-06-06) — reader loop for a foreign `byte_records`
  * ring. `local` is a monotonic byte cursor (the same units the
  * producer publishes); the physical read offset is
@@ -1685,6 +1733,67 @@ void lotus_bus_register_subscriber_shm_ring(const char *subject,
         fprintf(stderr,
                 "lotus_bus_register_subscriber_shm_ring(`%s`): exceeded "
                 "LOTUS_SHM_RING_MAX_SUBSCRIBERS (%d)\n",
+                subject, LOTUS_SHM_RING_MAX_SUBSCRIBERS);
+        _exit(1);
+    }
+    g_shm_ring_subscribers[idx] = sub;
+}
+
+/* Drain<T> batch consumer (2026-06-26): identical to the per-record
+ * register above (same open + subscriber struct + atexit teardown),
+ * but spawns shm_ring_batch_reader_thread, which calls the handler
+ * once per batch with a `lotus_drain_handle_t *` instead of once per
+ * record with a slot pointer. The handler ABI is
+ * `void(void *self, void *handle)`. */
+void lotus_bus_register_subscriber_shm_ring_batch(
+        const char *subject, uint64_t slot_size, uint64_t slot_count,
+        const char *shm_name, void *self_ptr,
+        void (*handler_fn)(void *self, void *handle)) {
+    ensure_shm_ring_atexit_registered();
+
+    lotus_shm_ring_t *ring = lotus_shm_ring_open(
+        shm_name, slot_size, slot_count, LOTUS_SHM_OVERFLOW_DROP);
+    if (!ring) {
+        fprintf(stderr,
+                "lotus_bus_register_subscriber_shm_ring_batch(`%s`, `%s`): "
+                "open failed: %s\n",
+                subject, shm_name, strerror(errno));
+        _exit(1);
+    }
+
+    shm_ring_subscriber_t *sub =
+        (shm_ring_subscriber_t *)calloc(1, sizeof(*sub));
+    if (!sub) {
+        fprintf(stderr,
+                "lotus_bus_register_subscriber_shm_ring_batch(`%s`): calloc "
+                "failed\n",
+                subject);
+        _exit(1);
+    }
+    sub->ring = ring;
+    /* The struct's handler_fn slot is typed (void*, void* slot); the
+     * batch thread re-casts it to (void*, void* handle) at call. */
+    sub->handler_fn = (void (*)(void *, void *))handler_fn;
+    sub->self_ptr = self_ptr;
+    atomic_store_explicit(&sub->should_stop, 0, memory_order_relaxed);
+
+    lotus_mark_multithreaded();
+    int rc = pthread_create(&sub->thread, NULL,
+                            shm_ring_batch_reader_thread, sub);
+    if (rc != 0) {
+        fprintf(stderr,
+                "lotus_bus_register_subscriber_shm_ring_batch(`%s`): "
+                "pthread_create failed: %d\n",
+                subject, rc);
+        free(sub);
+        _exit(1);
+    }
+    int idx = atomic_fetch_add_explicit(
+        &g_shm_ring_subscriber_count, 1, memory_order_acq_rel);
+    if (idx >= LOTUS_SHM_RING_MAX_SUBSCRIBERS) {
+        fprintf(stderr,
+                "lotus_bus_register_subscriber_shm_ring_batch(`%s`): "
+                "exceeded LOTUS_SHM_RING_MAX_SUBSCRIBERS (%d)\n",
                 subject, LOTUS_SHM_RING_MAX_SUBSCRIBERS);
         _exit(1);
     }

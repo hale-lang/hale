@@ -182,6 +182,16 @@ pub(crate) enum CodegenTy {
     /// `None` reserved for future generic-Cell<T> positions
     /// (e.g. fn args that take any cell); v1 always sets it.
     Cell(Box<CodegenTy>, Option<(String, String)>),
+    /// shm_ring batch consumer handle. The boxed `CodegenTy` is the
+    /// per-record element type T (a `TypeRef` to the topic payload
+    /// struct). Only valid as the single param of a batch bus handler
+    /// (`fn on_x(feed: Drain<T>)`) and as the iterable of a `for t in
+    /// feed` loop. At the LLVM level it is a `ptr` to a small handle
+    /// struct `{ void* ring, i64 start_seqno, i64 end_seqno }` the
+    /// runtime fills in per batch; the for-loop walks seqnos in that
+    /// range and reads each record zero-copy through
+    /// `lotus_shm_ring_read_slot`.
+    Drain(Box<CodegenTy>),
 }
 
 /// Did the last lowered statement leave the current basic block
@@ -2990,6 +3000,12 @@ pub(crate) struct LocusInfo<'ctx> {
     /// codegen evaluates EXPR at locus birth (where `self` is in
     /// scope) and threads the value into `lotus_bus_register_keyed`.
     pub(crate) subscriptions: Vec<(String, String, String, Option<KeyFilter>)>,
+    /// shm_ring batch consumers (2026-06-26): the set of handler
+    /// method names whose single param is `Drain<T>` rather than the
+    /// topic payload `T`. A subscribe whose handler is in this set
+    /// registers through `lotus_bus_register_subscriber_shm_ring_batch`
+    /// (one handler call per batch) instead of the per-record path.
+    pub(crate) batch_handlers: std::collections::BTreeSet<String>,
     /// Closure declarations on this locus. All five epochs lower
     /// (Birth m39, Dissolve, Tick m42, Duration m43, Explicit m44).
     /// Each element is `(name, assertion, epoch)` carried over from
@@ -8700,7 +8716,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 | Some(CodegenTy::Tuple(_))
                 | Some(CodegenTy::FnPtr { .. })
                 | Some(CodegenTy::Interface(_))
-                | Some(CodegenTy::Cell(_, _)) => self
+                | Some(CodegenTy::Cell(_, _))
+                | Some(CodegenTy::Drain(_)) => self
                     .context
                     .ptr_type(AddressSpace::default())
                     .fn_type(&llvm_param_tys, false),
@@ -9205,6 +9222,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::LocusRef(_)
             | CodegenTy::Cell(_, _)
             | CodegenTy::FnPtr { .. }
+            | CodegenTy::Drain(_)
             | CodegenTy::Decimal => Err(CodegenError::Unsupported(format!(
                 "@ffi fn `{}` parameter `{}`: type {:?} is not yet wired \
                  for FFI codegen at Stage 1. See spec/ffi.md.",
@@ -13602,6 +13620,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if let Expr::Range { lo, hi, inclusive, .. } = iter {
             return self.lower_for_range(var_name, lo, hi, *inclusive, body, scope);
         }
+        // shm_ring batch consumer: `for t in feed` where `feed:
+        // Drain<T>`. The iterable is the batch-handler's `Drain<T>`
+        // param (an Ident bound to a handle ptr in scope). Lower to a
+        // tight seqno walk that reads each record zero-copy through the
+        // ring — no per-record fn call.
+        if let Expr::Ident(id) = iter {
+            if let Some((_, CodegenTy::Drain(elem))) = scope.locals.get(&id.name) {
+                let elem = elem.as_ref().clone();
+                return self.lower_for_drain(var_name, iter, &elem, body, scope);
+            }
+        }
         if !is_self_children {
             return self.lower_for_array(var_name, iter, body, scope);
         }
@@ -14025,6 +14054,191 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(BlockEnd::Open)
     }
 
+    /// `for t in feed` where `feed: Drain<T>` — the shm_ring batch
+    /// consumer (2026-06-26). The handle `feed` is a ptr to a runtime
+    /// struct `{ void* ring, i64 start_seqno, i64 end_seqno }`. We walk
+    /// `seqno = start ..= end`, read each slot zero-copy via
+    /// `lotus_shm_ring_read_slot(ring, seqno)`, and bind `t` to the
+    /// slot pointer typed as `TypeRef(T)` so `t.field` GEPs straight
+    /// into the mapped ring (exactly how a per-record handler reads its
+    /// payload param). NO per-record function call — this is the perf
+    /// fix for cross-process delivery.
+    fn lower_for_drain(
+        &mut self,
+        var_name: &Ident,
+        iter: &Expr,
+        elem_ty: &CodegenTy,
+        body: &Block,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        // The handle is a `{ ptr, i64, i64 }` struct the runtime fills.
+        let handle_ty = self.context.struct_type(
+            &[ptr_t.into(), i64_t.into(), i64_t.into()],
+            false,
+        );
+
+        // Evaluate the iterable to the handle pointer.
+        let (handle_val, _) = self.lower_expr(iter, scope)?;
+        let handle_ptr = handle_val.into_pointer_value();
+
+        // Load ring, start_seqno, end_seqno once.
+        let ring_gep = self
+            .builder
+            .build_struct_gep(handle_ty, handle_ptr, 0, "drain.ring.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ring = self
+            .builder
+            .build_load(ptr_t, ring_gep, "drain.ring")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        let start_gep = self
+            .builder
+            .build_struct_gep(handle_ty, handle_ptr, 1, "drain.start.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let start = self
+            .builder
+            .build_load(i64_t, start_gep, "drain.start")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let end_gep = self
+            .builder
+            .build_struct_gep(handle_ty, handle_ptr, 2, "drain.end.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let end = self
+            .builder
+            .build_load(i64_t, end_gep, "drain.end")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+
+        let read_slot_fn = self
+            .module
+            .get_function("lotus_shm_ring_read_slot")
+            .expect("lotus_shm_ring_read_slot declared");
+
+        let func = self
+            .current_fn
+            .expect("current_fn set while lowering a for");
+        let header_bb = self.context.append_basic_block(func, "drain.cond");
+        let body_bb = self.context.append_basic_block(func, "drain.body");
+        let read_ok_bb = self.context.append_basic_block(func, "drain.read.ok");
+        let inc_bb = self.context.append_basic_block(func, "drain.inc");
+        let exit_bb = self.context.append_basic_block(func, "drain.end.bb");
+
+        // seqno = start
+        let seqno_slot = self
+            .builder
+            .build_alloca(i64_t, "drain.seqno.slot")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(seqno_slot, start)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // header: while seqno <= end
+        self.builder.position_at_end(header_bb);
+        let seqno = self
+            .builder
+            .build_load(i64_t, seqno_slot, "drain.seqno")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let in_range = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::ULE,
+                seqno,
+                end,
+                "drain.in.range",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(in_range, body_bb, exit_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // body: slot = read_slot(ring, seqno); if slot != null → bind t
+        self.builder.position_at_end(body_bb);
+        let slot = self
+            .builder
+            .build_call(
+                read_slot_fn,
+                &[ring.into(), seqno.into()],
+                "drain.read.slot",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("read_slot returns ptr")
+            .into_pointer_value();
+        let slot_is_null = self
+            .builder
+            .build_is_null(slot, "drain.slot.null")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(slot_is_null, inc_bb, read_ok_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // read.ok: bind `t = slot` typed as the record type; lower body
+        self.builder.position_at_end(read_ok_bb);
+        // The record type is read THROUGH the slot pointer — store the
+        // slot ptr in a ptr-shaped local typed `elem_ty` so `t.field`
+        // GEPs into the mapped ring (zero-copy), mirroring how a
+        // per-record handler binds its payload param.
+        let local_slot = self
+            .builder
+            .build_alloca(ptr_t, &var_name.name)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(local_slot, slot)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let prev = scope
+            .locals
+            .insert(var_name.name.clone(), (local_slot, elem_ty.clone()));
+        self.loops.push(LoopFrame {
+            continue_bb: inc_bb,
+            break_bb: exit_bb,
+        });
+        let body_end = self.lower_block(body, scope)?;
+        self.loops.pop();
+        if body_end == BlockEnd::Open {
+            self.builder
+                .build_unconditional_branch(inc_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        if let Some(prev) = prev {
+            scope.locals.insert(var_name.name.clone(), prev);
+        } else {
+            scope.locals.remove(&var_name.name);
+        }
+
+        // inc: seqno = seqno + 1
+        self.builder.position_at_end(inc_bb);
+        let seqno_now = self
+            .builder
+            .build_load(i64_t, seqno_slot, "drain.seqno.now")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let seqno_next = self
+            .builder
+            .build_int_add(
+                seqno_now,
+                i64_t.const_int(1, false),
+                "drain.seqno.next",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(seqno_slot, seqno_next)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(exit_bb);
+        Ok(BlockEnd::Open)
+    }
+
     fn lower_break(&mut self) -> Result<BlockEnd, CodegenError> {
         let frame = self.loops.last().copied().ok_or_else(|| {
             CodegenError::Unsupported("`break` outside a loop".to_string())
@@ -14378,7 +14592,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Array(_, _)
             | CodegenTy::Tuple(_)
             | CodegenTy::Interface(_)
-            | CodegenTy::Cell(_, _) => {
+            | CodegenTy::Cell(_, _)
+            | CodegenTy::Drain(_) => {
                 self.context.ptr_type(AddressSpace::default()).into()
             }
         };
@@ -16477,6 +16692,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                          handles at v1, not printable values. \
                          Release/free the cell and println a \
                          specific value instead.",
+                        inner
+                    )));
+                }
+                CodegenTy::Drain(inner) => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "println of a `Drain<{:?}>` batch handle — \
+                         iterate it with `for t in feed` and print \
+                         individual records instead",
                         inner
                     )));
                 }

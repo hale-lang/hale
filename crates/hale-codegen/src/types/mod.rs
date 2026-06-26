@@ -202,6 +202,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             TypeExpr::Named { path, generic_args, .. }
                 if !generic_args.is_empty() && path.segments.len() == 1 =>
             {
+                // shm_ring batch consumer: `Drain<T>` is a built-in
+                // 1-arg type constructor (NOT a user generic). It
+                // resolves to `CodegenTy::Drain(T)` — a `ptr` to a
+                // runtime-filled `{ ring, start, end }` handle. Only
+                // valid as a batch bus-handler param + a `for`-iterable;
+                // its element type T (the topic payload struct) is
+                // carried so the loop knows the record layout.
+                if path.segments[0].name == "Drain" && generic_args.len() == 1 {
+                    let elem = self.type_expr_to_codegen_ty(&generic_args[0])?;
+                    return Ok(CodegenTy::Drain(Box::new(elem)));
+                }
                 let mangled = Self::mangle_generic_name(
                     &path.segments[0].name,
                     generic_args,
@@ -614,7 +625,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Array(_, _)
             | CodegenTy::Tuple(_)
             | CodegenTy::Interface(_)
-            | CodegenTy::Cell(_, _) => {
+            | CodegenTy::Cell(_, _)
+            | CodegenTy::Drain(_) => {
                 self.context.ptr_type(AddressSpace::default()).into()
             }
         }
@@ -968,6 +980,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::BytesView
             | CodegenTy::StringView
             | CodegenTy::Cell(_, _)
+            | CodegenTy::Drain(_)
             | CodegenTy::BytesMut => false,
             CodegenTy::String
             | CodegenTy::Bytes

@@ -1185,6 +1185,36 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
+        // Drain<T> batch consumer (2026-06-26): same signature as the
+        // per-record register above, but spawns a BATCH reader thread
+        // that calls the handler ONCE per available batch with a
+        // `Drain<T>` handle (`{ void* ring, i64 start, i64 end }`)
+        // instead of once per record. The handler loops over the
+        // batch inline (`for t in feed`), reading each record
+        // zero-copy via lotus_shm_ring_read_slot.
+        // declare void @lotus_bus_register_subscriber_shm_ring_batch(
+        //   ptr subject, i64 slot_size, i64 slot_count,
+        //   ptr shm_name, ptr self_ptr, ptr batch_handler_fn)
+        self.module.add_function(
+            "lotus_bus_register_subscriber_shm_ring_batch",
+            bus_register_sub_shm_ring_ty,
+            None,
+        );
+
+        // Drain<T> for-loop primitive: read a pointer to the ring slot
+        // at `seqno` (1-based). Returns NULL if the seqno is stale /
+        // uncommitted; the batch for-loop skips those. `seqno` is a
+        // uint64_t (i64, NOT size_t) — it is a logical sequence
+        // number, native + wasm32 alike.
+        // declare ptr @lotus_shm_ring_read_slot(ptr ring, i64 seqno)
+        let shm_ring_read_slot_ty =
+            ptr_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
+        self.module.add_function(
+            "lotus_shm_ring_read_slot",
+            shm_ring_read_slot_ty,
+            None,
+        );
+
         // Proposal B (2026-06-06): foreign-layout subscriber. Like
         // the native register above, but the ring shape is described
         // by a `ring_layout` rather than the LRSRNG1 header — so it

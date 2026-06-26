@@ -17,6 +17,7 @@ pub(crate) trait BusRuntime<'ctx> {
         subject: &str,
         self_ptr: PointerValue<'ctx>,
         handler_fn: FunctionValue<'ctx>,
+        is_batch: bool,
     ) -> Result<(), CodegenError>;
     fn emit_bus_register(
         &mut self,
@@ -139,6 +140,7 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
         subject: &str,
         self_ptr: PointerValue<'ctx>,
         handler_fn: FunctionValue<'ctx>,
+        is_batch: bool,
     ) -> Result<(), CodegenError> {
         let info = self
             .shm_ring_subjects
@@ -156,6 +158,14 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
         // `ring_layout` and register through the layout-aware path;
         // the native LRSRNG1 path below is left untouched.
         if let Some(layout) = info.layout.clone() {
+            if is_batch {
+                return Err(CodegenError::Unsupported(format!(
+                    "shm_ring subscribe `{}`: `Drain<T>` batch consumers are \
+                     not supported on `layout:`-bound (foreign) rings yet — \
+                     use a per-record `fn on_x(t: T)` handler",
+                    subject
+                )));
+            }
             // The bound payload's fixed byte size — the consumer requires
             // each record's framed `len` to equal this before dispatch.
             // 0 ⇒ the raw/BytesView path (no struct, e.g. a heterogeneous
@@ -206,10 +216,20 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .as_pointer_value();
         let handler_ptr = handler_fn.as_global_value().as_pointer_value();
+        // Drain<T> batch consumer (2026-06-26): a batch handler gets a
+        // reader thread that dispatches ONE handle per available batch;
+        // the per-record path dispatches one slot per call. Both share
+        // the exact same (subject, slot_size, slot_count, name, self,
+        // handler) ABI — only the registration symbol differs.
+        let reg_sym = if is_batch {
+            "lotus_bus_register_subscriber_shm_ring_batch"
+        } else {
+            "lotus_bus_register_subscriber_shm_ring"
+        };
         let reg_fn = self
             .module
-            .get_function("lotus_bus_register_subscriber_shm_ring")
-            .expect("lotus_bus_register_subscriber_shm_ring declared");
+            .get_function(reg_sym)
+            .expect("shm_ring subscriber register fn declared");
         self.builder
             .build_call(
                 reg_fn,
