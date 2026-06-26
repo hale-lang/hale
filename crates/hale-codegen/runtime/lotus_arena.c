@@ -4228,15 +4228,6 @@ typedef struct lotus_bus_queue {
     size_t            head;     /* next slot to pop */
     size_t            tail;     /* next slot to fill */
     size_t            cap;
-    /* Re-entrancy guard: set while this queue is draining. A nested
-     * lotus_bus_queue_drain on the same queue (a free fn — or any
-     * synchronously-called body — invoked from inside a handler, whose
-     * tail flush would otherwise drain again) is a no-op; the outer
-     * for-loop already pumps the queue to empty in FIFO order. Without
-     * it, the nested drain pops the NEXT cell first, so handlers nest and
-     * delivery comes out reversed with stale self. Set/cleared only by the
-     * single draining thread, so a plain int suffices. */
-    int               draining;
     pthread_mutex_t   lock;
 } lotus_bus_queue_t;
 
@@ -4289,7 +4280,6 @@ lotus_bus_queue_t *lotus_bus_queue_create(void) {
     }
     q->head = 0;
     q->tail = 0;
-    q->draining = 0;
     pthread_mutex_init(&q->lock, NULL);
     return q;
 }
@@ -4485,16 +4475,26 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q) {
     if (heap_ptr) free(heap_ptr);
 }
 
+/* Re-entrancy guard: set while THIS THREAD is inside a drain. A nested
+ * lotus_bus_queue_drain on the same thread — a free fn (or any
+ * synchronously-called body) invoked from a handler, whose tail flush would
+ * otherwise drain again — is a no-op; the in-flight outer for-loop already
+ * pumps the queue to empty in FIFO order. Without it the nested drain pops
+ * the NEXT cell first, so handlers nest and delivery comes out reversed with
+ * stale self.
+ *
+ * Thread-LOCAL (not a queue field) on purpose: it must distinguish
+ * same-thread re-entrancy (skip) from two DIFFERENT threads draining the
+ * same queue (the cross-pool / locked path — both must proceed, serialized
+ * by q->lock). A shared queue field would (a) wrongly skip a concurrent
+ * cross-thread drainer and (b) be a data race on the unlocked entry check
+ * (TSAN-flagged). A __thread flag is per-thread, so neither happens. */
+static __thread int g_bus_drain_active = 0;
+
 void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
     if (!q) return;
-    /* Re-entrancy guard (see lotus_bus_queue's `draining` field): a nested
-     * drain on the same queue — a free fn or other synchronously-called
-     * body whose tail flush drains while a drain is already in flight — is
-     * a no-op. The in-flight outer for-loop pumps the queue to empty in
-     * FIFO order; a nested drain would pop the NEXT cell first, reversing
-     * delivery and reading stale self. */
-    if (q->draining) return;
-    q->draining = 1;
+    if (g_bus_drain_active) return;
+    g_bus_drain_active = 1;
     int locked = __atomic_load_n(&g_bus_has_pinned, __ATOMIC_ACQUIRE);
     if (locked) {
         /* Concurrent producers possible — must snapshot each cell
@@ -4506,7 +4506,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             if (q->head >= q->tail) {
                 q->head = 0;
                 q->tail = 0;
-                q->draining = 0;
+                g_bus_drain_active = 0;
                 pthread_mutex_unlock(&q->lock);
                 return;
             }
@@ -4534,7 +4534,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             if (q->head >= q->tail) {
                 q->head = 0;
                 q->tail = 0;
-                q->draining = 0;
+                g_bus_drain_active = 0;
                 return;
             }
             lotus_bus_cell_t *cell = &q->cells[q->head++];
