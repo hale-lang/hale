@@ -7,6 +7,10 @@
 - [Install](./getting-started/install.md)
 - [Your first run](./getting-started/first-run.md)
 
+# Tutorial
+
+- [Build a job queue](./tutorial/job-queue.md)
+
 # The basics
 
 - [Values & variables](./basics/values.md)
