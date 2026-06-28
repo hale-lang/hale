@@ -1521,6 +1521,45 @@ Defined in `crates/hale-codegen/runtime/lotus_arena.c`
   contract is "fixed cap; if init can't allocate, the buffer
   is permanently empty."
 
+## Native codegen defaults (2026-06-28)
+
+What the compiler emits for a native `hale build`:
+
+- **Host-CPU tuning + O3 by default.** Native builds tune to the
+  host CPU (`target-cpu`/`target-features` from the build
+  machine) and run LLVM's aggressive (O3) pipeline — both the
+  module passes and the backend codegen level. This unlocks
+  autovectorization across all generated code (e.g. AVX-512 on a
+  capable host). **Consequence:** a native binary is **not
+  portable across microarchitectures** — it may use instructions
+  absent on an older CPU.
+- **`--target-cpu native | baseline`.** `native` (default) is the
+  host-tuned build above. `baseline` pins a portable
+  **`x86-64-v3`** target (AVX2 + BMI2 + FMA) for **distributed
+  artifacts** that must run on any modern x86-64 CPU. The
+  emitted module self-describes its subtarget via per-function
+  `target-cpu`/`target-features` attributes, so the choice is
+  carried into bitcode (it survives LTO).
+- **`LOTUS_LTO=1` — opt-in full-LTO.** Read at *build time*.
+  Emits the Hale module as LLVM bitcode and compiles the lotus C
+  runtime TUs with `-flto`, so the final `clang -flto -O3
+  -fuse-ld=lld` link inlines the runtime hot paths (arena
+  bump-allocator, string helpers, shm_ring framing) **across the
+  TU boundary** into the Hale-generated callers — a boundary
+  that's otherwise opaque. Worth a few percent on
+  allocation/coordination-heavy code; neutral on
+  already-vectorized loops (the host tuning is preserved under
+  LTO via the function attributes above). **Off by default:** the
+  LTO link is ~3–4× slower and requires `lld` on PATH. Native,
+  non-sanitizer builds only; `wasm32` and sanitizer builds keep
+  the ordinary non-LTO link. The `-Wl,--wrap` malloc/syscall
+  shims (and the `LOTUS_ARENA_LOG_BIG_CHUNKS` /
+  `std::diag::syscall_count` features that ride them) are
+  preserved under LTO — `lld` resolves `--wrap` before LTO
+  codegen.
+- **`wasm32` is unaffected** — it stays `generic`/O2 (the browser
+  bundle is size/compat-sensitive).
+
 ## Diagnostic + tuning env vars
 
 A small set of env vars toggle runtime instrumentation and
@@ -1538,6 +1577,7 @@ the runtime quiet.
 | `LOTUS_ARENA_RESIDENCY=1` | Registers every top-level arena (locus `__arena`s, `g_bus_payload_arena`, the program-wide global) into a side-table at creation time with a 24-frame construction backtrace. `std::process::dump_arena_residency()` walks the live set and emits one line per arena to stderr — bytes / chunks / parent / label, sorted by bytes desc — with the construction backtrace. Subregions (method scratch) are skipped; they destroy at method exit and don't accumulate residency. Atexit also dumps, but post-dissolve fires after all loci tear down — useful only for the global arena's final state. Long-running daemons should call `dump_arena_residency` from a heartbeat / checkpoint tick so locus arenas are sampled while still alive. |
 | `LOTUS_CHUNK_POOL_PREFILL=<N>` | Per-thread chunk-pool pre-fill on first touch. Default 32 (= 2 MiB resident per scheduler thread). Set 0 to disable. Bumps the pool's steady-state floor so brief bursts don't drain to zero and miss into malloc; the trade-off is per-thread resident memory. |
 | `LOTUS_TSAN=1` | Read at *build time* (by the codegen's `build_executable`, not at runtime). When set, the emitted clang command passes `-fsanitize=thread` for both the C runtime compile and the binary link, and skips the `-Wl,--wrap=malloc/realloc/calloc/mmap` shim surface (TSAN intercepts malloc itself; the wrap'd `LOTUS_ARENA_LOG_BIG_CHUNKS` diagnostic is silently no-op under TSAN). The resulting binary runs ~5-15× slower; use only for race-hunting workloads. The C runtime embeds an empty `__tsan_default_suppressions` hook at link time so no external suppression file is needed; all originally-flagged substrate races (bus queue drain, arena destroy, coop pool worker, env-var lazy-init) have been fixed and the suppression list is empty. Opt-in tests live behind `#[ignore]` and the env var (see `crates/hale-codegen/tests/form_hashmap_lockfree_tsan.rs`). |
+| `LOTUS_LTO=1` | Read at *build time*. Opt-in full-LTO native build: the Hale module is emitted as bitcode and the lotus runtime TUs compile with `-flto`, so the `clang -flto -O3 -fuse-ld=lld` link inlines the runtime hot paths (arena / string / shm_ring) across the TU boundary into the Hale callers. A few percent on allocation/coordination-heavy code, neutral on vectorized loops (host tuning preserved via per-function `target-features`). Off by default — ~3–4× slower link, requires `lld`. Native non-sanitizer only; `--wrap` shims survive (lld resolves them before LTO codegen). See *Native codegen defaults* above. |
 | `LOTUS_BUS_LOG_UNMATCHED=1` | Surfaces silent no-key-match drops in `lotus_bus_local_dispatch_keyed` (Phase 3 routing keys). When set, each publish that matches no `where key == ...` subscriber for the topic emits a single stderr line citing subject, key, and the per-topic subscriber counts (specific vs unkeyed). Off by default — the silent-drop is correct for `on_unmatched: swallow` topics in steady state, but during bring-up the lack of any signal is load-bearing on debug cycles. Implied by `LOTUS_BUS_LOG_DROP=1`. |
 | `LOTUS_BUS_LOG_DESERIALIZE_DROP=1` | Surfaces silent drops in the udp:// reader thread when (a) no deserializer is registered for the inbound subject, or (b) the deserializer returns `<= 0` (size mismatch, bounded-read failure). Emits one stderr line per drop naming the subject, the payload size, and (when applicable) the deserializer's return value. Off by default; the silent-skip on cross-routed multicast noise is the correct steady-state behavior. Same env-gated pattern as `LOTUS_BUS_LOG_UNMATCHED` for keyed-dispatch misses. Implied by `LOTUS_BUS_LOG_DROP=1`. |
 | `LOTUS_BUS_QUEUE_CAP=<N>` | Caps both the cooperative bus dispatch queue and each per-pinned-locus mailbox at `N` cells (default 8192 ≈ 4.5 MB; floor 64; read once). When a producer hits the cap it *back-pressures* instead of growing without bound (GH #125) — every message is still delivered, resident memory stays bounded. The mechanism differs by path: a **single-threaded** producer on the cooperative queue **inline-drains** it (runs the oldest handlers) to free space; a **cross-thread** producer to a pinned locus's mailbox **blocks** on a condvar until that mailbox's single consumer (the pinned thread) drains a slot. A handler self-publishing to its own mailbox during its own drain grows instead (it can't block on itself). The cross-*cooperative*-pool queue path (multiple drainers, no single consumer to wait on) still grows — a follow-on. Lower the cap to tighten the bound; raise it to reduce drain bursts / blocking at the cost of resident memory. |

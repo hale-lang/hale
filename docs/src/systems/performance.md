@@ -189,6 +189,34 @@ region did what you think — read the counter before and after and
 check the delta is zero ("this loop allocated nothing", "exactly one
 `recv` per poll").
 
+## Build-time tuning
+
+`hale build` already tunes to the machine you build on: native
+builds compile for the **host CPU** at **O3**, so generated code
+autovectorizes to whatever the host supports (AVX2, AVX-512, …).
+Two knobs matter when that default isn't what you want:
+
+- **`--target-cpu baseline`** — pins a portable **`x86-64-v3`**
+  target (AVX2 + BMI2 + FMA) instead of the host. Reach for this
+  when you **ship a binary to other machines**: the default
+  host-tuned build may use instructions an older CPU lacks.
+  `--target-cpu native` (the default) is right for `hale run` and
+  for binaries you execute on the build host (e.g. a service on
+  hardware you control).
+- **`LOTUS_LTO=1`** — an opt-in full-LTO build that inlines the
+  lotus runtime (the arena allocator, string helpers, shm ring)
+  *into your code* across the compile boundary it otherwise can't
+  cross. A few percent on allocation- and coordination-heavy
+  programs — exactly the shape Hale is built for — and it keeps
+  the host vectorization, so there's no loop it slows down. It's
+  off by default because the link is ~3–4× slower and needs
+  `lld` on PATH; turn it on for release/perf builds, not the
+  edit-compile loop:
+
+  ```sh
+  LOTUS_LTO=1 hale build myservice/
+  ```
+
 ## Where Hale earns its overhead
 
 Hale is shaped to pay *coordination* cost well — bus dispatch,

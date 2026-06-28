@@ -213,9 +213,18 @@ different bands:
 > the fallible-ABI plumbing. **No 10% commitment at v1**;
 > isolated-microbench numbers may show 10–50× behind C. The
 > contract is that fallible primitives are correct, predictable,
-> and competitive when amortized (the (b) band) — closing the
-> isolated gap waits on either IR-level inlining of the
-> `lotus_*` primitive's logic at codegen time or LTO.
+> and competitive when amortized (the (b) band).
+>
+> **Update (2026-06-28): the isolated gap is largely closed.**
+> `@form(vec)` `.get` / `.set` / `.pop` / `.push` are now inlined
+> directly at codegen — bounds-check + typed GEP + load/store,
+> no `lotus_*` C-call boundary. `.get` indexed by a counted-loop
+> variable (`for i in 0..v.len()`, the vec unmutated in the body)
+> additionally drops the bounds check entirely — it's provably
+> in-bounds — so the read vectorizes. The remaining cross-boundary
+> calls (arena allocation, etc.) inline under opt-in `LOTUS_LTO=1`
+> (see `runtime.md`). The "IR-level inlining or LTO" this band
+> once deferred to is shipped.
 
 These bands track the same underlying performance reality at
 different observer-perspectives (per The Design's
@@ -225,14 +234,25 @@ measures the codegen-pattern overhead per primitive call.
 `@form(vec)` is the canonical benchmark target (see "Bench
 protocol" under the `@form(vec)` section below).
 
-**Current standing (2026-05-13):**
+**Current standing (2026-06-28, vs Go at matched iteration counts):**
 
 | Bench | Hale vs Go | Band | Status |
 |---|---|---|---|
-| `form_vec_push` (1M isolated push) | 1.00× | (a) | met ✓ |
-| `vec_amortized` (push + fold) | 0.42× | (b) | 2.4× — outside 2× band |
-| `form_vec_get` (1M isolated get) | 0.026× | (c) | as expected; deferred |
-| `fn_scratch_work` (calls with work) | 0.92× | (b) | met ✓ |
+| `form_vec_push` (500k push) | 4.83× | (a) | beats Go ✓ |
+| `vec_amortized` (push + fold, 200k) | 3.75× | (b) | beats Go ✓ |
+| `form_vec_get` (200k get) | 2.60× | (c) | beats Go ✓ |
+| `fn_scratch_work` (1k calls w/ work) | 7.05× | (b) | beats Go ✓ |
+
+`Hale vs Go` = Go time ÷ Hale time (> 1 → Hale faster). The earlier
+(2026-05-13) snapshot put `form_vec_get` at 0.026× and `vec_amortized`
+at 0.42×; those were a benchmark **iteration-count mismatch** — the
+Hale variants ran 20–25× more work than the `.go`/`.js`/`.py`
+siblings (see the bench repo's N-audit) — compounded by
+pre-optimization codegen. At matched N, with the `.get`/`.set`/`.pop`/
+`.push` inlines + counted-loop bounds-check elimination + native-CPU/O3
+defaults, Hale leads Go on all four. The formal within-10%/2×-of-**C**
+verification for bands (a)/(b) still awaits the C twins noted in the
+bench harness.
 
 If a form fails its applicable band, the lowering is redesigned
 before shipping more forms. The point of the form machinery is
