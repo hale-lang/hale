@@ -523,6 +523,7 @@ pub fn build_executable_with_options(
         pending_locus_names: BTreeSet::new(),
         nonalloc_free_fns: BTreeSet::new(),
         nonalloc_free_fns_numeric_ret: BTreeSet::new(),
+        elidable_methods: BTreeMap::new(),
         user_types: BTreeMap::new(),
         pending_type_names: BTreeSet::new(),
         user_enums: BTreeMap::new(),
@@ -1593,6 +1594,13 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// nothing. `numeric_ret` is the subset returning a numeric scalar.
     pub(crate) nonalloc_free_fns: BTreeSet<String>,
     pub(crate) nonalloc_free_fns_numeric_ret: BTreeSet<String>,
+    /// Stage 2 (2026-06-28) method-scratch elision: per-locus
+    /// `name → (elidable fn-methods, numeric-scalar-returning subset)`,
+    /// computed by the `compute_elidable_methods` fixpoint at
+    /// `lower_program` start. Read by `method_scratch_elidable` to resolve
+    /// `self.m()` calls in a method body as non-allocating.
+    pub(crate) elidable_methods:
+        BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)>,
     /// User-defined `type` declarations indexed by name. Filled
     /// in pass A0 of `lower_program`; carries the LLVM struct
     /// type and field map for plain data records (no methods).
@@ -2288,6 +2296,17 @@ struct AllocCtx<'a> {
     /// the numeric set PLUS `Bool`. A write to one of these stores by value
     /// (no deep-copy), so it's non-allocating. EMPTY off the method path.
     scalar_self_fields: &'a BTreeSet<String>,
+    /// Method-elidability only (stage 2, 2026-06-28): fn-methods of the
+    /// CURRENT locus proven elidable — their scratch is skippable, which is
+    /// EXACTLY the property that a call `self.m(args)` allocates nothing
+    /// (non-allocating body + scalar/Unit return ⇒ no return deep-copy). So a
+    /// `self.m(args)` call with non-allocating args allocates nothing. EMPTY
+    /// off the method path (free-fn / locus-arena fixpoints).
+    elidable_self_methods: &'a BTreeSet<String>,
+    /// Of `elidable_self_methods`, the subset whose declared return is a
+    /// numeric scalar — so `self.helper(x) + 1` classifies as arithmetic.
+    /// EMPTY off the method path.
+    numeric_ret_self_methods: &'a BTreeSet<String>,
 }
 
 /// `Int` / `Uint` / `Float` / `Duration` — the scalar types whose `+` is
@@ -2341,6 +2360,8 @@ fn compute_nonalloc_free_fns(
             numeric_ret: &numeric_ret,
             numeric_self_fields: &empty_self,
             scalar_self_fields: &empty_self,
+            elidable_self_methods: &empty_self,
+            numeric_ret_self_methods: &empty_self,
         };
         let demote: Vec<String> = fns
             .iter()
@@ -2365,6 +2386,154 @@ fn compute_nonalloc_free_fns(
             nonalloc.remove(&n);
         }
     }
+}
+
+/// Gate 1 for method-scratch elision (shared by stage 1's
+/// `method_scratch_elidable` and stage 2's `compute_elidable_methods`): a
+/// method is elision-eligible only if its declared return is `None` (Unit)
+/// or a by-value scalar primitive (Int / Uint / Float / Bool / Duration).
+/// Any heap return (String / Bytes / struct / array) keeps the scratch —
+/// eliding would dangle the return alias, and as a CALL TARGET its result
+/// would be a fresh heap value the caller can't treat as non-allocating.
+fn ret_is_scalar_or_unit(ret: Option<&TypeExpr>) -> bool {
+    matches!(
+        ret,
+        None | Some(TypeExpr::Primitive(
+            PrimType::Int
+                | PrimType::Uint
+                | PrimType::Float
+                | PrimType::Bool
+                | PrimType::Duration,
+            _,
+        ))
+    )
+}
+
+/// Stage 2 (2026-06-28): compute, per locus, the set of `fn` methods whose
+/// scratch is elidable — i.e. whose body allocates nothing AND whose return
+/// is a by-value scalar/Unit (no return deep-copy). That property is exactly
+/// "a call `self.m(args)` allocates nothing", so this set feeds the
+/// classifier's `self.m()` Call arm, letting a method that factors work into
+/// sibling self-methods drop its own per-call scratch too.
+///
+/// A greatest fixpoint, mirroring `compute_nonalloc_free_fns` but scoped to
+/// one locus's `self.m()` graph: start with every candidate (gate-1-eligible,
+/// non-fallible, non-FFI) optimistically elidable, then demote any whose body
+/// provably allocates GIVEN the current elidable set, until stable. Optimism
+/// lets mutually-recursive numeric self-methods converge; it's sound because
+/// at the fixpoint every remaining method's body is non-allocating with all
+/// of ITS `self.*` callees non-allocating, so the set contains no allocator.
+///
+/// `free_nonalloc` / `free_numeric_ret` are the already-computed free-fn
+/// facts (a self-method may also call proven-cheap free fns). Returns a map
+/// `locus name → (elidable fn-method names, the numeric-scalar-returning
+/// subset)`.
+fn compute_elidable_methods(
+    items: &[TopDecl],
+    free_nonalloc: &BTreeSet<String>,
+    free_numeric_ret: &BTreeSet<String>,
+) -> BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)> {
+    let mut out: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)> =
+        BTreeMap::new();
+    for it in items {
+        let TopDecl::Locus(l) = it else { continue };
+        // Candidates: gate-1-eligible (scalar/Unit return), non-fallible,
+        // non-FFI `fn` methods. Heap-returning methods are never elidable and
+        // never a non-allocating call target.
+        let fns: Vec<&FnDecl> = l
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                LocusMember::Fn(fd)
+                    if fd.fallible.is_none()
+                        && fd.ffi.is_none()
+                        && ret_is_scalar_or_unit(fd.ret.as_ref()) =>
+                {
+                    Some(fd)
+                }
+                _ => None,
+            })
+            .collect();
+        if fns.is_empty() {
+            continue;
+        }
+        // Self-field sets from the locus's `params { }` block (AST-level —
+        // same classification as stage 1's CodegenTy seeding): numeric scalar
+        // fields make `self.x + 1` arithmetic; scalar (numeric + Bool) fields
+        // make `self.x = ...` a by-value store.
+        let mut numeric_self_fields: BTreeSet<String> = BTreeSet::new();
+        let mut scalar_self_fields: BTreeSet<String> = BTreeSet::new();
+        for m in &l.members {
+            if let LocusMember::Params(pb) = m {
+                for p in &pb.params {
+                    match p.ty.as_ref() {
+                        Some(TypeExpr::Primitive(
+                            PrimType::Int
+                            | PrimType::Uint
+                            | PrimType::Float
+                            | PrimType::Duration,
+                            _,
+                        )) => {
+                            numeric_self_fields.insert(p.name.name.clone());
+                            scalar_self_fields.insert(p.name.name.clone());
+                        }
+                        Some(TypeExpr::Primitive(PrimType::Bool, _)) => {
+                            scalar_self_fields.insert(p.name.name.clone());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let numeric_ret_of = |elidable: &BTreeSet<String>| -> BTreeSet<String> {
+            fns.iter()
+                .filter(|f| {
+                    elidable.contains(&f.name.name)
+                        && f.ret
+                            .as_ref()
+                            .is_some_and(|t| type_expr_is_numeric_scalar(t))
+                })
+                .map(|f| f.name.name.clone())
+                .collect()
+        };
+        let mut elidable: BTreeSet<String> =
+            fns.iter().map(|f| f.name.name.clone()).collect();
+        loop {
+            let numeric_ret_self = numeric_ret_of(&elidable);
+            let ctx = AllocCtx {
+                nonalloc: free_nonalloc,
+                numeric_ret: free_numeric_ret,
+                numeric_self_fields: &numeric_self_fields,
+                scalar_self_fields: &scalar_self_fields,
+                elidable_self_methods: &elidable,
+                numeric_ret_self_methods: &numeric_ret_self,
+            };
+            let demote: Vec<String> = fns
+                .iter()
+                .filter(|f| elidable.contains(&f.name.name))
+                .filter(|f| {
+                    // Seed with the method's numeric scalar params.
+                    let seed: BTreeSet<String> = f
+                        .params
+                        .iter()
+                        .filter(|p| type_expr_is_numeric_scalar(&p.ty))
+                        .map(|p| p.name.name.clone())
+                        .collect();
+                    !fn_body_definitely_non_allocating(&f.body.stmts, &ctx, &seed)
+                })
+                .map(|f| f.name.name.clone())
+                .collect();
+            if demote.is_empty() {
+                let numeric_ret_self = numeric_ret_of(&elidable);
+                out.insert(l.name.name.clone(), (elidable, numeric_ret_self));
+                break;
+            }
+            for n in demote {
+                elidable.remove(&n);
+            }
+        }
+    }
+    out
 }
 
 fn fn_body_definitely_non_allocating(
@@ -2431,9 +2600,20 @@ fn expr_is_nonalloc_numeric(
         }
         // A call to a proven-non-allocating fn returning a numeric scalar
         // (with non-allocating args) yields a numeric scalar — so
-        // `helper(x) + 1` is arithmetic.
+        // `helper(x) + 1` is arithmetic. Both a free fn (`numeric_ret`) and,
+        // stage 2, a same-locus `self.m()` whose method is elidable and
+        // returns a numeric scalar (`numeric_ret_self_methods`).
         Expr::Call { callee, args, .. } => {
-            matches!(callee.as_ref(), Expr::Ident(id) if ctx.numeric_ret.contains(&id.name))
+            let callee_numeric = match callee.as_ref() {
+                Expr::Ident(id) => ctx.numeric_ret.contains(&id.name),
+                Expr::Field { receiver, name, .. }
+                    if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
+                {
+                    ctx.numeric_ret_self_methods.contains(&name.name)
+                }
+                _ => false,
+            };
+            callee_numeric
                 && args
                     .iter()
                     .all(|a| expr_definitely_non_allocating(a, ctx, num))
@@ -2588,11 +2768,24 @@ fn expr_definitely_non_allocating(
         },
         // A direct call to a proven-non-allocating free fn, with every
         // argument non-allocating, allocates nothing (the callee's body
-        // allocates nothing and returns a scalar). Method calls / std
-        // builtins / unresolved callees stay conservative. (Interprocedural
-        // — 2026-06-28.)
+        // allocates nothing and returns a scalar). Stage 2 (2026-06-28) adds
+        // same-locus `self.m(args)` where `m` is a proven-elidable fn-method
+        // of the current locus — its body allocates nothing and its
+        // scalar/Unit return needs no deep-copy, so the call allocates
+        // nothing. A call on any OTHER receiver (`x.m()`, cross-locus) stays
+        // conservative (needs type resolution — that's stage 3); std builtins
+        // / unresolved callees likewise.
         Expr::Call { callee, args, .. } => {
-            matches!(callee.as_ref(), Expr::Ident(id) if ctx.nonalloc.contains(&id.name))
+            let callee_nonalloc = match callee.as_ref() {
+                Expr::Ident(id) => ctx.nonalloc.contains(&id.name),
+                Expr::Field { receiver, name, .. }
+                    if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
+                {
+                    ctx.elidable_self_methods.contains(&name.name)
+                }
+                _ => false,
+            };
+            callee_nonalloc
                 && args
                     .iter()
                     .all(|a| expr_definitely_non_allocating(a, ctx, num))
@@ -2733,6 +2926,8 @@ pub(crate) fn locus_arena_elidable(l: &LocusDecl) -> bool {
         numeric_ret: &empty,
         numeric_self_fields: &empty,
         scalar_self_fields: &empty,
+        elidable_self_methods: &empty,
+        numeric_ret_self_methods: &empty,
     };
     // All method-like bodies non-allocating.
     for m in &l.members {
@@ -5093,6 +5288,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             compute_nonalloc_free_fns(&self.program.items);
         self.nonalloc_free_fns = nonalloc;
         self.nonalloc_free_fns_numeric_ret = numeric_ret;
+
+        // Stage 2 (2026-06-28): per-locus fixpoint of elidable `fn` methods —
+        // a method whose scratch is skippable is exactly a method whose
+        // `self.m()` call allocates nothing, so a sibling method calling it
+        // can drop its scratch too. Consumes the free-fn facts above.
+        self.elidable_methods = compute_elidable_methods(
+            &self.program.items,
+            &self.nonalloc_free_fns,
+            &self.nonalloc_free_fns_numeric_ret,
+        );
 
         // Locate fn main.
         let main_found = self
@@ -22967,11 +23172,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .filter(|p| type_expr_is_numeric_scalar(&p.ty))
             .map(|p| p.name.name.clone())
             .collect();
+        // Stage 2: seed the same-locus elidable-method sets from the
+        // precomputed per-locus fixpoint (`self.elidable_methods`), so a
+        // `self.m(args)` call in this body resolves as non-allocating exactly
+        // when `m` reached the elidable fixpoint. The on-the-fly walk here
+        // agrees with the fixpoint because that set is already stable.
+        let empty_methods = BTreeSet::new();
+        let (elidable_self_methods, numeric_ret_self_methods) = self
+            .elidable_methods
+            .get(&cs.locus_name)
+            .map(|(e, n)| (e, n))
+            .unwrap_or((&empty_methods, &empty_methods));
         let ctx = AllocCtx {
             nonalloc: &self.nonalloc_free_fns,
             numeric_ret: &self.nonalloc_free_fns_numeric_ret,
             numeric_self_fields: &numeric_self_fields,
             scalar_self_fields: &scalar_self_fields,
+            elidable_self_methods,
+            numeric_ret_self_methods,
         };
         fn_body_definitely_non_allocating(&body.stmts, &ctx, &param_seed)
     }

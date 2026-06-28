@@ -135,3 +135,111 @@ fn scalar_self_write_counter_exact() {
     "#;
     assert_eq!(build_and_run("counter", src).trim(), "1000000");
 }
+
+// ---- stage 2 (2026-06-28): same-locus `self.m()` calls --------------------
+//
+// A method that factors work into a sibling self-method used to keep its
+// scratch (the `self.m()` call fell through to "allocating"). Stage 2 proves,
+// per locus by a fixpoint, which `fn` methods are elidable — exactly the
+// methods whose CALL allocates nothing — and lets a caller treat
+// `self.m(args)` as non-allocating. These pin the correctness boundary.
+
+#[test]
+fn self_method_numeric_chain_computes_correctly() {
+    // `outer` calls the elidable `inner` (the headline stage-2 win: outer now
+    // also drops its scratch). The arithmetic over a hot loop must be exact.
+    let src = r#"
+        locus Compute {
+            params { base: Int = 0; }
+            fn inner(x: Int) -> Int { return x + 1; }
+            fn outer(x: Int) -> Int { return self.inner(x) * 3; }
+        }
+        fn main() {
+            let c = Compute { };
+            let mut acc: Int = 0;
+            let mut i: Int = 0;
+            while i < 1000 { acc = acc + c.outer(i); i = i + 1; }
+            println(acc);
+        }
+    "#;
+    // sum_{i=0}^{999} (i+1)*3 = 3 * (1000*1001/2) = 3 * 500500 = 1501500
+    assert_eq!(
+        build_and_run("self_chain", src).trim(),
+        "1501500"
+    );
+}
+
+#[test]
+fn self_method_three_deep_chain_correct() {
+    // a -> b(self.a) -> c(self.b): a 3-deep self-method chain. Each link is
+    // elidable, so the whole chain stays scratch-free; the result is exact.
+    let src = r#"
+        locus Chain {
+            params { base: Int = 0; }
+            fn a(x: Int) -> Int { return x + 1; }
+            fn b(x: Int) -> Int { return self.a(x) + 2; }
+            fn c(x: Int) -> Int { return self.b(x) * 2; }
+        }
+        fn main() {
+            let k = Chain { };
+            println(k.c(5));
+        }
+    "#;
+    // c(5) = (((5+1)+2)*2) = 16
+    assert_eq!(build_and_run("three_deep", src).trim(), "16");
+}
+
+#[test]
+fn self_method_returning_heap_call_not_elided() {
+    // SOUNDNESS: `wrap` calls `self.tag`, which returns a fresh String (heap).
+    // `tag` fails gate 1 → never elidable → `self.tag(...)` stays allocating →
+    // `wrap` keeps its scratch (and `wrap` itself returns String so is never
+    // elided either). The distinct results accumulated across the loop must
+    // not corrupt — proving the heap-returning self-call was NOT misclassified.
+    let src = r#"
+        locus Wrapper {
+            params { p: Int = 0; }
+            fn tag(n: Int) -> String { return "x" + to_string(n); }
+            fn wrap(n: Int) -> String { return self.tag(n + 1); }
+        }
+        fn main() {
+            let w = Wrapper { };
+            let mut i: Int = 0;
+            while i < 4 { println(w.wrap(i * 10)); i = i + 1; }
+        }
+    "#;
+    assert_eq!(
+        build_and_run("heap_self_call", src).trim(),
+        "x1\nx11\nx21\nx31"
+    );
+}
+
+#[test]
+fn self_method_mutual_recursion_converges() {
+    // Two numeric self-methods that call each other. The greatest-fixpoint
+    // elidability analysis must converge (both start optimistically elidable,
+    // neither demotes), and the computed values must be correct.
+    let src = r#"
+        locus MR {
+            params { base: Int = 0; }
+            fn even(n: Int) -> Int {
+                if n <= 0 { return 0; }
+                return self.odd(n - 1) + 1;
+            }
+            fn odd(n: Int) -> Int {
+                if n <= 0 { return 0; }
+                return self.even(n - 1) + 1;
+            }
+        }
+        fn main() {
+            let m = MR { };
+            println(m.even(10));
+            println(m.odd(7));
+        }
+    "#;
+    // even(n)/odd(n) just count down to 0 → both return n.
+    assert_eq!(
+        build_and_run("mutual_rec", src).trim(),
+        "10\n7"
+    );
+}
