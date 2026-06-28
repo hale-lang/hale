@@ -88,3 +88,56 @@ fn mixed_numeric_and_string_helper_is_correct() {
     "#;
     assert_eq!(build_and_run("mixed", src).trim(), "n=42");
 }
+
+// --- interprocedural propagation -----------------------------------------
+
+#[test]
+fn call_chain_of_numeric_helpers_computes() {
+    // a → b → c, all numeric (b uses c's result in an Add). The whole chain
+    // is non-allocating, so none pays a scratch — and the value is exact.
+    let src = r#"
+        fn c(i: Int) -> Int { return i + 1; }
+        fn b(i: Int) -> Int { return c(i) * 2; }
+        fn a(i: Int) -> Int { return b(i) + c(i); }
+        fn main() {
+            let mut acc: Int = 0;
+            let mut i: Int = 0;
+            while i < 100 { acc = acc + a(i); i = i + 1; }
+            println(acc);
+        }
+    "#;
+    // a(i) = (2*(i+1)) + (i+1) = 3*(i+1); sum_{0..99} 3(i+1) = 3 * 5050 = 15150
+    assert_eq!(build_and_run("chain", src).trim(), "15150");
+}
+
+#[test]
+fn fn_calling_allocating_helper_stays_correct() {
+    // The interprocedural soundness guard: `wrap` calls `tag`, which String-
+    // concats (allocating). `wrap` must therefore stay classified
+    // allocating — if the fixpoint wrongly promoted it, the returned String
+    // would be stranded in the caller's arena and clobbered across the loop.
+    let src = r#"
+        fn tag(n: Int) -> String { return "x" + to_string(n); }
+        fn wrap(n: Int) -> String { return tag(n + 100); }
+        fn main() {
+            let mut i: Int = 0;
+            while i < 4 { println(wrap(i)); i = i + 1; }
+        }
+    "#;
+    assert_eq!(
+        build_and_run("interp_alloc", src).trim(),
+        "x100\nx101\nx102\nx103"
+    );
+}
+
+#[test]
+fn mutually_recursive_numeric_fns_converge() {
+    // Mutual recursion over numeric scalars must converge to non-allocating
+    // (the greatest-fixpoint property) and stay correct.
+    let src = r#"
+        fn ping(i: Int) -> Int { if i <= 0 { return 0; } return pong(i - 1) + 1; }
+        fn pong(i: Int) -> Int { if i <= 0 { return 0; } return ping(i - 1) + 1; }
+        fn main() { println(ping(10)); }
+    "#;
+    assert_eq!(build_and_run("mutrec", src).trim(), "10");
+}
