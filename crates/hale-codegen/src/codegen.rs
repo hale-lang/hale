@@ -2280,6 +2280,14 @@ struct AllocCtx<'a> {
     /// numeric scalar — so `helper(x) + 1` (a call result inside an `Add`)
     /// classifies as arithmetic.
     numeric_ret: &'a BTreeSet<String>,
+    /// Method-elidability only: `self` fields of a non-allocating numeric
+    /// scalar type (Int / Uint / Float / Duration), so `self.x + 1` is
+    /// arithmetic. EMPTY on the free-fn / locus-arena paths (no `self`).
+    numeric_self_fields: &'a BTreeSet<String>,
+    /// Method-elidability only: scalar (by-value, non-heap) `self` fields —
+    /// the numeric set PLUS `Bool`. A write to one of these stores by value
+    /// (no deep-copy), so it's non-allocating. EMPTY off the method path.
+    scalar_self_fields: &'a BTreeSet<String>,
 }
 
 /// `Int` / `Uint` / `Float` / `Duration` — the scalar types whose `+` is
@@ -2327,7 +2335,13 @@ fn compute_nonalloc_free_fns(
         fns.iter().map(|f| f.name.name.clone()).collect();
     loop {
         let numeric_ret = numeric_ret_of(&nonalloc);
-        let ctx = AllocCtx { nonalloc: &nonalloc, numeric_ret: &numeric_ret };
+        let empty_self = BTreeSet::new();
+        let ctx = AllocCtx {
+            nonalloc: &nonalloc,
+            numeric_ret: &numeric_ret,
+            numeric_self_fields: &empty_self,
+            scalar_self_fields: &empty_self,
+        };
         let demote: Vec<String> = fns
             .iter()
             .filter(|f| nonalloc.contains(&f.name.name))
@@ -2398,6 +2412,13 @@ fn expr_is_nonalloc_numeric(
         | Expr::Literal(Literal::Float(_), _)
         | Expr::Literal(Literal::Duration(_), _) => true,
         Expr::Ident(id) => num.contains(&id.name),
+        // Method-elidability: `self.x` where `x` is a numeric scalar self
+        // field is itself a numeric scalar — so `self.x + 1` is arithmetic.
+        Expr::Field { receiver, name, .. }
+            if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
+        {
+            ctx.numeric_self_fields.contains(&name.name)
+        }
         Expr::Unary { operand, .. } => {
             expr_is_nonalloc_numeric(operand, ctx, num)
         }
@@ -2453,8 +2474,23 @@ fn stmt_definitely_non_allocating(
         Stmt::Let { value, .. } => expr_definitely_non_allocating(value, ctx, num),
         Stmt::Return(Some(e), _) => expr_definitely_non_allocating(e, ctx, num),
         Stmt::Return(None, _) => true,
-        Stmt::Assign { value, .. } => {
-            expr_definitely_non_allocating(value, ctx, num)
+        Stmt::Assign { target, value, .. } => {
+            // The target gates allocation independently of the value:
+            //  - a bare local (`x = …`, no tail) stores by value;
+            //  - a scalar `self` field (`self.f = …`, f a by-value field)
+            //    stores by value — no deep-copy;
+            //  - anything else (a heap `self` field deep-copies; an index
+            //    or nested write may touch heap) is conservatively
+            //    allocating.
+            let target_ok = if target.head.name == "self" {
+                matches!(
+                    target.tail.as_slice(),
+                    [LValueSeg::Field(f)] if ctx.scalar_self_fields.contains(&f.name)
+                )
+            } else {
+                target.tail.is_empty()
+            };
+            target_ok && expr_definitely_non_allocating(value, ctx, num)
         }
         Stmt::Expr(e) => expr_definitely_non_allocating(e, ctx, num),
         Stmt::If(IfStmt {
@@ -2692,7 +2728,12 @@ pub(crate) fn locus_arena_elidable(l: &LocusDecl) -> bool {
     // body stays conservative. The type-aware `Add` + numeric `let`s still
     // apply via the local scope.
     let empty = BTreeSet::new();
-    let ec = AllocCtx { nonalloc: &empty, numeric_ret: &empty };
+    let ec = AllocCtx {
+        nonalloc: &empty,
+        numeric_ret: &empty,
+        numeric_self_fields: &empty,
+        scalar_self_fields: &empty,
+    };
     // All method-like bodies non-allocating.
     for m in &l.members {
         let body = match m {
@@ -22862,6 +22903,78 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         })
     }
 
+
+    /// Method-scratch elision (stage 1, 2026-06-28): true iff this
+    /// method's per-call scratch subregion can be skipped entirely —
+    /// its body provably allocates nothing AND its return value is a
+    /// by-value scalar (or Unit), so no return deep-copy is needed.
+    /// When true the caller skips `open_method_scratch`, leaving
+    /// `current_method_scratch` None: allocations (there are none) would
+    /// fall through to `self.__arena`, destroy/close become no-ops, and
+    /// the return path takes the no-deep-copy "store the pointer
+    /// directly" branch (correct precisely because the body builds no
+    /// fresh heap value to return).
+    ///
+    /// Conservative: false-negatives just keep a redundant scratch;
+    /// a false-positive that skips a needed scratch/deep-copy is a
+    /// memory bug, so both gates must hold.
+    ///   1. `ret` is `None` or a scalar primitive (Int/Uint/Float/
+    ///      Bool/Duration). Any heap return (String/Bytes/struct/array)
+    ///      keeps the scratch — eliding would dangle the return alias.
+    ///   2. The body is non-allocating under the method-aware
+    ///      classifier (self numeric fields → arithmetic, scalar
+    ///      self-field writes → by-value).
+    pub(crate) fn method_scratch_elidable(
+        &self,
+        body: &Block,
+        params: &[Param],
+        ret: Option<&TypeExpr>,
+    ) -> bool {
+        // Gate 1: by-value scalar (or Unit) return only.
+        match ret {
+            None => {}
+            Some(TypeExpr::Primitive(
+                PrimType::Int
+                | PrimType::Uint
+                | PrimType::Float
+                | PrimType::Bool
+                | PrimType::Duration,
+                _,
+            )) => {}
+            Some(_) => return false,
+        }
+        // Gate 2: method-aware non-allocating body. Seed self-field
+        // sets from the current locus's field types.
+        let Some(cs) = self.current_self.as_ref() else {
+            return false;
+        };
+        let mut numeric_self_fields: BTreeSet<String> = BTreeSet::new();
+        let mut scalar_self_fields: BTreeSet<String> = BTreeSet::new();
+        for (fname, (_, ty)) in &cs.fields {
+            match ty {
+                CodegenTy::Int | CodegenTy::Float | CodegenTy::Duration => {
+                    numeric_self_fields.insert(fname.clone());
+                    scalar_self_fields.insert(fname.clone());
+                }
+                CodegenTy::Bool => {
+                    scalar_self_fields.insert(fname.clone());
+                }
+                _ => {}
+            }
+        }
+        let param_seed: BTreeSet<String> = params
+            .iter()
+            .filter(|p| type_expr_is_numeric_scalar(&p.ty))
+            .map(|p| p.name.name.clone())
+            .collect();
+        let ctx = AllocCtx {
+            nonalloc: &self.nonalloc_free_fns,
+            numeric_ret: &self.nonalloc_free_fns_numeric_ret,
+            numeric_self_fields: &numeric_self_fields,
+            scalar_self_fields: &scalar_self_fields,
+        };
+        fn_body_definitely_non_allocating(&body.stmts, &ctx, &param_seed)
+    }
 
     /// Bus-arena reclaim (2026-05-21): open a per-method-call
     /// scratch subregion of `self.__arena` and stash it in a fn-

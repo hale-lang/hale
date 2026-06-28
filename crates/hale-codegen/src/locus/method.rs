@@ -81,7 +81,21 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 });
                 self.loops.clear();
                 self.push_dissolve_frame();
-                self.open_method_scratch()?;
+                // Stage-1 scratch elision (lifecycle hook). Hooks return
+                // void (Unit), so gate 1 passes; gate 2 keeps the scratch
+                // for any hook whose body isn't provably non-allocating
+                // (most do real work). accept/release reads of the child
+                // ref classify non-allocating; method calls on it stay
+                // conservative, so a hook that calls into the child keeps
+                // its scratch.
+                let elide_scratch = self.method_scratch_elidable(
+                    &lc.body,
+                    &lc.params,
+                    lc.ret.as_ref(),
+                );
+                if !elide_scratch {
+                    self.open_method_scratch()?;
+                }
 
                 let mut scope = Scope::default();
 
@@ -653,7 +667,19 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 });
                 self.loops.clear();
                 self.push_dissolve_frame();
-                self.open_method_scratch()?;
+                // Stage-1 scratch elision: skip the per-call subregion
+                // malloc when the body provably allocates nothing and the
+                // return is a by-value scalar (no return deep-copy). Leaving
+                // `current_method_scratch` None routes the (absent)
+                // allocations to `self.__arena` and no-ops destroy/close.
+                let elide_scratch = self.method_scratch_elidable(
+                    &fd.body,
+                    &fd.params,
+                    fd.ret.as_ref(),
+                );
+                if !elide_scratch {
+                    self.open_method_scratch()?;
+                }
 
                 let mut scope = Scope::default();
                 for (i, p) in fd.params.iter().enumerate() {
@@ -911,7 +937,16 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 });
                 self.loops.clear();
                 self.push_dissolve_frame();
-                self.open_method_scratch()?;
+                // Stage-1 scratch elision (mode body) — same gate as fn
+                // members: non-allocating body + by-value scalar/Unit ret.
+                let elide_scratch = self.method_scratch_elidable(
+                    &md.body,
+                    &md.params,
+                    md.ret.as_ref(),
+                );
+                if !elide_scratch {
+                    self.open_method_scratch()?;
+                }
 
                 let mut scope = Scope::default();
                 for (i, p) in md.params.iter().enumerate() {
