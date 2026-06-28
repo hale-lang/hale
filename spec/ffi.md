@@ -452,6 +452,21 @@ program with no `fn main` is valid when it has any `@export`; if
 `_hale_start` is present the loader does **not** call `main` (its
 create-then-destroy of the arena would clobber the persistent one).
 
+**`--wrap-main` (browser-playground entry synthesis).** A bare
+`fn main` program is not the `@export` shape a wasm build needs. The
+`hale build … --target wasm32 --wrap-main` flag synthesizes it *on the
+parsed AST*: when the program has a top-level `fn main()` and no
+`@export` entry, it replaces `fn main` with an
+`@export locus __Main { birth() { <main's body> } }` (routing the body
+through the `_hale_start` path) and injects a `target wasm { }` gate if
+absent. Because it operates on the AST — not the source text — every
+diagnostic keeps the user's original line/col (no offset) and a `{`/`}`
+inside a string or comment can't mis-wrap it. It is **wasm-only and
+opt-in**: a hard error without `--target wasm32` (there is no native
+entry-inversion to wrap), never implied by the target (a wasm program
+may legitimately keep a bare `fn main` exported as `main`), and a no-op
+when an explicit `@export` entry already exists (prefer-explicit).
+
 Holding state across calls:
 
 - **`@export locus` (preferred):** state is the locus's fields,

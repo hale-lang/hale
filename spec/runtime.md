@@ -23,10 +23,15 @@ the model: runtime is automatic; stdlib is explicit.
   on dissolution. Bump allocation within a region; no per-object
   metadata; no GC. The framework's lotus structure provides the
   scope; the allocator just respects it.
-- **Per-method scratch (2026-05-21).** Each locus method body
+- **Per-method scratch (2026-05-21).** A locus method body
   (lifecycle / user-fn / mode) opens a per-call subregion of
-  `self.__arena` at entry and destroys it at every return.
-  Transient allocations made inside the body — `to_string`,
+  `self.__arena` at entry and destroys it at every return —
+  *unless* the body provably allocates nothing and returns a
+  by-value scalar (or Unit), in which case the scratch is elided
+  (2026-06-28; an optimization with no observable effect — there's
+  nothing to reclaim, so skipping the subregion just removes a
+  `malloc`/`free` per call). Transient allocations made inside the
+  body — `to_string`,
   `String` concat, `std::str::*` / `std::json::*` / `std::bytes::*`
   results, format-string composition — route through the
   scratch via `current_arena_ptr()` and get reclaimed at method

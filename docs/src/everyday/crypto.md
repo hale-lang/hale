@@ -16,11 +16,17 @@ let key  = std::bytes::from_string("secret");
 let digest = std::crypto::sha256(data);            // 32 bytes
 let tag    = std::crypto::hmac_sha256(key, data);  // 32 bytes
 let sum    = std::crypto::crc32(data);             // Int (IEEE 802.3 / zlib)
+
+let digest512 = std::crypto::sha512(data);            // 64 bytes
+let tag512    = std::crypto::hmac_sha512(key, data);  // 64 bytes
 ```
 
 `sha1` (20 bytes) is there too for legacy interop; reach for
-`sha256` by default. The hashes and `crc32` are hand-rolled — no
-OpenSSL dependency.
+`sha256` by default. The 64-bit-word SHA-512 siblings —
+`sha512` / `hmac_sha512` (64-byte) — are the same non-fallible
+shape, for venues that sign with HMAC-SHA512 (e.g. Kraken,
+Gate.io). The hashes and `crc32` are hand-rolled — no OpenSSL
+dependency.
 
 Raw hash bytes aren't printable, so encode one to show or
 transport it:

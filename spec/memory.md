@@ -876,10 +876,15 @@ answer.
 
 **Phase-4 per-method scratch reclaim (2026-05-21).** Locus
 method bodies (lifecycle `birth` / `run` / `accept` / `drain` /
-`dissolve`, user-fn members, mode bodies) now open a per-call
+`dissolve`, user-fn members, mode bodies) open a per-call
 scratch subregion of `self.__arena` on entry, route transient
 allocations through it via `current_arena_ptr()`, and destroy
-the subregion at every return point. Before this, every
+the subregion at every return point — except a body proven to
+allocate nothing that returns a by-value scalar (or Unit), where
+the scratch is elided entirely (2026-06-28). Eliding is sound
+because there is nothing to reclaim and no return value to
+deep-copy: it removes a `malloc`/`free` per call with no
+observable change to lifetimes or bounds. Before this, every
 allocation made by a long-running `run()` loop (JSON parse
 strings, format-string concats, metric-label entries, every
 stdlib primitive that lands on `lotus_caller_arena_or_global`)
