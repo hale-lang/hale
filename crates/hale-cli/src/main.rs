@@ -1624,6 +1624,25 @@ fn parse_build_options() -> Result<hale_codegen::BuildOptions, String> {
                 };
                 i += 2;
             }
+            // Backend CPU tuning for the native target. `native` tunes to
+            // the host (best perf, not portable); `baseline` pins a
+            // portable x86-64-v3 baseline for distributed artifacts.
+            "--target-cpu" => {
+                let v = args.get(i + 1).ok_or_else(|| {
+                    "--target-cpu requires a value (native|baseline)".to_string()
+                })?;
+                opts.target_cpu = match v.as_str() {
+                    "native" => hale_codegen::TargetCpu::Native,
+                    "baseline" => hale_codegen::TargetCpu::Baseline,
+                    other => {
+                        return Err(format!(
+                            "--target-cpu: unknown value `{}` (expected native|baseline)",
+                            other
+                        ));
+                    }
+                };
+                i += 2;
+            }
             other => {
                 return Err(format!(
                     "unknown `hale build` flag: {}",

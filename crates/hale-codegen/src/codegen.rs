@@ -516,6 +516,9 @@ pub struct BuildOptions {
     /// Compilation target. Selects the LLVM triple + the link
     /// strategy. Defaults to the host native target.
     pub target: CompileTarget,
+    /// Backend CPU tuning for the native target. Ignored on wasm32
+    /// (always generic).
+    pub target_cpu: TargetCpu,
 }
 
 /// The compilation backend. `Native` is the host ELF/Mach-O path
@@ -530,6 +533,18 @@ pub enum CompileTarget {
     #[default]
     Native,
     Wasm32,
+}
+
+/// Backend CPU tuning for the native target. `Native` tunes to the
+/// host (`-march=native`-equivalent: best perf, NOT portable across
+/// microarchitectures). `Baseline` pins a portable modern x86-64
+/// baseline (x86-64-v3: AVX2+BMI2+FMA) for distributed artifacts.
+/// Ignored on the wasm32 target (always generic).
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetCpu {
+    #[default]
+    Native,
+    Baseline,
 }
 
 /// Read a `LOTUS_*` boolean build flag from the environment.
@@ -761,12 +776,39 @@ pub fn build_executable_with_options(
     };
     let target = Target::from_triple(&triple)
         .map_err(|e| CodegenError::LlvmInit(e.to_string()))?;
+    // Backend tuning. wasm32 stays generic/Default (the browser bundle
+    // is size/compat-sensitive). The native path tunes to the host CPU
+    // by default (best perf) or pins a portable x86-64-v3 baseline, and
+    // runs the aggressive (O3) codegen pipeline. The host-CPU LLVMStrings
+    // are bound to owned Strings first so they outlive the FFI call.
+    let (cpu, features): (String, String) = if is_wasm {
+        ("generic".to_string(), String::new())
+    } else {
+        match options.target_cpu {
+            TargetCpu::Native => (
+                TargetMachine::get_host_cpu_name().to_string(),
+                TargetMachine::get_host_cpu_features().to_string(),
+            ),
+            TargetCpu::Baseline => {
+                if cfg!(target_arch = "x86_64") {
+                    ("x86-64-v3".to_string(), String::new())
+                } else {
+                    ("generic".to_string(), String::new())
+                }
+            }
+        }
+    };
+    let opt_level = if is_wasm {
+        OptimizationLevel::Default
+    } else {
+        OptimizationLevel::Aggressive
+    };
     let machine = target
         .create_target_machine(
             &triple,
-            "generic",
-            "",
-            OptimizationLevel::Default,
+            &cpu,
+            &features,
+            opt_level,
             RelocMode::PIC,
             CodeModel::Default,
         )
@@ -885,8 +927,12 @@ pub fn build_executable_with_options(
         .unwrap_or(false);
     if !asan_diag {
         let pb_opts = inkwell::passes::PassBuilderOptions::create();
+        // Native runs the aggressive O3 module pipeline; wasm stays O2
+        // (the browser bundle is size/compat-sensitive).
+        let pass_pipeline =
+            if is_wasm { "default<O2>" } else { "default<O3>" };
         cx.module
-            .run_passes("default<O2>", &machine, pb_opts)
+            .run_passes(pass_pipeline, &machine, pb_opts)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
     }
 
@@ -941,6 +987,22 @@ pub fn build_executable_with_options(
         // with the -Wl,--wrap link flags below.
         rt_cflags.push("-O2".into());
         rt_cflags.push("-DLOTUS_ENABLE_WRAP_MALLOC".into());
+        // Host-tune the arena/tls/shm_ring hot paths too. Only on the
+        // native target (a host -march is invalid for wasm). The runtime
+        // object cache is content-addressed on the cflags string and is
+        // per-machine (~/.cache), so -march=native resolves identically
+        // on a given machine and is never shared cross-machine. Not added
+        // to the sanitizer -O1 branches above.
+        if options.target == CompileTarget::Native {
+            match options.target_cpu {
+                TargetCpu::Native => rt_cflags.push("-march=native".into()),
+                TargetCpu::Baseline => {
+                    if cfg!(target_arch = "x86_64") {
+                        rt_cflags.push("-march=x86-64-v3".into());
+                    }
+                }
+            }
+        }
     }
     if prefetch_disabled {
         rt_cflags.push("-DLOTUS_DISABLE_PREFETCH=1".into());
