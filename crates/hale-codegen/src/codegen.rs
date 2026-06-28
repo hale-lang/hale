@@ -898,6 +898,32 @@ pub fn build_executable_with_options(
     // definitions, which the O2 pipeline below may inline / DCE
     // / rename — so the dump that's surfaced to tests is the
     // pre-opt view.
+    // Sanitizer + LTO mode flags. Read HERE (before the Hale module is
+    // emitted) so the emit can pick bitcode vs. native object. LTO is
+    // opt-in (LOTUS_LTO=1), native-only, and disabled under any
+    // sanitizer.
+    //
+    // LOTUS_UBSAN: address + undefined-behavior sanitizers together, with
+    // -fno-sanitize-recover so any UB (e.g. the signed `off + width`
+    // overflow class in the pack readers / ring framing) aborts and is
+    // caught. Separate from LOTUS_ASAN so the corpus-oracle ASan gate is
+    // unaffected; used to validate the foreign-ring boundary hardening.
+    let lotus_tsan = env_flag("LOTUS_TSAN");
+    let lotus_asan = env_flag("LOTUS_ASAN");
+    let lotus_ubsan = env_flag("LOTUS_UBSAN");
+    // LOTUS_LTO: opt-in full-LTO build. The Hale module is emitted as
+    // plain LLVM bitcode and the lotus C runtime TUs are compiled with
+    // -flto, so the final `clang -flto` link does cross-TU inlining of
+    // the arena bump-allocator / tls / shm_ring fast paths into the
+    // Hale-generated callers. Off by default: full LTO can interfere
+    // with the `-Wl,--wrap=malloc/...` link stage (the
+    // LOTUS_ARENA_LOG_BIG_CHUNKS diagnostic + the
+    // `std::diag::syscall_count` gate), so the default build + the whole
+    // test suite stay on the exact non-LTO behavior.
+    let lotus_lto = env_flag("LOTUS_LTO");
+    let lto_active =
+        lotus_lto && !is_wasm && !lotus_tsan && !lotus_ubsan && !lotus_asan;
+
     let obj_path: PathBuf = output_path.with_extension("o");
     if std::env::var("LOTUS_DUMP_IR").is_ok() {
         let ir_path = output_path.with_extension("ll");
@@ -922,6 +948,43 @@ pub fn build_executable_with_options(
     // function (e.g. an inlined alloc symbolized as
     // `__duration_closures`). Naive IR keeps every call in its true
     // function. Speed doesn't matter for the dedicated ASAN job.
+    // Stamp every function with the same target-cpu / target-features the
+    // TargetMachine was built with, so the emitted module SELF-DESCRIBES
+    // its subtarget. inkwell (unlike clang) does NOT add these function
+    // attributes automatically, so without this the bitcode falls back to
+    // the baseline x86-64 subtarget when re-compiled at LTO link time —
+    // which (a) loses host vectorization (AVX-512) on the Hale code, and
+    // (b) makes the LTO inliner refuse to inline the native
+    // (`-march=native`) lotus runtime fast paths into the Hale callers,
+    // because LLVM will not inline a callee whose target-features are a
+    // superset of the caller's. Stamping the host features here makes the
+    // Hale caller feature-MATCH the native runtime, so the arena / tls /
+    // shm_ring fast paths inline across the TU boundary AND the Hale code
+    // is itself compiled for the host CPU.
+    //
+    // Non-LTO is unaffected: these attributes equal the TargetMachine the
+    // object emit (`write_to_file`) already uses, so native codegen stays
+    // byte-identical. wasm uses generic/"" and must not carry x86 attrs.
+    // Applied to declarations too (harmless — no body — and matches what
+    // clang emits); only defined Hale functions actually change.
+    if !is_wasm {
+        let cpu_attr = cx.context.create_string_attribute("target-cpu", &cpu);
+        let feat_attr =
+            cx.context.create_string_attribute("target-features", &features);
+        let mut f = cx.module.get_first_function();
+        while let Some(func) = f {
+            func.add_attribute(
+                inkwell::attributes::AttributeLoc::Function,
+                cpu_attr,
+            );
+            func.add_attribute(
+                inkwell::attributes::AttributeLoc::Function,
+                feat_attr,
+            );
+            f = func.get_next_function();
+        }
+    }
+
     let asan_diag = std::env::var("LOTUS_ASAN")
         .map(|v| v == "1" || v == "true" || v == "TRUE")
         .unwrap_or(false);
@@ -936,9 +999,24 @@ pub fn build_executable_with_options(
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
     }
 
-    machine
-        .write_to_file(&cx.module, FileType::Object, &obj_path)
-        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+    // Under LTO, emit the Hale module as plain LLVM bitcode (the LTO
+    // link consumes it and re-runs the backend with cross-module
+    // inlining). Otherwise emit a native object as before. `main_input`
+    // is the first clang input either way.
+    let main_input: PathBuf = if lto_active {
+        let bc_path = output_path.with_extension("bc");
+        if !cx.module.write_bitcode_to_path(&bc_path) {
+            return Err(CodegenError::LlvmEmit(
+                "write_bitcode_to_path failed".into(),
+            ));
+        }
+        bc_path
+    } else {
+        machine
+            .write_to_file(&cx.module, FileType::Object, &obj_path)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        obj_path.clone()
+    };
 
     if is_wasm {
         // Compile the self-contained wasm runtime (arena core + bundled
@@ -955,14 +1033,8 @@ pub fn build_executable_with_options(
     // and content-address-cache the object; repeat builds just link.
     // The compile flags are part of the cache key, so a sanitizer /
     // prefetch / source change yields a fresh object.
-    let lotus_tsan = env_flag("LOTUS_TSAN");
-    let lotus_asan = env_flag("LOTUS_ASAN");
-    // LOTUS_UBSAN: address + undefined-behavior sanitizers together, with
-    // -fno-sanitize-recover so any UB (e.g. the signed `off + width`
-    // overflow class in the pack readers / ring framing) aborts and is
-    // caught. Separate from LOTUS_ASAN so the corpus-oracle ASan gate is
-    // unaffected; used to validate the foreign-ring boundary hardening.
-    let lotus_ubsan = env_flag("LOTUS_UBSAN");
+    // lotus_tsan / lotus_asan / lotus_ubsan / lotus_lto were read above
+    // (they gate the Hale-module emit format).
     let prefetch_disabled = env_flag("LOTUS_DISABLE_PREFETCH");
     let mut rt_cflags: Vec<String> = Vec::new();
     if lotus_tsan {
@@ -987,12 +1059,32 @@ pub fn build_executable_with_options(
         // with the -Wl,--wrap link flags below.
         rt_cflags.push("-O2".into());
         rt_cflags.push("-DLOTUS_ENABLE_WRAP_MALLOC".into());
+        // LTO mode: compile the runtime TUs to LLVM bitcode (cache key
+        // includes the cflags, so this recompiles to a distinct cached
+        // object automatically). Keep -O2 here; the link-time -O3 drives
+        // the final cross-module optimization.
+        //
+        // Note on cross-TU inlining: the runtime KEEPS its `-march=native`
+        // host tuning under LTO (below). That works — and is a pure win —
+        // because the Hale module is now stamped with the SAME host
+        // target-cpu / target-features (see the function-attribute loop
+        // near the emit site). LLVM's inliner only refuses to inline a
+        // callee whose features are a SUPERSET of the caller's; with both
+        // sides native they MATCH, so the arena/tls/shm_ring fast paths
+        // inline into the Hale callers AND every TU is vectorized for the
+        // host. (Earlier this guard dropped -march under LTO to dodge the
+        // mismatch at the cost of vectorization; stamping the Hale side
+        // removed the need for that workaround.)
+        if lto_active {
+            rt_cflags.push("-flto".into());
+        }
         // Host-tune the arena/tls/shm_ring hot paths too. Only on the
         // native target (a host -march is invalid for wasm). The runtime
         // object cache is content-addressed on the cflags string and is
         // per-machine (~/.cache), so -march=native resolves identically
         // on a given machine and is never shared cross-machine. Not added
-        // to the sanitizer -O1 branches above.
+        // to the sanitizer -O1 branches above. Applied under LTO too (the
+        // Hale bitcode carries matching host features, so inlining holds).
         if options.target == CompileTarget::Native {
             match options.target_cpu {
                 TargetCpu::Native => rt_cflags.push("-march=native".into()),
@@ -1034,11 +1126,22 @@ pub fn build_executable_with_options(
     let ts_shim_path = locate_ts_shim_staticlib();
     let mut clang = Command::new("clang");
     clang
-        .arg(&obj_path)
+        .arg(&main_input)
         .arg(&arena_o)
         .arg(&tls_o)
-        .arg(&shm_ring_o)
-        .arg("-O2")
+        .arg(&shm_ring_o);
+    if lto_active {
+        // Full-LTO link: -flto pulls the Hale bitcode + the runtime
+        // bitcode TUs through the LTO backend at -O3, inlining the arena
+        // / tls / shm_ring fast paths into the Hale callers. lld 18 is
+        // the LTO-capable linker (the default bfd/gold here is not built
+        // with the LLVM LTO plugin). Non-LTO inputs (the ts-shim Rust
+        // .a, OpenSSL .so) are linked normally — lld mixes them fine.
+        clang.arg("-flto").arg("-O3").arg("-fuse-ld=lld");
+    } else {
+        clang.arg("-O2");
+    }
+    clang
         // Form K5: SHM ring uses shm_open / shm_unlink which on
         // Linux live in librt. The functions are no-ops on macOS
         // (POSIX shm there is libc), but -lrt is portable on
@@ -1153,9 +1256,10 @@ pub fn build_executable_with_options(
         .arg(output_path)
         .status()
         .map_err(|e| CodegenError::Link(format!("clang invocation: {}", e)))?;
-    // Only the per-build user object is transient; the cached
-    // runtime objects persist for reuse by later builds.
-    let _ = std::fs::remove_file(&obj_path);
+    // Only the per-build user input (object, or bitcode under LTO) is
+    // transient; the cached runtime objects persist for reuse by later
+    // builds.
+    let _ = std::fs::remove_file(&main_input);
     if !status.success() {
         return Err(CodegenError::Link(format!(
             "clang exited with {}",
