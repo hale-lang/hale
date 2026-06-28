@@ -14,8 +14,8 @@ use inkwell::AddressSpace;
 
 use crate::locus::dissolve::LocusDissolve;
 use crate::codegen::{
-    view_coerces_to, BlockEnd, CodegenError, CodegenTy, Cx,
-    FallibleCallResult, FallibleCtx, FnSig, LocusInfo, Scope, SelfCx,
+    bce_receiver_key, view_coerces_to, BlockEnd, CodegenError, CodegenTy,
+    Cx, FallibleCallResult, FallibleCtx, FnSig, LocusInfo, Scope, SelfCx,
 };
 use crate::stdlib::bytes::BytesStdlib;
 use crate::stdlib::crypto::CryptoStdlib;
@@ -1880,6 +1880,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 (info, recv_val.into_pointer_value(), locus_name)
             };
 
+        // BCE: the receiver's canonical vec key — `Local(name)` for a
+        // local vec instance (`v.get(i)`, the common `@form(vec)`
+        // shape), `SelfLocus` for `self.get(i)`, or `SelfField(f)` for
+        // `self.data.get(i)`. Matched against the enclosing-loop
+        // registry in the vec `.get` arm; `None` for deeper receiver
+        // shapes, which never BCE.
+        let recv_bce_key = bce_receiver_key(receiver);
         if let Some(result) = self
             .try_lower_form_vec_fallible_method(
                 &info,
@@ -1888,6 +1895,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 method_name,
                 args,
                 scope,
+                recv_bce_key,
             )?
         {
             return Ok(result);

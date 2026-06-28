@@ -210,6 +210,278 @@ pub(crate) struct LoopFrame<'ctx> {
     break_bb: BasicBlock<'ctx>,
 }
 
+/// Bounds-check-elimination (BCE) support for `@form(vec)` `.get`
+/// inside counted loops. Stably identifies the self-rooted vec a
+/// `for VAR in 0..V.len()` loop iterates, so a matching
+/// `V.get(VAR)` in the body can skip its bounds check.
+///
+/// Soundness: for `for VAR in 0..V.len()` (EXCLUSIVE, lower bound
+/// literal `0`) with `V` not mutated in the body, every `V.get(VAR)`
+/// has `VAR ∈ [0, len(V)_at_entry)` and `len(V)` invariant ⟹
+/// `VAR < len(V)` always ⟹ the check is dead. The eligibility walker
+/// (`bce_body_is_safe`) defaults to BAIL: BCE applies only when every
+/// node is understood and provably hazard-free.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BceVecKey {
+    /// A local vec-locus instance — `let v = IntVec { }; ...
+    /// v.get(i)`, bound by `for i in 0..v.len()`. THE common shape:
+    /// a `@form(vec)` locus IS the vec and is used as a standalone
+    /// local instance (often in `main`, with no `self` in scope).
+    Local(String),
+    /// `self` is itself the `@form(vec)` locus — `self.get(i)`,
+    /// bound by `for i in 0..self.len()`.
+    SelfLocus,
+    /// `self.<field>` is a `@form(vec)` locus field — `self.data.get(i)`,
+    /// bound by `for i in 0..self.data.len()`.
+    SelfField(String),
+}
+
+impl BceVecKey {
+    /// The bound local name, if this key is a local vec instance.
+    /// Used by the eligibility walker to bail on reassignment /
+    /// shadowing / rebinding of the receiver local.
+    fn local_name(&self) -> Option<&str> {
+        match self {
+            BceVecKey::Local(n) => Some(n.as_str()),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct BceLoop {
+    pub(crate) vec_key: BceVecKey,
+    pub(crate) index_var: String,
+}
+
+/// Read-only `@form(vec)` methods — calling one of these on the
+/// loop's vec (or any vec) cannot change `len`, so it never
+/// invalidates the BCE invariant. ANY other method name is treated
+/// as a potential mutation and forces a bail.
+const BCE_READONLY_METHODS: &[&str] =
+    &["get", "len", "is_empty", "contains", "first", "last", "capacity"];
+
+/// Canonicalize a (method-call) receiver expression to a stable
+/// vec key by its syntactic identity: a local instance
+/// (`v` → `Local("v")`), `self` (→ `SelfLocus`), or `self.<field>`
+/// (→ `SelfField(f)`). Deeper shapes return `None` (not
+/// BCE-eligible). The eligibility walker bails on any reassignment /
+/// shadowing of a `Local` receiver, so we don't need full
+/// alias/provenance tracking — a mutating call always defeats the
+/// conservative call rule regardless of aliasing.
+pub(crate) fn bce_receiver_key(recv: &Expr) -> Option<BceVecKey> {
+    match recv {
+        Expr::Ident(id) => Some(BceVecKey::Local(id.name.clone())),
+        Expr::KwSelf(_) => Some(BceVecKey::SelfLocus),
+        Expr::Field { receiver, name, .. }
+            if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
+        {
+            Some(BceVecKey::SelfField(name.name.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// Recognize a syntactic `RECV.len()` upper bound and return the
+/// self-rooted vec key of `RECV`, or `None` if the upper bound is
+/// not a zero-arg `len()` call on a self-rooted receiver.
+fn bce_len_call_key(hi: &Expr) -> Option<BceVecKey> {
+    if let Expr::Call { callee, args, .. } = hi {
+        if args.is_empty() {
+            if let Expr::Field { receiver, name, .. } = callee.as_ref() {
+                if name.name == "len" {
+                    return bce_receiver_key(receiver);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Eligibility walk over a loop body. Returns `true` only when the
+/// body provably does NOT mutate the vec `vkey` and does NOT
+/// invalidate the index var `var`. Default is `false` (bail): any
+/// node not explicitly understood ⟹ keep the checked path.
+fn bce_body_is_safe(body: &Block, vkey: &BceVecKey, var: &str) -> bool {
+    body.stmts.iter().all(|s| bce_stmt_safe(s, vkey, var))
+        && body
+            .tail
+            .as_ref()
+            .map_or(true, |e| bce_expr_safe(e, vkey, var))
+}
+
+fn bce_stmt_safe(stmt: &Stmt, vkey: &BceVecKey, var: &str) -> bool {
+    let recv_local = vkey.local_name();
+    match stmt {
+        Stmt::Let { name, value, .. } => {
+            // Shadowing the index var rebinds what VAR means;
+            // shadowing the receiver local rebinds what V means.
+            name.name != var
+                && Some(name.name.as_str()) != recv_local
+                && bce_expr_safe(value, vkey, var)
+        }
+        Stmt::Assign { target, value, .. } => {
+            // Reassigning the index var (`i = ...`), the receiver
+            // local (`v = ...`), or writing into `self`
+            // (`self.x = ...`) breaks the invariant.
+            target.head.name != var
+                && target.head.name != "self"
+                && Some(target.head.name.as_str()) != recv_local
+                && target
+                    .tail
+                    .iter()
+                    .all(|seg| match seg {
+                        LValueSeg::Field(_) => true,
+                        LValueSeg::Index(e) => bce_expr_safe(e, vkey, var),
+                    })
+                && bce_expr_safe(value, vkey, var)
+        }
+        Stmt::If(ifs) => bce_ifstmt_safe(ifs, vkey, var),
+        Stmt::While { cond, body, .. } => {
+            bce_expr_safe(cond, vkey, var) && bce_body_is_safe(body, vkey, var)
+        }
+        Stmt::For { name, iter, body, .. } => {
+            // A nested loop rebinding VAR changes its value under the
+            // outer get; rebinding the receiver local changes V. Bail
+            // on either; otherwise recurse (the inner body's own
+            // mutations of V still matter).
+            name.name != var
+                && Some(name.name.as_str()) != recv_local
+                && bce_expr_safe(iter, vkey, var)
+                && bce_body_is_safe(body, vkey, var)
+        }
+        Stmt::Block(b) => bce_body_is_safe(b, vkey, var),
+        Stmt::Return(opt, _) => {
+            opt.as_ref().map_or(true, |e| bce_expr_safe(e, vkey, var))
+        }
+        Stmt::Break(_) | Stmt::Continue(_) => true,
+        // Everything else (Match, Send, ShmWrite, Recovery, Violate,
+        // Fail, Yield, Terminate, LetTuple, ...) is not modeled —
+        // bail conservatively.
+        _ => false,
+    }
+}
+
+fn bce_ifstmt_safe(ifs: &IfStmt, vkey: &BceVecKey, var: &str) -> bool {
+    if !bce_expr_safe(&ifs.cond, vkey, var) {
+        return false;
+    }
+    if !bce_body_is_safe(&ifs.then_block, vkey, var) {
+        return false;
+    }
+    match ifs.else_block.as_deref() {
+        None => true,
+        Some(ElseBranch::Else(b)) => bce_body_is_safe(b, vkey, var),
+        Some(ElseBranch::ElseIf(inner)) => bce_ifstmt_safe(inner, vkey, var),
+    }
+}
+
+/// True iff evaluating `expr` cannot mutate vec `vkey` (nor pass
+/// `self`/V by-reference somewhere that could). Default-bail.
+fn bce_expr_safe(expr: &Expr, vkey: &BceVecKey, var: &str) -> bool {
+    // A bare occurrence of V anywhere OTHER than as the receiver of a
+    // read-only method call (handled in `bce_call_safe`, which does
+    // not recurse here for that case) is an aliasing hazard: it could
+    // be captured into a struct/tuple, bound to another name, returned,
+    // or passed by reference, and then mutated. Bail.
+    if bce_receiver_key(expr).as_ref() == Some(vkey) {
+        return false;
+    }
+    match expr {
+        Expr::Literal(..) | Expr::Ident(_) | Expr::KwSelf(_) => true,
+        Expr::Binary { left, right, .. } => {
+            bce_expr_safe(left, vkey, var) && bce_expr_safe(right, vkey, var)
+        }
+        Expr::Unary { operand, .. } => bce_expr_safe(operand, vkey, var),
+        Expr::Field { receiver, .. } => bce_expr_safe(receiver, vkey, var),
+        Expr::Index { receiver, index, .. } => {
+            bce_expr_safe(receiver, vkey, var)
+                && bce_expr_safe(index, vkey, var)
+        }
+        Expr::Call { callee, args, .. } => {
+            bce_call_safe(callee, args, vkey, var)
+        }
+        Expr::Or { inner, disposition, .. } => {
+            bce_expr_safe(inner, vkey, var)
+                && match disposition {
+                    OrDisposition::Raise(_) | OrDisposition::Discard(_) => true,
+                    OrDisposition::Substitute(e) => bce_expr_safe(e, vkey, var),
+                    OrDisposition::Fail(e, _) => bce_expr_safe(e, vkey, var),
+                }
+        }
+        Expr::Block(b) => bce_body_is_safe(b, vkey, var),
+        Expr::If(ifs) => bce_ifstmt_safe(ifs, vkey, var),
+        Expr::Tuple(es, _) | Expr::Array(es, _) => {
+            es.iter().all(|e| bce_expr_safe(e, vkey, var))
+        }
+        Expr::Struct { inits, .. } => {
+            inits.iter().all(|i| bce_expr_safe(&i.value, vkey, var))
+        }
+        Expr::Range { lo, hi, .. } => {
+            bce_expr_safe(lo, vkey, var) && bce_expr_safe(hi, vkey, var)
+        }
+        Expr::ArrayRepeat { val, .. } => bce_expr_safe(val, vkey, var),
+        Expr::Sum(e, _) | Expr::Prod(e, _) => bce_expr_safe(e, vkey, var),
+        // Path / Path2 / Match / Approx and anything new: bail.
+        _ => false,
+    }
+}
+
+/// A call is safe iff: (a) no argument is `self` or V (no
+/// by-reference handoff that could mutate V), every arg subexpr is
+/// safe; and (b) the callee is either a free fn (cannot reach
+/// `self`'s fields without being passed them) or a method whose
+/// name is read-only — with a direct `self.method()` for the
+/// field-vec (pattern-2) case always bailing, since that user
+/// method could transitively mutate V.
+fn bce_call_safe(
+    callee: &Expr,
+    args: &[Expr],
+    vkey: &BceVecKey,
+    var: &str,
+) -> bool {
+    // Argument hazards: passing self / V by reference, or an unsafe
+    // subexpression.
+    for a in args {
+        if matches!(a, Expr::KwSelf(_)) {
+            return false;
+        }
+        if bce_receiver_key(a).as_ref() == Some(vkey) {
+            return false;
+        }
+        if !bce_expr_safe(a, vkey, var) {
+            return false;
+        }
+    }
+    if let Expr::Field { receiver, name, .. } = callee {
+        let rk = bce_receiver_key(receiver);
+        if rk.as_ref() == Some(vkey) {
+            // Method on V itself. get/len/etc are synthesized
+            // read-only intrinsics on a @form(vec) locus; any other
+            // name (push/pop/set/...) mutates → bail. The receiver IS
+            // V (the legitimate read); do NOT recurse into it (the
+            // aliasing guard in `bce_expr_safe` would reject the bare
+            // V reference). Args were already vetted above.
+            return BCE_READONLY_METHODS.contains(&name.name.as_str());
+        }
+        if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
+            // Direct `self.method()`. If we got here, `self` is not
+            // the loop's vec (pattern-2: V = self.<field>), so this
+            // is a user method on the enclosing locus that could
+            // transitively `self.<field>.push(...)`. Bail.
+            return false;
+        }
+        // Method on some other receiver (a different field, a local,
+        // ...). A read-only method cannot mutate anything; anything
+        // else might mutate a receiver that could alias V — bail.
+        return BCE_READONLY_METHODS.contains(&name.name.as_str())
+            && bce_expr_safe(receiver, vkey, var);
+    }
+    // Free-fn (or other) callee: recurse into it. With no self/V
+    // argument (checked above) it cannot reach V's storage.
+    bce_expr_safe(callee, vkey, var)
+}
+
 #[derive(Debug)]
 pub enum CodegenError {
     Unsupported(String),
@@ -518,6 +790,7 @@ pub fn build_executable_with_options(
         current_user_fn_ret: None,
         current_self: None,
         loops: Vec::new(),
+        bce_loops: Vec::new(),
         user_fns: BTreeMap::new(),
         user_loci: BTreeMap::new(),
         pending_locus_names: BTreeSet::new(),
@@ -1573,6 +1846,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// Stack of enclosing loops so `break` / `continue` can find
     /// their target blocks.
     pub(crate) loops: Vec<LoopFrame<'ctx>>,
+    /// Stack of enclosing counted loops eligible for `@form(vec)`
+    /// `.get` bounds-check elimination. Pushed by `lower_for_range`
+    /// when `for VAR in 0..V.len()` is proven safe; consulted by the
+    /// vec `.get` arm to emit the branch-free path. Innermost frame
+    /// shadows outer frames of the same index-var name.
+    pub(crate) bce_loops: Vec<BceLoop>,
     /// User-defined fns indexed by name. Filled in pass 1 of
     /// `lower_program` so call sites can refer to fns declared
     /// later in the same file.
@@ -14366,8 +14645,41 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             continue_bb: inc_bb,
             break_bb: exit_bb,
         });
-        let body_end = self.lower_block(body, scope)?;
+        // Bounds-check elimination eligibility (ALL must hold):
+        //   1. exclusive range (`..`, not `..=`)
+        //   2. lower bound is the integer literal `0`
+        //   3. upper bound is `V.len()` on a self-rooted vec
+        //   4. the body provably doesn't mutate V or invalidate VAR
+        // Any deviation ⟹ no frame pushed ⟹ the checked get path
+        // stays. The lazy IndexError / `or` handler then survive.
+        let bce_pushed = if !inclusive
+            && matches!(lo, Expr::Literal(Literal::Int(0), _))
+        {
+            if let Some(vkey) = bce_len_call_key(hi) {
+                if bce_body_is_safe(body, &vkey, &var_name.name) {
+                    self.bce_loops.push(BceLoop {
+                        vec_key: vkey,
+                        index_var: var_name.name.clone(),
+                    });
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        // Lower the body; pop the BCE frame on EVERY exit path
+        // (including the error early-return) so the registry stays
+        // balanced.
+        let body_res = self.lower_block(body, scope);
+        if bce_pushed {
+            self.bce_loops.pop();
+        }
         self.loops.pop();
+        let body_end = body_res?;
         if body_end == BlockEnd::Open {
             self.builder
                 .build_unconditional_branch(inc_bb)
