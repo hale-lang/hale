@@ -1,0 +1,10 @@
+# Keep the build context small + reproducible: the builder runs a fresh
+# `cargo build`, so the local target/ (and its 28MB+ staticlib) must not
+# be shipped into the image or it bloats the context and can mask a stale
+# artifact. Everything codegen needs is include_str!'d from crates/.
+target/
+play/site/dist/
+.git/
+.github/
+docs/book/
+**/*.wasm
