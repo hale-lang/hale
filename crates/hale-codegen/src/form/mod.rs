@@ -116,27 +116,142 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )));
                 }
                 let idx_i64 = idx_val.into_int_value();
-                let get_fn = self
-                    .module
-                    .get_function("lotus_vec_get")
-                    .expect("lotus_vec_get declared");
-                let c_ret = self
+                // FORM-vec hot-path inline (replaces the opaque
+                // lotus_vec_get C call). The vec slot is the inline
+                // struct `{ i64 cap, i64 len, ptr buf }`; on the
+                // common (in-bounds) path this is a bounds-check +
+                // GEP + typed load with no call. Produces the same
+                // `c_ret` the downstream fallible/IndexError code
+                // expects: 1 = ok, 0 = out-of-bounds (downstream
+                // computes `is_err = (c_ret == 0)`). The unsigned
+                // compare folds negative indices into the OOB path
+                // exactly like the C `i < 0 || (size_t)i >= len`.
+                let func = self
+                    .current_fn
+                    .expect("vec.get inside fn body");
+                // The slot's cap/len are C `size_t` (i64 native,
+                // i32 wasm32 — matching `usize_t`), so the struct
+                // type and the len/cap loads MUST use `usize_t` or
+                // the field offsets diverge from what the C runtime
+                // (init / grow) wrote on wasm32.
+                let usize_t = self.usize_type();
+                let vec_struct_ty = self.context.struct_type(
+                    &[usize_t.into(), usize_t.into(), ptr_t.into()],
+                    false,
+                );
+                let len_field_ptr = self
                     .builder
-                    .build_call(
-                        get_fn,
-                        &[
-                            vec_field_ptr.into(),
-                            elem_size.into(),
-                            idx_i64.into(),
-                            out_val_slot_opt.unwrap().into(),
-                        ],
-                        &format!("{}.get.call", locus_name),
+                    .build_struct_gep(
+                        vec_struct_ty,
+                        vec_field_ptr,
+                        1,
+                        &format!("{}.vec.get.len.ptr", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let len_usize = self
+                    .builder
+                    .build_load(
+                        usize_t,
+                        len_field_ptr,
+                        &format!("{}.vec.get.len", locus_name),
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .try_as_basic_value()
-                    .left()
-                    .expect("lotus_vec_get returns i32")
                     .into_int_value();
+                // Widen to i64 so the unsigned bounds-compare lines
+                // up with the i64 index (no-op bitcast on native).
+                let len_i64 = self
+                    .builder
+                    .build_int_z_extend_or_bit_cast(
+                        len_usize,
+                        i64_t,
+                        &format!("{}.vec.get.len.i64", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let inbounds = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::ULT,
+                        idx_i64,
+                        len_i64,
+                        &format!("{}.vec.get.inbounds", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let load_bb = self
+                    .context
+                    .append_basic_block(func, "vec.get.load");
+                let oob_bb = self
+                    .context
+                    .append_basic_block(func, "vec.get.oob");
+                let cont_bb = self
+                    .context
+                    .append_basic_block(func, "vec.get.cont");
+                self.builder
+                    .build_conditional_branch(inbounds, load_bb, oob_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+                // load_bb: buf[idx] -> out_val_slot, c_ret = 1
+                self.builder.position_at_end(load_bb);
+                let buf_field_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        vec_struct_ty,
+                        vec_field_ptr,
+                        2,
+                        &format!("{}.vec.get.buf.ptr", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let buf = self
+                    .builder
+                    .build_load(
+                        ptr_t,
+                        buf_field_ptr,
+                        &format!("{}.vec.get.buf", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_pointer_value();
+                let elem_ptr = unsafe {
+                    self.builder
+                        .build_gep(
+                            llvm_elem_ty,
+                            buf,
+                            &[idx_i64],
+                            &format!("{}.vec.get.elem.ptr", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                };
+                let loaded = self
+                    .builder
+                    .build_load(
+                        llvm_elem_ty,
+                        elem_ptr,
+                        &format!("{}.vec.get.elem", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(out_val_slot_opt.unwrap(), loaded)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_unconditional_branch(cont_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+                // oob_bb: nothing, fall through to cont with c_ret = 0
+                self.builder.position_at_end(oob_bb);
+                self.builder
+                    .build_unconditional_branch(cont_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+                // cont_bb: c_ret = phi [1 from load, 0 from oob]
+                self.builder.position_at_end(cont_bb);
+                let one_i32 = i32_t.const_int(1, false);
+                let cret_phi = self
+                    .builder
+                    .build_phi(i32_t, &format!("{}.vec.get.cret", locus_name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                cret_phi.add_incoming(&[
+                    (&one_i32, load_bb),
+                    (&zero_i32, oob_bb),
+                ]);
+                let c_ret = cret_phi.as_basic_value().into_int_value();
                 (c_ret, idx_i64)
             }
             "set" => {
@@ -1102,6 +1217,148 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let elem_size = self.size_to_usize(
                     llvm_elem_ty.size_of().expect("cell type has known size"),
                 )?;
+                // FORM-vec hot-path inline (replaces the opaque
+                // lotus_vec_push C call). The vec slot is the inline
+                // struct `{ i64 cap, i64 len, ptr buf }`. When
+                // `len < cap` we have room: store the (already
+                // arena-anchored) element into `buf[len]` and bump
+                // `len` — no call, no memcpy machinery. Only the
+                // grow case (len == cap) keeps the cold C call,
+                // which reallocs, stores, and bumps len itself. The
+                // deep-copy above ran on both paths, so heap fields
+                // are anchored either way.
+                let func = self
+                    .current_fn
+                    .expect("vec.push inside fn body");
+                // cap/len are C `size_t` (i64 native, i32 wasm32 —
+                // matching `usize_t`); use that width so the field
+                // offsets and the len bump agree with the C runtime
+                // (init / grow) on every target.
+                let usize_t = self.usize_type();
+                let vec_struct_ty = self.context.struct_type(
+                    &[usize_t.into(), usize_t.into(), ptr_t.into()],
+                    false,
+                );
+                let len_field_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        vec_struct_ty,
+                        vec_field_ptr,
+                        1,
+                        &format!("{}.vec.push.len.ptr", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let len_usize = self
+                    .builder
+                    .build_load(
+                        usize_t,
+                        len_field_ptr,
+                        &format!("{}.vec.push.len", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_int_value();
+                let cap_field_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        vec_struct_ty,
+                        vec_field_ptr,
+                        0,
+                        &format!("{}.vec.push.cap.ptr", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let cap_usize = self
+                    .builder
+                    .build_load(
+                        usize_t,
+                        cap_field_ptr,
+                        &format!("{}.vec.push.cap", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_int_value();
+                let has_room = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::ULT,
+                        len_usize,
+                        cap_usize,
+                        &format!("{}.vec.push.has_room", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let fast_bb = self
+                    .context
+                    .append_basic_block(func, "vec.push.fast");
+                let grow_bb = self
+                    .context
+                    .append_basic_block(func, "vec.push.grow");
+                let cont_bb = self
+                    .context
+                    .append_basic_block(func, "vec.push.cont");
+                self.builder
+                    .build_conditional_branch(has_room, fast_bb, grow_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+                // fast_bb: buf[len] = *arg_alloca; len += 1
+                self.builder.position_at_end(fast_bb);
+                let buf_field_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        vec_struct_ty,
+                        vec_field_ptr,
+                        2,
+                        &format!("{}.vec.push.buf.ptr", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let buf = self
+                    .builder
+                    .build_load(
+                        ptr_t,
+                        buf_field_ptr,
+                        &format!("{}.vec.push.buf", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_pointer_value();
+                let dst = unsafe {
+                    self.builder
+                        .build_gep(
+                            llvm_elem_ty,
+                            buf,
+                            &[len_usize],
+                            &format!("{}.vec.push.dst", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                };
+                // Typed whole-value copy of the element. Equivalent
+                // to the C path's `memcpy(buf+len*es, elem, es)` for
+                // any elem type (scalar, ptr, struct); LLVM lowers an
+                // aggregate load/store to the right move.
+                let elem_val = self
+                    .builder
+                    .build_load(
+                        llvm_elem_ty,
+                        arg_alloca,
+                        &format!("{}.vec.push.elem", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(dst, elem_val)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let new_len = self
+                    .builder
+                    .build_int_add(
+                        len_usize,
+                        usize_t.const_int(1, false),
+                        &format!("{}.vec.push.new_len", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(len_field_ptr, new_len)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_unconditional_branch(cont_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+                // grow_bb: cold path — realloc + store + len++ in C.
+                self.builder.position_at_end(grow_bb);
                 let push_fn = self
                     .module
                     .get_function("lotus_vec_push")
@@ -1119,6 +1376,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| {
                         CodegenError::LlvmEmit(e.to_string())
                     })?;
+                self.builder
+                    .build_unconditional_branch(cont_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+                self.builder.position_at_end(cont_bb);
                 Ok(Some(None))
             }
             "len" => {
