@@ -2259,40 +2259,115 @@ pub(crate) struct FnSig<'ctx> {
 /// allocate), struct/tuple/array/array-repeat/f-string literals
 /// (arena_alloc'd), match (codegen detail), `or` (the fallible
 /// machinery allocs), and anything not explicitly enumerated.
-fn fn_body_definitely_non_allocating(stmts: &[Stmt]) -> bool {
-    stmts.iter().all(stmt_definitely_non_allocating)
+fn fn_body_definitely_non_allocating(
+    stmts: &[Stmt],
+    num: &BTreeSet<String>,
+) -> bool {
+    // `num` is the set of in-scope locals known to hold a non-allocating
+    // numeric scalar (Int / Uint / Float / Duration) — seeded by the
+    // caller (a free fn's numeric params) and extended by numeric `let`s
+    // as we walk. It's read by the type-aware `Add` classification: `a + b`
+    // allocates only as String concat, so when both operands are provably
+    // such scalars the `+` is arithmetic and allocates nothing. (2026-06-28
+    // — closes the gap where any `i + 1` in a body forced a per-call
+    // scratch arena, the dominant "factoring out a function costs a
+    // malloc/free" penalty.)
+    let mut scope = num.clone();
+    for s in stmts {
+        if !stmt_definitely_non_allocating(s, &scope) {
+            return false;
+        }
+        if let Stmt::Let { name, ty, value, .. } = s {
+            if let_binds_nonalloc_numeric(ty.as_ref(), value, &scope) {
+                scope.insert(name.name.clone());
+            }
+        }
+    }
+    true
 }
 
-fn stmt_definitely_non_allocating(s: &Stmt) -> bool {
+/// True iff `e` provably has a non-allocating numeric scalar type (Int /
+/// Uint / Float / Duration), so an enclosing `Add` is arithmetic, not
+/// String concatenation. Conservative — anything not resolvable to a
+/// numeric literal, a known-numeric local (in `num`), or numeric
+/// arithmetic over those is `false`, leaving the `Add` classified as
+/// allocating (the safe default).
+fn expr_is_nonalloc_numeric(e: &Expr, num: &BTreeSet<String>) -> bool {
+    match e {
+        Expr::Literal(Literal::Int(_), _)
+        | Expr::Literal(Literal::Float(_), _)
+        | Expr::Literal(Literal::Duration(_), _) => true,
+        Expr::Ident(id) => num.contains(&id.name),
+        Expr::Unary { operand, .. } => expr_is_nonalloc_numeric(operand, num),
+        Expr::Binary { op, left, right, .. } => {
+            matches!(
+                op,
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
+            ) && expr_is_nonalloc_numeric(left, num)
+                && expr_is_nonalloc_numeric(right, num)
+        }
+        // Parenthesized single value `( e )`.
+        Expr::Tuple(parts, _) if parts.len() == 1 => {
+            expr_is_nonalloc_numeric(&parts[0], num)
+        }
+        _ => false,
+    }
+}
+
+/// A numeric-scalar `let` binding — an explicit Int/Uint/Float/Duration
+/// ascription, or a RHS that's provably numeric. Its name then joins the
+/// numeric scope so later `Add`s over it classify correctly. (Typecheck
+/// guarantees the RHS matches an ascription, so trusting the ascription is
+/// sound even when the RHS is opaque, e.g. `let n: Int = f();`.)
+fn let_binds_nonalloc_numeric(
+    ty: Option<&TypeExpr>,
+    value: &Expr,
+    num: &BTreeSet<String>,
+) -> bool {
+    if let Some(TypeExpr::Primitive(p, _)) = ty {
+        if matches!(
+            p,
+            PrimType::Int | PrimType::Uint | PrimType::Float | PrimType::Duration
+        ) {
+            return true;
+        }
+    }
+    expr_is_nonalloc_numeric(value, num)
+}
+
+fn stmt_definitely_non_allocating(s: &Stmt, num: &BTreeSet<String>) -> bool {
     match s {
-        Stmt::Let { value, .. } => expr_definitely_non_allocating(value),
-        Stmt::Return(Some(e), _) => expr_definitely_non_allocating(e),
+        Stmt::Let { value, .. } => expr_definitely_non_allocating(value, num),
+        Stmt::Return(Some(e), _) => expr_definitely_non_allocating(e, num),
         Stmt::Return(None, _) => true,
-        Stmt::Assign { value, .. } => expr_definitely_non_allocating(value),
-        Stmt::Expr(e) => expr_definitely_non_allocating(e),
+        Stmt::Assign { value, .. } => expr_definitely_non_allocating(value, num),
+        Stmt::Expr(e) => expr_definitely_non_allocating(e, num),
         Stmt::If(IfStmt {
             cond,
             then_block,
             else_block,
             ..
         }) => {
-            expr_definitely_non_allocating(cond)
-                && fn_body_definitely_non_allocating(&then_block.stmts)
+            expr_definitely_non_allocating(cond, num)
+                && fn_body_definitely_non_allocating(&then_block.stmts, num)
                 && match else_block.as_deref() {
                     None => true,
                     Some(ElseBranch::Else(b)) => {
-                        fn_body_definitely_non_allocating(&b.stmts)
+                        fn_body_definitely_non_allocating(&b.stmts, num)
                     }
                     Some(ElseBranch::ElseIf(if_stmt)) => {
-                        stmt_definitely_non_allocating(&Stmt::If(if_stmt.clone()))
+                        stmt_definitely_non_allocating(
+                            &Stmt::If(if_stmt.clone()),
+                            num,
+                        )
                     }
                 }
         }
         Stmt::While { cond, body, .. } => {
-            expr_definitely_non_allocating(cond)
-                && fn_body_definitely_non_allocating(&body.stmts)
+            expr_definitely_non_allocating(cond, num)
+                && fn_body_definitely_non_allocating(&body.stmts, num)
         }
-        Stmt::Block(b) => fn_body_definitely_non_allocating(&b.stmts),
+        Stmt::Block(b) => fn_body_definitely_non_allocating(&b.stmts, num),
         Stmt::Break(_) | Stmt::Continue(_) => true,
         // Conservative: for-loops, match, recovery, send, fail,
         // yield, let-tuple all touch machinery that may alloc.
@@ -2300,12 +2375,14 @@ fn stmt_definitely_non_allocating(s: &Stmt) -> bool {
     }
 }
 
-fn expr_definitely_non_allocating(e: &Expr) -> bool {
+fn expr_definitely_non_allocating(e: &Expr, num: &BTreeSet<String>) -> bool {
     match e {
         Expr::Literal(_, _) => true,
         Expr::Ident(_) => true,
         Expr::KwSelf(_) => true,
-        Expr::Field { receiver, .. } => expr_definitely_non_allocating(receiver),
+        Expr::Field { receiver, .. } => {
+            expr_definitely_non_allocating(receiver, num)
+        }
         Expr::Index { receiver, index, .. } => {
             // Index on a String with a Range is a slice (allocates).
             // The cheap conservative cut: reject any Range-typed
@@ -2313,62 +2390,72 @@ fn expr_definitely_non_allocating(e: &Expr) -> bool {
             if matches!(index.as_ref(), Expr::Range { .. }) {
                 false
             } else {
-                expr_definitely_non_allocating(receiver)
-                    && expr_definitely_non_allocating(index)
+                expr_definitely_non_allocating(receiver, num)
+                    && expr_definitely_non_allocating(index, num)
             }
         }
-        Expr::Unary { operand, .. } => expr_definitely_non_allocating(operand),
-        Expr::Binary { op, left, right, .. } => {
-            // `+` on Strings allocates; `+` on numerics doesn't.
-            // Without typecheck info threaded into codegen-side
-            // classifier, conservatively reject Add. All other
-            // BinOps are numeric/bool/bitwise and don't alloc.
-            let op_safe = match op {
-                BinOp::Add => false,
-                BinOp::Sub
-                | BinOp::Mul
-                | BinOp::Div
-                | BinOp::Mod
-                | BinOp::Eq
-                | BinOp::NotEq
-                | BinOp::Lt
-                | BinOp::Gt
-                | BinOp::LtEq
-                | BinOp::GtEq
-                | BinOp::And
-                | BinOp::Or
-                | BinOp::BitAnd
-                | BinOp::BitOr
-                | BinOp::BitXor
-                | BinOp::Shl
-                | BinOp::Shr => true,
-            };
-            op_safe
-                && expr_definitely_non_allocating(left)
-                && expr_definitely_non_allocating(right)
+        Expr::Unary { operand, .. } => {
+            expr_definitely_non_allocating(operand, num)
         }
+        Expr::Binary { op, left, right, .. } => match op {
+            // `+` allocates only as String concat. When both operands are
+            // provably non-allocating numeric scalars it's arithmetic and
+            // allocates nothing — the type-aware Add classification
+            // (2026-06-28). Otherwise (String, or an operand whose type we
+            // can't resolve) stay conservative and treat it as allocating.
+            BinOp::Add => {
+                expr_is_nonalloc_numeric(left, num)
+                    && expr_is_nonalloc_numeric(right, num)
+            }
+            // All other BinOps are numeric / bool / bitwise; non-allocating
+            // when their operands are.
+            BinOp::Sub
+            | BinOp::Mul
+            | BinOp::Div
+            | BinOp::Mod
+            | BinOp::Eq
+            | BinOp::NotEq
+            | BinOp::Lt
+            | BinOp::Gt
+            | BinOp::LtEq
+            | BinOp::GtEq
+            | BinOp::And
+            | BinOp::Or
+            | BinOp::BitAnd
+            | BinOp::BitOr
+            | BinOp::BitXor
+            | BinOp::Shl
+            | BinOp::Shr => {
+                expr_definitely_non_allocating(left, num)
+                    && expr_definitely_non_allocating(right, num)
+            }
+        },
         Expr::If(if_stmt) => {
-            expr_definitely_non_allocating(&if_stmt.cond)
-                && fn_body_definitely_non_allocating(&if_stmt.then_block.stmts)
+            expr_definitely_non_allocating(&if_stmt.cond, num)
+                && fn_body_definitely_non_allocating(
+                    &if_stmt.then_block.stmts,
+                    num,
+                )
                 && match if_stmt.else_block.as_deref() {
                     None => true,
                     Some(ElseBranch::Else(b)) => {
-                        fn_body_definitely_non_allocating(&b.stmts)
+                        fn_body_definitely_non_allocating(&b.stmts, num)
                     }
                     Some(ElseBranch::ElseIf(inner)) => {
-                        expr_definitely_non_allocating(&Expr::If(Box::new(
-                            inner.clone(),
-                        )))
+                        expr_definitely_non_allocating(
+                            &Expr::If(Box::new(inner.clone())),
+                            num,
+                        )
                     }
                 }
         }
-        Expr::Block(b) => fn_body_definitely_non_allocating(&b.stmts),
+        Expr::Block(b) => fn_body_definitely_non_allocating(&b.stmts, num),
         // Empty tuple = Unit value, no alloc. Single-elem tuple
         // is parenthesized expression; non-empty multi-elem
         // tuples allocate a tuple struct.
         Expr::Tuple(parts, _) if parts.is_empty() => true,
         Expr::Tuple(parts, _) if parts.len() == 1 => {
-            expr_definitely_non_allocating(&parts[0])
+            expr_definitely_non_allocating(&parts[0], num)
         }
         // Conservative for everything else: Call, Path, Path2,
         // Struct, multi-Tuple, Array, ArrayRepeat, Match, Or,
@@ -2475,7 +2562,7 @@ pub(crate) fn locus_arena_elidable(l: &LocusDecl) -> bool {
             LocusMember::Fn(fd) => &fd.body,
             _ => continue,
         };
-        if !fn_body_definitely_non_allocating(&body.stmts) {
+        if !fn_body_definitely_non_allocating(&body.stmts, &BTreeSet::new()) {
             return false;
         }
     }
@@ -2484,7 +2571,7 @@ pub(crate) fn locus_arena_elidable(l: &LocusDecl) -> bool {
         if let LocusMember::Params(p) = m {
             for param in &p.params {
                 if let ParamInit::Value(expr) = &param.init {
-                    if !expr_definitely_non_allocating(expr) {
+                    if !expr_definitely_non_allocating(expr, &BTreeSet::new()) {
                         return false;
                     }
                 }
@@ -8747,8 +8834,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // (the `or` codegen now constructs payloads lazily, but
         // the fallible-fn's *own* `fail` path still allocs eagerly
         // in the called body's frame).
-        let non_allocating =
-            fallible_payload_ty.is_none() && fn_body_definitely_non_allocating(&f.body.stmts);
+        // Seed the type-aware classifier with the fn's numeric scalar
+        // params (Int / Uint / Float / Duration → CodegenTy::{Int,Float,
+        // Duration}), so a body like `return i + 1;` is recognized as
+        // arithmetic, not a possible String concat — and skips the per-call
+        // scratch arena. `param_tys` aligns 1:1 with `f.params`.
+        let mut numeric_params: BTreeSet<String> = BTreeSet::new();
+        for (p, cty) in f.params.iter().zip(param_tys.iter()) {
+            if matches!(
+                cty,
+                CodegenTy::Int | CodegenTy::Float | CodegenTy::Duration
+            ) {
+                numeric_params.insert(p.name.name.clone());
+            }
+        }
+        let non_allocating = fallible_payload_ty.is_none()
+            && fn_body_definitely_non_allocating(&f.body.stmts, &numeric_params);
         self.user_fns.insert(
             f.name.name.clone(),
             FnSig {
