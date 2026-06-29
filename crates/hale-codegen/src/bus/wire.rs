@@ -1683,3 +1683,83 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
     }
 
 }
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// Flat-payload predicate for the same-process bus serialize-skip
+    /// optimization (2026-06-28). Answers: would a *verbatim* copy of
+    /// this payload's struct storage be a complete, self-contained
+    /// value — i.e. contain NO pointer into the publisher's arena that
+    /// the wire round-trip would otherwise rebind into the subscriber's
+    /// arena? If so, codegen routes the publish through
+    /// `lotus_bus_dispatch_flat` (one verbatim cell copy for local
+    /// fanout) instead of `lotus_bus_dispatch` (serialize → per-sub
+    /// deserialize-into-sub-arena).
+    ///
+    /// CORRECTNESS CONTRACT: a `true` here MUST mean "no heap pointer in
+    /// the bytes". A false positive aliases the publisher's arena into
+    /// every subscriber cell — exactly the unbounded leak Task-11 fixed.
+    /// So we DEFAULT TO `false` for anything not provably pointer-free.
+    /// A false negative merely forgoes the optimization (still correct,
+    /// just slower). The non-flat set here is therefore a *superset* of
+    /// what `emit_per_field_serialize` deep-copies / pointer-follows.
+    ///
+    /// What is flat: a struct (`TypeRef`) every one of whose fields is a
+    /// by-value scalar. In this codegen, ONLY scalars are stored inline
+    /// in a struct — `llvm_basic_type` lowers `String`, `Bytes`, `Time`,
+    /// `TypeRef` (nested struct), `Array`, `Tuple`, views, `Interface`,
+    /// `Cell`, `Drain`, and payload-carrying `Enum`s all to `ptr`. So a
+    /// nested struct or a fixed-size array FIELD is a heap pointer into
+    /// the publisher's arena (its storage is allocated separately), NOT
+    /// inline bytes — which is why we do NOT recurse through such fields
+    /// and treat their mere presence as non-flat. (This is intentionally
+    /// stricter than a structural "recurse into Array elem / nested
+    /// struct" reading: in Hale's pointer representation those fields are
+    /// not self-contained, and the serializer pointer-follows them, so
+    /// excluding them keeps the predicate superset-safe.)
+    pub(crate) fn bus_payload_is_flat(&self, ty: &CodegenTy) -> bool {
+        match ty {
+            // The bus payload container is always a struct (TypeRef) or
+            // a has-payload enum (handled below). A struct is flat iff
+            // every field is an inline-by-value scalar.
+            CodegenTy::TypeRef(name) => match self.user_types.get(name) {
+                Some(info) => info
+                    .fields
+                    .values()
+                    .all(|(_, fty)| self.bus_field_is_flat_scalar(fty)),
+                None => false,
+            },
+            // Anything else as a top-level payload (notably a
+            // payload-carrying Enum, which is a pointer to tagged-union
+            // storage whose body may carry variant pointers) is
+            // conservatively NOT flat.
+            _ => false,
+        }
+    }
+
+    /// Is `ty`, AS A STRUCT FIELD, stored inline with no heap pointer?
+    /// Only by-value scalars qualify (see `llvm_basic_type`): the
+    /// fixed-width primitives plus a no-payload enum (an i32 tag). Every
+    /// other variant lowers to a `ptr` (or a pointer-bearing by-value
+    /// view struct) and so makes the enclosing struct non-flat.
+    fn bus_field_is_flat_scalar(&self, ty: &CodegenTy) -> bool {
+        match ty {
+            CodegenTy::Int
+            | CodegenTy::Float
+            | CodegenTy::Bool
+            | CodegenTy::Decimal
+            | CodegenTy::Duration => true,
+            // No-payload enum is a plain i32 tag (value semantics); a
+            // payload-carrying enum is a pointer to its storage struct.
+            CodegenTy::Enum(name) => self
+                .user_enums
+                .get(name)
+                .map(|info| !info.has_payload)
+                .unwrap_or(false),
+            // Explicitly NOT flat (pointer-bearing or pointer-typed):
+            // String, Bytes, Time, BytesView, StringView, BytesMut,
+            // LocusRef, TypeRef, Array, Tuple, FnPtr, Interface, Cell,
+            // Drain — plus any future variant (default-false).
+            _ => false,
+        }
+    }
+}

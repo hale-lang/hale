@@ -967,6 +967,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             bus_dispatch_keyed_fallible_ty,
             None,
         );
+        // Flat-payload serialize-skip siblings (2026-06-28): same
+        // signatures as the _keyed / _keyed_fallible entries above.
+        // Codegen routes here ONLY when the payload type is proven
+        // flat (transitively pointer-free POD) via bus_payload_is_flat;
+        // the runtime does a verbatim local fanout and serializes once
+        // for remote only. serialize_fn is still passed (remote half
+        // needs it). See lotus_arena.c lotus_bus_dispatch_flat.
+        self.module.add_function(
+            "lotus_bus_dispatch_keyed_flat",
+            bus_dispatch_keyed_ty,
+            None,
+        );
+        self.module.add_function(
+            "lotus_bus_dispatch_keyed_fallible_flat",
+            bus_dispatch_keyed_fallible_ty,
+            None,
+        );
         // F.31 Phase 4: cooperative-pool worker surface.
         // declare ptr  @lotus_coop_pool_register(ptr name)
         // declare ptr  @lotus_coop_pool_lookup(ptr name)
@@ -1054,6 +1071,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_bus_dispatch", bus_dispatch_ty, None);
+        // Flat-payload serialize-skip sibling (2026-06-28): same
+        // signature as lotus_bus_dispatch. See the keyed siblings above
+        // and lotus_arena.c lotus_bus_dispatch_flat.
+        self.module
+            .add_function("lotus_bus_dispatch_flat", bus_dispatch_ty, None);
         let bus_quarantine_ty = void_t.fn_type(&[ptr_t.into()], false);
         self.module.add_function(
             "lotus_bus_quarantine_self",

@@ -220,6 +220,13 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
             } else {
                 self.lower_expr(value, scope)?
             };
+        // Flat-payload serialize-skip (2026-06-28): a transitively
+        // pointer-free POD payload needs no arena rebinding, so route
+        // it through the verbatim `lotus_bus_dispatch_flat` family
+        // instead of the serialize → per-sub-deserialize wire path. We
+        // still pass the serializer (remote fanout needs it). See
+        // `bus_payload_is_flat`.
+        let payload_is_flat = self.bus_payload_is_flat(&payload_ty);
         // m47-payloads-followup: bus payload is either a
         // user-type struct pointer OR a has-payload enum
         // pointer. Both lower to a ptr value + a sized storage
@@ -404,9 +411,14 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                 info.policy,
                 Some(hale_syntax::ast::UnmatchedPolicy::Fail)
             ) {
+                let dispatch_fallible_name = if payload_is_flat {
+                    "lotus_bus_dispatch_keyed_fallible_flat"
+                } else {
+                    "lotus_bus_dispatch_keyed_fallible"
+                };
                 let dispatch_fallible_fn = self
                     .module
-                    .get_function("lotus_bus_dispatch_keyed_fallible")
+                    .get_function(dispatch_fallible_name)
                     .expect("lotus_bus_dispatch_keyed_fallible declared");
                 let i32_t = self.context.i32_type();
                 let matched = self
@@ -701,9 +713,14 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                 return Ok(());
             }
 
+            let dispatch_keyed_name = if payload_is_flat {
+                "lotus_bus_dispatch_keyed_flat"
+            } else {
+                "lotus_bus_dispatch_keyed"
+            };
             let dispatch_keyed_fn = self
                 .module
-                .get_function("lotus_bus_dispatch_keyed")
+                .get_function(dispatch_keyed_name)
                 .expect("lotus_bus_dispatch_keyed declared in declare_builtins");
             self.builder
                 .build_call(
@@ -723,9 +740,14 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
             return Ok(());
         }
 
+        let dispatch_name = if payload_is_flat {
+            "lotus_bus_dispatch_flat"
+        } else {
+            "lotus_bus_dispatch"
+        };
         let dispatch_fn = self
             .module
-            .get_function("lotus_bus_dispatch")
+            .get_function(dispatch_name)
             .expect("lotus_bus_dispatch declared in declare_builtins");
         let _ = i64_t;
         self.builder

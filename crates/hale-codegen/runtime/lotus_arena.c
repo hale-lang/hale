@@ -6247,6 +6247,66 @@ void lotus_bus_dispatch_keyed(lotus_bus_queue_t *queue,
         queue, subject, struct_payload, struct_size, key_lo, key_hi);
 }
 
+/* Flat-payload sibling of lotus_bus_dispatch_keyed (keyed variant).
+ * See lotus_bus_dispatch_flat below for the rationale; this is the
+ * `where key == ...` routed form. Local fanout goes verbatim through
+ * lotus_bus_local_dispatch_keyed (honoring the key filter); the wire
+ * encode is paid ONCE for remote fanout only, when a CONNECT-role
+ * transport is bound to the subject. */
+void lotus_bus_dispatch_keyed_flat(lotus_bus_queue_t *queue,
+                                   const char *subject,
+                                   const void *struct_payload,
+                                   size_t struct_size,
+                                   lotus_serialize_fn serialize_fn,
+                                   uint64_t key_lo,
+                                   uint64_t key_hi) {
+    lotus_bus_local_dispatch_keyed(
+        queue, subject, struct_payload, struct_size, key_lo, key_hi);
+    if (serialize_fn && lotus_bus_has_remote_entries()) {
+        char *wire_buf = g_tls_bus_wire_buf;   /* off the coro stack */
+        ssize_t wire_size = serialize_fn(struct_payload, wire_buf,
+                                         LOTUS_PAYLOAD_MAX);
+        if (wire_size > 0) {
+            /* Remote fanout is unkeyed at v0.1 (mirrors
+             * lotus_bus_dispatch_keyed); remote bus routers filter on
+             * the payload's keyed_by field on their end. */
+            lotus_bus_remote_fanout(subject, wire_buf, (size_t)wire_size);
+        } else if (lotus_bus_log_drop_enabled()) {
+            fprintf(stderr,
+                    "[bus] remote publish dropped: serialize_fn returned "
+                    "%zd for subject=\"%s\" (struct_size=%zu, buf_cap=%d)\n",
+                    wire_size, subject, struct_size, LOTUS_PAYLOAD_MAX);
+        }
+    }
+}
+
+/* Flat-payload sibling of lotus_bus_dispatch_keyed_fallible. Same
+ * match pre-walk (so the caller can route the no-match `or`
+ * disposition), then the flat dispatch instead of the wire one. */
+int lotus_bus_dispatch_keyed_fallible_flat(lotus_bus_queue_t *queue,
+                                            const char *subject,
+                                            const void *struct_payload,
+                                            size_t struct_size,
+                                            lotus_serialize_fn serialize_fn,
+                                            uint64_t key_lo,
+                                            uint64_t key_hi) {
+    int matched = 0;
+    for (size_t i = 0; i < g_bus_count; i++) {
+        lotus_bus_entry_t *e = &g_bus_entries[i];
+        if (!e->subject) continue;
+        if (!lotus_subject_match(e->subject, subject)) continue;
+        if (e->key_filter_kind == 1
+            && e->key_lo == key_lo
+            && e->key_hi == key_hi) {
+            matched = 1;
+            break;
+        }
+    }
+    lotus_bus_dispatch_keyed_flat(queue, subject, struct_payload,
+                                  struct_size, serialize_fn, key_lo, key_hi);
+    return matched;
+}
+
 /* size/len params across the FFI surface are fixed-width uint64_t (not
  * size_t) so codegen's i64 matches on every target — see lotus_arena_alloc.
  * WASM plan size_t-ABI sweep. */
@@ -6315,6 +6375,46 @@ void lotus_bus_dispatch(lotus_bus_queue_t *queue,
     }
     /* Legacy verbatim local fanout (no wire codec). */
     lotus_bus_local_dispatch(queue, subject, struct_payload, struct_size);
+}
+
+/* Flat-payload fast path (2026-06-28). For a transitively pointer-free
+ * POD payload there is NOTHING to rebind: a verbatim cell copy is a
+ * complete, self-contained value, so local fanout is correct WITHOUT
+ * the serialize/deserialize round-trip lotus_bus_dispatch pays for
+ * arena rebinding (the Task-11 fix at lotus_bus_dispatch above). The
+ * round-trip exists solely so payloads with String/Bytes pointers get
+ * their heap rebuilt in each subscriber's arena; flat payloads have no
+ * such pointers, so they get isolation for free from the per-subscriber
+ * cell copy. Codegen routes here ONLY when the payload type is proven
+ * flat (bus_payload_is_flat) — a managed payload must NEVER reach this
+ * path or its pointers would alias the publisher's arena (unbounded
+ * leak). The drop diagnostics for the zero-matching-subscriber case
+ * fire from inside lotus_bus_local_dispatch.
+ *
+ * serialize_fn is still threaded through: remote (CONNECT-role)
+ * subscribers need the wire encoding, so we serialize ONCE and fan out
+ * the bytes only when a remote transport is bound to this subject. */
+void lotus_bus_dispatch_flat(lotus_bus_queue_t *queue,
+                             const char *subject,
+                             const void *struct_payload,
+                             uint64_t struct_size,
+                             lotus_serialize_fn serialize_fn) {
+    lotus_bus_local_dispatch(queue, subject, struct_payload,
+                             (size_t)struct_size);
+    if (serialize_fn && lotus_bus_has_remote_entries()) {
+        char *wire_buf = g_tls_bus_wire_buf;   /* off the coro stack */
+        ssize_t wire_size = serialize_fn(struct_payload, wire_buf,
+                                         LOTUS_PAYLOAD_MAX);
+        if (wire_size > 0) {
+            lotus_bus_remote_fanout(subject, wire_buf, (size_t)wire_size);
+        } else if (lotus_bus_log_drop_enabled()) {
+            fprintf(stderr,
+                    "[bus] remote publish dropped: serialize_fn returned "
+                    "%zd for subject=\"%s\" (struct_size=%zu, buf_cap=%d)\n",
+                    wire_size, subject, (size_t)struct_size,
+                    LOTUS_PAYLOAD_MAX);
+        }
+    }
 }
 
 /* m41b semantic: null-out subject for any entry whose self
