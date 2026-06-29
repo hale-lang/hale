@@ -22,6 +22,7 @@
 //! against built-ins.
 
 pub mod alloc_summary;
+pub mod bus_graph;
 pub mod check;
 pub mod purity;
 pub mod resolve;

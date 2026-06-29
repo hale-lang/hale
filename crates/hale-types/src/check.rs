@@ -3068,29 +3068,6 @@ fn collect_topic_pub_sub(
 // half). A declared topic is matched by both its name and its
 // `wire_subject` (a literal site may address it by the wire form).
 
-/// One end of the bus graph: subject-key → first declaration span,
-/// plus the wildcard patterns seen on that end (matched separately).
-#[derive(Default)]
-struct BusEnd {
-    concrete: BTreeMap<String, Span>,
-    wildcards: Vec<String>,
-}
-
-impl BusEnd {
-    fn record(&mut self, key: String, span: Span) {
-        if key.contains("**") {
-            self.wildcards.push(key);
-        } else {
-            self.concrete.entry(key).or_insert(span);
-        }
-    }
-    /// Does this end carry `subject` — exactly, or via a wildcard?
-    fn covers(&self, subject: &str) -> bool {
-        self.concrete.contains_key(subject)
-            || self.wildcards.iter().any(|p| crate::wildcard_match(p, subject))
-    }
-}
-
 fn check_bus_graph(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -3107,74 +3084,17 @@ fn check_bus_graph(
         return;
     }
 
-    let mut publishers = BusEnd::default();
-    let mut subscribers = BusEnd::default();
-    let mut bound: BTreeSet<String> = BTreeSet::new();
-    // Keys referenced cross-seed (`alias::Foo`) — the other seed owns
-    // the other half; never orphan-flag these.
-    let mut cross_seed: BTreeSet<String> = BTreeSet::new();
-
-    fn walk_bus(
-        items: &[TopDecl],
-        publishers: &mut BusEnd,
-        subscribers: &mut BusEnd,
-        bound: &mut BTreeSet<String>,
-        cross_seed: &mut BTreeSet<String>,
-    ) {
-        for item in items {
-            match item {
-                TopDecl::Locus(l) => {
-                    for m in &l.members {
-                        match m {
-                            LocusMember::Bus(bb) => {
-                                for bm in &bb.members {
-                                    match bm {
-                                        BusMember::Publish { subject, span, .. } => {
-                                            if matches!(subject, BusSubject::QualifiedTopic(_)) {
-                                                cross_seed.insert(subject.canonical().to_string());
-                                            }
-                                            publishers.record(
-                                                subject.canonical().to_string(),
-                                                *span,
-                                            );
-                                        }
-                                        BusMember::Subscribe { subject, span, .. } => {
-                                            if matches!(subject, BusSubject::QualifiedTopic(_)) {
-                                                cross_seed.insert(subject.canonical().to_string());
-                                            }
-                                            subscribers.record(
-                                                subject.canonical().to_string(),
-                                                *span,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            LocusMember::Bindings(bbk) => {
-                                for entry in &bbk.entries {
-                                    bound.insert(entry.topic.name.clone());
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                TopDecl::Module(md) => walk_bus(
-                    &md.items, publishers, subscribers, bound, cross_seed,
-                ),
-                _ => {}
-            }
-        }
-    }
-    for program in bundle.programs.values() {
-        walk_bus(
-            &program.items,
-            &mut publishers,
-            &mut subscribers,
-            &mut bound,
-            &mut cross_seed,
-        );
-    }
+    // The publisher/subscriber/bound/cross-seed walk is shared with
+    // `bus_graph::build_bus_graph` (the static-devirt analysis) — one
+    // walk, two consumers. The orphan diagnostics below use only the
+    // ends + bound + cross_seed; the per-site detail is ignored here.
+    let crate::bus_graph::BusWalk {
+        publishers,
+        subscribers,
+        bound,
+        cross_seed,
+        ..
+    } = crate::bus_graph::collect_bus_walk(bundle);
 
     // A subject has a publisher if some locus publishes it (exactly
     // or via wildcard), it is bound to a transport (external peer),
