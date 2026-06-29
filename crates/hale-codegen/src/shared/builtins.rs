@@ -1076,6 +1076,61 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // and lotus_arena.c lotus_bus_dispatch_flat.
         self.module
             .add_function("lotus_bus_dispatch_flat", bus_dispatch_ty, None);
+        // Static-devirt (build #1b). lotus_bus_register_static appends
+        // the subscriber's g_bus_entries index into the per-subject
+        // bucket `id` (in addition to the normal dynamic register —
+        // the dynamic path stays source of truth). Same trailing args
+        // as lotus_bus_register_keyed, prefixed with the i32 subject id.
+        // declare void @lotus_bus_register_static(i32 id, ptr subject,
+        //   ptr self, ptr handler, ptr mailbox, ptr deserialize,
+        //   ptr coop_pool, i8 kind, i64 key_lo, i64 key_hi)
+        let bus_register_static_ty = void_t.fn_type(
+            &[
+                i32_t.into(),     // subject id
+                ptr_t.into(),     // subject
+                ptr_t.into(),     // self_ptr
+                ptr_t.into(),     // handler
+                ptr_t.into(),     // mailbox
+                ptr_t.into(),     // deserialize
+                ptr_t.into(),     // coop_pool
+                i8_t.into(),      // key_filter_kind
+                i64_t.into(),     // key_lo
+                i64_t.into(),     // key_hi
+            ],
+            false,
+        );
+        self.module.add_function(
+            "lotus_bus_register_static",
+            bus_register_static_ty,
+            None,
+        );
+        // lotus_bus_dispatch_static reads bucket `id` directly (no
+        // scan, no strcmp) and routes the publish identically to the
+        // dynamic path. `flat` selects the verbatim-vs-wire fanout
+        // (matching lotus_bus_dispatch_flat vs lotus_bus_dispatch);
+        // `no_pinned` selects the no-acquire-load cooperative enqueue
+        // when the program has no pinned/cross-pool placement (#3).
+        // declare void @lotus_bus_dispatch_static(ptr queue, i32 id,
+        //   ptr subject, ptr payload, i64 size, ptr serialize_fn,
+        //   i32 flat, i32 no_pinned)
+        let bus_dispatch_static_ty = void_t.fn_type(
+            &[
+                ptr_t.into(),     // queue
+                i32_t.into(),     // subject id
+                ptr_t.into(),     // subject
+                ptr_t.into(),     // struct_payload
+                i64_t.into(),     // struct_size
+                ptr_t.into(),     // serialize_fn
+                i32_t.into(),     // flat
+                i32_t.into(),     // no_pinned
+            ],
+            false,
+        );
+        self.module.add_function(
+            "lotus_bus_dispatch_static",
+            bus_dispatch_static_ty,
+            None,
+        );
         let bus_quarantine_ty = void_t.fn_type(&[ptr_t.into()], false);
         self.module.add_function(
             "lotus_bus_quarantine_self",

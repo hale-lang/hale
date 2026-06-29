@@ -4330,11 +4330,19 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q);
  *
  * Holds the queue's mutex for the duration so concurrent pinned
  * publishers don't corrupt each other's writes. */
-void lotus_bus_queue_enqueue(lotus_bus_queue_t *q,
-                             void *handler,
-                             void *self_ptr,
-                             const void *payload_src,
-                             size_t payload_size) {
+/* Shared enqueue body. `locked` is the caller's decision on whether
+ * the queue mutex is needed. lotus_bus_queue_enqueue reads the
+ * g_bus_has_pinned atomic and passes that; the static-devirt no-pinned
+ * variant (lotus_bus_queue_enqueue_st) passes 0 unconditionally
+ * because codegen proved the whole program has no pinned / cross-pool
+ * placement, so g_bus_has_pinned is provably 0 and the acquire-load is
+ * dead work. */
+static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
+                                    void *handler,
+                                    void *self_ptr,
+                                    const void *payload_src,
+                                    size_t payload_size,
+                                    int locked) {
     if (!q) return;
     /* Two-tier payload storage. Small payloads land in the
      * cell's inline buffer (no malloc on the hot path); large
@@ -4348,7 +4356,6 @@ void lotus_bus_queue_enqueue(lotus_bus_queue_t *q,
             memcpy(heap_buf, payload_src, payload_size);
         }
     }
-    int locked = __atomic_load_n(&g_bus_has_pinned, __ATOMIC_ACQUIRE);
     if (locked) pthread_mutex_lock(&q->lock);
     /* Ensure a free tail slot, applying the bounded-queue backpressure
      * policy (GH #125). */
@@ -4405,6 +4412,32 @@ void lotus_bus_queue_enqueue(lotus_bus_queue_t *q,
         memcpy(slot->payload_inline, payload_src, payload_size);
     }
     if (locked) pthread_mutex_unlock(&q->lock);
+}
+
+void lotus_bus_queue_enqueue(lotus_bus_queue_t *q,
+                             void *handler,
+                             void *self_ptr,
+                             const void *payload_src,
+                             size_t payload_size) {
+    int locked = __atomic_load_n(&g_bus_has_pinned, __ATOMIC_ACQUIRE);
+    bus_queue_enqueue_inner(q, handler, self_ptr, payload_src,
+                            payload_size, locked);
+}
+
+/* Static-devirt no-pinned enqueue (build #3). Identical to
+ * lotus_bus_queue_enqueue minus the g_bus_has_pinned acquire-load:
+ * codegen emits this from lotus_bus_dispatch_static only when the
+ * BusGraph proves the whole program has zero pinned / cross-pool
+ * placement (single-threaded bus). In that case g_bus_has_pinned can
+ * never transition 1, so a non-atomic single-threaded enqueue is
+ * sound and drops the per-enqueue acquire-load. */
+void lotus_bus_queue_enqueue_st(lotus_bus_queue_t *q,
+                                void *handler,
+                                void *self_ptr,
+                                const void *payload_src,
+                                size_t payload_size) {
+    bus_queue_enqueue_inner(q, handler, self_ptr, payload_src,
+                            payload_size, /* locked */ 0);
 }
 
 /* Drain the queue: pop cells one at a time and invoke
@@ -5910,6 +5943,34 @@ static lotus_bus_entry_t *g_bus_entries = NULL;
 static size_t             g_bus_count   = 0;
 static size_t             g_bus_cap     = 0;
 
+/* === Static-devirt per-subject buckets (build #1b) ================
+ *
+ * For every statically-eligible subject (closed-world, no transport
+ * binding, no wildcard, no cross-seed, no routing key — the BusGraph
+ * gate in hale-types decides), codegen assigns a stable compile-time
+ * subject id and emits lotus_bus_register_static at each subscriber's
+ * registration. That appends the subscriber's INDEX into g_bus_entries
+ * to this subject's bucket — an additional index, never the source of
+ * truth. The dynamic path (g_bus_entries scan + lotus_subject_match)
+ * stays authoritative: remote fanout, quarantine, and deregister all
+ * keep operating on g_bus_entries unchanged.
+ *
+ * lotus_bus_dispatch_static(id, ...) then routes a publish by reading
+ * this subject's bucket directly — no scan over unrelated subjects'
+ * entries, no per-entry strcmp. The bucket stores INDICES (not copied
+ * entries or baked pointers) precisely so the static path observes the
+ * runtime-set self_ptr and the quarantine null-out on the SAME live
+ * lotus_bus_entry the dynamic path uses — the two paths dispatch over
+ * identical state, which is what makes them behaviorally identical. */
+typedef struct {
+    size_t *idx;     /* indices into g_bus_entries, append-only */
+    size_t  count;
+    size_t  cap;
+} lotus_bus_static_bucket_t;
+
+static lotus_bus_static_bucket_t *g_bus_static_buckets = NULL;
+static uint32_t                   g_bus_static_bucket_count = 0;
+
 /* Per-thread scratch for the wire dispatch path (2026-05-29).
  * These were `char buf[LOTUS_PAYLOAD_MAX]` (64 KiB) stack arrays
  * inside lotus_bus_dispatch{,_keyed} (the publish-side serialize
@@ -6115,6 +6176,62 @@ void lotus_bus_register_keyed(const char *subject,
     e->key_filter_kind = key_filter_kind;
     e->key_lo      = key_lo;
     e->key_hi      = key_hi;
+}
+
+/* Grow g_bus_static_buckets so index `id` is valid; new slots are
+ * zero-initialized (empty bucket). No-op if already large enough. */
+static void lotus_bus_static_buckets_ensure(uint32_t id) {
+    if (id < g_bus_static_bucket_count) return;
+    uint32_t new_count = id + 1;
+    lotus_bus_static_bucket_t *grown = (lotus_bus_static_bucket_t *)
+        realloc(g_bus_static_buckets,
+                (size_t)new_count * sizeof(lotus_bus_static_bucket_t));
+    if (!grown) return;     /* OOM — register_static degrades to dynamic-only */
+    for (uint32_t i = g_bus_static_bucket_count; i < new_count; i++) {
+        grown[i].idx = NULL;
+        grown[i].count = 0;
+        grown[i].cap = 0;
+    }
+    g_bus_static_buckets = grown;
+    g_bus_static_bucket_count = new_count;
+}
+
+/* Build #1b: register a subscriber on a statically-eligible subject.
+ * Does the normal dynamic registration FIRST (so the dynamic path
+ * remains the source of truth — remote fanout, quarantine, deregister
+ * are unaffected), then records the just-appended g_bus_entries index
+ * into bucket `id`. Same args as lotus_bus_register_keyed plus the
+ * compile-time subject id. On any OOM the static index is simply not
+ * recorded; the dynamic path still fires the subscriber, so the
+ * worst case is a fall-back to a scan-dispatch for that subject, never
+ * a dropped delivery. */
+void lotus_bus_register_static(uint32_t id,
+                               const char *subject,
+                               void *self_ptr,
+                               void *handler,
+                               lotus_mailbox_t *mailbox,
+                               lotus_deserialize_fn deserialize,
+                               lotus_coop_pool_t *coop_pool,
+                               uint8_t key_filter_kind,
+                               uint64_t key_lo,
+                               uint64_t key_hi) {
+    size_t before = g_bus_count;
+    lotus_bus_register_keyed(subject, self_ptr, handler, mailbox,
+                             deserialize, coop_pool,
+                             key_filter_kind, key_lo, key_hi);
+    if (g_bus_count == before) return;   /* register hit OOM — nothing to index */
+    size_t entry_idx = g_bus_count - 1;
+    lotus_bus_static_buckets_ensure(id);
+    if (id >= g_bus_static_bucket_count) return;   /* bucket-grow OOM */
+    lotus_bus_static_bucket_t *b = &g_bus_static_buckets[id];
+    if (b->count == b->cap) {
+        size_t nc = b->cap == 0 ? 4 : b->cap * 2;
+        size_t *grown = (size_t *)realloc(b->idx, nc * sizeof(size_t));
+        if (!grown) return;
+        b->idx = grown;
+        b->cap = nc;
+    }
+    b->idx[b->count++] = entry_idx;
 }
 
 /* Forward decl: defined alongside the other LOTUS_BUS_LOG_*
@@ -6669,6 +6786,17 @@ void lotus_bus_router_destroy(void) {
     g_bus_entries = NULL;
     g_bus_count   = 0;
     g_bus_cap     = 0;
+    /* Build #1b: release the static-devirt buckets (index lists). The
+     * entries they pointed into are freed above; the index storage is
+     * the bucket's own. */
+    if (g_bus_static_buckets) {
+        for (uint32_t i = 0; i < g_bus_static_bucket_count; i++) {
+            if (g_bus_static_buckets[i].idx) free(g_bus_static_buckets[i].idx);
+        }
+        free(g_bus_static_buckets);
+    }
+    g_bus_static_buckets = NULL;
+    g_bus_static_bucket_count = 0;
     /* m58: also tear down any remote-bound transports the
      * deployment-config loader opened at boot. */
     lotus_bus_remote_destroy_all();
@@ -11032,6 +11160,199 @@ void lotus_bus_dispatch_wire(const char *subject,
     }
     (void)delivered;
     lotus_current_caller_arena = prev_tls;
+}
+
+/* === Static-devirt dispatch (build #1b) ==========================
+ *
+ * The publish-side counterpart to lotus_bus_register_static. Reads
+ * the per-subject bucket for `id` directly — NO scan over unrelated
+ * g_bus_entries and NO lotus_subject_match strcmp — then does the
+ * SAME per-entry routing the dynamic path does, over the SAME live
+ * lotus_bus_entry rows (the bucket holds indices). That identity is
+ * the whole point: deferred-FIFO enqueue order, mailbox/coop_pool/
+ * queue routing, quarantine skip, and arena rebinding all behave
+ * exactly as the dynamic path, so the static and dynamic lowerings
+ * are differentially identical.
+ *
+ *   flat != 0  → mirror lotus_bus_dispatch_flat: verbatim cell copy
+ *                for local fanout (the flat payload has no pointers
+ *                to rebind), serialize once for remote fanout only.
+ *   flat == 0  → mirror lotus_bus_dispatch: serialize once, then
+ *                deserialize into EACH subscriber's own arena before
+ *                enqueue (Task-11 arena isolation), then remote.
+ *
+ *   no_pinned != 0 → the whole program has no pinned / cross-pool
+ *                placement (BusGraph-proven), so the cooperative-queue
+ *                enqueue takes the no-acquire-load lotus_bus_queue_
+ *                enqueue_st (build #3).
+ *
+ * `queue` is the program-wide cooperative queue (matches the flat
+ * dynamic path); the wire path mirrors lotus_bus_dispatch_wire and
+ * uses g_bus_queue_for_remote for the cooperative branch. For an
+ * eligible subject these are the same queue, set once at boot. */
+void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
+                               uint32_t id,
+                               const char *subject,
+                               const void *struct_payload,
+                               uint64_t struct_size,
+                               lotus_serialize_fn serialize_fn,
+                               int flat,
+                               int no_pinned) {
+    lotus_bus_static_bucket_t *b =
+        (id < g_bus_static_bucket_count) ? &g_bus_static_buckets[id] : NULL;
+
+    if (flat) {
+        /* Verbatim local fanout (mirror lotus_bus_local_dispatch). */
+        size_t delivered = 0;
+        if (b) {
+            for (size_t k = 0; k < b->count; k++) {
+                lotus_bus_entry_t *e = &g_bus_entries[b->idx[k]];
+                if (!e->subject) continue;           /* quarantined */
+                if (e->key_filter_kind != 0) continue;
+                if (e->mailbox) {
+                    lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
+                                       struct_payload, (size_t)struct_size);
+                    delivered++;
+                } else if (e->coop_pool) {
+                    lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
+                                         struct_payload, (size_t)struct_size);
+                    delivered++;
+                } else if (queue) {
+                    if (no_pinned) {
+                        lotus_bus_queue_enqueue_st(queue, e->handler,
+                                                   e->self_ptr, struct_payload,
+                                                   (size_t)struct_size);
+                    } else {
+                        lotus_bus_queue_enqueue(queue, e->handler, e->self_ptr,
+                                                struct_payload,
+                                                (size_t)struct_size);
+                    }
+                    delivered++;
+                }
+            }
+        }
+        if (delivered == 0 && lotus_bus_log_drop_enabled()) {
+            fprintf(stderr,
+                    "[bus] publish dropped: no local subscribers for "
+                    "subject=\"%s\" (static id=%u)\n",
+                    subject ? subject : "(null)", id);
+        }
+        /* Remote fanout for completeness (mirror lotus_bus_dispatch_flat).
+         * Eligible subjects are not transport-bound, so this is normally
+         * a no-op; kept identical for safety. */
+        if (serialize_fn && lotus_bus_has_remote_entries()) {
+            char *wire_buf = g_tls_bus_wire_buf;
+            ssize_t wire_size = serialize_fn(struct_payload, wire_buf,
+                                             LOTUS_PAYLOAD_MAX);
+            if (wire_size > 0) {
+                lotus_bus_remote_fanout(subject, wire_buf, (size_t)wire_size);
+            }
+        }
+        return;
+    }
+
+    /* Non-flat: serialize once, then deserialize into each subscriber's
+     * own arena before enqueue (mirror lotus_bus_dispatch ->
+     * lotus_bus_dispatch_wire). serialize_fn is required here; when
+     * absent the dynamic path would fall back to verbatim local
+     * dispatch, so do the same. */
+    if (!serialize_fn) {
+        /* Mirror lotus_bus_dispatch's NULL-serialize_fn legacy path:
+         * verbatim local fanout. */
+        size_t delivered = 0;
+        if (b) {
+            for (size_t k = 0; k < b->count; k++) {
+                lotus_bus_entry_t *e = &g_bus_entries[b->idx[k]];
+                if (!e->subject) continue;
+                if (e->key_filter_kind != 0) continue;
+                if (e->mailbox) {
+                    lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
+                                       struct_payload, (size_t)struct_size);
+                    delivered++;
+                } else if (e->coop_pool) {
+                    lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
+                                         struct_payload, (size_t)struct_size);
+                    delivered++;
+                } else if (queue) {
+                    if (no_pinned) {
+                        lotus_bus_queue_enqueue_st(queue, e->handler,
+                                                   e->self_ptr, struct_payload,
+                                                   (size_t)struct_size);
+                    } else {
+                        lotus_bus_queue_enqueue(queue, e->handler, e->self_ptr,
+                                                struct_payload,
+                                                (size_t)struct_size);
+                    }
+                    delivered++;
+                }
+            }
+        }
+        if (delivered == 0 && lotus_bus_log_drop_enabled()) {
+            fprintf(stderr,
+                    "[bus] publish dropped: no local subscribers for "
+                    "subject=\"%s\" (static id=%u, no codec)\n",
+                    subject ? subject : "(null)", id);
+        }
+        return;
+    }
+
+    char *wire_buf = g_tls_bus_wire_buf;
+    ssize_t wire_size = serialize_fn(struct_payload, wire_buf,
+                                     LOTUS_PAYLOAD_MAX);
+    if (wire_size <= 0) {
+        if (lotus_bus_log_drop_enabled()) {
+            fprintf(stderr,
+                    "[bus] publish dropped: serialize_fn returned %zd for "
+                    "subject=\"%s\" (static id=%u, struct_size=%zu)\n",
+                    wire_size, subject ? subject : "(null)", id,
+                    (size_t)struct_size);
+        }
+        return;
+    }
+
+    char *struct_buf = g_tls_bus_struct_buf;
+    lotus_arena_t *prev_tls = lotus_current_caller_arena;
+    size_t delivered = 0;
+    if (b) {
+        for (size_t k = 0; k < b->count; k++) {
+            lotus_bus_entry_t *e = &g_bus_entries[b->idx[k]];
+            if (!e->subject) continue;             /* quarantined */
+            if (e->key_filter_kind != 0) continue;
+            if (!e->deserialize) continue;
+            lotus_arena_t *sub_arena =
+                e->self_ptr ? *(lotus_arena_t **)e->self_ptr : NULL;
+            lotus_current_caller_arena = sub_arena;
+            ssize_t ssz = e->deserialize(wire_buf, (size_t)wire_size,
+                                         struct_buf, LOTUS_PAYLOAD_MAX);
+            if (ssz <= 0) continue;
+            if (e->mailbox) {
+                lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
+                                   struct_buf, (size_t)ssz);
+                delivered++;
+            } else if (e->coop_pool) {
+                lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
+                                     struct_buf, (size_t)ssz);
+                delivered++;
+            } else if (g_bus_queue_for_remote) {
+                if (no_pinned) {
+                    lotus_bus_queue_enqueue_st(g_bus_queue_for_remote,
+                                               e->handler, e->self_ptr,
+                                               struct_buf, (size_t)ssz);
+                } else {
+                    lotus_bus_queue_enqueue(g_bus_queue_for_remote, e->handler,
+                                            e->self_ptr, struct_buf,
+                                            (size_t)ssz);
+                }
+                delivered++;
+            }
+        }
+    }
+    lotus_current_caller_arena = prev_tls;
+    (void)delivered;
+    /* Remote fanout: same wire bytes, mirror lotus_bus_dispatch. */
+    if (lotus_bus_has_remote_entries()) {
+        lotus_bus_remote_fanout(subject, wire_buf, (size_t)wire_size);
+    }
 }
 
 /* m70: lazy global "payload arena" for String byte storage in

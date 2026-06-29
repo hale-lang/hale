@@ -346,6 +346,42 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
             self.lower_subscribe_key_filter(self_ptr, key_filter, subject)?;
         let kind_iv = i8_t.const_int(kind_v as u64, false);
 
+        // Static-devirt (build #1b): when this subject is statically
+        // eligible, register through lotus_bus_register_static so the
+        // subscriber's g_bus_entries index also lands in the per-subject
+        // bucket. register_static ALSO does the normal dynamic register
+        // internally, so the dynamic path (remote fanout, quarantine,
+        // keyed/wire dispatch) is unchanged — the bucket is purely an
+        // additional index. Ineligible subjects keep register_keyed.
+        if let Some(&id) = self.bus_devirt_ids.get(subject) {
+            let i32_t = self.context.i32_type();
+            let id_iv = i32_t.const_int(id as u64, false);
+            let register_static_fn = self
+                .module
+                .get_function("lotus_bus_register_static")
+                .expect("lotus_bus_register_static declared in declare_builtins");
+            self.builder
+                .build_call(
+                    register_static_fn,
+                    &[
+                        id_iv.into(),
+                        subj_str.into(),
+                        self_ptr.into(),
+                        handler_ptr.into(),
+                        mailbox_val.into(),
+                        deserialize_ptr.into(),
+                        coop_pool_ptr.into(),
+                        kind_iv.into(),
+                        key_lo_v.into(),
+                        key_hi_v.into(),
+                    ],
+                    "bus.register_static.call",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let _ = i64_t;
+            return Ok(());
+        }
+
         let register_keyed_fn = self
             .module
             .get_function("lotus_bus_register_keyed")

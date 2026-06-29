@@ -519,6 +519,60 @@ fn collect_subscriber_placements(bundle: &Bundle<'_>) -> BTreeMap<String, Placem
     out
 }
 
+/// Whole-program off-thread-placement probe for static-devirt #3
+/// (static-pinned). Returns `true` iff ANY `placement { }` entry in
+/// the bundle places a locus off its owner's thread — a `pinned`
+/// spec, or a `cooperative(pool = X)` with X != `main`. These are
+/// exactly the placements that make the runtime flip
+/// `g_bus_has_pinned` (via `lotus_bus_mark_pinned` on a pinned spawn,
+/// or `lotus_coop_pool_start_all` when a non-main pool has workers).
+///
+/// This is ONE term of codegen's "does a thread cross the bus
+/// boundary" predicate (`program_has_offthread`): codegen ORs it with
+/// an inline adapter `bindings { }` recv-loop check (a transport
+/// thread is pinned-equivalent but carries no placement entry, so it
+/// is invisible to this probe). Only when the FULL predicate is false
+/// may codegen emit the no-acquire-load static enqueue
+/// (`lotus_bus_queue_enqueue_st`) — this probe alone is NOT
+/// sufficient. Unlike the per-subject placement labels on
+/// `SubscriberSite` (subscribers only, first-placement-wins), this
+/// scans every placement entry so a pinned *publisher* (or any
+/// non-subscriber off-thread locus) is still caught.
+pub fn has_offthread_placement(bundle: &Bundle<'_>) -> bool {
+    fn walk(items: &[TopDecl]) -> bool {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => {
+                    for member in &l.members {
+                        if let LocusMember::Placement(pb) = member {
+                            for e in &pb.entries {
+                                match &e.spec {
+                                    PlacementSpec::Cooperative { pool } => {
+                                        if let Some(p) = pool {
+                                            if p.name != "main" {
+                                                return true;
+                                            }
+                                        }
+                                    }
+                                    PlacementSpec::Pinned { .. } => return true,
+                                }
+                            }
+                        }
+                    }
+                }
+                TopDecl::Module(m) => {
+                    if walk(&m.items) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    bundle.programs.values().any(|p| walk(&p.items))
+}
+
 /// The single named type a `TypeExpr` denotes (a bare `Named`
 /// path), else `None`. Non-locus field types never appear in a
 /// `placement { }` block (typecheck enforces), so we don't confirm

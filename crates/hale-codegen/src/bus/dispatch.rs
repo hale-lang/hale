@@ -740,6 +740,56 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
             return Ok(());
         }
 
+        // Static-devirt (build #1b): for a compile-time-literal subject
+        // that the BusGraph cleared as eligible, route the publish
+        // through lotus_bus_dispatch_static(id, ...) — reads the
+        // per-subject bucket directly (no g_bus_entries scan, no
+        // subject strcmp), then does the SAME deferred enqueue the
+        // dynamic path does. `flat` composes with the existing flat-
+        // skip (verbatim vs wire fanout); `no_pinned` drops the
+        // g_bus_has_pinned acquire-load when the program is provably
+        // single-threaded (#3). Ineligible / computed subjects are
+        // UNCHANGED (the dynamic lotus_bus_dispatch path).
+        let static_id: Option<u32> = match subject {
+            Expr::Literal(Literal::String(s), _) => {
+                self.bus_devirt_ids.get(s).copied()
+            }
+            _ => None,
+        };
+        if let Some(id) = static_id {
+            let i32_t = self.context.i32_type();
+            let id_iv = i32_t.const_int(id as u64, false);
+            let flat_iv = i32_t.const_int(payload_is_flat as u64, false);
+            // no_pinned is the EXACT negation of the mark_pinned
+            // condition (`program_has_offthread`) — same source of
+            // truth, so the static enqueue skips the g_bus_has_pinned
+            // acquire-load only when the runtime provably never sets it.
+            let no_pinned_iv =
+                i32_t.const_int((!self.program_has_offthread) as u64, false);
+            let dispatch_static_fn = self
+                .module
+                .get_function("lotus_bus_dispatch_static")
+                .expect("lotus_bus_dispatch_static declared in declare_builtins");
+            let _ = i64_t;
+            self.builder
+                .build_call(
+                    dispatch_static_fn,
+                    &[
+                        queue_ptr.into(),
+                        id_iv.into(),
+                        subj_val.into(),
+                        payload_val.into(),
+                        payload_size_iv.into(),
+                        ser_fn.as_global_value().as_pointer_value().into(),
+                        flat_iv.into(),
+                        no_pinned_iv.into(),
+                    ],
+                    "bus.dispatch_static.call",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            return Ok(());
+        }
+
         let dispatch_name = if payload_is_flat {
             "lotus_bus_dispatch_flat"
         } else {

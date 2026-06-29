@@ -756,6 +756,73 @@ pub fn build_executable_with_options(
     let mut merged = program.clone();
     merged.items.extend(stdlib_program.items);
 
+    // `program_has_offthread` — THE single source of truth for "does
+    // any thread cross the bus boundary in this program". It drives
+    // BOTH (a) the `lotus_bus_mark_pinned` emission below (which flips
+    // the runtime `g_bus_has_pinned` flag → locked enqueue/drain) and
+    // (b) the static-dispatch `no_pinned` flag (#3 static-pinned: the
+    // no-acquire-load `lotus_bus_queue_enqueue_st`). These two MUST be
+    // exact negations of each other or a no_pinned=1 publish would race
+    // an off-thread producer on the cooperative queue — a timing bug
+    // the differential harness can't catch. Computing them from ONE
+    // value makes them identical-by-construction.
+    //
+    // The value is the UNION of every condition that makes the runtime
+    // set `g_bus_has_pinned`:
+    //   * pinned OR non-main cooperative placement
+    //     (`has_offthread_placement` — drives `lotus_bus_mark_pinned`
+    //     for pinned, and `lotus_coop_pool_start_all` for pools), and
+    //   * an inline adapter `bindings { }` on the main locus — a
+    //     transport recv-loop on its own thread, "pinned-equivalent by
+    //     construction" (the term the legacy mark_pinned check carried,
+    //     which the placement-only probe omitted).
+    let mut bg_programs: BTreeMap<String, &Program> = BTreeMap::new();
+    bg_programs.insert("__codegen_merged".to_string(), &merged);
+    let bundle = hale_types::symbol::Bundle {
+        programs: bg_programs,
+    };
+    let has_adapter_binding = merged.items.iter().any(|item| {
+        matches!(item, TopDecl::Locus(l) if l.is_main && l.members.iter().any(|m| {
+            matches!(m, LocusMember::Bindings(b) if b.entries.iter().any(|e| {
+                matches!(&e.transport, TransportSpec::Adapter { .. })
+            }))
+        }))
+    });
+    let program_has_offthread =
+        hale_types::bus_graph::has_offthread_placement(&bundle)
+            || has_adapter_binding;
+
+    // Static-bus-dispatch devirtualization plan (build #1b). Compute
+    // the authoritative BusGraph over the MERGED + topic-desugared
+    // program: by this point `program` has had `desugar_topics` run, so
+    // every bus-block subject is a `Literal` whose `canonical()` equals
+    // the wire string codegen's register/publish sites see — and
+    // building over `merged` (user + stdlib) keeps the eligibility gate
+    // sound w.r.t. stdlib wildcard subscribers (e.g. `log.**`). The
+    // closed-world gate (`fn main` / `main locus`) defaults to
+    // ineligible, so a library/wasm build with no entry point yields an
+    // empty plan and the all-dynamic lowering. `LOTUS_NO_BUS_DEVIRT=1`
+    // forces the empty plan — the differential-test control arm.
+    let bus_devirt_ids: std::collections::BTreeMap<String, u32> =
+        if env_flag("LOTUS_NO_BUS_DEVIRT") {
+            std::collections::BTreeMap::new()
+        } else {
+            let (top, _diags) = hale_types::resolve::build_top_scope(&bundle);
+            let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
+            // Deterministic ids: eligible subjects sorted by wire string
+            // (BTreeMap iteration order is sorted), 0..N.
+            let mut ids: std::collections::BTreeMap<String, u32> =
+                std::collections::BTreeMap::new();
+            let mut next: u32 = 0;
+            for (subject, info) in &graph.subjects {
+                if info.eligible {
+                    ids.insert(subject.clone(), next);
+                    next += 1;
+                }
+            }
+            ids
+        };
+
     let context = Context::create();
     let module = context.create_module("lotus_main");
     let builder = context.create_builder();
@@ -852,6 +919,8 @@ pub fn build_executable_with_options(
         bus_state: None,
         shm_ring_subjects: std::collections::BTreeMap::new(),
         routing_key_subjects: std::collections::BTreeMap::new(),
+        bus_devirt_ids,
+        program_has_offthread,
         deferred_dissolves: Vec::new(),
         in_main: false,
         current_arena_override: None,
@@ -2127,6 +2196,28 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// through the legacy lotus_bus_dispatch path."
     pub(crate) routing_key_subjects:
         std::collections::BTreeMap<String, RoutingKeySubjectInfo>,
+    /// Static-bus-dispatch devirtualization (build #1b). Maps each
+    /// statically-ELIGIBLE subject's wire string → its stable
+    /// compile-time bucket id. Eligibility comes from the authoritative
+    /// `hale_types::bus_graph::BusGraph` gate, computed once over the
+    /// merged+desugared program in `build_executable_with_options`.
+    /// A subject present here gets `lotus_bus_register_static` at each
+    /// subscriber registration and `lotus_bus_dispatch_static` at each
+    /// compile-time-literal publish; subjects absent here are
+    /// UNCHANGED (the dynamic `lotus_bus_dispatch` scan path). Empty
+    /// when `LOTUS_NO_BUS_DEVIRT=1` (forces the all-dynamic lowering —
+    /// the differential-test control arm).
+    pub(crate) bus_devirt_ids: std::collections::BTreeMap<String, u32>,
+    /// THE single source of truth for "a thread crosses the bus
+    /// boundary in this program" — the union of pinned/cross-pool
+    /// placement and an inline adapter `bindings { }` recv-loop.
+    /// Drives BOTH the `lotus_bus_mark_pinned` emission AND the static
+    /// dispatch `no_pinned` flag (#3), which are exact negations of
+    /// each other: `no_pinned = !program_has_offthread`. Computing both
+    /// from this one field makes them identical-by-construction, so a
+    /// no_pinned=1 publish can never race an off-thread producer on the
+    /// cooperative queue.
+    pub(crate) program_has_offthread: bool,
     /// Stack of "deferred-dissolve" frames: each enclosing fn
     /// body / lifecycle method body opens one. Long-lived loci
     /// (any locus with a `bus subscribe` declaration) instantiated
@@ -6575,22 +6666,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // `placement { field: pinned[(core = N)]; }` entry in
         // the main locus, and (b) any adapter locus instantiated
         // inline in `bindings { }` (always pinned-equivalent
-        // by construction — recv-loop on its own thread). The
-        // legacy per-locus `info.schedule_class == Pinned` check
-        // is gone (every user locus now defaults to Cooperative).
-        let has_pinned_placement = self
-            .main_placement_map
-            .values()
-            .any(|sc| matches!(sc, ScheduleClass::Pinned(_)));
-        let has_adapter_binding = self.program.items.iter().any(|item| {
-            matches!(item, TopDecl::Locus(l) if l.is_main && l.members.iter().any(|m| {
-                matches!(m, LocusMember::Bindings(b) if b.entries.iter().any(|e| {
-                    matches!(&e.transport, TransportSpec::Adapter { .. })
-                }))
-            }))
-        });
-        let has_pinned_locus = has_pinned_placement || has_adapter_binding;
-        if has_pinned_locus {
+        // by construction — recv-loop on its own thread).
+        //
+        // Build #1b/#3: this reads the precomputed `program_has_offthread`
+        // (pinned/cross-pool placement OR adapter binding) rather than
+        // recomputing the condition inline. That field is ALSO the basis
+        // for the static dispatch `no_pinned` flag (`no_pinned =
+        // !program_has_offthread`), so the mark_pinned condition and the
+        // skip-the-lock condition are exact negations by construction and
+        // can never drift — closing the race where a no_pinned=1 publish
+        // would use the unlocked enqueue while an adapter recv-thread
+        // (mark_pinned set) used the locked one on the same queue.
+        if self.program_has_offthread {
             let mark_pinned_fn = self
                 .module
                 .get_function("lotus_bus_mark_pinned")
