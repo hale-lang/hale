@@ -2,14 +2,19 @@
 // pinned subscriber.
 //
 // The pinned subscriber gets its own per-locus mailbox: a
-// bounded ring buffer guarded by a mutex + condvar. When
-// the cooperative publisher's `<-` runs, the bus dispatch
-// path notices the subscriber's registration carries a
-// mailbox pointer, copies the typed payload INLINE into a
-// mailbox slot, and broadcasts the condvar. The pinned
-// thread's main loop is sitting in lotus_mailbox_drain_one,
-// blocked on the condvar; it wakes, pops the cell, copies
-// the payload from the inline slot into ITS OWN arena, and
+// LOCK-FREE bounded MPSC ring (the canonical Vyukov queue),
+// plus a mutex + condvar retained ONLY for the consumer's
+// blocking park and cross-thread backpressure — never per
+// message. When the cooperative publisher's `<-` runs, the
+// bus dispatch path notices the subscriber's registration
+// carries a mailbox pointer, copies the typed payload INLINE
+// into a ring slot via a single lock-free enqueue, then
+// signals the condvar ONLY if the consumer is parked. The
+// pinned thread's main loop is in lotus_mailbox_drain_one;
+// under load it is busy draining (never parked, no mutex on
+// the hot path); when idle it parks and the post's
+// parked-check wakes it. It pops the cell, copies the
+// payload from the inline slot into ITS OWN arena, and
 // invokes the handler.
 //
 // Per The Design / lotus, this is the canonical "any →

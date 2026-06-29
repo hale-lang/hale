@@ -4573,21 +4573,30 @@ void lotus_bus_queue_destroy(lotus_bus_queue_t *q) {
  * Per-pinned-locus mailbox (m28b stage 2).
  *
  * Each pinned locus that declares `bus subscribe` gets its own
- * mailbox: same cell shape as the global queue, plus a condvar
- * + shutdown flag. Cross-thread publishers (cooperative or
- * pinned) call lotus_mailbox_post to drop a cell into the
- * subscriber's mailbox; the pinned thread's main loop calls
- * lotus_mailbox_drain_one to pull one cell at a time, copy
- * its inline payload into the locus's arena, and invoke the
- * handler — handler-atomic per substrate cell, just like the
- * cooperative drain.
+ * mailbox: a LOCK-FREE bounded MPSC ring (the canonical Vyukov
+ * bounded queue — see lotus_mpsc_ring_t above) plus a retained
+ * mutex/condvar pair used ONLY for the consumer's blocking park
+ * and cross-thread producer backpressure — never per message.
+ * Cross-thread publishers (cooperative or pinned) call
+ * lotus_mailbox_post to enqueue a cell into the subscriber's
+ * ring; the pinned thread's main loop calls
+ * lotus_mailbox_drain_one to dequeue one cell at a time and
+ * invoke the handler — handler-atomic per substrate cell, just
+ * like the cooperative drain.
  *
- * post → broadcasts the not_empty condvar so a thread waiting
- * in drain_one wakes up.
+ * post → lock-free ring enqueue, then a seq_cst-fenced check of
+ * the `parked` flag: it signals not_empty ONLY when the consumer
+ * is actually parked. Under load the consumer is draining, never
+ * parked, so the steady-state post touches NO mutex. The
+ * producer's fence+load(parked) pairs with the consumer's
+ * store(parked,1)+fence+recheck (a Dekker handshake) so a wakeup
+ * is never lost.
  *
- * drain_one blocks on the condvar until either:
+ * drain_one dequeues from the ring (then the consumer-local
+ * self-publish overflow list); on empty it parks on the condvar
+ * until either:
  *   - a cell arrives (returns 1 after invoking the handler), or
- *   - shutdown is signaled and the queue is empty (returns 0).
+ *   - shutdown is signaled and the ring is empty (returns 0).
  *
  * shutdown sets the flag + broadcasts so all waiters return.
  * The pinned thread observes return=0, breaks its loop, runs
@@ -4595,46 +4604,217 @@ void lotus_bus_queue_destroy(lotus_bus_queue_t *q) {
  *
  * Per The Design / lotus, this is the canonical "any → pinned"
  * bus path: publisher and subscriber sit in different layers
- * of the lotus, the cost lives at the boundary (the mailbox
- * lock + the inline payload's two memcpy's), and each arena
+ * of the lotus, the cost lives at the boundary (now a single
+ * lock-free CAS + the inline payload memcpy), and each arena
  * stays single-threaded territory.
  */
 
-typedef struct lotus_mailbox {
-    lotus_bus_cell_t *cells;
-    size_t            head;
-    size_t            tail;
-    size_t            cap;
-    int               shutdown;
-    pthread_mutex_t   lock;
-    pthread_cond_t    not_empty;
-    pthread_cond_t    not_full;   /* GH #125: cross-pool backpressure */
-} lotus_mailbox_t;
+/* ----------------------------------------------------------------------
+ * lotus_mpsc_ring_t — lock-free bounded MPSC ring.
+ *
+ * This is the canonical Dmitry Vyukov bounded MPMC queue, used here
+ * single-consumer (the pinned locus's own thread). Each slot carries a
+ * sequence number that gates producer/consumer access: producers CAS a
+ * shared enqueue cursor; the single consumer owns the dequeue cursor
+ * (no CAS needed). The per-slot seq's release-store (producer) /
+ * acquire-load (consumer) pair carries the whole cell — including the
+ * `payload_heap` pointer and the inline bytes — across the handoff.
+ *
+ * Factored out so the cooperative pool (lotus_coop_pool_*) can adopt the
+ * same ring in a later phase; for now ONLY the pinned mailbox wires it.
+ *
+ * The memory orders below are load-bearing — they match the canonical
+ * Vyukov queue exactly. Do not weaken them.
+ * -------------------------------------------------------------------- */
+typedef struct lotus_ring_slot {
+    _Atomic uint64_t seq;
+    lotus_bus_cell_t cell;
+} lotus_ring_slot_t;
 
-#define LOTUS_MAILBOX_INITIAL_CAP 64
+typedef struct lotus_mpsc_ring {
+    lotus_ring_slot_t *slots;        /* cap entries, cap = power of two */
+    uint64_t           mask;         /* cap - 1 */
+    _Atomic uint64_t   enqueue_pos   /* producers' cursor — own cache line */
+        __attribute__((aligned(64)));
+    _Atomic uint64_t   dequeue_pos   /* consumer's cursor — separate line */
+        __attribute__((aligned(64)));
+} lotus_mpsc_ring_t;
+
+/* Smallest power of two >= n (>= 1). */
+static size_t lotus_round_up_pow2(size_t n) {
+    size_t p = 1;
+    while (p < n) p <<= 1;
+    return p;
+}
+
+/* Init with `cap` rounded up to a power of two. Returns 0 on alloc
+ * failure. slots[i].seq = i, enqueue_pos = dequeue_pos = 0. */
+static int lotus_mpsc_ring_init(lotus_mpsc_ring_t *r, size_t cap) {
+    cap = lotus_round_up_pow2(cap);
+    r->slots = (lotus_ring_slot_t *)
+        calloc(cap, sizeof(lotus_ring_slot_t));
+    if (!r->slots) return 0;
+    r->mask = cap - 1;
+    for (size_t i = 0; i < cap; i++) {
+        atomic_store_explicit(&r->slots[i].seq, (uint64_t)i,
+                              memory_order_relaxed);
+    }
+    atomic_store_explicit(&r->enqueue_pos, 0, memory_order_relaxed);
+    atomic_store_explicit(&r->dequeue_pos, 0, memory_order_relaxed);
+    return 1;
+}
+
+static void lotus_mpsc_ring_destroy(lotus_mpsc_ring_t *r) {
+    if (r->slots) free(r->slots);
+    r->slots = NULL;
+}
+
+/* Producer. Copies *cell into the ring on success; returns 1, or 0 if
+ * the ring is full. Safe for concurrent producers (CAS on the enqueue
+ * cursor). Canonical Vyukov producer. */
+static int lotus_mpsc_ring_try_enqueue(lotus_mpsc_ring_t *r,
+                                       const lotus_bus_cell_t *cell) {
+    lotus_ring_slot_t *slot;
+    uint64_t pos = atomic_load_explicit(&r->enqueue_pos,
+                                        memory_order_relaxed);
+    for (;;) {
+        slot = &r->slots[pos & r->mask];
+        uint64_t seq = atomic_load_explicit(&slot->seq,
+                                            memory_order_acquire);
+        int64_t dif = (int64_t)(seq - pos);
+        if (dif == 0) {
+            /* slot free at this lap — claim `pos`. weak CAS reloads `pos`
+             * to the current cursor on failure, so we just retry. */
+            if (atomic_compare_exchange_weak_explicit(
+                    &r->enqueue_pos, &pos, pos + 1,
+                    memory_order_relaxed, memory_order_relaxed)) {
+                break;
+            }
+        } else if (dif < 0) {
+            return 0;                       /* full */
+        } else {
+            pos = atomic_load_explicit(&r->enqueue_pos,
+                                       memory_order_relaxed);
+        }
+    }
+    slot->cell = *cell;                     /* plain store — published below */
+    atomic_store_explicit(&slot->seq, pos + 1, memory_order_release);
+    return 1;
+}
+
+/* Consumer (SINGLE). Writes the dequeued cell to *out and returns 1, or
+ * returns 0 if empty. Only the consumer thread calls this, so the
+ * dequeue cursor needs no CAS. Canonical Vyukov consumer. */
+static int lotus_mpsc_ring_try_dequeue(lotus_mpsc_ring_t *r,
+                                       lotus_bus_cell_t *out) {
+    uint64_t pos = atomic_load_explicit(&r->dequeue_pos,
+                                        memory_order_relaxed);
+    lotus_ring_slot_t *slot = &r->slots[pos & r->mask];
+    uint64_t seq = atomic_load_explicit(&slot->seq,
+                                        memory_order_acquire);
+    int64_t dif = (int64_t)(seq - (pos + 1));
+    if (dif == 0) {
+        *out = slot->cell;                  /* plain load — pairs w/ release */
+        atomic_store_explicit(&slot->seq, pos + r->mask + 1,
+                              memory_order_release);
+        atomic_store_explicit(&r->dequeue_pos, pos + 1,
+                              memory_order_relaxed);
+        return 1;
+    }
+    return 0;   /* dif < 0: empty (dif > 0 impossible for a single consumer) */
+}
+
+/* Consumer-thread-local overflow node. A self-publish — the consumer's
+ * own handler posting to its own mailbox — that finds the fixed-size ring
+ * full must NOT block (nothing else drains this mailbox → deadlock) and
+ * the ring does not grow. Such cells append to this singly-linked list;
+ * ONLY the consumer thread ever touches it, so no atomics are needed. It
+ * is drained after the ring on each pass. This preserves today's
+ * "self-publish defers, never blocks" semantics without a growable
+ * buffer. */
+typedef struct lotus_mailbox_overflow {
+    lotus_bus_cell_t               cell;
+    struct lotus_mailbox_overflow *next;
+} lotus_mailbox_overflow_t;
+
+typedef struct lotus_mailbox {
+    lotus_mpsc_ring_t ring;              /* lock-free MPSC ring (Vyukov) */
+    /* Park/wake handshake. The mutex + condvars are retained ONLY for the
+     * consumer's blocking park (drain_one when empty) and cross-thread
+     * producer backpressure (full ring) — NOT per message. Under load the
+     * consumer is never parked, so the steady-state post path is
+     * lock-free and never touches the mutex. */
+    _Atomic int       parked;            /* 1 while the consumer is (about to be) parked */
+    _Atomic int       producers_waiting; /* # producers blocked on a full ring */
+    _Atomic int       shutdown;
+    pthread_mutex_t   lock;
+    pthread_cond_t    not_empty;         /* the consumer parks here */
+    pthread_cond_t    not_full;          /* blocked producers park here */
+    /* Consumer-thread-local self-publish overflow list (see above). */
+    lotus_mailbox_overflow_t *overflow_head;
+    lotus_mailbox_overflow_t *overflow_tail;
+} lotus_mailbox_t;
 
 /* Defined below; `post` uses it to detect a self-publish from the
  * mailbox's own (pinned consumer) thread, which must not block. */
 lotus_mailbox_t *lotus_mailbox_get_current(void);
 
 lotus_mailbox_t *lotus_mailbox_create(void) {
-    lotus_mailbox_t *mb =
-        (lotus_mailbox_t *)malloc(sizeof(lotus_mailbox_t));
-    if (!mb) return NULL;
-    mb->cap   = LOTUS_MAILBOX_INITIAL_CAP;
-    mb->cells = (lotus_bus_cell_t *)
-        malloc(mb->cap * sizeof(lotus_bus_cell_t));
-    if (!mb->cells) {
+    lotus_mailbox_t *mb = NULL;
+    /* 64-byte alignment: the ring's enqueue/dequeue cursors are
+     * cache-line aligned within the struct, so honor that for the whole
+     * allocation — they then land on their own lines (no false sharing
+     * between producers' CAS cursor and the consumer's dequeue cursor). */
+    if (posix_memalign((void **)&mb, 64, sizeof(lotus_mailbox_t)) != 0
+        || !mb) {
+        return NULL;
+    }
+    /* Pre-allocate the ring at the configured cap (rounded up to a power
+     * of two). NOTE: this changes the mailbox from grow-to-cap to
+     * pre-allocate-cap — a fixed RSS cost per pinned subscriber, traded
+     * for a lock-free, allocation-free steady-state post. */
+    if (!lotus_mpsc_ring_init(&mb->ring, bus_queue_max_cap())) {
         free(mb);
         return NULL;
     }
-    mb->head     = 0;
-    mb->tail     = 0;
-    mb->shutdown = 0;
+    atomic_store_explicit(&mb->parked, 0, memory_order_relaxed);
+    atomic_store_explicit(&mb->producers_waiting, 0, memory_order_relaxed);
+    atomic_store_explicit(&mb->shutdown, 0, memory_order_relaxed);
     pthread_mutex_init(&mb->lock, NULL);
     pthread_cond_init(&mb->not_empty, NULL);
     pthread_cond_init(&mb->not_full, NULL);
+    mb->overflow_head = NULL;
+    mb->overflow_tail = NULL;
     return mb;
+}
+
+/* Run a dequeued cell's handler, then free its heap payload (if any).
+ * Two-tier inline/heap payload, identical to the cooperative drain. */
+static void lotus_mailbox_dispatch_cell(lotus_bus_cell_t *cell) {
+    void *payload_ptr = NULL;
+    if (cell->payload_size > 0) {
+        payload_ptr = cell->payload_heap
+            ? cell->payload_heap
+            : (void *)cell->payload_inline;
+    }
+    ((lotus_handler_fn)cell->handler)(cell->self_ptr, payload_ptr);
+    if (cell->payload_heap) free(cell->payload_heap);
+}
+
+/* A ring slot just freed (the consumer dequeued). Wake any producer
+ * blocked on a full ring — but only if one is actually waiting. The
+ * seq_cst fence + load pairs with the producer's producers_waiting++ +
+ * fence + recheck (post backpressure path): a Dekker handshake that
+ * makes it impossible for a producer to sleep on a slot we just freed.
+ * MUST be called with mb->lock NOT held. */
+static void lotus_mailbox_wake_producers(lotus_mailbox_t *mb) {
+    atomic_thread_fence(memory_order_seq_cst);
+    if (atomic_load_explicit(&mb->producers_waiting,
+                             memory_order_seq_cst) > 0) {
+        pthread_mutex_lock(&mb->lock);
+        pthread_cond_broadcast(&mb->not_full);
+        pthread_mutex_unlock(&mb->lock);
+    }
 }
 
 void lotus_mailbox_post(lotus_mailbox_t *mb,
@@ -4643,8 +4823,9 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
                         const void *payload_src,
                         size_t payload_size) {
     if (!mb) return;
-    /* Two-tier payload storage; see queue_enqueue for the
-     * design rationale. */
+    /* Two-tier payload storage; see queue_enqueue for the design
+     * rationale. Build the cell once, up front, so the lock-free enqueue
+     * is a single plain struct copy under the slot's seq release. */
     void *heap_buf = NULL;
     if (payload_size > LOTUS_PAYLOAD_INLINE) {
         heap_buf = malloc(payload_size);
@@ -4653,123 +4834,174 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
             memcpy(heap_buf, payload_src, payload_size);
         }
     }
-    pthread_mutex_lock(&mb->lock);
-    /* Ensure a free tail slot, with cross-pool backpressure (GH #125). The
-     * mailbox has a single consumer (the pinned locus's own thread), so a
-     * cross-thread producer that hits the cap can safely BLOCK until that
-     * consumer drains a slot. The exception is a self-publish from the
-     * consumer thread (a handler publishing to its own mailbox during its
-     * own drain) — detected via `g_current_pinned_mailbox`; blocking there
-     * would deadlock (nothing else drains this mailbox), so it grows. */
-    while (mb->tail == mb->cap) {
-        if (mb->head > 0) {
-            size_t live = mb->tail - mb->head;
-            if (live > 0) {
-                memmove(mb->cells, mb->cells + mb->head,
-                        live * sizeof(lotus_bus_cell_t));
-            }
-            mb->head = 0;
-            mb->tail = live;
-        }
-        if (mb->tail < mb->cap) break;            /* compaction freed a slot */
-        if (mb->shutdown) {
-            pthread_mutex_unlock(&mb->lock);
-            if (heap_buf) free(heap_buf);
-            return;                               /* drop — shutting down */
-        }
-        size_t max_cap = bus_queue_max_cap();
-        if (mb->cap < max_cap || mb == lotus_mailbox_get_current()) {
-            /* Grow: below the cap (clamp to it), or a self-publish from the
-             * consumer thread (can't block on itself). */
-            size_t new_cap = mb->cap * 2;
-            if (mb->cap < max_cap && new_cap > max_cap) new_cap = max_cap;
-            lotus_bus_cell_t *new_cells = (lotus_bus_cell_t *)
-                realloc(mb->cells, new_cap * sizeof(lotus_bus_cell_t));
-            if (!new_cells) {
+    lotus_bus_cell_t cell;
+    cell.handler      = handler;
+    cell.self_ptr     = self_ptr;
+    cell.payload_size = payload_size;
+    cell.payload_heap = heap_buf;
+    if (!heap_buf && payload_size > 0 && payload_src) {
+        memcpy(cell.payload_inline, payload_src, payload_size);
+    }
+
+    /* A self-publish — the consumer's own handler posting to this mailbox
+     * during its own drain — must NEVER block (nothing else drains it →
+     * deadlock). Detected via the consumer thread's TLS mailbox pointer. */
+    int self_publish = (lotus_mailbox_get_current() == mb);
+
+    for (;;) {
+        int enq = lotus_mpsc_ring_try_enqueue(&mb->ring, &cell);
+
+        if (!enq && !self_publish) {
+            /* Ring full, cross-thread producer — BLOCK until the consumer
+             * frees a slot or shutdown (GH #125 backpressure). */
+            pthread_mutex_lock(&mb->lock);
+            if (atomic_load_explicit(&mb->shutdown,
+                                     memory_order_relaxed)) {
                 pthread_mutex_unlock(&mb->lock);
                 if (heap_buf) free(heap_buf);
-                return;
+                return;                          /* drop — shutting down */
             }
-            mb->cells = new_cells;
-            mb->cap   = new_cap;
-            break;
+            /* Announce intent to wait, (seq_cst fence) then re-try the
+             * lock-free enqueue BEFORE sleeping. This is the producer half
+             * of the backpressure Dekker handshake with the consumer's
+             * drain + fence + load(producers_waiting): if the consumer just
+             * freed a slot, either this re-try sees it (we don't sleep) or
+             * the consumer sees producers_waiting>0 and signals not_full.
+             * No lost wakeup. */
+            atomic_fetch_add_explicit(&mb->producers_waiting, 1,
+                                      memory_order_seq_cst);
+            atomic_thread_fence(memory_order_seq_cst);
+            enq = lotus_mpsc_ring_try_enqueue(&mb->ring, &cell);
+            if (!enq) {
+                pthread_cond_wait(&mb->not_full, &mb->lock);
+                atomic_fetch_sub_explicit(&mb->producers_waiting, 1,
+                                          memory_order_seq_cst);
+                pthread_mutex_unlock(&mb->lock);
+                continue;                        /* retry from the top */
+            }
+            atomic_fetch_sub_explicit(&mb->producers_waiting, 1,
+                                      memory_order_seq_cst);
+            pthread_mutex_unlock(&mb->lock);
+            /* fall through to the parked-consumer wake below */
         }
-        /* At the cap, cross-thread producer — BLOCK until the pinned
-         * consumer drains a slot (drain_one / drain_pending signal
-         * not_full). Re-check on wake. */
-        pthread_cond_wait(&mb->not_full, &mb->lock);
+
+        if (enq) {
+            /* Signal-only-when-parked wake. The seq_cst fence orders the
+             * release-publish of the cell (inside try_enqueue) before this
+             * load of `parked`; it pairs with the consumer's
+             * store(parked,1) + fence + recheck (drain_one). Together they
+             * form the Dekker handshake that defeats the missed wakeup: it
+             * is impossible for the consumer to commit to parking (its
+             * recheck saw empty) while this producer reads parked==0. Under
+             * load the consumer is not parked → no mutex on the hot path. */
+            atomic_thread_fence(memory_order_seq_cst);
+            if (atomic_load_explicit(&mb->parked,
+                                     memory_order_seq_cst)) {
+                pthread_mutex_lock(&mb->lock);
+                pthread_cond_signal(&mb->not_empty);   /* one consumer */
+                pthread_mutex_unlock(&mb->lock);
+            }
+            return;
+        }
+
+        /* enq == 0 && self_publish: ring full on the consumer's own
+         * thread. Defer to the consumer-thread-local overflow list (no
+         * atomics — only this thread touches it). Never blocks. */
+        lotus_mailbox_overflow_t *node = (lotus_mailbox_overflow_t *)
+            malloc(sizeof(lotus_mailbox_overflow_t));
+        if (!node) {
+            if (heap_buf) free(heap_buf);
+            return;
+        }
+        node->cell = cell;
+        node->next = NULL;
+        if (mb->overflow_tail) {
+            mb->overflow_tail->next = node;
+        } else {
+            mb->overflow_head = node;
+        }
+        mb->overflow_tail = node;
+        return;
     }
-    lotus_bus_cell_t *slot = &mb->cells[mb->tail++];
-    slot->handler      = handler;
-    slot->self_ptr     = self_ptr;
-    slot->payload_size = payload_size;
-    slot->payload_heap = heap_buf;
-    if (!heap_buf && payload_size > 0 && payload_src) {
-        memcpy(slot->payload_inline, payload_src, payload_size);
-    }
-    pthread_cond_broadcast(&mb->not_empty);
-    pthread_mutex_unlock(&mb->lock);
 }
 
 int lotus_mailbox_drain_one(lotus_mailbox_t *mb) {
     if (!mb) return 0;
-    pthread_mutex_lock(&mb->lock);
-    while (mb->head >= mb->tail && !mb->shutdown) {
-        pthread_cond_wait(&mb->not_empty, &mb->lock);
-    }
-    if (mb->head >= mb->tail) {
-        /* shutdown with empty queue */
-        mb->head = 0;
-        mb->tail = 0;
-        pthread_mutex_unlock(&mb->lock);
-        return 0;
-    }
-    lotus_bus_cell_t cell_copy = mb->cells[mb->head++];
-    if (mb->head >= mb->tail) {
-        mb->head = 0;
-        mb->tail = 0;
-    }
-    pthread_cond_signal(&mb->not_full);   /* freed a slot (GH #125) */
-    pthread_mutex_unlock(&mb->lock);
+    lotus_bus_cell_t cell;
+    for (;;) {
+        /* Ring first (lock-free), then the consumer-local overflow list. */
+        if (lotus_mpsc_ring_try_dequeue(&mb->ring, &cell)) {
+            lotus_mailbox_wake_producers(mb);   /* freed a slot (GH #125) */
+            lotus_mailbox_dispatch_cell(&cell);
+            return 1;
+        }
+        if (mb->overflow_head) {
+            lotus_mailbox_overflow_t *node = mb->overflow_head;
+            mb->overflow_head = node->next;
+            if (!mb->overflow_head) mb->overflow_tail = NULL;
+            cell = node->cell;
+            free(node);
+            lotus_mailbox_dispatch_cell(&cell);
+            return 1;
+        }
 
-    /* Hand the dequeued cell's payload to the handler.
-     * `cell_copy` is a stack-local snapshot of the dequeued
-     * cell; its inline buffer (or its heap pointer) is the
-     * canonical payload copy for this dispatch. Skipping the
-     * prior `lotus_arena_alloc` + extra memcpy into the
-     * locus's arena drops the per-event overhead on the
-     * pinned-subscriber path. See the matching note in
-     * lotus_bus_queue_drain — same lifetime invariant. The
-     * heap-spill case (payload > LOTUS_PAYLOAD_INLINE) hands
-     * the malloc'd buffer through directly and frees it after
-     * the handler returns. */
-    void *payload_ptr = NULL;
-    if (cell_copy.payload_size > 0) {
-        payload_ptr = cell_copy.payload_heap
-            ? cell_copy.payload_heap
-            : (void *)cell_copy.payload_inline;
+        /* Both empty — park under the mutex with the seq_cst handshake. */
+        pthread_mutex_lock(&mb->lock);
+        atomic_store_explicit(&mb->parked, 1, memory_order_seq_cst);
+        atomic_thread_fence(memory_order_seq_cst);
+        /* Re-check AFTER announcing parked: a cell may have arrived between
+         * the failed dequeue and the parked store. The seq_cst store +
+         * fence here, paired with the producer's publish + fence +
+         * load(parked) (post), make a lost wake impossible — if a producer
+         * published, either this recheck sees the cell or the producer sees
+         * parked==1 and signals. */
+        if (lotus_mpsc_ring_try_dequeue(&mb->ring, &cell)) {
+            atomic_store_explicit(&mb->parked, 0, memory_order_seq_cst);
+            pthread_mutex_unlock(&mb->lock);
+            lotus_mailbox_wake_producers(mb);
+            lotus_mailbox_dispatch_cell(&cell);
+            return 1;
+        }
+        if (atomic_load_explicit(&mb->shutdown, memory_order_relaxed)) {
+            atomic_store_explicit(&mb->parked, 0, memory_order_seq_cst);
+            pthread_mutex_unlock(&mb->lock);
+            return 0;                           /* shutdown + empty */
+        }
+        pthread_cond_wait(&mb->not_empty, &mb->lock);
+        atomic_store_explicit(&mb->parked, 0, memory_order_seq_cst);
+        pthread_mutex_unlock(&mb->lock);
+        /* loop: re-dequeue */
     }
-    ((lotus_handler_fn)cell_copy.handler)(
-        cell_copy.self_ptr, payload_ptr);
-    if (cell_copy.payload_heap) free(cell_copy.payload_heap);
-    return 1;
 }
 
 void lotus_mailbox_shutdown(lotus_mailbox_t *mb) {
     if (!mb) return;
     pthread_mutex_lock(&mb->lock);
-    mb->shutdown = 1;
-    pthread_cond_broadcast(&mb->not_empty);
+    atomic_store_explicit(&mb->shutdown, 1, memory_order_seq_cst);
+    pthread_cond_broadcast(&mb->not_empty);  /* wake the parked consumer */
     pthread_cond_broadcast(&mb->not_full);   /* wake blocked producers → they drop (GH #125) */
     pthread_mutex_unlock(&mb->lock);
 }
 
 void lotus_mailbox_destroy(lotus_mailbox_t *mb) {
     if (!mb) return;
+    /* Free any undelivered cells' heap payloads — no leak (ASan checks).
+     * Called after the consumer thread has exited + joined, so the ring /
+     * overflow drain here is single-threaded. */
+    lotus_bus_cell_t cell;
+    while (lotus_mpsc_ring_try_dequeue(&mb->ring, &cell)) {
+        if (cell.payload_heap) free(cell.payload_heap);
+    }
+    while (mb->overflow_head) {
+        lotus_mailbox_overflow_t *node = mb->overflow_head;
+        mb->overflow_head = node->next;
+        if (node->cell.payload_heap) free(node->cell.payload_heap);
+        free(node);
+    }
+    lotus_mpsc_ring_destroy(&mb->ring);
     pthread_cond_destroy(&mb->not_empty);
     pthread_cond_destroy(&mb->not_full);
     pthread_mutex_destroy(&mb->lock);
-    if (mb->cells) free(mb->cells);
     free(mb);
 }
 
@@ -4819,31 +5051,26 @@ lotus_mailbox_t *lotus_mailbox_get_current(void) {
  */
 void lotus_mailbox_drain_pending(lotus_mailbox_t *mb) {
     if (!mb) return;
+    lotus_bus_cell_t cell;
+    /* Non-blocking: drain the ring, then the consumer-local overflow list,
+     * until both are empty. Cells posted DURING a handler land in the ring
+     * (or overflow, on self-publish) and are seen by a later iteration. */
     for (;;) {
-        pthread_mutex_lock(&mb->lock);
-        if (mb->head >= mb->tail) {
-            /* Empty — done. Don't reset head/tail when shutdown
-             * is signaled mid-sleep; the regular drain_one in
-             * __pinned_main handles that path. */
-            pthread_mutex_unlock(&mb->lock);
-            return;
+        if (lotus_mpsc_ring_try_dequeue(&mb->ring, &cell)) {
+            lotus_mailbox_wake_producers(mb);   /* freed a slot (GH #125) */
+            lotus_mailbox_dispatch_cell(&cell);
+            continue;
         }
-        lotus_bus_cell_t cell_copy = mb->cells[mb->head++];
-        if (mb->head >= mb->tail) {
-            mb->head = 0;
-            mb->tail = 0;
+        if (mb->overflow_head) {
+            lotus_mailbox_overflow_t *node = mb->overflow_head;
+            mb->overflow_head = node->next;
+            if (!mb->overflow_head) mb->overflow_tail = NULL;
+            cell = node->cell;
+            free(node);
+            lotus_mailbox_dispatch_cell(&cell);
+            continue;
         }
-        pthread_cond_signal(&mb->not_full);   /* freed a slot (GH #125) */
-        pthread_mutex_unlock(&mb->lock);
-        void *payload_ptr = NULL;
-        if (cell_copy.payload_size > 0) {
-            payload_ptr = cell_copy.payload_heap
-                ? cell_copy.payload_heap
-                : (void *)cell_copy.payload_inline;
-        }
-        ((lotus_handler_fn)cell_copy.handler)(
-            cell_copy.self_ptr, payload_ptr);
-        if (cell_copy.payload_heap) free(cell_copy.payload_heap);
+        return;                                 /* both empty */
     }
 }
 
