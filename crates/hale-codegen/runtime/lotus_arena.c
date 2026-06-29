@@ -4765,10 +4765,19 @@ lotus_mailbox_t *lotus_mailbox_create(void) {
      * cache-line aligned within the struct, so honor that for the whole
      * allocation — they then land on their own lines (no false sharing
      * between producers' CAS cursor and the consumer's dequeue cursor). */
+#ifdef __wasm__
+    /* wasm is single-threaded (no false sharing) and the bundled libc has
+     * no posix_memalign — plain malloc; the cache-line alignment is moot. */
+    mb = (lotus_mailbox_t *)malloc(sizeof(lotus_mailbox_t));
+    if (!mb) {
+        return NULL;
+    }
+#else
     if (posix_memalign((void **)&mb, 64, sizeof(lotus_mailbox_t)) != 0
         || !mb) {
         return NULL;
     }
+#endif
     /* Pre-allocate the ring at the configured cap (rounded up to a power
      * of two). NOTE: this changes the mailbox from grow-to-cap to
      * pre-allocate-cap — a fixed RSS cost per pinned subscriber, traded
