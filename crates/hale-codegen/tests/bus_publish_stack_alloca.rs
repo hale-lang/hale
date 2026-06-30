@@ -104,10 +104,15 @@ fn publish_loop_uses_stack_alloca_not_arena_alloc() {
         "Pub.run must NOT call lotus_arena_alloc per publish:\n{}",
         pub_run,
     );
-    // The publish call itself stays.
+    // The publish still fires. "bench.tick" is direct-call-eligible
+    // (quiet on_tick, flat Tick, same-thread), so since the bus-devirt
+    // arc it lowers to the inline baked direct-call path
+    // (`lotus_bus_static_direct_*`) rather than the runtime
+    // `lotus_bus_dispatch` — the stack-alloca of the payload (above) is
+    // unchanged by that.
     assert!(
-        pub_run.contains("call void @lotus_bus_dispatch"),
-        "Pub.run should still call lotus_bus_dispatch:\n{}",
+        pub_run.contains("lotus_bus_static_direct_count"),
+        "Pub.run should still lower the publish (direct-call path):\n{}",
         pub_run,
     );
 }
@@ -153,9 +158,12 @@ fn non_struct_payload_still_arena_paths() {
         "let-bound payload should arena-alloc:\n{}",
         pub_run,
     );
+    // The publish still fires; "bench.tick" is direct-call-eligible so
+    // it lowers to the inline direct-call path (devirt) — orthogonal to
+    // the let-bound payload still arena-allocating above.
     assert!(
-        pub_run.contains("call void @lotus_bus_dispatch"),
-        "publish call should still fire:\n{}",
+        pub_run.contains("lotus_bus_static_direct_count"),
+        "publish should still lower (direct-call path):\n{}",
         pub_run,
     );
 }
