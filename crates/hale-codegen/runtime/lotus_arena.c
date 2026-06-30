@@ -11550,6 +11550,76 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
     }
 }
 
+/* === Direct-call devirtualization (build #1b slice-2) =============
+ *
+ * The publish-side fast path beyond lotus_bus_dispatch_static. For an
+ * eligible subject whose EVERY subscriber is same-thread (cooperative
+ * on the owner thread — no mailbox, no coop_pool) AND whose EVERY
+ * handler is provably QUIET (mutates only its own self with pure
+ * expressions; no calls, no I/O, no republish) AND whose payload is
+ * FLAT (pointer-free POD), codegen replaces the deferred enqueue with
+ * a SYNCHRONOUS direct call to each subscriber handler.
+ *
+ * Soundness. Loci are ISOLATED: a publisher cannot read a subscriber's
+ * self state. So running a quiet handler synchronously at the publish
+ * point vs deferred at the next cooperative drain is UNOBSERVABLE — its
+ * only effect is isolated self-state that nobody can read until the
+ * subscriber's own code runs at a later drain point (by which time the
+ * handler has completed in either mode), and quiet handlers touch only
+ * their own state so dispatch order is irrelevant. We walk the SAME
+ * per-subject bucket lotus_bus_dispatch_static reads, in the SAME
+ * registration order, and skip the SAME quarantined / keyed entries —
+ * the only difference is WHEN the (effect-free-to-outsiders) handler
+ * runs.
+ *
+ * Payload lifetime. A flat payload has no interior pointers, so the
+ * publisher's LIVE storage carries exactly the bytes the deferred path
+ * would memcpy into a queue cell and restore into a stack buffer before
+ * the handler reads them. We pass that storage straight to the handler
+ * by pointer — no cell, no copy, no drain. The quiet gate guarantees
+ * the handler cannot capture this pointer into self (a bare-parameter
+ * read is non-pure), so no live publisher storage escapes the call.
+ *
+ * Defensive routing. The same-thread gate guarantees no entry carries a
+ * mailbox or coop_pool. Should one slip through (a gate bug), we POST
+ * it to its mailbox / pool exactly as the deferred path would, rather
+ * than direct-call an off-thread locus's handler on the publisher's
+ * thread — degrading a gate bug to correct-but-slower, never to a
+ * cross-thread call. */
+void lotus_bus_dispatch_static_direct(uint32_t id,
+                                      const char *subject,
+                                      const void *payload,
+                                      uint64_t size) {
+    lotus_bus_static_bucket_t *b =
+        (id < g_bus_static_bucket_count) ? &g_bus_static_buckets[id] : NULL;
+    size_t delivered = 0;
+    if (b) {
+        for (size_t k = 0; k < b->count; k++) {
+            lotus_bus_entry_t *e = &g_bus_entries[b->idx[k]];
+            if (!e->subject) continue;           /* quarantined */
+            if (e->key_filter_kind != 0) continue;
+            if (e->mailbox) {
+                /* off-thread; gate should have excluded — enqueue. */
+                lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
+                                   payload, (size_t)size);
+            } else if (e->coop_pool) {
+                lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
+                                     payload, (size_t)size);
+            } else {
+                /* same-thread: the whole point — run it now. */
+                ((lotus_handler_fn)e->handler)(e->self_ptr, (void *)payload);
+            }
+            delivered++;
+        }
+    }
+    if (delivered == 0 && lotus_bus_log_drop_enabled()) {
+        fprintf(stderr,
+                "[bus] publish dropped: no local subscribers for "
+                "subject=\"%s\" (static id=%u, direct)\n",
+                subject ? subject : "(null)", id);
+    }
+}
+
 /* m70: lazy global "payload arena" for String byte storage in
  * cross-process bus deserialization. The reader thread fills a
  * stack-local struct_buf, dispatches via lotus_bus_local_dispatch

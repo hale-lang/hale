@@ -267,6 +267,26 @@ pub struct SubjectInfo {
     pub eligible: bool,
     /// `Some(reason)` exactly when `!eligible`.
     pub ineligible_reason: Option<StaticIneligible>,
+    /// Direct-call devirtualization (build #1b slice-2). `true` iff
+    /// the publish on this subject may be lowered to a *synchronous
+    /// direct call* to each subscriber handler — collapsing the
+    /// cooperative-queue enqueue + deferred drain entirely — with no
+    /// loss of observable meaning. Strictly STRONGER than `eligible`:
+    /// it additionally requires that
+    ///   (a) the subject has ≥1 subscriber, every one of which is
+    ///       `Placement::SameThread` (a CrossPool / Pinned subscriber
+    ///       runs on another OS thread and CANNOT be direct-called —
+    ///       it must enqueue), and
+    ///   (b) every subscriber handler is provably **QUIET** by the
+    ///       syntactic effect-walk in [`handler_is_quiet`] — it
+    ///       mutates ONLY its own `self` fields with pure expressions
+    ///       and has no other effect.
+    /// Defaults to `false` (default-bail). The FLAT-payload condition
+    /// is the third leg of the gate but is checked at the codegen
+    /// publish site (it needs the lowered payload type), so this flag
+    /// is ANDed with `bus_payload_is_flat` there. A false positive is
+    /// an observable-ordering bug, so this stays conservative.
+    pub direct_call_eligible: bool,
 }
 
 /// The whole-bundle bus graph, keyed by `BusSubject::canonical()`.
@@ -365,6 +385,19 @@ pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope) -> BusGraph {
 
         let reason = classify(&key, &walk, has_entry_point);
         let eligible = reason.is_none();
+        // Direct-call gate (slice-2). STRONGER than `eligible`:
+        // additionally every subscriber must be same-thread AND its
+        // handler provably quiet (the flat-payload leg is ANDed in at
+        // the codegen publish site). Default-bail: a missing handler
+        // body or any unmodeled placement/effect ⟹ not direct.
+        let direct_call_eligible = eligible
+            && !subscribers.is_empty()
+            && subscribers.iter().all(|s| {
+                s.placement == Placement::SameThread
+                    && find_handler_fn(bundle, &s.locus, &s.handler)
+                        .map(handler_is_quiet)
+                        .unwrap_or(false)
+            });
         subjects.insert(
             key,
             SubjectInfo {
@@ -372,6 +405,7 @@ pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope) -> BusGraph {
                 subscribers,
                 eligible,
                 ineligible_reason: reason,
+                direct_call_eligible,
             },
         );
     }
@@ -581,5 +615,255 @@ fn single_named_type(ty: &TypeExpr) -> Option<String> {
     match ty {
         TypeExpr::Named { path, .. } => path.segments.last().map(|s| s.name.clone()),
         _ => None,
+    }
+}
+
+// === Quiet-handler classifier (direct-call devirt slice-2) =========
+//
+// The soundness theorem: loci are ISOLATED — a publisher cannot read a
+// subscriber's `self` state. So if a same-thread subscriber's handler
+// is QUIET (mutates ONLY its own `self` fields, with no other effect),
+// running it SYNCHRONOUSLY at the publish point is indistinguishable
+// from running it at the next deferred drain: its only effect is
+// isolated state nobody can read until the subscriber's own code runs
+// at a later cooperative point (by which time the handler has completed
+// in either mode), and multiple quiet handlers touch only their own
+// state so dispatch order is irrelevant. ⟹ identical observable
+// behavior. Any deviation from "same-thread + quiet" keeps the deferred
+// enqueue.
+//
+// `handler_is_quiet` is a CONSERVATIVE syntactic effect-walk that
+// DEFAULTS TO NOT-QUIET. The handler body may contain ONLY:
+//   * `self.<field…> = <pure-expr>` assignments (incl. compound `+=`),
+//     where the LValue is `self`-headed and every segment is a field
+//     (NO index — an array-index store can trap and the array field is
+//     a heap pointer);
+//   * `let <local> = <pure-expr>` bindings (the local joins the pure
+//     scope);
+//   * `if` / `while` / `block` control flow whose conditions are pure
+//     and whose bodies are themselves quiet;
+//   * bare `return [pure-expr]`, `break`, `continue`.
+// EVERYTHING ELSE bails: any function/method call, any `<-` send, any
+// I/O, any `accept`/`terminate`/`release`/lifecycle op, any
+// `yield`/`fail`/`violate`/recovery, `match`, `for`, tuple-`let`,
+// `Stmt::Expr` (a bare expression statement — the usual carrier of a
+// call like `println(...)`), and any AST node not explicitly modeled.
+//
+// `<pure-expr>` = arithmetic (EXCLUDING `/` and `%`, which lower to
+// `sdiv`/`srem` and can TRAP on divide-by-zero — a trap reorders a
+// program abort relative to publisher I/O, an observable difference) /
+// comparison / logical / bitwise over: literals, `self.<field…>`
+// reads, a handler PARAMETER's FIELD read (`param.field` — a flat
+// payload's fields are all by-value scalars, so this is a value read
+// with no lifetime hazard), and LOCAL reads. A BARE parameter ident is
+// NOT pure: a flat payload is passed by pointer, and capturing that
+// pointer into `self` (`self.last = p`) would alias the publisher's
+// live (reused) storage under the direct call while the deferred path
+// delivers a copy — so we forbid the bare-param read entirely. That
+// closes the only channel by which publisher/payload memory could
+// enter `self`; every permitted `self` mutation is therefore either a
+// scalar value or a `self`-internal pointer copy, both byte- and
+// lifetime-identical between the direct and deferred lowerings.
+
+/// Locate locus `locus`'s method `handler` FnDecl anywhere in the
+/// bundle (walking nested modules). `None` ⟹ not found ⟹ caller bails.
+fn find_handler_fn<'a>(
+    bundle: &Bundle<'a>,
+    locus: &str,
+    handler: &str,
+) -> Option<&'a FnDecl> {
+    fn search<'a>(
+        items: &'a [TopDecl],
+        locus: &str,
+        handler: &str,
+    ) -> Option<&'a FnDecl> {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) if l.name.name == locus => {
+                    for m in &l.members {
+                        if let LocusMember::Fn(f) = m {
+                            if f.name.name == handler {
+                                return Some(f);
+                            }
+                        }
+                    }
+                }
+                TopDecl::Module(md) => {
+                    if let Some(f) = search(&md.items, locus, handler) {
+                        return Some(f);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    for program in bundle.programs.values() {
+        if let Some(f) = search(&program.items, locus, handler) {
+            return Some(f);
+        }
+    }
+    None
+}
+
+/// Is the handler QUIET? See the module-level note above for the
+/// soundness argument and the exact allow/bail list.
+fn handler_is_quiet(f: &FnDecl) -> bool {
+    // A handler annotated `@ffi` has no analyzable body; bail.
+    if f.ffi.is_some() {
+        return false;
+    }
+    let params: BTreeSet<String> =
+        f.params.iter().map(|p| p.name.name.clone()).collect();
+    let locals: BTreeSet<String> = BTreeSet::new();
+    block_is_quiet(&f.body, &params, &locals)
+}
+
+/// Quiet over a block: each statement quiet, and the (discarded) tail
+/// expression — if any — pure. Locals are scoped to the block (cloned
+/// in) so an inner `let` cannot leak out.
+fn block_is_quiet(
+    b: &Block,
+    params: &BTreeSet<String>,
+    locals: &BTreeSet<String>,
+) -> bool {
+    let mut locals = locals.clone();
+    for s in &b.stmts {
+        if !stmt_is_quiet(s, params, &mut locals) {
+            return false;
+        }
+    }
+    if let Some(tail) = &b.tail {
+        if !expr_is_pure(tail, params, &locals) {
+            return false;
+        }
+    }
+    true
+}
+
+fn stmt_is_quiet(
+    s: &Stmt,
+    params: &BTreeSet<String>,
+    locals: &mut BTreeSet<String>,
+) -> bool {
+    match s {
+        Stmt::Let { name, value, .. } => {
+            if !expr_is_pure(value, params, locals) {
+                return false;
+            }
+            locals.insert(name.name.clone());
+            true
+        }
+        Stmt::Assign {
+            target, value, ..
+        } => {
+            // Target must be `self.<field…>` — self-headed, every tail
+            // segment a Field (no Index store), and the RHS pure. The
+            // assign op (`=` or compound `+=`/…) is irrelevant: a
+            // compound op just reads-then-writes the same self field,
+            // still a pure-valued self mutation.
+            if target.head.name != "self" {
+                return false;
+            }
+            if target.tail.is_empty() {
+                return false; // bare `self = …` (rejected upstream anyway)
+            }
+            if !target
+                .tail
+                .iter()
+                .all(|seg| matches!(seg, LValueSeg::Field(_)))
+            {
+                return false;
+            }
+            expr_is_pure(value, params, locals)
+        }
+        Stmt::If(ifstmt) => if_is_quiet(ifstmt, params, locals),
+        Stmt::While { cond, body, .. } => {
+            expr_is_pure(cond, params, locals)
+                && block_is_quiet(body, params, locals)
+        }
+        Stmt::Block(b) => block_is_quiet(b, params, locals),
+        Stmt::Return(opt, _) => {
+            opt.as_ref()
+                .map(|e| expr_is_pure(e, params, locals))
+                .unwrap_or(true)
+        }
+        Stmt::Break(_) | Stmt::Continue(_) => true,
+        // Everything else is NOT quiet: LetTuple, Match, For, Fail,
+        // Yield, Terminate, Recovery, Violate, Send, ShmWrite, and any
+        // bare Stmt::Expr (the carrier of a call / println / helper).
+        _ => false,
+    }
+}
+
+fn if_is_quiet(
+    ifstmt: &IfStmt,
+    params: &BTreeSet<String>,
+    locals: &BTreeSet<String>,
+) -> bool {
+    if !expr_is_pure(&ifstmt.cond, params, locals) {
+        return false;
+    }
+    if !block_is_quiet(&ifstmt.then_block, params, locals) {
+        return false;
+    }
+    match ifstmt.else_block.as_deref() {
+        None => true,
+        Some(ElseBranch::Else(b)) => block_is_quiet(b, params, locals),
+        Some(ElseBranch::ElseIf(inner)) => if_is_quiet(inner, params, locals),
+    }
+}
+
+/// A pure (effect-free, non-trapping, non-capturing) expression. See
+/// the module note: arithmetic excl. `/`,`%`; comparison; logical;
+/// bitwise; over literals, `self.<field…>`, `param.field`, and locals.
+fn expr_is_pure(
+    e: &Expr,
+    params: &BTreeSet<String>,
+    locals: &BTreeSet<String>,
+) -> bool {
+    match e {
+        Expr::Literal(_, _) => true,
+        // Reading `self` (effect-free); only meaningful as a Field
+        // receiver, but harmless on its own.
+        Expr::KwSelf(_) => true,
+        // A bare ident is pure ONLY if it is a LOCAL. A bare PARAMETER
+        // ident is excluded (a flat payload is passed by pointer;
+        // capturing it into `self` would alias publisher storage).
+        Expr::Ident(i) => locals.contains(&i.name),
+        Expr::Field { receiver, .. } => match receiver.as_ref() {
+            // `param.field`: a flat payload's fields are by-value
+            // scalars, so this is a pure value read.
+            Expr::Ident(i) if params.contains(&i.name) => true,
+            // `self.field`, `local.field`, `self.a.b`, …
+            other => expr_is_pure(other, params, locals),
+        },
+        Expr::Binary { op, left, right, .. } => {
+            bin_op_is_pure_safe(*op)
+                && expr_is_pure(left, params, locals)
+                && expr_is_pure(right, params, locals)
+        }
+        Expr::Unary { operand, .. } => {
+            // Neg / Not / BitNot — all pure on scalars.
+            expr_is_pure(operand, params, locals)
+        }
+        // Everything else bails: Call, Index, Path/Path2, Tuple, Array,
+        // Struct, Block, If, Match, Sum, Prod, Approx, Range,
+        // ArrayRepeat, Or — any of which is a call, an allocation, a
+        // possibly-trapping access, or an unmodeled shape.
+        _ => false,
+    }
+}
+
+/// Binary ops that are guaranteed non-trapping and side-effect-free.
+/// `/` and `%` are EXCLUDED: they lower to `sdiv`/`srem`, which trap on
+/// divide-by-zero, and a trap is an observable program abort whose
+/// timing would differ between the synchronous and deferred lowerings.
+fn bin_op_is_pure_safe(op: BinOp) -> bool {
+    use BinOp::*;
+    match op {
+        Add | Sub | Mul | Eq | NotEq | Lt | Gt | LtEq | GtEq | And | Or
+        | BitAnd | BitOr | BitXor | Shl | Shr => true,
+        Div | Mod => false,
     }
 }

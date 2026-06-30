@@ -1131,6 +1131,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             bus_dispatch_static_ty,
             None,
         );
+        // Direct-call devirt (build #1b slice-2). For an eligible
+        // subject whose every subscriber is same-thread AND whose every
+        // handler is provably QUIET AND whose payload is flat, codegen
+        // replaces the deferred enqueue with this SYNCHRONOUS direct
+        // call: it iterates the per-subject bucket `id` and calls each
+        // subscriber's handler(self, payload) inline (skipping
+        // quarantined / keyed / off-thread entries). No queue, no
+        // serialize_fn, no flat/no_pinned flags — a flat payload is
+        // passed straight through by pointer.
+        // declare void @lotus_bus_dispatch_static_direct(i32 id,
+        //   ptr subject, ptr payload, i64 size)
+        let bus_dispatch_static_direct_ty = void_t.fn_type(
+            &[
+                i32_t.into(), // subject id
+                ptr_t.into(), // subject
+                ptr_t.into(), // payload
+                i64_t.into(), // size
+            ],
+            false,
+        );
+        self.module.add_function(
+            "lotus_bus_dispatch_static_direct",
+            bus_dispatch_static_direct_ty,
+            None,
+        );
         let bus_quarantine_ty = void_t.fn_type(&[ptr_t.into()], false);
         self.module.add_function(
             "lotus_bus_quarantine_self",

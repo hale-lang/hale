@@ -330,6 +330,197 @@ main locus App {
 fn main() { App { }; }
 "#,
         ),
+        // === Direct-call devirt (slice-2) cases ===================
+        //
+        // POSITIVE: stream_aggregator shape — a quiet handler (only
+        // self-field assignments + an if over pure conditions), a flat
+        // single-Int payload, same-thread. This is the archetypal
+        // direct-call subject. main reads the aggregator's accumulated
+        // state afterward (the ONLY way to observe a quiet handler), so
+        // direct-call vs deferred must reach the same final state.
+        (
+            "direct_stream_aggregator",
+            r#"
+type Sample { value: Int; }
+locus Aggregator {
+    params { count: Int = 0; sum: Int = 0; min_v: Int = 999999999; max_v: Int = 0; }
+    bus { subscribe "bench.sample" as on_sample of type Sample; }
+    fn on_sample(s: Sample) {
+        self.count = self.count + 1;
+        self.sum = self.sum + s.value;
+        if s.value < self.min_v { self.min_v = s.value; }
+        if s.value > self.max_v { self.max_v = s.value; }
+    }
+}
+locus Publisher {
+    params { iters: Int = 50; }
+    bus { publish "bench.sample" of type Sample; }
+    run() {
+        let mut i = 0;
+        while i < self.iters {
+            let v = (i * 31 + 7) % 1000;
+            "bench.sample" <- Sample { value: v };
+            i = i + 1;
+        }
+    }
+}
+fn main() {
+    let agg = Aggregator { };
+    Publisher { iters: 50 };
+    print("count="); println(agg.count);
+    print("sum="); println(agg.sum);
+    print("min="); println(agg.min_v);
+    print("max="); println(agg.max_v);
+}
+"#,
+        ),
+        // SAFETY (the KEY test): a PRINTING handler. `on_t` does
+        // println(...) — a CALL — so it MUST be classified non-quiet and
+        // stay DEFERRED. The publisher prints between publishes, so if
+        // the handler were mis-classified direct-call its output would
+        // interleave WITH the publisher's prints (handler fires during
+        // the publish loop) instead of AFTER them (at the drain) — a
+        // different stdout ORDER the differential catches. Correctly
+        // classified, both arms defer and the order is identical.
+        (
+            "direct_printing_handler_stays_deferred",
+            r#"
+type Tick { n: Int; }
+locus Logger {
+    bus { subscribe "t" as on_t of type Tick; }
+    fn on_t(t: Tick) { print("handler "); println(t.n); }
+}
+locus Producer {
+    bus { publish "t" of type Tick; }
+    run() {
+        println("before 1");
+        "t" <- Tick { n: 1 };
+        println("after 1");
+        "t" <- Tick { n: 2 };
+        println("after 2");
+    }
+}
+fn main() { Logger { }; Producer { }; }
+"#,
+        ),
+        // SAFETY: a REPUBLISHING handler. `on_a` does `"b" <- ...` — a
+        // Send — so it is non-quiet and stays deferred (a synchronous
+        // nested republish would reorder dispatch). Subject "b"'s
+        // handler prints so the ordering is observable.
+        (
+            "direct_republishing_handler_stays_deferred",
+            r#"
+type A { n: Int; }
+type B { n: Int; }
+locus Relay {
+    bus {
+        subscribe "a" as on_a of type A;
+        publish "b" of type B;
+    }
+    fn on_a(x: A) { "b" <- B { n: x.n + 100 }; }
+}
+locus Bsink {
+    bus { subscribe "b" as on_b of type B; }
+    fn on_b(y: B) { print("b "); println(y.n); }
+}
+locus Producer {
+    bus { publish "a" of type A; }
+    run() {
+        println("p1");
+        "a" <- A { n: 1 };
+        println("p2");
+        "a" <- A { n: 2 };
+    }
+}
+fn main() { Relay { }; Bsink { }; Producer { }; }
+"#,
+        ),
+        // SAFETY: a handler that CALLS A HELPER fn. The first cut bails
+        // on ANY call, so this stays deferred. The helper prints so the
+        // ordering relative to the publisher's prints is observable.
+        (
+            "direct_helper_call_handler_stays_deferred",
+            r#"
+type Tick { n: Int; }
+fn emit(n: Int) { print("emit "); println(n); }
+locus Worker {
+    bus { subscribe "w" as on_w of type Tick; }
+    fn on_w(t: Tick) { emit(t.n); }
+}
+locus Producer {
+    bus { publish "w" of type Tick; }
+    run() {
+        println("p1");
+        "w" <- Tick { n: 1 };
+        println("p2");
+        "w" <- Tick { n: 2 };
+    }
+}
+fn main() { Worker { }; Producer { }; }
+"#,
+        ),
+        // POSITIVE: publisher PRINTS between QUIET publishes. The quiet
+        // handler is invisible (no output of its own), so the prints
+        // interleave identically whether the handler runs synchronously
+        // (direct) or at the drain (deferred). main reads the final
+        // accumulated total to confirm delivery.
+        (
+            "direct_publisher_prints_between_quiet",
+            r#"
+type Tick { n: Int; }
+locus Counter {
+    params { total: Int = 0; }
+    bus { subscribe "tk" as on_tk of type Tick; }
+    fn on_tk(t: Tick) { self.total = self.total + t.n; }
+}
+locus Producer {
+    bus { publish "tk" of type Tick; }
+    run() {
+        println("p1");
+        "tk" <- Tick { n: 1 };
+        println("p2");
+        "tk" <- Tick { n: 2 };
+        println("p3");
+    }
+}
+fn main() {
+    let c = Counter { };
+    Producer { };
+    print("total="); println(c.total);
+}
+"#,
+        ),
+        // POSITIVE: MULTI-SUBSCRIBER + MULTI-INSTANCE quiet subject. Two
+        // instances of a quiet Sink subscribe one subject; each
+        // accumulates its own self state. Direct-call must deliver to
+        // BOTH (in registration order) identically to the deferred FIFO
+        // drain. main reads each instance's final state.
+        (
+            "direct_multi_instance_quiet",
+            r#"
+type Ev { v: Int; }
+locus Sink {
+    params { tag: Int = 0; sum: Int = 0; }
+    bus { subscribe "ev" as on_ev of type Ev; }
+    fn on_ev(e: Ev) { self.sum = self.sum + e.v; }
+}
+locus Producer {
+    bus { publish "ev" of type Ev; }
+    run() {
+        "ev" <- Ev { v: 10 };
+        "ev" <- Ev { v: 20 };
+        "ev" <- Ev { v: 30 };
+    }
+}
+fn main() {
+    let a = Sink { tag: 1 };
+    let b = Sink { tag: 2 };
+    Producer { };
+    print("a="); println(a.sum);
+    print("b="); println(b.sum);
+}
+"#,
+        ),
     ]
 }
 

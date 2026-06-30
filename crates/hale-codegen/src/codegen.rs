@@ -803,25 +803,38 @@ pub fn build_executable_with_options(
     // ineligible, so a library/wasm build with no entry point yields an
     // empty plan and the all-dynamic lowering. `LOTUS_NO_BUS_DEVIRT=1`
     // forces the empty plan — the differential-test control arm.
-    let bus_devirt_ids: std::collections::BTreeMap<String, u32> =
-        if env_flag("LOTUS_NO_BUS_DEVIRT") {
-            std::collections::BTreeMap::new()
-        } else {
-            let (top, _diags) = hale_types::resolve::build_top_scope(&bundle);
-            let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
-            // Deterministic ids: eligible subjects sorted by wire string
-            // (BTreeMap iteration order is sorted), 0..N.
-            let mut ids: std::collections::BTreeMap<String, u32> =
-                std::collections::BTreeMap::new();
-            let mut next: u32 = 0;
-            for (subject, info) in &graph.subjects {
-                if info.eligible {
-                    ids.insert(subject.clone(), next);
-                    next += 1;
+    let (bus_devirt_ids, bus_devirt_direct): (
+        std::collections::BTreeMap<String, u32>,
+        std::collections::BTreeSet<String>,
+    ) = if env_flag("LOTUS_NO_BUS_DEVIRT") {
+        (
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeSet::new(),
+        )
+    } else {
+        let (top, _diags) = hale_types::resolve::build_top_scope(&bundle);
+        let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
+        // Deterministic ids: eligible subjects sorted by wire string
+        // (BTreeMap iteration order is sorted), 0..N. The direct-call
+        // subset reuses those very ids (its bucket is the same one
+        // lotus_bus_register_static populates), so we collect both in
+        // one pass.
+        let mut ids: std::collections::BTreeMap<String, u32> =
+            std::collections::BTreeMap::new();
+        let mut direct: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        let mut next: u32 = 0;
+        for (subject, info) in &graph.subjects {
+            if info.eligible {
+                ids.insert(subject.clone(), next);
+                next += 1;
+                if info.direct_call_eligible {
+                    direct.insert(subject.clone());
                 }
             }
-            ids
-        };
+        }
+        (ids, direct)
+    };
 
     let context = Context::create();
     let module = context.create_module("lotus_main");
@@ -920,6 +933,7 @@ pub fn build_executable_with_options(
         shm_ring_subjects: std::collections::BTreeMap::new(),
         routing_key_subjects: std::collections::BTreeMap::new(),
         bus_devirt_ids,
+        bus_devirt_direct,
         program_has_offthread,
         deferred_dissolves: Vec::new(),
         in_main: false,
@@ -2208,6 +2222,20 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// when `LOTUS_NO_BUS_DEVIRT=1` (forces the all-dynamic lowering —
     /// the differential-test control arm).
     pub(crate) bus_devirt_ids: std::collections::BTreeMap<String, u32>,
+    /// Direct-call devirt (build #1b slice-2): the SUBSET of
+    /// `bus_devirt_ids` whose every subscriber is same-thread AND whose
+    /// every handler is provably QUIET (the `direct_call_eligible`
+    /// flag off the `BusGraph`). A compile-time-literal publish on such
+    /// a subject — when its payload is ALSO flat (the third gate leg,
+    /// ANDed in at the publish site via `bus_payload_is_flat`) — lowers
+    /// to a SYNCHRONOUS direct call (`lotus_bus_dispatch_static_direct`)
+    /// instead of the deferred static enqueue: the cooperative-queue
+    /// round-trip is collapsed away. A subject in this set still uses
+    /// its `bus_devirt_ids` bucket id (direct subjects are a subset, so
+    /// the bucket is already populated by `lotus_bus_register_static`).
+    /// Empty when `LOTUS_NO_BUS_DEVIRT=1`, so the differential control
+    /// arm never direct-calls — exactly as it never static-enqueues.
+    pub(crate) bus_devirt_direct: std::collections::BTreeSet<String>,
     /// THE single source of truth for "a thread crosses the bus
     /// boundary in this program" — the union of pinned/cross-pool
     /// placement and an inline adapter `bindings { }` recv-loop.
