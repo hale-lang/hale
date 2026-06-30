@@ -2904,6 +2904,20 @@ struct AllocCtx<'a> {
     /// numeric scalar — so `self.helper(x) + 1` classifies as arithmetic.
     /// EMPTY off the method path.
     numeric_ret_self_methods: &'a BTreeSet<String>,
+    /// Scalar-param-field reads (2026-06-30): a map from an in-scope
+    /// PARAM/LOCAL name → the set of that variable's numeric-scalar
+    /// (Int/Uint/Float/Duration) field names, resolved from the variable's
+    /// declared struct/`type` shape. Lets `s.value` (a scalar field of a
+    /// flat struct param `s`) classify as a non-allocating numeric scalar,
+    /// so an enclosing `Add` like `self.sum + s.value` is arithmetic rather
+    /// than possible String concat. Only numeric-scalar fields are listed —
+    /// String/Bytes/Vec/nested-struct/interface fields are deliberately
+    /// absent (a read of one is still non-allocating, but it is NOT a
+    /// numeric scalar, so it can't make an `Add` arithmetic). DEFAULT-EMPTY
+    /// when no param/local type is resolvable — a missing entry just leaves
+    /// the read possibly-allocating (the safe default; a false
+    /// non-allocating would leak).
+    param_field_numeric: &'a BTreeMap<String, BTreeSet<String>>,
 }
 
 /// `Int` / `Uint` / `Float` / `Duration` — the scalar types whose `+` is
@@ -2916,6 +2930,73 @@ fn type_expr_is_numeric_scalar(ty: &TypeExpr) -> bool {
             _,
         )
     )
+}
+
+/// Build, from the whole program AST, a map `user-type name → its
+/// numeric-scalar field names` (Int/Uint/Float/Duration). Used to recognize
+/// `s.value` (a scalar field of a flat-struct param/local `s`) as a
+/// non-allocating numeric scalar in the allocation classifier. Walks plain
+/// `type T { ... }` data records (the only shape whose field is read with a
+/// statically known scalar type by a `.field` GEP+load) and recurses into
+/// modules. Non-struct types (aliases, enums) contribute nothing; their
+/// fields are never numeric-scalar field reads in this sense.
+fn struct_numeric_field_map(
+    items: &[TopDecl],
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    fn walk(items: &[TopDecl], out: &mut BTreeMap<String, BTreeSet<String>>) {
+        for it in items {
+            match it {
+                TopDecl::Type(td) => {
+                    if let TypeDeclBody::Struct(fields) = &td.body {
+                        let nf: BTreeSet<String> = fields
+                            .iter()
+                            .filter(|f| type_expr_is_numeric_scalar(&f.ty))
+                            .map(|f| f.name.name.clone())
+                            .collect();
+                        if !nf.is_empty() {
+                            out.insert(td.name.name.clone(), nf);
+                        }
+                    }
+                }
+                TopDecl::Module(m) => walk(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    walk(items, &mut out);
+    out
+}
+
+/// Map a fn/method's params to `param name → numeric-scalar field names of
+/// its struct type`, consulting the precomputed `structs` map. Only params
+/// whose declared type is a single-segment `Named` referring to a known
+/// struct contribute an entry; everything else (primitive, generic, array,
+/// tuple, unresolved path) is omitted — a missing entry leaves a `param.field`
+/// read possibly-allocating (the conservative default). Locals are not tracked
+/// here (params are the resolvable surface); an unascribed `let s = mk()`
+/// field read therefore stays conservative.
+fn param_field_numeric_map(
+    params: &[Param],
+    structs: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for p in params {
+        if let TypeExpr::Named { path, generic_args, .. } = &p.ty {
+            // Only a bare (non-generic) SINGLE-SEGMENT name maps to a flat
+            // user struct — matching how codegen keys `user_types` (by short
+            // name). A generic instantiation could be a collection; a
+            // path-qualified name could alias a same-named local struct, so
+            // both are conservatively skipped (the read stays
+            // possibly-allocating).
+            if generic_args.is_empty() && path.segments.len() == 1 {
+                if let Some(nf) = structs.get(&path.segments[0].name) {
+                    out.insert(p.name.name.clone(), nf.clone());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Compute, by a greatest-fixpoint over the call graph, the set of free fns
@@ -2947,23 +3028,29 @@ fn compute_nonalloc_free_fns(
             .map(|f| f.name.name.clone())
             .collect()
     };
+    let structs = struct_numeric_field_map(items);
     let mut nonalloc: BTreeSet<String> =
         fns.iter().map(|f| f.name.name.clone()).collect();
     loop {
         let numeric_ret = numeric_ret_of(&nonalloc);
         let empty_self = BTreeSet::new();
-        let ctx = AllocCtx {
-            nonalloc: &nonalloc,
-            numeric_ret: &numeric_ret,
-            numeric_self_fields: &empty_self,
-            scalar_self_fields: &empty_self,
-            elidable_self_methods: &empty_self,
-            numeric_ret_self_methods: &empty_self,
-        };
         let demote: Vec<String> = fns
             .iter()
             .filter(|f| nonalloc.contains(&f.name.name))
             .filter(|f| {
+                // Per-fn scalar-param-field facts: which of this fn's
+                // struct-typed params' fields are numeric scalars.
+                let param_field_numeric =
+                    param_field_numeric_map(&f.params, &structs);
+                let ctx = AllocCtx {
+                    nonalloc: &nonalloc,
+                    numeric_ret: &numeric_ret,
+                    numeric_self_fields: &empty_self,
+                    scalar_self_fields: &empty_self,
+                    elidable_self_methods: &empty_self,
+                    numeric_ret_self_methods: &empty_self,
+                    param_field_numeric: &param_field_numeric,
+                };
                 // Seed with the fn's numeric scalar params.
                 let seed: BTreeSet<String> = f
                     .params
@@ -3032,6 +3119,9 @@ fn compute_elidable_methods(
 ) -> BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)> {
     let mut out: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)> =
         BTreeMap::new();
+    // Program-wide `type` struct numeric-scalar field map — lets a method's
+    // `s.value` (scalar field of a struct param) classify as numeric.
+    let structs = &struct_numeric_field_map(items);
     for it in items {
         let TopDecl::Locus(l) = it else { continue };
         // Candidates: gate-1-eligible (scalar/Unit return), non-fallible,
@@ -3097,18 +3187,23 @@ fn compute_elidable_methods(
             fns.iter().map(|f| f.name.name.clone()).collect();
         loop {
             let numeric_ret_self = numeric_ret_of(&elidable);
-            let ctx = AllocCtx {
-                nonalloc: free_nonalloc,
-                numeric_ret: free_numeric_ret,
-                numeric_self_fields: &numeric_self_fields,
-                scalar_self_fields: &scalar_self_fields,
-                elidable_self_methods: &elidable,
-                numeric_ret_self_methods: &numeric_ret_self,
-            };
             let demote: Vec<String> = fns
                 .iter()
                 .filter(|f| elidable.contains(&f.name.name))
                 .filter(|f| {
+                    // Per-method scalar-param-field facts (e.g. `s.value` for
+                    // a `Sample` param) — `self.sum + s.value` is arithmetic.
+                    let param_field_numeric =
+                        param_field_numeric_map(&f.params, structs);
+                    let ctx = AllocCtx {
+                        nonalloc: free_nonalloc,
+                        numeric_ret: free_numeric_ret,
+                        numeric_self_fields: &numeric_self_fields,
+                        scalar_self_fields: &scalar_self_fields,
+                        elidable_self_methods: &elidable,
+                        numeric_ret_self_methods: &numeric_ret_self,
+                        param_field_numeric: &param_field_numeric,
+                    };
                     // Seed with the method's numeric scalar params.
                     let seed: BTreeSet<String> = f
                         .params
@@ -3185,6 +3280,21 @@ fn expr_is_nonalloc_numeric(
         {
             ctx.numeric_self_fields.contains(&name.name)
         }
+        // Scalar-param-field read (2026-06-30): `s.value` where `s` is a
+        // PARAM/LOCAL of a flat struct type and `value` is one of that
+        // struct's numeric-scalar (Int/Uint/Float/Duration) fields is itself
+        // a numeric scalar — so `self.sum + s.value` is arithmetic, not
+        // String concat. A scalar field load (GEP+load) never allocates, so
+        // this only ever REMOVES a false "possibly-allocating" signal. If the
+        // variable's type or the field's type is unresolvable, there's no
+        // map entry and the read stays possibly-allocating (the safe default).
+        Expr::Field { receiver, name, .. } => match receiver.as_ref() {
+            Expr::Ident(id) => ctx
+                .param_field_numeric
+                .get(&id.name)
+                .is_some_and(|nf| nf.contains(&name.name)),
+            _ => false,
+        },
         Expr::Unary { operand, .. } => {
             expr_is_nonalloc_numeric(operand, ctx, num)
         }
@@ -3518,6 +3628,7 @@ pub(crate) fn locus_arena_elidable(l: &LocusDecl) -> bool {
     // body stays conservative. The type-aware `Add` + numeric `let`s still
     // apply via the local scope.
     let empty = BTreeSet::new();
+    let empty_pf = BTreeMap::new();
     let ec = AllocCtx {
         nonalloc: &empty,
         numeric_ret: &empty,
@@ -3525,6 +3636,7 @@ pub(crate) fn locus_arena_elidable(l: &LocusDecl) -> bool {
         scalar_self_fields: &empty,
         elidable_self_methods: &empty,
         numeric_ret_self_methods: &empty,
+        param_field_numeric: &empty_pf,
     };
     // All method-like bodies non-allocating.
     for m in &l.members {
@@ -23798,6 +23910,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .filter(|p| type_expr_is_numeric_scalar(&p.ty))
             .map(|p| p.name.name.clone())
             .collect();
+        // Scalar-param-field facts (2026-06-30): a read of a numeric-scalar
+        // field of a struct-typed param (`s.value` for `s: Sample`) is a
+        // non-allocating numeric scalar, so `self.sum + s.value` is
+        // arithmetic — exactly what lets a quiet handler like
+        // `Aggregator.on_sample(s: Sample)` drop its per-call scratch. Built
+        // from the same whole-program `type` map the fixpoints use, keeping
+        // this on-the-fly decision consistent with them.
+        let structs = struct_numeric_field_map(&self.program.items);
+        let param_field_numeric = param_field_numeric_map(params, &structs);
         // Stage 2: seed the same-locus elidable-method sets from the
         // precomputed per-locus fixpoint (`self.elidable_methods`), so a
         // `self.m(args)` call in this body resolves as non-allocating exactly
@@ -23816,6 +23937,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             scalar_self_fields: &scalar_self_fields,
             elidable_self_methods,
             numeric_ret_self_methods,
+            param_field_numeric: &param_field_numeric,
         };
         fn_body_definitely_non_allocating(&body.stmts, &ctx, &param_seed)
     }

@@ -23,6 +23,35 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+/// Build with `LOTUS_DUMP_IR=1` and return the emitted LLVM IR text. Lets a
+/// test assert directly whether a method body opened a scratch subregion.
+fn dump_ir(name: &str, src: &str) -> String {
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let mut bin = std::env::temp_dir();
+    bin.push(format!("hale_ms_ir_{}_{}", name, std::process::id()));
+    let ir = bin.with_extension("ll");
+    std::env::set_var("LOTUS_DUMP_IR", "1");
+    let result = build_executable(&program, &bin);
+    std::env::remove_var("LOTUS_DUMP_IR");
+    result.expect("build");
+    let text = std::fs::read_to_string(&ir).expect("read IR");
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_file(&ir);
+    text
+}
+
+/// Carve the IR body of a (possibly void / ptr / i64-returning) function.
+fn carve_fn_body<'a>(ir: &'a str, name: &str) -> &'a str {
+    let start = ir
+        .find(&format!("define void @{}", name))
+        .or_else(|| ir.find(&format!("define ptr @{}", name)))
+        .or_else(|| ir.find(&format!("define i64 @{}", name)))
+        .or_else(|| ir.find(&format!("define double @{}", name)))
+        .unwrap_or_else(|| panic!("`{}` not defined in IR", name));
+    let end = ir[start..].find("\n}").map(|i| start + i).unwrap_or(ir.len());
+    &ir[start..end]
+}
+
 fn build_and_run(name: &str, src: &str) -> String {
     let program = hale_syntax::parse_source(src).expect("parse");
     let mut bin = std::env::temp_dir();
@@ -241,5 +270,93 @@ fn self_method_mutual_recursion_converges() {
     assert_eq!(
         build_and_run("mutual_rec", src).trim(),
         "10\n7"
+    );
+}
+
+// ---- scalar-param-field reads (2026-06-30) --------------------------------
+//
+// A quiet handler whose only "unrecognized" expression was a scalar field
+// read of a flat struct PARAM (`s.value` for `s: Sample`) used to keep its
+// scratch: `self.sum + s.value` looked like a possible String concat because
+// `s.value`'s scalar type wasn't modeled. The classifier now resolves the
+// param's struct shape and recognizes a numeric-scalar field read as a
+// non-allocating numeric scalar, so the `Add` is arithmetic and the method
+// (Unit return, pure scalar self-mutation) drops its per-call scratch.
+
+#[test]
+fn scalar_param_field_handler_elides_scratch() {
+    // The `Aggregator.on_sample(s: Sample)` ground-truth shape: pure scalar
+    // self-mutation + scalar reads of the flat param `s`. It is genuinely
+    // non-allocating; the only blocker was the `s.value` reads. The method's
+    // IR must now contain NO scratch subregion open/destroy.
+    let src = r#"
+        type Sample { value: Float; }
+        locus Aggregator {
+            params { count: Int = 0; sum: Float = 0.0; min_v: Float = 1000000.0; }
+            fn on_sample(s: Sample) {
+                self.count = self.count + 1;
+                self.sum = self.sum + s.value;
+                if s.value < self.min_v { self.min_v = s.value; }
+            }
+            fn report() -> Float { return self.sum; }
+        }
+        fn main() {
+            let a = Aggregator { };
+            a.on_sample(Sample { value: 3.0 });
+            a.on_sample(Sample { value: 4.0 });
+            println(a.report());
+        }
+    "#;
+    // Correctness: sum = 3.0 + 4.0 = 7.0.
+    assert_eq!(build_and_run("agg_run", src).trim(), "7");
+
+    let ir = dump_ir("agg_ir", src);
+    let body = carve_fn_body(&ir, "Aggregator.on_sample");
+    assert!(
+        !body.contains("@lotus_arena_create_subregion"),
+        "on_sample reads only scalar param fields + mutates scalar self \
+         fields — its scratch must be ELIDED (no create_subregion); body:\n{}",
+        body,
+    );
+    assert!(
+        !body.contains("@lotus_arena_destroy"),
+        "on_sample must not destroy a scratch it never opened; body:\n{}",
+        body,
+    );
+}
+
+#[test]
+fn string_param_field_handler_keeps_scratch() {
+    // NEGATIVE / soundness: a method whose body concatenates two STRING param
+    // fields (`n.first + n.last`) genuinely allocates. String fields are
+    // deliberately absent from the numeric-field map, so the `Add` stays
+    // classified as allocating and the method KEEPS its scratch. A false
+    // promotion here would strand the concat in self.__arena and leak (the
+    // ASan corpus net would catch it; this pins the boundary directly).
+    let src = r#"
+        type Name { first: String; last: String; }
+        locus Greeter {
+            params { count: Int = 0; }
+            fn greet(n: Name) {
+                self.count = self.count + 1;
+                let g = n.first + n.last;
+                println(g);
+            }
+        }
+        fn main() {
+            let gr = Greeter { };
+            gr.greet(Name { first: "ab", last: "cd" });
+        }
+    "#;
+    // Correctness: prints the concatenation.
+    assert_eq!(build_and_run("greet_run", src).trim(), "abcd");
+
+    let ir = dump_ir("greet_ir", src);
+    let body = carve_fn_body(&ir, "Greeter.greet");
+    assert!(
+        body.contains("@lotus_arena_create_subregion"),
+        "greet concatenates two String param fields (allocating) — it must \
+         KEEP its scratch (create_subregion present); body:\n{}",
+        body,
     );
 }
