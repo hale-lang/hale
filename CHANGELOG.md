@@ -6,7 +6,52 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.9.0 — lock-free bus, static dispatch devirtualization, native codegen
+
+- **Lock-free bus messaging + static dispatch devirtualization — coordination
+  is no longer the weak spot.** The pinned-locus mailbox and cooperative-pool
+  queues are now lock-free MPSC rings (Vyukov bounded ring + signal-only-when-
+  parked wake, genmc-verified) in place of the per-message mutex + `cond_broadcast`
+  handoff; and statically-eligible local bus subjects (closed-world programs, no
+  transport adapter / wildcard / cross-seed) skip the `g_bus_entries` registry
+  scan + the runtime dispatch entirely — a *quiet* same-thread handler (mutates
+  only its own `self`, no I/O, no republish) is lowered to a **direct synchronous
+  call**, proven byte-identical to the deferred dynamic path by a differential
+  test harness. Net on the bench grid (vs Go): `bus_dispatch` went from ~4× behind
+  to **2.4× ahead** (1.79 ms → 196 µs), `bus_dispatch_cross_pool` from 1.6× behind
+  to **1.26× ahead** (10.7 → 5.0 ms), `stream_aggregator` from ~23× behind to **1.9×
+  behind** (5.26 ms → 436 µs), `pipeline_3stage` ~2.4× faster. Footprint trade-off:
+  the lock-free rings **pre-allocate** their cap (~4.3 MB per pinned mailbox /
+  cooperative pool at the default 8192) rather than growing — lower
+  `LOTUS_BUS_QUEUE_CAP` for pinned-/pool-heavy programs (see `spec/runtime.md`).
+
+- **Native-tuned codegen + O3 by default, with `--target-cpu native|baseline`.**
+  A native `hale build` now tunes generated code to the host CPU (autovectorization,
+  AVX-512 where the host supports it — carried via per-function `target-features`)
+  and runs LLVM's aggressive (O3) pipeline. **Consequence:** native binaries are no
+  longer portable across microarchitectures — build distributed artifacts with
+  `--target-cpu baseline`, which pins a portable `x86-64-v3` (AVX2 + BMI2 + FMA).
+  `wasm32` is unaffected (stays generic / O2).
+
+- **`LOTUS_LTO=1` — opt-in full-LTO build.** Emits the Hale module as LLVM bitcode
+  and compiles the lotus C runtime with `-flto`, so the arena bump-allocator,
+  string helpers, and shm-ring fast paths inline across the TU boundary into the
+  Hale-generated callers. A few percent on allocation/coordination-heavy code,
+  neutral on vectorized loops (host tuning preserved via the function attributes
+  above). Off by default — the LTO link is ~3-4× slower and requires `lld`; native
+  non-sanitizer builds only.
+
+- **Collection-op inlining, bounds-check elimination, non-allocating-method
+  scratch elision.** `@form(vec)` / `@form(hashmap)` `.get` / `.set` / `.pop` /
+  `.push` are inlined at codegen (typed GEP + load/store, no `lotus_*` C-call
+  boundary); `v.get(i)` indexed by a counted-loop variable (`for i in 0..v.len()`
+  with `v` unmutated in the body) drops the per-element bounds check and the read
+  vectorizes; and a method proven non-allocating — now including one whose only
+  reads are scalar fields of a struct parameter (e.g. a bus handler doing
+  `self.sum = self.sum + s.value`) — skips its per-call arena subregion. On the
+  grid Hale now leads Go on `form_vec_get` (3.2×), `form_vec_push` (3.8×),
+  `vec_amortized` (4.2×), `fn_scratch_work` (8.7×), `json_parse` (2.3×), and ties
+  on `form_hashmap_get`.
 
 - **Fixed `String + Int` (and `to_string(Int)` / `to_string(Float)`) emitting
   empty under `--target wasm32`.** The wasm libc shim's `snprintf` was a
