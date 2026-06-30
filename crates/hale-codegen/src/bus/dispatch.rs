@@ -779,6 +779,190 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
             // static enqueue below (managed payloads keep the wire /
             // per-subscriber-arena path).
             if static_direct && payload_is_flat {
+                // Direct-INLINE (slice-3): when this direct subject has a
+                // SINGLE distinct subscriber handler (one subscriber
+                // locus-type, any # of instances), bake that handler as a
+                // DIRECT call and walk the per-subject bucket inline via
+                // the layout-safe, `pure` accessors. The optimizer hoists
+                // the loop-invariant count/self-ptr loads out of a publish
+                // loop and inlines the baked handler body — collapsing the
+                // singleton fast path to the Go-equivalent hoisted
+                // dispatch. Resolve+dedup the registered handler
+                // FunctionValue exactly as `emit_bus_register` does
+                // (reclaim-wrapper if present, else the raw handler) so the
+                // baked call is byte-identical to the helper's indirect one.
+                let baked_handler: Option<
+                    inkwell::values::FunctionValue<'ctx>,
+                > = match subject {
+                    Expr::Literal(Literal::String(s), _) => {
+                        self.bus_devirt_direct_subs.get(s).and_then(|subs| {
+                            let mut distinct: Vec<
+                                inkwell::values::FunctionValue<'ctx>,
+                            > = Vec::new();
+                            for (locus, handler) in subs {
+                                let info = self.user_loci.get(locus)?;
+                                // Bake the RAW locus method, NOT the
+                                // `__hwrap_*` reclaim-wrapper that
+                                // `emit_bus_register` registers. The wrapper is
+                                // exactly `{ raw(self, payload); if
+                                // self.__drain_requested != 0 { reclaim } }`,
+                                // and `__drain_requested` is set ONLY by
+                                // `terminate;` — which the direct-call gate's
+                                // `handler_is_quiet` rejects. So for a
+                                // direct-call (quiet) subject the wrapper's
+                                // reclaim tail is provably DEAD and raw ≡
+                                // wrapper at runtime; the differential harness
+                                // is the gate. Baking raw drops the wrapper's
+                                // per-dispatch dead `__drain_requested` load +
+                                // branch (and the never-taken
+                                // `lotus_bus_quarantine_self`/recpool reclaim
+                                // path), which otherwise — having unknown
+                                // memory effects — sat in the publish loop body.
+                                let raw =
+                                    info.user_methods.get(handler).copied()?;
+                                if !distinct.iter().any(|f| *f == raw) {
+                                    distinct.push(raw);
+                                }
+                            }
+                            if distinct.len() == 1 {
+                                Some(distinct[0])
+                            } else {
+                                // 0 (defensive) or ≥2 distinct handlers:
+                                // can't bake one constant → keep the helper.
+                                None
+                            }
+                        })
+                    }
+                    _ => None,
+                };
+                if let Some(handler_fn) = baked_handler {
+                    let count_fn = self
+                        .module
+                        .get_function("lotus_bus_static_direct_count")
+                        .expect(
+                            "lotus_bus_static_direct_count declared in \
+                             declare_builtins",
+                        );
+                    let selfptr_fn = self
+                        .module
+                        .get_function("lotus_bus_static_direct_selfptr")
+                        .expect(
+                            "lotus_bus_static_direct_selfptr declared in \
+                             declare_builtins",
+                        );
+                    let current_fn = self
+                        .builder
+                        .get_insert_block()
+                        .and_then(|bb| bb.get_parent())
+                        .expect("inside a function");
+                    let entry_bb = self
+                        .builder
+                        .get_insert_block()
+                        .expect("inside a block");
+                    let cond_bb = self
+                        .context
+                        .append_basic_block(current_fn, "bus.direct.cond");
+                    let body_bb = self
+                        .context
+                        .append_basic_block(current_fn, "bus.direct.body");
+                    let call_bb = self
+                        .context
+                        .append_basic_block(current_fn, "bus.direct.call");
+                    let iter_bb = self
+                        .context
+                        .append_basic_block(current_fn, "bus.direct.iter");
+                    let end_bb = self
+                        .context
+                        .append_basic_block(current_fn, "bus.direct.end");
+                    // n = count(id)
+                    let n = self
+                        .builder
+                        .build_call(
+                            count_fn,
+                            &[id_iv.into()],
+                            "bus.direct.count",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .try_as_basic_value()
+                        .left()
+                        .expect("count returns i64")
+                        .into_int_value();
+                    self.builder
+                        .build_unconditional_branch(cond_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // cond: k < n
+                    self.builder.position_at_end(cond_bb);
+                    let k_phi = self
+                        .builder
+                        .build_phi(i64_t, "bus.direct.k")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    k_phi.add_incoming(&[(&i64_t.const_zero(), entry_bb)]);
+                    let k_val = k_phi.as_basic_value().into_int_value();
+                    let more = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::ULT,
+                            k_val,
+                            n,
+                            "bus.direct.more",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_conditional_branch(more, body_bb, end_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // body: sp = selfptr(id, k); skip if null
+                    self.builder.position_at_end(body_bb);
+                    let sp = self
+                        .builder
+                        .build_call(
+                            selfptr_fn,
+                            &[id_iv.into(), k_val.into()],
+                            "bus.direct.self",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .try_as_basic_value()
+                        .left()
+                        .expect("selfptr returns ptr")
+                        .into_pointer_value();
+                    let is_null = self
+                        .builder
+                        .build_is_null(sp, "bus.direct.skip")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_conditional_branch(is_null, iter_bb, call_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // call: handler(sp, &payload) — the BAKED direct call
+                    self.builder.position_at_end(call_bb);
+                    self.builder
+                        .build_call(
+                            handler_fn,
+                            &[sp.into(), payload_val.into()],
+                            "bus.direct.handler",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_unconditional_branch(iter_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // iter: k = k + 1; loop
+                    self.builder.position_at_end(iter_bb);
+                    let k_next = self
+                        .builder
+                        .build_int_add(
+                            k_val,
+                            i64_t.const_int(1, false),
+                            "bus.direct.k.next",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    k_phi.add_incoming(&[(&k_next, iter_bb)]);
+                    self.builder
+                        .build_unconditional_branch(cond_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(end_bb);
+                    return Ok(());
+                }
+                // Multi-handler (or unresolved) direct subject: keep the
+                // helper (can't bake one constant). It carries the same
+                // defensive off-thread post.
                 let dispatch_direct_fn = self
                     .module
                     .get_function("lotus_bus_dispatch_static_direct")

@@ -803,13 +803,16 @@ pub fn build_executable_with_options(
     // ineligible, so a library/wasm build with no entry point yields an
     // empty plan and the all-dynamic lowering. `LOTUS_NO_BUS_DEVIRT=1`
     // forces the empty plan — the differential-test control arm.
-    let (bus_devirt_ids, bus_devirt_direct): (
+    #[allow(clippy::type_complexity)]
+    let (bus_devirt_ids, bus_devirt_direct, bus_devirt_direct_subs): (
         std::collections::BTreeMap<String, u32>,
         std::collections::BTreeSet<String>,
+        std::collections::BTreeMap<String, Vec<(String, String)>>,
     ) = if env_flag("LOTUS_NO_BUS_DEVIRT") {
         (
             std::collections::BTreeMap::new(),
             std::collections::BTreeSet::new(),
+            std::collections::BTreeMap::new(),
         )
     } else {
         let (top, _diags) = hale_types::resolve::build_top_scope(&bundle);
@@ -823,6 +826,13 @@ pub fn build_executable_with_options(
             std::collections::BTreeMap::new();
         let mut direct: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
+        // Direct-INLINE (slice-3): the subscriber (locus, handler) list
+        // per direct subject, so the publish site can resolve+dedup the
+        // handler FunctionValue and bake a single-handler direct call.
+        let mut direct_subs: std::collections::BTreeMap<
+            String,
+            Vec<(String, String)>,
+        > = std::collections::BTreeMap::new();
         let mut next: u32 = 0;
         for (subject, info) in &graph.subjects {
             if info.eligible {
@@ -830,10 +840,17 @@ pub fn build_executable_with_options(
                 next += 1;
                 if info.direct_call_eligible {
                     direct.insert(subject.clone());
+                    direct_subs.insert(
+                        subject.clone(),
+                        info.subscribers
+                            .iter()
+                            .map(|s| (s.locus.clone(), s.handler.clone()))
+                            .collect(),
+                    );
                 }
             }
         }
-        (ids, direct)
+        (ids, direct, direct_subs)
     };
 
     let context = Context::create();
@@ -934,6 +951,7 @@ pub fn build_executable_with_options(
         routing_key_subjects: std::collections::BTreeMap::new(),
         bus_devirt_ids,
         bus_devirt_direct,
+        bus_devirt_direct_subs,
         program_has_offthread,
         deferred_dissolves: Vec::new(),
         in_main: false,
@@ -2236,6 +2254,21 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// Empty when `LOTUS_NO_BUS_DEVIRT=1`, so the differential control
     /// arm never direct-calls — exactly as it never static-enqueues.
     pub(crate) bus_devirt_direct: std::collections::BTreeSet<String>,
+    /// Direct-call-INLINE devirt (build #1b slice-3): for each
+    /// `bus_devirt_direct` subject, the list of `(locus, handler)`
+    /// subscriber sites off the `BusGraph`, in graph (registration-
+    /// matching) order. The publish site resolves each to its
+    /// registered handler `FunctionValue`; when ALL entries share ONE
+    /// distinct handler (the common single-subscriber-locus-type case),
+    /// the publish bakes that handler as a DIRECT call over the
+    /// per-subject bucket's self-ptrs (`lotus_bus_static_direct_count` /
+    /// `_selfptr`), so the optimizer can hoist the loop-invariant
+    /// self-ptr load and inline the handler body. A subject with
+    /// MULTIPLE distinct handlers keeps the
+    /// `lotus_bus_dispatch_static_direct` helper (can't bake one
+    /// constant). Empty under `LOTUS_NO_BUS_DEVIRT=1`.
+    pub(crate) bus_devirt_direct_subs:
+        std::collections::BTreeMap<String, Vec<(String, String)>>,
     /// THE single source of truth for "a thread crosses the bus
     /// boundary in this program" — the union of pinned/cross-pool
     /// placement and an inline adapter `bindings { }` recv-loop.

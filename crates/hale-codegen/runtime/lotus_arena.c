@@ -11620,6 +11620,63 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
     }
 }
 
+/* === Direct-call-INLINE accessors (build #1b slice-3) ============
+ *
+ * The publish-side fast path beyond lotus_bus_dispatch_static_direct.
+ * When a direct-call-eligible subject has a SINGLE distinct subscriber
+ * handler (the common case — one subscriber locus-type, any number of
+ * instances), codegen bakes that handler as a DIRECT call and walks the
+ * per-subject bucket itself via these two accessors, instead of going
+ * through the (non-inlined) helper's indirect `e->handler` call. Baking
+ * the handler as a direct call lets the optimizer inline the handler
+ * body into the publish loop; marking these accessors `pure` (reads
+ * global memory, no writes, no other side effect) lets LICM hoist the
+ * loop-invariant `count(id)` / `selfptr(id, k)` loads out of a publish
+ * loop when `id` is loop-invariant — collapsing the singleton fast path
+ * to a loop-invariant self-ptr load + the inlined handler body, the
+ * Go-equivalent hoisted dispatch.
+ *
+ * These read the SAME g_bus_entries[idx] rows lotus_bus_dispatch_static_
+ * direct reads, in the SAME registration order, applying the SAME
+ * quarantine (`!e->subject`) / keyed (`key_filter_kind != 0`) skips — so
+ * the inline lowering is byte-identical to the helper. The accessor
+ * hides the C bucket/entry layout from codegen (which must not GEP these
+ * structs).
+ *
+ * `pure` soundness: the bus registry is populated at registration
+ * (program start) and mutated only by quarantine (rare, same-thread). A
+ * quiet publish loop cannot quarantine its own subscriber mid-loop (a
+ * quiet handler has no quarantining effect), so re-reading the registry
+ * across iterations is sound. The codegen-side declaration uses
+ * `memory(read)` + `nounwind` + `willreturn` (NOT `memory(none)`), so a
+ * store elsewhere (a quarantine) is not reordered across these reads. */
+size_t lotus_bus_static_direct_count(uint32_t id) __attribute__((pure));
+size_t lotus_bus_static_direct_count(uint32_t id) {
+    lotus_bus_static_bucket_t *b =
+        (id < g_bus_static_bucket_count) ? &g_bus_static_buckets[id] : NULL;
+    return b ? b->count : 0;
+}
+
+void *lotus_bus_static_direct_selfptr(uint32_t id, size_t k)
+    __attribute__((pure));
+void *lotus_bus_static_direct_selfptr(uint32_t id, size_t k) {
+    lotus_bus_static_bucket_t *b =
+        (id < g_bus_static_bucket_count) ? &g_bus_static_buckets[id] : NULL;
+    if (!b || k >= b->count) return NULL;
+    lotus_bus_entry_t *e = &g_bus_entries[b->idx[k]];
+    if (!e->subject) return NULL;            /* quarantined → skip */
+    if (e->key_filter_kind != 0) return NULL;/* keyed → skip */
+    /* Defensive (mirrors lotus_bus_dispatch_static_direct's same-thread
+     * gate): an off-thread entry (mailbox / coop_pool) must NEVER be
+     * direct-called on the publisher's thread. The BusGraph direct gate
+     * guarantees every baked subject's subscribers are same-thread, so
+     * this never fires for a baked subject — but returning NULL (codegen
+     * skips) degrades a hypothetical gate bug to a dropped delivery
+     * rather than a cross-thread call. */
+    if (e->mailbox || e->coop_pool) return NULL;
+    return e->self_ptr;
+}
+
 /* m70: lazy global "payload arena" for String byte storage in
  * cross-process bus deserialization. The reader thread fills a
  * stack-local struct_buf, dispatches via lotus_bus_local_dispatch

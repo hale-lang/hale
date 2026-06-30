@@ -1156,6 +1156,52 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             bus_dispatch_static_direct_ty,
             None,
         );
+        // Direct-call-INLINE accessors (build #1b slice-3). For a
+        // single-subscriber-handler direct subject, codegen bakes the
+        // handler as a DIRECT call and walks the per-subject bucket
+        // itself through these two LAYOUT-SAFE, HOISTABLE accessors —
+        // instead of the indirect `e->handler` call inside the non-
+        // inlined `lotus_bus_dispatch_static_direct` helper. Both are
+        // marked `pure` (memory(read) + nounwind + willreturn) so LLVM
+        // hoists the loop-invariant count/self-ptr loads out of a
+        // publish loop and the baked handler inlines into the loop body.
+        // declare i64 @lotus_bus_static_direct_count(i32 id)
+        // declare ptr @lotus_bus_static_direct_selfptr(i32 id, i64 k)
+        let direct_count_ty = i64_t.fn_type(&[i32_t.into()], false);
+        let direct_count_fn = self.module.add_function(
+            "lotus_bus_static_direct_count",
+            direct_count_ty,
+            None,
+        );
+        let direct_selfptr_ty =
+            ptr_t.fn_type(&[i32_t.into(), i64_t.into()], false);
+        let direct_selfptr_fn = self.module.add_function(
+            "lotus_bus_static_direct_selfptr",
+            direct_selfptr_ty,
+            None,
+        );
+        // `pure` ⇒ memory(read) (encoded ArgMem|InaccessibleMem|Other =
+        // Ref = 0b010101 = 21 per llvm/Support/ModRef.h) + nounwind +
+        // willreturn. memory(read) (NOT memory(none)) keeps a quarantine
+        // store elsewhere ordered correctly w.r.t. these reads while
+        // still letting LICM hoist them when `id` is loop-invariant.
+        {
+            use inkwell::attributes::{Attribute, AttributeLoc};
+            let mem_kind = Attribute::get_named_enum_kind_id("memory");
+            let nounwind_kind = Attribute::get_named_enum_kind_id("nounwind");
+            let willreturn_kind =
+                Attribute::get_named_enum_kind_id("willreturn");
+            let mem_read = self.context.create_enum_attribute(mem_kind, 21);
+            let nounwind =
+                self.context.create_enum_attribute(nounwind_kind, 0);
+            let willreturn =
+                self.context.create_enum_attribute(willreturn_kind, 0);
+            for f in [direct_count_fn, direct_selfptr_fn] {
+                f.add_attribute(AttributeLoc::Function, mem_read);
+                f.add_attribute(AttributeLoc::Function, nounwind);
+                f.add_attribute(AttributeLoc::Function, willreturn);
+            }
+        }
         let bus_quarantine_ty = void_t.fn_type(&[ptr_t.into()], false);
         self.module.add_function(
             "lotus_bus_quarantine_self",

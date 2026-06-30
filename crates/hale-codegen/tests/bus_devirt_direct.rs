@@ -45,7 +45,17 @@ fn build_ir(tag: &str, src: &str) -> String {
     text
 }
 
-fn calls_direct(ir: &str) -> bool {
+/// Slice-3 INLINE form: a single-subscriber-handler direct subject
+/// walks the bucket itself via the `pure` accessors and bakes the
+/// handler as a DIRECT call. The count-accessor call is the
+/// unambiguous signature of the inline lowering.
+fn calls_inline_direct(ir: &str) -> bool {
+    ir.contains("call i64 @lotus_bus_static_direct_count(")
+}
+/// Slice-2 HELPER form: the non-inlined `lotus_bus_dispatch_static_direct`
+/// runtime helper — kept for MULTI-distinct-handler direct subjects,
+/// which can't bake one constant.
+fn calls_direct_helper(ir: &str) -> bool {
     ir.contains("call void @lotus_bus_dispatch_static_direct(")
 }
 fn calls_deferred_static(ir: &str) -> bool {
@@ -128,13 +138,49 @@ main locus App {
 fn main() { App { }; }
 "#;
 
+/// MULTI-distinct-handler quiet+flat+same-thread subject: two DIFFERENT
+/// subscriber locus-types subscribe one subject, so the publish site
+/// cannot bake a single constant handler → it keeps the slice-2
+/// `lotus_bus_dispatch_static_direct` HELPER (which dispatches each
+/// `e->handler` indirectly), NOT the inline baked call.
+const MULTI_HANDLER_QUIET_FLAT: &str = r#"
+type Ev { v: Int; }
+locus SinkA {
+    params { sum: Int = 0; }
+    bus { subscribe "ev" as on_ev of type Ev; }
+    fn on_ev(e: Ev) { self.sum = self.sum + e.v; }
+}
+locus SinkB {
+    params { total: Int = 0; }
+    bus { subscribe "ev" as on_ev of type Ev; }
+    fn on_ev(e: Ev) { self.total = self.total + e.v; }
+}
+locus Producer {
+    bus { publish "ev" of type Ev; }
+    run() { "ev" <- Ev { v: 5 }; }
+}
+fn main() {
+    let a = SinkA { };
+    let b = SinkB { };
+    Producer { };
+    print("a="); println(a.sum);
+    print("b="); println(b.total);
+}
+"#;
+
 #[test]
-fn quiet_flat_same_thread_lowers_to_direct_call() {
+fn quiet_flat_same_thread_lowers_to_inline_direct_call() {
     let ir = build_ir("quiet", QUIET_FLAT);
     assert!(
-        calls_direct(&ir),
-        "a quiet + flat + same-thread subject must lower to \
-         lotus_bus_dispatch_static_direct"
+        calls_inline_direct(&ir),
+        "a quiet + flat + same-thread SINGLE-handler subject must lower to \
+         the INLINE baked direct call (walks the bucket via \
+         lotus_bus_static_direct_count/_selfptr)"
+    );
+    assert!(
+        !calls_direct_helper(&ir),
+        "the single-handler case must NOT use the lotus_bus_dispatch_static_direct \
+         helper — it bakes the handler inline instead"
     );
     assert!(
         !calls_deferred_static(&ir),
@@ -144,10 +190,26 @@ fn quiet_flat_same_thread_lowers_to_direct_call() {
 }
 
 #[test]
+fn multi_handler_direct_keeps_helper() {
+    let ir = build_ir("multi", MULTI_HANDLER_QUIET_FLAT);
+    assert!(
+        calls_direct_helper(&ir),
+        "a direct-call-eligible subject with TWO distinct subscriber \
+         handlers can't bake one constant — it must keep the \
+         lotus_bus_dispatch_static_direct helper"
+    );
+    assert!(
+        !calls_inline_direct(&ir),
+        "the multi-distinct-handler case must NOT emit the inline baked \
+         walk (no single handler to bake)"
+    );
+}
+
+#[test]
 fn printing_handler_stays_deferred() {
     let ir = build_ir("printing", PRINTING_HANDLER);
     assert!(
-        !calls_direct(&ir),
+        !calls_inline_direct(&ir) && !calls_direct_helper(&ir),
         "a handler that calls println is NOT quiet — it must never \
          direct-call (that would run I/O during the publish loop)"
     );
@@ -162,7 +224,7 @@ fn printing_handler_stays_deferred() {
 fn non_flat_payload_stays_deferred() {
     let ir = build_ir("nonflat", QUIET_NONFLAT);
     assert!(
-        !calls_direct(&ir),
+        !calls_inline_direct(&ir) && !calls_direct_helper(&ir),
         "a non-flat (String-bearing) payload must not direct-call — \
          managed payloads keep the wire / per-subscriber-arena path"
     );
@@ -176,7 +238,7 @@ fn non_flat_payload_stays_deferred() {
 fn cross_pool_subscriber_stays_deferred() {
     let ir = build_ir("crosspool", QUIET_FLAT_CROSS_POOL);
     assert!(
-        !calls_direct(&ir),
+        !calls_inline_direct(&ir) && !calls_direct_helper(&ir),
         "an off-thread (cross-pool) subscriber cannot be direct-called \
          — it must enqueue to the pool worker"
     );
