@@ -4757,6 +4757,28 @@ static int lotus_mpsc_ring_try_dequeue(lotus_mpsc_ring_t *r,
     return 0;   /* dif < 0: empty (dif > 0 impossible for a single consumer) */
 }
 
+/* Non-destructive "is a cell ready to dequeue?" — consumer-only. Reads the
+ * same slot seq the dequeue would, but does not advance the cursor. Used by
+ * the cooperative async drain to choose its epoll_wait timeout (poll vs
+ * block) without consuming the cell. ONLY the single consumer thread may
+ * call this (it reads the consumer-owned dequeue cursor). */
+static int lotus_mpsc_ring_peek_nonempty(lotus_mpsc_ring_t *r) {
+    uint64_t pos = atomic_load_explicit(&r->dequeue_pos,
+                                        memory_order_relaxed);
+    lotus_ring_slot_t *slot = &r->slots[pos & r->mask];
+    uint64_t seq = atomic_load_explicit(&slot->seq, memory_order_acquire);
+    return (int64_t)(seq - (pos + 1)) == 0;
+}
+
+/* Approximate occupancy (enqueue_pos - dequeue_pos). Diagnostic only — a
+ * relaxed snapshot that may count a reserved-but-not-yet-published slot.
+ * Used by the residency dump. */
+static size_t lotus_mpsc_ring_size_approx(lotus_mpsc_ring_t *r) {
+    uint64_t enq = atomic_load_explicit(&r->enqueue_pos, memory_order_relaxed);
+    uint64_t deq = atomic_load_explicit(&r->dequeue_pos, memory_order_relaxed);
+    return (enq >= deq) ? (size_t)(enq - deq) : 0;
+}
+
 /* Consumer-thread-local overflow node. A self-publish — the consumer's
  * own handler posting to its own mailbox — that finds the fixed-size ring
  * full must NOT block (nothing else drains this mailbox → deadlock) and
@@ -5173,20 +5195,44 @@ typedef struct lotus_coro {
     struct lotus_coro *next;
 } lotus_coro_t;
 
+/* Consumer-thread-local self-publish overflow node for the cooperative
+ * pool — identical role to lotus_mailbox_overflow_t. A handler running on
+ * the pool's own worker thread that posts to its own pool and finds the
+ * fixed-cap ring full must NOT block (it IS the consumer → deadlock); such
+ * cells append here and drain after the ring on each pass. Only the worker
+ * thread ever touches this list, so no atomics are needed. */
+typedef struct lotus_coop_overflow {
+    lotus_bus_cell_t             cell;
+    struct lotus_coop_overflow  *next;
+} lotus_coop_overflow_t;
+
 typedef struct lotus_coop_pool {
     /* Name as registered (null-terminated, <= 63 chars). Stored
      * inline so lookup doesn't chase an extra pointer. Pool
      * names are typically short ("io", "render", "main") so 64
      * bytes covers every realistic case. */
     char              name[64];
-    /* Cell ring buffer + tail/head/cap — same shape as mailbox. */
-    lotus_bus_cell_t *cells;
-    size_t            head;
-    size_t            tail;
-    size_t            cap;
-    int               shutdown;
+    /* Phase-1b (2026-06-30): the cell queue is now the same lock-free
+     * Vyukov MPSC ring the pinned mailbox uses (lotus_mpsc_ring_t). The
+     * single worker is the sole consumer; cross-pool publishers are the
+     * producers. The mutex + condvars below are retained ONLY for the
+     * classic consumer's blocking park (drain_one when empty) and the
+     * cross-thread producer backpressure (full ring) — NOT per message.
+     * Under load the consumer is never parked, so the steady-state post
+     * path is lock-free and never touches the mutex (the per-message
+     * mutex+broadcast handoff this replaces was the cross-pool grid
+     * bottleneck). The async_io path keeps epoll/wake_fd as its park —
+     * see drain_one_async — and only re-sources cells from this ring. */
+    lotus_mpsc_ring_t ring;
+    _Atomic int       parked;            /* 1 while the classic consumer is (about to be) parked */
+    _Atomic int       producers_waiting; /* # producers blocked on a full ring */
+    _Atomic int       shutdown;
     pthread_mutex_t   lock;
-    pthread_cond_t    not_empty;
+    pthread_cond_t    not_empty;         /* the classic consumer parks here */
+    pthread_cond_t    not_full;          /* blocked producers park here */
+    /* Consumer-thread-local self-publish overflow list (see above). */
+    lotus_coop_overflow_t *overflow_head;
+    lotus_coop_overflow_t *overflow_tail;
     /* Worker pthread; set once start_all has run. */
     pthread_t         worker;
     int               worker_started;
@@ -5225,7 +5271,9 @@ typedef struct lotus_coop_pool {
  * workload ever needs a different default per locus. */
 #define LOTUS_CORO_STACK_BYTES (64 * 1024)
 
-#define LOTUS_COOP_POOL_INITIAL_CAP 64
+/* Phase-1b: the cooperative pool's queue is now a fixed-cap lock-free ring
+ * pre-allocated at bus_queue_max_cap() (like the mailbox), so there is no
+ * longer a grow-from-initial-cap path — LOTUS_COOP_POOL_INITIAL_CAP retired. */
 #define LOTUS_COOP_POOL_MAX 16
 
 static lotus_coop_pool_t *g_coop_pools[LOTUS_COOP_POOL_MAX];
@@ -5254,19 +5302,39 @@ lotus_coop_pool_t *lotus_coop_pool_register(const char *name) {
     lotus_coop_pool_t *existing = lotus_coop_pool_lookup(name);
     if (existing) return existing;
     if (g_coop_pool_count >= LOTUS_COOP_POOL_MAX) return NULL;
-    lotus_coop_pool_t *p =
-        (lotus_coop_pool_t *)malloc(sizeof(lotus_coop_pool_t));
+    /* Phase-1b: 64-byte aligned alloc so the ring's enqueue/dequeue
+     * cursors land on their own cache lines (no false sharing between
+     * producers' CAS cursor and the consumer's dequeue cursor) — the
+     * same allocation guard the mailbox uses. wasm is single-threaded
+     * (false sharing is moot) and its bundled libc has no
+     * posix_memalign, so plain malloc there. */
+    lotus_coop_pool_t *p = NULL;
+#ifdef __wasm__
+    p = (lotus_coop_pool_t *)malloc(sizeof(lotus_coop_pool_t));
     if (!p) return NULL;
-    p->cells = (lotus_bus_cell_t *)
-        malloc(LOTUS_COOP_POOL_INITIAL_CAP * sizeof(lotus_bus_cell_t));
-    if (!p->cells) { free(p); return NULL; }
-    p->cap  = LOTUS_COOP_POOL_INITIAL_CAP;
-    p->head = 0;
-    p->tail = 0;
-    p->shutdown = 0;
+#else
+    if (posix_memalign((void **)&p, 64, sizeof(lotus_coop_pool_t)) != 0
+        || !p) {
+        return NULL;
+    }
+#endif
+    /* Pre-allocate the ring at the configured cap (rounded up to a power
+     * of two). NOTE: like the mailbox, this trades grow-to-cap for
+     * pre-allocate-cap — a fixed RSS cost per cooperative pool, bought
+     * back as a lock-free, allocation-free steady-state post. */
+    if (!lotus_mpsc_ring_init(&p->ring, bus_queue_max_cap())) {
+        free(p);
+        return NULL;
+    }
+    atomic_store_explicit(&p->parked, 0, memory_order_relaxed);
+    atomic_store_explicit(&p->producers_waiting, 0, memory_order_relaxed);
+    atomic_store_explicit(&p->shutdown, 0, memory_order_relaxed);
+    p->overflow_head = NULL;
+    p->overflow_tail = NULL;
     p->worker_started = 0;
     pthread_mutex_init(&p->lock, NULL);
     pthread_cond_init(&p->not_empty, NULL);
+    pthread_cond_init(&p->not_full, NULL);
     /* F.35 Slice 1: async_io defaults off. Slice 2's codegen flips
      * this via `lotus_coop_pool_enable_async_io` for pools whose
      * placement entries declare `where async_io`. */
@@ -5287,14 +5355,51 @@ lotus_coop_pool_t *lotus_coop_pool_register(const char *name) {
     return p;
 }
 
+/* Defined below; `post` uses it to detect a self-publish from the pool's
+ * own worker thread (a handler posting to its own pool), which must never
+ * block. Mirrors lotus_mailbox_get_current's role. */
+lotus_coop_pool_t *lotus_coop_pool_current(void);
+
+/* Run a dequeued cell's handler, then free its heap payload (if any).
+ * Two-tier inline/heap payload, identical to the mailbox dispatch. Used by
+ * the classic drain (the async drain runs the handler on a coro stack and
+ * frees the payload after the coro completes, so it can't use this). */
+static void lotus_coop_pool_dispatch_cell(lotus_bus_cell_t *cell) {
+    void *payload_ptr = NULL;
+    if (cell->payload_size > 0) {
+        payload_ptr = cell->payload_heap
+            ? cell->payload_heap
+            : (void *)cell->payload_inline;
+    }
+    ((lotus_handler_fn)cell->handler)(cell->self_ptr, payload_ptr);
+    if (cell->payload_heap) free(cell->payload_heap);
+}
+
+/* A ring slot just freed (the consumer dequeued). Wake any producer
+ * blocked on a full ring — but only if one is actually waiting. The
+ * seq_cst fence + load pairs with the producer's producers_waiting++ +
+ * fence + recheck (post backpressure path): a Dekker handshake that makes
+ * it impossible for a producer to sleep on a slot we just freed. Identical
+ * to lotus_mailbox_wake_producers. MUST be called with p->lock NOT held. */
+static void lotus_coop_pool_wake_producers(lotus_coop_pool_t *p) {
+    atomic_thread_fence(memory_order_seq_cst);
+    if (atomic_load_explicit(&p->producers_waiting,
+                             memory_order_seq_cst) > 0) {
+        pthread_mutex_lock(&p->lock);
+        pthread_cond_broadcast(&p->not_full);
+        pthread_mutex_unlock(&p->lock);
+    }
+}
+
 void lotus_coop_pool_post(lotus_coop_pool_t *p,
                           void *handler,
                           void *self_ptr,
                           const void *payload_src,
                           size_t payload_size) {
     if (!p) return;
-    /* Two-tier payload storage; see queue_enqueue for the
-     * design rationale. */
+    /* Two-tier payload storage; see queue_enqueue for the design
+     * rationale. Build the cell once, up front, so the lock-free enqueue
+     * is a single plain struct copy under the slot's seq release. */
     void *heap_buf = NULL;
     if (payload_size > LOTUS_PAYLOAD_INLINE) {
         heap_buf = malloc(payload_size);
@@ -5303,75 +5408,106 @@ void lotus_coop_pool_post(lotus_coop_pool_t *p,
             memcpy(heap_buf, payload_src, payload_size);
         }
     }
-    pthread_mutex_lock(&p->lock);
-    if (p->tail == p->cap) {
-        size_t live = p->tail - p->head;
-        if (p->head > 0) {
-            memmove(p->cells, p->cells + p->head,
-                    live * sizeof(lotus_bus_cell_t));
-            p->head = 0;
-            p->tail = live;
-        }
-        if (p->tail == p->cap) {
-            size_t new_cap = p->cap * 2;
-            lotus_bus_cell_t *new_cells = (lotus_bus_cell_t *)
-                realloc(p->cells, new_cap * sizeof(lotus_bus_cell_t));
-            if (!new_cells) {
+    lotus_bus_cell_t cell;
+    cell.handler      = handler;
+    cell.self_ptr     = self_ptr;
+    cell.payload_size = payload_size;
+    cell.payload_heap = heap_buf;
+    if (!heap_buf && payload_size > 0 && payload_src) {
+        memcpy(cell.payload_inline, payload_src, payload_size);
+    }
+
+    /* A self-publish — a handler running on this pool's own worker thread
+     * posting to this same pool — must NEVER block (the worker IS the sole
+     * consumer → deadlock). Detected via the worker's TLS pool pointer. */
+    int self_publish = (lotus_coop_pool_current() == p);
+    /* wake_fd >= 0 ⇔ async_io pool. Read once; set at async-enable and
+     * stable thereafter, so this unlocked read is race-free. */
+    int is_async = (p->wake_fd >= 0);
+
+    for (;;) {
+        int enq = lotus_mpsc_ring_try_enqueue(&p->ring, &cell);
+
+        if (!enq && !self_publish) {
+            /* Ring full, cross-thread producer — BLOCK until the consumer
+             * frees a slot or shutdown (backpressure). Same Dekker
+             * handshake as the mailbox: announce intent, fence, RE-TRY the
+             * lock-free enqueue before sleeping, so a slot the consumer
+             * just freed is never missed. Applies to both classic and
+             * async pools — both can be flooded by cross-pool producers,
+             * and both drains call wake_producers after a dequeue. */
+            pthread_mutex_lock(&p->lock);
+            if (atomic_load_explicit(&p->shutdown, memory_order_relaxed)) {
                 pthread_mutex_unlock(&p->lock);
                 if (heap_buf) free(heap_buf);
-                return;
+                return;                          /* drop — shutting down */
             }
-            p->cells = new_cells;
-            p->cap   = new_cap;
+            atomic_fetch_add_explicit(&p->producers_waiting, 1,
+                                      memory_order_seq_cst);
+            atomic_thread_fence(memory_order_seq_cst);
+            enq = lotus_mpsc_ring_try_enqueue(&p->ring, &cell);
+            if (!enq) {
+                pthread_cond_wait(&p->not_full, &p->lock);
+                atomic_fetch_sub_explicit(&p->producers_waiting, 1,
+                                          memory_order_seq_cst);
+                pthread_mutex_unlock(&p->lock);
+                continue;                        /* retry from the top */
+            }
+            atomic_fetch_sub_explicit(&p->producers_waiting, 1,
+                                      memory_order_seq_cst);
+            pthread_mutex_unlock(&p->lock);
+            /* fall through to the wake below */
         }
-    }
-    lotus_bus_cell_t *slot = &p->cells[p->tail++];
-    slot->handler      = handler;
-    slot->self_ptr     = self_ptr;
-    slot->payload_size = payload_size;
-    slot->payload_heap = heap_buf;
-    if (!heap_buf && payload_size > 0 && payload_src) {
-        memcpy(slot->payload_inline, payload_src, payload_size);
-    }
-    /* F.32-4-prefetch (2026-05-24): hint the receiver's L1 to
-     * pull the freshly-written slot's cache line. The receiver
-     * pool's drain loop will read these bytes within ~µs; the
-     * prefetch arrives well ahead of the consumer's load,
-     * eliminating the cache-miss stall on the consumer side
-     * (~10-50 ns saved per cell). Write-intent locality 3
-     * (high temporal reuse) because the drain pops + reads
-     * the cell almost immediately. Zero-cost on the producer
-     * side — single instruction, no stall.
-     *
-     * Build-flag toggle (2026-05-25): set
-     * LOTUS_DISABLE_PREFETCH=1 in the build environment to
-     * compile this site out. Used by the A/B harness to
-     * isolate the prefetch's perf contribution on
-     * `bus_dispatch_cross_pool`. Default (env unset): prefetch
-     * enabled — matches shipped behavior. */
-#ifndef LOTUS_DISABLE_PREFETCH
-    __builtin_prefetch(slot, 1, 3);
-#endif
-    pthread_cond_broadcast(&p->not_empty);
-    pthread_mutex_unlock(&p->lock);
-    /* 2026-05-31: if this is an async_io pool, its worker may be
-     * blocked in `epoll_wait(-1)` with a parked coro and no cells
-     * pending (the `timeout_ms = cell_pending ? 0 : -1` path in
-     * drain_one_async). The condvar broadcast above does NOT wake a
-     * worker sitting in epoll_wait — so a cross-pool cell enqueued
-     * here would sit undelivered until some fd event happens to wake
-     * the worker. That starves fanout to a per-connection handler
-     * whose `run()` is parked on recv (a silent client → the push
-     * cell never fires). Poke the wake eventfd — the same one
-     * shutdown_all uses — so the worker returns from epoll_wait,
-     * falls through to the cell-drain step, and dispatches this cell.
-     * Gated on `wake_fd >= 0` (async_io pools only): a classic
-     * blocking pool has wake_fd == -1 and is woken by the condvar,
-     * so it pays nothing. (wake_fd is set once at async-enable and
-     * stable thereafter, so this unlocked read is race-free.) */
-    if (p->wake_fd >= 0) {
-        uint64_t one = 1;
-        (void)write(p->wake_fd, &one, sizeof(one));
+
+        if (enq) {
+            if (is_async) {
+                /* async_io pool: the worker parks in epoll_wait, not on the
+                 * condvar. Poke the wake eventfd — UNCHANGED from the prior
+                 * design. eventfd is level-triggered (its counter is
+                 * durable until the worker read()s it), so this is already
+                 * missed-wakeup-safe: even if the worker hasn't yet entered
+                 * epoll_wait, the pending count returns it immediately. The
+                 * parked/cond handshake does NOT apply to the epoll path. */
+                uint64_t one = 1;
+                (void)write(p->wake_fd, &one, sizeof(one));
+            } else {
+                /* classic pool: signal-only-when-parked wake. The seq_cst
+                 * fence orders the release-publish of the cell (inside
+                 * try_enqueue) before this load of `parked`; it pairs with
+                 * the consumer's store(parked,1) + fence + recheck
+                 * (drain_one). Byte-identical to the mailbox producer wake
+                 * — the Dekker/SB handshake that defeats the missed wakeup.
+                 * Under load the consumer is not parked → no mutex on the
+                 * hot path (this is the cross-pool grid win). */
+                atomic_thread_fence(memory_order_seq_cst);
+                if (atomic_load_explicit(&p->parked,
+                                         memory_order_seq_cst)) {
+                    pthread_mutex_lock(&p->lock);
+                    pthread_cond_signal(&p->not_empty);   /* one consumer */
+                    pthread_mutex_unlock(&p->lock);
+                }
+            }
+            return;
+        }
+
+        /* enq == 0 && self_publish: ring full on the worker's own thread.
+         * Defer to the consumer-thread-local overflow list (no atomics —
+         * only this thread touches it). Never blocks. */
+        lotus_coop_overflow_t *node = (lotus_coop_overflow_t *)
+            malloc(sizeof(lotus_coop_overflow_t));
+        if (!node) {
+            if (heap_buf) free(heap_buf);
+            return;
+        }
+        node->cell = cell;
+        node->next = NULL;
+        if (p->overflow_tail) {
+            p->overflow_tail->next = node;
+        } else {
+            p->overflow_head = node;
+        }
+        p->overflow_tail = node;
+        return;
     }
 }
 
@@ -5380,32 +5516,50 @@ void lotus_coop_pool_post(lotus_coop_pool_t *p,
  * signaled with empty queue. Returns 1 after a cell ran, 0
  * after shutdown-empty. */
 static int lotus_coop_pool_drain_one(lotus_coop_pool_t *p) {
-    pthread_mutex_lock(&p->lock);
-    while (p->head >= p->tail && !p->shutdown) {
+    lotus_bus_cell_t cell;
+    for (;;) {
+        /* Ring first (lock-free), then the consumer-local overflow list. */
+        if (lotus_mpsc_ring_try_dequeue(&p->ring, &cell)) {
+            lotus_coop_pool_wake_producers(p);  /* freed a slot */
+            lotus_coop_pool_dispatch_cell(&cell);
+            return 1;
+        }
+        if (p->overflow_head) {
+            lotus_coop_overflow_t *node = p->overflow_head;
+            p->overflow_head = node->next;
+            if (!p->overflow_head) p->overflow_tail = NULL;
+            cell = node->cell;
+            free(node);
+            lotus_coop_pool_dispatch_cell(&cell);
+            return 1;
+        }
+
+        /* Both empty — park under the mutex with the seq_cst handshake.
+         * Byte-identical to lotus_mailbox_drain_one. */
+        pthread_mutex_lock(&p->lock);
+        atomic_store_explicit(&p->parked, 1, memory_order_seq_cst);
+        atomic_thread_fence(memory_order_seq_cst);
+        /* Re-check AFTER announcing parked: a cell may have arrived between
+         * the failed dequeue and the parked store. The seq_cst store +
+         * fence here, paired with the producer's publish + fence +
+         * load(parked) (post), make a lost wake impossible. */
+        if (lotus_mpsc_ring_try_dequeue(&p->ring, &cell)) {
+            atomic_store_explicit(&p->parked, 0, memory_order_seq_cst);
+            pthread_mutex_unlock(&p->lock);
+            lotus_coop_pool_wake_producers(p);
+            lotus_coop_pool_dispatch_cell(&cell);
+            return 1;
+        }
+        if (atomic_load_explicit(&p->shutdown, memory_order_relaxed)) {
+            atomic_store_explicit(&p->parked, 0, memory_order_seq_cst);
+            pthread_mutex_unlock(&p->lock);
+            return 0;                           /* shutdown + empty */
+        }
         pthread_cond_wait(&p->not_empty, &p->lock);
-    }
-    if (p->head >= p->tail) {
-        p->head = 0;
-        p->tail = 0;
+        atomic_store_explicit(&p->parked, 0, memory_order_seq_cst);
         pthread_mutex_unlock(&p->lock);
-        return 0;
+        /* loop: re-dequeue */
     }
-    lotus_bus_cell_t cell_copy = p->cells[p->head++];
-    if (p->head >= p->tail) {
-        p->head = 0;
-        p->tail = 0;
-    }
-    pthread_mutex_unlock(&p->lock);
-    void *payload_ptr = NULL;
-    if (cell_copy.payload_size > 0) {
-        payload_ptr = cell_copy.payload_heap
-            ? cell_copy.payload_heap
-            : (void *)cell_copy.payload_inline;
-    }
-    ((lotus_handler_fn)cell_copy.handler)(
-        cell_copy.self_ptr, payload_ptr);
-    if (cell_copy.payload_heap) free(cell_copy.payload_heap);
-    return 1;
 }
 
 /* F.35 Slice 1: thread-locals tracking which pool / coro is on-CPU
@@ -5586,44 +5740,64 @@ int lotus_coop_park_on_fd(int fd, uint32_t events) {
  * Returns 0 on shutdown-with-empty-queue-and-no-parked; 1 after a
  * cell or wakeup advanced state (caller loops). */
 static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
-    /* (1) Service parked-fd wakeups first. epoll_wait timeout
-     * choice: 0 (non-blocking) when a cell is pending so we hand
-     * cells to the dispatcher promptly; -1 (block) only when no
-     * cells AND parked exist; skip entirely when neither holds. */
-    if (p->parked_head) {
-        pthread_mutex_lock(&p->lock);
-        int cell_pending = (p->head < p->tail);
-        int shutdown_set = p->shutdown;
-        pthread_mutex_unlock(&p->lock);
-        if (shutdown_set && !cell_pending) {
-            /* 2026-05-30 wakeable park: the pool is shutting down and
-             * has no more cells, but coros are still parked. We do NOT
-             * resume them to unwind: a forever-loop run() (the stdlib
-             * Listener / http Server `while true { accept }`) does not
-             * cooperatively break on a cancel-wake — accept would
-             * return its sentinel, the loop would re-accept, and we'd
-             * spin (cooperative unwind needs the loop to check
-             * `self.draining`, which the stdlib loops don't — a future
-             * refinement). The process is exiting, so ABANDON them:
-             * free each parked coro's stack (its fd/arena are
-             * reclaimed at process exit / by the parent's dissolve).
-             * The wake eventfd — poked by shutdown_all — is what let
-             * this worker return from epoll_wait to reach here; that
-             * alone unblocks the join. */
-            lotus_coro_t *c = p->parked_head;
-            while (c) {
-                lotus_coro_t *next = c->next;
-                if (c->parked_fd >= 0) {
-                    (void)epoll_ctl(p->epoll_fd, EPOLL_CTL_DEL,
-                                    c->parked_fd, NULL);
-                }
-                lotus_coro_free(c);
-                c = next;
+    /* Phase-1b: the cell SOURCE is now the lock-free ring (+ the consumer-
+     * local overflow list); the park stays epoll_wait and the wake stays
+     * the wake eventfd — NO cond handshake on this path (eventfd is level-
+     * triggered, so already missed-wakeup-safe). Cell readiness is a non-
+     * destructive ring peek (consumer-only) + the overflow head — neither
+     * needs the pool mutex. */
+    int cell_pending = lotus_mpsc_ring_peek_nonempty(&p->ring)
+                       || (p->overflow_head != NULL);
+    int shutdown_set = atomic_load_explicit(&p->shutdown,
+                                            memory_order_seq_cst);
+
+    if (shutdown_set && !cell_pending) {
+        /* 2026-05-30 wakeable park: shutting down with no more cells, but
+         * coros may still be parked. We do NOT resume them to unwind: a
+         * forever-loop run() (the stdlib Listener / http Server
+         * `while true { accept }`) does not cooperatively break on a
+         * cancel-wake — accept would return its sentinel, the loop would
+         * re-accept, and we'd spin (cooperative unwind needs the loop to
+         * check `self.draining`, which the stdlib loops don't — a future
+         * refinement). The process is exiting, so ABANDON them: free each
+         * parked coro's stack (its fd/arena are reclaimed at process exit /
+         * by the parent's dissolve). The wake eventfd — poked by
+         * shutdown_all — is what let this worker return from epoll_wait to
+         * reach here; that alone unblocks the join. Covers the no-parked
+         * case too (the loop no-ops on an empty list). */
+        lotus_coro_t *c = p->parked_head;
+        while (c) {
+            lotus_coro_t *next = c->next;
+            if (c->parked_fd >= 0) {
+                (void)epoll_ctl(p->epoll_fd, EPOLL_CTL_DEL,
+                                c->parked_fd, NULL);
             }
-            p->parked_head = NULL;
-            return 0;
+            lotus_coro_free(c);
+            c = next;
         }
-        int timeout_ms = cell_pending ? 0 : -1;
+        p->parked_head = NULL;
+        return 0;
+    }
+
+    /* (1) epoll. Enter it to service parked coros, OR to block waiting for
+     * work when no cell is pending — the wake eventfd (registered for the
+     * life of the async pool) is how a cross-pool post and shutdown reach a
+     * worker with no fd events, replacing the old cond_wait(not_empty).
+     * Skip epoll only on the fast path: a cell is pending AND no coros need
+     * servicing, so a busy consumer pays no syscall. */
+    if (p->parked_head || !cell_pending) {
+        int timeout_ms;
+        if (cell_pending) {
+            timeout_ms = 0;          /* cells waiting — poll, don't block */
+        } else if (p->wake_fd >= 0) {
+            timeout_ms = -1;         /* block; a post / shutdown pokes wake_fd */
+        } else {
+            /* Degenerate fallback: async enabled but the wake eventfd could
+             * not be created. Poll on a bounded timeout so a cross-pool post
+             * (with no wake_fd to poke) is still picked up and we never
+             * hang. Normal async pools always have wake_fd >= 0. */
+            timeout_ms = 20;
+        }
         struct epoll_event events[16];
         int n = epoll_wait(p->epoll_fd, events, 16, timeout_ms);
         if (n < 0) {
@@ -5634,9 +5808,9 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
             n = 0;
         }
         for (int i = 0; i < n; i++) {
-            /* The wake eventfd uses data.ptr == p (never a coro) —
-             * it only exists to unblock epoll_wait so the shutdown
-             * check above runs. Drain it and skip. */
+            /* The wake eventfd uses data.ptr == p (never a coro) — it only
+             * exists to unblock epoll_wait so the top-of-loop checks rerun.
+             * Drain it and skip. */
             if (events[i].data.ptr == p) {
                 if (p->wake_fd >= 0) {
                     uint64_t v;
@@ -5664,33 +5838,32 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
                 lotus_coro_free(c);
             }
         }
-        if (n > 0) return 1;
-        if (cell_pending == 0) return 1;
+        /* If we just blocked (no cell to drain this pass), return to the
+         * worker loop and re-evaluate from the top — a cell that arrived
+         * while we were parked is drained on the next pass. When a cell was
+         * already pending we fall through to drain it now. */
+        if (!cell_pending) return 1;
     }
-    /* (2) Drain one cell on a fresh coro stack. */
-    pthread_mutex_lock(&p->lock);
-    while (p->head >= p->tail && !p->shutdown) {
-        /* If parked coros exist, we cannot block on the condvar
-         * forever — epoll might be the wake signal. Drop the lock
-         * and loop back to step (1). */
-        if (p->parked_head) {
-            pthread_mutex_unlock(&p->lock);
-            return 1;
-        }
-        pthread_cond_wait(&p->not_empty, &p->lock);
+
+    /* (2) Drain one cell — ring first (lock-free), then the consumer-local
+     * overflow list — and run it on a fresh coro stack. */
+    lotus_bus_cell_t cell_copy;
+    int got = lotus_mpsc_ring_try_dequeue(&p->ring, &cell_copy);
+    if (got) {
+        lotus_coop_pool_wake_producers(p);   /* freed a slot */
+    } else if (p->overflow_head) {
+        lotus_coop_overflow_t *node = p->overflow_head;
+        p->overflow_head = node->next;
+        if (!p->overflow_head) p->overflow_tail = NULL;
+        cell_copy = node->cell;
+        free(node);
+        got = 1;
     }
-    if (p->head >= p->tail) {
-        p->head = 0;
-        p->tail = 0;
-        pthread_mutex_unlock(&p->lock);
-        return 0;
+    if (!got) {
+        /* Spurious — the peek raced a concurrent state change, or the cell
+         * was already consumed. Loop. */
+        return 1;
     }
-    lotus_bus_cell_t cell_copy = p->cells[p->head++];
-    if (p->head >= p->tail) {
-        p->head = 0;
-        p->tail = 0;
-    }
-    pthread_mutex_unlock(&p->lock);
     void *payload_ptr = NULL;
     if (cell_copy.payload_size > 0) {
         payload_ptr = cell_copy.payload_heap
@@ -5793,9 +5966,14 @@ void lotus_coop_pool_dump_parked_counts(int fd) {
     for (size_t i = 0; i < g_coop_pool_count; i++) {
         lotus_coop_pool_t *p = g_coop_pools[i];
         if (!p) continue;
-        pthread_mutex_lock(&p->lock);
-        size_t pending = (p->tail >= p->head) ? (p->tail - p->head) : 0;
-        pthread_mutex_unlock(&p->lock);
+        /* Approximate ring occupancy (relaxed snapshot of the cursors) —
+         * diagnostic only, no lock needed; the overflow list is touched
+         * only by the worker, so a possibly-stale read is the right
+         * residency-dump semantic. */
+        size_t pending = lotus_mpsc_ring_size_approx(&p->ring);
+        for (lotus_coop_overflow_t *o = p->overflow_head; o; o = o->next) {
+            pending++;
+        }
         /* parked_head walk is safe without the pool lock because only
          * the worker thread mutates the list — readers see a possibly-
          * stale snapshot, which is the right semantic for a residency
@@ -5817,8 +5995,9 @@ void lotus_coop_pool_shutdown_all(void) {
         lotus_coop_pool_t *p = g_coop_pools[i];
         if (!p->worker_started) continue;
         pthread_mutex_lock(&p->lock);
-        p->shutdown = 1;
-        pthread_cond_broadcast(&p->not_empty);
+        atomic_store_explicit(&p->shutdown, 1, memory_order_seq_cst);
+        pthread_cond_broadcast(&p->not_empty);  /* wake the parked classic consumer */
+        pthread_cond_broadcast(&p->not_full);   /* wake blocked producers → they drop */
         pthread_mutex_unlock(&p->lock);
         /* 2026-05-30 wakeable park: the condvar broadcast above wakes
          * a worker blocked on the cell queue, but NOT one blocked in
@@ -5841,7 +6020,7 @@ void lotus_coop_pool_shutdown_all(void) {
 }
 
 /* Tear down the pool registry. Called at program exit AFTER
- * shutdown_all. Frees cell buffers + the pool structs. F.35 Slice 1:
+ * shutdown_all. Frees the ring + the pool structs. F.35 Slice 1:
  * also close the epoll fd and free any still-parked coros (their
  * stacks would otherwise leak — process exit reclaims either way,
  * but explicit free keeps valgrind / leak detectors quiet). */
@@ -5849,9 +6028,25 @@ void lotus_coop_pool_destroy_all(void) {
     for (size_t i = 0; i < g_coop_pool_count; i++) {
         lotus_coop_pool_t *p = g_coop_pools[i];
         if (!p) continue;
+        /* Free any undelivered cells' heap payloads — no leak (ASan
+         * checks). Called after the worker has exited + joined, so the
+         * ring / overflow drain here is single-threaded. Mirrors
+         * lotus_mailbox_destroy. */
+        lotus_bus_cell_t cell;
+        while (lotus_mpsc_ring_try_dequeue(&p->ring, &cell)) {
+            if (cell.payload_heap) free(cell.payload_heap);
+        }
+        while (p->overflow_head) {
+            lotus_coop_overflow_t *node = p->overflow_head;
+            p->overflow_head = node->next;
+            if (node->cell.payload_heap) free(node->cell.payload_heap);
+            free(node);
+        }
+        p->overflow_tail = NULL;
+        lotus_mpsc_ring_destroy(&p->ring);
         pthread_cond_destroy(&p->not_empty);
+        pthread_cond_destroy(&p->not_full);
         pthread_mutex_destroy(&p->lock);
-        if (p->cells) free(p->cells);
         if (p->wake_fd >= 0) {
             close(p->wake_fd);
             p->wake_fd = -1;
