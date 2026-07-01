@@ -4220,7 +4220,21 @@ typedef struct lotus_bus_cell {
      * in a per-cell malloc'd buffer of `payload_size` bytes;
      * drain paths free it after handler returns. */
     void  *payload_heap;
-    char   payload_inline[LOTUS_PAYLOAD_INLINE];
+    /* 16-byte aligned. The inline buffer holds a verbatim copy of a
+     * bus payload struct, which may carry an i128 / Decimal (align-16)
+     * field. A subscriber handler reads such a field with an aligned
+     * SSE move (`vmovaps`/`movdqa`), which #GP-traps on a non-16-aligned
+     * address. Without this attribute the cell's natural alignment is
+     * only 8 (its widest member is a pointer / size_t), so a stack cell
+     * snapshot in a drain path — or the mailbox ring slot's embedded
+     * cell (preceded by an 8-byte seq) — lands `payload_inline` at an
+     * 8-mod-16 address and the handler traps. This was a live segfault
+     * on the pinned mailbox path (cooperative drains copy into an
+     * `aligned(16)` scratch buffer and were unaffected). Forcing the
+     * member to 16 raises the whole struct's alignment, so EVERY cell
+     * copy — stack snapshots, the ring slot's cell, the malloc'd queue
+     * array — keeps `payload_inline` 16-aligned. */
+    char   payload_inline[LOTUS_PAYLOAD_INLINE] __attribute__((aligned(16)));
 } lotus_bus_cell_t;
 
 typedef struct lotus_bus_queue {

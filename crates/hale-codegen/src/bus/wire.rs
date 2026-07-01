@@ -1238,7 +1238,13 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                             alloc_fn,
                             &[
                                 nested_size.into(),
-                                i64_t.const_int(8, false).into(),
+                                // 16-align: a nested payload struct may
+                                // carry an i128 / Decimal (align-16)
+                                // field; a handler's aligned SSE load
+                                // (`vmovaps`) of it #GP-traps on an
+                                // 8-aligned allocation. Mirrors the
+                                // fixed-size-array element path above.
+                                i64_t.const_int(16, false).into(),
                             ],
                             "de.nested.alloc",
                         )
@@ -1615,7 +1621,10 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                             alloc_fn,
                             &[
                                 nested_size.into(),
-                                i64_t.const_int(8, false).into(),
+                                // 16-align: see `de.nested.alloc` — a
+                                // nested payload struct may carry an
+                                // i128 / Decimal (align-16) field.
+                                i64_t.const_int(16, false).into(),
                             ],
                             "de.nested.deep.alloc",
                         )
