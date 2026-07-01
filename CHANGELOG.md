@@ -6,6 +6,40 @@ behavior.
 
 ---
 
+## v0.9.2 — interest-based ownership (accept bubbling)
+
+- **`accept()` now collects descendants, not just direct children — a locus
+  bubbles to its nearest accepting ancestor.** When a locus `I{}` is instantiated
+  somewhere its *direct* enclosing locus does not `accept(I)`, it now stitches to
+  the nearest enclosing ancestor that does (innermost-wins), instead of falling
+  through to a transient throwaway. A top-level `World` can `accept(Ship)` and
+  collect every `Ship` spawned anywhere beneath it — past intermediaries that
+  don't care about Ships — with no manual registration. It's the structural dual
+  of the bus: where the bus is ephemeral *messaging*, this is ephemeral
+  *ownership* (a live projection the ancestor iterates and reclaims).
+  **Backward-compatible by construction:** innermost-wins picks the direct parent
+  whenever it accepts, so no existing parent↔child relationship changes; the
+  feature only *adds* an owner where a child was previously transient (the whole
+  corpus is byte-identical with the feature on vs off). Ownership stays opt-in via
+  `accept` — an `I{}` with no accepting ancestor is a transient locus, never an
+  error. Resolution is fully static (no polymorphic instantiation → the
+  closed-world graph fixes every owner edge at compile time; no runtime ancestor
+  walk). Three tiers, each proven inert on shipped code and ASan-clean:
+  - **Same-tower, singleton owner** — the owner (a `main locus` / `@export`) is a
+    compile-time constant; bubbling lowers to direct pointer wiring + a projection
+    append + the existing reclaim cascade. Zero runtime cost over direct parenting.
+  - **Same-tower, multiple owner instances** — the owner pointer is threaded down
+    the birth chain via hidden per-locus fields, giving **instance isolation**:
+    two `World`s each collect only the entities in their own subtree.
+  - **Cross-pool** — a consumer on a worker pool spawning into a main-thread
+    registry. The child is born on the owner's thread via an async handoff over the
+    bus queue (reusing the lock-free post+wake), so teardown stays the owner's
+    same-thread cascade — no cross-thread reclaim. Necessarily **async
+    fire-and-forget**: a cross-pool `I{}` may only be a bare statement; using the
+    instance as a value is a compile error.
+  `LOTUS_NO_OWNERSHIP_BUBBLE=1` disables the whole mechanism (used as the
+  backward-compat differential).
+
 ## v0.9.1 — pinned-Decimal bus-payload alignment fix
 
 - **Fixed a segfault when a pinned bus subscriber stores or does arithmetic on a

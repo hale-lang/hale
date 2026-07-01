@@ -113,6 +113,31 @@ the model: runtime is automatic; stdlib is explicit.
   dissolve` per locus; invokes `accept` on coordinatee
   attachment; invokes `on_failure` on child failure with the
   parent's policy.
+- **Interest-based ownership (accept bubbling)** (2026-07-01).
+  `accept(c: I)` collects not only a *direct* child but the
+  nearest such acceptor for an `I{}` instantiated anywhere in the
+  subtree: when a locus instantiates `I{}` and its direct
+  enclosing locus does not `accept(I)`, ownership *bubbles* to the
+  nearest enclosing ancestor that does (innermost-wins).
+  Resolution is entirely static — there is no polymorphic locus
+  instantiation, so the closed-world instantiation graph fixes
+  every owner edge at compile time; no runtime ancestor walk.
+  Backward-compatible by construction: innermost-wins selects the
+  direct parent whenever it accepts, so no existing parent↔child
+  edge changes; bubbling only *adds* an owner where a child would
+  otherwise be a transient throwaway. An `I{}` with no accepting
+  ancestor stays transient — ownership is opt-in via `accept`, and
+  the absence of an owner is never an error. Same-tower bubbling
+  costs nothing beyond the direct-parent case (the owner pointer is
+  a constant for a singleton owner, or threaded down the birth
+  chain for multiple owner instances — giving each owner instance
+  its own isolated collection — then the ordinary accept path). A
+  cross-pool owner (e.g. a `main locus` registry collecting
+  entities spawned on a worker pool) is served by an async handoff
+  over the bus queue: the child is born on the owner's thread and
+  reclaimed by the owner's same-thread cascade, so a cross-pool
+  `I{}` is **fire-and-forget** — it may only be a bare statement;
+  using the instance as a value is rejected at compile time.
 - **State machine enforcement.** A locus can't accept after
   drain has begun, can't run before birth completed, etc. The
   runtime tracks state; transitions are rejected if they
