@@ -483,6 +483,22 @@ must ask for the natural alignment of the widest scalar it can
 emit, and the C arena must honor that alignment at the pointer
 level, not the offset level.
 
+The same discipline governs the **bus payload path**, which uses
+distinct allocation sites (2026-06-30). (a) The mailbox cell
+`lotus_bus_cell_t.payload_inline` is forced to 16-byte alignment
+via a struct attribute: a *pinned* subscriber is handed
+`&cell.payload_inline` directly (unlike a cooperative drain, which
+copies into a 16-aligned scratch), so an 8-aligned cell — its
+widest natural member is a pointer — traps a whole-`Decimal`-payload
+copy (an aligned `vmovaps`) even though at `-O3` LLVM scalarizes
+individual i128 *field* ops into misalignment-tolerant paired
+64-bit moves. (b) The wire *deserialize* allocations for nested
+`TypeRef` (struct) fields request `align = 16`, matching the
+fixed-size-array element path, since a nested struct may carry a
+`Decimal`. A payload/cell allocation must request the natural
+alignment of the widest scalar the struct can hold — never a
+hardcoded 8.
+
 ## Codegen ABI (v0)
 
 The native-codegen path (`hale build`) lowers each locus to an
