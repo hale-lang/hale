@@ -183,6 +183,26 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         let routed_by_parent =
             std::mem::take(&mut self.instantiating_into_payload_arena);
         let go_to_payload_arena = returns_this_locus || routed_by_parent;
+        // Interest-based ownership #2: singleton-owner, same-tower
+        // bubble. When the DIRECT enclosing locus does not accept us,
+        // but the ownership plan resolved `(enclosing, I) -> A` (A a
+        // `main locus`/`@export` SingletonConst ancestor on the same
+        // tower), we stitch `I` to A instead of falling through to
+        // transient. SelfOwned (`parent_accepts_us`) is the innermost
+        // acceptor and always wins, so we only consult the plan when the
+        // direct parent doesn't accept us. Empty plan (the corpus, or
+        // `LOTUS_NO_OWNERSHIP_BUBBLE=1`) → always `None`, so every path
+        // below is byte-for-byte today's behavior.
+        let bubble_owner_name: Option<String> = if parent_accepts_us {
+            None
+        } else if let Some(cs) = self.current_self.as_ref() {
+            self.ownership_bubble_plan
+                .get(&(cs.locus_name.clone(), locus_name.to_string()))
+                .cloned()
+        } else {
+            None
+        };
+        let bubbled = bubble_owner_name.is_some();
         // Pool-inheritance fix (2026-05-29): is this locus owned
         // beyond the enclosing scope? Only owned loci may inherit
         // the current pool at runtime (post run() / pool-tag their
@@ -195,8 +215,39 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         // behavior: synchronous run + global-queue subscription.
         // The canonical N-dynamic-children pattern is accept'd /
         // field-owned children, which ARE owned beyond scope.
-        let owned_beyond_scope =
-            parent_accepts_us || parent_owns_via_field || returns_this_locus;
+        // A bubbled child lives in A's arena and is reclaimed by A's
+        // dissolve cascade, so — like an accept'd child — it is owned
+        // beyond the instantiating scope.
+        let owned_beyond_scope = parent_accepts_us
+            || parent_owns_via_field
+            || returns_this_locus
+            || bubbled;
+        // Resolve the accept-dispatch owner ONCE, so both SelfOwned and
+        // the singleton-Ancestor bubble feed the same emit. `self` (the
+        // enclosing locus) when it accepts us; the bubbled singleton A
+        // otherwise. A's self-pointer is loaded from the internal global
+        // `@__owner_singleton_<A>` stashed at A's own instantiation (A, a
+        // program-start singleton, always outlives us — no lifetime
+        // race). None → transient, exactly as before.
+        let bubble_owner_self_ptr: Option<PointerValue<'ctx>> =
+            match &bubble_owner_name {
+                Some(a) => Some(self.load_owner_singleton_ptr(a)?),
+                None => None,
+            };
+        let (owner_self_ptr, owner_locus_name): (
+            Option<PointerValue<'ctx>>,
+            Option<String>,
+        ) = if parent_accepts_us {
+            let cs = self
+                .current_self
+                .as_ref()
+                .expect("parent_accepts_us implies current_self");
+            (Some(cs.self_ptr), Some(cs.locus_name.clone()))
+        } else if let Some(a) = &bubble_owner_name {
+            (bubble_owner_self_ptr, Some(a.clone()))
+        } else {
+            (None, None)
+        };
         let self_ptr = if go_to_payload_arena {
             let alloc_fn = self
                 .module
@@ -272,37 +323,39 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                 .left()
                 .expect("lotus_arena_alloc returns ptr")
                 .into_pointer_value()
-        } else if parent_accepts_us {
-            // 3d+3e fix: allocate the child struct in parent's arena.
-            // Lives until parent's arena_destroy, so cross-lifecycle
-            // reads through self.children stay valid (e.g. child
-            // birthed in parent's birth(), read in parent's run()).
-            let parent_self = self
-                .current_self
+        } else if let Some(owner_ptr) = owner_self_ptr {
+            // 3d+3e fix (generalized for interest-based ownership #2):
+            // allocate the child struct in the OWNER's arena. The owner is
+            // `self` (the enclosing locus accepts us — SelfOwned, today's
+            // path) or the bubbled singleton `A`. It lives until the
+            // owner's arena_destroy, so cross-lifecycle reads through
+            // `owner.__children` stay valid (e.g. child birthed in the
+            // owner's run(), read in a later lifecycle). SelfOwned reaches
+            // this branch identically to before (owner == current_self).
+            let owner_name = owner_locus_name
                 .as_ref()
-                .cloned()
-                .expect("parent_accepts_us implies current_self");
-            let parent_info = self
+                .expect("owner_self_ptr implies owner_locus_name");
+            let owner_info = self
                 .user_loci
-                .get(&parent_self.locus_name)
+                .get(owner_name)
                 .cloned()
-                .expect("parent locus declared");
+                .expect("owner locus declared");
             let ptr_t = self.context.ptr_type(AddressSpace::default());
             let arena_field_ptr = self
                 .builder
                 .build_struct_gep(
-                    parent_info.struct_ty,
-                    parent_self.self_ptr,
-                    parent_info.arena_field_idx,
-                    &format!("{}.parent_arena.gep", locus_name),
+                    owner_info.struct_ty,
+                    owner_ptr,
+                    owner_info.arena_field_idx,
+                    &format!("{}.owner_arena.gep", locus_name),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let parent_arena = self
+            let owner_arena = self
                 .builder
                 .build_load(
                     ptr_t,
                     arena_field_ptr,
-                    &format!("{}.parent_arena", locus_name),
+                    &format!("{}.owner_arena", locus_name),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             let alloc_fn = self
@@ -318,11 +371,11 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                 .build_call(
                     alloc_fn,
                     &[
-                        parent_arena.into(),
+                        owner_arena.into(),
                         size.into(),
                         i64_t.const_int(8, false).into(),
                     ],
-                    &format!("{}.self.in_parent_arena", locus_name),
+                    &format!("{}.self.in_owner_arena", locus_name),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                 .try_as_basic_value()
@@ -453,47 +506,46 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             RecpoolFixed,
             RecpoolSlab,
         }
+        // Route the child's OWN arena strategy by the OWNER's projection
+        // class. Owner = `self` (SelfOwned) or the bubbled singleton `A`
+        // (interest-based ownership #2). Both feed this one selection.
+        // SelfOwned is unchanged: owner == current_self, so the strategy
+        // and the returned owner self_ptr are identical to before.
         let (acquire_strategy, parent_self_ptr_opt) =
-            if let Some(cs) = self.current_self.as_ref() {
-                let parent_info = self
-                    .user_loci
-                    .get(&cs.locus_name)
-                    .cloned()
-                    .expect("current_self points to a declared locus");
-                let parent_accepts_us = parent_info
-                    .accept_param
+            if let Some(owner_ptr) = owner_self_ptr {
+                let owner_name = owner_locus_name
                     .as_ref()
-                    .map(|(_, child_ty)| child_ty == locus_name)
-                    .unwrap_or(false);
-                if parent_accepts_us {
-                    match parent_info.projection_class {
-                        ProjectionClass::Recognition(Some(p)) => match p.sub_mode {
-                            RecognitionSubMode::FixedCell => {
-                                (AcquireStrategy::RecpoolFixed, Some(cs.self_ptr))
-                            }
-                            RecognitionSubMode::SharedSlab => {
-                                (AcquireStrategy::RecpoolSlab, Some(cs.self_ptr))
-                            }
-                            // Spillover + SummaryOnly are typecheck-
-                            // rejected before codegen; defense: fall
-                            // back to subregion shape rather than
-                            // crash on missing recpool wiring.
-                            _ => (AcquireStrategy::Subregion, Some(cs.self_ptr)),
-                        },
-                        ProjectionClass::Chunked => {
-                            (AcquireStrategy::Subregion, Some(cs.self_ptr))
+                    .expect("owner_self_ptr implies owner_locus_name");
+                let owner_info = self
+                    .user_loci
+                    .get(owner_name)
+                    .cloned()
+                    .expect("owner points to a declared locus");
+                match owner_info.projection_class {
+                    ProjectionClass::Recognition(Some(p)) => match p.sub_mode {
+                        RecognitionSubMode::FixedCell => {
+                            (AcquireStrategy::RecpoolFixed, Some(owner_ptr))
                         }
-                        // Recognition(None) shouldn't appear in a
-                        // locus-annotation context (parser produces
-                        // Recognition(Some(_)) there), but defense:
-                        // treat as Subregion.
-                        ProjectionClass::Recognition(None) => {
-                            (AcquireStrategy::Subregion, Some(cs.self_ptr))
+                        RecognitionSubMode::SharedSlab => {
+                            (AcquireStrategy::RecpoolSlab, Some(owner_ptr))
                         }
-                        ProjectionClass::Rich => (AcquireStrategy::Fresh, None),
+                        // Spillover + SummaryOnly are typecheck-
+                        // rejected before codegen; defense: fall
+                        // back to subregion shape rather than
+                        // crash on missing recpool wiring.
+                        _ => (AcquireStrategy::Subregion, Some(owner_ptr)),
+                    },
+                    ProjectionClass::Chunked => {
+                        (AcquireStrategy::Subregion, Some(owner_ptr))
                     }
-                } else {
-                    (AcquireStrategy::Fresh, None)
+                    // Recognition(None) shouldn't appear in a
+                    // locus-annotation context (parser produces
+                    // Recognition(Some(_)) there), but defense:
+                    // treat as Subregion.
+                    ProjectionClass::Recognition(None) => {
+                        (AcquireStrategy::Subregion, Some(owner_ptr))
+                    }
+                    ProjectionClass::Rich => (AcquireStrategy::Fresh, None),
                 }
             } else {
                 (AcquireStrategy::Fresh, None)
@@ -595,11 +647,17 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             AcquireStrategy::Subregion => {
                 let parent_self_ptr = parent_self_ptr_opt
                     .expect("subregion strategy requires parent self_ptr");
+                // Owner (SelfOwned self, or bubbled singleton A) — the
+                // strategy was picked from its projection class above.
                 let parent_info = self
                     .user_loci
-                    .get(&self.current_self.as_ref().unwrap().locus_name)
+                    .get(
+                        owner_locus_name
+                            .as_ref()
+                            .expect("subregion strategy implies an owner"),
+                    )
                     .cloned()
-                    .expect("parent declared");
+                    .expect("owner declared");
                 let arena_field_ptr = self
                     .builder
                     .build_struct_gep(
@@ -648,11 +706,17 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             strategy @ (AcquireStrategy::RecpoolFixed | AcquireStrategy::RecpoolSlab) => {
                 let parent_self_ptr = parent_self_ptr_opt
                     .expect("recpool strategy requires parent self_ptr");
+                // Owner (SelfOwned self, or bubbled singleton A) — the
+                // recpool handle lives on the owner's struct.
                 let parent_info = self
                     .user_loci
-                    .get(&self.current_self.as_ref().unwrap().locus_name)
+                    .get(
+                        owner_locus_name
+                            .as_ref()
+                            .expect("recpool strategy implies an owner"),
+                    )
                     .cloned()
-                    .expect("parent declared");
+                    .expect("owner declared");
                 // Load `parent.__recpool` — the recpool handle
                 // allocated at the parent's own instantiation.
                 let recpool_field_ptr = self
@@ -714,6 +778,22 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         self.builder
             .build_store(arena_field, new_arena)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Interest-based ownership #2: if THIS locus is a bubble owner —
+        // a SingletonConst `A` that some deeper site resolves to — stash
+        // its self-pointer into `@__owner_singleton_<A>` now, right after
+        // allocation and BEFORE its params-init loop / run() body
+        // instantiate any descendants. A bubble site reached transitively
+        // below (in A's own subtree) then loads a live pointer. A is a
+        // `main locus`/`@export` singleton, so this store runs exactly
+        // once per program. The plan is empty on the corpus / under
+        // `LOTUS_NO_OWNERSHIP_BUBBLE=1`, so no store is emitted there.
+        if self.ownership_bubble_plan.values().any(|a| a == locus_name) {
+            let owner_global = self.owner_singleton_global(locus_name);
+            self.builder
+                .build_store(owner_global.as_pointer_value(), self_ptr)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
 
         // v1.x-4b: compute a borrow map for each child slot whose
         // matching parent slot has `as_parent_for ThisLocus`.
@@ -1909,27 +1989,37 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         }
 
         // F.7 ordering: if we're inside a parent locus's lifecycle
-        // method AND the parent has an accept(child: ThisLocus) that
-        // matches our type, call parent.accept(parent_self, child)
+        // method AND the OWNER has an accept(child: ThisLocus) that
+        // matches our type, call owner.accept(owner_self, child)
         // BEFORE this child's own birth. This is how
         // `02-parent-child` wires the coordinator's accept callback
         // to each greeter instantiation in run().
         //
-        // Additionally, when the parent's children array exists
+        // Interest-based ownership #2: the owner is `self` when the
+        // enclosing locus accepts us (SelfOwned — unchanged), else the
+        // bubbled SingletonConst ancestor `A`. Substituting the resolved
+        // owner here (self_ptr + locus type) makes this ONE accept path
+        // serve both — no forked emit. For a bubble, `A.accept(A, child)`
+        // fires and `child` is appended to `A.__children[]` so A's
+        // dissolve cascade reclaims it.
+        //
+        // Additionally, when the owner's children array exists
         // (accept declared), append the child's self_ptr to it +
         // bump child_count so `for child in self.children { ... }`
         // can iterate later.
-        if let Some(parent_self) = self.current_self.clone() {
+        if let (Some(owner_ptr), Some(owner_name)) =
+            (owner_self_ptr, owner_locus_name.as_ref())
+        {
             let parent_info = self
                 .user_loci
-                .get(&parent_self.locus_name)
+                .get(owner_name)
                 .cloned()
-                .expect("current_self points to a declared locus");
+                .expect("owner points to a declared locus");
             if let Some((_, expected_child)) = &parent_info.accept_param {
                 if expected_child == locus_name {
-                    // 2026-05-30: record the accept'ing parent as this
+                    // 2026-05-30: record the accept'ing owner as this
                     // child's owner, so a flow child's run-wrapper can
-                    // fire `parent.release(owner, child)` on completion.
+                    // fire `owner.release(owner, child)` on completion.
                     let owner_slot = self
                         .builder
                         .build_struct_gep(
@@ -1940,7 +2030,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     self.builder
-                        .build_store(owner_slot, parent_self.self_ptr)
+                        .build_store(owner_slot, owner_ptr)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     let accept_fn = parent_info
                         .methods
@@ -1960,10 +2050,10 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                             .build_call(
                                 accept_fn,
                                 &[
-                                    parent_self.self_ptr.into(),
+                                    owner_ptr.into(),
                                     self_ptr.into(),
                                 ],
-                                &format!("{}.accept.call", parent_self.locus_name),
+                                &format!("{}.accept.call", owner_name),
                             )
                             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     }
@@ -1983,7 +2073,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                             .builder
                             .build_struct_gep(
                                 parent_info.struct_ty,
-                                parent_self.self_ptr,
+                                owner_ptr,
                                 arr_idx,
                                 "children.ptr",
                             )
@@ -1992,7 +2082,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                             .builder
                             .build_struct_gep(
                                 parent_info.struct_ty,
-                                parent_self.self_ptr,
+                                owner_ptr,
                                 cnt_idx,
                                 "child.count.ptr",
                             )
@@ -2001,7 +2091,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                             .builder
                             .build_struct_gep(
                                 parent_info.struct_ty,
-                                parent_self.self_ptr,
+                                owner_ptr,
                                 cap_idx,
                                 "child.cap.ptr",
                             )
@@ -2021,7 +2111,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                                 ],
                                 &format!(
                                     "{}.accept.push",
-                                    parent_self.locus_name
+                                    owner_name
                                 ),
                             )
                             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -2887,7 +2977,12 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             || defer_for_let
             || returns_this_locus
             || parent_accepts_us
-            || parent_owns_via_field;
+            || parent_owns_via_field
+            // Interest-based ownership #2: a bubbled child lives in A's
+            // arena and is reclaimed by A's `__children[]` dissolve
+            // cascade — same as an accept'd child. Skip the eager
+            // dissolve here (see the matching no-op teardown branch).
+            || bubbled;
         if !defer {
             // 2026-06-01: the MAIN locus dissolves eagerly here, right
             // after its run() returns — but its `params` fields may be
@@ -2972,12 +3067,15 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         } else if returns_this_locus {
             // Intentionally no-op: see m90 note above. The locus
             // outlives this fn's frame by design.
-        } else if parent_accepts_us {
-            // Intentionally no-op: see 3d+3e note above. Parent's
+        } else if parent_accepts_us || bubbled {
+            // Intentionally no-op: see 3d+3e note above. The owner's
             // arena_destroy will wholesale-free the child struct
-            // when the parent itself dissolves. Drain/dissolve
-            // bodies don't fire on the child — v1 trade-off,
-            // matches `returns_this_locus`.
+            // when the owner itself dissolves, and its `__children[]`
+            // reclaim spine (`__reclaim_<owner>`) runs the child's
+            // drain/dissolve. Interest-based ownership #2 routes a
+            // bubbled child here for the identical reason: it was
+            // allocated in the singleton A's arena and appended to
+            // `A.__children[]` above, so A's dissolve reclaims it.
         } else if parent_owns_via_field {
             // Phase-2 (2): parent locus is initializing this child
             // as a field default. The parent's dissolve dispatch
@@ -3013,4 +3111,48 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         Ok(self_ptr)
     }
 
+}
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// Interest-based ownership #2: get-or-create the internal global
+    /// `@__owner_singleton_<A>` that stashes a SingletonConst owner `A`'s
+    /// self-pointer. Created lazily (ptr, internal linkage, null init) so
+    /// the store (at A's instantiation) and every bubble-site load agree
+    /// on ONE global regardless of emit order.
+    fn owner_singleton_global(
+        &self,
+        owner_name: &str,
+    ) -> inkwell::values::GlobalValue<'ctx> {
+        let gname = format!("__owner_singleton_{}", owner_name);
+        if let Some(g) = self.module.get_global(&gname) {
+            return g;
+        }
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let g = self.module.add_global(ptr_t, None, &gname);
+        g.set_initializer(&ptr_t.const_null());
+        g.set_linkage(inkwell::module::Linkage::Internal);
+        g
+    }
+
+    /// Interest-based ownership #2: load owner `A`'s stashed singleton
+    /// self-pointer from `@__owner_singleton_<A>` at a bubble site. A is a
+    /// program-start singleton, so the pointer is always populated by the
+    /// time any of A's (transitive) descendants instantiate a bubbled
+    /// child.
+    fn load_owner_singleton_ptr(
+        &self,
+        owner_name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let g = self.owner_singleton_global(owner_name);
+        Ok(self
+            .builder
+            .build_load(
+                ptr_t,
+                g.as_pointer_value(),
+                &format!("owner_singleton.{}", owner_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value())
+    }
 }

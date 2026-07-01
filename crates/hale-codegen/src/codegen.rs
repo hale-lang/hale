@@ -853,6 +853,52 @@ pub fn build_executable_with_options(
         (ids, direct, direct_subs)
     };
 
+    // Interest-based ownership, artifact #2: singleton-owner, same-tower
+    // bubbling. Build the authoritative `OwnershipGraph` over the SAME
+    // merged/desugared bundle the bus graph consumes, then distil it to
+    // the only sites this artifact acts on: an `I{}` born deep inside
+    // locus `B` that resolves to a UNIQUE accepting ancestor `A` where
+    // `A` is a `main locus`/`@export` singleton (`OwnerKind::
+    // SingletonConst`) running on the same OS thread as `B`
+    // (`EdgeClass::SameTower`). Those bubble to `A`; every other
+    // resolution (SelfOwned direct-parent, non-singleton ancestor,
+    // cross-pool, per-path, orphan, open) is dropped and stays transient.
+    // Resolution depends only on `(enclosing_locus, child_ty)` (the graph
+    // climbs the static instantiated-by relation, not a runtime path), so
+    // the plan keys on that pair. `LOTUS_NO_OWNERSHIP_BUBBLE=1` empties
+    // the plan — the differential-gate control arm that proves inertness
+    // (the corpus resolves `Ancestor: 0`, so the plan is empty either way
+    // and behavior is identical on/off).
+    let ownership_bubble_plan: std::collections::BTreeMap<
+        (String, String),
+        String,
+    > = if env_flag("LOTUS_NO_OWNERSHIP_BUBBLE") {
+        std::collections::BTreeMap::new()
+    } else {
+        use hale_types::ownership_graph::{EdgeClass, OwnerKind, OwnerResolution};
+        let (top, _diags) = hale_types::resolve::build_top_scope(&bundle);
+        let graph =
+            hale_types::ownership_graph::build_ownership_graph(&bundle, &top);
+        let mut plan: std::collections::BTreeMap<(String, String), String> =
+            std::collections::BTreeMap::new();
+        for site in &graph.sites {
+            if let OwnerResolution::Ancestor(owner) = &site.resolution {
+                if site.owner_kind == OwnerKind::SingletonConst
+                    && site.edge_class == EdgeClass::SameTower
+                {
+                    plan.insert(
+                        (
+                            site.enclosing_locus.clone(),
+                            site.child_ty.clone(),
+                        ),
+                        owner.clone(),
+                    );
+                }
+            }
+        }
+        plan
+    };
+
     let context = Context::create();
     let module = context.create_module("lotus_main");
     let builder = context.create_builder();
@@ -952,6 +998,7 @@ pub fn build_executable_with_options(
         bus_devirt_ids,
         bus_devirt_direct,
         bus_devirt_direct_subs,
+        ownership_bubble_plan,
         program_has_offthread,
         deferred_dissolves: Vec::new(),
         in_main: false,
@@ -2269,6 +2316,21 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// constant). Empty under `LOTUS_NO_BUS_DEVIRT=1`.
     pub(crate) bus_devirt_direct_subs:
         std::collections::BTreeMap<String, Vec<(String, String)>>,
+    /// Interest-based ownership, artifact #2: singleton-owner,
+    /// same-tower bubbling. Keyed by `(enclosing_locus, child_ty)` —
+    /// the only key the `OwnershipGraph` resolution depends on — the
+    /// value is the owner locus type `A` (a `main locus` / `@export`
+    /// locus, i.e. a provably-unique instance) that `accept`s the child
+    /// instantiated deep inside `enclosing_locus`. Only sites resolving
+    /// to `Ancestor(A)` with `OwnerKind::SingletonConst` AND
+    /// `EdgeClass::SameTower` land here; everything else (direct
+    /// SelfOwned, non-singleton ancestor, cross-pool, open, per-path,
+    /// orphan) is absent and stays transient exactly as before. Empty
+    /// under `LOTUS_NO_OWNERSHIP_BUBBLE=1` (the differential-gate
+    /// control arm), mirroring `bus_devirt_ids` under
+    /// `LOTUS_NO_BUS_DEVIRT`.
+    pub(crate) ownership_bubble_plan:
+        std::collections::BTreeMap<(String, String), String>,
     /// THE single source of truth for "a thread crosses the bus
     /// boundary in this program" — the union of pinned/cross-pool
     /// placement and an inline adapter `bindings { }` recv-loop.
