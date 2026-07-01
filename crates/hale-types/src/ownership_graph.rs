@@ -176,6 +176,98 @@ impl OwnershipGraph {
     pub fn sites_for<'g>(&'g self, child_ty: &str) -> Vec<&'g OwnedSite> {
         self.sites.iter().filter(|s| s.child_ty == child_ty).collect()
     }
+
+    /// Interest-based ownership, artifact #2b — **owner-forwarding sets**.
+    ///
+    /// #2 bubbled a child `I` to a *singleton* ancestor `A` by
+    /// constant-folding `A`'s pointer through a global. #2b generalizes
+    /// to a NON-singleton ancestor whose instance pointer cannot be a
+    /// global constant (two `A`s, two subtrees): the owner pointer must
+    /// be **threaded** down the birth chain via a hidden per-locus
+    /// `__owner_for_<I>` field, so each `A` collects only the `I`s born
+    /// in its own subtree (instance isolation).
+    ///
+    /// This computes, per locus type, the set of interest-types it must
+    /// *carry* that field for. For every site resolving to a
+    /// NON-singleton `Ancestor(A)` (`OwnerKind::Ancestor`, skipping
+    /// `SingletonConst` which stays on #2's global path) with
+    /// `EdgeClass::SameTower`, EVERY intermediary on EVERY instantiation
+    /// path from the enclosing locus UP to — but excluding — `A` gets
+    /// `site.child_ty` added to its set. The enclosing locus is included
+    /// (it holds the field it reads at the bubble site); `A` itself is
+    /// excluded (it *accepts* `I` — it is the owner, not a forwarder).
+    ///
+    /// Because the site resolved to a UNIQUE `Ancestor(A)` with no orphan
+    /// path, no intermediary between the enclosing locus and `A` accepts
+    /// `I` (else the climb would have stopped there), and every branch
+    /// reaches `A` (else it would be `Orphan`/`PerPath`) — so the walk
+    /// never climbs above `A` and never over-includes an off-path node.
+    /// Cycle-safe via a per-site visited set, mirroring [`climb`].
+    pub fn compute_forwarding_sets(
+        &self,
+    ) -> BTreeMap<String, BTreeSet<String>> {
+        let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for site in &self.sites {
+            let owner = match &site.resolution {
+                OwnerResolution::Ancestor(a) => a.as_str(),
+                // SelfOwned / PerPath / Orphan / Unanalyzable never thread.
+                _ => continue,
+            };
+            // Singletons keep #2's global-constant path; only genuine
+            // multi-instance ancestors thread. Cross-pool is #3.
+            if site.owner_kind != OwnerKind::Ancestor {
+                continue;
+            }
+            if site.edge_class != EdgeClass::SameTower {
+                continue;
+            }
+            let mut visited: BTreeSet<String> = BTreeSet::new();
+            collect_forwarding(
+                &site.enclosing_locus,
+                owner,
+                &site.child_ty,
+                &self.instantiated_by,
+                &mut visited,
+                &mut out,
+            );
+        }
+        out
+    }
+}
+
+/// DFS upward from `node` toward `owner` via `instantiated_by`, adding
+/// `child` to the forwarding set of every intermediary reached (the
+/// enclosing locus and every locus above it up to, but excluding,
+/// `owner`). `visited` guards instantiation cycles.
+fn collect_forwarding(
+    node: &str,
+    owner: &str,
+    child: &str,
+    instantiated_by: &BTreeMap<String, BTreeSet<String>>,
+    visited: &mut BTreeSet<String>,
+    out: &mut BTreeMap<String, BTreeSet<String>>,
+) {
+    // `owner` accepts `child` — it is the owner, not a forwarder. Stop
+    // (and never climb above it).
+    if node == owner {
+        return;
+    }
+    if !visited.insert(node.to_string()) {
+        return;
+    }
+    out.entry(node.to_string()).or_default().insert(child.to_string());
+    if let Some(parents) = instantiated_by.get(node) {
+        for p in parents {
+            collect_forwarding(
+                p,
+                owner,
+                child,
+                instantiated_by,
+                visited,
+                out,
+            );
+        }
+    }
 }
 
 // === Shared walk ==================================================

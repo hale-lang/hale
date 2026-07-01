@@ -183,24 +183,47 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         let routed_by_parent =
             std::mem::take(&mut self.instantiating_into_payload_arena);
         let go_to_payload_arena = returns_this_locus || routed_by_parent;
-        // Interest-based ownership #2: singleton-owner, same-tower
-        // bubble. When the DIRECT enclosing locus does not accept us,
-        // but the ownership plan resolved `(enclosing, I) -> A` (A a
-        // `main locus`/`@export` SingletonConst ancestor on the same
-        // tower), we stitch `I` to A instead of falling through to
-        // transient. SelfOwned (`parent_accepts_us`) is the innermost
-        // acceptor and always wins, so we only consult the plan when the
-        // direct parent doesn't accept us. Empty plan (the corpus, or
-        // `LOTUS_NO_OWNERSHIP_BUBBLE=1`) → always `None`, so every path
-        // below is byte-for-byte today's behavior.
-        let bubble_owner_name: Option<String> = if parent_accepts_us {
+        // Interest-based ownership #2 / #2b: same-tower bubble. When the
+        // DIRECT enclosing locus does not accept us, but an ownership plan
+        // resolved `(enclosing, I) -> A`, we stitch `I` to `A` instead of
+        // falling through to transient. SelfOwned (`parent_accepts_us`) is
+        // the innermost acceptor and always wins, so we only consult the
+        // plans when the direct parent doesn't accept us.
+        //
+        // Two disjoint routes feed ONE downstream owner path:
+        //   * #2  Singleton — `A` is a `main locus`/`@export` singleton;
+        //         its pointer folds to the `@__owner_singleton_<A>` global.
+        //   * #2b Threaded  — `A` has multiple instances; its pointer is
+        //         loaded from the enclosing locus's per-instance
+        //         `__owner_for_<I>` field, threaded down the birth chain.
+        //         This is what gives instance isolation: two `A`s thread
+        //         different pointers, so their subtrees stitch to the
+        //         right `A`.
+        // Both plans empty (the corpus, or `LOTUS_NO_OWNERSHIP_BUBBLE=1`)
+        // → `None`, so every path below is byte-for-byte today's behavior.
+        enum BubbleRoute {
+            Singleton(String),
+            Threaded(String),
+        }
+        let bubble_route: Option<BubbleRoute> = if parent_accepts_us {
             None
         } else if let Some(cs) = self.current_self.as_ref() {
-            self.ownership_bubble_plan
-                .get(&(cs.locus_name.clone(), locus_name.to_string()))
-                .cloned()
+            let key = (cs.locus_name.clone(), locus_name.to_string());
+            if let Some(a) = self.ownership_bubble_plan.get(&key) {
+                Some(BubbleRoute::Singleton(a.clone()))
+            } else {
+                self.ownership_bubble_nonsingleton_plan
+                    .get(&key)
+                    .map(|a| BubbleRoute::Threaded(a.clone()))
+            }
         } else {
             None
+        };
+        let bubble_owner_name: Option<String> = match &bubble_route {
+            Some(BubbleRoute::Singleton(a)) | Some(BubbleRoute::Threaded(a)) => {
+                Some(a.clone())
+            }
+            None => None,
         };
         let bubbled = bubble_owner_name.is_some();
         // Pool-inheritance fix (2026-05-29): is this locus owned
@@ -222,16 +245,72 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             || parent_owns_via_field
             || returns_this_locus
             || bubbled;
-        // Resolve the accept-dispatch owner ONCE, so both SelfOwned and
-        // the singleton-Ancestor bubble feed the same emit. `self` (the
-        // enclosing locus) when it accepts us; the bubbled singleton A
-        // otherwise. A's self-pointer is loaded from the internal global
-        // `@__owner_singleton_<A>` stashed at A's own instantiation (A, a
-        // program-start singleton, always outlives us — no lifetime
-        // race). None → transient, exactly as before.
+        // Resolve the accept-dispatch owner ONCE, so SelfOwned, the
+        // singleton bubble (#2), and the threaded bubble (#2b) feed the
+        // SAME emit. `self` (the enclosing locus) when it accepts us; the
+        // bubbled `A` otherwise.
+        //
+        //  * #2  Singleton — load A's self-pointer from the internal
+        //        global `@__owner_singleton_<A>` (A, a program-start
+        //        singleton, always outlives us — no lifetime race).
+        //  * #2b Threaded  — load A's self-pointer from the enclosing
+        //        locus's `__owner_for_<child>` field (the enclosing locus
+        //        carries it — it is on the bubble path, so its forwarding
+        //        set contains `child`). Same-tower guarantees A is an
+        //        ancestor alive in this tower when the bubble fires. If
+        //        that load is null the child is outside any A-owner's
+        //        subtree on this path → transient: do NOT stitch, fall
+        //        through to today's behavior. (For a strict `Ancestor(A)`
+        //        plan entry the field is provably non-null on every
+        //        reachable birth — every path from the enclosing locus up
+        //        to A carries+forwards it — so this null gate is a
+        //        defensive belt; a runtime null would only arise if the
+        //        plan admitted an orphan/per-path site, which it never
+        //        does.)
+        // None → transient, exactly as before.
         let bubble_owner_self_ptr: Option<PointerValue<'ctx>> =
-            match &bubble_owner_name {
-                Some(a) => Some(self.load_owner_singleton_ptr(a)?),
+            match &bubble_route {
+                Some(BubbleRoute::Singleton(a)) => {
+                    Some(self.load_owner_singleton_ptr(a)?)
+                }
+                Some(BubbleRoute::Threaded(_)) => {
+                    let cs = self
+                        .current_self
+                        .clone()
+                        .expect("threaded bubble implies current_self");
+                    let encl_info = self
+                        .user_loci
+                        .get(&cs.locus_name)
+                        .cloned()
+                        .expect("enclosing locus declared");
+                    let fidx = *encl_info
+                        .owner_forward_field_idxs
+                        .get(locus_name)
+                        .expect(
+                            "threaded bubble: enclosing carries \
+                             __owner_for_<child>",
+                        );
+                    let ptr_t = self.context.ptr_type(AddressSpace::default());
+                    let slot = self
+                        .builder
+                        .build_struct_gep(
+                            encl_info.struct_ty,
+                            cs.self_ptr,
+                            fidx,
+                            &format!("{}.__owner_for.load.gep", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let loaded = self
+                        .builder
+                        .build_load(
+                            ptr_t,
+                            slot,
+                            &format!("{}.__owner_for.load", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_pointer_value();
+                    Some(loaded)
+                }
                 None => None,
             };
         let (owner_self_ptr, owner_locus_name): (
@@ -1937,6 +2016,97 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                 self.context.ptr_type(AddressSpace::default()).const_null(),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Interest-based ownership, artifact #2b: birth-threading — the
+        // 3-way write of this child `X`'s `__owner_for_<I>` fields. For
+        // each interest-type `I` in X's forwarding set, decide the owner
+        // pointer to thread FROM the parent `P` (`current_self`, still
+        // live here — it is not swapped to the child until X's own
+        // birth/run further down):
+        //   (a) P ACCEPTS I           → store P's self_ptr (P is the owner)
+        //   (b) P CARRIES __owner_for_I → forward P.__owner_for_I
+        //   (c) otherwise / P is None  → store null (this child is outside
+        //       any I-owner's subtree on this path → transient; a bubble
+        //       site below sees null and does not stitch).
+        // Instance isolation falls out of (a): two `P`/owner instances
+        // thread their OWN self_ptr, so their subtrees stitch disjointly.
+        if !info.owner_forward_field_idxs.is_empty() {
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let null_owner = ptr_t.const_null();
+            // Snapshot the parent context (P) once — `current_self` is the
+            // enclosing locus at this point, not yet the child.
+            let parent_ctx = self.current_self.clone();
+            let parent_info = parent_ctx
+                .as_ref()
+                .and_then(|cs| self.user_loci.get(&cs.locus_name).cloned());
+            for (interest, field_idx) in info.owner_forward_field_idxs.clone() {
+                let dst = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        self_ptr,
+                        field_idx,
+                        &format!(
+                            "{}.__owner_for_{}.ptr",
+                            locus_name, interest
+                        ),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let value: PointerValue<'ctx> = match (&parent_ctx, &parent_info)
+                {
+                    (Some(cs), Some(pinfo)) => {
+                        let p_accepts = pinfo
+                            .accept_param
+                            .as_ref()
+                            .map(|(_, ct)| ct == &interest)
+                            .unwrap_or(false);
+                        if p_accepts {
+                            // (a) parent is the owner.
+                            cs.self_ptr
+                        } else if let Some(pfidx) =
+                            pinfo.owner_forward_field_idxs.get(&interest).copied()
+                        {
+                            // (b) parent forwards its own carried pointer.
+                            let src = self
+                                .builder
+                                .build_struct_gep(
+                                    pinfo.struct_ty,
+                                    cs.self_ptr,
+                                    pfidx,
+                                    &format!(
+                                        "{}.fwd_{}.src.gep",
+                                        locus_name, interest
+                                    ),
+                                )
+                                .map_err(|e| {
+                                    CodegenError::LlvmEmit(e.to_string())
+                                })?;
+                            self.builder
+                                .build_load(
+                                    ptr_t,
+                                    src,
+                                    &format!(
+                                        "{}.fwd_{}.src",
+                                        locus_name, interest
+                                    ),
+                                )
+                                .map_err(|e| {
+                                    CodegenError::LlvmEmit(e.to_string())
+                                })?
+                                .into_pointer_value()
+                        } else {
+                            // (c) parent neither accepts nor carries I.
+                            null_owner
+                        }
+                    }
+                    // (c) no parent (a root born at `fn main`).
+                    _ => null_owner,
+                };
+                self.builder
+                    .build_store(dst, value)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+        }
 
         // m43: init each __duration_last_fire_<i> field to
         // monotonic-now so the first fire happens after the

@@ -170,14 +170,17 @@ fn self_owned_control_still_works() {
 }
 
 #[test]
-fn non_singleton_ancestor_stays_transient() {
-    // A plain (non-`main`) `Fleet` accepts Ship, but reaches it only
-    // through an intermediary `Yard`. Because `Fleet` is not a
-    // SingletonConst, the site resolves to `Ancestor(Fleet)` with
-    // `OwnerKind::Ancestor` — NOT `SingletonConst` — so it is absent from
-    // the bubble plan and the Ships stay transient. `Fleet` collects
-    // nothing. (Bubbling that case is artifacts #2b/#3, deliberately out
-    // of scope here.)
+fn non_singleton_ancestor_now_bubbles_via_threading() {
+    // A plain (non-`main`) `Fleet` accepts Ship but reaches it only
+    // through an intermediary `Yard`. The site resolves to
+    // `Ancestor(Fleet)` with `OwnerKind::Ancestor` (NOT SingletonConst).
+    // Under #2 this was inert (Fleet's pointer is not a constant); as of
+    // #2b the pointer is THREADED through `Yard.__owner_for_Ship`, so
+    // Fleet now collects both bubbled Ships. (Was
+    // `non_singleton_ancestor_stays_transient` in the #2-only world —
+    // #2b is exactly the artifact that makes this case work. Instance
+    // isolation across MULTIPLE Fleets is proved in
+    // `ownership_bubble_multi.rs`.)
     let src = r#"
         locus Ship {
             params { hull: Int = 0; }
@@ -194,9 +197,15 @@ fn non_singleton_ancestor_stays_transient() {
                 for child in self.children { n = n + 1; }
                 return n;
             }
+            mode bulk() -> Int {
+                let mut t: Int = 0;
+                for child in self.children { t = t + child.hull; }
+                return t;
+            }
             run() {
                 Yard { };
                 println("fleet_count=", self.harmonic());
+                println("fleet_total=", self.bulk());
             }
         }
         main locus World {
@@ -207,9 +216,9 @@ fn non_singleton_ancestor_stays_transient() {
     let bin = build_named("nonsingleton", src);
     let stdout = run(&bin);
     assert!(
-        stdout.contains("fleet_count=0"),
-        "a non-singleton accepting ancestor must NOT bubble (stays \
-         transient); got: {:?}",
+        stdout.contains("fleet_count=2") && stdout.contains("fleet_total=42"),
+        "a non-singleton accepting ancestor must bubble via #2b threading \
+         (collects both Ships, 7+35=42); got: {:?}",
         stdout
     );
 }

@@ -509,6 +509,26 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let owner_self_field_idx = idx;
         llvm_field_tys.push(ptr_field_t.into());
         idx += 1;
+        // Interest-based ownership, artifact #2b: append one
+        // `__owner_for_<I>: ptr` field per interest-type `I` this locus
+        // must forward (its entry in the whole-program forwarding sets).
+        // Only carrying loci get fields — keeps every other struct lean.
+        // Deterministic layout: the forwarding set is a BTreeSet, so the
+        // fields append in sorted interest-type order. Threaded at birth
+        // (3-way write in lower_locus_instantiation); read at the
+        // non-singleton bubble seam. Empty under
+        // `LOTUS_NO_OWNERSHIP_BUBBLE=1` (forwarding sets emptied).
+        let mut owner_forward_field_idxs: BTreeMap<String, u32> =
+            BTreeMap::new();
+        if let Some(interests) =
+            self.ownership_forwarding_sets.get(&l.name.name).cloned()
+        {
+            for interest in &interests {
+                owner_forward_field_idxs.insert(interest.clone(), idx);
+                llvm_field_tys.push(ptr_field_t.into());
+                idx += 1;
+            }
+        }
         // m43: append one i64 __duration_last_fire field per
         // duration-epoch closure on this locus (in declaration
         // order). Init at instantiation to time::monotonic()
@@ -1044,6 +1064,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 recpool_release_kind_field_idx,
                 parent_self_field_idx,
                 owner_self_field_idx,
+                owner_forward_field_idxs,
                 parent_on_failure_field_idx,
                 mailbox_field_idx,
                 projection_class,

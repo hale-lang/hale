@@ -869,11 +869,37 @@ pub fn build_executable_with_options(
     // the plan — the differential-gate control arm that proves inertness
     // (the corpus resolves `Ancestor: 0`, so the plan is empty either way
     // and behavior is identical on/off).
-    let ownership_bubble_plan: std::collections::BTreeMap<
-        (String, String),
-        String,
-    > = if env_flag("LOTUS_NO_OWNERSHIP_BUBBLE") {
-        std::collections::BTreeMap::new()
+    //
+    // Interest-based ownership, artifact #2b: NON-singleton owner
+    // threading (same-tower). #2 handled a SingletonConst ancestor `A`
+    // whose pointer folds to a global; #2b generalizes to an `A` with
+    // MULTIPLE instances, whose pointer cannot be a constant and must be
+    // threaded down the birth chain via hidden `__owner_for_<I>` fields
+    // (see `compute_forwarding_sets`). Both plans are keyed on
+    // `(enclosing_locus, child_ty)`; they are DISJOINT (a site is either
+    // SingletonConst or Ancestor). The seam routes a singleton hit to the
+    // global load and a non-singleton hit to the threaded-field load. The
+    // forwarding sets drive both the hidden-field declaration (decl.rs)
+    // and the birth-time 3-way write (instantiation.rs).
+    //
+    // `LOTUS_NO_OWNERSHIP_BUBBLE=1` empties BOTH plans AND the forwarding
+    // sets — so the OFF build declares no threading fields, writes none,
+    // and stitches nothing: byte-identical to pre-#2 (the differential
+    // control arm).
+    let (
+        ownership_bubble_plan,
+        ownership_bubble_nonsingleton_plan,
+        ownership_forwarding_sets,
+    ): (
+        std::collections::BTreeMap<(String, String), String>,
+        std::collections::BTreeMap<(String, String), String>,
+        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    ) = if env_flag("LOTUS_NO_OWNERSHIP_BUBBLE") {
+        (
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::new(),
+        )
     } else {
         use hale_types::ownership_graph::{EdgeClass, OwnerKind, OwnerResolution};
         let (top, _diags) = hale_types::resolve::build_top_scope(&bundle);
@@ -881,12 +907,25 @@ pub fn build_executable_with_options(
             hale_types::ownership_graph::build_ownership_graph(&bundle, &top);
         let mut plan: std::collections::BTreeMap<(String, String), String> =
             std::collections::BTreeMap::new();
+        let mut nonsingleton: std::collections::BTreeMap<
+            (String, String),
+            String,
+        > = std::collections::BTreeMap::new();
         for site in &graph.sites {
             if let OwnerResolution::Ancestor(owner) = &site.resolution {
-                if site.owner_kind == OwnerKind::SingletonConst
-                    && site.edge_class == EdgeClass::SameTower
-                {
+                if site.edge_class != EdgeClass::SameTower {
+                    continue;
+                }
+                if site.owner_kind == OwnerKind::SingletonConst {
                     plan.insert(
+                        (
+                            site.enclosing_locus.clone(),
+                            site.child_ty.clone(),
+                        ),
+                        owner.clone(),
+                    );
+                } else if site.owner_kind == OwnerKind::Ancestor {
+                    nonsingleton.insert(
                         (
                             site.enclosing_locus.clone(),
                             site.child_ty.clone(),
@@ -896,7 +935,8 @@ pub fn build_executable_with_options(
                 }
             }
         }
-        plan
+        let forwarding = graph.compute_forwarding_sets();
+        (plan, nonsingleton, forwarding)
     };
 
     let context = Context::create();
@@ -999,6 +1039,8 @@ pub fn build_executable_with_options(
         bus_devirt_direct,
         bus_devirt_direct_subs,
         ownership_bubble_plan,
+        ownership_bubble_nonsingleton_plan,
+        ownership_forwarding_sets,
         program_has_offthread,
         deferred_dissolves: Vec::new(),
         in_main: false,
@@ -2331,6 +2373,25 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `LOTUS_NO_BUS_DEVIRT`.
     pub(crate) ownership_bubble_plan:
         std::collections::BTreeMap<(String, String), String>,
+    /// Interest-based ownership, artifact #2b — the NON-singleton twin of
+    /// `ownership_bubble_plan`. Same key `(enclosing_locus, child_ty)`,
+    /// value the owner locus type `A`, but `A` has MULTIPLE instances
+    /// (`OwnerKind::Ancestor`, not `SingletonConst`), so its pointer
+    /// cannot be a global constant — the seam loads it from the enclosing
+    /// locus's threaded `__owner_for_<child_ty>` field instead of the
+    /// `@__owner_singleton_<A>` global. Disjoint from
+    /// `ownership_bubble_plan`. Empty under `LOTUS_NO_OWNERSHIP_BUBBLE=1`.
+    pub(crate) ownership_bubble_nonsingleton_plan:
+        std::collections::BTreeMap<(String, String), String>,
+    /// Interest-based ownership, artifact #2b — per-locus owner-forwarding
+    /// sets: locus type → the interest-types `I` it must carry an
+    /// `__owner_for_I: ptr` field for (it is an intermediary, or the
+    /// enclosing locus, on some non-singleton same-tower bubble path).
+    /// Consumed by `declare_locus_struct` (field declaration) and the
+    /// birth-time 3-way write in `lower_locus_instantiation`. Empty under
+    /// `LOTUS_NO_OWNERSHIP_BUBBLE=1`.
+    pub(crate) ownership_forwarding_sets:
+        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     /// THE single source of truth for "a thread crosses the bus
     /// boundary in this program" — the union of pinned/cross-pool
     /// placement and an inline adapter `bindings { }` recv-loop.
@@ -4434,6 +4495,16 @@ pub(crate) struct LocusInfo<'ctx> {
     /// routing-gated). Read by a flow child's run-wrapper to fire
     /// `parent.release(owner, child)`. Null when never accept'd.
     pub(crate) owner_self_field_idx: u32,
+    /// Interest-based ownership, artifact #2b — indices of the synthetic
+    /// `__owner_for_<I>: ptr` fields, one per interest-type `I` in this
+    /// locus's forwarding set (keyed by `I`). Threaded at birth: set to
+    /// the parent's self_ptr if the parent accepts `I`, forwarded from
+    /// `parent.__owner_for_I` if the parent also carries it, else null.
+    /// Read at a non-singleton bubble site to stitch the child to the
+    /// correct owner INSTANCE (instance isolation). Empty for loci that
+    /// carry no forwarding field.
+    pub(crate) owner_forward_field_idxs:
+        std::collections::BTreeMap<String, u32>,
     /// m42: index of the synthetic `__parent_on_failure: ptr`
     /// field. Paired with `parent_self_field_idx`. Holds the
     /// parent's `on_failure` fn ptr (or null). Read by the

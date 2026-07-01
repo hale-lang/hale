@@ -331,6 +331,99 @@ fn open_world_no_entry_point_is_unanalyzable() {
     assert_eq!(s.edge_class, EdgeClass::Open);
 }
 
+// --- #2b forwarding sets ------------------------------------------
+
+#[test]
+fn forwarding_set_bubbling_grandparent_carries_child() {
+    // Non-singleton acceptor `A` (two instances born under `Root`),
+    // reached through intermediary `B` that does NOT accept `I`. The
+    // site resolves to `Ancestor(A)` with `OwnerKind::Ancestor` (NOT
+    // SingletonConst) → `B` must carry `__owner_for_I`. `A` is the
+    // owner (accepts I), so it is excluded from the set.
+    let src = r#"
+        locus I { params { x: Int = 0; } }
+        locus B { run() { I { }; } }
+        locus A {
+            accept(i: I) { }
+            run() { B { }; }
+        }
+        main locus Root { run() { A { }; A { }; } }
+        fn main() { Root { }; }
+    "#;
+    let g = graph(src);
+    // Precondition: the site is the non-singleton Ancestor case.
+    let s = site(&g, "B", "I");
+    assert_eq!(s.resolution, OwnerResolution::Ancestor("A".to_string()));
+    assert_eq!(s.owner_kind, OwnerKind::Ancestor);
+    assert_eq!(s.edge_class, EdgeClass::SameTower);
+
+    let fset = g.compute_forwarding_sets();
+    assert_eq!(
+        fset.get("B").cloned().unwrap_or_default(),
+        ["I".to_string()].into_iter().collect(),
+        "enclosing B must carry __owner_for_I; got {:?}",
+        fset
+    );
+    // A is the owner (excluded); Root neither carries nor accepts I.
+    assert!(!fset.contains_key("A"), "owner A must not carry: {:?}", fset);
+    assert!(!fset.contains_key("Root"), "Root must not carry: {:?}", fset);
+}
+
+#[test]
+fn forwarding_set_three_level_chain_threads_both_intermediaries() {
+    // Root -> W{} (x2, non-singleton) ; W accepts I ; W -> A -> B -> I{}.
+    // The nearest acceptor of B is W. Every intermediary between B and W
+    // (i.e. B and A, W excluded) must carry `__owner_for_I`.
+    let src = r#"
+        locus I { params { x: Int = 0; } }
+        locus B { run() { I { }; } }
+        locus A { run() { B { }; } }
+        locus W {
+            accept(i: I) { }
+            run() { A { }; }
+        }
+        main locus Root { run() { W { }; W { }; } }
+        fn main() { Root { }; }
+    "#;
+    let g = graph(src);
+    let s = site(&g, "B", "I");
+    assert_eq!(s.resolution, OwnerResolution::Ancestor("W".to_string()));
+    assert_eq!(s.owner_kind, OwnerKind::Ancestor);
+
+    let fset = g.compute_forwarding_sets();
+    let want: std::collections::BTreeSet<String> =
+        ["I".to_string()].into_iter().collect();
+    assert_eq!(fset.get("A").cloned().unwrap_or_default(), want, "A: {:?}", fset);
+    assert_eq!(fset.get("B").cloned().unwrap_or_default(), want, "B: {:?}", fset);
+    assert!(!fset.contains_key("W"), "owner W excluded: {:?}", fset);
+    assert!(!fset.contains_key("Root"), "Root excluded: {:?}", fset);
+}
+
+#[test]
+fn forwarding_set_singleton_owner_yields_nothing() {
+    // The #2 singleton case: `A` is a `main locus` (SingletonConst) →
+    // stays on #2's global-constant path, so NO threading fields.
+    let src = r#"
+        locus I { params { x: Int = 0; } }
+        locus B { run() { I { }; } }
+        main locus A {
+            accept(i: I) { }
+            run() { B { }; }
+        }
+        fn main() { A { }; }
+    "#;
+    let g = graph(src);
+    let s = site(&g, "B", "I");
+    assert_eq!(s.owner_kind, OwnerKind::SingletonConst);
+
+    let fset = g.compute_forwarding_sets();
+    assert!(
+        fset.is_empty(),
+        "singleton owner must thread nothing; got {:?}",
+        fset
+    );
+}
+
 // --- Real corpus regression ---------------------------------------
 
 fn examples_dir() -> PathBuf {
@@ -428,4 +521,38 @@ fn corpus_walk_does_not_panic() {
         }
     }
     println!("ownership-graph corpus: {total_sites} instantiation sites");
+}
+
+#[test]
+fn corpus_threads_nothing_2b_inert() {
+    // #2b inertness gate: the corpus has ZERO non-singleton same-tower
+    // Ancestor sites, so `compute_forwarding_sets` is empty on every
+    // project → no `__owner_for_<I>` fields, no birth-threading, no
+    // non-singleton bubble stitch. This is what makes bubbling ON vs
+    // `LOTUS_NO_OWNERSHIP_BUBBLE=1` byte-identical on the corpus.
+    let dir = examples_dir();
+    let Ok(entries) = fs::read_dir(&dir) else {
+        eprintln!("examples dir missing; skipping");
+        return;
+    };
+    let mut projects: Vec<String> = entries
+        .filter_map(|e| {
+            let p = e.ok()?.path();
+            p.is_dir()
+                .then(|| p.file_name().unwrap().to_string_lossy().into_owned())
+        })
+        .collect();
+    projects.sort();
+
+    for project in &projects {
+        if let Some(g) = corpus_graph(project) {
+            let fset = g.compute_forwarding_sets();
+            assert!(
+                fset.is_empty(),
+                "#2b must be inert on the corpus, but project `{project}` \
+                 threads: {:?}",
+                fset
+            );
+        }
+    }
 }
