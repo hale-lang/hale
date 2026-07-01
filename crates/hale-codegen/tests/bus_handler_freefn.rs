@@ -17,7 +17,14 @@ use hale_codegen::build_executable;
 fn run_lines(src: &str) -> Vec<String> {
     let program = hale_syntax::parse_source(src).expect("parse");
     let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_bus_freefn_{}", std::process::id()));
+    // pid alone is NOT unique here: both #[test] fns run inside one
+    // test-binary process, so parallel execution raced on the same
+    // artifact path (each test intermittently ran the OTHER test's
+    // binary). A per-call counter disambiguates.
+    static NEXT: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    bin.push(format!("hale_bus_freefn_{}_{}", std::process::id(), n));
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

@@ -12643,18 +12643,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             Expr::Struct { path, inits, .. },
                         ) = (field, value)
                         {
-                            if path.segments.len() == 1
-                                && self
-                                    .user_loci
-                                    .contains_key(&path.segments[0].name)
-                            {
-                                return self.lower_locus_field_reassign(
-                                    field_idx,
-                                    &field_locus,
-                                    &path.segments[0].name,
-                                    inits,
-                                    scope,
-                                );
+                            // 2026-07-01: resolve qualified (cross-seed)
+                            // RHS paths through the import-rename table,
+                            // same as statement-position instantiation.
+                            // Previously the `segments.len() == 1` gate
+                            // silently dropped `self.conn = wsx::Conn
+                            // { … }` to the plain-value lowering — the
+                            // field ended up pointing at a method-scoped
+                            // stack temp (the exact WS1#4 dangle this
+                            // path exists to prevent), which the
+                            // ws1_cross_seed_locus_reassign test only
+                            // survived because the dead frame happened
+                            // to read back benignly.
+                            let resolved_new: Option<String> =
+                                if path.segments.len() == 1 {
+                                    Some(path.segments[0].name.clone())
+                                } else {
+                                    let segs: Vec<&str> = path
+                                        .segments
+                                        .iter()
+                                        .map(|s| s.name.as_str())
+                                        .collect();
+                                    self.mangled_for_path(&segs)
+                                };
+                            if let Some(new_name) = resolved_new {
+                                if self.user_loci.contains_key(&new_name) {
+                                    return self.lower_locus_field_reassign(
+                                        field_idx,
+                                        &field_locus,
+                                        &new_name,
+                                        inits,
+                                        scope,
+                                    );
+                                }
                             }
                         }
                     }

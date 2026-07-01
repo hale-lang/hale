@@ -6,6 +6,36 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **Accept'd-child struct recycling — churn daemons no longer grow by
+  sizeof(child struct) per child.** Interest-based ownership (v0.9.2)
+  allocates an accept'd/bubbled child's locus struct in the owner's
+  arena so `owner.__children` reads stay valid cross-lifecycle — but
+  arena allocations are never individually freed, so a churn shape
+  (one flow child per connection/message) leaked ~100–200 B per child
+  *forever*, O(total children ever) instead of the O(peak alive) the
+  F.3 free-list contract promises. Reclaim (flow run-completion,
+  `terminate;`, parent cascade) now pushes the dead struct onto an
+  intrusive per-owner free-list (`lotus_child_struct_release`);
+  instantiation pops a size-matched block before bump-allocating
+  (`lotus_child_struct_alloc`). Covers both subregion-owning children
+  and arena-elidable (empty-lifecycle) children. Measured: accept-churn
+  at K=4M flat at 5.5 MB maxrss (was 443 MB). Resident children (no
+  `release(c)` on the parent) still accumulate until parent dissolve —
+  that's the documented flow-vs-resident semantics, not a leak.
+- **Owner-arena child structs now allocated 16-byte aligned** (was 8):
+  an accept'd child with a `Decimal` param could take a `movaps` trap —
+  same genre as the 2026-05-20 arena-alignment fix.
+- **Cross-seed locus-field whole-reassignment now takes the WS1#4
+  lifecycle path.** `self.conn = wsx::Conn { … }` (qualified/imported
+  RHS type) previously fell through the `segments.len() == 1` gate to
+  the plain value lowering — the field ended up pointing at a
+  method-scoped stack temp, the exact dangle WS1#4 exists to prevent
+  (its cross-seed test only survived by benign garbage). Qualified
+  paths now resolve through the import-rename table, same as
+  statement-position instantiation.
+
 ## v0.9.2 — interest-based ownership (accept bubbling)
 
 - **`accept()` now collects descendants, not just direct children — a locus

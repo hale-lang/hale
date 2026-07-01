@@ -756,6 +756,41 @@ only when neither reclamation trigger applied; declaring the
 flow's `release` closes it. See spec/semantics.md § "release(c)
 and flow children".)
 
+#### Accept'd-child struct recycling (2026-07-01)
+
+The child's **locus struct** (as opposed to its `__arena`
+contents) lives in the OWNER's arena — that's what keeps
+`owner.__children` reads valid cross-lifecycle. Arena
+allocations are never individually freed, so per-child
+reclamation alone left ~sizeof(child struct) pinned in the
+owner's arena per child ever accepted: a churn daemon grew
+O(total children), violating F.3's O(peak-alive) intent
+(measured ~110 B/child; 443 MB at 4M children).
+
+The substrate closes this with an intrusive per-owner free-list
+of dead child structs, threaded through the owner's arena
+struct (`child_struct_free`, guarded by `subregion_lock` under
+multithreading):
+
+- `lotus_child_struct_release(owner_self, child, size)` — called
+  from the teardown chokepoint (`emit_locus_arena_destroy`)
+  after the `__arena` NULL-latch, exactly once per reclaimed
+  child (the latch gates it). Node layout inside the dead
+  struct: offset 0 is never written (it is the child's own
+  NULL'd latch), offset 8 holds `next`, offset 16 the block
+  size. Covers subregion-owning children AND arena-elidable
+  (empty-lifecycle) children, which share the parent's arena
+  pointer and latch on their (otherwise unused) `__arena` field.
+- `lotus_child_struct_alloc(owner_arena, size, align)` — the
+  instantiation front: pops a size-matched block (bounded
+  first-fit, ≤8 probes) before falling back to the bump
+  allocator. Alignment is **16** per the Arena alignment
+  contract (was 8 — a latent `Decimal`-param `movaps` trap).
+
+Steady-state churn (accept → run → reclaim per event) therefore
+reuses one struct slot per concurrent child, per type. Resident
+children don't route through mid-life reclaim and are unaffected.
+
 Bus dispatch implements the spec's copy-not-pointer semantic:
 
 ```

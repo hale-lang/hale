@@ -487,10 +487,22 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     &format!("{}.owner_arena", locus_name),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // 2026-07-01: route through the child-struct recycler
+            // rather than the raw bump allocator. Arena allocations
+            // are never individually freed, so a churn daemon (one
+            // accept'd child per connection/message) previously grew
+            // the owner's arena by sizeof(child struct) per child,
+            // O(total children ever) — the flow-child reclaim freed
+            // the child's ARENA but its struct stayed pinned in the
+            // owner's. The recycler pops a size-matched dead struct
+            // pushed back by `lotus_child_struct_release` in the
+            // teardown path (dissolve.rs), restoring the F.3
+            // O(peak-alive) contract. Falls back to a bump alloc on
+            // an empty free-list, so cold-path behavior is unchanged.
             let alloc_fn = self
                 .module
-                .get_function("lotus_arena_alloc")
-                .expect("lotus_arena_alloc declared");
+                .get_function("lotus_child_struct_alloc")
+                .expect("lotus_child_struct_alloc declared");
             let i64_t = self.context.i64_type();
             let size = info
                 .struct_ty
@@ -502,7 +514,13 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     &[
                         owner_arena.into(),
                         size.into(),
-                        i64_t.const_int(8, false).into(),
+                        // align=16 (widest scalar — i128 / Decimal),
+                        // per memory.md "Arena alignment contract".
+                        // Was 8, which could misalign a Decimal
+                        // param's i128 store (movaps trap) — same
+                        // genre as the 2026-05-20 arena-alignment
+                        // fix.
+                        i64_t.const_int(16, false).into(),
                     ],
                     &format!("{}.self.in_owner_arena", locus_name),
                 )
