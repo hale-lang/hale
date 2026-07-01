@@ -1187,6 +1187,29 @@ pub fn build_executable_with_options(
         }
     }
 
+    // 2026-07-01 aliasing metadata, stage 1: every DEFINED function is
+    // `nounwind` — Hale has no unwinding (no exceptions/panic; failure
+    // is fallible-sret or violate→process-exit, and the lotus C
+    // runtime never throws). Declarations (externs) are left alone
+    // except the individually-audited ones in builtins.rs. Emitted
+    // before the pass pipeline so the inliner and SimplifyCFG see it.
+    {
+        let nounwind_kind = inkwell::attributes::Attribute::get_named_enum_kind_id(
+            "nounwind",
+        );
+        let nounwind = cx.context.create_enum_attribute(nounwind_kind, 0);
+        let mut f = cx.module.get_first_function();
+        while let Some(func) = f {
+            if func.count_basic_blocks() > 0 {
+                func.add_attribute(
+                    inkwell::attributes::AttributeLoc::Function,
+                    nounwind,
+                );
+            }
+            f = func.get_next_function();
+        }
+    }
+
     let asan_diag = std::env::var("LOTUS_ASAN")
         .map(|v| v == "1" || v == "true" || v == "TRUE")
         .unwrap_or(false);
@@ -10093,6 +10116,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             f.name.name.clone()
         };
         let func = self.module.add_function(&impl_symbol, fn_ty, None);
+        // 2026-07-01 aliasing metadata, stage 1: the implicit
+        // `__caller_arena` (param 0) is `noalias` — the arena STRUCT
+        // and its metadata are reachable only through this pointer
+        // within the call (user-visible values point into chunk DATA
+        // bytes, which bump allocation never re-hands out, so actual
+        // accessed locations never overlap). Hale code never unwinds
+        // (failure is fallible-sret or violate→process-exit), so
+        // every user fn is `nounwind`.
+        {
+            use inkwell::attributes::{Attribute, AttributeLoc};
+            let noalias_kind = Attribute::get_named_enum_kind_id("noalias");
+            let nounwind_kind = Attribute::get_named_enum_kind_id("nounwind");
+            func.add_attribute(
+                AttributeLoc::Param(0),
+                self.context.create_enum_attribute(noalias_kind, 0),
+            );
+            func.add_attribute(
+                AttributeLoc::Function,
+                self.context.create_enum_attribute(nounwind_kind, 0),
+            );
+        }
         // FORM-3: skip the per-call scratch arena when the body provably
         // allocates nothing. The decision is the call-graph fixpoint
         // (`compute_nonalloc_free_fns`, run at lower_program start into
