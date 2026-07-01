@@ -1700,9 +1700,22 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     &format!("{}.{}.ptr", locus_name, fname),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_store(field_ptr, val)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // Inline fixed arrays: the field slot IS the [N x T]
+            // storage — memcpy the evaluated array's elements in
+            // rather than storing its pointer over inline data.
+            if Self::array_inline_spec(&declared_ty).is_some() {
+                let size = self.compound_storage_size(&declared_ty)?;
+                self.emit_memcpy_call(
+                    field_ptr,
+                    val.into_pointer_value(),
+                    size,
+                    &format!("{}.{}.inline_array.init", locus_name, fname),
+                )?;
+            } else {
+                self.builder
+                    .build_store(field_ptr, val)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
             // F.29 follow-up: OR the bit for this field into
             // `__locus_ref_owned_mask` if the field is LocusRef-
             // typed AND the value came from a parent-owned locus

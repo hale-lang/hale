@@ -310,15 +310,24 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
         let i64_t = self.context.i64_type();
         let i8_t = self.context.i8_type();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
-        // Array fields in a struct are pointer-shaped (see
-        // `llvm_basic_type` — Array variants map to `ptr`); the
-        // pointer addresses a separately-allocated `[N x elem]`
-        // storage. Load it before iterating.
-        let arr_ptr = self
-            .builder
-            .build_load(ptr_t, src_field_ptr, "ser.arr.field.load")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_pointer_value();
+        // Inline fixed arrays (2026-07-01, array_inline_spec): the
+        // field slot IS the [N x elem] storage — serialize straight
+        // from it. Out-of-line arrays (non-scalar elements) keep the
+        // legacy shape: the slot holds a pointer to separately-
+        // allocated storage; load it before iterating.
+        let arr_ptr = if Self::array_inline_spec(&CodegenTy::Array(
+            Box::new(elem_ty.clone()),
+            n,
+        ))
+        .is_some()
+        {
+            src_field_ptr
+        } else {
+            self.builder
+                .build_load(ptr_t, src_field_ptr, "ser.arr.field.load")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value()
+        };
         let arr_ty = self.llvm_array_storage_type(elem_ty, n);
         match elem_ty {
             CodegenTy::Int
@@ -466,34 +475,48 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
         // (lower_expr's `Expr::ArrayRepeat` arm). 16-byte align
         // covers Decimal (i128) element types.
         let arr_ty = self.llvm_array_storage_type(elem_ty, n);
-        let arr_size = arr_ty
-            .size_of()
-            .expect("array storage type has known size");
-        let alloc_fn = self
-            .module
-            .get_function("lotus_bus_payload_arena_alloc")
-            .expect("lotus_bus_payload_arena_alloc declared");
-        let arr_ptr = self
-            .builder
-            .build_call(
-                alloc_fn,
-                &[
-                    arr_size.into(),
-                    i64_t.const_int(16, false).into(),
-                ],
-                "de.arr.alloc",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("payload arena alloc returns ptr")
-            .into_pointer_value();
-        // Store the array pointer in the parent's field slot now,
-        // before filling — readers go through the pointer either
-        // way and it simplifies error paths.
-        self.builder
-            .build_store(dst_field_ptr, arr_ptr)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // Inline fixed arrays (2026-07-01, array_inline_spec): the
+        // parent's field slot IS the [N x elem] storage — decode
+        // straight into it, no side allocation, no pointer store.
+        // Out-of-line arrays keep the legacy shape below.
+        let arr_ptr = if Self::array_inline_spec(&CodegenTy::Array(
+            Box::new(elem_ty.clone()),
+            n,
+        ))
+        .is_some()
+        {
+            dst_field_ptr
+        } else {
+            let arr_size = arr_ty
+                .size_of()
+                .expect("array storage type has known size");
+            let alloc_fn = self
+                .module
+                .get_function("lotus_bus_payload_arena_alloc")
+                .expect("lotus_bus_payload_arena_alloc declared");
+            let p = self
+                .builder
+                .build_call(
+                    alloc_fn,
+                    &[
+                        arr_size.into(),
+                        i64_t.const_int(16, false).into(),
+                    ],
+                    "de.arr.alloc",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("payload arena alloc returns ptr")
+                .into_pointer_value();
+            // Store the array pointer in the parent's field slot now,
+            // before filling — readers go through the pointer either
+            // way and it simplifies error paths.
+            self.builder
+                .build_store(dst_field_ptr, p)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            p
+        };
         let _ = ptr_t;
         match elem_ty {
             CodegenTy::Int

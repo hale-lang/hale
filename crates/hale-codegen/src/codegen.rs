@@ -11267,8 +11267,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// needs to be anchored in the destination arena? Scalars +
     /// views + locus-refs + cells don't (their bytes/handle live
     /// in the parent struct's storage). String/Bytes/TypeRef/
-    /// Tuple/Array/Interface/Enum do.
+    /// Tuple/Interface/Enum do. Inline fixed arrays (2026-07-01,
+    /// `array_inline_spec`) don't either — their element bytes are
+    /// part of the parent struct's storage and travel with the
+    /// parent's memcpy; loading the slot as a "pointer" would read
+    /// element bytes as an address (the pre-inline walk did chase a
+    /// real pointer here). Out-of-line arrays (non-scalar elements)
+    /// still anchor.
     fn field_needs_anchor(ty: &CodegenTy) -> bool {
+        if Self::array_inline_spec(ty).is_some() {
+            return false;
+        }
         !matches!(
             ty,
             CodegenTy::Int
@@ -12790,20 +12799,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             let ptr_t = self
                                 .context
                                 .ptr_type(AddressSpace::default());
-                            let arr_ptr = self
-                                .builder
-                                .build_load(
-                                    ptr_t,
-                                    field_slot_ptr,
-                                    &format!(
-                                        "self.{}.arr",
-                                        fname_ident.name
-                                    ),
-                                )
-                                .map_err(|e| {
-                                    CodegenError::LlvmEmit(e.to_string())
-                                })?
-                                .into_pointer_value();
+                            // Inline fixed arrays: the field slot IS
+                            // the [N x T] storage — GEP it directly.
+                            // Out-of-line arrays load the payload ptr.
+                            let arr_ptr = if Self::array_inline_spec(
+                                &CodegenTy::Array(
+                                    Box::new(elem_ty.clone()),
+                                    n,
+                                ),
+                            )
+                            .is_some()
+                            {
+                                field_slot_ptr
+                            } else {
+                                self.builder
+                                    .build_load(
+                                        ptr_t,
+                                        field_slot_ptr,
+                                        &format!(
+                                            "self.{}.arr",
+                                            fname_ident.name
+                                        ),
+                                    )
+                                    .map_err(|e| {
+                                        CodegenError::LlvmEmit(e.to_string())
+                                    })?
+                                    .into_pointer_value()
+                            };
                             let (idx_val, idx_ty) =
                                 self.lower_expr(idx_expr, scope)?;
                             if idx_ty != CodegenTy::Int {
@@ -16394,6 +16416,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         &format!("self.{}.ptr", name.name),
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // Inline fixed arrays: the slot IS the [N x T]
+                // storage; the array's SSA value is its address.
+                if Self::array_inline_spec(&ty).is_some() {
+                    return Ok((ptr.into(), ty));
+                }
                 let llvm_ty = self.llvm_basic_type(&ty);
                 let val = self
                     .builder
@@ -16575,6 +16602,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         &format!("field.{}.ptr", name.name),
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // Inline fixed arrays: the field slot IS the [N x T]
+                // storage — the array's SSA value (a ptr to storage)
+                // is the slot's address, not a loaded pointer.
+                if Self::array_inline_spec(&field_ty).is_some() {
+                    return Ok((field_ptr.into(), field_ty));
+                }
                 let llvm_ty = self.llvm_basic_type(&field_ty);
                 let val = self
                     .builder
@@ -23556,9 +23589,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         //   `array_slot_ty` — Some(Array(elem, n)) when cur_ptr is
         //     a SLOT holding the array's payload pointer; consumed
         //     by the next Index segment.
+        //   `array_storage_direct` — 2026-07-01 inline fixed arrays:
+        //     true when cur_ptr IS the [N x T] storage itself (an
+        //     inline scalar-array field slot), so the Index segment
+        //     must NOT load a payload pointer first. False for the
+        //     legacy shape (local alloca / out-of-line field slot
+        //     holding a ptr).
         let mut cur_ptr: PointerValue<'ctx>;
         let mut cur_struct: Option<(StructType<'ctx>, BTreeMap<String, (u32, CodegenTy)>)>;
         let mut array_slot_ty: Option<CodegenTy>;
+        let mut array_storage_direct = false;
         let mut name: String;
 
         if target.head.name == "self" {
@@ -23647,6 +23687,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     cur_ptr = alloca;
                     cur_struct = None;
                     array_slot_ty = Some(CodegenTy::Array(elem.clone(), *n_cap));
+                    // Local binding: the alloca holds the array's
+                    // payload POINTER (SSA repr), not the storage.
+                    array_storage_direct = false;
                 }
                 other => {
                     return Err(CodegenError::Unsupported(format!(
@@ -23764,6 +23807,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             array_slot_ty = None;
                         }
                         CodegenTy::Array(elem, n_cap) => {
+                            // Inline scalar arrays: field_ptr IS the
+                            // [N x T] storage; out-of-line arrays:
+                            // field_ptr is a slot holding the payload
+                            // pointer (Index loads it).
+                            array_storage_direct = Self::array_inline_spec(
+                                &CodegenTy::Array(elem.clone(), n_cap),
+                            )
+                            .is_some();
                             cur_ptr = field_ptr;
                             cur_struct = None;
                             array_slot_ty =
@@ -23789,11 +23840,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         CodegenTy::Array(elem, n) => (*elem, n),
                         _ => unreachable!("checked above"),
                     };
-                    let arr_ptr = self
-                        .builder
-                        .build_load(ptr_t, cur_ptr, &format!("{}.arr", name))
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                        .into_pointer_value();
+                    // Inline scalar-array field: cur_ptr already IS
+                    // the [N x T] storage — no payload-pointer load.
+                    let arr_ptr = if array_storage_direct {
+                        cur_ptr
+                    } else {
+                        self.builder
+                            .build_load(ptr_t, cur_ptr, &format!("{}.arr", name))
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .into_pointer_value()
+                    };
                     let (idx_val, idx_ty) = self.lower_expr(idx_expr, scope)?;
                     if idx_ty != CodegenTy::Int {
                         return Err(CodegenError::Unsupported(format!(

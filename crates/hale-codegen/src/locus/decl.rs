@@ -195,7 +195,8 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                             let ty = self.type_expr_to_codegen_ty(ascribed)?;
                             fields.insert(p.name.name.clone(), (idx, ty.clone()));
                             defaults.push((p.name.name.clone(), DefaultInit::Required));
-                            llvm_field_tys.push(self.llvm_basic_type(&ty));
+                            // Inline fixed arrays (array_inline_spec).
+                            llvm_field_tys.push(self.llvm_field_storage_type(&ty));
                             idx += 1;
                             continue;
                         }
@@ -296,7 +297,8 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                         (idx, default_ty.clone()),
                     );
                     defaults.push((p.name.name.clone(), default));
-                    llvm_field_tys.push(self.llvm_basic_type(&default_ty));
+                    // Inline fixed arrays (array_inline_spec).
+                    llvm_field_tys.push(self.llvm_field_storage_type(&default_ty));
                     idx += 1;
                 }
             }

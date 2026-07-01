@@ -364,7 +364,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Vec::new();
         for (idx, f) in struct_fields.iter().enumerate() {
             let ft = self.type_expr_to_codegen_ty(&f.ty)?;
-            llvm_field_tys.push(self.llvm_basic_type(&ft));
+            // Inline fixed arrays (see array_inline_spec): scalar
+            // [T; N] fields are [N x T] in the struct body, not ptr.
+            llvm_field_tys.push(self.llvm_field_storage_type(&ft));
             fields.insert(f.name.name.clone(), (idx as u32, ft));
             field_order.push(f.name.name.clone());
             if let Some(d) = &f.default {
@@ -632,6 +634,54 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// 2026-07-01 inline fixed arrays: a `[T; N]` field with a
+    /// SCALAR element type is laid out inline in its containing
+    /// struct as LLVM `[N x T]`, not as an out-of-line arena
+    /// pointer. Returns `Some((elem, n))` when `ty` is such an
+    /// array. Scalar elements only at v1 — Int/Float/Bool/Decimal/
+    /// Duration — so element storage is self-contained bytes
+    /// (String/Bytes/TypeRef elements would embed pointers whose
+    /// deep-copy semantics stay on the out-of-line path).
+    ///
+    /// The SSA representation of an array VALUE is unchanged — a
+    /// `ptr` to `[N x T]` storage. Only the storage LOCATION moves:
+    /// field reads yield the field slot's address (no load), field
+    /// writes memcpy `N * sizeof(T)` into the slot (no ptr store).
+    /// This is what makes a struct with a fixed-size array field
+    /// genuinely flat (`is_flat_shapeable` already claimed it) —
+    /// the xproc SHM zero-copy reader used to receive a dangling
+    /// `{tag, ptr}` instead of the 4 KB payload.
+    pub(crate) fn array_inline_spec(
+        ty: &CodegenTy,
+    ) -> Option<(&CodegenTy, u64)> {
+        match ty {
+            CodegenTy::Array(elem, n) => match elem.as_ref() {
+                CodegenTy::Int
+                | CodegenTy::Float
+                | CodegenTy::Bool
+                | CodegenTy::Decimal
+                | CodegenTy::Duration => Some((elem.as_ref(), *n)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Storage type for a STRUCT FIELD of CodegenTy `ty`: inline
+    /// `[N x T]` for scalar-element fixed arrays, `llvm_basic_type`
+    /// for everything else. Use this (not `llvm_basic_type`) when
+    /// building struct bodies and when loading/storing field slots.
+    pub(crate) fn llvm_field_storage_type(
+        &self,
+        ty: &CodegenTy,
+    ) -> inkwell::types::BasicTypeEnum<'ctx> {
+        if let Some((elem, n)) = Self::array_inline_spec(ty) {
+            self.llvm_array_storage_type(elem, n).into()
+        } else {
+            self.llvm_basic_type(ty)
+        }
+    }
+
     /// LLVM `[N x T]` for the element type + size of an Array
     /// CodegenTy. Used at array-literal allocation time + at GEP
     /// time when indexing or iterating.
@@ -821,7 +871,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             | CodegenTy::Tuple(_)
                             | CodegenTy::Array(_, _)
                             | CodegenTy::Enum(_)
-                    );
+                    )
+                    // Inline arrays are memcpy'd into the struct body
+                    // below — the source only needs to be readable
+                    // NOW, so no arena-anchoring copy is needed.
+                    && Self::array_inline_spec(&declared_ty).is_none();
                 if needs_copy {
                     self.emit_cross_arena_store_deep_copy_ptr(
                         val,
@@ -844,6 +898,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     &format!("{}.{}.ptr", type_name, fname),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // Inline fixed arrays: the field slot IS [N x T] storage;
+            // `val` is a ptr to the evaluated array's elements —
+            // memcpy them in rather than storing the pointer (which
+            // would clobber the first 8 element bytes with an address
+            // and leave the rest uninitialized).
+            if Self::array_inline_spec(&declared_ty).is_some() {
+                let size = self.compound_storage_size(&declared_ty)?;
+                self.emit_memcpy_call(
+                    field_ptr,
+                    val.into_pointer_value(),
+                    size,
+                    &format!("{}.{}.inline_array.init", type_name, fname),
+                )?;
+                continue;
+            }
             self.builder
                 .build_store(field_ptr, val)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

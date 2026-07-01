@@ -184,17 +184,28 @@ fn is_flat_shapeable_inner(
             | PrimType::BytesMut => false,
         },
         Ty::Unit => true,
-        // A fixed-size array's storage is laid out OUT-OF-LINE by codegen:
-        // a `[T; N]` field holds a pointer to a separate arena allocation,
-        // not the inline bytes (`CodegenTy::Array` lowers to `ptr`). So a
-        // raw memcpy of a value containing an array shares a pointer that
-        // dangles across a `zero_copy` / shm boundary — a real
-        // cross-process use-after-free / segfault. Until array fields are
-        // laid out inline for flat payloads, an array (at any nesting) is
-        // NOT memcpy-flat; the element type's own flatness is moot while the
-        // storage is indirect. `Array(_, None)` (unbounded) is non-flat for
-        // the same indirection reason plus the unknown size.
-        Ty::Array(_, _) => false,
+        // 2026-07-01 inline fixed arrays: codegen now lays out a
+        // `[T; N]` field with a SCALAR element type INLINE in its
+        // containing struct (`llvm_field_storage_type` → `[N x T]`),
+        // so the element bytes are part of the value's own layout and
+        // memcpy-flat. This predicate must match codegen's
+        // `array_inline_spec` exactly: scalar elements only. Arrays
+        // of non-scalar elements (String, nested structs, …) keep the
+        // out-of-line pointer layout and stay non-flat — a raw memcpy
+        // would share a pointer that dangles across a `zero_copy` /
+        // shm boundary. `Array(_, None)` (unbounded) is non-flat: the
+        // size is unknown.
+        Ty::Array(elem, Some(_)) => matches!(
+            elem.as_ref(),
+            Ty::Prim(
+                PrimType::Int
+                    | PrimType::Float
+                    | PrimType::Bool
+                    | PrimType::Decimal
+                    | PrimType::Duration
+            )
+        ),
+        Ty::Array(_, None) => false,
         Ty::Tuple(parts) => parts
             .iter()
             .all(|p| is_flat_shapeable_inner(p, scope, seen)),

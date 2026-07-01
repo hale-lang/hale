@@ -8,6 +8,29 @@ behavior.
 
 ## Unreleased
 
+- **Inline fixed arrays — scalar `[T; N]` fields are now laid out inline
+  in their containing struct.** Previously every array field lowered to
+  an out-of-line arena pointer, so a "flat" struct with an array field
+  was secretly `{…, ptr}`: `is_flat_shapeable` said flat, the shm slot
+  carried a dangling pointer cross-process (the bench xproc segfault),
+  and every whole-value replace persisted a fresh copy in the locus
+  arena. Scalar-element arrays (Int/Float/Bool/Decimal/Duration) are now
+  `[N x T]` in the struct body; the array's SSA value is unchanged (a
+  ptr to storage — field reads yield the slot address, field writes
+  memcpy elements). Covers user types, locus params, struct literals,
+  locus params-init, self-field reads/indexed assigns, the lvalue
+  walker, deep-copy/anchor walks, and the m70 wire codec.
+  `is_flat_shapeable` accepts scalar arrays again to match; non-scalar
+  element arrays keep the out-of-line layout and stay rejected under
+  `zero_copy`. Verified cross-process: the idiomatic
+  `type Blob { tag: Int; data: [Int; 511]; }` round-trips a 4 KB payload
+  over `shm_ring … where zero_copy` with a correct checksum — no more
+  512 hand-spelled scalar fields. Whole-value scalar-array replace
+  (`self.recent = […]`) no longer leaks a persisted copy per assign
+  (~35 MB over 3M trips removed; the RHS literal's scratch growth in a
+  single long activation remains and is still flagged by
+  `--warn-unbounded-alloc`).
+
 - **Accept'd-child struct recycling — churn daemons no longer grow by
   sizeof(child struct) per child.** Interest-based ownership (v0.9.2)
   allocates an accept'd/bubbled child's locus struct in the owner's

@@ -684,6 +684,8 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
     let mut locus_shapes: BTreeMap<String, LocusShape> = BTreeMap::new();
     // Phase D / D2 — per-locus param field → declared type name.
     let mut locus_field_types: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    // 2026-07-01 — per-locus scalar-[T; N] param fields (inline layout).
+    let mut locus_inline_arrays: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     for program in programs {
         for item in &program.items {
@@ -704,6 +706,8 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
                     }
                     locus_shapes.insert(locus.clone(), locus_shape_of(l));
                     locus_field_types.insert(locus.clone(), locus_param_field_types(l));
+                    locus_inline_arrays
+                        .insert(locus.clone(), locus_inline_array_fields(l));
                     let handlers = bus_handler_names(l);
                     for member in &l.members {
                         match member {
@@ -756,6 +760,7 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
         .filter_map(|(name, shape)| shape.form.as_ref().map(|f| (name.clone(), f.name.clone())))
         .collect();
     let empty_fields: BTreeMap<String, String> = BTreeMap::new();
+    let empty_inline_arrays: BTreeSet<String> = BTreeSet::new();
 
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
@@ -765,6 +770,10 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
             .as_ref()
             .and_then(|l| locus_field_types.get(l))
             .unwrap_or(&empty_fields);
+        let inline_array_fields = enclosing_locus
+            .as_ref()
+            .and_then(|l| locus_inline_arrays.get(l))
+            .unwrap_or(&empty_inline_arrays);
         let mut w = Walker {
             sites: Vec::new(),
             calls: Vec::new(),
@@ -777,6 +786,7 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
             store_target: None,
             var_types: param_types.iter().cloned().collect(),
             field_types,
+            inline_array_fields,
             form_of: &form_of,
         };
         w.walk_block(body, 0, Escape::Local);
@@ -820,6 +830,39 @@ fn locus_param_field_types(l: &LocusDecl) -> BTreeMap<String, String> {
         }
     }
     m
+}
+
+/// 2026-07-01 inline fixed arrays: the locus's param fields whose declared
+/// type is a scalar-element `[T; N]`. Codegen lays these out INLINE in the
+/// locus struct (see hale-codegen `array_inline_spec`), so a whole-value
+/// replace `self.f = [ … ]` is an in-place element memcpy — the RHS
+/// literal is scratch-reclaimed at method exit and nothing persists. The
+/// walker downgrades such a store's escape to `Local` so store-latest
+/// verdicts don't false-positive on the now-bounded shape.
+fn locus_inline_array_fields(l: &LocusDecl) -> BTreeSet<String> {
+    let mut s = BTreeSet::new();
+    for member in &l.members {
+        if let LocusMember::Params(pb) = member {
+            for pd in &pb.params {
+                if let Some(TypeExpr::Array { elem, .. }) = pd.ty.as_ref() {
+                    if matches!(
+                        elem.as_ref(),
+                        TypeExpr::Primitive(
+                            PrimType::Int
+                                | PrimType::Float
+                                | PrimType::Bool
+                                | PrimType::Decimal
+                                | PrimType::Duration,
+                            _,
+                        )
+                    ) {
+                        s.insert(pd.name.name.clone());
+                    }
+                }
+            }
+        }
+    }
+    s
 }
 
 /// Phase D / D1: distill a `LocusDecl` into the storage shape the bound
@@ -954,6 +997,10 @@ struct Walker<'a> {
     /// The enclosing locus's param fields → declared type name, so a
     /// `self.<field>.push(x)` resolves `<field>`'s type the same way.
     field_types: &'a BTreeMap<String, String>,
+    /// 2026-07-01: the enclosing locus's scalar-[T; N] param fields —
+    /// codegen lays these out inline, so a whole-value replace is an
+    /// in-place memcpy whose RHS is scratch-reclaimed (walked Local).
+    inline_array_fields: &'a BTreeSet<String>,
     /// Every locus's `@form(...)` name, keyed by locus type name — the
     /// lookup `var_types`/`field_types` feed into `form_grows`.
     form_of: &'a BTreeMap<String, String>,
@@ -1040,7 +1087,7 @@ impl<'a> Walker<'a> {
             }
             Stmt::LetTuple { value, .. } => self.walk_expr(value, depth, Escape::Local),
             Stmt::Assign { target, value, .. } => {
-                let esc = if target.head.name == "self" {
+                let mut esc = if target.head.name == "self" {
                     Escape::StoredToSelf
                 } else {
                     self.escaping.get(&target.head.name).copied().unwrap_or(Escape::Local)
@@ -1051,7 +1098,22 @@ impl<'a> Walker<'a> {
                 // a trailing `Index` segment and allocates nothing new).
                 let prev = self.store_target.take();
                 if esc == Escape::StoredToSelf {
-                    self.store_target = self_replace_field(target);
+                    let target_field = self_replace_field(target);
+                    // 2026-07-01 inline fixed arrays: a whole-value
+                    // replace of a scalar-[T; N] field is an in-place
+                    // element memcpy (codegen `array_inline_spec`) —
+                    // nothing persists in the locus arena; the RHS
+                    // literal is scratch-reclaimed at method exit.
+                    // Walk the RHS as Local so store-latest verdicts
+                    // don't flag the now-bounded shape.
+                    if let Some(f) = &target_field {
+                        if self.inline_array_fields.contains(f) {
+                            esc = Escape::Local;
+                        }
+                    }
+                    if esc == Escape::StoredToSelf {
+                        self.store_target = target_field;
+                    }
                 }
                 self.walk_expr(value, depth, esc);
                 self.store_target = prev;
