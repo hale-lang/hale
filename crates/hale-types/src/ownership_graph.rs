@@ -382,6 +382,26 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                                 locus_types,
                                 &mut entry.instantiates,
                             ),
+                            // A params default `child: C = C { ... }` is
+                            // a real ownership edge (this locus gives
+                            // birth to `C` as its own initial state) —
+                            // the same edge the placement block pins on
+                            // a `main locus` field. Collecting it lets
+                            // the ancestor climb connect a pool-placed
+                            // consumer up to its owner (interest #3's
+                            // cross-pool bubble), and it only ADDS edges
+                            // (Orphan→Ancestor), never removes them.
+                            LocusMember::Params(pb) => {
+                                for p in &pb.params {
+                                    if let ParamInit::Value(e) = &p.init {
+                                        collect_sites_expr(
+                                            e,
+                                            locus_types,
+                                            &mut entry.instantiates,
+                                        );
+                                    }
+                                }
+                            }
                             _ => {}
                         }
                     }

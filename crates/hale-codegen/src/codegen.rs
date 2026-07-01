@@ -890,12 +890,15 @@ pub fn build_executable_with_options(
         ownership_bubble_plan,
         ownership_bubble_nonsingleton_plan,
         ownership_forwarding_sets,
+        ownership_bubble_crosspool_plan,
     ): (
         std::collections::BTreeMap<(String, String), String>,
         std::collections::BTreeMap<(String, String), String>,
         std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+        std::collections::BTreeMap<(String, String), String>,
     ) = if env_flag("LOTUS_NO_OWNERSHIP_BUBBLE") {
         (
+            std::collections::BTreeMap::new(),
             std::collections::BTreeMap::new(),
             std::collections::BTreeMap::new(),
             std::collections::BTreeMap::new(),
@@ -911,32 +914,39 @@ pub fn build_executable_with_options(
             (String, String),
             String,
         > = std::collections::BTreeMap::new();
+        // Interest-based ownership #3: the cross-pool twin. A site
+        // resolving to `Ancestor(A)` with `OwnerKind::SingletonConst`
+        // AND `EdgeClass::CrossPool` (A a program-start singleton on a
+        // different thread than the enclosing locus) lands here — the
+        // child is born on A's thread via the async post+dispatch path.
+        // Non-singleton cross-pool has no compile-time pool handle for A
+        // → NOT admitted (stays transient, deferred).
+        let mut crosspool: std::collections::BTreeMap<
+            (String, String),
+            String,
+        > = std::collections::BTreeMap::new();
         for site in &graph.sites {
             if let OwnerResolution::Ancestor(owner) = &site.resolution {
-                if site.edge_class != EdgeClass::SameTower {
-                    continue;
-                }
-                if site.owner_kind == OwnerKind::SingletonConst {
-                    plan.insert(
-                        (
-                            site.enclosing_locus.clone(),
-                            site.child_ty.clone(),
-                        ),
-                        owner.clone(),
-                    );
-                } else if site.owner_kind == OwnerKind::Ancestor {
-                    nonsingleton.insert(
-                        (
-                            site.enclosing_locus.clone(),
-                            site.child_ty.clone(),
-                        ),
-                        owner.clone(),
-                    );
+                let key =
+                    (site.enclosing_locus.clone(), site.child_ty.clone());
+                match (&site.edge_class, &site.owner_kind) {
+                    (EdgeClass::SameTower, OwnerKind::SingletonConst) => {
+                        plan.insert(key, owner.clone());
+                    }
+                    (EdgeClass::SameTower, OwnerKind::Ancestor) => {
+                        nonsingleton.insert(key, owner.clone());
+                    }
+                    (EdgeClass::CrossPool, OwnerKind::SingletonConst) => {
+                        crosspool.insert(key, owner.clone());
+                    }
+                    // CrossPool + non-singleton (no static pool handle),
+                    // Open, per-path, orphan: stay transient.
+                    _ => {}
                 }
             }
         }
         let forwarding = graph.compute_forwarding_sets();
-        (plan, nonsingleton, forwarding)
+        (plan, nonsingleton, forwarding, crosspool)
     };
 
     let context = Context::create();
@@ -1041,6 +1051,8 @@ pub fn build_executable_with_options(
         ownership_bubble_plan,
         ownership_bubble_nonsingleton_plan,
         ownership_forwarding_sets,
+        ownership_bubble_crosspool_plan,
+        bare_locus_instantiation_stmt: false,
         program_has_offthread,
         deferred_dissolves: Vec::new(),
         in_main: false,
@@ -2392,6 +2404,28 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `LOTUS_NO_OWNERSHIP_BUBBLE=1`.
     pub(crate) ownership_forwarding_sets:
         std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// Interest-based ownership, artifact #3 — cross-pool bubbling.
+    /// Same key `(enclosing_locus, child_ty)`, value the owner locus
+    /// type `A`, but here `A` is a `SingletonConst` on a DIFFERENT
+    /// pool/thread than the enclosing locus (`EdgeClass::CrossPool`).
+    /// Because arenas are per-thread, the child cannot be born on the
+    /// consumer's thread — it is marshaled + posted to `A`'s thread
+    /// where a synthesized dispatcher allocs it in `A`'s arena, inits
+    /// its params, and stitches it to `A` (accept + children_push).
+    /// Async fire-and-forget: an `I{}` at such a site is legal only as
+    /// a bare statement (a value-use is a compile error). Disjoint from
+    /// `ownership_bubble_plan` / `_nonsingleton_plan`. Empty under
+    /// `LOTUS_NO_OWNERSHIP_BUBBLE=1`.
+    pub(crate) ownership_bubble_crosspool_plan:
+        std::collections::BTreeMap<(String, String), String>,
+    /// Set true by `lower_stmt` immediately before it lowers a bare
+    /// expression-statement locus instantiation (`I { ... };`), and
+    /// consumed (mem::take) at the top of `lower_locus_instantiation`.
+    /// It is the ONLY context in which a cross-pool fire-and-forget
+    /// spawn is legal; every other call path (let-binding RHS, sub-
+    /// expression, field default) leaves it false, so a cross-pool
+    /// `I{}` used as a value is rejected with a clear diagnostic.
+    pub(crate) bare_locus_instantiation_stmt: bool,
     /// THE single source of truth for "a thread crosses the bus
     /// boundary in this program" — the union of pinned/cross-pool
     /// placement and an inline adapter `bindings { }` recv-loop.
@@ -12297,7 +12331,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 };
                 let name = resolved_name.as_str();
                 if self.user_loci.contains_key(name) {
-                    let _ = self.lower_locus_instantiation(name, inits, scope)?;
+                    // Interest-based ownership #3: this is the ONLY
+                    // context where a cross-pool fire-and-forget spawn
+                    // (`I { ... };`) is legal — a bare
+                    // expression-statement whose value is discarded.
+                    // `lower_locus_instantiation` mem::takes the flag at
+                    // its top, so nested/param-default instantiations
+                    // see false and a value-use of a cross-pool `I{}` is
+                    // rejected there.
+                    self.bare_locus_instantiation_stmt = true;
+                    let r = self.lower_locus_instantiation(name, inits, scope);
+                    self.bare_locus_instantiation_stmt = false;
+                    let _ = r?;
                 } else if self.user_types.contains_key(name) {
                     // Statement-position type literal: build it,
                     // discard the pointer. Useful for side-effect-

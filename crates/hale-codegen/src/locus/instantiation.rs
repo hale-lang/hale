@@ -17,9 +17,10 @@ use inkwell::values::PointerValue;
 use inkwell::AddressSpace;
 
 use crate::bus::runtime::BusRuntime;
+use crate::bus::wire::BusWire;
 use crate::codegen::{
     chunk_hint_for_coop_pool, CodegenError, CodegenTy, Cx,
-    DefaultInit, ParamValue, Scope, SelfCx, SlotForm, SyncMode,
+    DefaultInit, LocusInfo, ParamValue, Scope, SelfCx, SlotForm, SyncMode,
 };
 use crate::locus::dissolve::LocusDissolve;
 use crate::stdlib::time::TimeStdlib;
@@ -49,6 +50,13 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         // eager dissolve. Outermost instantiation owns it; nested
         // ones see false.
         let defer_for_let = std::mem::take(&mut self.defer_next_locus_dissolve);
+        // Interest-based ownership #3: whether THIS instantiation is a
+        // bare expression-statement (`I { ... };`, value discarded) —
+        // the only context in which a cross-pool fire-and-forget spawn
+        // is legal. Taken here so nested/param-default instantiations
+        // (recursive `lower_locus_instantiation` calls below) see false.
+        let is_bare_stmt =
+            std::mem::take(&mut self.bare_locus_instantiation_stmt);
         // Phase-2 (2): parent locus is constructing us as a field
         // default / override. Suppress eager dissolve — the parent
         // owns us and cascades dissolve from its own dispatch.
@@ -135,6 +143,48 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         } else {
             false
         };
+        // Interest-based ownership #3: cross-pool bubble. When the direct
+        // parent does not accept us but the cross-pool plan resolved
+        // `(enclosing, I) -> A` (A a SingletonConst on a DIFFERENT
+        // thread), the child CANNOT be born on this (consumer) thread —
+        // arenas are per-thread. Marshal its params, post a create cell
+        // to A's thread, and return early: A's dispatcher births it in
+        // A's arena and stitches it. Fire-and-forget — a value-use is a
+        // compile error (only a bare `I{};` statement is legal), which
+        // is what makes the co-location (and same-thread teardown)
+        // sound. SelfOwned (`parent_accepts_us`) always wins, so we only
+        // consult the plan when the direct parent doesn't accept us.
+        let crosspool_owner: Option<String> = if parent_accepts_us {
+            None
+        } else if let Some(cs) = self.current_self.as_ref() {
+            let key = (cs.locus_name.clone(), locus_name.to_string());
+            self.ownership_bubble_crosspool_plan.get(&key).cloned()
+        } else {
+            None
+        };
+        if let Some(owner_name) = crosspool_owner {
+            if !is_bare_stmt {
+                return Err(CodegenError::Unsupported(format!(
+                    "cross-pool spawn `{child}{{ }}` is fire-and-forget: \
+                     the instance is created on `{owner}`'s thread and \
+                     cannot be used here. Write it as a bare statement \
+                     (`{child} {{ ... }};`), not as a value (let-binding, \
+                     sub-expression, or field).",
+                    child = locus_name,
+                    owner = owner_name,
+                )));
+            }
+            // Restore the cooperative-pool context we swapped in above
+            // (the normal path restores it at fn exit; we early-return).
+            self.current_cooperative_pool = prev_current_coop_pool;
+            return self.emit_crosspool_bubble_spawn(
+                locus_name,
+                &info,
+                &owner_name,
+                &overrides,
+                scope,
+            );
+        }
         // m90 (3f fix): if the current fn declares `-> Self` for this
         // locus, the instance can escape to the caller. A stack alloca
         // becomes dangling the moment the method returns, so the first
@@ -867,7 +917,18 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         // `main locus`/`@export` singleton, so this store runs exactly
         // once per program. The plan is empty on the corpus / under
         // `LOTUS_NO_OWNERSHIP_BUBBLE=1`, so no store is emitted there.
-        if self.ownership_bubble_plan.values().any(|a| a == locus_name) {
+        //
+        // Interest-based ownership #3: a cross-pool bubble owner is the
+        // SAME kind of SingletonConst `A`; its consumer runs on another
+        // thread and loads this global to address the create-cell's
+        // `self_ptr`. Store it here too (the store runs on A's own
+        // thread, before A spawns the pool-placed consumers).
+        if self.ownership_bubble_plan.values().any(|a| a == locus_name)
+            || self
+                .ownership_bubble_crosspool_plan
+                .values()
+                .any(|a| a == locus_name)
+        {
             let owner_global = self.owner_singleton_global(locus_name);
             self.builder
                 .build_store(owner_global.as_pointer_value(), self_ptr)
@@ -3324,5 +3385,585 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .into_pointer_value())
+    }
+
+    // === Interest-based ownership #3: cross-pool bubbling =========
+
+    /// The param-field marshaling layout for a cross-pool-bubbled locus
+    /// `I`: the `(field_order, fields)` pair the bus wire serializer
+    /// consumes, restricted to `I`'s user-declared params (in
+    /// declaration order — `info.defaults`), and validated to be
+    /// wire-serializable. This is what crosses the thread boundary; a
+    /// param whose type the wire format can't carry is rejected with a
+    /// clear "unsupported cross-pool payload field" diagnostic.
+    fn crosspool_param_layout(
+        &self,
+        child_locus: &str,
+        info: &LocusInfo<'ctx>,
+    ) -> Result<(Vec<String>, BTreeMap<String, (u32, CodegenTy)>), CodegenError>
+    {
+        fn wire_ok(ty: &CodegenTy) -> bool {
+            match ty {
+                CodegenTy::Int
+                | CodegenTy::Float
+                | CodegenTy::Bool
+                | CodegenTy::String
+                | CodegenTy::Duration
+                | CodegenTy::Decimal
+                | CodegenTy::Time
+                | CodegenTy::Bytes
+                | CodegenTy::TypeRef(_) => true,
+                CodegenTy::Array(elem, _) => wire_ok(elem),
+                _ => false,
+            }
+        }
+        let mut order: Vec<String> = Vec::new();
+        let mut fields: BTreeMap<String, (u32, CodegenTy)> = BTreeMap::new();
+        for (fname, _default) in &info.defaults {
+            let (idx, ty) = info.fields.get(fname).cloned().ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "cross-pool spawn `{}`: param `{}` has no struct field",
+                    child_locus, fname
+                ))
+            })?;
+            if !wire_ok(&ty) {
+                return Err(CodegenError::Unsupported(format!(
+                    "cross-pool spawn `{}`: unsupported cross-pool payload \
+                     field `{}: {:?}` — a fire-and-forget spawn marshals its \
+                     params across the thread boundary via the bus wire \
+                     format, which supports primitives (Int, Float, Decimal, \
+                     Bool, Duration, Time), String, Bytes, nested structs, \
+                     and fixed-size arrays of those. LocusRef / interface / \
+                     enum / tuple params are not carryable.",
+                    child_locus, fname, ty
+                )));
+            }
+            order.push(fname.clone());
+            fields.insert(fname.clone(), (idx, ty));
+        }
+        Ok((order, fields))
+    }
+
+    /// Validate that a cross-pool-bubbled locus `I` is a shape the async
+    /// create-and-accept path can birth on `A`'s thread from a marshaled
+    /// payload. The child is born co-located with `A` (so its teardown is
+    /// A's ordinary same-thread reclaim cascade — no cross-thread
+    /// protocol); shapes needing their own scheduling / cross-thread
+    /// coordination on the far side are rejected up front.
+    fn crosspool_child_shape_ok(
+        &self,
+        child_locus: &str,
+        info: &LocusInfo<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let reject = |why: &str| {
+            Err(CodegenError::Unsupported(format!(
+                "cross-pool spawn `{}` is fire-and-forget and is born on the \
+                 owner's thread; {} is not supported for a cross-pool child \
+                 (born via async handoff). Restrict it to params + optional \
+                 `birth` / `drain` / `dissolve` + contract.",
+                child_locus, why
+            )))
+        };
+        if matches!(info.schedule_class, ScheduleClass::Pinned(_)) {
+            return reject("a pinned placement");
+        }
+        if !info.subscriptions.is_empty() {
+            return reject("bus subscriptions");
+        }
+        if !info.closures.is_empty() {
+            return reject("closures");
+        }
+        if !info.capacity_slots.is_empty() {
+            return reject("capacity slots");
+        }
+        if info.accept_param.is_some() {
+            return reject("its own `accept` (nested owned children)");
+        }
+        if !info.owner_forward_field_idxs.is_empty() {
+            return reject("owner-forwarding fields");
+        }
+        // A non-empty `run` would need to be scheduled on the far side;
+        // an empty (or absent) run is a no-op we simply skip.
+        if info.methods.contains_key("run")
+            && !info.empty_lifecycle.contains("run")
+        {
+            return reject("a non-empty `run`");
+        }
+        Ok(())
+    }
+
+    /// Consumer side of a cross-pool bubble. Runs on the enclosing
+    /// locus's (consumer's) thread: evaluate `I`'s param-init
+    /// expressions locally, marshal them into a payload via the bus wire
+    /// serializer, and post a create cell — `(dispatcher, A_self,
+    /// payload)` — to `A`'s thread (mailbox / main-thread bus queue).
+    /// The statement produces no usable value (fire-and-forget): a null
+    /// pointer is returned and discarded by the bare-statement caller.
+    fn emit_crosspool_bubble_spawn(
+        &mut self,
+        child_locus: &str,
+        info: &LocusInfo<'ctx>,
+        owner_name: &str,
+        overrides: &BTreeMap<&str, &Expr>,
+        scope: &Scope<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.crosspool_child_shape_ok(child_locus, info)?;
+        let (param_order, param_fields) =
+            self.crosspool_param_layout(child_locus, info)?;
+        // Synthesize (once) the far-side dispatcher for this (I, A) pair.
+        let dispatcher = self.synthesize_crosspool_dispatcher(
+            child_locus,
+            owner_name,
+            &param_order,
+            &param_fields,
+        )?;
+
+        let i8_t = self.context.i8_type();
+        let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+
+        // A local scratch `I` struct to hold evaluated param values —
+        // stack-lived, read only by the serializer below, then dropped.
+        let tmp = self
+            .builder
+            .build_alloca(info.struct_ty, "xpool.params.tmp")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        for fname in &param_order {
+            let (idx, declared_ty) = param_fields
+                .get(fname)
+                .cloned()
+                .expect("param in order is in fields");
+            let (val, val_ty) = if let Some(expr) = overrides.get(fname.as_str())
+            {
+                self.lower_expr(expr, scope)?
+            } else {
+                match info
+                    .defaults
+                    .iter()
+                    .find(|(n, _)| n == fname)
+                    .map(|(_, d)| d)
+                    .expect("param has a default entry")
+                {
+                    DefaultInit::Const(pv) => self.const_param(pv),
+                    DefaultInit::Expr(e) => self.lower_expr(e, scope)?,
+                    DefaultInit::Required => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "cross-pool spawn `{}`: param `{}` is required — \
+                             supply it as `{} {{ {}: ... }};`",
+                            child_locus, fname, child_locus, fname
+                        )));
+                    }
+                }
+            };
+            if val_ty != declared_ty {
+                return Err(CodegenError::Unsupported(format!(
+                    "cross-pool spawn `{}` field `{}` type mismatch: declared \
+                     {:?}, got {:?}",
+                    child_locus, fname, declared_ty, val_ty
+                )));
+            }
+            let slot = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    tmp,
+                    idx,
+                    &format!("xpool.{}.{}.ptr", child_locus, fname),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(slot, val)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+
+        // Serialize the param fields into a stack payload buffer. The
+        // post copies the bytes into the cell, so the buffer's lifetime
+        // ends here. Cap chosen to match the runtime cell scratch; a
+        // fire-and-forget entity's params are small by construction.
+        const XPOOL_PAYLOAD_CAP: u32 = 8192;
+        let buf_ty = i8_t.array_type(XPOOL_PAYLOAD_CAP);
+        let payload_buf = self
+            .builder
+            .build_alloca(buf_ty, "xpool.payload")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let nbytes = self.emit_per_field_serialize(
+            tmp,
+            payload_buf,
+            info.struct_ty,
+            &param_order,
+            &param_fields,
+        )?;
+        let size_arg = self.size_to_usize(nbytes)?;
+
+        // A's self-pointer (a program-start SingletonConst) from the
+        // internal global, and the post to A's thread.
+        let a_self = self.load_owner_singleton_ptr(owner_name)?;
+        self.emit_crosspool_post(
+            owner_name,
+            dispatcher.as_global_value().as_pointer_value(),
+            a_self,
+            payload_buf,
+            size_arg,
+        )?;
+        let _ = (i64_t, ptr_t);
+        // Fire-and-forget: no usable value on the consumer side.
+        Ok(self.context.ptr_type(AddressSpace::default()).const_null())
+    }
+
+    /// Emit the actual post of a create cell to owner `A`'s thread. `A`
+    /// is a SingletonConst: either pinned (its `__mailbox` drains on its
+    /// pthread) or a `main locus` / `@export` singleton running on the
+    /// main thread (its cells drain off the program-wide cooperative bus
+    /// queue). Both drains run the dispatcher on `A`'s own thread. If a
+    /// placement isn't cleanly reachable, reports it.
+    fn emit_crosspool_post(
+        &mut self,
+        owner_name: &str,
+        dispatcher_ptr: PointerValue<'ctx>,
+        a_self: PointerValue<'ctx>,
+        payload: PointerValue<'ctx>,
+        size: inkwell::values::IntValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let owner_info = self
+            .user_loci
+            .get(owner_name)
+            .cloned()
+            .expect("cross-pool owner is a declared locus");
+        let owner_pinned =
+            matches!(owner_info.schedule_class, ScheduleClass::Pinned(_))
+                || self.pinned_locus_types.contains(owner_name);
+        if owner_pinned {
+            // Pinned A: post to A's mailbox (drained by A's pthread).
+            let mb_idx = owner_info.mailbox_field_idx.ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "cross-pool bubble to pinned owner `{}`: it has no \
+                     mailbox to receive the create cell (a pinned owner must \
+                     declare bus subscriptions to have a drain loop)",
+                    owner_name
+                ))
+            })?;
+            let mb_slot = self
+                .builder
+                .build_struct_gep(
+                    owner_info.struct_ty,
+                    a_self,
+                    mb_idx,
+                    &format!("{}.xpool.mailbox.ptr", owner_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let mb = self
+                .builder
+                .build_load(ptr_t, mb_slot, &format!("{}.xpool.mailbox", owner_name))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let post_fn = self
+                .module
+                .get_function("lotus_mailbox_post")
+                .expect("lotus_mailbox_post declared");
+            self.builder
+                .build_call(
+                    post_fn,
+                    &[
+                        mb.into(),
+                        dispatcher_ptr.into(),
+                        a_self.into(),
+                        payload.into(),
+                        size.into(),
+                    ],
+                    "xpool.mailbox.post",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            return Ok(());
+        }
+        // Main-thread SingletonConst A (a `main locus` / `@export`
+        // locus): route to the program-wide cooperative bus queue. The
+        // main thread drains it at every `time::sleep` slice and at
+        // `flush_dissolve_frame` (before A dissolves), so a cell posted
+        // just before shutdown is drained — never leaked or UAF'd.
+        let queue_global = self
+            .module
+            .get_global("lotus.bus_queue.global")
+            .expect("bus queue global declared");
+        let queue_ptr = self
+            .builder
+            .build_load(ptr_t, queue_global.as_pointer_value(), "xpool.queue")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let enqueue_fn = self
+            .module
+            .get_function("lotus_bus_queue_enqueue")
+            .expect("lotus_bus_queue_enqueue declared");
+        self.builder
+            .build_call(
+                enqueue_fn,
+                &[
+                    queue_ptr.into(),
+                    dispatcher_ptr.into(),
+                    a_self.into(),
+                    payload.into(),
+                    size.into(),
+                ],
+                "xpool.queue.enqueue",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Synthesize (once per `(I, A)`) the far-side dispatcher run on
+    /// `A`'s thread when it drains a cross-pool create cell:
+    /// `void __xpool_dispatch_<I>_<A>(void *A_self, void *payload)`.
+    /// It allocates `I` in `A`'s arena, deserializes the payload into
+    /// `I`'s params, gives `I` its own arena (or borrows `A`'s when
+    /// `I` is arena-elidable — matching the Fresh-strategy reclaim
+    /// contract), runs `I.birth()`, then stitches `I` to `A`
+    /// (`A.accept(A, I)` + `lotus_children_push`). Because `I` ends up
+    /// co-located with `A`, teardown is A's existing same-thread reclaim
+    /// cascade — no cross-thread reclaim protocol.
+    fn synthesize_crosspool_dispatcher(
+        &mut self,
+        child_locus: &str,
+        owner_name: &str,
+        param_order: &[String],
+        param_fields: &BTreeMap<String, (u32, CodegenTy)>,
+    ) -> Result<inkwell::values::FunctionValue<'ctx>, CodegenError> {
+        let fn_name = format!("__xpool_dispatch_{}_{}", child_locus, owner_name);
+        if let Some(f) = self.module.get_function(&fn_name) {
+            return Ok(f);
+        }
+        let child_info = self
+            .user_loci
+            .get(child_locus)
+            .cloned()
+            .expect("cross-pool child is a declared locus");
+        let owner_info = self
+            .user_loci
+            .get(owner_name)
+            .cloned()
+            .expect("cross-pool owner is a declared locus");
+
+        let void_t = self.context.void_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        let fn_ty = void_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        let dispatch = self.module.add_function(&fn_name, fn_ty, None);
+
+        let saved_block = self.builder.get_insert_block();
+        let prev_fn = self.current_fn.take();
+        self.current_fn = Some(dispatch);
+
+        let entry = self.context.append_basic_block(dispatch, "entry");
+        // Deserialize bound-check failure (corrupt payload) → drop the
+        // cell (return void). Trusted same-process payload never trips
+        // this; it exists only to satisfy the wire deserializer ABI.
+        let fail_bb = self.context.append_basic_block(dispatch, "xpool.fail");
+        self.builder.position_at_end(fail_bb);
+        self.builder
+            .build_return(None)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(entry);
+        let a_self = dispatch
+            .get_nth_param(0)
+            .expect("dispatch A_self param")
+            .into_pointer_value();
+        let payload = dispatch
+            .get_nth_param(1)
+            .expect("dispatch payload param")
+            .into_pointer_value();
+
+        // A's arena, from A_self.
+        let a_arena_slot = self
+            .builder
+            .build_struct_gep(
+                owner_info.struct_ty,
+                a_self,
+                owner_info.arena_field_idx,
+                &format!("{}.xpool.arena.ptr", owner_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let a_arena = self
+            .builder
+            .build_load(ptr_t, a_arena_slot, &format!("{}.xpool.arena", owner_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+
+        // Allocate I's struct in A's arena (16-align — widest scalar).
+        let alloc_fn = self
+            .module
+            .get_function("lotus_arena_alloc")
+            .expect("lotus_arena_alloc declared");
+        let child_size = child_info
+            .struct_ty
+            .size_of()
+            .expect("child struct has known size");
+        let child_ptr = self
+            .builder
+            .build_call(
+                alloc_fn,
+                &[a_arena.into(), child_size.into(), i64_t.const_int(16, false).into()],
+                &format!("{}.xpool.self", child_locus),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_arena_alloc returns ptr")
+            .into_pointer_value();
+
+        // I's own arena: a fresh labeled arena, unless I is
+        // arena-elidable — then borrow A's arena (matching the
+        // Fresh-strategy contract so __reclaim's destroy-skip is
+        // leak-free).
+        let child_arena = if child_info.arena_elidable {
+            a_arena
+        } else {
+            let label_ptr = self
+                .builder
+                .build_global_string_ptr(
+                    child_locus,
+                    &format!("{}.xpool.arena.label", child_locus),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .as_pointer_value();
+            let create_fn = self
+                .module
+                .get_function("lotus_arena_create_labeled")
+                .expect("lotus_arena_create_labeled declared");
+            self.builder
+                .build_call(
+                    create_fn,
+                    &[label_ptr.into()],
+                    &format!("{}.xpool.arena.new", child_locus),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("arena_create returns ptr")
+                .into_pointer_value()
+        };
+
+        // Synthetic-field init: __arena, __owner_self=A, __parent_self,
+        // __parent_on_failure, __locus_ref_owned_mask=0.
+        let store_ptr_field = |cx: &Self,
+                               idx: u32,
+                               val: inkwell::values::BasicValueEnum<'ctx>,
+                               label: &str|
+         -> Result<(), CodegenError> {
+            let slot = cx
+                .builder
+                .build_struct_gep(child_info.struct_ty, child_ptr, idx, label)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            cx.builder
+                .build_store(slot, val)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            Ok(())
+        };
+        let null = ptr_t.const_null();
+        store_ptr_field(self, child_info.arena_field_idx, child_arena.into(), "xpool.arena.set")?;
+        store_ptr_field(self, child_info.owner_self_field_idx, a_self.into(), "xpool.owner.set")?;
+        store_ptr_field(self, child_info.parent_self_field_idx, null.into(), "xpool.parent.set")?;
+        store_ptr_field(
+            self,
+            child_info.parent_on_failure_field_idx,
+            null.into(),
+            "xpool.parent_of.set",
+        )?;
+        {
+            let mask_slot = self
+                .builder
+                .build_struct_gep(
+                    child_info.struct_ty,
+                    child_ptr,
+                    child_info.locus_ref_owned_mask_field_idx,
+                    "xpool.mask.ptr",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(mask_slot, i64_t.const_int(0, false))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+
+        // Deserialize the marshaled params into I's param slots. The
+        // wire deserializer allocates String/Bytes into the program-
+        // lifetime payload arena (freed at exit). A generous wire_n
+        // bound suffices — the payload is trusted (same process).
+        let wire_n = i64_t.const_int(1 << 30, false);
+        let param_order_vec: Vec<String> = param_order.to_vec();
+        let _ = self.emit_per_field_deserialize(
+            payload,
+            child_ptr,
+            child_info.struct_ty,
+            &param_order_vec,
+            param_fields,
+            wire_n,
+            fail_bb,
+        )?;
+
+        // birth() on A's thread.
+        if let Some(birth_fn) = child_info.methods.get("birth") {
+            if !child_info.empty_lifecycle.contains("birth") {
+                self.builder
+                    .build_call(
+                        *birth_fn,
+                        &[child_ptr.into()],
+                        &format!("{}.xpool.birth", child_locus),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+        }
+
+        // Stitch to A: accept(A, I) (if non-empty) + children_push.
+        if let Some((_, expected)) = &owner_info.accept_param {
+            if expected == child_locus {
+                if let Some(accept_fn) = owner_info.methods.get("accept") {
+                    if !owner_info.empty_lifecycle.contains("accept") {
+                        self.builder
+                            .build_call(
+                                *accept_fn,
+                                &[a_self.into(), child_ptr.into()],
+                                &format!("{}.xpool.accept", owner_name),
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    }
+                }
+                if let (Some(arr_idx), Some(cnt_idx), Some(cap_idx)) = (
+                    owner_info.children_field_idx,
+                    owner_info.child_count_field_idx,
+                    owner_info.child_cap_field_idx,
+                ) {
+                    let arr_ptr = self
+                        .builder
+                        .build_struct_gep(owner_info.struct_ty, a_self, arr_idx, "xpool.children.ptr")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let cnt_ptr = self
+                        .builder
+                        .build_struct_gep(owner_info.struct_ty, a_self, cnt_idx, "xpool.child_count.ptr")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let cap_ptr = self
+                        .builder
+                        .build_struct_gep(owner_info.struct_ty, a_self, cap_idx, "xpool.child_cap.ptr")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let push_fn = self
+                        .module
+                        .get_function("lotus_children_push")
+                        .expect("lotus_children_push declared");
+                    self.builder
+                        .build_call(
+                            push_fn,
+                            &[arr_ptr.into(), cnt_ptr.into(), cap_ptr.into(), child_ptr.into()],
+                            &format!("{}.xpool.children_push", owner_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+            }
+        }
+
+        self.builder
+            .build_return(None)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.current_fn = prev_fn;
+        if let Some(bb) = saved_block {
+            self.builder.position_at_end(bb);
+        }
+        Ok(dispatch)
     }
 }
