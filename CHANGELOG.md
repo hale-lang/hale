@@ -6,6 +6,29 @@ behavior.
 
 ---
 
+## v0.9.1 — pinned-Decimal bus-payload alignment fix
+
+- **Fixed a segfault when a pinned bus subscriber stores or does arithmetic on a
+  received `Decimal`.** A `Decimal` (an inline `i128`, align-16) delivered to a
+  *pinned* subscriber landed in an 8-aligned mailbox payload cell, so an aligned
+  SSE access (`vmovaps`) `#GP`-trapped — silent UB on ordinary type-correct code
+  in the hot path of any bus consumer carrying money. Root cause:
+  `lotus_bus_cell_t.payload_inline` had only the cell's natural align 8 (its
+  widest member is a pointer), and the pinned drain hands the handler
+  `&cell.payload_inline` directly — whereas a cooperative drain copies into a
+  16-aligned scratch, which is why only the *pinned* path crashed. (It looked
+  flaky because at `-O3` LLVM scalarizes individual i128 *field* ops into
+  misalignment-tolerant paired 64-bit moves, so only a whole-struct payload copy
+  reliably tripped the aligned `vmovaps`.) Fix: force the mailbox cell to 16-byte
+  alignment (one struct attribute makes every cell copy 16-aligned uniformly), and
+  bump the two nested-struct wire-deserialize allocations from 8 to 16 (a latent
+  trap for remote/cross-process payloads carrying a nested Decimal-bearing struct).
+  The downstream "never hold a bus-received Decimal — `to_string` it at the seam"
+  workaround is no longer needed. Regression test: `bus_decimal_store` — three
+  pinned-subscriber cases (`@form(vec)` push, `@form(hashmap)` cell, plain `self`
+  field) asserting the *exact* round-tripped values + an accumulated sum, ASan-
+  clean; SIGSEGVs on the pre-fix compiler.
+
 ## v0.9.0 — lock-free bus, static dispatch devirtualization, native codegen
 
 - **Lock-free bus messaging + static dispatch devirtualization — coordination
