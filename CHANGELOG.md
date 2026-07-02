@@ -8,6 +8,23 @@ behavior.
 
 ## Unreleased
 
+- **Typecheck M3 stage 3 (tranche 1) — generic fn call validation.**
+  Call sites of generic fn templates are now checked at typecheck
+  with source spans — the Ty-level mirror of codegen's m62
+  inference: arity ("takes 3 arguments, got 2"), binding conflicts
+  ("parameter `T` bound to both `Int` and `String` by this call's
+  arguments"), unpinned generics ("cannot infer `T` from this
+  call"), and args vs SUBSTITUTED param types. The call types as
+  the substituted return (fallible payloads substituted too), so a
+  generic call's result participates in downstream checking instead
+  of passing through as Unknown. Permissive exactly where inference
+  is blind (Unknown args, generic-arg'd nested shapes). Tranche 2:
+  generic STRUCT literal field validation. Also fixed en route: a
+  DWARF location leak at the mid-statement generic-synthesis site
+  (the caller's active location poisoned the synthesized fn's entry
+  allocas — "!dbg attachment points at wrong subprogram" — on any
+  debug-info build using generics).
+
 - **bounded[T; N]: `set(f, i, x)` + `truncate(f, n)` intrinsics.**
   `set` overwrites a live slot (fallible IndexError, arena-anchors
   pointer-shaped elements like push); `truncate` clamps the count

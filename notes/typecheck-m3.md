@@ -1,6 +1,6 @@
 # Typecheck Milestone 3 — full-fidelity checking
 
-Status: stages 1 + 2 + 4 SHIPPED (2026-07-02, commits df60cdd + 0b10063 + 3519dec); 3 and 5 remain. The public-launch gate: errors fire at
+Status: stages 1 + 2 + 4 SHIPPED, stage 3 tranche 1 SHIPPED (generic FN call validation — arity/conflicts/unpinned/substituted args+ret; struct-literal tranche remains); 5 remains. The public-launch gate: errors fire at
 typecheck with source spans, not two phases later at codegen/link,
 and never as runtime corruption.
 

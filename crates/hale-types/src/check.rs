@@ -149,6 +149,114 @@ fn is_pure_literal(e: &Expr) -> bool {
     }
 }
 
+/// M3 stage 3: collect generic fn templates (recursing modules).
+fn collect_generic_fns<'a>(
+    items: &'a [TopDecl],
+    out: &mut BTreeMap<String, &'a FnDecl>,
+) {
+    for item in items {
+        match item {
+            TopDecl::Fn(f) if !f.generics.is_empty() => {
+                out.insert(f.name.name.clone(), f);
+            }
+            TopDecl::Module(m) => collect_generic_fns(&m.items, out),
+            _ => {}
+        }
+    }
+}
+
+/// M3 stage 3: Ty-level mirror of codegen's m62
+/// `unify_generic_param_bindings`. Binds generic names appearing in
+/// `param_te` against the actual arg type. Top-level generic names
+/// bind directly; Array/Bounded recurse on the element. Generic
+/// names nested under generic-ARG'd Named types (Box<T> in param
+/// position) stay unbound here — permissive, codegen's own unifier
+/// still runs. Returns Err((name, existing, new)) on a conflict.
+fn unify_generic_ty(
+    param_te: &TypeExpr,
+    arg: &Ty,
+    generics: &std::collections::BTreeSet<String>,
+    bindings: &mut BTreeMap<String, Ty>,
+) -> Result<(), (String, Ty, Ty)> {
+    match param_te {
+        TypeExpr::Named { path, generic_args, .. }
+            if generic_args.is_empty() && path.segments.len() == 1 =>
+        {
+            let name = &path.segments[0].name;
+            if !generics.contains(name) {
+                return Ok(());
+            }
+            if matches!(arg, Ty::Unknown) {
+                return Ok(());
+            }
+            match bindings.get(name) {
+                Some(existing) if existing != arg => Err((
+                    name.clone(),
+                    existing.clone(),
+                    arg.clone(),
+                )),
+                Some(_) => Ok(()),
+                None => {
+                    bindings.insert(name.clone(), arg.clone());
+                    Ok(())
+                }
+            }
+        }
+        TypeExpr::Array { elem, .. } => match arg {
+            Ty::Array(a_elem, _) => {
+                unify_generic_ty(elem, a_elem, generics, bindings)
+            }
+            _ => Ok(()),
+        },
+        TypeExpr::Bounded { elem, .. } => match arg {
+            Ty::Bounded(a_elem, _) => {
+                unify_generic_ty(elem, a_elem, generics, bindings)
+            }
+            _ => Ok(()),
+        },
+        _ => Ok(()),
+    }
+}
+
+/// M3 stage 3: resolve a template TypeExpr with generic bindings
+/// applied — generic names map through `bindings`; everything else
+/// through the ordinary resolver. Unbound generics (or shapes the
+/// resolver can't see) fall to Unknown, keeping the checks
+/// permissive exactly where inference was.
+fn substitute_generic_ty(
+    te: &TypeExpr,
+    bindings: &BTreeMap<String, Ty>,
+    known: &BTreeMap<String, Span>,
+) -> Ty {
+    match te {
+        TypeExpr::Named { path, generic_args, .. }
+            if generic_args.is_empty() && path.segments.len() == 1 =>
+        {
+            if let Some(t) = bindings.get(&path.segments[0].name) {
+                return t.clone();
+            }
+            resolve_type_expr(te, known)
+        }
+        TypeExpr::Array { elem, size, .. } => {
+            let n = match size {
+                Some(Expr::Literal(Literal::Int(n), _)) if *n >= 0 => {
+                    Some(*n as u64)
+                }
+                _ => None,
+            };
+            Ty::Array(
+                Box::new(substitute_generic_ty(elem, bindings, known)),
+                n,
+            )
+        }
+        TypeExpr::Bounded { elem, cap, .. } => Ty::Bounded(
+            Box::new(substitute_generic_ty(elem, bindings, known)),
+            *cap,
+        ),
+        _ => resolve_type_expr(te, known),
+    }
+}
+
 pub fn check_bundle(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -165,6 +273,8 @@ pub fn check_bundle(
         })
     });
     for program in bundle.programs.values() {
+        let mut generic_fns: BTreeMap<String, &FnDecl> = BTreeMap::new();
+        collect_generic_fns(&program.items, &mut generic_fns);
         let mut cx = Checker {
             top,
             known: &known,
@@ -177,6 +287,7 @@ pub fn check_bundle(
             fallible_ctx: None,
             wasm_target,
             or_value_discarded: false,
+            generic_fns,
         };
         for item in &program.items {
             cx.check_top_decl(item);
@@ -4053,6 +4164,13 @@ struct Checker<'a> {
     /// Set by Stmt::Expr, consumed and cleared by the Or arm so
     /// nested `or`s in subexpressions don't inherit it.
     or_value_discarded: bool,
+    /// M3 stage 3 (2026-07-02): generic fn templates declared in
+    /// the program being checked (name → decl). Call sites mirror
+    /// codegen's m62 inference at the Ty level — every generic
+    /// param must be pinned by an arg, bindings must not conflict,
+    /// args must match the substituted params — and the call types
+    /// as the SUBSTITUTED return instead of Unknown.
+    generic_fns: BTreeMap<String, &'a FnDecl>,
 }
 
 #[derive(Default)]
@@ -7944,6 +8062,145 @@ impl<'a> Checker<'a> {
                         }
                         // Not bounded: roll back speculative diags.
                         self.diags.truncate(mark);
+                    }
+                }
+                // M3 stage 3 (2026-07-02): generic fn call
+                // validation — the Ty-level mirror of codegen's m62
+                // inference, with spans. Checks: arity, every
+                // generic param pinned, no conflicting bindings,
+                // args vs substituted params; the call types as the
+                // substituted return (fallible payloads
+                // substituted too).
+                if let Expr::Ident(id) = callee.as_ref() {
+                    if let Some(template) =
+                        self.generic_fns.get(id.name.as_str()).copied()
+                    {
+                        if args.len() != template.params.len() {
+                            self.diags.push(Diag::ty(
+                                callee.span(),
+                                format!(
+                                    "generic fn `{}` takes {} \
+                                     argument{}, got {}",
+                                    id.name,
+                                    template.params.len(),
+                                    if template.params.len() == 1 {
+                                        ""
+                                    } else {
+                                        "s"
+                                    },
+                                    args.len()
+                                ),
+                            ));
+                        }
+                        let arg_tys: Vec<Ty> = args
+                            .iter()
+                            .map(|a| self.check_expr_addressed(a))
+                            .collect();
+                        let generic_names: std::collections::BTreeSet<
+                            String,
+                        > = template
+                            .generics
+                            .iter()
+                            .map(|g| g.name.name.clone())
+                            .collect();
+                        let mut bindings: BTreeMap<String, Ty> =
+                            BTreeMap::new();
+                        for (p, at) in
+                            template.params.iter().zip(arg_tys.iter())
+                        {
+                            if let Err((gname, was, now)) =
+                                unify_generic_ty(
+                                    &p.ty,
+                                    at,
+                                    &generic_names,
+                                    &mut bindings,
+                                )
+                            {
+                                self.diags.push(Diag::ty(
+                                    callee.span(),
+                                    format!(
+                                        "generic fn `{}`: parameter \
+                                         `{}` bound to both `{}` and \
+                                         `{}` by this call's arguments",
+                                        id.name,
+                                        gname,
+                                        was.display(),
+                                        now.display()
+                                    ),
+                                ));
+                            }
+                        }
+                        // Every generic must be pinned — UNLESS an
+                        // arg typed Unknown could have pinned it
+                        // (stay permissive where inference was).
+                        let any_unknown_arg = arg_tys
+                            .iter()
+                            .any(|t| matches!(t, Ty::Unknown));
+                        if !any_unknown_arg {
+                            for g in &template.generics {
+                                if !bindings.contains_key(&g.name.name)
+                                {
+                                    self.diags.push(Diag::ty(
+                                        callee.span(),
+                                        format!(
+                                            "generic fn `{}`: cannot \
+                                             infer `{}` from this call \
+                                             — every generic param \
+                                             must appear in an \
+                                             argument position that \
+                                             pins it",
+                                            id.name, g.name.name
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                        // Args vs substituted params.
+                        for ((p, at), a) in template
+                            .params
+                            .iter()
+                            .zip(arg_tys.iter())
+                            .zip(args.iter())
+                        {
+                            let want = substitute_generic_ty(
+                                &p.ty,
+                                &bindings,
+                                self.known,
+                            );
+                            if !want.assignable_from(at) {
+                                self.diags.push(Diag::ty(
+                                    a.span(),
+                                    format!(
+                                        "generic fn `{}` argument \
+                                         `{}`: expected `{}`, got `{}`",
+                                        id.name,
+                                        p.name.name,
+                                        want.display(),
+                                        at.display()
+                                    ),
+                                ));
+                            }
+                        }
+                        let ret = match &template.ret {
+                            Some(te) => substitute_generic_ty(
+                                te,
+                                &bindings,
+                                self.known,
+                            ),
+                            None => Ty::Unit,
+                        };
+                        if let Some(fe) = &template.fallible {
+                            let payload = substitute_generic_ty(
+                                fe,
+                                &bindings,
+                                self.known,
+                            );
+                            return Ty::Fallible {
+                                success: Box::new(ret),
+                                payload: Box::new(payload),
+                            };
+                        }
+                        return ret;
                     }
                 }
                 // m47-payloads: enum-variant construction with

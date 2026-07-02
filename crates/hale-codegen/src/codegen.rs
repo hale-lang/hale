@@ -11691,6 +11691,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let saved_in_main = self.in_main;
             let saved_current_self = self.current_self.clone();
             let saved_loops = std::mem::take(&mut self.loops);
+            // DWARF: synthesis fires MID-STATEMENT while lowering
+            // the caller — the caller's active location must not
+            // leak into the synthesized fn's entry allocas
+            // ("!dbg attachment points at wrong subprogram").
+            // Unset for the synthesis; restore with the block.
+            let saved_di_loc = self.di_current_loc.take();
+            self.builder.unset_current_debug_location();
 
             self.in_main = false;
             self.current_self = None;
@@ -11701,6 +11708,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Restore caller-side state.
             if let Some(b) = saved_block {
                 self.builder.position_at_end(b);
+            }
+            // Restore the caller's statement location (see the
+            // unset above) — but never a location from another fn:
+            // saved_di_loc came from the caller we're returning to.
+            self.di_current_loc = saved_di_loc;
+            match saved_di_loc {
+                Some(loc) => {
+                    self.builder.set_current_debug_location(loc)
+                }
+                None => self.builder.unset_current_debug_location(),
             }
             self.current_fn = saved_current_fn;
             self.current_user_fn_ret = saved_user_fn_ret;
