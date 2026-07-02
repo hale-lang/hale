@@ -1225,6 +1225,55 @@ pub fn build_executable_with_options(
     // optimized — unresolved temporary MDNodes otherwise abort the
     // pass pipeline.
     if let Some(di) = &cx.di {
+        // Belt-and-braces DI repair (2026-07-03): synthesized code
+        // (fn-exit dissolve cascades, main's teardown, reclaim
+        // spines) is emitted from many sites, and any call that
+        // lands WITHOUT a !dbg inside a subprogram-carrying
+        // function is a verifier error ("inlinable function call in
+        // a function with debug info must have a !dbg location").
+        // The two fallible-epilogue emitters pin locations at
+        // emission time; this sweep catches every remaining site
+        // structurally: give each dbg-less call/invoke the LLVM
+        // synthesized-code convention, line 0 in its function's
+        // scope.
+        {
+            use inkwell::debug_info::AsDIScope;
+            use inkwell::values::InstructionOpcode;
+            let dbg_kind = cx.context.get_kind_id("dbg");
+            let mut f = cx.module.get_first_function();
+            while let Some(func) = f {
+                if let Some(sp) = func.get_subprogram() {
+                    let loc = di.builder.create_debug_location(
+                        cx.context,
+                        0,
+                        0,
+                        sp.as_debug_info_scope(),
+                        None,
+                    );
+                    for bb in func.get_basic_blocks() {
+                        let mut inst = bb.get_first_instruction();
+                        while let Some(i) = inst {
+                            if matches!(
+                                i.get_opcode(),
+                                InstructionOpcode::Call
+                                    | InstructionOpcode::Invoke
+                            ) && i.get_metadata(dbg_kind).is_none()
+                            {
+                                use inkwell::values::AsValueRef;
+                                unsafe {
+                                    inkwell::llvm_sys::debuginfo::LLVMInstructionSetDebugLoc(
+                                        i.as_value_ref(),
+                                        loc.as_mut_ptr(),
+                                    );
+                                }
+                            }
+                            inst = i.get_next_instruction();
+                        }
+                    }
+                }
+                f = func.get_next_function();
+            }
+        }
         di.builder.finalize();
         // DWARF emission is the one feature where a codegen mistake
         // (a location scoped to the wrong subprogram, a call missing
