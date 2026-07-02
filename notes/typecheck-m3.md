@@ -1,6 +1,6 @@
 # Typecheck Milestone 3 — full-fidelity checking
 
-Status: stages 1 + 4 SHIPPED (2026-07-02, commits df60cdd + 3519dec); 2, 3, 5 remain. The public-launch gate: errors fire at
+Status: stages 1 + 2 + 4 SHIPPED (2026-07-02, commits df60cdd + 0b10063 + 3519dec); 3 and 5 remain. The public-launch gate: errors fire at
 typecheck with source spans, not two phases later at codegen/link,
 and never as runtime corruption.
 
@@ -50,7 +50,13 @@ VALIDATION GATE: `hale check` over every program in hale/apps (via
 the corpus), all of pond, all of fathom — zero new errors before the
 stage ships.
 
-### Stage 2 — signature table for the scalar-heavy namespaces
+### Stage 2 — signature table for the scalar-heavy namespaces — SHIPPED 2026-07-02
+
+118 rows shipped (math/time/env/decimal/process-scalar/str/stdin/
+stdout/bytes/crypto/base64/rand); tranche 2 = io::fs/file/tcp/tls/
+udp + process child-management + json/text. Excluded-not-guessed:
+str::builder_* (opaque handles), can_parse_decimal (SPEC BUG: listed
+in stdlib.md, absent from dispatch). Original plan follows.
 
 Full `(params, ret, fallible)` rows for the namespaces where
 signatures are mostly scalars and the table is low-risk:
