@@ -8,6 +8,19 @@ behavior.
 
 ## Unreleased
 
+- **Aliasing stage 2 (tier 1) — `noalias self` on provably
+  non-reentrant locus methods.** Rust's `&mut`-style guarantee,
+  earned from Hale's own invariants: a method in the elidable
+  fixpoint (non-allocating ⇒ cannot publish, and its callees never
+  drain the cooperative queue) with all-scalar params cannot be
+  re-entered through the bus registry nor handed an aliasing
+  pointer — so `self` is `noalias` and field loads can stay in
+  registers across calls. MODES join the elidable fixpoint under
+  their synthetic names (bulk/harmonic/resolution — the brain-tower
+  pull surface — qualify, and sibling `self.bulk()` calls now
+  classify non-allocating for scratch elision too). Contract pinned
+  by IR tests (positive + both unsound channels stay unmarked).
+
 - **Builds are 2.3–5.8× faster: dead-stdlib elimination before the
   backend.** Every module carries the full merged stdlib; it was
   being O3-optimized and machine-emitted on every build, used or

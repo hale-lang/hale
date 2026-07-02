@@ -39,7 +39,21 @@ tree_fanout −4.6%, form_hashmap_set −3.9%, json_parse −1.7%,
 pipeline_3stage −1.1%; call-only microbenches (fn_call, fn_modular)
 jitter ±2% from code layout. No test regressions.
 
-## Stage 2 — `noalias self` gated on a reentrancy analysis (open)
+## Stage 2 — `noalias self` gated on a reentrancy analysis (TIER 1 SHIPPED 2026-07-02)
+
+Tier 1 shipped: `noalias` on `self` when the method is in the
+ELIDABLE fixpoint (non-allocating ⇒ cannot publish; with the
+task-10 exit-drain elision, none of its callees drain — channel 1
+closed) AND every param is a by-value scalar (channel 2 closed).
+Nested `self.m()` calls are sound under LLVM based-on semantics.
+MODES joined the elidable fixpoint under their synthetic names, so
+brain-tower pulls (bulk/harmonic/resolution) qualify. Contract
+pinned by tests/noalias_self.rs (positive + both negative
+channels). Indicative min-of-7: form_hashmap_set −11%,
+form_vec_get −8%, locus_instantiation −4%; bus_dispatch flat
+(handlers excluded by design). The middle tier below (methods
+calling non-reentrant NON-elidable fns) remains open. Original
+design follows.
 
 The prize is Rust's `&mut`-style `noalias` on `self` in locus
 methods — it's what lets field loads stay in registers across calls.

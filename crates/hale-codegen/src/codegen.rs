@@ -3617,7 +3617,12 @@ fn compute_elidable_methods(
         // Candidates: gate-1-eligible (scalar/Unit return), non-fallible,
         // non-FFI `fn` methods. Heap-returning methods are never elidable and
         // never a non-allocating call target.
-        let fns: Vec<&FnDecl> = l
+        // Aliasing stage 2 (2026-07-02): MODES join the candidate
+        // set under their synthetic names (bulk/harmonic/
+        // resolution) — they lower as ordinary locus methods and
+        // brain-tower pulls hit them hot, so both scratch elision
+        // and the noalias-self attribute want the same proof.
+        let fns: Vec<(&str, &[Param], Option<&TypeExpr>, &Block)> = l
             .members
             .iter()
             .filter_map(|m| match m {
@@ -3626,7 +3631,27 @@ fn compute_elidable_methods(
                         && fd.ffi.is_none()
                         && ret_is_scalar_or_unit(fd.ret.as_ref()) =>
                 {
-                    Some(fd)
+                    Some((
+                        fd.name.name.as_str(),
+                        fd.params.as_slice(),
+                        fd.ret.as_ref(),
+                        &fd.body,
+                    ))
+                }
+                LocusMember::Mode(md)
+                    if ret_is_scalar_or_unit(md.ret.as_ref()) =>
+                {
+                    let name = match md.kind {
+                        ModeKind::Bulk => "bulk",
+                        ModeKind::Harmonic => "harmonic",
+                        ModeKind::Resolution => "resolution",
+                    };
+                    Some((
+                        name,
+                        md.params.as_slice(),
+                        md.ret.as_ref(),
+                        &md.body,
+                    ))
                 }
                 _ => None,
             })
@@ -3664,29 +3689,27 @@ fn compute_elidable_methods(
         }
         let numeric_ret_of = |elidable: &BTreeSet<String>| -> BTreeSet<String> {
             fns.iter()
-                .filter(|f| {
-                    elidable.contains(&f.name.name)
-                        && f.ret
-                            .as_ref()
-                            .is_some_and(|t| type_expr_is_numeric_scalar(t))
+                .filter(|(name, _, ret, _)| {
+                    elidable.contains(*name)
+                        && ret.is_some_and(|t| type_expr_is_numeric_scalar(t))
                 })
-                .map(|f| f.name.name.clone())
+                .map(|(name, _, _, _)| name.to_string())
                 .collect()
         };
         let mut elidable: BTreeSet<String> =
-            fns.iter().map(|f| f.name.name.clone()).collect();
+            fns.iter().map(|(name, _, _, _)| name.to_string()).collect();
         loop {
             let numeric_ret_self = numeric_ret_of(&elidable);
             let demote: Vec<String> = fns
                 .iter()
-                .filter(|f| elidable.contains(&f.name.name))
-                .filter(|f| {
+                .filter(|(name, _, _, _)| elidable.contains(*name))
+                .filter(|(_, params, _, body)| {
                     // Per-method scalar-param-field facts (e.g. `s.value` for
                     // a `Sample` param) — `self.sum + s.value` is arithmetic.
                     let param_field_numeric =
-                        param_field_numeric_map(&f.params, structs);
+                        param_field_numeric_map(params, structs);
                     let fnptr_numeric_ret =
-                        fnptr_numeric_param_set(&f.params);
+                        fnptr_numeric_param_set(params);
                     let ctx = AllocCtx {
                         nonalloc: free_nonalloc,
                         numeric_ret: free_numeric_ret,
@@ -3698,15 +3721,14 @@ fn compute_elidable_methods(
                         fnptr_numeric_ret: &fnptr_numeric_ret,
                     };
                     // Seed with the method's numeric scalar params.
-                    let seed: BTreeSet<String> = f
-                        .params
+                    let seed: BTreeSet<String> = params
                         .iter()
                         .filter(|p| type_expr_is_numeric_scalar(&p.ty))
                         .map(|p| p.name.name.clone())
                         .collect();
-                    !fn_body_definitely_non_allocating(&f.body.stmts, &ctx, &seed)
+                    !fn_body_definitely_non_allocating(&body.stmts, &ctx, &seed)
                 })
-                .map(|f| f.name.name.clone())
+                .map(|(name, _, _, _)| name.to_string())
                 .collect();
             if demote.is_empty() {
                 let numeric_ret_self = numeric_ret_of(&elidable);
