@@ -88,7 +88,16 @@ const XPOOL_SRC: &str = r#"
             return t;
         }
         run() {
-            std::time::sleep(300ms);
+            // Poll instead of a fixed sleep: three cross-pool
+            // bubbles race pinned-thread startup, and a 300ms
+            // window flaked on loaded CI runners (each sleep slice
+            // drains the pool's queue, so delivery progresses
+            // through this loop). Bounded at ~6s.
+            let mut waited: Int = 0;
+            while self.harmonic() < 3 && waited < 60 {
+                std::time::sleep(100ms);
+                waited = waited + 1;
+            }
             println("count=", self.harmonic());
             println("total=", self.bulk());
         }
