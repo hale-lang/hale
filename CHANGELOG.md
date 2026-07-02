@@ -8,6 +8,20 @@ behavior.
 
 ## Unreleased
 
+- **Typecheck M3 stage 3 (tranche 2) — generic STRUCT literals +
+  monomorph unification.** `Box_Int { ... }` literals now resolve
+  against the generic template with the type args substituted:
+  wrong-typed fields, unknown fields, and missing fields are caught
+  at typecheck; field READS on monomorph values type as the
+  substituted field (`b.value` on a `Box_Int` is `Int`). And
+  `Box<Int>` type-exprs now resolve to the mangled monomorph name
+  (previously the bare `Box`), so a `Box<Int>`-typed field and a
+  `Box_Int` literal unify — and a `Box_String` literal in a
+  `Box<Int>` slot is a caught mismatch. This also FIXES generic
+  structs being unusable through the CLI: `hale check` rejected
+  every mangled-monomorph literal as "unknown type", so only
+  codegen unit tests (which skip the checker) could use them.
+
 - **Typecheck M3 stage 3 (tranche 1) — generic fn call validation.**
   Call sites of generic fn templates are now checked at typecheck
   with source spans — the Ty-level mirror of codegen's m62

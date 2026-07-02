@@ -165,6 +165,48 @@ fn collect_generic_fns<'a>(
     }
 }
 
+/// M3 stage 3 tranche 2: collect generic type templates.
+fn collect_generic_types<'a>(
+    items: &'a [TopDecl],
+    out: &mut BTreeMap<String, &'a TypeDecl>,
+) {
+    for item in items {
+        match item {
+            TopDecl::Type(t) if !t.generics.is_empty() => {
+                out.insert(t.name.name.clone(), t);
+            }
+            TopDecl::Module(m) => collect_generic_types(&m.items, out),
+            _ => {}
+        }
+    }
+}
+
+/// M3 stage 3 tranche 2: resolve one mangle token (`Int`, `Float`,
+/// a user type name, or a nested mangled monomorph) to a Ty. The
+/// codegen mangle joins tokens with `_`, so this stays permissive
+/// (Unknown) for anything it can't confidently name.
+fn mangle_token_to_ty(
+    tok: &str,
+    known: &BTreeMap<String, Span>,
+) -> Ty {
+    match tok {
+        "Int" => Ty::Prim(PrimType::Int),
+        "Float" => Ty::Prim(PrimType::Float),
+        "Bool" => Ty::Prim(PrimType::Bool),
+        "String" => Ty::Prim(PrimType::String),
+        "Duration" => Ty::Prim(PrimType::Duration),
+        "Decimal" => Ty::Prim(PrimType::Decimal),
+        "Time" => Ty::Prim(PrimType::Time),
+        other => {
+            if known.contains_key(other) {
+                Ty::Named(other.to_string())
+            } else {
+                Ty::Unknown
+            }
+        }
+    }
+}
+
 /// M3 stage 3: Ty-level mirror of codegen's m62
 /// `unify_generic_param_bindings`. Binds generic names appearing in
 /// `param_te` against the actual arg type. Top-level generic names
@@ -275,6 +317,9 @@ pub fn check_bundle(
     for program in bundle.programs.values() {
         let mut generic_fns: BTreeMap<String, &FnDecl> = BTreeMap::new();
         collect_generic_fns(&program.items, &mut generic_fns);
+        let mut generic_types: BTreeMap<String, &TypeDecl> =
+            BTreeMap::new();
+        collect_generic_types(&program.items, &mut generic_types);
         let mut cx = Checker {
             top,
             known: &known,
@@ -288,6 +333,7 @@ pub fn check_bundle(
             wasm_target,
             or_value_discarded: false,
             generic_fns,
+            generic_types,
         };
         for item in &program.items {
             cx.check_top_decl(item);
@@ -4171,6 +4217,13 @@ struct Checker<'a> {
     /// args must match the substituted params — and the call types
     /// as the SUBSTITUTED return instead of Unknown.
     generic_fns: BTreeMap<String, &'a FnDecl>,
+    /// M3 stage 3 tranche 2: generic TYPE templates (name → decl).
+    /// Mangled monomorph literals (`Box_Int { ... }`) resolve
+    /// against these — previously "unknown type" at typecheck,
+    /// which made generic types unusable through the CLI (only
+    /// codegen unit tests, which skip the checker, exercised
+    /// them). Fields validate against the SUBSTITUTED types.
+    generic_types: BTreeMap<String, &'a TypeDecl>,
 }
 
 #[derive(Default)]
@@ -7630,7 +7683,31 @@ impl<'a> Checker<'a> {
                 }
                 None
             }
-            Ty::Named(n) => match self.top.lookup(n)? {
+            Ty::Named(n) => {
+                // M3 stage 3 tranche 2: field reads on mangled
+                // generic monomorph values (`b.value` where
+                // b: Box_Int) resolve through the template with
+                // the type args substituted.
+                if self.top.lookup(n).is_none() {
+                    let (template, bindings) =
+                        self.resolve_generic_monomorph(n)?;
+                    if let TypeDeclBody::Struct(tfields) =
+                        &template.body
+                    {
+                        return tfields
+                            .iter()
+                            .find(|f| f.name.name == name)
+                            .map(|f| {
+                                substitute_generic_ty(
+                                    &f.ty,
+                                    &bindings,
+                                    self.known,
+                                )
+                            });
+                    }
+                    return None;
+                }
+                match self.top.lookup(n)? {
                 TopSymbol::Type(info) => match &info.kind {
                     TypeKind::Struct(fields) => fields
                         .iter()
@@ -7695,7 +7772,8 @@ impl<'a> Checker<'a> {
                     })
                 }
                 _ => None,
-            },
+            }
+            }
             Ty::Unknown => Some(Ty::Unknown),
             _ => None,
         }
@@ -8917,6 +8995,37 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// M3 stage 3 tranche 2: match a mangled monomorph name
+    /// (`Box_Int`, `Pair_Int_String`) against a generic type
+    /// template, producing the generic→Ty bindings. The mangle
+    /// joins single tokens with `_`; template base names
+    /// containing `_` are handled by prefix match. None when no
+    /// template matches or the token count disagrees.
+    fn resolve_generic_monomorph(
+        &self,
+        name: &str,
+    ) -> Option<(&'a TypeDecl, BTreeMap<String, Ty>)> {
+        for (base, template) in &self.generic_types {
+            let prefix = format!("{}_", base);
+            let Some(rest) = name.strip_prefix(&prefix) else {
+                continue;
+            };
+            let toks: Vec<&str> = rest.split('_').collect();
+            if toks.len() != template.generics.len() {
+                continue;
+            }
+            let mut bindings: BTreeMap<String, Ty> = BTreeMap::new();
+            for (g, tok) in template.generics.iter().zip(toks.iter()) {
+                bindings.insert(
+                    g.name.name.clone(),
+                    mangle_token_to_ty(tok, self.known),
+                );
+            }
+            return Some((template, bindings));
+        }
+        None
+    }
+
     fn check_struct_literal(
         &mut self,
         path: &QualifiedName,
@@ -8930,6 +9039,38 @@ impl<'a> Checker<'a> {
             return Ty::Unknown;
         }
         let name = &path.segments[0].name;
+        // M3 stage 3 tranche 2 (2026-07-02): mangled generic
+        // monomorph literal (`Box_Int { ... }`). Resolve the
+        // `Base_Tok[_Tok...]` shape against a generic type
+        // template, substitute the type args into the field
+        // types, and validate the inits like a concrete struct.
+        // (Previously "unknown type" — generic types were
+        // unusable through the CLI.)
+        if self.top.lookup(name).is_none() {
+            if let Some((template, bindings)) =
+                self.resolve_generic_monomorph(name)
+            {
+                if let TypeDeclBody::Struct(tfields) = &template.body {
+                    let fields: Vec<(String, Ty, bool)> = tfields
+                        .iter()
+                        .map(|f| {
+                            (
+                                f.name.name.clone(),
+                                substitute_generic_ty(
+                                    &f.ty,
+                                    &bindings,
+                                    self.known,
+                                ),
+                                f.default.is_some(),
+                            )
+                        })
+                        .collect();
+                    return self.check_literal_fields(
+                        name, &fields, "type", true, inits, span,
+                    );
+                }
+            }
+        }
         let sym = match self.top.lookup(name) {
             Some(s) => s,
             None => {
@@ -8995,6 +9136,23 @@ impl<'a> Checker<'a> {
             }
         };
 
+        self.check_literal_fields(
+            name, &fields, kind_label, requires_all, inits, span,
+        )
+    }
+
+    /// Shared literal field validation — concrete structs/loci/
+    /// perspectives and (M3 stage 3 tranche 2) substituted generic
+    /// monomorphs both land here.
+    fn check_literal_fields(
+        &mut self,
+        name: &str,
+        fields: &[(String, Ty, bool)],
+        kind_label: &str,
+        requires_all: bool,
+        inits: &[StructInit],
+        span: Span,
+    ) -> Ty {
         let mut seen: BTreeMap<String, ()> = BTreeMap::new();
         for init in inits {
             let got = self.check_expr(&init.value);
@@ -9056,7 +9214,7 @@ impl<'a> Checker<'a> {
             seen.insert(init.name.name.clone(), ());
         }
         if requires_all {
-            for (fname, fty, has_default) in &fields {
+            for (fname, fty, has_default) in fields {
                 // bounded[T; N] fields auto-init empty and cannot
                 // be spelled in a literal.
                 if matches!(fty, Ty::Bounded(_, _)) {
@@ -9086,7 +9244,7 @@ impl<'a> Checker<'a> {
             }
         }
 
-        Ty::Named(name.clone())
+        Ty::Named(name.to_string())
     }
 }
 

@@ -115,3 +115,86 @@ fn valid_generic_calls_stay_clean() {
         m.iter().filter(|s| s.contains("generic fn")).collect();
     assert!(errs.is_empty(), "got: {:?}", errs);
 }
+
+// ── Tranche 2: generic STRUCT literals ──
+
+const BOX: &str = r#"
+    type Box<T> {
+        value: T;
+    }
+"#;
+
+#[test]
+fn monomorph_literal_fields_validate_substituted() {
+    let m = msgs(&format!(
+        "{}{}",
+        BOX,
+        r#"
+        fn main() {
+            let bad = Box_Int { value: "nope" };
+            let typo = Box_Int { valeu: 42 };
+            println(bad.value, typo.value);
+        }
+    "#
+    ));
+    assert!(
+        m.iter().any(|s| s.contains("field `value` expects `Int`")
+            && s.contains("got `String`")),
+        "got: {:?}",
+        m
+    );
+    assert!(
+        m.iter()
+            .any(|s| s.contains("has no field `valeu`")),
+        "got: {:?}",
+        m
+    );
+}
+
+#[test]
+fn monomorph_field_reads_type_substituted() {
+    // b.value on Box_Int must type as Int — an Int use passes, and
+    // valid programs stay clean.
+    let m = msgs(&format!(
+        "{}{}",
+        BOX,
+        r#"
+        type Holder { b: Box<Int>; }
+        fn main() {
+            let inner = Box_Int { value: 42 };
+            let h = Holder { b: inner };
+            println(h.b.value + 1);
+        }
+    "#
+    ));
+    let errs: Vec<&String> = m
+        .iter()
+        .filter(|s| {
+            s.contains("Box") || s.contains("no field")
+        })
+        .collect();
+    assert!(errs.is_empty(), "got: {:?}", errs);
+}
+
+#[test]
+fn generic_typeexpr_unifies_with_monomorph_literal() {
+    // `b: Box<Int>` and a `Box_String` literal must MISMATCH.
+    let m = msgs(&format!(
+        "{}{}",
+        BOX,
+        r#"
+        type Holder { b: Box<Int>; }
+        fn main() {
+            let inner = Box_String { value: "x" };
+            let h = Holder { b: inner };
+            println(h.b.value);
+        }
+    "#
+    ));
+    assert!(
+        m.iter().any(|s| s.contains("expects `Box_Int`")
+            && s.contains("got `Box_String`")),
+        "got: {:?}",
+        m
+    );
+}

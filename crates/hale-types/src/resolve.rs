@@ -1121,12 +1121,72 @@ fn register_symbol(
 /// Resolve a syntactic [`TypeExpr`] to a [`Ty`], using the
 /// bundle-wide set of known type-like names. Names not in
 /// `known` and not primitive resolve to [`Ty::Unknown`].
+/// M3 stage 3 tranche 2: mirror of codegen's m61
+/// `type_expr_mangle_token` — one token per generic arg.
+fn type_expr_mangle_token(
+    t: &TypeExpr,
+    known: &BTreeMap<String, Span>,
+) -> Option<String> {
+    match t {
+        TypeExpr::Primitive(p, _) => match p {
+            PrimType::Int => Some("Int".into()),
+            PrimType::Float => Some("Float".into()),
+            PrimType::Bool => Some("Bool".into()),
+            PrimType::String => Some("String".into()),
+            PrimType::Duration => Some("Duration".into()),
+            PrimType::Decimal => Some("Decimal".into()),
+            PrimType::Time => Some("Time".into()),
+            _ => None,
+        },
+        TypeExpr::Named { path, generic_args, .. }
+            if path.segments.len() == 1 =>
+        {
+            let base = &path.segments[0].name;
+            if generic_args.is_empty() {
+                if known.contains_key(base) {
+                    Some(base.clone())
+                } else {
+                    None
+                }
+            } else {
+                let mut toks: Vec<String> = Vec::new();
+                for a in generic_args {
+                    toks.push(type_expr_mangle_token(a, known)?);
+                }
+                Some(format!("{}_{}", base, toks.join("_")))
+            }
+        }
+        _ => None,
+    }
+}
+
 pub fn resolve_type_expr(te: &TypeExpr, known: &BTreeMap<String, Span>) -> Ty {
     match te {
         TypeExpr::Primitive(p, _) => Ty::Prim(*p),
-        TypeExpr::Named { path, .. } => {
+        TypeExpr::Named { path, generic_args, .. } => {
             if path.segments.len() == 1 {
                 let name = &path.segments[0].name;
+                // M3 stage 3 tranche 2 (2026-07-02): a generic
+                // instantiation type-expr (`Box<Int>`) resolves to
+                // its MANGLED monomorph name (`Box_Int`) — the same
+                // name codegen synthesizes and the same Ty a
+                // `Box_Int { ... }` literal produces, so the two
+                // unify. Unknown when any arg token can't be named
+                // (permissive, as before).
+                if !generic_args.is_empty() {
+                    let mut toks: Vec<String> = Vec::new();
+                    for a in generic_args {
+                        match type_expr_mangle_token(a, known) {
+                            Some(t) => toks.push(t),
+                            None => return Ty::Unknown,
+                        }
+                    }
+                    return Ty::Named(format!(
+                        "{}_{}",
+                        name,
+                        toks.join("_")
+                    ));
+                }
                 if known.contains_key(name) {
                     Ty::Named(name.clone())
                 } else {
