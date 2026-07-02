@@ -180,6 +180,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 } else {
                     xv
                 };
+                // Pointer-shaped elements (String/Bytes/TypeRef):
+                // the slot stores the POINTER, so the pointee must
+                // live in the receiver's owning arena — a scratch-
+                // arena element would dangle after the enclosing
+                // call. The _ptr helper same-arena-skips (String
+                // clone skip / lotus_arena_contains_ptr gate), so
+                // an already-anchored value is identity.
+                let xv = if Self::bounded_elem_is_ptr(&elem) {
+                    let target = self.bounded_target_arena(&args[0])?;
+                    self.emit_cross_arena_store_deep_copy_ptr(
+                        xv,
+                        &elem,
+                        target,
+                        "bounded.push",
+                    )?
+                } else {
+                    xv
+                };
                 let is_full = self
                     .builder
                     .build_int_compare(
@@ -422,4 +440,177 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             },
         );
     }
+    /// Pointer-shaped bounded element? (String/Bytes/TypeRef slots
+    /// hold heap pointers that need arena anchoring; scalars are
+    /// inline bytes.)
+    pub(crate) fn bounded_elem_is_ptr(elem: &CodegenTy) -> bool {
+        matches!(
+            elem,
+            CodegenTy::String | CodegenTy::Bytes | CodegenTy::TypeRef(_)
+        )
+    }
+
+    /// Anchor every LIVE slot of a bounded storage in place — a
+    /// runtime loop over [0, len) that rewrites each element
+    /// pointer with its `dest_arena`-anchored version (String/Bytes
+    /// clone with same-arena skip; TypeRef through the
+    /// lotus_arena_contains_ptr-gated deep copy). Slots past `len`
+    /// are never read, so they're skipped by construction; clear()
+    /// doesn't null old slots, which is fine for the same reason.
+    pub(crate) fn anchor_bounded_elems_in_place(
+        &mut self,
+        storage_ptr: PointerValue<'ctx>,
+        elem: &CodegenTy,
+        cap: u64,
+        dest_arena: PointerValue<'ctx>,
+        site: &str,
+    ) -> Result<(), CodegenError> {
+        if !Self::bounded_elem_is_ptr(elem) {
+            return Ok(());
+        }
+        let i64_t = self.context.i64_type();
+        let func = self
+            .current_fn
+            .expect("bounded anchor inside a fn body");
+        let st = self.llvm_bounded_storage_type(elem, cap);
+        let len_ptr = self
+            .builder
+            .build_struct_gep(st, storage_ptr, 0, &format!("{}.len.ptr", site))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let len = self
+            .builder
+            .build_load(i64_t, len_ptr, &format!("{}.len", site))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let data_ptr = self
+            .builder
+            .build_struct_gep(st, storage_ptr, 1, &format!("{}.data.ptr", site))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let elem_llvm = self.llvm_basic_type(elem);
+
+        let i_slot = self
+            .builder
+            .build_alloca(i64_t, &format!("{}.i", site))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(i_slot, i64_t.const_int(0, false))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let header_bb = self
+            .context
+            .append_basic_block(func, "bounded.anchor.cond");
+        let body_bb = self
+            .context
+            .append_basic_block(func, "bounded.anchor.body");
+        let exit_bb = self
+            .context
+            .append_basic_block(func, "bounded.anchor.end");
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(header_bb);
+        let i = self
+            .builder
+            .build_load(i64_t, i_slot, "bounded.anchor.i")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let in_range = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                i,
+                len,
+                "bounded.anchor.in_range",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(in_range, body_bb, exit_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(body_bb);
+        let slot_ptr = unsafe {
+            self.builder
+                .build_gep(elem_llvm, data_ptr, &[i], "bounded.anchor.slot")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+        let ev = self
+            .builder
+            .build_load(elem_llvm, slot_ptr, "bounded.anchor.elem")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let anchored = self.emit_cross_arena_store_deep_copy_ptr(
+            ev,
+            elem,
+            dest_arena,
+            site,
+        )?;
+        self.builder
+            .build_store(slot_ptr, anchored)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let next = self
+            .builder
+            .build_int_add(
+                i,
+                i64_t.const_int(1, false),
+                "bounded.anchor.next",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(i_slot, next)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(exit_bb);
+        Ok(())
+    }
+
+    /// The arena a pushed element must be anchored into: the
+    /// receiver's owning arena. `self.*`-rooted receivers → the
+    /// locus's own arena (the struct lives there); everything else
+    /// (locals, params) → the current allocation arena (the local
+    /// struct's own arena in the common shapes).
+    fn bounded_target_arena(
+        &mut self,
+        recv: &Expr,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        fn rooted_at_self(e: &Expr) -> bool {
+            match e {
+                Expr::KwSelf(_) => true,
+                Expr::Field { receiver, .. } => rooted_at_self(receiver),
+                _ => false,
+            }
+        }
+        if rooted_at_self(recv) {
+            if let Some(cs) = self.current_self.clone() {
+                let ptr_t =
+                    self.context.ptr_type(inkwell::AddressSpace::default());
+                let info = self
+                    .user_loci
+                    .get(&cs.locus_name)
+                    .cloned()
+                    .expect("current_self points to a declared locus");
+                let arena_field_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        cs.self_ptr,
+                        info.arena_field_idx,
+                        "bounded.self.__arena.ptr",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let arena_ptr = self
+                    .builder
+                    .build_load(
+                        ptr_t,
+                        arena_field_ptr,
+                        "bounded.self.__arena",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                return Ok(arena_ptr.into_pointer_value());
+            }
+        }
+        self.current_arena_ptr()
+    }
+
 }

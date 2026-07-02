@@ -151,3 +151,134 @@ fn float_elem_int_widening_on_push() {
     );
     assert!(out.contains("s=2.5"), "got: {:?}", out);
 }
+
+// ── Stage 1: pointer-shaped elements ──
+
+#[test]
+fn string_elements_survive_cross_fn_and_return_copy() {
+    // Elements pushed from another fn's frame (scratch strings) and
+    // a struct returned through the deep-copy path — dangling
+    // pointers would print garbage.
+    let out = build_and_run(
+        "strelem",
+        r#"
+        type Params {
+            n: Int;
+            keys: bounded[String; 16];
+            vals: bounded[String; 16];
+        }
+        fn add_pair(p: Params, k: String, v: String) {
+            push(p.keys, k) or raise;
+            push(p.vals, v) or raise;
+        }
+        fn build() -> Params {
+            let p = Params { n: 3 };
+            let mut i = 0;
+            while i < 3 {
+                add_pair(p, "route_k" + to_string(i), "v" + to_string(i));
+                i = i + 1;
+            }
+            return p;
+        }
+        fn main() {
+            let p = build();
+            println("count=", count(p.keys));
+            let mut i = 0;
+            while i < 3 {
+                let k = at(p.keys, i) or "?";
+                let v = at(p.vals, i) or "?";
+                println(k, "=", v);
+                i = i + 1;
+            }
+        }
+    "#,
+    );
+    assert!(out.contains("count=3"), "got: {:?}", out);
+    for want in ["route_k0=v0", "route_k1=v1", "route_k2=v2"] {
+        assert!(out.contains(want), "missing {:?} in {:?}", want, out);
+    }
+}
+
+#[test]
+fn struct_elements_in_type_and_locus_field() {
+    let out = build_and_run(
+        "structelem",
+        r#"
+        type Msg { role: String; text: String; }
+        type Convo { history: bounded[Msg; 64]; }
+        fn say(c: Convo, role: String, text: String) {
+            push(c.history, Msg { role: role, text: text }) or raise;
+        }
+        locus Agent {
+            params { convo: Convo = Convo { }; }
+            fn hear(t: String) -> Int {
+                push(self.convo.history, Msg { role: "user", text: t })
+                    or raise;
+                return count(self.convo.history);
+            }
+            fn dump() {
+                for m in self.convo.history {
+                    println(m.role, ": ", m.text);
+                }
+            }
+        }
+        fn main() {
+            let c = Convo { };
+            let mut i = 0;
+            while i < 40 {
+                say(c, "sys", "msg_" + to_string(i * 7));
+                i = i + 1;
+            }
+            println("c40=", count(c.history));
+            let m39 = at(c.history, 39) or raise;
+            println("last=", m39.text);
+            let a = Agent { };
+            println("h1=", a.hear("hello"));
+            a.dump();
+        }
+    "#,
+    );
+    assert!(out.contains("c40=40"), "got: {:?}", out);
+    assert!(out.contains("last=msg_273"), "got: {:?}", out);
+    assert!(out.contains("h1=1"), "got: {:?}", out);
+    assert!(out.contains("user: hello"), "got: {:?}", out);
+}
+
+#[test]
+fn scalar_bounded_travels_the_bus() {
+    let out = build_and_run(
+        "bus",
+        r#"
+        type Window { id: Int; samples: bounded[Float; 16]; }
+        locus Listener {
+            params { seen: Int = 0; }
+            bus { subscribe "win" as on_win of type Window; }
+            fn on_win(w: Window) {
+                let mut s = 0.0;
+                for x in w.samples {
+                    s = s + x;
+                }
+                println("got id=", w.id, " n=", count(w.samples),
+                        " sum=", s);
+            }
+        }
+        locus Sender {
+            params { l: Listener = Listener { }; }
+            bus { publish "win" of type Window; }
+            run() {
+                let w = Window { id: 42 };
+                push(w.samples, 1.5) or raise;
+                push(w.samples, 2.25) or raise;
+                push(w.samples, 3.0) or raise;
+                "win" <- w;
+            }
+        }
+        fn main() { Sender { }; }
+    "#,
+    );
+    assert!(
+        out.contains("got id=42 n=3 sum=6.75"),
+        "got: {:?}",
+        out
+    );
+}

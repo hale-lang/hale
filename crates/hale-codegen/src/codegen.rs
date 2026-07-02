@@ -11529,6 +11529,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     ),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // bounded[T; N] with pointer elems: anchor each live
+            // slot in place (a runtime loop over [0, len)) — the
+            // field is inline storage, not a loadable pointer.
+            if let CodegenTy::Bounded(belem, bcap) = &fty {
+                self.anchor_bounded_elems_in_place(
+                    field_slot,
+                    belem,
+                    *bcap,
+                    dest_arena,
+                    &format!(
+                        "{}.anchor.{}.{}",
+                        site_name, type_name, fname
+                    ),
+                )?;
+                continue;
+            }
             let llvm_field_ty = self.llvm_basic_type(&fty);
             let field_val = self
                 .builder
@@ -11580,10 +11596,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if Self::array_inline_spec(ty).is_some() {
             return false;
         }
-        // bounded[T; N] (scalar elems): inline bytes, travel with
-        // the parent's memcpy — nothing to anchor.
-        if matches!(ty, CodegenTy::Bounded(_, _)) {
-            return false;
+        // bounded[T; N]: scalar elems are inline bytes that travel
+        // with the parent's memcpy — nothing to anchor. Pointer
+        // elems (String/Bytes/TypeRef slots) DO anchor — the walk
+        // has a dedicated live-slot loop (never load the field as
+        // a single pointer).
+        if let CodegenTy::Bounded(elem, _) = ty {
+            return Self::bounded_elem_is_ptr(elem);
         }
         !matches!(
             ty,
@@ -25189,6 +25208,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             CodegenTy::Array(elem_ty, n) => {
                 self.llvm_array_storage_type(elem_ty, *n).size_of()
+            }
+            CodegenTy::Bounded(elem_ty, n) => {
+                self.llvm_bounded_storage_type(elem_ty, *n).size_of()
             }
             CodegenTy::Interface(_) => self.iface_fat_struct_ty().size_of(),
             CodegenTy::Enum(name) => {

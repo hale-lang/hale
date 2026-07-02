@@ -500,6 +500,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         )?;
                         continue;
                     }
+                    // bounded[T; N]: memcpy the inline { len, data }
+                    // storage, then anchor the DST copy's live
+                    // pointer elements into dest_arena (no-op for
+                    // scalar elements).
+                    if let CodegenTy::Bounded(belem, bcap) = &fty {
+                        let size = self.compound_storage_size(&fty)?;
+                        self.emit_memcpy_call(
+                            dst_slot,
+                            src_slot,
+                            size,
+                            &format!("fn.ret.struct.bounded.{}", fname),
+                        )?;
+                        self.anchor_bounded_elems_in_place(
+                            dst_slot,
+                            belem,
+                            *bcap,
+                            dest_arena,
+                            &format!("fn.ret.struct.bounded.{}", fname),
+                        )?;
+                        continue;
+                    }
                     let llvm_field_ty = self.llvm_basic_type(&fty);
                     let field_val = self
                         .builder

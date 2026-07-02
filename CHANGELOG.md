@@ -23,9 +23,16 @@ behavior.
   fields and locus `params`; whole-struct copies carry elements and
   count by construction; scalar-element bounded is flat under
   `zero_copy`. v1 covers scalar elements (Int/Float/Bool/Decimal/
-  Duration); pointer-shaped elements (`bounded[String; N]` — the
-  pond TSV-idiom killer) are the staged follow-up
-  (notes/bounded-collections.md stage 1).
+  Duration) AND pointer-shaped elements — `bounded[String; N]`,
+  `bounded[Bytes; N]`, `bounded[SomeStruct; N]` (stage 1, same
+  day): push arena-anchors each element into the receiver's owning
+  arena (a scratch-built String pushed from another fn survives —
+  the same-arena gates make re-anchoring idempotent, no realloc
+  storms), and whole-struct copies anchor live slots with a runtime
+  [0, len) loop. `type RouteParams { keys: bounded[String; 16];
+  ... }` replaces the pond TSV idiom directly. On the bus:
+  scalar-element bounded travels as flat bytes; pointer-element
+  bounded cross-process is post-v1 polish (focused reject).
 
 - **Typecheck M3 stage 2, tranche 2 — signatures for the I/O
   namespaces + dual-mode fallible semantics.** 60 more rows:

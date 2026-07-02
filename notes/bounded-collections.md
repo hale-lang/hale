@@ -5,9 +5,17 @@ Status: Stage 2 Option B SHIPPED for scalar elements (2026-07-02) —
 inline layout, push (fallible CapacityError { cap, count }) / at
 (fallible IndexError) / count / clear intrinsics, `for x in f`
 iteration, auto-empty init (literal init and whole-field assignment
-rejected), flat under zero_copy for scalar T. Stage 1
-(pointer-shaped elements — the RouteParams/TSV killer) remains the
-follow-up; stage 0 shipped earlier via inline fixed arrays.
+rejected), flat under zero_copy for scalar T. Stage 1 SHIPPED same
+day: pointer-shaped elements (String/Bytes/user structs) — push
+arena-anchors elements into the receiver's owning arena
+(self-rooted → locus arena, else current arena; the _ptr helper's
+same-arena gates make re-anchoring idempotent), and struct copies
+run a live-slot anchor loop ([0, len), no null-skip needed).
+Scalar-element bounded travels the bus as flat bytes;
+pointer-element bounded cross-process is post-v1 polish (focused
+reject). The RouteParams/LlmRequest.messages TSV idiom is now
+directly replaceable in-process. Stage 0 shipped earlier via
+inline fixed arrays.
 
 ## The problem
 
