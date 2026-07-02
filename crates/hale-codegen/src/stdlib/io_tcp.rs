@@ -200,19 +200,25 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
             .module
             .get_function("lotus_tcp_connect")
             .expect("lotus_tcp_connect declared");
-        let port_i32 = self
+        // NOTE 2026-07-02: was truncated to i32, mismatching the
+        // i16-port declaration (and the C uint16_t). Benign on
+        // x86-64 SysV (both travel in the low register bits) but a
+        // real signature mismatch — surfaced by the DWARF-gated
+        // module verifier on the first pond build that exercised
+        // this path with debug info enabled.
+        let port_i16 = self
             .builder
             .build_int_truncate(
                 port_val.into_int_value(),
-                self.context.i32_type(),
-                "connect.port.i32",
+                self.context.i16_type(),
+                "connect.port.i16",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let fd_i32 = self
             .builder
             .build_call(
                 connect_fn,
-                &[host_val.into(), port_i32.into()],
+                &[host_val.into(), port_i16.into()],
                 "connect.fd",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
