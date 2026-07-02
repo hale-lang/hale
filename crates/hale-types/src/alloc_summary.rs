@@ -623,6 +623,37 @@ impl AllocSummary {
     /// Every site whose final verdict is unbounded accumulation — the
     /// step-3 result the diagnostic emits.
     pub fn leak_sites(&self) -> Vec<LeakSite> {
+        // M3 stage 5 gap E (2026-07-02): a bundle with NO long-lived
+        // entry point — no `run` loop, no bus handler — is a
+        // run-to-exit program (a script, a smoke binary, a lib
+        // checked standalone). Per the tool's own philosophy ("a
+        // memory-bound proof only means something for long-lived
+        // processes"), nothing in it can leak in the sense this
+        // analysis measures. A LIB's latent leaks still surface at
+        // every consumer's whole-program check, where the
+        // consumer's run/handlers are present — that's the right
+        // place: the same lib fn may be one-shot in a script and
+        // hot in a daemon.
+        // Refinement: only suppress ACTUAL run-to-exit programs (a
+        // `main` present, nothing long-lived). A LIB checked
+        // standalone has no main at all — its warnings stay, because
+        // per-dir consumer checks don't re-bundle vendored libs and
+        // would otherwise never surface the lib's real leaks
+        // (pond/websocket's per-message stores were the case in
+        // point).
+        let has_long_lived_entry = self.fns.values().any(|f| {
+            matches!(
+                f.entry,
+                Some(EntryKind::Run) | Some(EntryKind::BusHandler)
+            )
+        });
+        let has_main = self
+            .fns
+            .values()
+            .any(|f| matches!(f.entry, Some(EntryKind::Main)));
+        if has_main && !has_long_lived_entry {
+            return Vec::new();
+        }
         let unbounded = self.unbounded_invoked();
         let scratchless = self.scratchless_longlived();
         let mut callers: BTreeMap<FnKey, BTreeSet<FnKey>> = BTreeMap::new();
@@ -1596,6 +1627,15 @@ fn while_counter_bounded(cond: &Expr, fn_body: &Block) -> bool {
         }
         _ => return false,
     };
+    // M3 stage 5 note (2026-07-02): a runtime-invariant ceiling
+    // extension (len()/param ceilings ranked bounded) was tried and
+    // REVERTED — the RSS-validated model_unbounded_verdict test is
+    // the authority: a param-ceiling loop in a scratchless frame
+    // accumulates linearly IN THE INPUT (3M iters ≈ 190 MB), which
+    // is exactly what "unbounded" means here. Scratch-ful frames
+    // already get their per-activation reclaim in final_verdict
+    // (gap B); the one-shot-main shape is gap E, a lifetime
+    // question, not a loop-bound one.
     let mut s = CounterScan::default();
     scan_counter_block(fn_body, var, &mut s);
     s.const_inits == 1

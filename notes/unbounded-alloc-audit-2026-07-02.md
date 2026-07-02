@@ -8,7 +8,7 @@ notes/audit/merged.tsv + findings.txt.
 
 ## Result: 402 warnings — 103 TRUE (26%), 299 FALSE (74%)
 
-VERDICT (audit time): not clean enough to default-on. UPDATE same day: gaps A, B (+while-true refinement), C fixed — ~402 → ~165 warnings, all audited TPs preserved. Remaining to flip: len()/param loop bounds; D accepted (population domains unknowable without annotations); E/F accepted as documented limitations. Prerequisite gap fixes
+VERDICT (audit time): not clean enough to default-on. UPDATE same day: gaps A, B (+while-true refinement), C fixed — ~402 → ~165 warnings, all audited TPs preserved. UPDATE 2 (same day): the len()/param loop-bound extension was implemented and REVERTED — the RSS-validated model test proves param-ceiling loops in scratchless frames accumulate linearly in input (the definition of unbounded here). Gap E shipped as: main-present + no run/handlers = run-to-exit, no warnings (libs keep theirs — consumer per-dir checks don't re-bundle vendored libs). Final: ~160 warnings, 103 TP, ~36% FP from accepted limitations. THE FLIP IS NOW A POLICY CALL for Riley: default-on at 36% FP with every FP in a documented class, or keep opt-in until per-locus lifetime modeling. Prerequisite gap fixes
 below; projected residual after A+B+C+D ≈ 26 warnings (~6%) against
 103 genuine findings.
 

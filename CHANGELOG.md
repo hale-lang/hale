@@ -8,6 +8,26 @@ behavior.
 
 ## Unreleased
 
+- **M3 stage 5 (part 2) — run-to-exit programs don't warn; a
+  tempting loop-bound extension rejected by the empirical model.**
+  A program whose bundle has a `main` but no `run` loop and no bus
+  handler is run-to-exit — per the tool's own philosophy it owes no
+  memory-bound proof, so smoke binaries and scripts no longer warn
+  (the model still ranks their sites; only the diagnostic surface
+  is gated). Libs checked standalone (no `main`) keep ALL warnings —
+  per-dir consumer checks don't re-bundle vendored libs, so the lib
+  check is where pond/websocket's real per-message leaks surface.
+  Also documented in-code: ranking runtime-invariant loop ceilings
+  (len()/params) as bounded was implemented and REVERTED — the
+  RSS-validated test is the authority that a param-ceiling loop in
+  a scratchless frame accumulates linearly in the input (3M iters ≈
+  190 MB), which is exactly what unbounded means here. Warning
+  totals across the corpus: 402 (pre-audit) → ~160, all audited
+  true positives preserved. Default-on remains blocked at ~36%
+  residual FP (accepted D/E-lib/F limitations + one-shot-shaped
+  app code) — the flip is now a policy call, not an engineering
+  gap.
+
 - **M3 stage 5 (part 1) — unbounded-alloc analysis: audited + three
   gap fixes.** A fresh-context audit triaged all 402
   `--warn-unbounded-alloc` warnings across pond + fathom + examples:
