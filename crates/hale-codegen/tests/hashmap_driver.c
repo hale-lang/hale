@@ -22,7 +22,11 @@
  * paths know the layout; callers see an opaque blob big enough
  * to hold it. Size = 5 * size_t/int + pointer = comfortably
  * under 64 bytes on a 64-bit host; allocate generously. */
-#define LOTUS_HASHMAP_OPAQUE_SIZE 128
+/* Must be >= sizeof(lotus_hashmap_t) — checked at driver start via
+ * lotus_hashmap_struct_size() (2026-07-03: the anchor-retirement
+ * tail fields silently overflowed the old 128 and corrupted the
+ * adjacent map on CI's clang while surviving locally). */
+#define LOTUS_HASHMAP_OPAQUE_SIZE 256
 
 void lotus_hashmap_init(void *map_ptr,
                         size_t key_size,

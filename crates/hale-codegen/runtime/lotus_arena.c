@@ -4283,6 +4283,12 @@ void lotus_arena_retire_str(void *arena_ptr, char *s) {
 
 /* Install the retire descriptor on a map (codegen, once at
  * instantiation; offsets point at a static global). */
+/* Test-harness probe: the C driver reserves opaque storage for the
+ * map and must be able to assert it's big enough. */
+size_t lotus_hashmap_struct_size(void) {
+    return sizeof(lotus_hashmap_t);
+}
+
 void lotus_hashmap_set_retire_desc(void *map_ptr,
                                    const int32_t *offsets,
                                    int32_t n, void *arena) {
