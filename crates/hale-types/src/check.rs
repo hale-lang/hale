@@ -149,6 +149,156 @@ fn is_pure_literal(e: &Expr) -> bool {
     }
 }
 
+/// M3 stage 3: collect generic fn templates (recursing modules).
+fn collect_generic_fns<'a>(
+    items: &'a [TopDecl],
+    out: &mut BTreeMap<String, &'a FnDecl>,
+) {
+    for item in items {
+        match item {
+            TopDecl::Fn(f) if !f.generics.is_empty() => {
+                out.insert(f.name.name.clone(), f);
+            }
+            TopDecl::Module(m) => collect_generic_fns(&m.items, out),
+            _ => {}
+        }
+    }
+}
+
+/// M3 stage 3 tranche 2: collect generic type templates.
+fn collect_generic_types<'a>(
+    items: &'a [TopDecl],
+    out: &mut BTreeMap<String, &'a TypeDecl>,
+) {
+    for item in items {
+        match item {
+            TopDecl::Type(t) if !t.generics.is_empty() => {
+                out.insert(t.name.name.clone(), t);
+            }
+            TopDecl::Module(m) => collect_generic_types(&m.items, out),
+            _ => {}
+        }
+    }
+}
+
+/// M3 stage 3 tranche 2: resolve one mangle token (`Int`, `Float`,
+/// a user type name, or a nested mangled monomorph) to a Ty. The
+/// codegen mangle joins tokens with `_`, so this stays permissive
+/// (Unknown) for anything it can't confidently name.
+fn mangle_token_to_ty(
+    tok: &str,
+    known: &BTreeMap<String, Span>,
+) -> Ty {
+    match tok {
+        "Int" => Ty::Prim(PrimType::Int),
+        "Float" => Ty::Prim(PrimType::Float),
+        "Bool" => Ty::Prim(PrimType::Bool),
+        "String" => Ty::Prim(PrimType::String),
+        "Duration" => Ty::Prim(PrimType::Duration),
+        "Decimal" => Ty::Prim(PrimType::Decimal),
+        "Time" => Ty::Prim(PrimType::Time),
+        other => {
+            if known.contains_key(other) {
+                Ty::Named(other.to_string())
+            } else {
+                Ty::Unknown
+            }
+        }
+    }
+}
+
+/// M3 stage 3: Ty-level mirror of codegen's m62
+/// `unify_generic_param_bindings`. Binds generic names appearing in
+/// `param_te` against the actual arg type. Top-level generic names
+/// bind directly; Array/Bounded recurse on the element. Generic
+/// names nested under generic-ARG'd Named types (Box<T> in param
+/// position) stay unbound here — permissive, codegen's own unifier
+/// still runs. Returns Err((name, existing, new)) on a conflict.
+fn unify_generic_ty(
+    param_te: &TypeExpr,
+    arg: &Ty,
+    generics: &std::collections::BTreeSet<String>,
+    bindings: &mut BTreeMap<String, Ty>,
+) -> Result<(), (String, Ty, Ty)> {
+    match param_te {
+        TypeExpr::Named { path, generic_args, .. }
+            if generic_args.is_empty() && path.segments.len() == 1 =>
+        {
+            let name = &path.segments[0].name;
+            if !generics.contains(name) {
+                return Ok(());
+            }
+            if matches!(arg, Ty::Unknown) {
+                return Ok(());
+            }
+            match bindings.get(name) {
+                Some(existing) if existing != arg => Err((
+                    name.clone(),
+                    existing.clone(),
+                    arg.clone(),
+                )),
+                Some(_) => Ok(()),
+                None => {
+                    bindings.insert(name.clone(), arg.clone());
+                    Ok(())
+                }
+            }
+        }
+        TypeExpr::Array { elem, .. } => match arg {
+            Ty::Array(a_elem, _) => {
+                unify_generic_ty(elem, a_elem, generics, bindings)
+            }
+            _ => Ok(()),
+        },
+        TypeExpr::Bounded { elem, .. } => match arg {
+            Ty::Bounded(a_elem, _) => {
+                unify_generic_ty(elem, a_elem, generics, bindings)
+            }
+            _ => Ok(()),
+        },
+        _ => Ok(()),
+    }
+}
+
+/// M3 stage 3: resolve a template TypeExpr with generic bindings
+/// applied — generic names map through `bindings`; everything else
+/// through the ordinary resolver. Unbound generics (or shapes the
+/// resolver can't see) fall to Unknown, keeping the checks
+/// permissive exactly where inference was.
+fn substitute_generic_ty(
+    te: &TypeExpr,
+    bindings: &BTreeMap<String, Ty>,
+    known: &BTreeMap<String, Span>,
+) -> Ty {
+    match te {
+        TypeExpr::Named { path, generic_args, .. }
+            if generic_args.is_empty() && path.segments.len() == 1 =>
+        {
+            if let Some(t) = bindings.get(&path.segments[0].name) {
+                return t.clone();
+            }
+            resolve_type_expr(te, known)
+        }
+        TypeExpr::Array { elem, size, .. } => {
+            let n = match size {
+                Some(Expr::Literal(Literal::Int(n), _)) if *n >= 0 => {
+                    Some(*n as u64)
+                }
+                _ => None,
+            };
+            Ty::Array(
+                Box::new(substitute_generic_ty(elem, bindings, known)),
+                n,
+            )
+        }
+        TypeExpr::Bounded { elem, cap, .. } => Ty::Bounded(
+            Box::new(substitute_generic_ty(elem, bindings, known)),
+            *cap,
+        ),
+        _ => resolve_type_expr(te, known),
+    }
+}
+
 pub fn check_bundle(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -165,6 +315,11 @@ pub fn check_bundle(
         })
     });
     for program in bundle.programs.values() {
+        let mut generic_fns: BTreeMap<String, &FnDecl> = BTreeMap::new();
+        collect_generic_fns(&program.items, &mut generic_fns);
+        let mut generic_types: BTreeMap<String, &TypeDecl> =
+            BTreeMap::new();
+        collect_generic_types(&program.items, &mut generic_types);
         let mut cx = Checker {
             top,
             known: &known,
@@ -176,6 +331,9 @@ pub fn check_bundle(
             in_on_failure: false,
             fallible_ctx: None,
             wasm_target,
+            or_value_discarded: false,
+            generic_fns,
+            generic_types,
         };
         for item in &program.items {
             cx.check_top_decl(item);
@@ -3732,6 +3890,9 @@ fn scan_flood_in_if(i: &IfStmt, locus: &str, diags: &mut Vec<Diag>) {
 fn type_expr_key(t: &TypeExpr) -> String {
     match t {
         TypeExpr::Primitive(p, _) => format!("{:?}", p),
+        TypeExpr::Bounded { elem, cap, .. } => {
+            format!("bounded[{}; {}]", type_expr_key(elem), cap)
+        }
         TypeExpr::Named { path, generic_args, .. } => {
             let base = path
                 .segments
@@ -3912,6 +4073,10 @@ fn collect_known_names(top: &TopScope) -> BTreeMap<String, Span> {
 /// of this predicate already handles that path.
 fn ffi_type_unportable(ty: &Ty) -> Option<&'static str> {
     match ty {
+        Ty::Bounded(_, _) => Some(
+            "bounded[T; N] has no portable C mapping — pass the \
+             element pointer + count separately",
+        ),
         Ty::Prim(p) => match p {
             PrimType::Int
             | PrimType::Float
@@ -4039,6 +4204,26 @@ struct Checker<'a> {
     /// `target browser_js`. Gates the POSIX-only stdlib (no syscalls in
     /// the browser sandbox) at typecheck — see `wasm_unavailable_stdlib`.
     wasm_target: bool,
+    /// M3 stage 2 (2026-07-02): true while checking an `or`
+    /// expression whose value is discarded (statement position) —
+    /// the Substitute arm skips the fallback-vs-success type match.
+    /// Set by Stmt::Expr, consumed and cleared by the Or arm so
+    /// nested `or`s in subexpressions don't inherit it.
+    or_value_discarded: bool,
+    /// M3 stage 3 (2026-07-02): generic fn templates declared in
+    /// the program being checked (name → decl). Call sites mirror
+    /// codegen's m62 inference at the Ty level — every generic
+    /// param must be pinned by an arg, bindings must not conflict,
+    /// args must match the substituted params — and the call types
+    /// as the SUBSTITUTED return instead of Unknown.
+    generic_fns: BTreeMap<String, &'a FnDecl>,
+    /// M3 stage 3 tranche 2: generic TYPE templates (name → decl).
+    /// Mangled monomorph literals (`Box_Int { ... }`) resolve
+    /// against these — previously "unknown type" at typecheck,
+    /// which made generic types unusable through the CLI (only
+    /// codegen unit tests, which skip the checker, exercised
+    /// them). Fields validate against the SUBSTITUTED types.
+    generic_types: BTreeMap<String, &'a TypeDecl>,
 }
 
 #[derive(Default)]
@@ -5008,6 +5193,15 @@ impl<'a> Checker<'a> {
         if !info.contract_consume.is_empty() {
             self.check_contract_compatibility(info);
         }
+        // M3 stage 4 (2026-07-02): expose-side validity. Codegen
+        // treats `contract` members as pure declaration, so this is
+        // the ONLY place a lying expose can be caught — an entry
+        // must bind against something real on this locus (a params
+        // field, a mode, or a fn member) at a matching type, or a
+        // consuming parent type-checks against fiction.
+        if !info.contract_expose.is_empty() {
+            self.check_contract_expose_validity(info);
+        }
 
         // F.31 (2026-05-23): validate the `placement { }` block
         // when present. The parser already enforced "main-only"
@@ -5904,6 +6098,103 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// M3 stage 4 (2026-07-02): every `expose` entry must bind
+    /// against something real on the declaring locus — a params
+    /// field, a mode (bulk/harmonic/resolution, per the
+    /// mode-pull rule in semantics.md), or a `fn` member — with a
+    /// type matching what's declared there (v0 equality via
+    /// assignable_from, which stays permissive on Unknown).
+    /// Without this, `expose value: String;` over an Int field
+    /// compiles, and a parent consuming `value: String` checks
+    /// clean against fiction.
+    fn check_contract_expose_validity(&mut self, locus: &LocusInfo) {
+        for entry in &locus.contract_expose {
+            // 1. params field
+            if let Some(p) =
+                locus.params.iter().find(|p| p.name == entry.name)
+            {
+                if !entry.ty.assignable_from(&p.ty) {
+                    self.diags.push(Diag::ty(
+                        entry.span,
+                        format!(
+                            "contract: locus `{}` exposes `{}: {}`, but the \
+                             field is declared `{}`",
+                            locus.name,
+                            entry.name,
+                            entry.ty.display(),
+                            p.ty.display()
+                        ),
+                    ));
+                }
+                continue;
+            }
+            // 2. mode (exposed-mode pull: `expose bulk: T;`)
+            let mode = match entry.name.as_str() {
+                "bulk" => Some(ModeKind::Bulk),
+                "harmonic" => Some(ModeKind::Harmonic),
+                "resolution" => Some(ModeKind::Resolution),
+                _ => None,
+            };
+            if let Some(mk) = mode {
+                match locus.mode_returns.get(&mk) {
+                    Some(ret) => {
+                        if !entry.ty.assignable_from(ret) {
+                            self.diags.push(Diag::ty(
+                                entry.span,
+                                format!(
+                                    "contract: locus `{}` exposes `{}: {}`, \
+                                     but the mode returns `{}`",
+                                    locus.name,
+                                    entry.name,
+                                    entry.ty.display(),
+                                    ret.display()
+                                ),
+                            ));
+                        }
+                    }
+                    None => {
+                        self.diags.push(Diag::ty(
+                            entry.span,
+                            format!(
+                                "contract: locus `{}` exposes mode `{}` but \
+                                 does not declare it",
+                                locus.name, entry.name
+                            ),
+                        ));
+                    }
+                }
+                continue;
+            }
+            // 3. fn member (vertical method surface)
+            if let Some(m) =
+                locus.methods.iter().find(|m| m.name == entry.name)
+            {
+                if !entry.ty.assignable_from(&m.ret) {
+                    self.diags.push(Diag::ty(
+                        entry.span,
+                        format!(
+                            "contract: locus `{}` exposes `{}: {}`, but the \
+                             method returns `{}`",
+                            locus.name,
+                            entry.name,
+                            entry.ty.display(),
+                            m.ret.display()
+                        ),
+                    ));
+                }
+                continue;
+            }
+            self.diags.push(Diag::ty(
+                entry.span,
+                format!(
+                    "contract: locus `{}` exposes `{}` but has no field, \
+                     mode, or method with that name",
+                    locus.name, entry.name
+                ),
+            ));
+        }
+    }
+
     fn check_contract_compatibility(&mut self, parent: &LocusInfo) {
         let child_name = match &parent.accept_param {
             Some((_, Ty::Named(n))) => n.clone(),
@@ -6607,6 +6898,18 @@ impl<'a> Checker<'a> {
             Stmt::Assign { target, value, span, .. } => {
                 let got = self.check_expr_addressed(value);
                 let want = self.lvalue_ty(target);
+                // bounded[T; N] fields cannot be whole-assigned
+                // (even from another bounded of the same shape —
+                // no copy semantics exist; the mutation surface is
+                // push/clear).
+                if matches!(want, Ty::Bounded(_, _)) {
+                    self.diags.push(Diag::ty(
+                        *span,
+                        "bounded[T; N] fields cannot be assigned as a \
+                         whole — mutate through push(...) / clear(...)"
+                            .to_string(),
+                    ));
+                }
                 if !want.assignable_from(&got) {
                     self.diags.push(Diag::ty(
                         value.span(),
@@ -6647,7 +6950,30 @@ impl<'a> Checker<'a> {
             Stmt::If(if_stmt) => self.check_if(if_stmt),
             Stmt::Match(m) => self.check_match(m),
             Stmt::For { name, iter, body, .. } => {
-                let _ = self.check_expr(iter);
+                // 2026-07-02 @form iteration surface: `for e in
+                // m.entries` (hashmap) / `for x in v.items` (vec).
+                // `entries`/`items` are pseudo-fields the generic
+                // field check would reject — when the receiver is a
+                // locus, check only the receiver and bind the loop
+                // var Unknown (codegen resolves the cell type and
+                // rejects non-form receivers with a focused error).
+                let mut handled = false;
+                if let Expr::Field { receiver, name: fname, .. } = iter {
+                    if fname.name == "entries" || fname.name == "items" {
+                        let recv_ty = self.check_expr(receiver);
+                        if let Ty::Named(ln) = &recv_ty {
+                            if matches!(
+                                self.top.lookup(ln),
+                                Some(TopSymbol::Locus(_))
+                            ) {
+                                handled = true;
+                            }
+                        }
+                    }
+                }
+                if !handled {
+                    let _ = self.check_expr(iter);
+                }
                 self.locals.push();
                 self.locals.insert(&name.name, LocalSym { ty: Ty::Unknown, is_mut: false });
                 self.check_block(body);
@@ -6827,7 +7153,18 @@ impl<'a> Checker<'a> {
                 }
             }
             Stmt::Expr(e) => {
+                // M3 stage 2 (2026-07-02): a statement-position
+                // `call() or fallback` discards its value, so the
+                // fallback's type needn't match the success type —
+                // `write_file(p, s) or handler(err);` with a
+                // Bool-returning handler is fine (and common in
+                // production code). The flag is consumed (and
+                // cleared) by the Or/Substitute arm.
+                if matches!(e, Expr::Or { .. }) {
+                    self.or_value_discarded = true;
+                }
                 let _ = self.check_expr_addressed(e);
+                self.or_value_discarded = false;
             }
             Stmt::ShmWrite { topic, max, binding, body, span } => {
                 // The receiver must be a declared topic (its layout-bound
@@ -7346,7 +7683,31 @@ impl<'a> Checker<'a> {
                 }
                 None
             }
-            Ty::Named(n) => match self.top.lookup(n)? {
+            Ty::Named(n) => {
+                // M3 stage 3 tranche 2: field reads on mangled
+                // generic monomorph values (`b.value` where
+                // b: Box_Int) resolve through the template with
+                // the type args substituted.
+                if self.top.lookup(n).is_none() {
+                    let (template, bindings) =
+                        self.resolve_generic_monomorph(n)?;
+                    if let TypeDeclBody::Struct(tfields) =
+                        &template.body
+                    {
+                        return tfields
+                            .iter()
+                            .find(|f| f.name.name == name)
+                            .map(|f| {
+                                substitute_generic_ty(
+                                    &f.ty,
+                                    &bindings,
+                                    self.known,
+                                )
+                            });
+                    }
+                    return None;
+                }
+                match self.top.lookup(n)? {
                 TopSymbol::Type(info) => match &info.kind {
                     TypeKind::Struct(fields) => fields
                         .iter()
@@ -7411,7 +7772,8 @@ impl<'a> Checker<'a> {
                     })
                 }
                 _ => None,
-            },
+            }
+            }
             Ty::Unknown => Some(Ty::Unknown),
             _ => None,
         }
@@ -7538,6 +7900,385 @@ impl<'a> Checker<'a> {
                                 ),
                             ));
                         }
+                    }
+                }
+                // Typecheck M3 stage 1 (2026-07-02): stdlib fn-name
+                // validation. Within a TABLED namespace an unknown
+                // name is an error with a did-you-mean; untabled
+                // namespaces keep the permissive Unknown behavior,
+                // so table incompleteness degrades to the status
+                // quo, never to a false error.
+                if let Expr::Path(qn) = callee.as_ref() {
+                    if qn.segments.first().map(|s| s.name.as_str())
+                        == Some("std")
+                    {
+                        let segs: Vec<&str> = qn
+                            .segments
+                            .iter()
+                            .map(|s| s.name.as_str())
+                            .collect();
+                        if let Some(msg) =
+                            crate::stdlib_surface::unknown_fn_error(&segs)
+                        {
+                            self.diags.push(Diag::ty(qn.span, msg));
+                        }
+                        // M3 stage 2 (2026-07-02): signature
+                        // enforcement — arity, arg types, and the
+                        // REAL return type (killing the Unknown
+                        // passthrough for tabled fns). Fallible rows
+                        // return Ty::Fallible, so `or 0` on an
+                        // Int-success call checks the substitute
+                        // against Int and codegen's must-address
+                        // rule gets a typecheck twin.
+                        if let Some(sig) =
+                            crate::stdlib_surface::signature_for(&segs)
+                        {
+                            // (bounded-intrinsic block is below —
+                            // stdlib paths never collide with it.)
+                            if args.len() != sig.params.len() {
+                                self.diags.push(Diag::ty(
+                                    qn.span,
+                                    format!(
+                                        "`{}` takes {} argument{}, got {}",
+                                        sig.display_path(),
+                                        sig.params.len(),
+                                        if sig.params.len() == 1 {
+                                            ""
+                                        } else {
+                                            "s"
+                                        },
+                                        args.len()
+                                    ),
+                                ));
+                            }
+                            for (i, a) in args.iter().enumerate() {
+                                let got = self.check_expr_addressed(a);
+                                if let Some(want) = sig.params.get(i) {
+                                    if !want.accepts(&got) {
+                                        self.diags.push(Diag::ty(
+                                            a.span(),
+                                            format!(
+                                                "`{}` argument {}: expected \
+                                                 `{}`, got `{}`",
+                                                sig.display_path(),
+                                                i + 1,
+                                                want.to_ty().display(),
+                                                got.display()
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
+                            return sig.ret_ty();
+                        }
+                    }
+                }
+                // bounded[T; N] intrinsics (2026-07-02):
+                // push/at/count/clear over a bounded-typed first
+                // arg. Probed speculatively — when arg0 isn't
+                // bounded, its diags are rolled back and the call
+                // falls through to the normal paths.
+                if let Expr::Ident(id) = callee.as_ref() {
+                    if matches!(
+                        id.name.as_str(),
+                        "push" | "at" | "set" | "count" | "clear"
+                            | "truncate"
+                    ) && !args.is_empty()
+                    {
+                        let mark = self.diags.len();
+                        let recv_ty = self.check_expr(&args[0]);
+                        if let Ty::Bounded(elem, _cap) = recv_ty {
+                            let want_args = match id.name.as_str() {
+                                "push" | "at" | "truncate" => 2,
+                                "set" => 3,
+                                _ => 1,
+                            };
+                            if args.len() != want_args {
+                                self.diags.push(Diag::ty(
+                                    callee.span(),
+                                    format!(
+                                        "`{}(bounded, ...)` takes {} \
+                                         argument{}, got {}",
+                                        id.name,
+                                        want_args,
+                                        if want_args == 1 { "" } else { "s" },
+                                        args.len()
+                                    ),
+                                ));
+                            }
+                            if id.name == "set" {
+                                if let Some(i) = args.get(1) {
+                                    let it =
+                                        self.check_expr_addressed(i);
+                                    if !Ty::Prim(PrimType::Int)
+                                        .assignable_from(&it)
+                                    {
+                                        self.diags.push(Diag::ty(
+                                            i.span(),
+                                            format!(
+                                                "set: index must be \
+                                                 Int, got `{}`",
+                                                it.display()
+                                            ),
+                                        ));
+                                    }
+                                }
+                                if let Some(x) = args.get(2) {
+                                    let xt =
+                                        self.check_expr_addressed(x);
+                                    let widen_ok = matches!(
+                                        (elem.as_ref(), &xt),
+                                        (
+                                            Ty::Prim(PrimType::Float),
+                                            Ty::Prim(PrimType::Int)
+                                        )
+                                    );
+                                    if !widen_ok
+                                        && !elem.assignable_from(&xt)
+                                    {
+                                        self.diags.push(Diag::ty(
+                                            x.span(),
+                                            format!(
+                                                "set: element type `{}` \
+                                                 does not match bounded \
+                                                 element `{}`",
+                                                xt.display(),
+                                                elem.display()
+                                            ),
+                                        ));
+                                    }
+                                }
+                                return Ty::Fallible {
+                                    success: Box::new(Ty::Unit),
+                                    payload: Box::new(Ty::Named(
+                                        "IndexError".into(),
+                                    )),
+                                };
+                            }
+                            if id.name == "truncate" {
+                                if let Some(n) = args.get(1) {
+                                    let nt =
+                                        self.check_expr_addressed(n);
+                                    if !Ty::Prim(PrimType::Int)
+                                        .assignable_from(&nt)
+                                    {
+                                        self.diags.push(Diag::ty(
+                                            n.span(),
+                                            format!(
+                                                "truncate: n must be \
+                                                 Int, got `{}`",
+                                                nt.display()
+                                            ),
+                                        ));
+                                    }
+                                }
+                                return Ty::Prim(PrimType::Int);
+                            }
+                            match id.name.as_str() {
+                                "push" => {
+                                    if let Some(x) = args.get(1) {
+                                        let xt =
+                                            self.check_expr_addressed(x);
+                                        let widen_ok = matches!(
+                                            (elem.as_ref(), &xt),
+                                            (
+                                                Ty::Prim(PrimType::Float),
+                                                Ty::Prim(PrimType::Int)
+                                            )
+                                        );
+                                        if !widen_ok
+                                            && !elem.assignable_from(&xt)
+                                        {
+                                            self.diags.push(Diag::ty(
+                                                x.span(),
+                                                format!(
+                                                    "push: element type \
+                                                     `{}` does not match \
+                                                     bounded element `{}`",
+                                                    xt.display(),
+                                                    elem.display()
+                                                ),
+                                            ));
+                                        }
+                                    }
+                                    return Ty::Fallible {
+                                        success: Box::new(Ty::Unit),
+                                        payload: Box::new(Ty::Named(
+                                            "CapacityError".into(),
+                                        )),
+                                    };
+                                }
+                                "at" => {
+                                    if let Some(i) = args.get(1) {
+                                        let it =
+                                            self.check_expr_addressed(i);
+                                        if !Ty::Prim(PrimType::Int)
+                                            .assignable_from(&it)
+                                        {
+                                            self.diags.push(Diag::ty(
+                                                i.span(),
+                                                format!(
+                                                    "at: index must be \
+                                                     Int, got `{}`",
+                                                    it.display()
+                                                ),
+                                            ));
+                                        }
+                                    }
+                                    return Ty::Fallible {
+                                        success: elem,
+                                        payload: Box::new(Ty::Named(
+                                            "IndexError".into(),
+                                        )),
+                                    };
+                                }
+                                "count" => {
+                                    return Ty::Prim(PrimType::Int);
+                                }
+                                _ => return Ty::Unit,
+                            }
+                        }
+                        // Not bounded: roll back speculative diags.
+                        self.diags.truncate(mark);
+                    }
+                }
+                // M3 stage 3 (2026-07-02): generic fn call
+                // validation — the Ty-level mirror of codegen's m62
+                // inference, with spans. Checks: arity, every
+                // generic param pinned, no conflicting bindings,
+                // args vs substituted params; the call types as the
+                // substituted return (fallible payloads
+                // substituted too).
+                if let Expr::Ident(id) = callee.as_ref() {
+                    if let Some(template) =
+                        self.generic_fns.get(id.name.as_str()).copied()
+                    {
+                        if args.len() != template.params.len() {
+                            self.diags.push(Diag::ty(
+                                callee.span(),
+                                format!(
+                                    "generic fn `{}` takes {} \
+                                     argument{}, got {}",
+                                    id.name,
+                                    template.params.len(),
+                                    if template.params.len() == 1 {
+                                        ""
+                                    } else {
+                                        "s"
+                                    },
+                                    args.len()
+                                ),
+                            ));
+                        }
+                        let arg_tys: Vec<Ty> = args
+                            .iter()
+                            .map(|a| self.check_expr_addressed(a))
+                            .collect();
+                        let generic_names: std::collections::BTreeSet<
+                            String,
+                        > = template
+                            .generics
+                            .iter()
+                            .map(|g| g.name.name.clone())
+                            .collect();
+                        let mut bindings: BTreeMap<String, Ty> =
+                            BTreeMap::new();
+                        for (p, at) in
+                            template.params.iter().zip(arg_tys.iter())
+                        {
+                            if let Err((gname, was, now)) =
+                                unify_generic_ty(
+                                    &p.ty,
+                                    at,
+                                    &generic_names,
+                                    &mut bindings,
+                                )
+                            {
+                                self.diags.push(Diag::ty(
+                                    callee.span(),
+                                    format!(
+                                        "generic fn `{}`: parameter \
+                                         `{}` bound to both `{}` and \
+                                         `{}` by this call's arguments",
+                                        id.name,
+                                        gname,
+                                        was.display(),
+                                        now.display()
+                                    ),
+                                ));
+                            }
+                        }
+                        // Every generic must be pinned — UNLESS an
+                        // arg typed Unknown could have pinned it
+                        // (stay permissive where inference was).
+                        let any_unknown_arg = arg_tys
+                            .iter()
+                            .any(|t| matches!(t, Ty::Unknown));
+                        if !any_unknown_arg {
+                            for g in &template.generics {
+                                if !bindings.contains_key(&g.name.name)
+                                {
+                                    self.diags.push(Diag::ty(
+                                        callee.span(),
+                                        format!(
+                                            "generic fn `{}`: cannot \
+                                             infer `{}` from this call \
+                                             — every generic param \
+                                             must appear in an \
+                                             argument position that \
+                                             pins it",
+                                            id.name, g.name.name
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                        // Args vs substituted params.
+                        for ((p, at), a) in template
+                            .params
+                            .iter()
+                            .zip(arg_tys.iter())
+                            .zip(args.iter())
+                        {
+                            let want = substitute_generic_ty(
+                                &p.ty,
+                                &bindings,
+                                self.known,
+                            );
+                            if !want.assignable_from(at) {
+                                self.diags.push(Diag::ty(
+                                    a.span(),
+                                    format!(
+                                        "generic fn `{}` argument \
+                                         `{}`: expected `{}`, got `{}`",
+                                        id.name,
+                                        p.name.name,
+                                        want.display(),
+                                        at.display()
+                                    ),
+                                ));
+                            }
+                        }
+                        let ret = match &template.ret {
+                            Some(te) => substitute_generic_ty(
+                                te,
+                                &bindings,
+                                self.known,
+                            ),
+                            None => Ty::Unit,
+                        };
+                        if let Some(fe) = &template.fallible {
+                            let payload = substitute_generic_ty(
+                                fe,
+                                &bindings,
+                                self.known,
+                            );
+                            return Ty::Fallible {
+                                success: Box::new(ret),
+                                payload: Box::new(payload),
+                            };
+                        }
+                        return ret;
                     }
                 }
                 // m47-payloads: enum-variant construction with
@@ -7832,15 +8573,41 @@ impl<'a> Checker<'a> {
                 Ty::Unknown
             }
             Expr::Or { inner, disposition, span } => {
+                let value_discarded = self.or_value_discarded;
+                self.or_value_discarded = false;
                 let inner_ty = self.check_expr(inner);
+                // M3 stage 2 (2026-07-02): stdlib fallible
+                // path-calls are dual-mode at codegen (bare = the
+                // legacy direct form, `or` = fallible ABI), so the
+                // Call arm types them Unknown; the precise
+                // success/payload for the `or` form comes from the
+                // signature table here.
+                let stdlib_or = match inner.as_ref() {
+                    Expr::Call { callee, .. } => match callee.as_ref() {
+                        Expr::Path(qn) => {
+                            let segs: Vec<&str> = qn
+                                .segments
+                                .iter()
+                                .map(|s| s.name.as_str())
+                                .collect();
+                            crate::stdlib_surface::signature_for(&segs)
+                                .and_then(|sig| sig.or_types())
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
                 // Unwrap the fallible to get success + payload
                 // types. If the inner isn't actually fallible,
                 // the `or` clause is a no-op at best and likely
                 // a user mistake.
-                let (success, payload) = match inner_ty {
-                    Ty::Fallible { success, payload } => (*success, *payload),
-                    Ty::Unknown => (Ty::Unknown, Ty::Unknown),
-                    other => {
+                let (success, payload) = match (stdlib_or, inner_ty) {
+                    (Some((s, p)), _) => (s, p),
+                    (None, Ty::Fallible { success, payload }) => {
+                        (*success, *payload)
+                    }
+                    (None, Ty::Unknown) => (Ty::Unknown, Ty::Unknown),
+                    (None, other) => {
                         self.diags.push(Diag::ty(
                             inner.span(),
                             format!(
@@ -7960,6 +8727,114 @@ impl<'a> Checker<'a> {
                         } else {
                             false
                         };
+                        // 2026-07-02 fallible handlers: the substitute
+                        // may itself be a fallible call —
+                        // `db() or self.convert(err)` where `convert`
+                        // is `fallible(E2)`. Semantics are implicit
+                        // `or raise` on the handler: its success value
+                        // substitutes; its failure propagates through
+                        // the ENCLOSING fn's error path, so E2 must be
+                        // assignable to the enclosing fallible
+                        // payload. (Sugar for the already-legal
+                        // `db() or (self.convert(err) or raise)` —
+                        // this closes the pond stash-bridge idiom that
+                        // made jobs::Queue non-reentrant.)
+                        if let Ty::Fallible {
+                            success: h_success,
+                            payload: h_payload,
+                        } = &rhs_ty
+                        {
+                            if !value_discarded
+                                && !success.assignable_from(h_success)
+                            {
+                                self.diags.push(Diag::ty(
+                                    *span,
+                                    format!(
+                                        "`or <handler>`: handler's success \
+                                         type `{}` does not match the \
+                                         call's success type `{}`",
+                                        h_success.display(),
+                                        success.display()
+                                    ),
+                                ));
+                            }
+                            match &self.fallible_ctx {
+                                None => self.diags.push(Diag::ty(
+                                    *span,
+                                    format!(
+                                        "`or <handler>`: handler is \
+                                         `fallible({})` but the enclosing \
+                                         fn is not fallible — the \
+                                         handler's failure has nowhere to \
+                                         go. Declare the enclosing fn \
+                                         `fallible({})`, or handle inside \
+                                         the handler and drop its \
+                                         `fallible`",
+                                        h_payload.display(),
+                                        h_payload.display()
+                                    ),
+                                )),
+                                Some((_, expected_payload)) => {
+                                    if !expected_payload
+                                        .assignable_from(h_payload)
+                                    {
+                                        self.diags.push(Diag::ty(
+                                            *span,
+                                            format!(
+                                                "`or <handler>`: handler \
+                                                 fails with `{}` but the \
+                                                 enclosing fn is \
+                                                 `fallible({})` — the \
+                                                 propagated payload must \
+                                                 match",
+                                                h_payload.display(),
+                                                expected_payload.display()
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
+                            return success;
+                        }
+                        // Docs/spec pass find (2026-07-02): a
+                        // STDLIB fallible path-call used directly
+                        // as the handler compiles but silently
+                        // yields the un-addressed sret ("" / 0) on
+                        // the handler's OWN failure instead of
+                        // propagating — the codegen handler
+                        // classifier doesn't cover stdlib paths.
+                        // Reject with the working spelling until
+                        // it does.
+                        if let Expr::Call { callee, .. } = rhs.as_ref() {
+                            if let Expr::Path(qn) = callee.as_ref() {
+                                let segs: Vec<&str> = qn
+                                    .segments
+                                    .iter()
+                                    .map(|s| s.name.as_str())
+                                    .collect();
+                                let is_fallible_stdlib =
+                                    crate::stdlib_surface::signature_for(
+                                        &segs,
+                                    )
+                                    .map(|sig| sig.fallible.is_some())
+                                    .unwrap_or(false);
+                                if is_fallible_stdlib {
+                                    self.diags.push(Diag::ty(
+                                        *span,
+                                        format!(
+                                            "`or {}(...)`: a fallible \
+                                             stdlib call can't be the \
+                                             handler directly yet — \
+                                             write the nested form `or \
+                                             ({}(...) or raise)` so its \
+                                             own failure has a path",
+                                            segs.join("::"),
+                                            segs.join("::")
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
                         // The substitute RHS must produce a
                         // value of the success type (or be a
                         // nested `or` that ultimately produces
@@ -7967,7 +8842,10 @@ impl<'a> Checker<'a> {
                         // don't false-positive when the
                         // typechecker can't see through a
                         // stdlib path.
-                        if !interface_satisfied && !success.assignable_from(&rhs_ty) {
+                        if !interface_satisfied
+                            && !value_discarded
+                            && !success.assignable_from(&rhs_ty)
+                        {
                             self.diags.push(Diag::ty(
                                 *span,
                                 format!(
@@ -8156,6 +9034,37 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// M3 stage 3 tranche 2: match a mangled monomorph name
+    /// (`Box_Int`, `Pair_Int_String`) against a generic type
+    /// template, producing the generic→Ty bindings. The mangle
+    /// joins single tokens with `_`; template base names
+    /// containing `_` are handled by prefix match. None when no
+    /// template matches or the token count disagrees.
+    fn resolve_generic_monomorph(
+        &self,
+        name: &str,
+    ) -> Option<(&'a TypeDecl, BTreeMap<String, Ty>)> {
+        for (base, template) in &self.generic_types {
+            let prefix = format!("{}_", base);
+            let Some(rest) = name.strip_prefix(&prefix) else {
+                continue;
+            };
+            let toks: Vec<&str> = rest.split('_').collect();
+            if toks.len() != template.generics.len() {
+                continue;
+            }
+            let mut bindings: BTreeMap<String, Ty> = BTreeMap::new();
+            for (g, tok) in template.generics.iter().zip(toks.iter()) {
+                bindings.insert(
+                    g.name.name.clone(),
+                    mangle_token_to_ty(tok, self.known),
+                );
+            }
+            return Some((template, bindings));
+        }
+        None
+    }
+
     fn check_struct_literal(
         &mut self,
         path: &QualifiedName,
@@ -8169,6 +9078,38 @@ impl<'a> Checker<'a> {
             return Ty::Unknown;
         }
         let name = &path.segments[0].name;
+        // M3 stage 3 tranche 2 (2026-07-02): mangled generic
+        // monomorph literal (`Box_Int { ... }`). Resolve the
+        // `Base_Tok[_Tok...]` shape against a generic type
+        // template, substitute the type args into the field
+        // types, and validate the inits like a concrete struct.
+        // (Previously "unknown type" — generic types were
+        // unusable through the CLI.)
+        if self.top.lookup(name).is_none() {
+            if let Some((template, bindings)) =
+                self.resolve_generic_monomorph(name)
+            {
+                if let TypeDeclBody::Struct(tfields) = &template.body {
+                    let fields: Vec<(String, Ty, bool)> = tfields
+                        .iter()
+                        .map(|f| {
+                            (
+                                f.name.name.clone(),
+                                substitute_generic_ty(
+                                    &f.ty,
+                                    &bindings,
+                                    self.known,
+                                ),
+                                f.default.is_some(),
+                            )
+                        })
+                        .collect();
+                    return self.check_literal_fields(
+                        name, &fields, "type", true, inits, span,
+                    );
+                }
+            }
+        }
         let sym = match self.top.lookup(name) {
             Some(s) => s,
             None => {
@@ -8234,6 +9175,23 @@ impl<'a> Checker<'a> {
             }
         };
 
+        self.check_literal_fields(
+            name, &fields, kind_label, requires_all, inits, span,
+        )
+    }
+
+    /// Shared literal field validation — concrete structs/loci/
+    /// perspectives and (M3 stage 3 tranche 2) substituted generic
+    /// monomorphs both land here.
+    fn check_literal_fields(
+        &mut self,
+        name: &str,
+        fields: &[(String, Ty, bool)],
+        kind_label: &str,
+        requires_all: bool,
+        inits: &[StructInit],
+        span: Span,
+    ) -> Ty {
         let mut seen: BTreeMap<String, ()> = BTreeMap::new();
         for init in inits {
             let got = self.check_expr(&init.value);
@@ -8295,7 +9253,24 @@ impl<'a> Checker<'a> {
             seen.insert(init.name.name.clone(), ());
         }
         if requires_all {
-            for (fname, _, has_default) in &fields {
+            for (fname, fty, has_default) in fields {
+                // bounded[T; N] fields auto-init empty and cannot
+                // be spelled in a literal.
+                if matches!(fty, Ty::Bounded(_, _)) {
+                    if seen.contains_key(fname) {
+                        self.diags.push(Diag::ty(
+                            span,
+                            format!(
+                                "{} `{}` field `{}`: bounded[T; N] \
+                                 fields cannot be initialized in a \
+                                 literal — they start empty; use \
+                                 push(...)",
+                                kind_label, name, fname
+                            ),
+                        ));
+                    }
+                    continue;
+                }
                 if !seen.contains_key(fname) && !has_default {
                     self.diags.push(Diag::ty(
                         span,
@@ -8308,7 +9283,7 @@ impl<'a> Checker<'a> {
             }
         }
 
-        Ty::Named(name.clone())
+        Ty::Named(name.to_string())
     }
 }
 

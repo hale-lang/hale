@@ -6,6 +6,367 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **Typecheck: fallible stdlib calls rejected as direct `or`
+  handlers.** `x() or std::io::fs::read_file(p)` compiled but
+  silently yielded the un-addressed sret value ("" / 0) when the
+  handler ITSELF failed, instead of propagating — found while
+  compile-testing doc examples. Now a typecheck error with the
+  exact rewrite ("write `or (std::io::fs::read_file(p) or raise)`
+  so its own failure has a path") until the codegen handler
+  classifier covers stdlib paths. Zero hits across pond + fathom +
+  examples.
+
+- **Aliasing stage 2 (tier 1) — `noalias self` on provably
+  non-reentrant locus methods.** Rust's `&mut`-style guarantee,
+  earned from Hale's own invariants: a method in the elidable
+  fixpoint (non-allocating ⇒ cannot publish, and its callees never
+  drain the cooperative queue) with all-scalar params cannot be
+  re-entered through the bus registry nor handed an aliasing
+  pointer — so `self` is `noalias` and field loads can stay in
+  registers across calls. MODES join the elidable fixpoint under
+  their synthetic names (bulk/harmonic/resolution — the brain-tower
+  pull surface — qualify, and sibling `self.bulk()` calls now
+  classify non-allocating for scratch elision too). Contract pinned
+  by IR tests (positive + both unsound channels stay unmarked).
+
+- **Builds are 2.3–5.8× faster: dead-stdlib elimination before the
+  backend.** Every module carries the full merged stdlib; it was
+  being O3-optimized and machine-emitted on every build, used or
+  not (224 ms of a 462 ms trivial build). Defined fns except `main`
+  are now internalized and a leading `globaldce` strips the
+  unreferenced stdlib before the pipeline runs. Trivial builds
+  462 → 80 ms; the largest app (riskgw) 1.2 s → 526 ms. Plus:
+  `HALE_TIME=1` prints per-phase wall times; `hale build --dev`
+  (or HALE_DEV=1) selects an O1 pipeline for latency-critical
+  loops; `hale check --json` emits NDJSON diagnostics on stdout
+  (file/line/col/severity/kind/message) — with `hale check` at
+  ~10 ms on the largest apps, this is the LSP groundwork: an
+  editor save-hook needs nothing more. The staged rest (prebuilt
+  stdlib object, `hale lsp`, per-seed caching) is in
+  notes/build-latency-and-lsp.md.
+
+- **Unbounded-allocation warnings are DEFAULT-ON.** (M3 stage 5
+  complete — Riley's flip call after the full-corpus audit.) Every
+  `hale check`/`build` now surveys the whole program; run-to-exit
+  programs (a `main` with no `run` loop and no bus handler) warn
+  nothing, `@unbounded fn` stays the carve-out, and
+  `--no-warn-unbounded-alloc` is the opt-out (the old
+  `--warn-unbounded-alloc` spelling is accepted-and-ignored).
+  Warnings never fail the build. Expect real findings on the fathom
+  daemons: the audit confirmed 103 true accumulation sites
+  (riskgw/dashboard/prober/tui/websocket) — that visibility is the
+  point of the flip.
+
+- **M3 stage 5 (part 2) — run-to-exit programs don't warn; a
+  tempting loop-bound extension rejected by the empirical model.**
+  A program whose bundle has a `main` but no `run` loop and no bus
+  handler is run-to-exit — per the tool's own philosophy it owes no
+  memory-bound proof, so smoke binaries and scripts no longer warn
+  (the model still ranks their sites; only the diagnostic surface
+  is gated). Libs checked standalone (no `main`) keep ALL warnings —
+  per-dir consumer checks don't re-bundle vendored libs, so the lib
+  check is where pond/websocket's real per-message leaks surface.
+  Also documented in-code: ranking runtime-invariant loop ceilings
+  (len()/params) as bounded was implemented and REVERTED — the
+  RSS-validated test is the authority that a param-ceiling loop in
+  a scratchless frame accumulates linearly in the input (3M iters ≈
+  190 MB), which is exactly what unbounded means here. Warning
+  totals across the corpus: 402 (pre-audit) → ~160, all audited
+  true positives preserved. Default-on remains blocked at ~36%
+  residual FP (accepted D/E-lib/F limitations + one-shot-shaped
+  app code) — the flip is now a policy call, not an engineering
+  gap.
+
+- **M3 stage 5 (part 1) — unbounded-alloc analysis: audited + three
+  gap fixes.** A fresh-context audit triaged all 402
+  `--warn-unbounded-alloc` warnings across pond + fathom + examples:
+  103 true (26%) — including live production leaks (riskgw
+  `marks.set` per md frame, pond websocket `last_message.kind` per
+  message; the per-set anchor-clone class is filed in fathom
+  FRICTION.md as a runtime issue) — and 299 false (74%). Record in
+  notes/audit/. Three classifier gaps fixed:
+  (A) `Returned` values consumed inside a member fn's per-call
+  scratch no longer flag — only returns consumed by a scratch-less
+  long-lived frame (`main`/`run`/free-fn chains therefrom) accumulate;
+  (B) in-loop `Local`s in scratch-ful frames are bounded per
+  activation (reclaimed at method exit) — EXCEPT inside a literal
+  `while true`, where the exit never comes;
+  (C) whole-value `self.field = Struct{...}` replaces whose inits
+  are all scalar/static-literal are in-place memcpys, not arena
+  growth (a single fresh heap subfield re-flags — that's the
+  anchor-clone leak).
+  Result: ~402 → ~165 warnings with every audited true positive
+  preserved (dashboard/tui/riskgw/jobs counts audit-exact);
+  bounded[T; N] eviction loops no longer warn. Remaining for
+  default-on: len()/param loop-bound recognition (the ~35% residual
+  FP is main-reached runtime-bounded loops) and the accepted E/F
+  limitations (one-shot binaries, return-then-publish aliasing).
+
+- **Typecheck M3 stage 3 (tranche 2) — generic STRUCT literals +
+  monomorph unification.** `Box_Int { ... }` literals now resolve
+  against the generic template with the type args substituted:
+  wrong-typed fields, unknown fields, and missing fields are caught
+  at typecheck; field READS on monomorph values type as the
+  substituted field (`b.value` on a `Box_Int` is `Int`). And
+  `Box<Int>` type-exprs now resolve to the mangled monomorph name
+  (previously the bare `Box`), so a `Box<Int>`-typed field and a
+  `Box_Int` literal unify — and a `Box_String` literal in a
+  `Box<Int>` slot is a caught mismatch. This also FIXES generic
+  structs being unusable through the CLI: `hale check` rejected
+  every mangled-monomorph literal as "unknown type", so only
+  codegen unit tests (which skip the checker) could use them.
+
+- **Typecheck M3 stage 3 (tranche 1) — generic fn call validation.**
+  Call sites of generic fn templates are now checked at typecheck
+  with source spans — the Ty-level mirror of codegen's m62
+  inference: arity ("takes 3 arguments, got 2"), binding conflicts
+  ("parameter `T` bound to both `Int` and `String` by this call's
+  arguments"), unpinned generics ("cannot infer `T` from this
+  call"), and args vs SUBSTITUTED param types. The call types as
+  the substituted return (fallible payloads substituted too), so a
+  generic call's result participates in downstream checking instead
+  of passing through as Unknown. Permissive exactly where inference
+  is blind (Unknown args, generic-arg'd nested shapes). Tranche 2:
+  generic STRUCT literal field validation. Also fixed en route: a
+  DWARF location leak at the mid-statement generic-synthesis site
+  (the caller's active location poisoned the synthesized fn's entry
+  allocas — "!dbg attachment points at wrong subprogram" — on any
+  debug-info build using generics).
+
+- **bounded[T; N]: `set(f, i, x)` + `truncate(f, n)` intrinsics.**
+  `set` overwrites a live slot (fallible IndexError, arena-anchors
+  pointer-shaped elements like push); `truncate` clamps the count
+  down (never grows; returns the new count). Together they make the
+  drop-front/FIFO idiom expressible — shift live slots left with
+  set, then truncate — which unblocked migrating
+  pond/agent/conversation's history eviction off its TSV walker.
+
+- **`bounded[T; N]` — fixed-capacity counted collections in types.**
+  Types can now hold a real bounded collection instead of the
+  delimited-string workaround: `type Recent { vals: bounded[Int;
+  32]; }` lays out inline as `{ i64 len, [N x T] }` (capacity is
+  part of the type — K made value-level per F.22). The operations
+  are grammar INTRINSICS, not methods, so the types-are-pure-data
+  axiom holds: `push(f, x)` (fallible `CapacityError { cap, count }`
+  when full — displacement policy lives in the caller's `or` arm),
+  `at(f, i)` (fallible IndexError), `count(f)`, `clear(f)`, and
+  `for x in f` iterates the live slots. Fields auto-initialize
+  EMPTY — literal init and whole-field assignment are rejected
+  (the intrinsics are the only mutation surface). Works in `type`
+  fields and locus `params`; whole-struct copies carry elements and
+  count by construction; scalar-element bounded is flat under
+  `zero_copy`. v1 covers scalar elements (Int/Float/Bool/Decimal/
+  Duration) AND pointer-shaped elements — `bounded[String; N]`,
+  `bounded[Bytes; N]`, `bounded[SomeStruct; N]` (stage 1, same
+  day): push arena-anchors each element into the receiver's owning
+  arena (a scratch-built String pushed from another fn survives —
+  the same-arena gates make re-anchoring idempotent, no realloc
+  storms), and whole-struct copies anchor live slots with a runtime
+  [0, len) loop. `type RouteParams { keys: bounded[String; 16];
+  ... }` replaces the pond TSV idiom directly. On the bus:
+  scalar-element bounded travels as flat bytes; pointer-element
+  bounded cross-process is post-v1 polish (focused reject).
+
+- **Typecheck M3 stage 2, tranche 2 — signatures for the I/O
+  namespaces + dual-mode fallible semantics.** 60 more rows:
+  io::fs/file/tcp/tls/udp, process child management, text
+  predicates, term/diag/os. Two semantic fixes the corpus forced:
+  (1) stdlib fallible path-calls are DUAL-MODE at codegen — with
+  `or` they use the fallible ABI, bare they're the legacy direct
+  form with per-fn returns (read_file → the String, write_file →
+  an Int status) — so bare calls now stay permissive (Unknown)
+  while `or` positions get precise success/payload types from the
+  table (the Or arm consults it directly); (2) a statement-position
+  `call() or handler(err);` discards its value, so the fallback/
+  handler-return type no longer needs to match the success type
+  (the pond/fathom production pattern). Handle args at the
+  path-call level are plain Int fds. Still excluded-not-guessed:
+  all std::json / std::http rows and process stdio (routed through
+  Hale-stdlib __ fns — no codegen-level ground truth), the 7
+  spec'd-but-unimplemented std::io::tls fns, tcp
+  set_recv/send_timeout, io::file::write_line, io::fs::list_dir.
+  Gate: zero new errors across pond, fathom, and examples; the
+  three bring-up hits (fathom refdata, pond logfmt, io-demo) were
+  exactly the two semantic gaps above — all three now pass.
+
+- **Typecheck M3 stage 2 — stdlib signatures for the scalar-heavy
+  namespaces.** 118 functions across std::math/time/env/decimal/
+  process(scalar)/str/io::stdin/io::stdout/bytes/crypto/
+  text::base64/rand now have full signature rows: arity and arg
+  types are enforced, and calls return their REAL type instead of
+  the permissive Unknown — `std::math::sqrt("four")`,
+  `std::math::pow(2.0)`, and `std::time::sleep(100)` (Int where
+  Duration is required) are now typecheck errors with spans.
+  Fallible rows return `Ty::Fallible`, so `parse_int(s) or ""`
+  is caught (`or` substitute checked against the Int success type).
+  The table's coercions mirror what each lowering actually does
+  (verified per-fn): math sitofp-coerces Int args, every String
+  position accepts StringView, readers accept the whole Bytes
+  family. Uncertain rows are names-only, not guessed —
+  str::builder_* (opaque handles) and can_parse_decimal (in the
+  spec, NOT in the dispatch — spec bug, flagged). io::fs/tcp/tls/
+  udp/file are the string-heavy tranche 2. Gate: zero new type
+  errors across pond, fathom, and the example corpus (the two hits
+  found were verified pre-existing at the unmodified baseline).
+
+- **Typecheck M3 stage 4 — expose-side contract validity + exposed-mode
+  syntax.** Every `expose` entry must now bind against something real
+  on the declaring locus — a params field, a mode, or a `fn` member —
+  at a matching type. Previously `expose no_such_field: Int;` and
+  `expose value: String;` over an Int field compiled silently (codegen
+  treats contract members as pure declaration, so typecheck is the
+  only enforcement point) and a consuming parent type-checked against
+  fiction. The consume-side checks (missing expose, type mismatch,
+  consume-without-accept) already existed. Also: mode keywords are now
+  admitted in contract-name position (`expose bulk: Float;`), making
+  the spec's exposed-mode pull rule (semantics.md — a parent may call
+  a child's mode iff contract-exposed) expressible for the first time;
+  the exposed type is checked against the mode's declared return.
+  Gate: zero errors across pond, fathom, and the example corpus (51
+  real contract lines, including pond websocket).
+
+- **Typecheck M3 stage 1 — stdlib typo detection.** A call to an
+  unknown function in a TABLED `std::` namespace is now a typecheck
+  error with a did-you-mean (`std::str::parse_itn` → "did you mean
+  `std::str::parse_int`?"). The table covers 26 namespaces
+  (mechanically extracted from the codegen dispatch's
+  `["std", ...]` patterns, unioned with spec/stdlib.md); namespaces
+  with non-literal dispatch (io::sockopt, io::mirror, shm, ts) stay
+  permissive, so table incompleteness degrades to the old Unknown
+  behavior, never to a false error. Gate: zero new errors across
+  pond, fathom, and the full example corpus. This is the first slice
+  of the M3 plan (notes/typecheck-m3.md); signatures (killing the
+  Unknown returns) are stage 2.
+
+- **@form iteration surface — `for e in m.entries` / `for x in
+  v.items`.** Hashmap iteration lowers to a cluster-aware
+  slot-cursor walk (`lotus_hashmap_iter_next`): O(cap) for a full
+  walk, where the index-based `key_at`/`entry_at` pair rescans from
+  slot 0 per element (O(cap×len) — the quadratic behavior that put
+  form_hashmap_walk_large 13× behind Rust). Vec iteration is a fully
+  inline buf walk with zero per-element calls. Loop var is a copy
+  (hashmap) / reference-to-cell (vec struct cells); mutation during
+  iteration is unsupported; break/continue work. Measured on
+  walk_large (100k entries): 1.22 ms → 0.30 ms — 4× faster and now
+  1.9× ahead of the hand-written C comparator; Rust's SwissTable
+  iterator still leads 3.4× (one C call per element remains — a
+  batched iterator is the follow-on). Ring iteration deferred.
+
+- **Fn-call protocol at C shape — exit-drain elision + fn-pointer
+  classifier refinement.** Two changes driven by the first Rust/C bench
+  comparators (fn_call/fn_modular ratio was 0.40 vs all three):
+  (1) a proven-non-allocating body cannot have published (payload
+  copies allocate), so its scope-exit flush skips the per-call
+  `lotus_bus_queue_drain` when the deferred-dissolve frame is also
+  empty — fn exit is NOT a spec-required yield point (handler exits,
+  lifecycle transitions, `yield`, and `sleep` still drain). A
+  minimal free fn drops from `push+lea+load+call drain+pop+ret` to
+  `lea; ret` — literally C's shape. BEHAVIOR NOTE: a cooperative
+  compute-only loop that relied on helper-call exits as its delivery
+  points never had that guarantee by spec and now won't get it —
+  use `yield;` (that's what it's for).
+  (2) a call through a fn-pointer PARAM with a numeric-scalar return
+  no longer marks the caller allocating: the callee scratches off the
+  threaded caller arena and a scalar return leaves nothing behind —
+  callback-style code (`fn outer(x: Int, g: fn(Int) -> Int)`) stays
+  elidable instead of paying subregion+drain+destroy per call.
+  Measured (opaque-pointer bench variants, ratio vs clang -O3 C):
+  fn_call 0.40 → 0.77, fn_modular 0.40 → 0.98 (15.77 ms vs C's
+  15.4 ms — parity). The bench .hl files now call through
+  pid-selected opaque fn pointers (Hale has no noinline surface; the
+  direct-call versions inline + fold to nothing post-elision).
+
+- **Fallible `or` handlers — `call() or handler(err)` now accepts a
+  handler that is itself `fallible(E2)`.** The handler's success value
+  substitutes; its failure propagates through the ENCLOSING fn's error
+  path (implicit `or raise` — sugar for the already-legal nested form
+  `call() or (handler(err) or raise)`). E2 must be assignable to the
+  enclosing fn's fallible payload; targeted diagnostics otherwise
+  ("handler's failure has nowhere to go" / "propagated payload must
+  match"). Free-fn, imported-path, and locus-member handlers are
+  classified; `@form` synthesized methods and stdlib path-calls still
+  need the explicit nested spelling. This closes the pond stash-bridge
+  idiom: `jobs::Queue`'s DbError→JobError conversion no longer needs
+  private stash fields, removing its non-reentrancy hazard.
+
+- **DWARF debug info — `hale build` binaries now carry line tables for
+  Hale code and full debug info for the runtime.** Every statement gets
+  a file:line location (emission kind LineTablesOnly, DWARF 5); the
+  lotus runtime TUs compile with `-g`. gdb sets breakpoints on `.hl`
+  lines, backtraces show `FxL.at () at inlarr.hl:7` with inline frames,
+  addr2line resolves Hale addresses, and ASAN reports carry real
+  file:line through both Hale and runtime frames. Zero runtime cost —
+  frame pointers are deliberately NOT forced (measured +22% on
+  bus_dispatch from `-fno-omit-frame-pointer` on the runtime's
+  dispatch fast paths); profile with `perf record --call-graph dwarf`.
+  Opt out with `LOTUS_NO_DEBUGINFO=1`. Stdlib and synthesized `__*`
+  helper bodies carry no line info (their spans live in other
+  coordinate spaces); `__lib_*` cross-seed imports keep theirs. The
+  module is verified whenever debug info is enabled, so a codegen
+  location bug surfaces as a readable error (dumped to a .ll file)
+  instead of a backend abort. Implementation notes: statement
+  locations are managed by a save/restore stack that never restores a
+  location across a function boundary (mid-expression fn synthesis),
+  and `alloca_in_entry`'s `position_before` — which silently ADOPTS
+  the target instruction's empty location per LLVM's SetInsertPoint
+  semantics — re-asserts the statement location after repositioning.
+  Inkwell's `get_current_debug_location` is avoided entirely (its
+  legacy value-based API materializes an empty MDNode for "none",
+  which then verifier-fails as `!dbg !{}`).
+
+- **Inline fixed arrays — scalar `[T; N]` fields are now laid out inline
+  in their containing struct.** Previously every array field lowered to
+  an out-of-line arena pointer, so a "flat" struct with an array field
+  was secretly `{…, ptr}`: `is_flat_shapeable` said flat, the shm slot
+  carried a dangling pointer cross-process (the bench xproc segfault),
+  and every whole-value replace persisted a fresh copy in the locus
+  arena. Scalar-element arrays (Int/Float/Bool/Decimal/Duration) are now
+  `[N x T]` in the struct body; the array's SSA value is unchanged (a
+  ptr to storage — field reads yield the slot address, field writes
+  memcpy elements). Covers user types, locus params, struct literals,
+  locus params-init, self-field reads/indexed assigns, the lvalue
+  walker, deep-copy/anchor walks, and the m70 wire codec.
+  `is_flat_shapeable` accepts scalar arrays again to match; non-scalar
+  element arrays keep the out-of-line layout and stay rejected under
+  `zero_copy`. Verified cross-process: the idiomatic
+  `type Blob { tag: Int; data: [Int; 511]; }` round-trips a 4 KB payload
+  over `shm_ring … where zero_copy` with a correct checksum — no more
+  512 hand-spelled scalar fields. Whole-value scalar-array replace
+  (`self.recent = […]`) no longer leaks a persisted copy per assign
+  (~35 MB over 3M trips removed; the RHS literal's scratch growth in a
+  single long activation remains and is still flagged by
+  `--warn-unbounded-alloc`).
+
+- **Accept'd-child struct recycling — churn daemons no longer grow by
+  sizeof(child struct) per child.** Interest-based ownership (v0.9.2)
+  allocates an accept'd/bubbled child's locus struct in the owner's
+  arena so `owner.__children` reads stay valid cross-lifecycle — but
+  arena allocations are never individually freed, so a churn shape
+  (one flow child per connection/message) leaked ~100–200 B per child
+  *forever*, O(total children ever) instead of the O(peak alive) the
+  F.3 free-list contract promises. Reclaim (flow run-completion,
+  `terminate;`, parent cascade) now pushes the dead struct onto an
+  intrusive per-owner free-list (`lotus_child_struct_release`);
+  instantiation pops a size-matched block before bump-allocating
+  (`lotus_child_struct_alloc`). Covers both subregion-owning children
+  and arena-elidable (empty-lifecycle) children. Measured: accept-churn
+  at K=4M flat at 5.5 MB maxrss (was 443 MB). Resident children (no
+  `release(c)` on the parent) still accumulate until parent dissolve —
+  that's the documented flow-vs-resident semantics, not a leak.
+- **Owner-arena child structs now allocated 16-byte aligned** (was 8):
+  an accept'd child with a `Decimal` param could take a `movaps` trap —
+  same genre as the 2026-05-20 arena-alignment fix.
+- **Cross-seed locus-field whole-reassignment now takes the WS1#4
+  lifecycle path.** `self.conn = wsx::Conn { … }` (qualified/imported
+  RHS type) previously fell through the `segments.len() == 1` gate to
+  the plain value lowering — the field ended up pointing at a
+  method-scoped stack temp, the exact dangle WS1#4 exists to prevent
+  (its cross-seed test only survived by benign garbage). Qualified
+  paths now resolve through the import-rename table, same as
+  statement-position instantiation.
+
 ## v0.9.2 — interest-based ownership (accept bubbling)
 
 - **`accept()` now collects descendants, not just direct children — a locus

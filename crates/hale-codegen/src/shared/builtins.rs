@@ -95,7 +95,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // `int64_t`/`uint64_t` params stay i64; `int` stays i32.
         let usize_t = self.usize_type();
         let arena_create_ty = ptr_t.fn_type(&[], false);
-        self.module
+        let arena_create_fn = self
+            .module
             .add_function("lotus_arena_create", arena_create_ty, None);
         // declare ptr @lotus_arena_create_labeled(ptr label)
         // 2026-05-22 PM: codegen-side entry point that stashes a
@@ -107,7 +108,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // construction backtraces.
         let arena_create_labeled_ty =
             ptr_t.fn_type(&[ptr_t.into()], false);
-        self.module.add_function(
+        let arena_create_labeled_fn = self.module.add_function(
             "lotus_arena_create_labeled",
             arena_create_labeled_ty,
             None,
@@ -122,7 +123,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // `initial_chunk_bytes` is size_t (i32 wasm32).
         let arena_create_labeled_sized_ty =
             ptr_t.fn_type(&[ptr_t.into(), usize_t.into()], false);
-        self.module.add_function(
+        let arena_create_labeled_sized_fn = self.module.add_function(
             "lotus_arena_create_labeled_sized",
             arena_create_labeled_sized_ty,
             None,
@@ -131,12 +132,53 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // child; the child arena registers a slot index in the
         // parent so destroy can free-list it for reuse.
         let subregion_ty = ptr_t.fn_type(&[ptr_t.into()], false);
-        self.module
+        let subregion_fn = self
+            .module
             .add_function("lotus_arena_create_subregion", subregion_ty, None);
         let arena_alloc_ty =
             ptr_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false);
-        self.module
+        let arena_alloc_fn = self
+            .module
             .add_function("lotus_arena_alloc", arena_alloc_ty, None);
+        // 2026-07-01 aliasing metadata, stage 1. The allocator family
+        // returns FRESH memory — no other live pointer refers to the
+        // returned block (bump allocation never re-hands live bytes;
+        // chunk-pool and child-struct-freelist reuse only recycles
+        // blocks whose previous owners are dead, same contract as
+        // malloc reusing freed memory). `noalias` on the return is
+        // the same guarantee C's malloc carries, and it lets LLVM
+        // treat every allocation as a distinct object: store-to-load
+        // forwarding and dead-store elimination across struct-literal
+        // init sequences, payload copies, and sret writes stop being
+        // blocked by "might alias the destination". The C runtime
+        // never unwinds (`nounwind`) and these entry points always
+        // return (`willreturn` — the cap path returns NULL rather
+        // than aborting). No `memory(...)` mask: the diagnostic env
+        // paths (residency logging, cap dprintf) read/write freely,
+        // so the default conservative mask stays.
+        {
+            use inkwell::attributes::{Attribute, AttributeLoc};
+            let noalias_kind = Attribute::get_named_enum_kind_id("noalias");
+            let nounwind_kind = Attribute::get_named_enum_kind_id("nounwind");
+            let willreturn_kind =
+                Attribute::get_named_enum_kind_id("willreturn");
+            let noalias = self.context.create_enum_attribute(noalias_kind, 0);
+            let nounwind =
+                self.context.create_enum_attribute(nounwind_kind, 0);
+            let willreturn =
+                self.context.create_enum_attribute(willreturn_kind, 0);
+            for f in [
+                arena_create_fn,
+                arena_create_labeled_fn,
+                arena_create_labeled_sized_fn,
+                subregion_fn,
+                arena_alloc_fn,
+            ] {
+                f.add_attribute(AttributeLoc::Return, noalias);
+                f.add_attribute(AttributeLoc::Function, nounwind);
+                f.add_attribute(AttributeLoc::Function, willreturn);
+            }
+        }
         let arena_destroy_ty = void_t.fn_type(&[ptr_t.into()], false);
         self.module
             .add_function("lotus_arena_destroy", arena_destroy_ty, None);
@@ -515,7 +557,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i32_t_local.fn_type(&[ptr_t.into(), ptr_t.into()], false);
         self.module.add_function("lotus_str_eq", str_eq_ty, None);
         let str_len_ty = i64_t.fn_type(&[ptr_t.into()], false);
-        self.module.add_function("lotus_str_len", str_len_ty, None);
+        let str_len_fn = self
+            .module
+            .add_function("lotus_str_len", str_len_ty, None);
         let str_slice_ty = ptr_t.fn_type(
             &[ptr_t.into(), ptr_t.into(), i64_t.into(), i64_t.into()],
             false,
@@ -572,10 +616,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_bytes_create", bytes_create_ty, None);
         let bytes_len_ty = i64_t.fn_type(&[ptr_t.into()], false);
-        self.module
+        let bytes_len_fn = self
+            .module
             .add_function("lotus_bytes_len", bytes_len_ty, None);
         let bytes_data_ty = ptr_t.fn_type(&[ptr_t.into()], false);
-        self.module
+        let bytes_data_fn = self
+            .module
             .add_function("lotus_bytes_data", bytes_data_ty, None);
         // B2 / G5: bytes-literal helper.
         // declare ptr @lotus_bytes_from_buf(ptr arena, ptr src, i64 len)
@@ -726,6 +772,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .add_global(ptr_t, None, "lotus.arena.global");
         arena_global.set_initializer(&ptr_t.const_null());
         arena_global.set_linkage(inkwell::module::Linkage::Internal);
+
+        // 2026-07-02 @form(hashmap) iteration surface:
+        // declare i64 @lotus_hashmap_iter_next(ptr map, i64 start_slot, ptr out_entry)
+        // Cluster-aware step for `for e in m.entries` — returns the
+        // next occupied slot index ≥ start_slot (copying the cell
+        // into out_entry) or -1 at end. O(cap) per full walk.
+        let hashmap_iter_next_ty = i64_t.fn_type(
+            &[ptr_t.into(), i64_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_hashmap_iter_next",
+            hashmap_iter_next_ty,
+            None,
+        );
 
         // m26 + m28b stage 1: cooperative scheduler — bus dispatch queue.
         // declare ptr  @lotus_bus_queue_create()
@@ -1487,6 +1548,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             children_remove_ty,
             None,
         );
+        // 2026-07-01: accept'd-child struct recycling. Instantiation
+        // of an owner-arena child (accept'd / bubbled) allocates via
+        // the recycler; the teardown path pushes the dead struct
+        // back. Keeps a churn daemon's owner arena at O(peak-alive)
+        // children instead of O(total-ever) — the F.3 contract.
+        // declare ptr @lotus_child_struct_alloc(ptr owner_arena, i64 size, i64 align)
+        let child_struct_alloc_ty = ptr_t.fn_type(
+            &[ptr_t.into(), i64_t.into(), i64_t.into()],
+            false,
+        );
+        let child_struct_alloc_fn = self.module.add_function(
+            "lotus_child_struct_alloc",
+            child_struct_alloc_ty,
+            None,
+        );
+        // declare void @lotus_child_struct_release(ptr owner_self, ptr child, i64 size)
+        // (owner_self is the OWNER's locus struct; the runtime derefs
+        //  its slot-0 __arena field itself, so this call site doesn't
+        //  need the owner's concrete struct type.)
+        let child_struct_release_ty = void_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), i64_t.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_child_struct_release",
+            child_struct_release_ty,
+            None,
+        );
 
         // m70: lazy global payload arena for cross-process String
         // byte storage. The synthesized __deserialize_T body calls
@@ -1498,11 +1587,48 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // declare ptr @lotus_bus_payload_arena_alloc(i64 size, i64 align)
         let bus_payload_alloc_ty =
             ptr_t.fn_type(&[i64_t.into(), i64_t.into()], false);
-        self.module.add_function(
+        let bus_payload_alloc_fn = self.module.add_function(
             "lotus_bus_payload_arena_alloc",
             bus_payload_alloc_ty,
             None,
         );
+        // 2026-07-01 aliasing metadata, stage 1 (continued — see the
+        // arena-family block above for the soundness argument).
+        // Fresh-memory allocators get a `noalias` return;
+        // `lotus_child_struct_alloc` recycles only blocks whose
+        // previous owners are dead (children_remove'd + latch-gated
+        // release), the same contract malloc has when reusing freed
+        // memory. The three accessors are pure reads audited against
+        // runtime/lotus_arena.c: `lotus_str_len` = strlen,
+        // `lotus_bytes_len` = one 8-byte load, `lotus_bytes_data` =
+        // pointer arithmetic only — memory(read) (mask 21, same
+        // encoding as the v0.9.0 static-dispatch block) + nounwind +
+        // willreturn lets LICM hoist length reads out of loops and
+        // CSE repeated calls.
+        {
+            use inkwell::attributes::{Attribute, AttributeLoc};
+            let noalias_kind = Attribute::get_named_enum_kind_id("noalias");
+            let nounwind_kind = Attribute::get_named_enum_kind_id("nounwind");
+            let willreturn_kind =
+                Attribute::get_named_enum_kind_id("willreturn");
+            let mem_kind = Attribute::get_named_enum_kind_id("memory");
+            let noalias = self.context.create_enum_attribute(noalias_kind, 0);
+            let nounwind =
+                self.context.create_enum_attribute(nounwind_kind, 0);
+            let willreturn =
+                self.context.create_enum_attribute(willreturn_kind, 0);
+            let mem_read = self.context.create_enum_attribute(mem_kind, 21);
+            for f in [bus_payload_alloc_fn, child_struct_alloc_fn] {
+                f.add_attribute(AttributeLoc::Return, noalias);
+                f.add_attribute(AttributeLoc::Function, nounwind);
+                f.add_attribute(AttributeLoc::Function, willreturn);
+            }
+            for f in [str_len_fn, bytes_len_fn, bytes_data_fn] {
+                f.add_attribute(AttributeLoc::Function, mem_read);
+                f.add_attribute(AttributeLoc::Function, nounwind);
+                f.add_attribute(AttributeLoc::Function, willreturn);
+            }
+        }
 
         // m28c: optional CPU-core affinity. Pinned loci that
         // declare `: schedule pinned(core = N)` emit a call to

@@ -323,6 +323,25 @@ typedef struct lotus_arena {
      * one anyway for the case they themselves become a parent
      * via a nested sub-region. */
     pthread_mutex_t      subregion_lock;
+    /* 2026-07-01 accept'd-child struct recycling. Interest-based
+     * ownership (v0.9.2) allocates an accept'd/bubbled child's
+     * LOCUS STRUCT in the owner's arena so `owner.__children`
+     * reads stay valid cross-lifecycle — but arena allocations
+     * are never individually freed, so a churn daemon (one child
+     * per connection/message) grew the owner's arena by
+     * sizeof(child struct) per child FOREVER, O(total children)
+     * instead of the O(peak alive) the F.3 free-list contract
+     * promises. This is an intrusive free-list of dead child
+     * structs: `lotus_child_struct_release` pushes a reclaimed
+     * child's struct here; `lotus_child_struct_alloc` pops a
+     * size-matched block before falling back to the bump
+     * allocator. Node layout inside the dead struct: offset 0 is
+     * NEVER written (it is the `__arena` field, already NULL'd
+     * as the idempotent-teardown latch, and stray teardown paths
+     * key off it); offset 8 holds `next`, offset 16 holds the
+     * block size. Guarded by `subregion_lock` under
+     * multithreaded, same posture as the slot free-list. */
+    void                *child_struct_free;
     /* 2026-06-13: set to 1 only on the shared g_bus_payload_arena. That
      * arena is reachable lock-free via lotus_caller_arena_or_global() (the
      * fallback when the per-thread caller_arena TLS is unset) — e.g. a
@@ -1388,6 +1407,7 @@ static lotus_arena_t *lotus_arena_alloc_struct(void) {
     a->chunk_byte_total = 0;
     a->chunk_byte_cap   = 0;
     a->cap_diag_name    = NULL;
+    a->child_struct_free = NULL;
     /* 2026-05-26 substrate-race fix: subregion freelist mutex.
      * Used by create_subregion / destroy via the PARENT arena's
      * pointer; arenas with no children never acquire the lock.
@@ -1561,6 +1581,73 @@ void lotus_children_remove(void **buf, int64_t *count, void *child) {
             return;
         }
     }
+}
+
+/* 2026-07-01 accept'd-child struct recycling (see the
+ * `child_struct_free` field comment for the why). Free-list node
+ * layout inside a dead child struct:
+ *   offset 0  — untouched (`__arena`, NULL'd teardown latch)
+ *   offset 8  — void *next
+ *   offset 16 — uint64_t size of the block
+ * Blocks smaller than 24 bytes are never listed (no locus struct
+ * is that small — every one carries at least the synthetic
+ * __arena / __parent_self / __owner_self pointers). */
+#define LOTUS_CHILD_STRUCT_MIN 24
+#define LOTUS_CHILD_STRUCT_SCAN_MAX 8
+
+void *lotus_arena_alloc(lotus_arena_t *a, uint64_t size, uint64_t align);
+
+void *lotus_child_struct_alloc(lotus_arena_t *owner, uint64_t size,
+                               uint64_t align) {
+    if (owner && size >= LOTUS_CHILD_STRUCT_MIN) {
+        int mt = lotus_runtime_multithreaded();
+        if (mt) pthread_mutex_lock(&owner->subregion_lock);
+        /* Bounded first-fit on exact size. One parent overwhelmingly
+         * recycles one child type (v0 single-accept-type), so the
+         * head matches on the first probe in the churn shape this
+         * exists for; mixed interest-bubbled types cost a short walk
+         * and degrade to bump-alloc past the scan cap. */
+        void **prev = &owner->child_struct_free;
+        void  *node = owner->child_struct_free;
+        int    scanned = 0;
+        while (node && scanned < LOTUS_CHILD_STRUCT_SCAN_MAX) {
+            void    **next_p = (void **)((char *)node + 8);
+            uint64_t *size_p = (uint64_t *)((char *)node + 16);
+            if (*size_p == size) {
+                *prev = *next_p;
+                if (mt) pthread_mutex_unlock(&owner->subregion_lock);
+                return node;
+            }
+            prev = next_p;
+            node = *next_p;
+            scanned++;
+        }
+        if (mt) pthread_mutex_unlock(&owner->subregion_lock);
+    }
+    return lotus_arena_alloc(owner, size, align);
+}
+
+/* Push a reclaimed child's struct back onto its owner's free-list.
+ * `owner_self` is the OWNER's locus struct; its `__arena` field is
+ * struct slot 0 by construction (decl.rs arena_field_idx = 0), so
+ * one deref yields the arena without codegen knowing the owner's
+ * concrete type. NULL-safe on every argument: a NULL owner arena
+ * means the owner is itself mid-teardown and its arena_destroy
+ * will wholesale-free the block anyway. Never touches offset 0 of
+ * `child` — that byte range is the child's own NULL'd teardown
+ * latch, and leaving it NULL keeps any stale teardown path a
+ * no-op. */
+void lotus_child_struct_release(void *owner_self, void *child,
+                                uint64_t size) {
+    if (!owner_self || !child || size < LOTUS_CHILD_STRUCT_MIN) return;
+    lotus_arena_t *owner = *(lotus_arena_t **)owner_self;
+    if (!owner) return;
+    int mt = lotus_runtime_multithreaded();
+    if (mt) pthread_mutex_lock(&owner->subregion_lock);
+    *(void **)((char *)child + 8)     = owner->child_struct_free;
+    *(uint64_t *)((char *)child + 16) = size;
+    owner->child_struct_free          = child;
+    if (mt) pthread_mutex_unlock(&owner->subregion_lock);
 }
 
 /* Carve a sub-region of `parent`. The sub-region holds its own
@@ -3909,6 +3996,72 @@ static size_t lotus_hashmap_resolve_index_slot_striped(lotus_hashmap_t *m,
         seen++;
     }
     return m->cap;
+}
+
+/* 2026-07-02 iteration surface: cluster-aware step. Scan slots from
+ * `start_slot` for the next occupied cell, copy its value (the whole
+ * cell struct) into `out_entry`, and return the slot index — the
+ * caller's `for e in m.entries` loop resumes at +1. Returns -1 past
+ * the end. A full walk is O(cap) TOTAL; the index-based
+ * key_at/entry_at resolve "the i-th occupied slot" by rescanning
+ * from slot 0 every call, making a naive walk O(cap × len) — the
+ * quadratic behavior the form_hashmap_walk_large bench measured at
+ * 13× behind Rust's native iterator.
+ *
+ * Occupancy: plain/serialized mark occupied with byte 1;
+ * striped/lockfree publish with COMMITTED(2) (CLAIMED means a
+ * writer holds the slot — skip it; TOMBSTONE is removed). Locking
+ * mirrors value_at per discipline. Mutating the map from the loop
+ * body is not supported (a grow rehashes slots under the cursor);
+ * the copied-out entry keeps reads safe either way. */
+int64_t lotus_hashmap_iter_next(void *map_ptr, int64_t start_slot,
+                                void *out_entry) {
+    if (!map_ptr || !out_entry || start_slot < 0) return -1;
+    lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
+    size_t es = lotus_hashmap_entry_size(m);
+    int64_t found = -1;
+
+    if (m->sync_mode == LOTUS_HASHMAP_SYNC_LOCKFREE) {
+        lotus_hashmap_lf_enter(m);
+        for (size_t s = (size_t)start_slot; s < m->cap; s++) {
+            char *slot = m->slots + s * es;
+            unsigned char occ =
+                __atomic_load_n((unsigned char *)slot, __ATOMIC_ACQUIRE);
+            if (occ == LOTUS_CELL_COMMITTED) {
+                memcpy(out_entry, slot + 1 + m->key_size, m->value_size);
+                found = (int64_t)s;
+                break;
+            }
+        }
+        lotus_hashmap_lf_exit(m);
+        return found;
+    }
+    if (m->sync_mode == LOTUS_HASHMAP_SYNC_STRIPED) {
+        pthread_rwlock_rdlock(m->mu_grow);
+        for (size_t s = (size_t)start_slot; s < m->cap; s++) {
+            char *slot = m->slots + s * es;
+            unsigned char occ =
+                __atomic_load_n((unsigned char *)slot, __ATOMIC_ACQUIRE);
+            if (occ == LOTUS_CELL_COMMITTED) {
+                memcpy(out_entry, slot + 1 + m->key_size, m->value_size);
+                found = (int64_t)s;
+                break;
+            }
+        }
+        pthread_rwlock_unlock(m->mu_grow);
+        return found;
+    }
+    lotus_hashmap_lock(m);
+    for (size_t s = (size_t)start_slot; s < m->cap; s++) {
+        char *slot = m->slots + s * es;
+        if (*(unsigned char *)slot) {
+            memcpy(out_entry, slot + 1 + m->key_size, m->value_size);
+            found = (int64_t)s;
+            break;
+        }
+    }
+    lotus_hashmap_unlock(m);
+    return found;
 }
 
 int lotus_hashmap_key_at(void *map_ptr, int64_t i, void *out_key) {

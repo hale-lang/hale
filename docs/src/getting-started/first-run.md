@@ -71,3 +71,22 @@ Hale program is built from.
 > run ./dir`), which bundles the directory's files without
 > cross-seed import resolution — use `hale build ./dir` for a
 > multi-file project that imports libraries.
+
+## Build modes, diagnostics, and debugging
+
+A few switches worth knowing from day one:
+
+- **Faster iteration:** `hale build --dev` (or `HALE_DEV=1`) uses a
+  lighter optimization pipeline — noticeably quicker builds while
+  you're in an edit-run loop. Release builds default to `-O3`
+  tuned for your CPU.
+- **Where did the build time go?** `HALE_TIME=1 hale build app.hl`
+  prints per-phase wall times.
+- **Editor integration:** `hale check app.hl --json` emits one JSON
+  object per diagnostic (file, line, col, severity, message) on
+  stdout. `hale check` itself runs in ~10 ms even on large
+  programs, so a save-hook is all an editor needs.
+- **Real debugging:** binaries carry DWARF line tables by default —
+  `gdb ./app`, `break app.hl:42`, backtraces with real file:line,
+  and ASAN reports that point at the exact source line. Zero
+  runtime cost; opt out with `LOTUS_NO_DEBUGINFO=1`.

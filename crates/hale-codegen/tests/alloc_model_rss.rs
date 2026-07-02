@@ -181,10 +181,12 @@ const INPLACE_FIELD_WRITE: &str = r#"
     fn main() { Acc { }; }
 "#;
 
-/// Whole-value replace of a fixed-size `[Int; 4]` field each iteration. The
-/// array literal bump-allocates a fresh 4-int array into the locus arena
-/// every trip; the prior one is not reclaimed until dissolve. The model
-/// flags it, and RSS climbs steeply with the trip count.
+/// Whole-value replace of a fixed-size `[Int; 4]` field each iteration.
+/// 2026-07-01 inline fixed arrays: scalar `[T; N]` fields are laid out
+/// INLINE in the locus struct, so this replace is an in-place element
+/// memcpy — the RHS literal is scratch-reclaimed and nothing persists.
+/// Historical behavior (pre-inline): the literal bump-allocated a fresh
+/// 4-int array into the locus arena every trip (~130 MB over 3M trips).
 const ARRAY_FIELD_REPLACE: &str = r#"
     locus Acc {
         params { recent: [Int; 4] = [0,0,0,0]; n: Int = 3000000; sink: Int = 0; }
@@ -204,11 +206,20 @@ const ARRAY_FIELD_REPLACE: &str = r#"
 
 #[test]
 fn store_latest_field_replace_grows_inplace_stays_flat() {
-    // Model side: the whole-value replace is an unbounded site; the
-    // in-place indexed write has no allocation site at all.
+    // Model side: the whole-value replace is still an unbounded site —
+    // 2026-07-01 inline fixed arrays changed the MECHANISM but not the
+    // verdict. The store itself is now an in-place element memcpy into
+    // the inline field (nothing persists in the locus arena; the walker
+    // records the RHS as Local, not StoredToSelf), but the RHS array
+    // LITERAL arena-allocates in run()'s method scratch each iteration,
+    // and scratch reclaims at method EXIT — one long-running activation
+    // accumulates 32 B × trips regardless (measured 96 MB over 3M).
+    // The in-place indexed write has no allocation site at all.
     assert!(
         model_has_unbounded_site(ARRAY_FIELD_REPLACE),
-        "whole-value `self.recent = [..]` replace must be flagged unbounded"
+        "whole-value `self.recent = [..]` replace must stay flagged: the \
+         RHS literal accumulates in the activation's scratch even though \
+         the inline-array store itself no longer persists anything"
     );
     assert!(
         !model_has_unbounded_site(INPLACE_FIELD_WRITE),
@@ -216,21 +227,24 @@ fn store_latest_field_replace_grows_inplace_stays_flat() {
          unbounded"
     );
 
-    // Runtime side: RSS confirms the verdicts. The replace accumulates ~130
-    // MB over 3M trips; the in-place write sits at the runtime floor. Assert
-    // relative to the in-place baseline — the absolute floor varies with
-    // build config (see the model-vs-RSS test above).
+    // Runtime side: RSS confirms. The replace accumulates ~96 MB of
+    // scratch-literal growth over 3M trips (was ~130 MB pre-inline, when
+    // the store also leaked a persisted copy per trip into the locus
+    // arena); the in-place write sits at the runtime floor (~5 MB).
     let inplace_rss = build_and_rss("inplace_field_write", INPLACE_FIELD_WRITE);
     let replace_rss = build_and_rss("array_field_replace", ARRAY_FIELD_REPLACE);
 
+    // Threshold recalibrated 2026-07-01: pre-inline the gap was ~76 MB
+    // (scratch literal + a persisted copy per trip in the locus arena);
+    // inline arrays removed the ~35 MB persist component, leaving the
+    // scratch-literal growth (~42 MB under the test harness build).
     assert!(
-        replace_rss >= inplace_rss + 60,
-        "store-latest field replace should add >60MB over the in-place \
+        replace_rss >= inplace_rss + 25,
+        "store-latest field replace should add >25MB over the in-place \
          baseline: replace={}MB, inplace={}MB. If the gap collapsed, \
-         whole-value field assignment now reclaims per iteration — the \
-         'store-latest is unbounded' verdict (and the model that flags it) \
-         must be revisited before trusting any store-latest-is-bounded \
-         refinement.",
+         per-iteration literal allocation now reclaims mid-activation — \
+         revisit the model's scratch-accumulation verdict before trusting \
+         any store-latest-is-bounded refinement.",
         replace_rss,
         inplace_rss
     );

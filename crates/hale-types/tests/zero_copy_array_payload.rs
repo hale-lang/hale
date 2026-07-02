@@ -1,11 +1,19 @@
-//! Regression: a `where zero_copy` binding whose topic payload contains a
-//! fixed-size array field must be REJECTED at typecheck — codegen lays an
-//! array field out-of-line (the field is a pointer, not inline bytes), so a
-//! raw memcpy of the value across a zero-copy / shm boundary shares a
-//! pointer that dangles in the reader's address space (a real cross-process
-//! segfault, surfaced by the bench `xproc` large-payload work). The
-//! `is_flat_shapeable` predicate now matches that layout reality, so the
-//! binding errors with a clear diagnostic instead of compiling-and-crashing.
+//! `where zero_copy` + fixed-size array payload fields.
+//!
+//! 2026-07-01 inline fixed arrays: codegen lays a SCALAR-element
+//! `[T; N]` field out INLINE in its containing struct
+//! (`llvm_field_storage_type` → `[N x T]`), so the element bytes are
+//! part of the value's own layout and a raw memcpy across a
+//! zero-copy / shm boundary carries them correctly. The
+//! `is_flat_shapeable` predicate accepts scalar arrays to match —
+//! the bench `xproc` large-payload can be the idiomatic
+//! `type Blob { tag: Int; data: [Int; 511]; }` instead of 512
+//! hand-spelled scalar fields (verified cross-process 2026-07-01).
+//!
+//! NON-scalar element arrays keep the out-of-line pointer layout and
+//! must still be REJECTED — a memcpy would share a pointer that
+//! dangles in the reader's address space (the original cross-process
+//! segfault this test was born from).
 
 use hale_syntax::parse_source;
 use hale_types::check_program;
@@ -35,22 +43,34 @@ fn main() {{ App {{ }}; Reader {{ }}; }}
 }
 
 #[test]
-fn zero_copy_array_field_payload_is_rejected() {
+fn zero_copy_scalar_array_field_payload_is_accepted() {
+    // Scalar-element fixed arrays are inline (2026-07-01) — flat.
     let msgs = check(&program("tag: Int; data: [Int; 8];"));
     assert!(
+        !msgs.iter().any(|m| m.contains("flat-shapeable")),
+        "a scalar [Int; 8] field in a zero_copy payload is inline and \
+         must be accepted; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn zero_copy_string_array_field_payload_is_rejected() {
+    // Non-scalar elements stay out-of-line — still rejected.
+    let msgs = check(&program("tag: Int; names: [String; 4];"));
+    assert!(
         msgs.iter().any(|m| m.contains("zero_copy")
-            && m.contains("not flat-shapeable")
-            && m.contains("array")),
-        "a fixed-size array field in a zero_copy payload must be rejected \
-         with a flat-shapeable diagnostic naming the array; got: {:?}",
+            && m.contains("not flat-shapeable")),
+        "a [String; 4] field in a zero_copy payload keeps the \
+         out-of-line layout and must be rejected; got: {:?}",
         msgs
     );
 }
 
 #[test]
 fn zero_copy_scalar_only_payload_is_accepted() {
-    // The valid shape — only fixed-size scalar fields — must NOT trip the
-    // flat-shapeable constraint (regression guard against over-rejecting).
+    // The always-valid shape — only fixed-size scalar fields — must NOT
+    // trip the flat-shapeable constraint (guard against over-rejecting).
     let msgs = check(&program("tag: Int; a: Int; b: Float;"));
     assert!(
         !msgs.iter().any(|m| m.contains("flat-shapeable")),

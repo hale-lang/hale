@@ -487,10 +487,22 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     &format!("{}.owner_arena", locus_name),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // 2026-07-01: route through the child-struct recycler
+            // rather than the raw bump allocator. Arena allocations
+            // are never individually freed, so a churn daemon (one
+            // accept'd child per connection/message) previously grew
+            // the owner's arena by sizeof(child struct) per child,
+            // O(total children ever) — the flow-child reclaim freed
+            // the child's ARENA but its struct stayed pinned in the
+            // owner's. The recycler pops a size-matched dead struct
+            // pushed back by `lotus_child_struct_release` in the
+            // teardown path (dissolve.rs), restoring the F.3
+            // O(peak-alive) contract. Falls back to a bump alloc on
+            // an empty free-list, so cold-path behavior is unchanged.
             let alloc_fn = self
                 .module
-                .get_function("lotus_arena_alloc")
-                .expect("lotus_arena_alloc declared");
+                .get_function("lotus_child_struct_alloc")
+                .expect("lotus_child_struct_alloc declared");
             let i64_t = self.context.i64_type();
             let size = info
                 .struct_ty
@@ -502,7 +514,13 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     &[
                         owner_arena.into(),
                         size.into(),
-                        i64_t.const_int(8, false).into(),
+                        // align=16 (widest scalar — i128 / Decimal),
+                        // per memory.md "Arena alignment contract".
+                        // Was 8, which could misalign a Decimal
+                        // param's i128 store (movaps trap) — same
+                        // genre as the 2026-05-20 arena-alignment
+                        // fix.
+                        i64_t.const_int(16, false).into(),
                     ],
                     &format!("{}.self.in_owner_arena", locus_name),
                 )
@@ -1511,6 +1529,45 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             //   knows which children to tear down at this parent's
             //   dissolve vs. leave alone (they're owned by an
             //   outer scope).
+            // bounded[T; N] (2026-07-02): params fields
+            // auto-initialize EMPTY (zeroed slot); explicit init is
+            // rejected — the only mutation surface is the
+            // intrinsics. Mirrors populate_user_type_fields.
+            if let Some((bidx, CodegenTy::Bounded(belem, bn))) = info
+                .fields
+                .get(fname)
+                .cloned()
+                .filter(|(_, t)| matches!(t, CodegenTy::Bounded(_, _)))
+            {
+                if overrides.contains_key(fname.as_str()) {
+                    return Err(CodegenError::Unsupported(format!(
+                        "locus `{}` param `{}`: bounded[T; N] fields \
+                         cannot be initialized in a literal — they \
+                         start empty; use push(...)",
+                        locus_name, fname
+                    )));
+                }
+                let slot = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        self_ptr,
+                        bidx,
+                        &format!("{}.{}.bounded.slot", locus_name, fname),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let st = self.llvm_bounded_storage_type(&belem, bn);
+                let size = st.size_of().expect("bounded storage sized");
+                self.builder
+                    .build_memset(
+                        slot,
+                        8,
+                        self.context.i8_type().const_zero(),
+                        size,
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                continue;
+            }
             let prev_field_flag = self.instantiating_for_parent_field;
             self.instantiating_for_parent_field = true;
             // 2026-05-24: if THIS locus is m90-routed to payload
@@ -1682,9 +1739,22 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     &format!("{}.{}.ptr", locus_name, fname),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.builder
-                .build_store(field_ptr, val)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // Inline fixed arrays: the field slot IS the [N x T]
+            // storage — memcpy the evaluated array's elements in
+            // rather than storing its pointer over inline data.
+            if Self::array_inline_spec(&declared_ty).is_some() {
+                let size = self.compound_storage_size(&declared_ty)?;
+                self.emit_memcpy_call(
+                    field_ptr,
+                    val.into_pointer_value(),
+                    size,
+                    &format!("{}.{}.inline_array.init", locus_name, fname),
+                )?;
+            } else {
+                self.builder
+                    .build_store(field_ptr, val)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
             // F.29 follow-up: OR the bit for this field into
             // `__locus_ref_owned_mask` if the field is LocusRef-
             // typed AND the value came from a parent-owned locus

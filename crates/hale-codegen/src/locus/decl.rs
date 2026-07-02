@@ -22,6 +22,60 @@ use crate::codegen::{
     Cx, DefaultInit, LocusInfo, ParamValue, SlotForm, SyncMode,
 };
 
+
+/// Aliasing stage 2 (2026-07-02): `noalias` on `self` (param 0)
+/// when BOTH reentrancy channels are provably closed for this
+/// method:
+/// - all declared params are by-value scalars (Int/Float/Bool/
+///   Decimal/Duration) — nothing pointer-shaped can smuggle in a
+///   second path into this locus's memory;
+/// - the body is in the ELIDABLE set (proven non-allocating,
+///   transitively): it cannot publish (payload copies allocate),
+///   and with the task-10 exit-drain elision none of its callees
+///   drain the cooperative queue — so no bus handler can run on
+///   this locus (through the subscriber registry's foreign
+///   pointer) inside the method's dynamic extent.
+/// Nested `self.m()` calls are fine under LLVM's based-on
+/// semantics: the callee's self is derived from this self.
+fn apply_noalias_self_if_provable<'ctx>(
+    cx: &Cx<'ctx, '_>,
+    func: FunctionValue<'ctx>,
+    locus_name: &str,
+    method_name: &str,
+    params: &[hale_syntax::ast::Param],
+) {
+    let elidable = cx
+        .elidable_methods
+        .get(locus_name)
+        .map(|(e, _)| e.contains(method_name))
+        .unwrap_or(false);
+    if !elidable {
+        return;
+    }
+    let all_scalar = params.iter().all(|p| {
+        matches!(
+            &p.ty,
+            hale_syntax::ast::TypeExpr::Primitive(
+                hale_syntax::ast::PrimType::Int
+                    | hale_syntax::ast::PrimType::Float
+                    | hale_syntax::ast::PrimType::Bool
+                    | hale_syntax::ast::PrimType::Decimal
+                    | hale_syntax::ast::PrimType::Duration,
+                _,
+            )
+        )
+    });
+    if !all_scalar {
+        return;
+    }
+    use inkwell::attributes::{Attribute, AttributeLoc};
+    let noalias_kind = Attribute::get_named_enum_kind_id("noalias");
+    func.add_attribute(
+        AttributeLoc::Param(0),
+        cx.context.create_enum_attribute(noalias_kind, 0),
+    );
+}
+
 pub(crate) trait LocusDeclare<'ctx> {
     fn declare_locus_struct(
         &mut self,
@@ -195,7 +249,8 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                             let ty = self.type_expr_to_codegen_ty(ascribed)?;
                             fields.insert(p.name.name.clone(), (idx, ty.clone()));
                             defaults.push((p.name.name.clone(), DefaultInit::Required));
-                            llvm_field_tys.push(self.llvm_basic_type(&ty));
+                            // Inline fixed arrays (array_inline_spec).
+                            llvm_field_tys.push(self.llvm_field_storage_type(&ty));
                             idx += 1;
                             continue;
                         }
@@ -296,7 +351,8 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                         (idx, default_ty.clone()),
                     );
                     defaults.push((p.name.name.clone(), default));
-                    llvm_field_tys.push(self.llvm_basic_type(&default_ty));
+                    // Inline fixed arrays (array_inline_spec).
+                    llvm_field_tys.push(self.llvm_field_storage_type(&default_ty));
                     idx += 1;
                 }
             }
@@ -1451,6 +1507,13 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                         match &ret_codegen_ty {
                             None => void_t.fn_type(&llvm_param_tys, false),
                             Some(rt) => match rt {
+                                CodegenTy::Bounded(_, _) => {
+                                    return Err(CodegenError::Unsupported(
+                                        "bounded[T; N] cannot be returned \
+                                         by value"
+                                            .into(),
+                                    ));
+                                }
                                 CodegenTy::Int | CodegenTy::Duration => self
                                     .context
                                     .i64_type()
@@ -1509,6 +1572,13 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                         &format!("{}.{}", l.name.name, fd.name.name),
                         fn_ty,
                         None,
+                    );
+                    apply_noalias_self_if_provable(
+                        self,
+                        func,
+                        &l.name.name,
+                        &fd.name.name,
+                        &fd.params,
                     );
                     user_methods.insert(fd.name.name.clone(), func);
                 }
@@ -1637,6 +1707,13 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                         Some(t) => {
                             let rt = self.type_expr_to_codegen_ty(t)?;
                             match rt {
+                                CodegenTy::Bounded(_, _) => {
+                                    return Err(CodegenError::Unsupported(
+                                        "bounded[T; N] cannot be returned \
+                                         by value"
+                                            .into(),
+                                    ));
+                                }
                                 CodegenTy::Int | CodegenTy::Duration => self
                                     .context
                                     .i64_type()
@@ -1695,6 +1772,15 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                         &format!("{}.{}", l.name.name, mode_name),
                         fn_ty,
                         None,
+                    );
+                    // Aliasing stage 2: modes are in the elidable
+                    // fixpoint under their synthetic names.
+                    apply_noalias_self_if_provable(
+                        self,
+                        func,
+                        &l.name.name,
+                        mode_name,
+                        &md.params,
                     );
                     user_methods.insert(mode_name.to_string(), func);
                 }

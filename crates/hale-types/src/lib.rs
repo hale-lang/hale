@@ -24,6 +24,7 @@
 pub mod alloc_summary;
 pub mod bus_graph;
 pub mod check;
+pub mod stdlib_surface;
 pub mod ownership_graph;
 pub mod purity;
 pub mod resolve;
@@ -310,13 +311,13 @@ mod flat_shapeable_tests {
     }
 
     #[test]
-    fn not_flat_for_fixed_size_array() {
-        // A fixed-size array is stored out-of-line (the field is a pointer,
-        // not inline bytes), so it is NOT memcpy-flat — a raw copy across a
-        // zero-copy / shm boundary would share a dangling pointer.
+    fn flat_for_scalar_fixed_size_array() {
+        // 2026-07-01 inline fixed arrays: a scalar-element `[T; N]` is
+        // laid out INLINE by codegen (array_inline_spec), so its element
+        // bytes are part of the value's own layout — memcpy-flat.
         with_scope("fn main() {}", |s| {
             let ty = Ty::Array(Box::new(Ty::Prim(PrimType::Int)), Some(8));
-            assert!(!is_flat_shapeable(&ty, s));
+            assert!(is_flat_shapeable(&ty, s));
         });
     }
 

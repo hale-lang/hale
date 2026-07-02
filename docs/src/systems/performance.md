@@ -92,7 +92,7 @@ into `self`, a connection child left resident — have a static
 shape, and `hale check` flags them before you ever measure RSS.
 These are advisory warnings, not build failures:
 
-- `hale check app.hl --warn-unbounded-alloc` flags an allocation that
+- `hale check app.hl` flags (by default — no flag needed) an allocation that
   accumulates without bound: a struct / array / bytes value created
   in a per-message bus handler (or a runtime-bounded loop) that
   escapes into `self`, where it lives until the locus dissolves —
@@ -102,9 +102,10 @@ These are advisory warnings, not build failures:
   instead of replacing the whole value, or the moves from this
   chapter — a capacity-bounded `@form`, route it over the bus, or a
   per-iteration child. A `while i < N { … }` counter with a constant
-  bound is *proven* bounded and left alone. It's opt-in because a bound
-  *per epoch* only matters for a long-lived process — a script that
-  allocates and exits owes it nothing. Annotate the long-lived locus
+  bound is *proven* bounded and left alone. Run-to-exit programs (a
+  `main` with no `run` loop and no bus handler) are exempt
+  automatically — a script that allocates and exits owes nothing.
+  Opt out of a run with `--no-warn-unbounded-alloc`; annotate the long-lived locus
   `@bounded` to get the check on every `hale check` without the flag,
   and `@unbounded` (on a `fn` or a lifecycle hook) to acknowledge an
   intentional accumulation and silence it.

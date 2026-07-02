@@ -1303,6 +1303,17 @@ pub enum TypeExpr {
         size: Option<Expr>,
         span: Span,
     },
+    /// Bounded collection field type: `bounded[T; N]` — a
+    /// fixed-capacity counted buffer laid out inline as
+    /// `{ i64 len, [N x T] }`. Capacity is part of the type (K
+    /// made value-level per F.22). Operated on via the grammar
+    /// intrinsics `push`/`at`/`count`/`clear` and `for x in f`
+    /// iteration — types stay method-free.
+    Bounded {
+        elem: Box<TypeExpr>,
+        cap: u64,
+        span: Span,
+    },
     Tuple(Vec<TypeExpr>, Span),
     Function {
         params: Vec<TypeExpr>,
@@ -1318,6 +1329,7 @@ impl TypeExpr {
             TypeExpr::Named { span, .. } => *span,
             TypeExpr::Projection { span, .. } => *span,
             TypeExpr::Array { span, .. } => *span,
+            TypeExpr::Bounded { span, .. } => *span,
             TypeExpr::Tuple(_, s) => *s,
             TypeExpr::Function { span, .. } => *span,
         }
@@ -1507,6 +1519,43 @@ pub enum Stmt {
         span: Span,
     },
     Expr(Expr),
+}
+
+impl Stmt {
+    /// The statement's source span. Used by DWARF line-table
+    /// emission (debug story stage 2) and available to any
+    /// diagnostic that has a Stmt in hand. Block statements
+    /// report their first inner statement's span (a bare `{ }`
+    /// carries no span of its own); an empty block falls back
+    /// to its tail expression or a zero span.
+    pub fn span(&self) -> Span {
+        match self {
+            Stmt::Let { span, .. }
+            | Stmt::LetTuple { span, .. }
+            | Stmt::Assign { span, .. }
+            | Stmt::For { span, .. }
+            | Stmt::While { span, .. }
+            | Stmt::Return(_, span)
+            | Stmt::Break(span)
+            | Stmt::Continue(span)
+            | Stmt::Fail { span, .. }
+            | Stmt::Yield(span)
+            | Stmt::Terminate(span)
+            | Stmt::Recovery { span, .. }
+            | Stmt::Violate { span, .. }
+            | Stmt::Send { span, .. }
+            | Stmt::ShmWrite { span, .. } => *span,
+            Stmt::If(i) => i.span,
+            Stmt::Match(m) => m.span,
+            Stmt::Expr(e) => e.span(),
+            Stmt::Block(b) => b
+                .stmts
+                .first()
+                .map(|s| s.span())
+                .or_else(|| b.tail.as_ref().map(|t| t.span()))
+                .unwrap_or(Span::new(0, 0)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]

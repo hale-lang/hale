@@ -114,6 +114,14 @@ pub(crate) enum CodegenTy {
     /// `std::bytes::write_*`. Never heap-backed; writes go straight into
     /// the mapped ring.
     BytesMut,
+    /// bounded[T; N] (2026-07-02): fixed-capacity counted buffer,
+    /// laid out INLINE in its containing struct as
+    /// `{ i64 len, [N x T] }`. Like inline fixed arrays, the SSA
+    /// repr of a bounded value is a POINTER to the storage (field
+    /// reads yield the slot address); it is only consumed by the
+    /// push/at/count/clear intrinsics and `for` iteration — never
+    /// a first-class copied value on its own.
+    Bounded(Box<CodegenTy>, u64),
     /// Pointer to a locus's struct. The string carries the locus
     /// name; the layout + field map live in `Cx.user_loci`. Used
     /// for the child param of `accept(g: ChildLocus)`.
@@ -511,6 +519,12 @@ impl std::error::Error for CodegenError {}
 /// `--link` and `--csrc` flags.
 #[derive(Default, Debug, Clone)]
 pub struct BuildOptions {
+    /// #8 dev profile (2026-07-02): trade runtime speed for build
+    /// latency — O1 module pipeline + Less machine codegen instead
+    /// of the O3/Aggressive release default. The 97%-of-build-time
+    /// LLVM share (HALE_TIME) is the whole target; the Hale
+    /// front-end is ~35 ms even on the largest apps.
+    pub dev_profile: bool,
     pub link_libs: Vec<String>,
     pub csrc_files: Vec<std::path::PathBuf>,
     /// Compilation target. Selects the LLVM triple + the link
@@ -519,6 +533,32 @@ pub struct BuildOptions {
     /// Backend CPU tuning for the native target. Ignored on wasm32
     /// (always generic).
     pub target_cpu: TargetCpu,
+    /// 2026-07-01 debug story stage 2: when present, emit DWARF
+    /// line tables (functions + statement locations) for the Hale
+    /// code, mapping the program's process-wide byte spans back to
+    /// (file, line) via these per-file base offsets + source texts.
+    /// The CLI populates this from its parse-time file table;
+    /// harness callers (tests) leave it None and get no Hale-side
+    /// DWARF (the runtime C always carries -g regardless).
+    pub debug: Option<DebugSources>,
+}
+
+/// The per-build source table for DWARF emission: each entry is one
+/// parsed file's (virtual base offset, byte length, path, text) —
+/// the same coordinate space `parse_source_at` shifts spans into,
+/// so `span.start` demultiplexes to a file by range and to a line
+/// by scanning that file's text.
+#[derive(Debug, Clone, Default)]
+pub struct DebugSources {
+    pub files: Vec<DebugSourceFile>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DebugSourceFile {
+    pub base: u32,
+    pub len: u32,
+    pub path: std::path::PathBuf,
+    pub text: String,
 }
 
 /// The compilation backend. `Native` is the host ELF/Mach-O path
@@ -695,6 +735,23 @@ pub fn build_executable_with_options(
     import_renames: &[(Vec<String>, String)],
     options: &BuildOptions,
 ) -> Result<(), CodegenError> {
+    // #8 (2026-07-02): HALE_TIME=1 prints per-phase wall times to
+    // stderr — the profiling surface the incremental design reads.
+    let time_phases = std::env::var("HALE_TIME").is_ok();
+    let t_start = std::time::Instant::now();
+    let mut t_last = t_start;
+    let mut phase = |name: &str, t_last: &mut std::time::Instant| {
+        if time_phases {
+            let now = std::time::Instant::now();
+            eprintln!(
+                "hale-time: {:<18} {:>7.1?} (total {:>7.1?})",
+                name,
+                now.duration_since(*t_last),
+                now.duration_since(t_start)
+            );
+            *t_last = now;
+        }
+    };
     // A7 (G16): resolve `BusSubject::QualifiedTopic(alias::Foo)`
     // — cross-seed topic refs the parser admits — to plain
     // single-segment `BusSubject::Topic(Ident(mangled_name))`
@@ -993,6 +1050,8 @@ pub fn build_executable_with_options(
     };
     let opt_level = if is_wasm {
         OptimizationLevel::Default
+    } else if options.dev_profile {
+        OptimizationLevel::Less
     } else {
         OptimizationLevel::Aggressive
     };
@@ -1086,10 +1145,103 @@ pub fn build_executable_with_options(
         reclaim_fns: BTreeMap::new(),
         handler_reclaim_wrappers: BTreeMap::new(),
         vtables: BTreeMap::new(),
+        current_fn_skip_exit_drain: false,
+        di: None,
+        di_loc_stack: Vec::new(),
+        di_current_loc: None,
     };
+
+    // 2026-07-01 debug story stage 2: DWARF line tables for the Hale
+    // code. Emission kind is LineTablesOnly — function names +
+    // file:line per statement — which is what perf flamegraphs,
+    // addr2line, ASAN reports, and gdb frame listings consume;
+    // variable info is a later stage. Native only (wasm DWARF is a
+    // separate story).
+    if !is_wasm {
+        if let Some(dbg) = &options.debug {
+            if !dbg.files.is_empty() {
+                let i32_t = cx.context.i32_type();
+                cx.module.add_basic_value_flag(
+                    "Debug Info Version",
+                    inkwell::module::FlagBehavior::Warning,
+                    i32_t.const_int(3, false),
+                );
+                cx.module.add_basic_value_flag(
+                    "Dwarf Version",
+                    inkwell::module::FlagBehavior::Warning,
+                    i32_t.const_int(5, false),
+                );
+                let entry = &dbg.files[0];
+                let (entry_name, entry_dir) = di_split_path(&entry.path);
+                let (dib, cu) = cx.module.create_debug_info_builder(
+                    true,
+                    // DW_LANG_C: the closest stable tag every DWARF
+                    // consumer understands; a registered Hale tag can
+                    // replace it without changing anything else here.
+                    inkwell::debug_info::DWARFSourceLanguage::C,
+                    &entry_name,
+                    &entry_dir,
+                    "hale",
+                    true,
+                    "",
+                    0,
+                    "",
+                    inkwell::debug_info::DWARFEmissionKind::LineTablesOnly,
+                    0,
+                    false,
+                    false,
+                    "",
+                    "",
+                );
+                let mut files = Vec::with_capacity(dbg.files.len());
+                for f in &dbg.files {
+                    let (name, dir) = di_split_path(&f.path);
+                    let difile = dib.create_file(&name, &dir);
+                    // Precompute the byte offset of each line start so
+                    // span→line is a binary search, not a rescan.
+                    let mut line_starts: Vec<u32> = vec![0];
+                    for (i, b) in f.text.bytes().enumerate() {
+                        if b == b'\n' {
+                            line_starts.push(i as u32 + 1);
+                        }
+                    }
+                    files.push(DiFileEntry {
+                        base: f.base,
+                        len: f.len,
+                        file: difile,
+                        line_starts,
+                    });
+                }
+                files.sort_by_key(|e| e.base);
+                cx.di = Some(DiState { builder: dib, cu, files });
+            }
+        }
+    }
 
     cx.declare_builtins();
     cx.lower_program()?;
+
+    // Debug info must be finalized before the module is verified /
+    // optimized — unresolved temporary MDNodes otherwise abort the
+    // pass pipeline.
+    if let Some(di) = &cx.di {
+        di.builder.finalize();
+        // DWARF emission is the one feature where a codegen mistake
+        // (a location scoped to the wrong subprogram, a call missing
+        // a !dbg in a debug-info'd function) surfaces as a hard LLVM
+        // abort deep in the backend. Verify the module here so the
+        // failure is a readable CodegenError instead.
+        if let Err(msg) = cx.module.verify() {
+            let dump = std::env::temp_dir().join("hale-di-verify-fail.ll");
+            let _ = cx.module.print_to_file(&dump);
+            return Err(CodegenError::LlvmEmit(format!(
+                "module verification failed with debug info enabled \
+                 (module dumped to {}): {}",
+                dump.display(),
+                msg.to_string()
+            )));
+        }
+    }
 
     // Emit object file, then link via clang. Target machine was
     // created above (before lowering) so its datalayout was set on
@@ -1187,6 +1339,36 @@ pub fn build_executable_with_options(
         }
     }
 
+    // 2026-07-01 aliasing metadata, stage 1: every DEFINED function is
+    // `nounwind` — Hale has no unwinding (no exceptions/panic; failure
+    // is fallible-sret or violate→process-exit, and the lotus C
+    // runtime never throws). Declarations (externs) are left alone
+    // except the individually-audited ones in builtins.rs. Emitted
+    // before the pass pipeline so the inliner and SimplifyCFG see it.
+    {
+        let nounwind_kind = inkwell::attributes::Attribute::get_named_enum_kind_id(
+            "nounwind",
+        );
+        let nounwind = cx.context.create_enum_attribute(nounwind_kind, 0);
+        // Frame pointers are deliberately NOT forced (debug story
+        // stage 1 measured +22% on bus_dispatch from frame pointers
+        // on the hot C fast paths; the Hale-side attribute has the
+        // same cost profile). DWARF line tables + `perf record
+        // --call-graph dwarf` give full stacks without the register
+        // tax.
+        let mut f = cx.module.get_first_function();
+        while let Some(func) = f {
+            if func.count_basic_blocks() > 0 {
+                func.add_attribute(
+                    inkwell::attributes::AttributeLoc::Function,
+                    nounwind,
+                );
+            }
+            f = func.get_next_function();
+        }
+    }
+
+    phase("front-end+codegen", &mut t_last);
     let asan_diag = std::env::var("LOTUS_ASAN")
         .map(|v| v == "1" || v == "true" || v == "TRUE")
         .unwrap_or(false);
@@ -1194,12 +1376,46 @@ pub fn build_executable_with_options(
         let pb_opts = inkwell::passes::PassBuilderOptions::create();
         // Native runs the aggressive O3 module pipeline; wasm stays O2
         // (the browser bundle is size/compat-sensitive).
-        let pass_pipeline =
-            if is_wasm { "default<O2>" } else { "default<O3>" };
+        // #8 (2026-07-02): internalize + globaldce ahead of the
+        // main pipeline. Every module carries the FULL merged
+        // stdlib; without internalization the backend emits machine
+        // code for all of it on every build (~224 ms of the 460 ms
+        // trivial-build floor) and O3 optimizes dead fns. `main` is
+        // the only symbol the native link needs by name — bus
+        // handlers / pinned entries / fn-pointer callees are
+        // address-taken and survive DCE through their uses. wasm
+        // keeps its exports and skips internalization.
+        // Manual internalization (the textual `internalize` pass
+        // has no preserved-symbol parameter through
+        // PassBuilderOptions): every DEFINED fn except `main` goes
+        // Internal, then a leading globaldce strips the unreferenced
+        // stdlib before the main pipeline spends O3 on it.
+        if !is_wasm {
+            let mut f = cx.module.get_first_function();
+            while let Some(func) = f {
+                let name = func
+                    .get_name()
+                    .to_str()
+                    .unwrap_or("")
+                    .to_string();
+                if func.count_basic_blocks() > 0 && name != "main" {
+                    func.set_linkage(inkwell::module::Linkage::Internal);
+                }
+                f = func.get_next_function();
+            }
+        }
+        let pass_pipeline = if is_wasm {
+            "default<O2>"
+        } else if options.dev_profile {
+            "globaldce,default<O1>"
+        } else {
+            "globaldce,default<O3>"
+        };
         cx.module
             .run_passes(pass_pipeline, &machine, pb_opts)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
     }
+    phase("llvm-passes", &mut t_last);
 
     // Under LTO, emit the Hale module as plain LLVM bitcode (the LTO
     // link consumes it and re-runs the backend with cross-module
@@ -1217,6 +1433,7 @@ pub fn build_executable_with_options(
         machine
             .write_to_file(&cx.module, FileType::Object, &obj_path)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        phase("obj-emit", &mut t_last);
         obj_path.clone()
     };
 
@@ -1239,6 +1456,17 @@ pub fn build_executable_with_options(
     // (they gate the Hale-module emit format).
     let prefetch_disabled = env_flag("LOTUS_DISABLE_PREFETCH");
     let mut rt_cflags: Vec<String> = Vec::new();
+    // 2026-07-01 debug story stage 1: the runtime TUs always carry
+    // DWARF (-g). It costs zero runtime speed (debug sections aren't
+    // loaded at run time) and gives perf / gdb / ASAN full file:line
+    // through every lotus_* frame. Frame pointers are deliberately
+    // NOT forced — measured +22% on bus_dispatch (the direct-dispatch
+    // loop's per-iteration lotus_bus_static_* fast-path calls pay the
+    // push/pop + lost register). Profile with DWARF-based unwinding
+    // instead: `perf record --call-graph dwarf`. -g is part of the
+    // content-addressed cache key, so cached objects refresh
+    // automatically.
+    rt_cflags.push("-g".into());
     if lotus_tsan {
         // TSAN: -O1 keeps reports readable. The wrap-malloc shim
         // collides with TSAN's allocator interceptor, so the wrapper
@@ -1458,6 +1686,7 @@ pub fn build_executable_with_options(
         .arg(output_path)
         .status()
         .map_err(|e| CodegenError::Link(format!("clang invocation: {}", e)))?;
+    phase("emit+link", &mut t_last);
     // Only the per-build user input (object, or bitcode under LTO) is
     // transient; the cached runtime objects persist for reuse by later
     // builds.
@@ -2752,6 +2981,80 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// fat-pointer build site can take its address without a
     /// re-emit.
     vtables: BTreeMap<(String, String), inkwell::values::GlobalValue<'ctx>>,
+    /// 2026-07-01 debug story stage 2: DWARF line-table emission
+    /// state. None when the build carries no source table (test
+    /// harness) or targets wasm.
+    /// 2026-07-02 fn-call protocol shave: true while lowering a
+    /// body the nonalloc classifier proved allocation-free.
+    /// Publishing allocates (payload copy), so a non-allocating
+    /// body cannot have enqueued bus cells — its scope-exit drain
+    /// is pure overhead when the deferred-dissolve frame is also
+    /// empty (fn exit is NOT a spec-required yield point; handler
+    /// exits / lifecycle transitions / sleep still drain). The
+    /// drain was the entire measured gap on the fn_call bench:
+    /// C/Rust/Go agree at ~0.77 ns/call, Hale paid 1.93 ns — a
+    /// push/pop + global load + lotus_bus_queue_drain call per
+    /// invocation of a two-instruction function.
+    pub(crate) current_fn_skip_exit_drain: bool,
+    di: Option<DiState<'ctx>>,
+    /// Per-statement debug-location stack: (function the location
+    /// was set in, the location live before this statement). The
+    /// lower_stmt wrapper pushes on entry / pops on exit; the pop
+    /// restores the outer statement's location ONLY when still
+    /// positioned in the same function — a cross-function pop
+    /// (returning out of a mid-expression fn synthesis, e.g. a
+    /// generic monomorph body) unsets instead, so a location can
+    /// never attach to instructions of a function whose subprogram
+    /// it doesn't belong to (an LLVM verifier error).
+    di_loc_stack: Vec<(
+        inkwell::values::FunctionValue<'ctx>,
+        Option<inkwell::debug_info::DILocation<'ctx>>,
+    )>,
+    /// Shadow of the builder's current debug location. Inkwell's
+    /// `get_current_debug_location` routes through the LEGACY
+    /// value-based LLVM API, which materializes an EMPTY MDNode for
+    /// "no location" instead of returning null — restoring that
+    /// yields `!dbg !{}` on every subsequent instruction (an
+    /// "invalid !dbg metadata attachment" verifier error). All
+    /// location mutations go through di_enter_stmt/di_exit_stmt, so
+    /// this field is authoritative.
+    di_current_loc: Option<inkwell::debug_info::DILocation<'ctx>>,
+}
+
+/// DWARF emission state (debug story stage 2). One DIBuilder +
+/// compile unit per module; per-file DIFile handles plus the
+/// precomputed line-start offsets used to map process-wide span
+/// bytes to (file, line, col).
+pub(crate) struct DiState<'ctx> {
+    pub(crate) builder: inkwell::debug_info::DebugInfoBuilder<'ctx>,
+    #[allow(dead_code)]
+    pub(crate) cu: inkwell::debug_info::DICompileUnit<'ctx>,
+    pub(crate) files: Vec<DiFileEntry<'ctx>>,
+}
+
+pub(crate) struct DiFileEntry<'ctx> {
+    pub(crate) base: u32,
+    pub(crate) len: u32,
+    pub(crate) file: inkwell::debug_info::DIFile<'ctx>,
+    /// Byte offset (file-local) of each line's first byte; index i
+    /// is line i+1's start. Binary-searchable.
+    pub(crate) line_starts: Vec<u32>,
+}
+
+/// Split a path into (file name, directory) strings for DIFile
+/// creation. Falls back to the display string + "." when the path
+/// has no parent.
+fn di_split_path(p: &std::path::Path) -> (String, String) {
+    let name = p
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.display().to_string());
+    let dir = p
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map(|d| d.display().to_string())
+        .unwrap_or_else(|| ".".to_string());
+    (name, dir)
 }
 
 /// m60: paired serialize / deserialize fns synthesized per bus
@@ -3075,6 +3378,17 @@ struct AllocCtx<'a> {
     /// the read possibly-allocating (the safe default; a false
     /// non-allocating would leak).
     param_field_numeric: &'a BTreeMap<String, BTreeSet<String>>,
+    /// Fn-pointer PARAMS with a numeric-scalar declared return
+    /// (2026-07-02, fn-call protocol shave): a call through one of
+    /// these allocates nothing FROM THE CALLER'S PERSPECTIVE — the
+    /// callee opens/destroys its own scratch off the threaded
+    /// caller arena, and a scalar return means no deep-copy lands
+    /// in the caller's arena. (If the callee publishes, the cells
+    /// wait for the enclosing cell's next drain point — fn exit is
+    /// not a spec-required yield point.) Lets callback-style code
+    /// (`fn outer(x: Int, g: fn(Int) -> Int)`) stay elidable
+    /// instead of paying subregion + drain per call.
+    fnptr_numeric_ret: &'a BTreeSet<String>,
 }
 
 /// `Int` / `Uint` / `Float` / `Duration` — the scalar types whose `+` is
@@ -3166,6 +3480,23 @@ fn param_field_numeric_map(
 /// numeric fns converge to non-allocating; it's sound because at the
 /// fixpoint every remaining fn's body is non-allocating with all of ITS
 /// callees non-allocating, so the set contains no allocator.
+/// Fn-pointer params whose declared return is a numeric scalar —
+/// `g: fn(Int) -> Int` — for the classifier's fnptr_numeric_ret set
+/// (2026-07-02 fn-call protocol shave).
+fn fnptr_numeric_param_set(params: &[Param]) -> BTreeSet<String> {
+    params
+        .iter()
+        .filter(|p| {
+            matches!(
+                &p.ty,
+                TypeExpr::Function { ret: Some(r), .. }
+                    if type_expr_is_numeric_scalar(r)
+            )
+        })
+        .map(|p| p.name.name.clone())
+        .collect()
+}
+
 fn compute_nonalloc_free_fns(
     items: &[TopDecl],
 ) -> (BTreeSet<String>, BTreeSet<String>) {
@@ -3199,6 +3530,7 @@ fn compute_nonalloc_free_fns(
                 // struct-typed params' fields are numeric scalars.
                 let param_field_numeric =
                     param_field_numeric_map(&f.params, &structs);
+                let fnptr_numeric_ret = fnptr_numeric_param_set(&f.params);
                 let ctx = AllocCtx {
                     nonalloc: &nonalloc,
                     numeric_ret: &numeric_ret,
@@ -3207,6 +3539,7 @@ fn compute_nonalloc_free_fns(
                     elidable_self_methods: &empty_self,
                     numeric_ret_self_methods: &empty_self,
                     param_field_numeric: &param_field_numeric,
+                    fnptr_numeric_ret: &fnptr_numeric_ret,
                 };
                 // Seed with the fn's numeric scalar params.
                 let seed: BTreeSet<String> = f
@@ -3284,7 +3617,12 @@ fn compute_elidable_methods(
         // Candidates: gate-1-eligible (scalar/Unit return), non-fallible,
         // non-FFI `fn` methods. Heap-returning methods are never elidable and
         // never a non-allocating call target.
-        let fns: Vec<&FnDecl> = l
+        // Aliasing stage 2 (2026-07-02): MODES join the candidate
+        // set under their synthetic names (bulk/harmonic/
+        // resolution) — they lower as ordinary locus methods and
+        // brain-tower pulls hit them hot, so both scratch elision
+        // and the noalias-self attribute want the same proof.
+        let fns: Vec<(&str, &[Param], Option<&TypeExpr>, &Block)> = l
             .members
             .iter()
             .filter_map(|m| match m {
@@ -3293,7 +3631,27 @@ fn compute_elidable_methods(
                         && fd.ffi.is_none()
                         && ret_is_scalar_or_unit(fd.ret.as_ref()) =>
                 {
-                    Some(fd)
+                    Some((
+                        fd.name.name.as_str(),
+                        fd.params.as_slice(),
+                        fd.ret.as_ref(),
+                        &fd.body,
+                    ))
+                }
+                LocusMember::Mode(md)
+                    if ret_is_scalar_or_unit(md.ret.as_ref()) =>
+                {
+                    let name = match md.kind {
+                        ModeKind::Bulk => "bulk",
+                        ModeKind::Harmonic => "harmonic",
+                        ModeKind::Resolution => "resolution",
+                    };
+                    Some((
+                        name,
+                        md.params.as_slice(),
+                        md.ret.as_ref(),
+                        &md.body,
+                    ))
                 }
                 _ => None,
             })
@@ -3331,27 +3689,27 @@ fn compute_elidable_methods(
         }
         let numeric_ret_of = |elidable: &BTreeSet<String>| -> BTreeSet<String> {
             fns.iter()
-                .filter(|f| {
-                    elidable.contains(&f.name.name)
-                        && f.ret
-                            .as_ref()
-                            .is_some_and(|t| type_expr_is_numeric_scalar(t))
+                .filter(|(name, _, ret, _)| {
+                    elidable.contains(*name)
+                        && ret.is_some_and(|t| type_expr_is_numeric_scalar(t))
                 })
-                .map(|f| f.name.name.clone())
+                .map(|(name, _, _, _)| name.to_string())
                 .collect()
         };
         let mut elidable: BTreeSet<String> =
-            fns.iter().map(|f| f.name.name.clone()).collect();
+            fns.iter().map(|(name, _, _, _)| name.to_string()).collect();
         loop {
             let numeric_ret_self = numeric_ret_of(&elidable);
             let demote: Vec<String> = fns
                 .iter()
-                .filter(|f| elidable.contains(&f.name.name))
-                .filter(|f| {
+                .filter(|(name, _, _, _)| elidable.contains(*name))
+                .filter(|(_, params, _, body)| {
                     // Per-method scalar-param-field facts (e.g. `s.value` for
                     // a `Sample` param) — `self.sum + s.value` is arithmetic.
                     let param_field_numeric =
-                        param_field_numeric_map(&f.params, structs);
+                        param_field_numeric_map(params, structs);
+                    let fnptr_numeric_ret =
+                        fnptr_numeric_param_set(params);
                     let ctx = AllocCtx {
                         nonalloc: free_nonalloc,
                         numeric_ret: free_numeric_ret,
@@ -3360,17 +3718,17 @@ fn compute_elidable_methods(
                         elidable_self_methods: &elidable,
                         numeric_ret_self_methods: &numeric_ret_self,
                         param_field_numeric: &param_field_numeric,
+                        fnptr_numeric_ret: &fnptr_numeric_ret,
                     };
                     // Seed with the method's numeric scalar params.
-                    let seed: BTreeSet<String> = f
-                        .params
+                    let seed: BTreeSet<String> = params
                         .iter()
                         .filter(|p| type_expr_is_numeric_scalar(&p.ty))
                         .map(|p| p.name.name.clone())
                         .collect();
-                    !fn_body_definitely_non_allocating(&f.body.stmts, &ctx, &seed)
+                    !fn_body_definitely_non_allocating(&body.stmts, &ctx, &seed)
                 })
-                .map(|f| f.name.name.clone())
+                .map(|(name, _, _, _)| name.to_string())
                 .collect();
             if demote.is_empty() {
                 let numeric_ret_self = numeric_ret_of(&elidable);
@@ -3469,7 +3827,12 @@ fn expr_is_nonalloc_numeric(
         // returns a numeric scalar (`numeric_ret_self_methods`).
         Expr::Call { callee, args, .. } => {
             let callee_numeric = match callee.as_ref() {
-                Expr::Ident(id) => ctx.numeric_ret.contains(&id.name),
+                Expr::Ident(id) => {
+                    ctx.numeric_ret.contains(&id.name)
+                        // 2026-07-02: numeric-scalar-returning
+                        // fn-pointer param — see fnptr_numeric_ret.
+                        || ctx.fnptr_numeric_ret.contains(&id.name)
+                }
                 Expr::Field { receiver, name, .. }
                     if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
                 {
@@ -3641,7 +4004,15 @@ fn expr_definitely_non_allocating(
         // / unresolved callees likewise.
         Expr::Call { callee, args, .. } => {
             let callee_nonalloc = match callee.as_ref() {
-                Expr::Ident(id) => ctx.nonalloc.contains(&id.name),
+                Expr::Ident(id) => {
+                    ctx.nonalloc.contains(&id.name)
+                        // 2026-07-02: numeric-scalar-returning
+                        // fn-pointer param — the callee scratches off
+                        // the threaded caller arena and a scalar
+                        // return leaves nothing behind. See
+                        // fnptr_numeric_ret.
+                        || ctx.fnptr_numeric_ret.contains(&id.name)
+                }
                 Expr::Field { receiver, name, .. }
                     if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
                 {
@@ -3794,6 +4165,7 @@ pub(crate) fn locus_arena_elidable(l: &LocusDecl) -> bool {
         elidable_self_methods: &empty,
         numeric_ret_self_methods: &empty,
         param_field_numeric: &empty_pf,
+        fnptr_numeric_ret: &empty,
     };
     // All method-like bodies non-allocating.
     for m in &l.members {
@@ -4926,7 +5298,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // enqueued during the dissolves below is leaked (v0
         // limitation; realistic programs don't publish
         // during dissolve).
-        if drain_queue {
+        // 2026-07-02 fn-call protocol shave: a proven-non-allocating
+        // body can't have published (payload copies allocate), and an
+        // empty deferred frame means no dissolve needs a pre-drain —
+        // skip the per-call drain entirely. See
+        // `current_fn_skip_exit_drain`.
+        let frame_statically_empty = self
+            .deferred_dissolves
+            .last()
+            .map_or(true, |f| f.is_empty());
+        if drain_queue
+            && !(frame_statically_empty && self.current_fn_skip_exit_drain)
+        {
             self.emit_bus_drain()?;
         }
         let frame = self
@@ -6237,6 +6620,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // of `inject_form_stdlib_types` in
         // hale-types/src/resolve.rs.
         self.declare_builtin_index_error_type();
+        self.declare_builtin_capacity_error_type();
         // v1.x-FORM-4: synthesized @form(hashmap) `get` /
         // `remove` surface a typed `KeyError` payload. Mirror
         // of the typecheck-side injection alongside IndexError.
@@ -9782,6 +10166,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )?;
                 }
             }
+            TypeExpr::Bounded { elem, .. } => Self::collect_generic_uses(
+                elem,
+                generic_names,
+                seen,
+                requests,
+            )?,
             TypeExpr::Array { elem, .. } => Self::collect_generic_uses(
                 elem,
                 generic_names,
@@ -10030,6 +10420,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.context.bool_type().fn_type(&llvm_param_tys, false)
         } else {
             match &ret_ty {
+                Some(CodegenTy::Bounded(_, _)) => {
+                    return Err(CodegenError::Unsupported(
+                        "bounded[T; N] cannot be returned by value — it \
+                         lives inline in its containing type"
+                            .into(),
+                    ));
+                }
                 Some(CodegenTy::Int) | Some(CodegenTy::Duration) => self
                     .context
                     .i64_type()
@@ -10093,6 +10490,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             f.name.name.clone()
         };
         let func = self.module.add_function(&impl_symbol, fn_ty, None);
+        // 2026-07-01 aliasing metadata, stage 1: the implicit
+        // `__caller_arena` (param 0) is `noalias` — the arena STRUCT
+        // and its metadata are reachable only through this pointer
+        // within the call (user-visible values point into chunk DATA
+        // bytes, which bump allocation never re-hands out, so actual
+        // accessed locations never overlap). Hale code never unwinds
+        // (failure is fallible-sret or violate→process-exit), so
+        // every user fn is `nounwind`.
+        {
+            use inkwell::attributes::{Attribute, AttributeLoc};
+            let noalias_kind = Attribute::get_named_enum_kind_id("noalias");
+            let nounwind_kind = Attribute::get_named_enum_kind_id("nounwind");
+            func.add_attribute(
+                AttributeLoc::Param(0),
+                self.context.create_enum_attribute(noalias_kind, 0),
+            );
+            func.add_attribute(
+                AttributeLoc::Function,
+                self.context.create_enum_attribute(nounwind_kind, 0),
+            );
+        }
         // FORM-3: skip the per-call scratch arena when the body provably
         // allocates nothing. The decision is the call-graph fixpoint
         // (`compute_nonalloc_free_fns`, run at lower_program start into
@@ -10526,6 +10944,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<inkwell::types::BasicMetadataTypeEnum<'ctx>, CodegenError> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         match ty {
+            CodegenTy::Bounded(_, _) => {
+                return Err(CodegenError::Unsupported(format!(
+                    "@ffi fn `{}` param `{}`: bounded[T; N] has no \
+                     portable C mapping",
+                    fn_name, param_name
+                )));
+            }
             // `@ffi("js")`: i64-class scalars cross as f64 (JS number),
             // not i64 (BigInt). The call site sitofp's before the call.
             CodegenTy::Int | CodegenTy::Duration if is_js => {
@@ -10674,6 +11099,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.current_user_fn_ret = Some(sig.ret.clone());
         self.current_self = None;
         self.loops.clear();
+        // Fn-call protocol shave: non-allocating bodies can't publish,
+        // so their (empty-frame) scope-exit flushes skip the bus drain.
+        let prev_skip_drain = self.current_fn_skip_exit_drain;
+        self.current_fn_skip_exit_drain = sig.non_allocating;
         self.push_dissolve_frame();
 
         let ptr_t = self.context.ptr_type(AddressSpace::default());
@@ -10854,6 +11283,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // types), destroy the subregion, build_return.
         self.emit_fn_exit_epilogue(&sig)?;
 
+        self.current_fn_skip_exit_drain = prev_skip_drain;
         self.current_user_fn_caller_arena = None;
         self.current_user_fn_arena = None;
         self.current_user_fn_exit_bb = None;
@@ -11183,6 +11613,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     ),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // bounded[T; N] with pointer elems: anchor each live
+            // slot in place (a runtime loop over [0, len)) — the
+            // field is inline storage, not a loadable pointer.
+            if let CodegenTy::Bounded(belem, bcap) = &fty {
+                self.anchor_bounded_elems_in_place(
+                    field_slot,
+                    belem,
+                    *bcap,
+                    dest_arena,
+                    &format!(
+                        "{}.anchor.{}.{}",
+                        site_name, type_name, fname
+                    ),
+                )?;
+                continue;
+            }
             let llvm_field_ty = self.llvm_basic_type(&fty);
             let field_val = self
                 .builder
@@ -11223,8 +11669,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// needs to be anchored in the destination arena? Scalars +
     /// views + locus-refs + cells don't (their bytes/handle live
     /// in the parent struct's storage). String/Bytes/TypeRef/
-    /// Tuple/Array/Interface/Enum do.
+    /// Tuple/Interface/Enum do. Inline fixed arrays (2026-07-01,
+    /// `array_inline_spec`) don't either — their element bytes are
+    /// part of the parent struct's storage and travel with the
+    /// parent's memcpy; loading the slot as a "pointer" would read
+    /// element bytes as an address (the pre-inline walk did chase a
+    /// real pointer here). Out-of-line arrays (non-scalar elements)
+    /// still anchor.
     fn field_needs_anchor(ty: &CodegenTy) -> bool {
+        if Self::array_inline_spec(ty).is_some() {
+            return false;
+        }
+        // bounded[T; N]: scalar elems are inline bytes that travel
+        // with the parent's memcpy — nothing to anchor. Pointer
+        // elems (String/Bytes/TypeRef slots) DO anchor — the walk
+        // has a dedicated live-slot loop (never load the field as
+        // a single pointer).
+        if let CodegenTy::Bounded(elem, _) = ty {
+            return Self::bounded_elem_is_ptr(elem);
+        }
         !matches!(
             ty,
             CodegenTy::Int
@@ -11312,6 +11775,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let saved_in_main = self.in_main;
             let saved_current_self = self.current_self.clone();
             let saved_loops = std::mem::take(&mut self.loops);
+            // DWARF: synthesis fires MID-STATEMENT while lowering
+            // the caller — the caller's active location must not
+            // leak into the synthesized fn's entry allocas
+            // ("!dbg attachment points at wrong subprogram").
+            // Unset for the synthesis; restore with the block.
+            let saved_di_loc = self.di_current_loc.take();
+            self.builder.unset_current_debug_location();
 
             self.in_main = false;
             self.current_self = None;
@@ -11322,6 +11792,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Restore caller-side state.
             if let Some(b) = saved_block {
                 self.builder.position_at_end(b);
+            }
+            // Restore the caller's statement location (see the
+            // unset above) — but never a location from another fn:
+            // saved_di_loc came from the caller we're returning to.
+            self.di_current_loc = saved_di_loc;
+            match saved_di_loc {
+                Some(loc) => {
+                    self.builder.set_current_debug_location(loc)
+                }
+                None => self.builder.unset_current_debug_location(),
             }
             self.current_fn = saved_current_fn;
             self.current_user_fn_ret = saved_user_fn_ret;
@@ -12299,7 +12779,190 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.global_string(&name)
     }
 
+    /// 2026-07-01 debug story stage 2: per-statement DWARF line
+    /// locations. The wrapper (a) resolves the statement's span to
+    /// (file, line, col), (b) lazily attaches a DISubprogram to the
+    /// function currently being emitted into (derived from the
+    /// builder's insert block, NOT current_fn — so the scope always
+    /// matches the actual emission target), (c) sets the builder's
+    /// debug location for the statement's instructions, and (d) on
+    /// exit restores the enclosing statement's location — but only
+    /// when still positioned in the same function; a cross-function
+    /// pop (a mid-expression fn synthesis returned) unsets instead,
+    /// so a location never attaches to a foreign function's
+    /// instructions (LLVM verifier: "!dbg attachment points at
+    /// wrong subprogram"). No-op end to end when `di` is None.
     pub(crate) fn lower_stmt(
+        &mut self,
+        stmt: &Stmt,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        if self.di.is_none() {
+            return self.lower_stmt_inner(stmt, scope);
+        }
+        let entered = self.di_enter_stmt(stmt.span());
+        let r = self.lower_stmt_inner(stmt, scope);
+        if entered {
+            self.di_exit_stmt();
+        }
+        r
+    }
+
+    /// Set the debug location for a statement about to lower.
+    /// Returns true iff a stack frame was pushed (di_exit_stmt must
+    /// run). Skips stdlib-mangled functions (their spans live in the
+    /// separately-parsed STDLIB_AP_SOURCE coordinate space, which
+    /// overlaps user file ranges) and spans outside every known
+    /// file.
+    fn di_enter_stmt(&mut self, span: hale_syntax::Span) -> bool {
+        use inkwell::debug_info::{AsDIScope, DIFlagsConstants};
+        let Some(cur_bb) = self.builder.get_insert_block() else {
+            return false;
+        };
+        let Some(func) = cur_bb.get_parent() else {
+            return false;
+        };
+        let fn_name = func.get_name().to_string_lossy().into_owned();
+        // No debug info for (a) stdlib bodies — their spans live in
+        // the separately-parsed STDLIB_AP_SOURCE coordinate space,
+        // which overlaps user file ranges — and (b) synthesized
+        // `__*` helpers (json parsers / __replace_all / serializers /
+        // wrappers), whose ASTs carry copied or zero spans that map
+        // to garbage lines AND whose half-mapped bodies trip the
+        // "inlinable call needs !dbg" verifier rule. `__lib_*`
+        // import mangles are REAL user code parsed at real file
+        // bases and keep their debug info. Any location still live
+        // from an earlier statement must not leak onto skipped
+        // functions' instructions.
+        let skip_di = (fn_name.starts_with("__")
+            && !fn_name.starts_with("__lib_"))
+            || fn_name.starts_with("__Std")
+            || fn_name.starts_with("__std");
+        if skip_di {
+            if self.di_current_loc.is_some() {
+                self.builder.unset_current_debug_location();
+                self.di_current_loc = None;
+            }
+            return false;
+        }
+        let Some((file_idx, line, col)) = self.di_locate(span) else {
+            if std::env::var("LOTUS_DI_TRACE").is_ok() {
+                eprintln!(
+                    "di: unmapped span {}..{} in fn {}",
+                    span.start.0, span.end.0, fn_name
+                );
+            }
+            if self.di_current_loc.is_some() {
+                self.builder.unset_current_debug_location();
+                self.di_current_loc = None;
+            }
+            return false;
+        };
+        let di = self.di.as_ref().expect("di_enter_stmt gated on di");
+        let sp = match func.get_subprogram() {
+            Some(sp) => sp,
+            None => {
+                let file = di.files[file_idx].file;
+                let fn_ty = di.builder.create_subroutine_type(
+                    file,
+                    None,
+                    &[],
+                    inkwell::debug_info::DIFlags::PUBLIC,
+                );
+                let sp = di.builder.create_function(
+                    file.as_debug_info_scope(),
+                    &fn_name,
+                    None,
+                    file,
+                    line,
+                    fn_ty,
+                    // local_to_unit=false: symbols are external-ish;
+                    // definition=true; scope_line = first stmt's line
+                    // (close enough to the decl line for v1).
+                    false,
+                    true,
+                    line,
+                    inkwell::debug_info::DIFlags::PUBLIC,
+                    true,
+                );
+                func.set_subprogram(sp);
+                sp
+            }
+        };
+        let prev = self.di_current_loc;
+        let loc = di.builder.create_debug_location(
+            self.context,
+            line,
+            col,
+            sp.as_debug_info_scope(),
+            None,
+        );
+        self.builder.set_current_debug_location(loc);
+        self.di_current_loc = Some(loc);
+        if std::env::var("LOTUS_DI_TRACE").is_ok() {
+            eprintln!("di: SET {} line {} col {}", fn_name, line, col);
+        }
+        self.di_loc_stack.push((func, prev));
+        true
+    }
+
+    /// Pop the per-statement location frame pushed by di_enter_stmt.
+    fn di_exit_stmt(&mut self) {
+        let Some((frame_fn, prev)) = self.di_loc_stack.pop() else {
+            return;
+        };
+        let cur_fn = self
+            .builder
+            .get_insert_block()
+            .and_then(|b| b.get_parent());
+        if cur_fn == Some(frame_fn) {
+            match prev {
+                Some(loc) => {
+                    self.builder.set_current_debug_location(loc);
+                    self.di_current_loc = Some(loc);
+                }
+                None => {
+                    self.builder.unset_current_debug_location();
+                    self.di_current_loc = None;
+                }
+            }
+        } else {
+            // Returned into a different function than the one this
+            // statement's location was set in (mid-expression fn
+            // synthesis boundary). Never restore across functions.
+            self.builder.unset_current_debug_location();
+            self.di_current_loc = None;
+        }
+    }
+
+    /// Map a process-wide span start to (file index, 1-based line,
+    /// 1-based col) against the debug source table. None when the
+    /// span falls outside every file range (stdlib / synthesized
+    /// spans) or di is off.
+    fn di_locate(&self, span: hale_syntax::Span) -> Option<(usize, u32, u32)> {
+        let di = self.di.as_ref()?;
+        let off = span.start.0;
+        if span.start.0 == 0 && span.end.0 == 0 {
+            return None; // synthesized zero span
+        }
+        let idx = di
+            .files
+            .partition_point(|f| f.base <= off)
+            .checked_sub(1)?;
+        let f = di.files.get(idx)?;
+        if off < f.base || off >= f.base.saturating_add(f.len) {
+            return None;
+        }
+        let local = off - f.base;
+        let line_idx = f
+            .line_starts
+            .partition_point(|&s| s <= local)
+            .saturating_sub(1);
+        let col = local - f.line_starts[line_idx] + 1;
+        Some((idx, line_idx as u32 + 1, col))
+    }
+
+    fn lower_stmt_inner(
         &mut self,
         stmt: &Stmt,
         scope: &mut Scope<'ctx>,
@@ -12365,6 +13028,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // Terminated up so the lower_block walker
                             // stops emitting IR after this stmt.
                             return self.lower_bubble_call(args, scope);
+                        } else if matches!(
+                            name,
+                            "count" | "clear" | "truncate"
+                        ) && args.len()
+                            == if name == "truncate" { 2 } else { 1 }
+                            && self
+                                .bounded_recv_spec(args, scope)
+                                .is_some()
+                        {
+                            // bounded[T; N] count/clear/truncate at
+                            // statement position.
+                            let (elem, cap) = self
+                                .bounded_recv_spec(args, scope)
+                                .expect("guard checked");
+                            match name {
+                                "count" => {
+                                    let _ = self.lower_bounded_count(
+                                        args, &elem, cap, scope,
+                                    )?;
+                                }
+                                "truncate" => {
+                                    let _ = self.lower_bounded_truncate(
+                                        args, &elem, cap, scope,
+                                    )?;
+                                }
+                                _ => {
+                                    let _ = self.lower_bounded_clear(
+                                        args, &elem, cap, scope,
+                                    )?;
+                                }
+                            }
                         } else if name == "check_closures" {
                             // m44: explicit-epoch closure check
                             // surface. `check_closures();` from
@@ -12643,18 +13337,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             Expr::Struct { path, inits, .. },
                         ) = (field, value)
                         {
-                            if path.segments.len() == 1
-                                && self
-                                    .user_loci
-                                    .contains_key(&path.segments[0].name)
-                            {
-                                return self.lower_locus_field_reassign(
-                                    field_idx,
-                                    &field_locus,
-                                    &path.segments[0].name,
-                                    inits,
-                                    scope,
-                                );
+                            // 2026-07-01: resolve qualified (cross-seed)
+                            // RHS paths through the import-rename table,
+                            // same as statement-position instantiation.
+                            // Previously the `segments.len() == 1` gate
+                            // silently dropped `self.conn = wsx::Conn
+                            // { … }` to the plain-value lowering — the
+                            // field ended up pointing at a method-scoped
+                            // stack temp (the exact WS1#4 dangle this
+                            // path exists to prevent), which the
+                            // ws1_cross_seed_locus_reassign test only
+                            // survived because the dead frame happened
+                            // to read back benignly.
+                            let resolved_new: Option<String> =
+                                if path.segments.len() == 1 {
+                                    Some(path.segments[0].name.clone())
+                                } else {
+                                    let segs: Vec<&str> = path
+                                        .segments
+                                        .iter()
+                                        .map(|s| s.name.as_str())
+                                        .collect();
+                                    self.mangled_for_path(&segs)
+                                };
+                            if let Some(new_name) = resolved_new {
+                                if self.user_loci.contains_key(&new_name) {
+                                    return self.lower_locus_field_reassign(
+                                        field_idx,
+                                        &field_locus,
+                                        &new_name,
+                                        inits,
+                                        scope,
+                                    );
+                                }
                             }
                         }
                     }
@@ -12725,20 +13440,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             let ptr_t = self
                                 .context
                                 .ptr_type(AddressSpace::default());
-                            let arr_ptr = self
-                                .builder
-                                .build_load(
-                                    ptr_t,
-                                    field_slot_ptr,
-                                    &format!(
-                                        "self.{}.arr",
-                                        fname_ident.name
-                                    ),
-                                )
-                                .map_err(|e| {
-                                    CodegenError::LlvmEmit(e.to_string())
-                                })?
-                                .into_pointer_value();
+                            // Inline fixed arrays: the field slot IS
+                            // the [N x T] storage — GEP it directly.
+                            // Out-of-line arrays load the payload ptr.
+                            let arr_ptr = if Self::array_inline_spec(
+                                &CodegenTy::Array(
+                                    Box::new(elem_ty.clone()),
+                                    n,
+                                ),
+                            )
+                            .is_some()
+                            {
+                                field_slot_ptr
+                            } else {
+                                self.builder
+                                    .build_load(
+                                        ptr_t,
+                                        field_slot_ptr,
+                                        &format!(
+                                            "self.{}.arr",
+                                            fname_ident.name
+                                        ),
+                                    )
+                                    .map_err(|e| {
+                                        CodegenError::LlvmEmit(e.to_string())
+                                    })?
+                                    .into_pointer_value()
+                            };
                             let (idx_val, idx_ty) =
                                 self.lower_expr(idx_expr, scope)?;
                             if idx_ty != CodegenTy::Int {
@@ -14994,6 +15722,66 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 return self.lower_for_drain(var_name, iter, &elem, body, scope);
             }
         }
+        // bounded[T; N] iteration (2026-07-02): `for x in m.history`
+        // where the iterand statically types as bounded — counted
+        // loop over the live slots [0, len).
+        if let Some(CodegenTy::Bounded(belem, bcap)) =
+            self.static_expr_codegen_ty(iter, scope)
+        {
+            return self.lower_for_bounded(
+                var_name,
+                iter,
+                belem.as_ref().clone(),
+                bcap,
+                body,
+                scope,
+            );
+        }
+        // 2026-07-02 @form iteration surface: `for e in m.entries`
+        // (hashmap — cluster-aware occupied-slot walk, O(cap) total
+        // via lotus_hashmap_iter_next; the index-based key_at/
+        // entry_at rescan from slot 0 per call, O(cap×len)) and
+        // `for x in v.items` (vec — fully inline buf walk, zero
+        // calls). The iteration variable is a per-iteration COPY of
+        // the cell; mutating the form inside the body is not
+        // supported (a grow would rehash/realloc under the cursor).
+        if let Expr::Field { receiver, name, .. } = iter {
+            if name.name == "entries" || name.name == "items" {
+                let recv_form: Option<(PointerValue<'ctx>, String)> =
+                    match self.lower_expr(receiver, scope) {
+                        Ok((v, CodegenTy::LocusRef(ln))) => {
+                            Some((v.into_pointer_value(), ln))
+                        }
+                        _ => None,
+                    };
+                if let Some((recv_ptr, ln)) = recv_form {
+                    if let Some(info) = self.user_loci.get(&ln).cloned() {
+                        if name.name == "entries" {
+                            if let Some(slot) = info
+                                .capacity_slots
+                                .iter()
+                                .find(|s| s.form == Some(SlotForm::Hashmap))
+                                .cloned()
+                            {
+                                return self.lower_for_hashmap_entries(
+                                    var_name, recv_ptr, &info, &slot, body,
+                                    scope,
+                                );
+                            }
+                        } else if let Some(slot) = info
+                            .capacity_slots
+                            .iter()
+                            .find(|s| s.form == Some(SlotForm::Vec))
+                            .cloned()
+                        {
+                            return self.lower_for_vec_items(
+                                var_name, recv_ptr, &info, &slot, body, scope,
+                            );
+                        }
+                    }
+                }
+            }
+        }
         if !is_self_children {
             return self.lower_for_array(var_name, iter, body, scope);
         }
@@ -15149,6 +15937,467 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let i_next = self
             .builder
             .build_int_add(i_now, i64_t.const_int(1, false), "for.i.next")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(i_slot, i_next)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(exit_bb);
+        Ok(BlockEnd::Open)
+    }
+
+    /// bounded[T; N] iteration (2026-07-02): counted loop over
+    /// live slots — len + data base loaded once, per-element
+    /// GEP + load into the loop var (a copy). Mutating the
+    /// bounded field inside the body is unsupported (the len is
+    /// read once at entry).
+    fn lower_for_bounded(
+        &mut self,
+        var_name: &Ident,
+        iter: &Expr,
+        elem: CodegenTy,
+        cap: u64,
+        body: &Block,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let i64_t = self.context.i64_type();
+        let func = self
+            .current_fn
+            .expect("current_fn set while lowering a for");
+        let (v, ty) = self.lower_expr(iter, scope)?;
+        if !matches!(ty, CodegenTy::Bounded(_, _)) {
+            return Err(CodegenError::Unsupported(format!(
+                "bounded iteration receiver lowered to {:?}",
+                ty
+            )));
+        }
+        let storage = v.into_pointer_value();
+        let st = self.llvm_bounded_storage_type(&elem, cap);
+        let len_ptr = self
+            .builder
+            .build_struct_gep(st, storage, 0, "for.bounded.len.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let len = self
+            .builder
+            .build_load(i64_t, len_ptr, "for.bounded.len")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let data_ptr = self
+            .builder
+            .build_struct_gep(st, storage, 1, "for.bounded.data.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let elem_llvm = self.llvm_basic_type(&elem);
+
+        let var_slot = self.alloca_in_entry(
+            elem_llvm,
+            &format!("for.bounded.{}", var_name.name),
+        )?;
+        let i_slot = self
+            .builder
+            .build_alloca(i64_t, "for.bounded.i")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(i_slot, i64_t.const_int(0, false))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let header_bb =
+            self.context.append_basic_block(func, "for.bounded.cond");
+        let body_bb =
+            self.context.append_basic_block(func, "for.bounded.body");
+        let inc_bb =
+            self.context.append_basic_block(func, "for.bounded.inc");
+        let exit_bb =
+            self.context.append_basic_block(func, "for.bounded.end");
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(header_bb);
+        let i = self
+            .builder
+            .build_load(i64_t, i_slot, "for.bounded.i.now")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let in_range = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                i,
+                len,
+                "for.bounded.in_range",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(in_range, body_bb, exit_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(body_bb);
+        let slot_ptr = unsafe {
+            self.builder
+                .build_gep(elem_llvm, data_ptr, &[i], "for.bounded.slot")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+        let ev = self
+            .builder
+            .build_load(elem_llvm, slot_ptr, "for.bounded.elem")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(var_slot, ev)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let prev = scope
+            .locals
+            .insert(var_name.name.clone(), (var_slot, elem.clone()));
+        self.loops.push(LoopFrame {
+            continue_bb: inc_bb,
+            break_bb: exit_bb,
+        });
+        let body_end = self.lower_block(body, scope)?;
+        self.loops.pop();
+        if body_end == BlockEnd::Open {
+            self.builder
+                .build_unconditional_branch(inc_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        if let Some(prev) = prev {
+            scope.locals.insert(var_name.name.clone(), prev);
+        } else {
+            scope.locals.remove(&var_name.name);
+        }
+
+        self.builder.position_at_end(inc_bb);
+        let i_now = self
+            .builder
+            .build_load(i64_t, i_slot, "for.bounded.i.inc")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let i_next = self
+            .builder
+            .build_int_add(
+                i_now,
+                i64_t.const_int(1, false),
+                "for.bounded.i.next",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(i_slot, i_next)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(exit_bb);
+        Ok(BlockEnd::Open)
+    }
+
+    /// 2026-07-02 @form(hashmap) iteration: `for e in m.entries`.
+    /// Lowers to a slot-cursor loop over `lotus_hashmap_iter_next`
+    /// — each call scans forward from the cursor for the next
+    /// occupied slot and copies the cell into a loop-local alloca,
+    /// so a full walk is O(cap) TOTAL (the index-based key_at /
+    /// entry_at pair rescans from slot 0 per element: O(cap×len)).
+    /// The binding is a per-iteration copy of the cell struct.
+    fn lower_for_hashmap_entries(
+        &mut self,
+        var_name: &Ident,
+        recv_ptr: PointerValue<'ctx>,
+        info: &LocusInfo<'ctx>,
+        slot: &CapacitySlotLayout,
+        body: &Block,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let cell_name = match &slot.elem_ty {
+            CodegenTy::TypeRef(n) => n.clone(),
+            other => {
+                return Err(CodegenError::Unsupported(format!(
+                    "`for _ in <hashmap>.entries`: cell type must be a \
+                     user-declared struct; got {:?}",
+                    other
+                )));
+            }
+        };
+        let cell_info = self
+            .user_types
+            .get(&cell_name)
+            .cloned()
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "`for _ in <hashmap>.entries`: cell type `{}` not \
+                     registered",
+                    cell_name
+                ))
+            })?;
+        let i64_t = self.context.i64_type();
+        let func = self
+            .current_fn
+            .expect("current_fn set while lowering a for");
+
+        // The inline hashmap struct's ADDRESS is the C-side handle
+        // (same convention as every lotus_hashmap_* call site).
+        let map_handle = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                recv_ptr,
+                slot.struct_field_idx,
+                "for.entries.map.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let entry_slot = self.alloca_in_entry(
+            cell_info.struct_ty.into(),
+            &format!("for.entries.{}", var_name.name),
+        )?;
+        let cursor_slot = self
+            .builder
+            .build_alloca(i64_t, "for.entries.cursor")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(cursor_slot, i64_t.const_int(0, false))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let header_bb =
+            self.context.append_basic_block(func, "for.entries.cond");
+        let body_bb =
+            self.context.append_basic_block(func, "for.entries.body");
+        let exit_bb =
+            self.context.append_basic_block(func, "for.entries.end");
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // header: slot = iter_next(map, cursor, &entry); advance the
+        // cursor to slot+1 (a `continue` re-enters here already
+        // advanced); loop while slot >= 0.
+        self.builder.position_at_end(header_bb);
+        let cursor = self
+            .builder
+            .build_load(i64_t, cursor_slot, "for.entries.cursor.now")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let iter_fn = self
+            .module
+            .get_function("lotus_hashmap_iter_next")
+            .expect("lotus_hashmap_iter_next declared");
+        let found = self
+            .builder
+            .build_call(
+                iter_fn,
+                &[map_handle.into(), cursor.into(), entry_slot.into()],
+                "for.entries.next",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("iter_next returns i64")
+            .into_int_value();
+        let next_cursor = self
+            .builder
+            .build_int_add(
+                found,
+                i64_t.const_int(1, false),
+                "for.entries.cursor.next",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(cursor_slot, next_cursor)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let has = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SGE,
+                found,
+                i64_t.const_int(0, false),
+                "for.entries.has",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(has, body_bb, exit_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // body: bind the copied cell; `continue` → header (cursor
+        // already advanced), `break` → exit. TypeRef locals hold a
+        // POINTER alloca (the SSA repr of a struct value is a ptr),
+        // so bind an indirection slot pointing at the entry storage.
+        self.builder.position_at_end(body_bb);
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let var_slot = self
+            .builder
+            .build_alloca(ptr_t, &var_name.name)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(var_slot, entry_slot)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let prev = scope.locals.insert(
+            var_name.name.clone(),
+            (var_slot, CodegenTy::TypeRef(cell_name)),
+        );
+        self.loops.push(LoopFrame {
+            continue_bb: header_bb,
+            break_bb: exit_bb,
+        });
+        let body_end = self.lower_block(body, scope)?;
+        self.loops.pop();
+        if body_end == BlockEnd::Open {
+            self.builder
+                .build_unconditional_branch(header_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        if let Some(prev) = prev {
+            scope.locals.insert(var_name.name.clone(), prev);
+        } else {
+            scope.locals.remove(&var_name.name);
+        }
+        self.builder.position_at_end(exit_bb);
+        Ok(BlockEnd::Open)
+    }
+
+    /// 2026-07-02 @form(vec) iteration: `for x in v.items`. Fully
+    /// inline buf walk — load `{cap, len, buf}` once, then per
+    /// element a GEP + load (scalars) or memcpy into the loop-local
+    /// alloca (struct cells). Zero per-element calls; the counted
+    /// shape vectorizes for scalar element types. The binding is a
+    /// per-iteration copy.
+    fn lower_for_vec_items(
+        &mut self,
+        var_name: &Ident,
+        recv_ptr: PointerValue<'ctx>,
+        info: &LocusInfo<'ctx>,
+        slot: &CapacitySlotLayout,
+        body: &Block,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let func = self
+            .current_fn
+            .expect("current_fn set while lowering a for");
+        let elem_ty = slot.elem_ty.clone();
+        // The buf stride is the element's SSA width — scalars by
+        // value, String/Bytes/TypeRef as pointers (the same
+        // llvm_basic_type sizing `lotus_vec_init` was given). A
+        // struct-cell binding is therefore a REFERENCE to the
+        // vec-owned cell, not a copy — reads are fine; the vec must
+        // not be mutated during iteration either way.
+        let elem_llvm = self.llvm_basic_type(&elem_ty);
+        let stride_ty = elem_llvm;
+
+        // Inline vec struct: { i64 cap, i64 len, ptr buf }.
+        let vec_struct_ty = self.context.struct_type(
+            &[i64_t.into(), i64_t.into(), ptr_t.into()],
+            false,
+        );
+        let vec_field_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                recv_ptr,
+                slot.struct_field_idx,
+                "for.items.vec.ptr",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let len_ptr = self
+            .builder
+            .build_struct_gep(vec_struct_ty, vec_field_ptr, 1, "for.items.len.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let len = self
+            .builder
+            .build_load(i64_t, len_ptr, "for.items.len")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let buf_ptr_slot = self
+            .builder
+            .build_struct_gep(vec_struct_ty, vec_field_ptr, 2, "for.items.buf.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let buf = self
+            .builder
+            .build_load(ptr_t, buf_ptr_slot, "for.items.buf")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+
+        let var_slot = self.alloca_in_entry(
+            stride_ty,
+            &format!("for.items.{}", var_name.name),
+        )?;
+        let i_slot = self
+            .builder
+            .build_alloca(i64_t, "for.items.i")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(i_slot, i64_t.const_int(0, false))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let header_bb =
+            self.context.append_basic_block(func, "for.items.cond");
+        let body_bb = self.context.append_basic_block(func, "for.items.body");
+        let inc_bb = self.context.append_basic_block(func, "for.items.inc");
+        let exit_bb = self.context.append_basic_block(func, "for.items.end");
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(header_bb);
+        let i = self
+            .builder
+            .build_load(i64_t, i_slot, "for.items.i.now")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let in_range = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                i,
+                len,
+                "for.items.in_range",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(in_range, body_bb, exit_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(body_bb);
+        let elem_ptr = unsafe {
+            self.builder
+                .build_gep(stride_ty, buf, &[i], "for.items.elem.ptr")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+        let v = self
+            .builder
+            .build_load(elem_llvm, elem_ptr, "for.items.elem")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(var_slot, v)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let prev = scope
+            .locals
+            .insert(var_name.name.clone(), (var_slot, elem_ty.clone()));
+        self.loops.push(LoopFrame {
+            continue_bb: inc_bb,
+            break_bb: exit_bb,
+        });
+        let body_end = self.lower_block(body, scope)?;
+        self.loops.pop();
+        if body_end == BlockEnd::Open {
+            self.builder
+                .build_unconditional_branch(inc_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        if let Some(prev) = prev {
+            scope.locals.insert(var_name.name.clone(), prev);
+        } else {
+            scope.locals.remove(&var_name.name);
+        }
+
+        self.builder.position_at_end(inc_bb);
+        let i_now = self
+            .builder
+            .build_load(i64_t, i_slot, "for.items.i.inc")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let i_next = self
+            .builder
+            .build_int_add(i_now, i64_t.const_int(1, false), "for.items.i.next")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
             .build_store(i_slot, i_next)
@@ -15956,6 +17205,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int | CodegenTy::Duration => {
                 self.context.i64_type().into()
             }
+            CodegenTy::Bounded(_, _) => {
+                // SSA repr is a pointer to the inline storage.
+                self.context.ptr_type(AddressSpace::default()).into()
+            }
             CodegenTy::FnPtr { .. } => {
                 self.context.ptr_type(AddressSpace::default()).into()
             }
@@ -16034,6 +17287,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         if let Some(bb) = saved {
             self.builder.position_at_end(bb);
+        }
+        // LLVM's SetInsertPoint(Instruction*) — the position_before
+        // above — ADOPTS that instruction's debug location, which for
+        // an entry-block alloca is empty. Re-assert the statement's
+        // location so the caller's remaining instructions keep their
+        // line info (debug story stage 2).
+        if let Some(loc) = self.di_current_loc {
+            self.builder.set_current_debug_location(loc);
         }
         Ok(slot)
     }
@@ -16329,6 +17590,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         &format!("self.{}.ptr", name.name),
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // Inline fixed arrays: the slot IS the [N x T]
+                // storage; the array's SSA value is its address.
+                // Same for bounded[T; N] ({ i64 len, [N x T] }).
+                if Self::array_inline_spec(&ty).is_some()
+                    || matches!(ty, CodegenTy::Bounded(_, _))
+                {
+                    return Ok((ptr.into(), ty));
+                }
                 let llvm_ty = self.llvm_basic_type(&ty);
                 let val = self
                     .builder
@@ -16510,6 +17779,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         &format!("field.{}.ptr", name.name),
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // Inline fixed arrays: the field slot IS the [N x T]
+                // storage — the array's SSA value (a ptr to storage)
+                // is the slot's address, not a loaded pointer.
+                // Same for bounded[T; N] ({ i64 len, [N x T] }).
+                if Self::array_inline_spec(&field_ty).is_some()
+                    || matches!(field_ty, CodegenTy::Bounded(_, _))
+                {
+                    return Ok((field_ptr.into(), field_ty));
+                }
                 let llvm_ty = self.llvm_basic_type(&field_ty);
                 let val = self
                     .builder
@@ -16589,6 +17867,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Expr::Ident(i) if i.name == "len" => {
                     self.lower_len_builtin(args, scope)
+                }
+                // bounded[T; N] intrinsics (2026-07-02): count/clear
+                // (push/at are fallible — they route through
+                // lower_fallible_call's Ident arm under `or`).
+                Expr::Ident(i)
+                    if matches!(
+                        i.name.as_str(),
+                        "count" | "clear" | "truncate"
+                    ) && args.len()
+                        == if i.name == "truncate" { 2 } else { 1 }
+                        && self.bounded_recv_spec(args, scope).is_some() =>
+                {
+                    let (elem, cap) = self
+                        .bounded_recv_spec(args, scope)
+                        .expect("guard checked");
+                    match i.name.as_str() {
+                        "count" => self
+                            .lower_bounded_count(args, &elem, cap, scope),
+                        "truncate" => self
+                            .lower_bounded_truncate(args, &elem, cap, scope),
+                        _ => self
+                            .lower_bounded_clear(args, &elem, cap, scope),
+                    }
                 }
                 Expr::Ident(i) if i.name == "to_string" => {
                     self.lower_to_string_builtin(args, scope)
@@ -17903,6 +19204,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             let (val, ty) = self.lower_expr(a, scope)?;
             match &ty {
+                CodegenTy::Bounded(_, _) => {
+                    return Err(CodegenError::Unsupported(
+                        "cannot print a bounded[T; N] value directly — \
+                         print count(f) or iterate its elements"
+                            .into(),
+                    ));
+                }
                 CodegenTy::Int => {
                     format.push_str("%lld");
                     printf_args.push(BasicMetadataValueEnum::IntValue(val.into_int_value()));
@@ -23491,9 +24799,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         //   `array_slot_ty` — Some(Array(elem, n)) when cur_ptr is
         //     a SLOT holding the array's payload pointer; consumed
         //     by the next Index segment.
+        //   `array_storage_direct` — 2026-07-01 inline fixed arrays:
+        //     true when cur_ptr IS the [N x T] storage itself (an
+        //     inline scalar-array field slot), so the Index segment
+        //     must NOT load a payload pointer first. False for the
+        //     legacy shape (local alloca / out-of-line field slot
+        //     holding a ptr).
         let mut cur_ptr: PointerValue<'ctx>;
         let mut cur_struct: Option<(StructType<'ctx>, BTreeMap<String, (u32, CodegenTy)>)>;
         let mut array_slot_ty: Option<CodegenTy>;
+        let mut array_storage_direct = false;
         let mut name: String;
 
         if target.head.name == "self" {
@@ -23582,6 +24897,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     cur_ptr = alloca;
                     cur_struct = None;
                     array_slot_ty = Some(CodegenTy::Array(elem.clone(), *n_cap));
+                    // Local binding: the alloca holds the array's
+                    // payload POINTER (SSA repr), not the storage.
+                    array_storage_direct = false;
                 }
                 other => {
                     return Err(CodegenError::Unsupported(format!(
@@ -23699,6 +25017,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             array_slot_ty = None;
                         }
                         CodegenTy::Array(elem, n_cap) => {
+                            // Inline scalar arrays: field_ptr IS the
+                            // [N x T] storage; out-of-line arrays:
+                            // field_ptr is a slot holding the payload
+                            // pointer (Index loads it).
+                            array_storage_direct = Self::array_inline_spec(
+                                &CodegenTy::Array(elem.clone(), n_cap),
+                            )
+                            .is_some();
                             cur_ptr = field_ptr;
                             cur_struct = None;
                             array_slot_ty =
@@ -23724,11 +25050,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         CodegenTy::Array(elem, n) => (*elem, n),
                         _ => unreachable!("checked above"),
                     };
-                    let arr_ptr = self
-                        .builder
-                        .build_load(ptr_t, cur_ptr, &format!("{}.arr", name))
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                        .into_pointer_value();
+                    // Inline scalar-array field: cur_ptr already IS
+                    // the [N x T] storage — no payload-pointer load.
+                    let arr_ptr = if array_storage_direct {
+                        cur_ptr
+                    } else {
+                        self.builder
+                            .build_load(ptr_t, cur_ptr, &format!("{}.arr", name))
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .into_pointer_value()
+                    };
                     let (idx_val, idx_ty) = self.lower_expr(idx_expr, scope)?;
                     if idx_ty != CodegenTy::Int {
                         return Err(CodegenError::Unsupported(format!(
@@ -23996,6 +25327,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Array(elem_ty, n) => {
                 self.llvm_array_storage_type(elem_ty, *n).size_of()
             }
+            CodegenTy::Bounded(elem_ty, n) => {
+                self.llvm_bounded_storage_type(elem_ty, *n).size_of()
+            }
             CodegenTy::Interface(_) => self.iface_fat_struct_ty().size_of(),
             CodegenTy::Enum(name) => {
                 let info = self
@@ -24108,6 +25442,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .get(&cs.locus_name)
             .map(|(e, n)| (e, n))
             .unwrap_or((&empty_methods, &empty_methods));
+        let fnptr_numeric_ret = fnptr_numeric_param_set(params);
         let ctx = AllocCtx {
             nonalloc: &self.nonalloc_free_fns,
             numeric_ret: &self.nonalloc_free_fns_numeric_ret,
@@ -24116,6 +25451,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             elidable_self_methods,
             numeric_ret_self_methods,
             param_field_numeric: &param_field_numeric,
+            fnptr_numeric_ret: &fnptr_numeric_ret,
         };
         fn_body_definitely_non_allocating(&body.stmts, &ctx, &param_seed)
     }
@@ -24431,6 +25767,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         if let Some(bb) = saved {
             self.builder.position_at_end(bb);
+        }
+        // position_before adopts the target instruction's (empty)
+        // debug location — re-assert ours (debug story stage 2).
+        if let Some(loc) = self.di_current_loc {
+            self.builder.set_current_debug_location(loc);
         }
         Ok(slot)
     }

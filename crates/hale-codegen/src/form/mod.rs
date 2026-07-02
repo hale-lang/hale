@@ -7,6 +7,8 @@
 //! Lifted as inherent `impl<'ctx, 'p> Cx<'ctx, 'p>` blocks — call
 //! sites need no `use` import.
 
+pub(crate) mod bounded;
+
 use hale_syntax::ast::Expr;
 use inkwell::types::BasicType;
 use inkwell::values::{BasicValueEnum, IntValue, PointerValue};

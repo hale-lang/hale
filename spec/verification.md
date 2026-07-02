@@ -99,12 +99,18 @@ assume the others in a build:
     **error** contract once the precision refinements — store-latest vs.
     append, `@form(cap)` composition — drive in-scope false positives to
     zero.)*
-  - **`--warn-unbounded-alloc`** — the whole-program advisory survey. Flags
-    every site regardless of `@bounded` (a `@unbounded` fn is still
-    suppressed). Warnings print but never fail the build.
-  `--dump-alloc-summary` prints the raw per-fn summary.
-  `--no-warn-unbounded-alloc` is accepted-and-ignored for back-compat with
-  the former default-on flag. A per-method allocation summary + call-graph
+  - **The whole-program advisory survey — DEFAULT-ON since 2026-07-02**
+    (the M3 stage-5 flip, after a full-corpus audit triaged all 402
+    warnings: every true positive preserved, every residual false positive
+    in a documented accepted class — see
+    notes/unbounded-alloc-audit-2026-07-02.md). Flags every site
+    regardless of `@bounded` (a `@unbounded` fn is still suppressed);
+    run-to-exit programs (a `main` with no `run` loop and no bus handler)
+    warn nothing — a script owes the proof nothing. Warnings print but
+    never fail the build. **`--no-warn-unbounded-alloc`** is the opt-out;
+    `--warn-unbounded-alloc` is accepted-and-ignored (the former opt-in
+    spelling).
+  `--dump-alloc-summary` prints the raw per-fn summary. A per-method allocation summary + call-graph
   escape/loop dataflow — with **escape-awareness** (a non-escaping local in
   a per-message handler is reclaimed at the per-delivery method-scratch
   destroy, so it isn't flagged), call-result escape tagging, and

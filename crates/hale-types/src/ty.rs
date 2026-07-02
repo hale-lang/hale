@@ -20,6 +20,9 @@ pub enum Ty {
     Named(String),
     Projection(ProjectionClass, Box<Ty>),
     Array(Box<Ty>, Option<u64>),
+    /// `bounded[T; N]` — fixed-capacity counted buffer, inline
+    /// `{ i64 len, [N x T] }`. Capacity is part of the type.
+    Bounded(Box<Ty>, u64),
     Tuple(Vec<Ty>),
     Function {
         params: Vec<Ty>,
@@ -53,6 +56,9 @@ impl Ty {
         match self {
             Ty::Prim(p) => prim_name(*p).to_string(),
             Ty::Named(n) => n.clone(),
+            Ty::Bounded(e, n) => {
+                format!("bounded[{}; {}]", e.display(), n)
+            }
             Ty::Projection(c, inner) => {
                 let cn = match c {
                     ProjectionClass::Rich => "Rich",
@@ -99,6 +105,11 @@ impl Ty {
         }
         match (self, other) {
             (Ty::Array(a_elem, a_n), Ty::Array(b_elem, b_n)) if a_n == b_n => {
+                a_elem.assignable_from(b_elem)
+            }
+            (Ty::Bounded(a_elem, a_n), Ty::Bounded(b_elem, b_n))
+                if a_n == b_n =>
+            {
                 a_elem.assignable_from(b_elem)
             }
             (Ty::Tuple(a), Ty::Tuple(b)) if a.len() == b.len() => {
@@ -184,17 +195,42 @@ fn is_flat_shapeable_inner(
             | PrimType::BytesMut => false,
         },
         Ty::Unit => true,
-        // A fixed-size array's storage is laid out OUT-OF-LINE by codegen:
-        // a `[T; N]` field holds a pointer to a separate arena allocation,
-        // not the inline bytes (`CodegenTy::Array` lowers to `ptr`). So a
-        // raw memcpy of a value containing an array shares a pointer that
-        // dangles across a `zero_copy` / shm boundary — a real
-        // cross-process use-after-free / segfault. Until array fields are
-        // laid out inline for flat payloads, an array (at any nesting) is
-        // NOT memcpy-flat; the element type's own flatness is moot while the
-        // storage is indirect. `Array(_, None)` (unbounded) is non-flat for
-        // the same indirection reason plus the unknown size.
-        Ty::Array(_, _) => false,
+        // 2026-07-02 bounded[T; N]: inline `{ i64 len, [N x T] }` —
+        // flat iff the element is a flat scalar (mirror of the
+        // inline-array rule below; the count travels in the bytes).
+        Ty::Bounded(elem, _) => matches!(
+            elem.as_ref(),
+            Ty::Prim(
+                PrimType::Int
+                    | PrimType::Uint
+                    | PrimType::Float
+                    | PrimType::Bool
+                    | PrimType::Decimal
+                    | PrimType::Duration
+            )
+        ),
+        // 2026-07-01 inline fixed arrays: codegen now lays out a
+        // `[T; N]` field with a SCALAR element type INLINE in its
+        // containing struct (`llvm_field_storage_type` → `[N x T]`),
+        // so the element bytes are part of the value's own layout and
+        // memcpy-flat. This predicate must match codegen's
+        // `array_inline_spec` exactly: scalar elements only. Arrays
+        // of non-scalar elements (String, nested structs, …) keep the
+        // out-of-line pointer layout and stay non-flat — a raw memcpy
+        // would share a pointer that dangles across a `zero_copy` /
+        // shm boundary. `Array(_, None)` (unbounded) is non-flat: the
+        // size is unknown.
+        Ty::Array(elem, Some(_)) => matches!(
+            elem.as_ref(),
+            Ty::Prim(
+                PrimType::Int
+                    | PrimType::Float
+                    | PrimType::Bool
+                    | PrimType::Decimal
+                    | PrimType::Duration
+            )
+        ),
+        Ty::Array(_, None) => false,
         Ty::Tuple(parts) => parts
             .iter()
             .all(|p| is_flat_shapeable_inner(p, scope, seen)),

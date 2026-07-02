@@ -183,7 +183,9 @@ fn subregion_call_elided_for_elidable_child() {
         while_body,
     );
     assert!(
-        while_body.contains("@lotus_arena_alloc"),
-        "Coord.run while.body must still allocate the Worker struct via lotus_arena_alloc",
+        while_body.contains("@lotus_child_struct_alloc"),
+        "Coord.run while.body must still allocate the Worker struct \
+         via lotus_child_struct_alloc (the recycling front of \
+         lotus_arena_alloc for accept'd children, 2026-07-01)",
     );
 }

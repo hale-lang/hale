@@ -1,18 +1,14 @@
-//! GH #18 item 1 — the memory-bound-proof warning is OPT-IN.
+//! M3 stage 5 (2026-07-02) — the memory-bound-proof warning is
+//! DEFAULT-ON (Riley's flip after the 402-warning audit; see
+//! notes/unbounded-alloc-audit-2026-07-02.md). Run-to-exit programs
+//! (a `main`, no run loop, no bus handler) still warn nothing —
+//! the analysis itself spares them, so scripts pay nothing.
 //!
-//! "Bounded per epoch" only means something for a long-lived process
-//! (a daemon, a bus handler, a persistent locus). A script that
-//! allocates and exits owes the proof nothing, so it pays nothing by
-//! default — the same descent-curve stance as the `@locality`
-//! cache-tier budgets (annotation/flag-gated, never automatic). This
-//! pins that contract so a future refactor can't silently re-enable
-//! the former default-on behavior:
-//!
-//!   - default: silent (no warning), build succeeds
-//!   - `--warn-unbounded-alloc`: emits the advisory warning, build
-//!     still succeeds (a warning, not an error)
-//!   - `--no-warn-unbounded-alloc`: accepted-and-ignored for
-//!     back-compat with the former default-on flag
+//!   - default: emits the advisory warning, build still succeeds
+//!     (a warning, not an error)
+//!   - `--no-warn-unbounded-alloc`: the opt-OUT, silent
+//!   - `--warn-unbounded-alloc`: accepted-and-ignored (the former
+//!     opt-in spelling)
 //!
 //! The fixture (`fixtures/unbounded-alloc-opt-in/app.hl`) is the
 //! canonical unbounded-accumulation shape: a per-message handler that
@@ -47,21 +43,11 @@ fn check(extra: &[&str]) -> (bool, String) {
 const WARN_NEEDLE: &str = "unbounded allocation";
 
 #[test]
-fn default_is_silent() {
+fn default_emits_advisory_but_succeeds() {
     let (ok, stderr) = check(&[]);
-    assert!(ok, "default check should succeed: {stderr}");
-    assert!(
-        !stderr.contains(WARN_NEEDLE),
-        "memory-bound warning must be OPT-IN — default run leaked it:\n{stderr}"
-    );
-}
-
-#[test]
-fn warn_flag_emits_advisory_but_succeeds() {
-    let (ok, stderr) = check(&["--warn-unbounded-alloc"]);
     assert!(
         stderr.contains(WARN_NEEDLE),
-        "--warn-unbounded-alloc should emit the advisory warning:\n{stderr}"
+        "default-on: the advisory warning must print without a flag:\n{stderr}"
     );
     assert!(
         ok,
@@ -70,11 +56,51 @@ fn warn_flag_emits_advisory_but_succeeds() {
 }
 
 #[test]
-fn no_warn_flag_is_accepted_noop() {
+fn warn_flag_is_accepted_redundant() {
+    let (ok, stderr) = check(&["--warn-unbounded-alloc"]);
+    assert!(
+        stderr.contains(WARN_NEEDLE),
+        "the former opt-in spelling stays accepted:\n{stderr}"
+    );
+    assert!(ok, "advisory only: {stderr}");
+}
+
+#[test]
+fn no_warn_flag_opts_out() {
     let (ok, stderr) = check(&["--no-warn-unbounded-alloc"]);
     assert!(ok, "--no-warn-unbounded-alloc should be accepted: {stderr}");
     assert!(
         !stderr.contains(WARN_NEEDLE),
-        "back-compat opt-out must stay silent:\n{stderr}"
+        "the opt-out must silence the survey:\n{stderr}"
+    );
+}
+
+// #8 (2026-07-02): `--json` NDJSON diagnostics — the LSP-groundwork
+// contract. Reuses this fixture (it has a default-on warning).
+#[test]
+fn json_mode_emits_ndjson_on_stdout() {
+    let out = Command::new(hale_bin())
+        .arg("check")
+        .arg(app())
+        .arg("--json")
+        .output()
+        .expect("invoke hale check --json");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.lines().count() >= 1,
+        "at least one diagnostic line: {stdout}"
+    );
+    for line in stdout.lines() {
+        assert!(
+            line.starts_with('{') && line.ends_with('}'),
+            "NDJSON object per line: {line}"
+        );
+        for key in ["\"file\":", "\"line\":", "\"col\":", "\"severity\":", "\"message\":"] {
+            assert!(line.contains(key), "missing {key} in {line}");
+        }
+    }
+    assert!(
+        out.status.success(),
+        "warnings are advisory in json mode too"
     );
 }

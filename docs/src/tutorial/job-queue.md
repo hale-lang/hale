@@ -59,12 +59,8 @@ fn main() {
     q.push(Job { id: 3, work: 9 });
     println("queued: ", q.len());
 
-    let mut i = 0;
-    let n = q.len();
-    while i < n {
-        let j: Job = q.get(i) or Job { id: 0, work: 0 };
+    for j in q.items {
         println("job ", j.id, " -> ", process(j));
-        i = i + 1;
     }
 }
 ```

@@ -132,9 +132,42 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
 /// so projects that don't use the form machinery don't get
 /// `IndexError` / similar names spuriously in scope.
 fn bundle_uses_form_machinery(bundle: &Bundle<'_>) -> bool {
+    fn te_has_bounded(t: &TypeExpr) -> bool {
+        match t {
+            TypeExpr::Bounded { .. } => true,
+            TypeExpr::Array { elem, .. } => te_has_bounded(elem),
+            TypeExpr::Projection { inner, .. } => te_has_bounded(inner),
+            TypeExpr::Tuple(parts, _) => {
+                parts.iter().any(te_has_bounded)
+            }
+            _ => false,
+        }
+    }
     fn scan_items(items: &[TopDecl]) -> bool {
         items.iter().any(|item| match item {
-            TopDecl::Locus(l) => l.form.is_some(),
+            TopDecl::Locus(l) => {
+                l.form.is_some()
+                    || l.members.iter().any(|m| match m {
+                        LocusMember::Params(p) => p
+                            .params
+                            .iter()
+                            .any(|param| {
+                                param
+                                    .ty
+                                    .as_ref()
+                                    .is_some_and(te_has_bounded)
+                            }),
+                        _ => false,
+                    })
+            }
+            // bounded[T; N] fields (2026-07-02) use the same
+            // injected error types (CapacityError / IndexError).
+            TopDecl::Type(td) => match &td.body {
+                TypeDeclBody::Struct(fields) => {
+                    fields.iter().any(|f| te_has_bounded(&f.ty))
+                }
+                _ => false,
+            },
             TopDecl::Module(m) => scan_items(&m.items),
             _ => false,
         })
@@ -1088,12 +1121,72 @@ fn register_symbol(
 /// Resolve a syntactic [`TypeExpr`] to a [`Ty`], using the
 /// bundle-wide set of known type-like names. Names not in
 /// `known` and not primitive resolve to [`Ty::Unknown`].
+/// M3 stage 3 tranche 2: mirror of codegen's m61
+/// `type_expr_mangle_token` — one token per generic arg.
+fn type_expr_mangle_token(
+    t: &TypeExpr,
+    known: &BTreeMap<String, Span>,
+) -> Option<String> {
+    match t {
+        TypeExpr::Primitive(p, _) => match p {
+            PrimType::Int => Some("Int".into()),
+            PrimType::Float => Some("Float".into()),
+            PrimType::Bool => Some("Bool".into()),
+            PrimType::String => Some("String".into()),
+            PrimType::Duration => Some("Duration".into()),
+            PrimType::Decimal => Some("Decimal".into()),
+            PrimType::Time => Some("Time".into()),
+            _ => None,
+        },
+        TypeExpr::Named { path, generic_args, .. }
+            if path.segments.len() == 1 =>
+        {
+            let base = &path.segments[0].name;
+            if generic_args.is_empty() {
+                if known.contains_key(base) {
+                    Some(base.clone())
+                } else {
+                    None
+                }
+            } else {
+                let mut toks: Vec<String> = Vec::new();
+                for a in generic_args {
+                    toks.push(type_expr_mangle_token(a, known)?);
+                }
+                Some(format!("{}_{}", base, toks.join("_")))
+            }
+        }
+        _ => None,
+    }
+}
+
 pub fn resolve_type_expr(te: &TypeExpr, known: &BTreeMap<String, Span>) -> Ty {
     match te {
         TypeExpr::Primitive(p, _) => Ty::Prim(*p),
-        TypeExpr::Named { path, .. } => {
+        TypeExpr::Named { path, generic_args, .. } => {
             if path.segments.len() == 1 {
                 let name = &path.segments[0].name;
+                // M3 stage 3 tranche 2 (2026-07-02): a generic
+                // instantiation type-expr (`Box<Int>`) resolves to
+                // its MANGLED monomorph name (`Box_Int`) — the same
+                // name codegen synthesizes and the same Ty a
+                // `Box_Int { ... }` literal produces, so the two
+                // unify. Unknown when any arg token can't be named
+                // (permissive, as before).
+                if !generic_args.is_empty() {
+                    let mut toks: Vec<String> = Vec::new();
+                    for a in generic_args {
+                        match type_expr_mangle_token(a, known) {
+                            Some(t) => toks.push(t),
+                            None => return Ty::Unknown,
+                        }
+                    }
+                    return Ty::Named(format!(
+                        "{}_{}",
+                        name,
+                        toks.join("_")
+                    ));
+                }
                 if known.contains_key(name) {
                     Ty::Named(name.clone())
                 } else {
@@ -1106,6 +1199,9 @@ pub fn resolve_type_expr(te: &TypeExpr, known: &BTreeMap<String, Span>) -> Ty {
         }
         TypeExpr::Projection { class, inner, .. } => {
             Ty::Projection(*class, Box::new(resolve_type_expr(inner, known)))
+        }
+        TypeExpr::Bounded { elem, cap, .. } => {
+            Ty::Bounded(Box::new(resolve_type_expr(elem, known)), *cap)
         }
         TypeExpr::Array { elem, size, .. } => {
             let n = match size {
@@ -1446,6 +1542,32 @@ fn synthesize_form_ring_buffer_methods(
 /// for projects that already shipped their own error shapes.
 pub(crate) fn inject_form_stdlib_types(scope: &mut TopScope) {
     let zero = Span::new(0, 0);
+    // bounded[T; N] (2026-07-02): push-at-cap payload.
+    if !scope.symbols.contains_key("CapacityError") {
+        scope.symbols.insert(
+            "CapacityError".to_string(),
+            TopSymbol::Type(TypeInfo {
+                name: "CapacityError".to_string(),
+                kind: TypeKind::Struct(vec![
+                    FieldInfo {
+                        name: "cap".to_string(),
+                        ty: Ty::Prim(PrimType::Int),
+                        has_default: false,
+                        tag: None,
+                        span: zero,
+                    },
+                    FieldInfo {
+                        name: "count".to_string(),
+                        ty: Ty::Prim(PrimType::Int),
+                        has_default: false,
+                        tag: None,
+                        span: zero,
+                    },
+                ]),
+                span: zero,
+            }),
+        );
+    }
     if !scope.symbols.contains_key("IndexError") {
         scope.symbols.insert(
             "IndexError".to_string(),

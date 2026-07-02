@@ -437,3 +437,13 @@ End-to-end coverage lives in
 `tests/fixtures/lib-toy/` (two-file library) and
 `tests/fixtures/import-toy-consumer/main.hl` (consumer with
 `import "../lib-toy" as toy;`).
+
+## Build flags + environment (2026-07-02)
+
+| Surface | Effect |
+|---|---|
+| `hale build --dev` / `HALE_DEV=1` | Latency mode: LLVM O1 pipeline + Less machine codegen instead of the O3/`target-cpu=native` release default. For edit-build-run loops. |
+| `hale check --json` | NDJSON diagnostics on stdout, one object per line (`file`/`line`/`col`/`severity`/`kind`/`message`) — editor/LSP consumption. `hale check` runs in ~10 ms on the largest apps. |
+| `HALE_TIME=1` | Per-phase build wall times on stderr (front-end+codegen, llvm-passes, obj-emit, emit+link). |
+| `--no-warn-unbounded-alloc` | Opts a run out of the default-on memory-bound survey (see verification.md). |
+| `--target-cpu native\|baseline` | Backend CPU tuning (native = host, default; baseline = portable x86-64-v3). |

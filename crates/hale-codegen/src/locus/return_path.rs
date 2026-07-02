@@ -137,6 +137,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         dest_arena: PointerValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         match ty {
+            CodegenTy::Bounded(_, _) => Err(CodegenError::Unsupported(
+                "bounded[T; N] is not a first-class value — it cannot \
+                 be deep-copied on its own"
+                    .into(),
+            )),
             CodegenTy::Int
             | CodegenTy::Float
             | CodegenTy::Bool
@@ -471,6 +476,51 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             &format!("fn.ret.struct.src.{}", fname),
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let dst_slot = self
+                        .builder
+                        .build_struct_gep(
+                            struct_ty,
+                            new_struct,
+                            idx,
+                            &format!("fn.ret.struct.dst.{}", fname),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // Inline fixed arrays: the slot IS the [N x T]
+                    // element bytes — memcpy them across. Loading it
+                    // as a `ptr` (the pre-inline shape) would read
+                    // element bytes as an address and recurse on
+                    // garbage.
+                    if Self::array_inline_spec(&fty).is_some() {
+                        let size = self.compound_storage_size(&fty)?;
+                        self.emit_memcpy_call(
+                            dst_slot,
+                            src_slot,
+                            size,
+                            &format!("fn.ret.struct.inline_arr.{}", fname),
+                        )?;
+                        continue;
+                    }
+                    // bounded[T; N]: memcpy the inline { len, data }
+                    // storage, then anchor the DST copy's live
+                    // pointer elements into dest_arena (no-op for
+                    // scalar elements).
+                    if let CodegenTy::Bounded(belem, bcap) = &fty {
+                        let size = self.compound_storage_size(&fty)?;
+                        self.emit_memcpy_call(
+                            dst_slot,
+                            src_slot,
+                            size,
+                            &format!("fn.ret.struct.bounded.{}", fname),
+                        )?;
+                        self.anchor_bounded_elems_in_place(
+                            dst_slot,
+                            belem,
+                            *bcap,
+                            dest_arena,
+                            &format!("fn.ret.struct.bounded.{}", fname),
+                        )?;
+                        continue;
+                    }
                     let llvm_field_ty = self.llvm_basic_type(&fty);
                     let field_val = self
                         .builder
@@ -483,15 +533,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let copied = self.emit_return_value_deep_copy(
                         field_val, &fty, dest_arena,
                     )?;
-                    let dst_slot = self
-                        .builder
-                        .build_struct_gep(
-                            struct_ty,
-                            new_struct,
-                            idx,
-                            &format!("fn.ret.struct.dst.{}", fname),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     self.builder
                         .build_store(dst_slot, copied)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -749,6 +790,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         rhs: BasicValueEnum<'ctx>,
         slot_ty: &CodegenTy,
     ) -> Result<(), CodegenError> {
+        // 2026-07-01 inline fixed arrays: the slot IS the [N x T]
+        // storage (not a pointer to it), so whole-array assignment
+        // is a memcpy of the element bytes into the slot — in every
+        // context, scratch or not. No anchoring: inline eligibility
+        // requires scalar elements (no heap fields to chase). This
+        // must come before every other branch — the legacy paths
+        // below either store a pointer over the slot (corrupting
+        // inline data with an 8-byte ptr) or load a "pointer" out
+        // of it (reading element bytes as an address).
+        if Self::array_inline_spec(slot_ty).is_some() {
+            let size = self.compound_storage_size(slot_ty)?;
+            self.emit_memcpy_call(
+                slot_ptr,
+                rhs.into_pointer_value(),
+                size,
+                "inline_array.assign.memcpy",
+            )?;
+            return Ok(());
+        }
         // Scalars + views + LocusRefs + Cells: store the value
         // directly. No anchoring needed (the value's bytes live
         // in the slot itself, or the slot holds a stable pointer

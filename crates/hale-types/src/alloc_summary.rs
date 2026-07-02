@@ -237,6 +237,10 @@ pub struct AllocSite {
     /// True if any enclosing loop has a non-const (runtime / `while true`)
     /// trip count.
     pub in_unbounded_loop: bool,
+    /// M3 stage 5 gap B: true if any enclosing loop is literally
+    /// `while true` — a frame stuck in one never reaches its
+    /// method-exit scratch destroy.
+    pub in_infinite_loop: bool,
     pub reclaim: ReclaimScope,
     /// Phase D / D1: when this allocation is stored straight into a
     /// `self.<field>` (a whole-value replace, `StoredToSelf`), the field
@@ -495,25 +499,122 @@ impl AllocSummary {
         set
     }
 
+    /// M3 stage 5 gap A/B (2026-07-02, audit notes/unbounded-alloc-
+    /// audit-2026-07-02.md): the set of frames whose allocations live
+    /// in a LONG-LIVED arena with no per-call scratch — `main` and
+    /// `run` bodies, plus (fixpoint) free fns reached from one: the
+    /// empirical reclaim model says free-fn returns do NOT reclaim,
+    /// so a free fn called from `run` allocates straight into run's
+    /// lifetime arena. Member fns and bus handlers open a per-call
+    /// method scratch, so they STOP the propagation — a value
+    /// consumed there dies at method exit.
+    fn scratchless_longlived(&self) -> BTreeSet<FnKey> {
+        let mut set: BTreeSet<FnKey> = self
+            .fns
+            .values()
+            .filter(|f| {
+                matches!(f.entry, Some(EntryKind::Main) | Some(EntryKind::Run))
+            })
+            .map(|f| f.key.clone())
+            .collect();
+        loop {
+            let mut changed = false;
+            for f in self.fns.values() {
+                if !set.contains(&f.key) {
+                    continue;
+                }
+                for c in &f.calls {
+                    if let Callee::Resolved(callee) = &c.callee {
+                        if callee.locus.is_none()
+                            && self.fns.contains_key(callee)
+                            && set.insert(callee.clone())
+                        {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        set
+    }
+
     /// A site's final verdict, folding in call-graph multiplicity: an
     /// accumulating site in an unboundedly-invoked fn is unbounded even if
     /// it's only once-per-call in its own body. Bus-dispatch reclaim stays
     /// bounded regardless (the value is freed each dispatch).
-    fn final_verdict(&self, owner: &FnKey, site: &AllocSite, unbounded: &BTreeSet<FnKey>) -> SiteVerdict {
+    ///
+    /// M3 stage 5 gap A+B refinements (2026-07-02, audit-driven —
+    /// 74% FP rate before, dominated by two over-approximations):
+    ///
+    /// GAP A — a `Returned` value only accumulates when a DIRECT
+    /// caller consumes it in a scratch-less long-lived frame
+    /// (`main`/`run`/free-fn-chain therefrom). Consumed inside a
+    /// member fn or bus handler, it dies with that frame's per-call
+    /// scratch. KNOWN HOLE (accepted, documented): a member fn that
+    /// FORWARDS the value (returns it onward to run) deep-copies it
+    /// into the caller arena and does accumulate — value-flow
+    /// through frames isn't tracked, so that shape is missed.
+    ///
+    /// GAP B — a `Local` in an unbounded loop inside a fn WITH
+    /// per-call scratch is bounded by the activation (reclaimed at
+    /// method exit); only scratch-less frames turn in-loop locals
+    /// into true accumulation. KNOWN HOLE: a `while true` loop that
+    /// never exits inside a handler defeats the "dies at exit"
+    /// argument; rare, and the old behavior flagged 155 bounded
+    /// per-activation loops to catch it.
+    fn final_verdict(
+        &self,
+        owner: &FnKey,
+        site: &AllocSite,
+        unbounded: &BTreeSet<FnKey>,
+        scratchless: &BTreeSet<FnKey>,
+        callers: &BTreeMap<FnKey, BTreeSet<FnKey>>,
+    ) -> SiteVerdict {
         let intra = site.verdict();
+        let owner_scratchless = scratchless.contains(owner);
         match intra {
-            SiteVerdict::AccumulatesUnbounded | SiteVerdict::PerIterationReclaim => intra,
-            // Cross-invocation accumulation (a per-message handler / a fn
-            // reached from an unbounded loop): only ESCAPING values persist
-            // across invocations. A non-escaping `Local` is reclaimed at the
-            // per-call method-scratch destroy (R1 — escape-awareness), so it
-            // does not accumulate across deliveries. The in-loop case
-            // (intra == AccumulatesUnbounded) is handled above and untouched.
+            SiteVerdict::AccumulatesUnbounded => {
+                // GAP B: in-loop Local in a scratch-ful frame dies
+                // at method exit — bounded per activation. EXCEPT
+                // inside a literal `while true`, where the method
+                // never exits and the scratch never destroys.
+                if matches!(site.escape, Escape::Local)
+                    && !owner_scratchless
+                    && !site.in_infinite_loop
+                {
+                    SiteVerdict::PerIterationReclaim
+                } else {
+                    intra
+                }
+            }
+            SiteVerdict::PerIterationReclaim => intra,
             _ if unbounded.contains(owner)
                 && site.reclaim.accumulates_in_loop()
                 && site.escape.persists_across_calls() =>
             {
-                SiteVerdict::AccumulatesUnbounded
+                match site.escape {
+                    // GAP A: Returned — accumulate only when some
+                    // direct caller consumes in a scratch-less
+                    // long-lived frame.
+                    Escape::Returned => {
+                        let consumed_dangerously = callers
+                            .get(owner)
+                            .map(|cs| {
+                                cs.iter().any(|c| scratchless.contains(c))
+                            })
+                            .unwrap_or(false)
+                            || owner_scratchless;
+                        if consumed_dangerously {
+                            SiteVerdict::AccumulatesUnbounded
+                        } else {
+                            SiteVerdict::PerIterationReclaim
+                        }
+                    }
+                    _ => SiteVerdict::AccumulatesUnbounded,
+                }
             }
             _ => intra,
         }
@@ -522,7 +623,50 @@ impl AllocSummary {
     /// Every site whose final verdict is unbounded accumulation — the
     /// step-3 result the diagnostic emits.
     pub fn leak_sites(&self) -> Vec<LeakSite> {
+        // M3 stage 5 gap E (2026-07-02): a bundle with NO long-lived
+        // entry point — no `run` loop, no bus handler — is a
+        // run-to-exit program (a script, a smoke binary, a lib
+        // checked standalone). Per the tool's own philosophy ("a
+        // memory-bound proof only means something for long-lived
+        // processes"), nothing in it can leak in the sense this
+        // analysis measures. A LIB's latent leaks still surface at
+        // every consumer's whole-program check, where the
+        // consumer's run/handlers are present — that's the right
+        // place: the same lib fn may be one-shot in a script and
+        // hot in a daemon.
+        // Refinement: only suppress ACTUAL run-to-exit programs (a
+        // `main` present, nothing long-lived). A LIB checked
+        // standalone has no main at all — its warnings stay, because
+        // per-dir consumer checks don't re-bundle vendored libs and
+        // would otherwise never surface the lib's real leaks
+        // (pond/websocket's per-message stores were the case in
+        // point).
+        let has_long_lived_entry = self.fns.values().any(|f| {
+            matches!(
+                f.entry,
+                Some(EntryKind::Run) | Some(EntryKind::BusHandler)
+            )
+        });
+        let has_main = self
+            .fns
+            .values()
+            .any(|f| matches!(f.entry, Some(EntryKind::Main)));
+        if has_main && !has_long_lived_entry {
+            return Vec::new();
+        }
         let unbounded = self.unbounded_invoked();
+        let scratchless = self.scratchless_longlived();
+        let mut callers: BTreeMap<FnKey, BTreeSet<FnKey>> = BTreeMap::new();
+        for f in self.fns.values() {
+            for c in &f.calls {
+                if let Callee::Resolved(callee) = &c.callee {
+                    callers
+                        .entry(callee.clone())
+                        .or_default()
+                        .insert(f.key.clone());
+                }
+            }
+        }
         let mut out = Vec::new();
         for f in self.fns.values() {
             // `@unbounded` is the acknowledged carve-out — its sites never
@@ -532,7 +676,7 @@ impl AllocSummary {
                 continue;
             }
             for s in &f.sites {
-                if self.final_verdict(&f.key, s, &unbounded) == SiteVerdict::AccumulatesUnbounded {
+                if self.final_verdict(&f.key, s, &unbounded, &scratchless, &callers) == SiteVerdict::AccumulatesUnbounded {
                     let reason = if matches!(s.verdict(), SiteVerdict::AccumulatesUnbounded) {
                         LeakReason::InUnboundedLoop
                     } else {
@@ -554,6 +698,18 @@ impl AllocSummary {
     /// Human-readable dump for `--dump-alloc-summary`.
     pub fn render(&self) -> String {
         let unbounded = self.unbounded_invoked();
+        let scratchless = self.scratchless_longlived();
+        let mut callers: BTreeMap<FnKey, BTreeSet<FnKey>> = BTreeMap::new();
+        for f in self.fns.values() {
+            for c in &f.calls {
+                if let Callee::Resolved(callee) = &c.callee {
+                    callers
+                        .entry(callee.clone())
+                        .or_default()
+                        .insert(f.key.clone());
+                }
+            }
+        }
         let mut out = String::new();
         out.push_str("# allocation summary (GH #18 item 1, steps 1-3 + D1 slot shape)\n");
         let entries: Vec<&FnSummary> = self.fns.values().filter(|f| f.entry.is_some()).collect();
@@ -620,7 +776,9 @@ impl AllocSummary {
                 ));
             }
             for s in &f.sites {
-                let v = self.final_verdict(&f.key, s, &unbounded);
+                let v = self.final_verdict(
+                    &f.key, s, &unbounded, &scratchless, &callers,
+                );
                 let flag = if matches!(v, SiteVerdict::AccumulatesUnbounded) {
                     "  <-- LEAK"
                 } else {
@@ -684,6 +842,8 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
     let mut locus_shapes: BTreeMap<String, LocusShape> = BTreeMap::new();
     // Phase D / D2 — per-locus param field → declared type name.
     let mut locus_field_types: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    // 2026-07-01 — per-locus scalar-[T; N] param fields (inline layout).
+    let mut locus_inline_arrays: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     for program in programs {
         for item in &program.items {
@@ -704,6 +864,8 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
                     }
                     locus_shapes.insert(locus.clone(), locus_shape_of(l));
                     locus_field_types.insert(locus.clone(), locus_param_field_types(l));
+                    locus_inline_arrays
+                        .insert(locus.clone(), locus_inline_array_fields(l));
                     let handlers = bus_handler_names(l);
                     for member in &l.members {
                         match member {
@@ -756,6 +918,7 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
         .filter_map(|(name, shape)| shape.form.as_ref().map(|f| (name.clone(), f.name.clone())))
         .collect();
     let empty_fields: BTreeMap<String, String> = BTreeMap::new();
+    let empty_inline_arrays: BTreeSet<String> = BTreeSet::new();
 
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
@@ -765,6 +928,10 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
             .as_ref()
             .and_then(|l| locus_field_types.get(l))
             .unwrap_or(&empty_fields);
+        let inline_array_fields = enclosing_locus
+            .as_ref()
+            .and_then(|l| locus_inline_arrays.get(l))
+            .unwrap_or(&empty_inline_arrays);
         let mut w = Walker {
             sites: Vec::new(),
             calls: Vec::new(),
@@ -773,10 +940,12 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
             enclosing_locus: enclosing_locus.clone(),
             known: &known,
             loop_stack: Vec::new(),
+            infinite_stack: Vec::new(),
             fn_body: body,
             store_target: None,
             var_types: param_types.iter().cloned().collect(),
             field_types,
+            inline_array_fields,
             form_of: &form_of,
         };
         w.walk_block(body, 0, Escape::Local);
@@ -820,6 +989,39 @@ fn locus_param_field_types(l: &LocusDecl) -> BTreeMap<String, String> {
         }
     }
     m
+}
+
+/// 2026-07-01 inline fixed arrays: the locus's param fields whose declared
+/// type is a scalar-element `[T; N]`. Codegen lays these out INLINE in the
+/// locus struct (see hale-codegen `array_inline_spec`), so a whole-value
+/// replace `self.f = [ … ]` is an in-place element memcpy — the RHS
+/// literal is scratch-reclaimed at method exit and nothing persists. The
+/// walker downgrades such a store's escape to `Local` so store-latest
+/// verdicts don't false-positive on the now-bounded shape.
+fn locus_inline_array_fields(l: &LocusDecl) -> BTreeSet<String> {
+    let mut s = BTreeSet::new();
+    for member in &l.members {
+        if let LocusMember::Params(pb) = member {
+            for pd in &pb.params {
+                if let Some(TypeExpr::Array { elem, .. }) = pd.ty.as_ref() {
+                    if matches!(
+                        elem.as_ref(),
+                        TypeExpr::Primitive(
+                            PrimType::Int
+                                | PrimType::Float
+                                | PrimType::Bool
+                                | PrimType::Decimal
+                                | PrimType::Duration,
+                            _,
+                        )
+                    ) {
+                        s.insert(pd.name.name.clone());
+                    }
+                }
+            }
+        }
+    }
+    s
 }
 
 /// Phase D / D1: distill a `LocusDecl` into the storage shape the bound
@@ -929,6 +1131,44 @@ fn bus_handler_names(l: &LocusDecl) -> BTreeSet<String> {
     out
 }
 
+/// M3 stage 5 gap C: is this field-init expression scalar-valued or
+/// a static literal — i.e., does storing it into an existing struct
+/// slot allocate NOTHING in the locus arena? Conservative: anything
+/// unrecognized returns false (the site stays flagged).
+fn init_is_scalar_or_static(e: &Expr) -> bool {
+    match e {
+        // Static literals: strings/bytes live in .rodata (the
+        // anchor's static-skip); scalar literals are by-value.
+        Expr::Literal(_, _) => true,
+        Expr::Unary { operand, .. } => init_is_scalar_or_static(operand),
+        Expr::Binary { left, right, op, .. } => {
+            // Arithmetic/comparison on scalars is by-value. `+` over
+            // strings CONCATENATES (fresh heap) — only accept when
+            // both sides are non-string-literal scalars; a string
+            // literal on either side of `+` marks concat.
+            let string_side = matches!(
+                left.as_ref(),
+                Expr::Literal(Literal::String(_), _)
+            ) || matches!(
+                right.as_ref(),
+                Expr::Literal(Literal::String(_), _)
+            );
+            !(matches!(op, hale_syntax::ast::BinOp::Add) && string_side)
+                && init_is_scalar_or_static(left)
+                && init_is_scalar_or_static(right)
+        }
+        // self.field re-reads are the RMW pattern — the anchor's
+        // same-arena gate makes re-storing them identity. A bare
+        // LOCAL Ident stays conservative: it may hold a freshly
+        // parsed String, and storing that into self is exactly the
+        // TP-3 anchor-clone leak.
+        Expr::Field { receiver, .. } => {
+            matches!(receiver.as_ref(), Expr::KwSelf(_))
+        }
+        _ => false,
+    }
+}
+
 struct Walker<'a> {
     sites: Vec<AllocSite>,
     calls: Vec<CallEdge>,
@@ -939,6 +1179,11 @@ struct Walker<'a> {
     /// One entry per enclosing loop: `true` if that loop has a const trip
     /// count. A value alloc is in an unbounded loop iff any entry is false.
     loop_stack: Vec<bool>,
+    /// M3 stage 5 gap B: parallel stack, `true` when the loop is
+    /// literally `while true` (never exits) — the one shape where a
+    /// scratch-ful frame's "reclaimed at method exit" argument
+    /// fails, because the method never exits.
+    infinite_stack: Vec<bool>,
     /// The whole fn body — loop-ranking scans it to decide whether a
     /// `while v < N` counter is const-bounded (const init + only positive
     /// const increments anywhere in the fn).
@@ -954,6 +1199,10 @@ struct Walker<'a> {
     /// The enclosing locus's param fields → declared type name, so a
     /// `self.<field>.push(x)` resolves `<field>`'s type the same way.
     field_types: &'a BTreeMap<String, String>,
+    /// 2026-07-01: the enclosing locus's scalar-[T; N] param fields —
+    /// codegen lays these out inline, so a whole-value replace is an
+    /// in-place memcpy whose RHS is scratch-reclaimed (walked Local).
+    inline_array_fields: &'a BTreeSet<String>,
     /// Every locus's `@form(...)` name, keyed by locus type name — the
     /// lookup `var_types`/`field_types` feed into `form_grows`.
     form_of: &'a BTreeMap<String, String>,
@@ -973,6 +1222,7 @@ impl<'a> Walker<'a> {
             escape,
             loop_depth: depth,
             in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
+            in_infinite_loop: self.infinite_stack.iter().any(|i| *i),
             reclaim: ReclaimScope::of(escape),
             target_field,
             span,
@@ -1010,6 +1260,7 @@ impl<'a> Walker<'a> {
             escape: Escape::StoredToSelf,
             loop_depth: depth,
             in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
+            in_infinite_loop: self.infinite_stack.iter().any(|i| *i),
             reclaim: ReclaimScope::EnclosingLocus,
             target_field: None,
             span,
@@ -1040,7 +1291,7 @@ impl<'a> Walker<'a> {
             }
             Stmt::LetTuple { value, .. } => self.walk_expr(value, depth, Escape::Local),
             Stmt::Assign { target, value, .. } => {
-                let esc = if target.head.name == "self" {
+                let mut esc = if target.head.name == "self" {
                     Escape::StoredToSelf
                 } else {
                     self.escaping.get(&target.head.name).copied().unwrap_or(Escape::Local)
@@ -1051,7 +1302,22 @@ impl<'a> Walker<'a> {
                 // a trailing `Index` segment and allocates nothing new).
                 let prev = self.store_target.take();
                 if esc == Escape::StoredToSelf {
-                    self.store_target = self_replace_field(target);
+                    let target_field = self_replace_field(target);
+                    // 2026-07-01 inline fixed arrays: a whole-value
+                    // replace of a scalar-[T; N] field is an in-place
+                    // element memcpy (codegen `array_inline_spec`) —
+                    // nothing persists in the locus arena; the RHS
+                    // literal is scratch-reclaimed at method exit.
+                    // Walk the RHS as Local so store-latest verdicts
+                    // don't flag the now-bounded shape.
+                    if let Some(f) = &target_field {
+                        if self.inline_array_fields.contains(f) {
+                            esc = Escape::Local;
+                        }
+                    }
+                    if esc == Escape::StoredToSelf {
+                        self.store_target = target_field;
+                    }
                 }
                 self.walk_expr(value, depth, esc);
                 self.store_target = prev;
@@ -1069,8 +1335,10 @@ impl<'a> Walker<'a> {
                 let bounded = matches!(kind, LoopKind::ForRange { bounded: Some(_) });
                 self.loops.push(LoopInfo { kind, depth, span: *span });
                 self.loop_stack.push(bounded);
+                self.infinite_stack.push(false);
                 self.walk_block(body, depth + 1, Escape::Local);
                 self.loop_stack.pop();
+                self.infinite_stack.pop();
             }
             Stmt::While { cond, body, span } => {
                 self.walk_expr(cond, depth, Escape::Local);
@@ -1080,10 +1348,16 @@ impl<'a> Walker<'a> {
                 // (its trip count is runtime, like a runtime `for`-iter).
                 let bounded = while_counter_bounded(cond, self.fn_body);
                 let kind = if bounded { LoopKind::WhileCounter } else { while_loop_kind(cond) };
+                let infinite = matches!(
+                    cond,
+                    Expr::Literal(Literal::Bool(true), _)
+                );
                 self.loops.push(LoopInfo { kind, depth, span: *span });
                 self.loop_stack.push(bounded);
+                self.infinite_stack.push(infinite);
                 self.walk_block(body, depth + 1, Escape::Local);
                 self.loop_stack.pop();
+                self.infinite_stack.pop();
             }
             Stmt::If(if_stmt) => self.walk_if(if_stmt, depth, Escape::Local),
             Stmt::Match(m) => self.walk_match(m, depth, Escape::Local),
@@ -1141,7 +1415,21 @@ impl<'a> Walker<'a> {
                 // path ("std::io::tcp::Listener") so consumers can match it
                 // without colliding with a same-named user type.
                 let name = path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
-                self.push_site(AllocKind::StructLit(name), escape, depth, *span);
+                // M3 stage 5 gap C (2026-07-02, audit): a
+                // whole-value `self.<field> = X { ... }` replace
+                // where every init is a scalar expression or a
+                // STATIC literal does not grow the arena — codegen's
+                // emit_self_field_inplace_assign memcpys over the
+                // existing struct, and anchor_struct_fields_in_place
+                // skips static-literal subfields (they live in
+                // .rodata, not any arena). A single fresh heap
+                // subfield (a parsed String, a concat) re-enables
+                // the site — that's the TP-3 anchor-clone class.
+                let inplace_no_heap = matches!(escape, Escape::StoredToSelf)
+                    && inits.iter().all(|si| init_is_scalar_or_static(&si.value));
+                if !inplace_no_heap {
+                    self.push_site(AllocKind::StructLit(name), escape, depth, *span);
+                }
                 for si in inits {
                     self.walk_expr(&si.value, depth, escape);
                 }
@@ -1339,6 +1627,15 @@ fn while_counter_bounded(cond: &Expr, fn_body: &Block) -> bool {
         }
         _ => return false,
     };
+    // M3 stage 5 note (2026-07-02): a runtime-invariant ceiling
+    // extension (len()/param ceilings ranked bounded) was tried and
+    // REVERTED — the RSS-validated model_unbounded_verdict test is
+    // the authority: a param-ceiling loop in a scratchless frame
+    // accumulates linearly IN THE INPUT (3M iters ≈ 190 MB), which
+    // is exactly what "unbounded" means here. Scratch-ful frames
+    // already get their per-activation reclaim in final_verdict
+    // (gap B); the one-shot-main shape is gap E, a lifetime
+    // question, not a loop-bound one.
     let mut s = CounterScan::default();
     scan_counter_block(fn_body, var, &mut s);
     s.const_inits == 1
@@ -1962,11 +2259,14 @@ mod tests {
 
     #[test]
     fn d1_store_latest_records_target_field() {
+        // M3 stage 5 gap C: the ALL-SCALAR variant of this store is
+        // now carved out (in-place memcpy, no arena growth), so the
+        // struct here carries a fresh heap subfield to stay a site.
         let src = r#"
-            type Q { a: Int; }
+            type Q { a: Int; s: String; }
             locus C {
-                params { latest: Q = Q { a: 0 }; }
-                run { while true { self.latest = Q { a: 1 }; } }
+                params { latest: Q = Q { a: 0, s: "" }; }
+                run { while true { self.latest = Q { a: 1, s: to_string(1) }; } }
             }
             fn main() { }
         "#;

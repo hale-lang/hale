@@ -2294,7 +2294,12 @@ impl Parser {
                 span: direction_tok.span.merge(semi.span),
             });
         }
-        let name = self.expect_ident("contract field name")?;
+        // Mode keywords are admitted as contract names per the
+        // exposed-mode pull rule (`expose bulk: Float;` — a parent
+        // may call the child's mode iff it's contract-exposed).
+        // Same F.10 keyword-as-name fallback as `self.bulk()`.
+        let name =
+            self.expect_ident_or_kw_name("contract field name")?;
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
         let semi = self.expect(TokenKind::Semi, ";")?;
@@ -3205,6 +3210,39 @@ impl Parser {
                 } else {
                     Ok(TypeExpr::Tuple(elems, span))
                 }
+            }
+            // `bounded[T; N]` — contextual keyword: only an ident
+            // named `bounded` directly followed by `[` in type
+            // position. Capacity must be a positive int literal
+            // (part of the type, like `[T; N]`).
+            TokenKind::Ident(name)
+                if name == "bounded"
+                    && matches!(
+                        self.peek_at(1),
+                        TokenKind::LBracket
+                    ) =>
+            {
+                let kw = self.bump();
+                self.expect(TokenKind::LBracket, "[")?;
+                let elem = self.parse_type_expr()?;
+                self.expect(TokenKind::Semi, ";")?;
+                let cap_tok_span = self.peek_token().span;
+                let cap = match self.parse_expr()? {
+                    Expr::Literal(Literal::Int(n), _) if n > 0 => n as u64,
+                    _ => {
+                        return Err(Diag::parse(
+                            cap_tok_span,
+                            "bounded[T; N]: capacity must be a                              positive integer literal"
+                                .to_string(),
+                        ));
+                    }
+                };
+                let rb = self.expect(TokenKind::RBracket, "]")?;
+                Ok(TypeExpr::Bounded {
+                    elem: Box::new(elem),
+                    cap,
+                    span: kw.span.merge(rb.span),
+                })
             }
             TokenKind::Ident(_) => {
                 let qn = self.parse_qualified_name()?;

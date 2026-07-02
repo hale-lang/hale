@@ -77,7 +77,11 @@ locus Router {
 
 The [forms](./forms.md) you've been using — `@form(vec)`,
 `@form(hashmap)` — are built on exactly these slots; the form
-annotation just synthesizes the method surface over them. Slots
+annotation just synthesizes the method surface over them. And for a
+list that belongs *inside a value* rather than on a locus, there's
+`bounded[T; N]` (see [Collections](../everyday/collections.md)) —
+fixed-capacity, laid out inline, whole-struct copies carry it, and
+the memory-bound analysis treats it as bounded by construction. Slots
 hold *values*, never locus references: locus membership goes
 through [`accept`](../services/parents-children.md), not storage.
 

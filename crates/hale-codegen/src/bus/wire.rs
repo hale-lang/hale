@@ -16,6 +16,18 @@ pub(crate) trait BusWire<'ctx> {
         &mut self,
         type_name: &str,
     ) -> Result<(), CodegenError>;
+
+    fn emit_bounded_field_wire_memcpy(
+        &mut self,
+        field_storage_ptr: PointerValue<'ctx>,
+        wire_buf: PointerValue<'ctx>,
+        cursor_alloca: PointerValue<'ctx>,
+        elem_ty: &CodegenTy,
+        n: u64,
+        to_wire: bool,
+        site: &str,
+    ) -> Result<(), CodegenError>;
+
     fn emit_array_field_serialize(
         &mut self,
         src_field_ptr: PointerValue<'ctx>,
@@ -296,6 +308,56 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
     /// on emit_per_field_serialize). The loop is unrolled at
     /// codegen-time — N is statically known and typically small
     /// (~10–20 for the canonical fixed-cap-array use case).
+    /// bounded[T; N] (2026-07-02): scalar-element bounded fields
+    /// serialize as their raw inline `{ i64 len, [N x T] }` bytes —
+    /// fixed size, count travels in the bytes. Pointer-shaped
+    /// elements (String/Bytes/TypeRef) cross-process are post-v1
+    /// polish (callers get a focused reject at the dispatch arm).
+    fn emit_bounded_field_wire_memcpy(
+        &mut self,
+        field_storage_ptr: PointerValue<'ctx>,
+        wire_buf: PointerValue<'ctx>,
+        cursor_alloca: PointerValue<'ctx>,
+        elem_ty: &CodegenTy,
+        n: u64,
+        to_wire: bool,
+        site: &str,
+    ) -> Result<(), CodegenError> {
+        let i64_t = self.context.i64_type();
+        let i8_t = self.context.i8_type();
+        let st = self.llvm_bounded_storage_type(elem_ty, n);
+        let total_iv = st.size_of().expect("bounded storage sized");
+        let cursor_iv = self
+            .builder
+            .build_load(i64_t, cursor_alloca, &format!("{}.cursor", site))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let wire_at_cursor = unsafe {
+            self.builder
+                .build_gep(
+                    i8_t,
+                    wire_buf,
+                    &[cursor_iv],
+                    &format!("{}.wire", site),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+        let (dst, src) = if to_wire {
+            (wire_at_cursor, field_storage_ptr)
+        } else {
+            (field_storage_ptr, wire_at_cursor)
+        };
+        self.emit_memcpy_call(dst, src, total_iv, site)?;
+        let after = self
+            .builder
+            .build_int_add(cursor_iv, total_iv, &format!("{}.after", site))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(cursor_alloca, after)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
     fn emit_array_field_serialize(
         &mut self,
         src_field_ptr: PointerValue<'ctx>,
@@ -310,15 +372,24 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
         let i64_t = self.context.i64_type();
         let i8_t = self.context.i8_type();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
-        // Array fields in a struct are pointer-shaped (see
-        // `llvm_basic_type` — Array variants map to `ptr`); the
-        // pointer addresses a separately-allocated `[N x elem]`
-        // storage. Load it before iterating.
-        let arr_ptr = self
-            .builder
-            .build_load(ptr_t, src_field_ptr, "ser.arr.field.load")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_pointer_value();
+        // Inline fixed arrays (2026-07-01, array_inline_spec): the
+        // field slot IS the [N x elem] storage — serialize straight
+        // from it. Out-of-line arrays (non-scalar elements) keep the
+        // legacy shape: the slot holds a pointer to separately-
+        // allocated storage; load it before iterating.
+        let arr_ptr = if Self::array_inline_spec(&CodegenTy::Array(
+            Box::new(elem_ty.clone()),
+            n,
+        ))
+        .is_some()
+        {
+            src_field_ptr
+        } else {
+            self.builder
+                .build_load(ptr_t, src_field_ptr, "ser.arr.field.load")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value()
+        };
         let arr_ty = self.llvm_array_storage_type(elem_ty, n);
         match elem_ty {
             CodegenTy::Int
@@ -466,34 +537,48 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
         // (lower_expr's `Expr::ArrayRepeat` arm). 16-byte align
         // covers Decimal (i128) element types.
         let arr_ty = self.llvm_array_storage_type(elem_ty, n);
-        let arr_size = arr_ty
-            .size_of()
-            .expect("array storage type has known size");
-        let alloc_fn = self
-            .module
-            .get_function("lotus_bus_payload_arena_alloc")
-            .expect("lotus_bus_payload_arena_alloc declared");
-        let arr_ptr = self
-            .builder
-            .build_call(
-                alloc_fn,
-                &[
-                    arr_size.into(),
-                    i64_t.const_int(16, false).into(),
-                ],
-                "de.arr.alloc",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("payload arena alloc returns ptr")
-            .into_pointer_value();
-        // Store the array pointer in the parent's field slot now,
-        // before filling — readers go through the pointer either
-        // way and it simplifies error paths.
-        self.builder
-            .build_store(dst_field_ptr, arr_ptr)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // Inline fixed arrays (2026-07-01, array_inline_spec): the
+        // parent's field slot IS the [N x elem] storage — decode
+        // straight into it, no side allocation, no pointer store.
+        // Out-of-line arrays keep the legacy shape below.
+        let arr_ptr = if Self::array_inline_spec(&CodegenTy::Array(
+            Box::new(elem_ty.clone()),
+            n,
+        ))
+        .is_some()
+        {
+            dst_field_ptr
+        } else {
+            let arr_size = arr_ty
+                .size_of()
+                .expect("array storage type has known size");
+            let alloc_fn = self
+                .module
+                .get_function("lotus_bus_payload_arena_alloc")
+                .expect("lotus_bus_payload_arena_alloc declared");
+            let p = self
+                .builder
+                .build_call(
+                    alloc_fn,
+                    &[
+                        arr_size.into(),
+                        i64_t.const_int(16, false).into(),
+                    ],
+                    "de.arr.alloc",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("payload arena alloc returns ptr")
+                .into_pointer_value();
+            // Store the array pointer in the parent's field slot now,
+            // before filling — readers go through the pointer either
+            // way and it simplifies error paths.
+            self.builder
+                .build_store(dst_field_ptr, p)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            p
+        };
         let _ = ptr_t;
         match elem_ty {
             CodegenTy::Int
@@ -860,6 +945,26 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                     self.builder
                         .build_store(cursor_alloca, after)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                CodegenTy::Bounded(belem, bn) => {
+                    if Self::bounded_elem_is_ptr(belem) {
+                        return Err(CodegenError::Unsupported(format!(
+                            "bus payload field `{}: bounded[{:?}; {}]` — \
+                             pointer-element bounded cross-process is \
+                             post-v1 polish; scalar-element bounded \
+                             travels as flat bytes",
+                            fname, belem, bn
+                        )));
+                    }
+                    self.emit_bounded_field_wire_memcpy(
+                        src_field_ptr,
+                        dst,
+                        cursor_alloca,
+                        belem,
+                        *bn,
+                        true,
+                        "ser.bounded",
+                    )?;
                 }
                 CodegenTy::Array(elem_ty, n) => {
                     // Form H (2026-05-20): fixed-size array payload.
@@ -1277,6 +1382,25 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                         .build_store(cursor_alloca, after)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
+                CodegenTy::Bounded(belem, bn) => {
+                    if Self::bounded_elem_is_ptr(belem) {
+                        return Err(CodegenError::Unsupported(format!(
+                            "bus payload field `{}: bounded[{:?}; {}]` — \
+                             pointer-element bounded cross-process is \
+                             post-v1 polish",
+                            fname, belem, bn
+                        )));
+                    }
+                    self.emit_bounded_field_wire_memcpy(
+                        dst_field_ptr,
+                        src,
+                        cursor_alloca,
+                        belem,
+                        *bn,
+                        false,
+                        "de.bounded",
+                    )?;
+                }
                 CodegenTy::Array(elem_ty, n) => {
                     self.emit_array_field_deserialize(
                         dst_field_ptr,
@@ -1656,6 +1780,25 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                     self.builder
                         .build_store(cursor_alloca, after)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                CodegenTy::Bounded(belem, bn) => {
+                    if Self::bounded_elem_is_ptr(belem) {
+                        return Err(CodegenError::Unsupported(format!(
+                            "bus payload field `{}: bounded[{:?}; {}]` — \
+                             pointer-element bounded cross-process is \
+                             post-v1 polish",
+                            fname, belem, bn
+                        )));
+                    }
+                    self.emit_bounded_field_wire_memcpy(
+                        dst_field_ptr,
+                        src,
+                        cursor_alloca,
+                        belem,
+                        *bn,
+                        false,
+                        "de.bounded",
+                    )?;
                 }
                 CodegenTy::Array(elem_ty, n) => {
                     self.emit_array_field_deserialize(

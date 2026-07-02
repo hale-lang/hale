@@ -7,7 +7,10 @@
 //! sites need no `use` import. Round 6 of the codegen model-org
 //! refactor.
 
-use hale_syntax::ast::{Expr, FnDecl, LocusDecl, OrDisposition, Stmt, TypeExpr};
+use hale_syntax::ast::{
+    Expr, FnDecl, LocusDecl, LocusMember, OrDisposition, Stmt, TopDecl,
+    TypeExpr,
+};
 use inkwell::types::BasicType;
 use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, IntValue, PointerValue};
 use inkwell::AddressSpace;
@@ -573,6 +576,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         "err".to_string(),
                         (call.out_err_slot, call.payload_ty.clone()),
                     );
+                    // 2026-07-02 fallible handlers: when the
+                    // substitute is itself a fallible call
+                    // (`db() or self.convert(err)` with `convert`
+                    // declared `fallible(E2)`), its failure
+                    // propagates through the ENCLOSING fn's error
+                    // path — implicit `or raise`. Lower by rewriting
+                    // to the equivalent already-supported nested form
+                    // `db() or (self.convert(err) or raise)` and
+                    // recursing; the typechecker validated E2 against
+                    // the enclosing fallible payload. Closes the pond
+                    // stash-bridge idiom (jobs::Queue non-reentrancy).
+                    let rhs_wrapped;
+                    let rhs: &Expr = if self.expr_is_fallible_call(rhs, scope)
+                    {
+                        rhs_wrapped = Expr::Or {
+                            inner: rhs.clone(),
+                            disposition: OrDisposition::Raise(rhs.span()),
+                            span: rhs.span(),
+                        };
+                        &rhs_wrapped
+                    } else {
+                        rhs
+                    };
                     let (sub_v, sub_ty) = if call.success_ty.is_none() {
                         // v1.x-FORM-4: Unit-success fallible (e.g.
                         // hashmap.remove / write_file). The substitute RHS
@@ -580,7 +606,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         let mut sub_mut_scope = Scope {
                             locals: sub_scope.locals.clone(),
                         };
-                        match rhs.as_ref() {
+                        match rhs {
                             // A `{ block }` disposer — `… or { println(…); }`
                             // or `… or { return; }`. Lower the block body
                             // directly: `lower_stmt` has no
@@ -598,7 +624,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // expression-position "fn returns no value"
                             // reject.
                             _ => {
-                                let s = Stmt::Expr((**rhs).clone());
+                                let s = Stmt::Expr(rhs.clone());
                                 self.lower_stmt(&s, &mut sub_mut_scope)?;
                             }
                         }
@@ -712,6 +738,79 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// `l.pop()`) lower as-if-fallible inline in commit 4 (PR5
     /// finale); other shapes (path calls, generic-fn callees)
     /// reject with a clear diagnostic.
+    /// 2026-07-02 fallible handlers: conservative classifier for
+    /// "this substitute expression is a call to a USER-DECLARED
+    /// fallible fn" — the shapes the `or <handler>` implicit-raise
+    /// sugar rewrites. Free fns (bare + imported-path) resolve via
+    /// `user_fns`; method calls resolve the receiver to a locus
+    /// (self / local LocusRef / self.<field> LocusRef) and consult
+    /// the AST for a `fallible(E)` member fn, mirroring
+    /// `try_lower_user_locus_fallible_method`. Deliberately FALSE
+    /// for `@form` synthesized methods and stdlib path-calls — for
+    /// those, write the explicit nested form
+    /// `call() or (handler(err) or raise)`.
+    pub(crate) fn expr_is_fallible_call(
+        &self,
+        e: &Expr,
+        scope: &Scope<'ctx>,
+    ) -> bool {
+        let Expr::Call { callee, .. } = e else {
+            return false;
+        };
+        match callee.as_ref() {
+            Expr::Ident(id) => self
+                .user_fns
+                .get(&id.name)
+                .map_or(false, |s| s.fallible.is_some()),
+            Expr::Path(qn) => {
+                let segs: Vec<&str> =
+                    qn.segments.iter().map(|s| s.name.as_str()).collect();
+                self.mangled_for_path(&segs)
+                    .and_then(|m| self.user_fns.get(&m).cloned())
+                    .map_or(false, |s| s.fallible.is_some())
+            }
+            Expr::Field { receiver, name, .. } => {
+                let locus_name: Option<String> = match receiver.as_ref() {
+                    Expr::KwSelf(_) => self
+                        .current_self
+                        .as_ref()
+                        .map(|cs| cs.locus_name.clone()),
+                    Expr::Ident(v) => {
+                        scope.locals.get(&v.name).and_then(|(_, t)| match t {
+                            CodegenTy::LocusRef(n) => Some(n.clone()),
+                            _ => None,
+                        })
+                    }
+                    Expr::Field {
+                        receiver: r2,
+                        name: f2,
+                        ..
+                    } if matches!(r2.as_ref(), Expr::KwSelf(_)) => self
+                        .current_self
+                        .as_ref()
+                        .and_then(|cs| cs.fields.get(&f2.name).cloned())
+                        .and_then(|(_, t)| match t {
+                            CodegenTy::LocusRef(n) => Some(n),
+                            _ => None,
+                        }),
+                    _ => None,
+                };
+                let Some(ln) = locus_name else {
+                    return false;
+                };
+                self.program.items.iter().any(|item| {
+                    matches!(item,
+                        TopDecl::Locus(l) if l.name.name == ln
+                            && l.members.iter().any(|m| matches!(m,
+                                LocusMember::Fn(fd)
+                                    if fd.name.name == name.name
+                                        && fd.fallible.is_some())))
+                })
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn lower_fallible_call(
         &mut self,
         inner: &Expr,
@@ -738,7 +837,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         //     etc.) route to `try_lower_fallible_stdlib_path_call`
         //     for the per-path synthesis (see #68 / IoError flip).
         let resolved_name: String = match callee {
-            Expr::Ident(id) => id.name.clone(),
+            Expr::Ident(id) => {
+                // bounded[T; N] fallible intrinsics: push/at with a
+                // bounded-typed first arg. Falls through to the
+                // user-fn path when arg0 isn't bounded.
+                if let Some(result) = self
+                    .try_lower_bounded_fallible_intrinsic(
+                        &id.name, args, scope,
+                    )?
+                {
+                    return Ok(result);
+                }
+                id.name.clone()
+            }
             Expr::Field { receiver, name, .. } => {
                 return self.lower_fallible_method_call(
                     receiver, &name.name, args, scope,
