@@ -8,6 +8,31 @@ behavior.
 
 ## Unreleased
 
+- **M3 stage 5 (part 1) — unbounded-alloc analysis: audited + three
+  gap fixes.** A fresh-context audit triaged all 402
+  `--warn-unbounded-alloc` warnings across pond + fathom + examples:
+  103 true (26%) — including live production leaks (riskgw
+  `marks.set` per md frame, pond websocket `last_message.kind` per
+  message; the per-set anchor-clone class is filed in fathom
+  FRICTION.md as a runtime issue) — and 299 false (74%). Record in
+  notes/audit/. Three classifier gaps fixed:
+  (A) `Returned` values consumed inside a member fn's per-call
+  scratch no longer flag — only returns consumed by a scratch-less
+  long-lived frame (`main`/`run`/free-fn chains therefrom) accumulate;
+  (B) in-loop `Local`s in scratch-ful frames are bounded per
+  activation (reclaimed at method exit) — EXCEPT inside a literal
+  `while true`, where the exit never comes;
+  (C) whole-value `self.field = Struct{...}` replaces whose inits
+  are all scalar/static-literal are in-place memcpys, not arena
+  growth (a single fresh heap subfield re-flags — that's the
+  anchor-clone leak).
+  Result: ~402 → ~165 warnings with every audited true positive
+  preserved (dashboard/tui/riskgw/jobs counts audit-exact);
+  bounded[T; N] eviction loops no longer warn. Remaining for
+  default-on: len()/param loop-bound recognition (the ~35% residual
+  FP is main-reached runtime-bounded loops) and the accepted E/F
+  limitations (one-shot binaries, return-then-publish aliasing).
+
 - **Typecheck M3 stage 3 (tranche 2) — generic STRUCT literals +
   monomorph unification.** `Box_Int { ... }` literals now resolve
   against the generic template with the type args substituted:
