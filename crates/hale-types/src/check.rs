@@ -176,6 +176,7 @@ pub fn check_bundle(
             in_on_failure: false,
             fallible_ctx: None,
             wasm_target,
+            or_value_discarded: false,
         };
         for item in &program.items {
             cx.check_top_decl(item);
@@ -4039,6 +4040,12 @@ struct Checker<'a> {
     /// `target browser_js`. Gates the POSIX-only stdlib (no syscalls in
     /// the browser sandbox) at typecheck — see `wasm_unavailable_stdlib`.
     wasm_target: bool,
+    /// M3 stage 2 (2026-07-02): true while checking an `or`
+    /// expression whose value is discarded (statement position) —
+    /// the Substitute arm skips the fallback-vs-success type match.
+    /// Set by Stmt::Expr, consumed and cleared by the Or arm so
+    /// nested `or`s in subexpressions don't inherit it.
+    or_value_discarded: bool,
 }
 
 #[derive(Default)]
@@ -6956,7 +6963,18 @@ impl<'a> Checker<'a> {
                 }
             }
             Stmt::Expr(e) => {
+                // M3 stage 2 (2026-07-02): a statement-position
+                // `call() or fallback` discards its value, so the
+                // fallback's type needn't match the success type —
+                // `write_file(p, s) or handler(err);` with a
+                // Bool-returning handler is fine (and common in
+                // production code). The flag is consumed (and
+                // cleared) by the Or/Substitute arm.
+                if matches!(e, Expr::Or { .. }) {
+                    self.or_value_discarded = true;
+                }
                 let _ = self.check_expr_addressed(e);
+                self.or_value_discarded = false;
             }
             Stmt::ShmWrite { topic, max, binding, body, span } => {
                 // The receiver must be a declared topic (its layout-bound
@@ -8030,15 +8048,41 @@ impl<'a> Checker<'a> {
                 Ty::Unknown
             }
             Expr::Or { inner, disposition, span } => {
+                let value_discarded = self.or_value_discarded;
+                self.or_value_discarded = false;
                 let inner_ty = self.check_expr(inner);
+                // M3 stage 2 (2026-07-02): stdlib fallible
+                // path-calls are dual-mode at codegen (bare = the
+                // legacy direct form, `or` = fallible ABI), so the
+                // Call arm types them Unknown; the precise
+                // success/payload for the `or` form comes from the
+                // signature table here.
+                let stdlib_or = match inner.as_ref() {
+                    Expr::Call { callee, .. } => match callee.as_ref() {
+                        Expr::Path(qn) => {
+                            let segs: Vec<&str> = qn
+                                .segments
+                                .iter()
+                                .map(|s| s.name.as_str())
+                                .collect();
+                            crate::stdlib_surface::signature_for(&segs)
+                                .and_then(|sig| sig.or_types())
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
                 // Unwrap the fallible to get success + payload
                 // types. If the inner isn't actually fallible,
                 // the `or` clause is a no-op at best and likely
                 // a user mistake.
-                let (success, payload) = match inner_ty {
-                    Ty::Fallible { success, payload } => (*success, *payload),
-                    Ty::Unknown => (Ty::Unknown, Ty::Unknown),
-                    other => {
+                let (success, payload) = match (stdlib_or, inner_ty) {
+                    (Some((s, p)), _) => (s, p),
+                    (None, Ty::Fallible { success, payload }) => {
+                        (*success, *payload)
+                    }
+                    (None, Ty::Unknown) => (Ty::Unknown, Ty::Unknown),
+                    (None, other) => {
                         self.diags.push(Diag::ty(
                             inner.span(),
                             format!(
@@ -8175,7 +8219,9 @@ impl<'a> Checker<'a> {
                             payload: h_payload,
                         } = &rhs_ty
                         {
-                            if !success.assignable_from(h_success) {
+                            if !value_discarded
+                                && !success.assignable_from(h_success)
+                            {
                                 self.diags.push(Diag::ty(
                                     *span,
                                     format!(
@@ -8232,7 +8278,10 @@ impl<'a> Checker<'a> {
                         // don't false-positive when the
                         // typechecker can't see through a
                         // stdlib path.
-                        if !interface_satisfied && !success.assignable_from(&rhs_ty) {
+                        if !interface_satisfied
+                            && !value_discarded
+                            && !success.assignable_from(&rhs_ty)
+                        {
                             self.diags.push(Diag::ty(
                                 *span,
                                 format!(

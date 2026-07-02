@@ -8,6 +8,28 @@ behavior.
 
 ## Unreleased
 
+- **Typecheck M3 stage 2, tranche 2 — signatures for the I/O
+  namespaces + dual-mode fallible semantics.** 60 more rows:
+  io::fs/file/tcp/tls/udp, process child management, text
+  predicates, term/diag/os. Two semantic fixes the corpus forced:
+  (1) stdlib fallible path-calls are DUAL-MODE at codegen — with
+  `or` they use the fallible ABI, bare they're the legacy direct
+  form with per-fn returns (read_file → the String, write_file →
+  an Int status) — so bare calls now stay permissive (Unknown)
+  while `or` positions get precise success/payload types from the
+  table (the Or arm consults it directly); (2) a statement-position
+  `call() or handler(err);` discards its value, so the fallback/
+  handler-return type no longer needs to match the success type
+  (the pond/fathom production pattern). Handle args at the
+  path-call level are plain Int fds. Still excluded-not-guessed:
+  all std::json / std::http rows and process stdio (routed through
+  Hale-stdlib __ fns — no codegen-level ground truth), the 7
+  spec'd-but-unimplemented std::io::tls fns, tcp
+  set_recv/send_timeout, io::file::write_line, io::fs::list_dir.
+  Gate: zero new errors across pond, fathom, and examples; the
+  three bring-up hits (fathom refdata, pond logfmt, io-demo) were
+  exactly the two semantic gaps above — all three now pass.
+
 - **Typecheck M3 stage 2 — stdlib signatures for the scalar-heavy
   namespaces.** 118 functions across std::math/time/env/decimal/
   process(scalar)/str/io::stdin/io::stdout/bytes/crypto/

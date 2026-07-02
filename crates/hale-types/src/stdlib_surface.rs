@@ -38,6 +38,12 @@ pub enum SigTy {
     Time,
     Unit,
     Any,
+    /// A stdlib locus/struct handle (File, Stream, Child, ...).
+    /// Matches `Ty::Named` by (last-segment) name. Use only when
+    /// the handle's typecheck-side name is verified — when in
+    /// doubt, `Any` keeps arity/other-arg checking without the
+    /// mistyping risk.
+    Named(&'static str),
 }
 
 impl SigTy {
@@ -55,6 +61,7 @@ impl SigTy {
             SigTy::Time => Ty::Prim(PrimType::Time),
             SigTy::Unit => Ty::Unit,
             SigTy::Any => Ty::Unknown,
+            SigTy::Named(n) => Ty::Named(n.to_string()),
         }
     }
 
@@ -122,15 +129,26 @@ pub fn signature_for(segs: &[&str]) -> Option<&'static FnSig> {
 }
 
 impl FnSig {
+    /// Type of a BARE (no `or`) call. Stdlib fallible path-calls
+    /// are dual-mode at codegen: with `or` they take the fallible
+    /// ABI; without, they're the legacy direct form whose return
+    /// differs per fn (read_file → the String, write_file → an Int
+    /// status). We don't model the legacy zoo — bare fallible calls
+    /// stay Unknown (the status quo), while `or` positions get the
+    /// precise types via `or_types` (consulted by the Or arm).
     pub fn ret_ty(&self) -> Ty {
-        let ret = self.ret.to_ty();
         match self.fallible {
-            Some(err) => Ty::Fallible {
-                success: Box::new(ret),
-                payload: Box::new(Ty::Named(err.to_string())),
-            },
-            None => ret,
+            Some(_) => Ty::Unknown,
+            None => self.ret.to_ty(),
         }
+    }
+
+    /// (success, payload) for `call() or ...` positions. None for
+    /// non-fallible rows.
+    pub fn or_types(&self) -> Option<(Ty, Ty)> {
+        self.fallible.map(|err| {
+            (self.ret.to_ty(), Ty::Named(err.to_string()))
+        })
     }
 
     pub fn display_path(&self) -> String {
@@ -573,6 +591,15 @@ const NS_BYTES: &[&str] = &["bytes"];
 const NS_CRYPTO: &[&str] = &["crypto"];
 const NS_B64: &[&str] = &["text", "base64"];
 const NS_RAND: &[&str] = &["rand"];
+const NS_FS: &[&str] = &["io", "fs"];
+const NS_FILE: &[&str] = &["io", "file"];
+const NS_TCP: &[&str] = &["io", "tcp"];
+const NS_TLS: &[&str] = &["io", "tls"];
+const NS_UDP: &[&str] = &["io", "udp"];
+const NS_TEXT: &[&str] = &["text"];
+const NS_TERM: &[&str] = &["term"];
+const NS_DIAG: &[&str] = &["diag"];
+const NS_OS: &[&str] = &["os"];
 
 pub const SIGS: &[FnSig] = &[
     // std::math — unary/binary fns sitofp-coerce Int args.
@@ -708,4 +735,87 @@ pub const SIGS: &[FnSig] = &[
     // std::rand
     sig!(NS_RAND, "next_int", [Int], Int),
     sig!(NS_RAND, "seed_from_time", [], Unit),
+    // ── Tranche 2 (2026-07-02): the I/O namespaces. Verified the
+    // same way (per-fn lowering read). EXCLUDED-not-guessed: all
+    // std::json/std::http rows and process write_stdin/read_std*
+    // (routed through Hale-stdlib __ fns — codegen never validates
+    // their args, so there's no ground truth to table);
+    // io::file::write_line, io::tcp set_recv/send_timeout (lowering
+    // ambiguous); io::fs::list_dir (spec-only); the 7 spec'd
+    // std::io::tls fns with NO lowering (recv_stamped_into,
+    // last_recv_*, set_*) — names-only keeps them permissive.
+    // Handle args are plain Int FDs at the path-call level (the
+    // File/Stream locus wrappers live in stdlib .hl seeds).
+    sig!(NS_FS, "read_file", [Str], Str, "IoError"),
+    sig!(NS_FS, "read_bytes", [Str], Bytes, "IoError"),
+    sig!(NS_FS, "write_file", [Str, Str], Unit, "IoError"),
+    sig!(NS_FS, "write_file_append", [Str, Str], Int, "IoError"),
+    sig!(NS_FS, "file_size", [Str], Int, "IoError"),
+    sig!(NS_FS, "mkdir", [Str], Unit, "IoError"),
+    sig!(NS_FS, "rename", [Str, Str], Unit, "IoError"),
+    sig!(NS_FS, "unlink", [Str], Unit, "IoError"),
+    sig!(NS_FS, "mktemp", [Str, Str], Str, "IoError"),
+    sig!(NS_FS, "list_dir_count", [Str], Int, "IoError"),
+    sig!(NS_FS, "list_dir_at", [Str, Int], Str, "IoError"),
+    sig!(NS_FS, "file_exists", [Str], Bool),
+    sig!(NS_FS, "extension", [Str], Str),
+    sig!(NS_FILE, "open", [Str, Str], Int, "IoError"),
+    sig!(NS_FILE, "write_bytes", [Int, Bytes], Unit, "IoError"),
+    sig!(NS_FILE, "seek", [Int, Int], Unit, "IoError"),
+    sig!(NS_FILE, "read_line", [Int], Str),
+    sig!(NS_FILE, "close", [Int], Int),
+    sig!(NS_FILE, "at_eof", [Int], Bool),
+    sig!(NS_TCP, "listen_socket", [Str, Int], Int, "IoError"),
+    sig!(NS_TCP, "connect", [Str, Int], Int, "IoError"),
+    sig!(NS_TCP, "accept_one", [Int], Int, "IoError"),
+    sig!(NS_TCP, "close_fd", [Int], Int),
+    sig!(NS_TCP, "recv_into", [Int, Any, Int], Int),
+    sig!(NS_TCP, "recv_stamped_into", [Int, Any, Int], Int),
+    sig!(NS_TCP, "last_recv_kernel_ns", [], Int),
+    sig!(NS_TCP, "last_recv_user_ns", [], Int),
+    sig!(NS_TCP, "set_nodelay", [Int, Bool], Unit, "IoError"),
+    sig!(NS_TCP, "set_rx_timestamps", [Int, Bool], Unit, "IoError"),
+    sig!(NS_TLS, "connect", [Str, Int], Int, "IoError"),
+    sig!(NS_TLS, "send_bytes", [Int, Bytes], Int),
+    sig!(NS_TLS, "recv_bytes", [Int, Int], Bytes),
+    sig!(NS_TLS, "recv_into", [Int, Any, Int], Int),
+    sig!(NS_TLS, "close", [Int], Int),
+    sig!(NS_UDP, "bind", [Str, Int], Int, "IoError"),
+    sig!(NS_UDP, "send", [Int, Str, Int, Any], Unit, "IoError"),
+    sig!(NS_UDP, "recv", [Int, Int], Bytes, "IoError"),
+    sig!(NS_UDP, "recv_into", [Int, Any, Int], Int),
+    sig!(NS_UDP, "close", [Int], Int),
+    sig!(NS_UDP, "recv_with_source", [Int, Int], Bytes, "IoError"),
+    sig!(NS_UDP, "join_group", [Int, Str, Str], Unit, "IoError"),
+    sig!(NS_UDP, "leave_group", [Int, Str, Str], Unit, "IoError"),
+    sig!(NS_UDP, "set_multicast_ttl", [Int, Int], Unit, "IoError"),
+    sig!(NS_UDP, "set_multicast_loop", [Int, Any], Unit, "IoError"),
+    sig!(NS_UDP, "set_multicast_iface", [Int, Str], Unit, "IoError"),
+    sig!(NS_UDP, "set_option_int", [Int, Int, Int, Int], Unit, "IoError"),
+    sig!(NS_UDP, "set_option_bool", [Int, Int, Int, Bool], Unit, "IoError"),
+    sig!(NS_UDP, "get_option_int", [Int, Int, Int], Int, "IoError"),
+    sig!(NS_UDP, "set_recv_timeout", [Int, Duration], Unit, "IoError"),
+    sig!(NS_UDP, "set_send_timeout", [Int, Duration], Unit, "IoError"),
+    sig!(NS_UDP, "last_source_host", [], Str),
+    sig!(NS_UDP, "last_source_port", [], Int),
+    // std::process child management — success types are internal
+    // handles (__StdProcessSpawnHandle etc.); Any keeps arity +
+    // arg + fallible checking without naming them.
+    sig!(NS_PROC, "run", [Str], Any, "IoError"),
+    sig!(NS_PROC, "spawn", [Str], Any, "IoError"),
+    sig!(NS_PROC, "wait", [Int], Any, "IoError"),
+    sig!(NS_PROC, "kill", [Int], Unit, "IoError"),
+    // std::text byte-class predicates + tokenizer (vec target is a
+    // user @form(vec) locus — Any).
+    sig!(NS_TEXT, "is_alpha", [Int], Bool),
+    sig!(NS_TEXT, "is_digit", [Int], Bool),
+    sig!(NS_TEXT, "is_alnum", [Int], Bool),
+    sig!(NS_TEXT, "is_whitespace", [Int], Bool),
+    sig!(NS_TEXT, "is_word_char", [Int], Bool),
+    sig!(NS_TEXT, "tokenize_words_into", [Str, Any], Unit),
+    // std::term / std::diag / std::os
+    sig!(NS_TERM, "is_tty", [Int], Bool),
+    sig!(NS_DIAG, "heap_alloc_count", [], Int),
+    sig!(NS_DIAG, "syscall_count", [Str], Int),
+    sig!(NS_OS, "getrandom", [Int], Bytes, "IoError"),
 ];
