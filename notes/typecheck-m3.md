@@ -1,6 +1,6 @@
 # Typecheck Milestone 3 — full-fidelity checking
 
-Status: PLAN (2026-07-02). The public-launch gate: errors fire at
+Status: stages 1 + 4 SHIPPED (2026-07-02, commits df60cdd + 3519dec); 2, 3, 5 remain. The public-launch gate: errors fire at
 typecheck with source spans, not two phases later at codegen/link,
 and never as runtime corruption.
 
@@ -77,13 +77,17 @@ non-generic one. Codegen keeps its synthesis; typecheck gains the
 validation + spans. Also validate generic STRUCT literals
 (`Box<Int> { ... }` field types post-substitution).
 
-### Stage 4 — F.8 contract compatibility
+### Stage 4 — F.8 contract compatibility — SHIPPED 2026-07-02
 
-For each `accept(c: Child)` locus: every `consume` entry on the
-parent must have a matching `expose` on Child with an equal type
-(v0 equality; graded subtyping later per spec). Both sides are
-already in LocusSym (`contract_expose` / `contract_consume`) — this
-is plumbing, not analysis.
+The consume side already existed (check_contract_compatibility:
+missing expose, type mismatch, consume-without-accept). What was
+missing — and shipped — is the EXPOSE side: every expose entry must
+bind against a real params field, mode, or fn member at a matching
+type (check_contract_expose_validity). Codegen ignores contract
+members entirely, so typecheck is the only enforcement point.
+Bonus: mode keywords are now admitted in contract-name position
+(`expose bulk: Float;`), making the exposed-mode pull rule
+expressible — it was a parse error before.
 
 ### Stage 5 — memory-bounds as errors
 
