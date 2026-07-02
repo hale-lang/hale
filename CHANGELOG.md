@@ -8,6 +8,22 @@ behavior.
 
 ## Unreleased
 
+- **Typecheck M3 stage 4 — expose-side contract validity + exposed-mode
+  syntax.** Every `expose` entry must now bind against something real
+  on the declaring locus — a params field, a mode, or a `fn` member —
+  at a matching type. Previously `expose no_such_field: Int;` and
+  `expose value: String;` over an Int field compiled silently (codegen
+  treats contract members as pure declaration, so typecheck is the
+  only enforcement point) and a consuming parent type-checked against
+  fiction. The consume-side checks (missing expose, type mismatch,
+  consume-without-accept) already existed. Also: mode keywords are now
+  admitted in contract-name position (`expose bulk: Float;`), making
+  the spec's exposed-mode pull rule (semantics.md — a parent may call
+  a child's mode iff contract-exposed) expressible for the first time;
+  the exposed type is checked against the mode's declared return.
+  Gate: zero errors across pond, fathom, and the example corpus (51
+  real contract lines, including pond websocket).
+
 - **Typecheck M3 stage 1 — stdlib typo detection.** A call to an
   unknown function in a TABLED `std::` namespace is now a typecheck
   error with a did-you-mean (`std::str::parse_itn` → "did you mean

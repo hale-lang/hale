@@ -2294,7 +2294,12 @@ impl Parser {
                 span: direction_tok.span.merge(semi.span),
             });
         }
-        let name = self.expect_ident("contract field name")?;
+        // Mode keywords are admitted as contract names per the
+        // exposed-mode pull rule (`expose bulk: Float;` — a parent
+        // may call the child's mode iff it's contract-exposed).
+        // Same F.10 keyword-as-name fallback as `self.bulk()`.
+        let name =
+            self.expect_ident_or_kw_name("contract field name")?;
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
         let semi = self.expect(TokenKind::Semi, ";")?;

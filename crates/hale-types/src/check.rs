@@ -5008,6 +5008,15 @@ impl<'a> Checker<'a> {
         if !info.contract_consume.is_empty() {
             self.check_contract_compatibility(info);
         }
+        // M3 stage 4 (2026-07-02): expose-side validity. Codegen
+        // treats `contract` members as pure declaration, so this is
+        // the ONLY place a lying expose can be caught — an entry
+        // must bind against something real on this locus (a params
+        // field, a mode, or a fn member) at a matching type, or a
+        // consuming parent type-checks against fiction.
+        if !info.contract_expose.is_empty() {
+            self.check_contract_expose_validity(info);
+        }
 
         // F.31 (2026-05-23): validate the `placement { }` block
         // when present. The parser already enforced "main-only"
@@ -5901,6 +5910,103 @@ impl<'a> Checker<'a> {
                     ),
                 ));
             }
+        }
+    }
+
+    /// M3 stage 4 (2026-07-02): every `expose` entry must bind
+    /// against something real on the declaring locus — a params
+    /// field, a mode (bulk/harmonic/resolution, per the
+    /// mode-pull rule in semantics.md), or a `fn` member — with a
+    /// type matching what's declared there (v0 equality via
+    /// assignable_from, which stays permissive on Unknown).
+    /// Without this, `expose value: String;` over an Int field
+    /// compiles, and a parent consuming `value: String` checks
+    /// clean against fiction.
+    fn check_contract_expose_validity(&mut self, locus: &LocusInfo) {
+        for entry in &locus.contract_expose {
+            // 1. params field
+            if let Some(p) =
+                locus.params.iter().find(|p| p.name == entry.name)
+            {
+                if !entry.ty.assignable_from(&p.ty) {
+                    self.diags.push(Diag::ty(
+                        entry.span,
+                        format!(
+                            "contract: locus `{}` exposes `{}: {}`, but the \
+                             field is declared `{}`",
+                            locus.name,
+                            entry.name,
+                            entry.ty.display(),
+                            p.ty.display()
+                        ),
+                    ));
+                }
+                continue;
+            }
+            // 2. mode (exposed-mode pull: `expose bulk: T;`)
+            let mode = match entry.name.as_str() {
+                "bulk" => Some(ModeKind::Bulk),
+                "harmonic" => Some(ModeKind::Harmonic),
+                "resolution" => Some(ModeKind::Resolution),
+                _ => None,
+            };
+            if let Some(mk) = mode {
+                match locus.mode_returns.get(&mk) {
+                    Some(ret) => {
+                        if !entry.ty.assignable_from(ret) {
+                            self.diags.push(Diag::ty(
+                                entry.span,
+                                format!(
+                                    "contract: locus `{}` exposes `{}: {}`, \
+                                     but the mode returns `{}`",
+                                    locus.name,
+                                    entry.name,
+                                    entry.ty.display(),
+                                    ret.display()
+                                ),
+                            ));
+                        }
+                    }
+                    None => {
+                        self.diags.push(Diag::ty(
+                            entry.span,
+                            format!(
+                                "contract: locus `{}` exposes mode `{}` but \
+                                 does not declare it",
+                                locus.name, entry.name
+                            ),
+                        ));
+                    }
+                }
+                continue;
+            }
+            // 3. fn member (vertical method surface)
+            if let Some(m) =
+                locus.methods.iter().find(|m| m.name == entry.name)
+            {
+                if !entry.ty.assignable_from(&m.ret) {
+                    self.diags.push(Diag::ty(
+                        entry.span,
+                        format!(
+                            "contract: locus `{}` exposes `{}: {}`, but the \
+                             method returns `{}`",
+                            locus.name,
+                            entry.name,
+                            entry.ty.display(),
+                            m.ret.display()
+                        ),
+                    ));
+                }
+                continue;
+            }
+            self.diags.push(Diag::ty(
+                entry.span,
+                format!(
+                    "contract: locus `{}` exposes `{}` but has no field, \
+                     mode, or method with that name",
+                    locus.name, entry.name
+                ),
+            ));
         }
     }
 
