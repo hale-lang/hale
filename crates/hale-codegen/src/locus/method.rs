@@ -96,6 +96,11 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 if !elide_scratch {
                     self.open_method_scratch()?;
                 }
+                // Fn-call protocol shave (2026-07-02): elidable bodies
+                // can't publish, so their empty-frame exit flush skips
+                // the bus drain.
+                let prev_skip_drain = self.current_fn_skip_exit_drain;
+                self.current_fn_skip_exit_drain = elide_scratch;
 
                 let mut scope = Scope::default();
 
@@ -148,6 +153,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                     self.current_method_scratch = None;
                     self.current_method_caller_arena = None;
                 }
+                self.current_fn_skip_exit_drain = prev_skip_drain;
 
                 self.current_fn = None;
                 self.current_self = None;
@@ -680,6 +686,12 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 if !elide_scratch {
                     self.open_method_scratch()?;
                 }
+                // Fn-call protocol shave (2026-07-02): elidable bodies
+                // can't publish, so their empty-frame exit flush skips
+                // the bus drain. (Counter.inc-class methods and
+                // scalar getters drop to the C call shape.)
+                let prev_skip_drain = self.current_fn_skip_exit_drain;
+                self.current_fn_skip_exit_drain = elide_scratch;
 
                 let mut scope = Scope::default();
                 for (i, p) in fd.params.iter().enumerate() {
@@ -897,6 +909,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                     self.current_method_scratch = None;
                     self.current_method_caller_arena = None;
                 }
+                self.current_fn_skip_exit_drain = prev_skip_drain;
 
                 self.current_fn = None;
                 self.current_user_fn_ret = None;
@@ -947,6 +960,9 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 if !elide_scratch {
                     self.open_method_scratch()?;
                 }
+                // Fn-call protocol shave (2026-07-02): see fn members.
+                let prev_skip_drain = self.current_fn_skip_exit_drain;
+                self.current_fn_skip_exit_drain = elide_scratch;
 
                 let mut scope = Scope::default();
                 for (i, p) in md.params.iter().enumerate() {
@@ -984,6 +1000,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                     self.current_method_scratch = None;
                     self.current_method_caller_arena = None;
                 }
+                self.current_fn_skip_exit_drain = prev_skip_drain;
 
                 self.current_fn = None;
                 self.current_user_fn_ret = None;

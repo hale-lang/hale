@@ -8,6 +8,30 @@ behavior.
 
 ## Unreleased
 
+- **Fn-call protocol at C shape — exit-drain elision + fn-pointer
+  classifier refinement.** Two changes driven by the first Rust/C bench
+  comparators (fn_call/fn_modular ratio was 0.40 vs all three):
+  (1) a proven-non-allocating body cannot have published (payload
+  copies allocate), so its scope-exit flush skips the per-call
+  `lotus_bus_queue_drain` when the deferred-dissolve frame is also
+  empty — fn exit is NOT a spec-required yield point (handler exits,
+  lifecycle transitions, `yield`, and `sleep` still drain). A
+  minimal free fn drops from `push+lea+load+call drain+pop+ret` to
+  `lea; ret` — literally C's shape. BEHAVIOR NOTE: a cooperative
+  compute-only loop that relied on helper-call exits as its delivery
+  points never had that guarantee by spec and now won't get it —
+  use `yield;` (that's what it's for).
+  (2) a call through a fn-pointer PARAM with a numeric-scalar return
+  no longer marks the caller allocating: the callee scratches off the
+  threaded caller arena and a scalar return leaves nothing behind —
+  callback-style code (`fn outer(x: Int, g: fn(Int) -> Int)`) stays
+  elidable instead of paying subregion+drain+destroy per call.
+  Measured (opaque-pointer bench variants, ratio vs clang -O3 C):
+  fn_call 0.40 → 0.77, fn_modular 0.40 → 0.98 (15.77 ms vs C's
+  15.4 ms — parity). The bench .hl files now call through
+  pid-selected opaque fn pointers (Hale has no noinline surface; the
+  direct-call versions inline + fold to nothing post-elision).
+
 - **Fallible `or` handlers — `call() or handler(err)` now accepts a
   handler that is itself `fallible(E2)`.** The handler's success value
   substitutes; its failure propagates through the ENCLOSING fn's error

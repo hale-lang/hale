@@ -1112,6 +1112,7 @@ pub fn build_executable_with_options(
         reclaim_fns: BTreeMap::new(),
         handler_reclaim_wrappers: BTreeMap::new(),
         vtables: BTreeMap::new(),
+        current_fn_skip_exit_drain: false,
         di: None,
         di_loc_stack: Vec::new(),
         di_current_loc: None,
@@ -2913,6 +2914,18 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// 2026-07-01 debug story stage 2: DWARF line-table emission
     /// state. None when the build carries no source table (test
     /// harness) or targets wasm.
+    /// 2026-07-02 fn-call protocol shave: true while lowering a
+    /// body the nonalloc classifier proved allocation-free.
+    /// Publishing allocates (payload copy), so a non-allocating
+    /// body cannot have enqueued bus cells — its scope-exit drain
+    /// is pure overhead when the deferred-dissolve frame is also
+    /// empty (fn exit is NOT a spec-required yield point; handler
+    /// exits / lifecycle transitions / sleep still drain). The
+    /// drain was the entire measured gap on the fn_call bench:
+    /// C/Rust/Go agree at ~0.77 ns/call, Hale paid 1.93 ns — a
+    /// push/pop + global load + lotus_bus_queue_drain call per
+    /// invocation of a two-instruction function.
+    pub(crate) current_fn_skip_exit_drain: bool,
     di: Option<DiState<'ctx>>,
     /// Per-statement debug-location stack: (function the location
     /// was set in, the location live before this statement). The
@@ -3295,6 +3308,17 @@ struct AllocCtx<'a> {
     /// the read possibly-allocating (the safe default; a false
     /// non-allocating would leak).
     param_field_numeric: &'a BTreeMap<String, BTreeSet<String>>,
+    /// Fn-pointer PARAMS with a numeric-scalar declared return
+    /// (2026-07-02, fn-call protocol shave): a call through one of
+    /// these allocates nothing FROM THE CALLER'S PERSPECTIVE — the
+    /// callee opens/destroys its own scratch off the threaded
+    /// caller arena, and a scalar return means no deep-copy lands
+    /// in the caller's arena. (If the callee publishes, the cells
+    /// wait for the enclosing cell's next drain point — fn exit is
+    /// not a spec-required yield point.) Lets callback-style code
+    /// (`fn outer(x: Int, g: fn(Int) -> Int)`) stay elidable
+    /// instead of paying subregion + drain per call.
+    fnptr_numeric_ret: &'a BTreeSet<String>,
 }
 
 /// `Int` / `Uint` / `Float` / `Duration` — the scalar types whose `+` is
@@ -3386,6 +3410,23 @@ fn param_field_numeric_map(
 /// numeric fns converge to non-allocating; it's sound because at the
 /// fixpoint every remaining fn's body is non-allocating with all of ITS
 /// callees non-allocating, so the set contains no allocator.
+/// Fn-pointer params whose declared return is a numeric scalar —
+/// `g: fn(Int) -> Int` — for the classifier's fnptr_numeric_ret set
+/// (2026-07-02 fn-call protocol shave).
+fn fnptr_numeric_param_set(params: &[Param]) -> BTreeSet<String> {
+    params
+        .iter()
+        .filter(|p| {
+            matches!(
+                &p.ty,
+                TypeExpr::Function { ret: Some(r), .. }
+                    if type_expr_is_numeric_scalar(r)
+            )
+        })
+        .map(|p| p.name.name.clone())
+        .collect()
+}
+
 fn compute_nonalloc_free_fns(
     items: &[TopDecl],
 ) -> (BTreeSet<String>, BTreeSet<String>) {
@@ -3419,6 +3460,7 @@ fn compute_nonalloc_free_fns(
                 // struct-typed params' fields are numeric scalars.
                 let param_field_numeric =
                     param_field_numeric_map(&f.params, &structs);
+                let fnptr_numeric_ret = fnptr_numeric_param_set(&f.params);
                 let ctx = AllocCtx {
                     nonalloc: &nonalloc,
                     numeric_ret: &numeric_ret,
@@ -3427,6 +3469,7 @@ fn compute_nonalloc_free_fns(
                     elidable_self_methods: &empty_self,
                     numeric_ret_self_methods: &empty_self,
                     param_field_numeric: &param_field_numeric,
+                    fnptr_numeric_ret: &fnptr_numeric_ret,
                 };
                 // Seed with the fn's numeric scalar params.
                 let seed: BTreeSet<String> = f
@@ -3572,6 +3615,8 @@ fn compute_elidable_methods(
                     // a `Sample` param) — `self.sum + s.value` is arithmetic.
                     let param_field_numeric =
                         param_field_numeric_map(&f.params, structs);
+                    let fnptr_numeric_ret =
+                        fnptr_numeric_param_set(&f.params);
                     let ctx = AllocCtx {
                         nonalloc: free_nonalloc,
                         numeric_ret: free_numeric_ret,
@@ -3580,6 +3625,7 @@ fn compute_elidable_methods(
                         elidable_self_methods: &elidable,
                         numeric_ret_self_methods: &numeric_ret_self,
                         param_field_numeric: &param_field_numeric,
+                        fnptr_numeric_ret: &fnptr_numeric_ret,
                     };
                     // Seed with the method's numeric scalar params.
                     let seed: BTreeSet<String> = f
@@ -3689,7 +3735,12 @@ fn expr_is_nonalloc_numeric(
         // returns a numeric scalar (`numeric_ret_self_methods`).
         Expr::Call { callee, args, .. } => {
             let callee_numeric = match callee.as_ref() {
-                Expr::Ident(id) => ctx.numeric_ret.contains(&id.name),
+                Expr::Ident(id) => {
+                    ctx.numeric_ret.contains(&id.name)
+                        // 2026-07-02: numeric-scalar-returning
+                        // fn-pointer param — see fnptr_numeric_ret.
+                        || ctx.fnptr_numeric_ret.contains(&id.name)
+                }
                 Expr::Field { receiver, name, .. }
                     if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
                 {
@@ -3861,7 +3912,15 @@ fn expr_definitely_non_allocating(
         // / unresolved callees likewise.
         Expr::Call { callee, args, .. } => {
             let callee_nonalloc = match callee.as_ref() {
-                Expr::Ident(id) => ctx.nonalloc.contains(&id.name),
+                Expr::Ident(id) => {
+                    ctx.nonalloc.contains(&id.name)
+                        // 2026-07-02: numeric-scalar-returning
+                        // fn-pointer param — the callee scratches off
+                        // the threaded caller arena and a scalar
+                        // return leaves nothing behind. See
+                        // fnptr_numeric_ret.
+                        || ctx.fnptr_numeric_ret.contains(&id.name)
+                }
                 Expr::Field { receiver, name, .. }
                     if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
                 {
@@ -4014,6 +4073,7 @@ pub(crate) fn locus_arena_elidable(l: &LocusDecl) -> bool {
         elidable_self_methods: &empty,
         numeric_ret_self_methods: &empty,
         param_field_numeric: &empty_pf,
+        fnptr_numeric_ret: &empty,
     };
     // All method-like bodies non-allocating.
     for m in &l.members {
@@ -5146,7 +5206,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // enqueued during the dissolves below is leaked (v0
         // limitation; realistic programs don't publish
         // during dissolve).
-        if drain_queue {
+        // 2026-07-02 fn-call protocol shave: a proven-non-allocating
+        // body can't have published (payload copies allocate), and an
+        // empty deferred frame means no dissolve needs a pre-drain —
+        // skip the per-call drain entirely. See
+        // `current_fn_skip_exit_drain`.
+        let frame_statically_empty = self
+            .deferred_dissolves
+            .last()
+            .map_or(true, |f| f.is_empty());
+        if drain_queue
+            && !(frame_statically_empty && self.current_fn_skip_exit_drain)
+        {
             self.emit_bus_drain()?;
         }
         let frame = self
@@ -10915,6 +10986,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.current_user_fn_ret = Some(sig.ret.clone());
         self.current_self = None;
         self.loops.clear();
+        // Fn-call protocol shave: non-allocating bodies can't publish,
+        // so their (empty-frame) scope-exit flushes skip the bus drain.
+        let prev_skip_drain = self.current_fn_skip_exit_drain;
+        self.current_fn_skip_exit_drain = sig.non_allocating;
         self.push_dissolve_frame();
 
         let ptr_t = self.context.ptr_type(AddressSpace::default());
@@ -11095,6 +11170,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // types), destroy the subregion, build_return.
         self.emit_fn_exit_epilogue(&sig)?;
 
+        self.current_fn_skip_exit_drain = prev_skip_drain;
         self.current_user_fn_caller_arena = None;
         self.current_user_fn_arena = None;
         self.current_user_fn_exit_bb = None;
@@ -24617,6 +24693,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .get(&cs.locus_name)
             .map(|(e, n)| (e, n))
             .unwrap_or((&empty_methods, &empty_methods));
+        let fnptr_numeric_ret = fnptr_numeric_param_set(params);
         let ctx = AllocCtx {
             nonalloc: &self.nonalloc_free_fns,
             numeric_ret: &self.nonalloc_free_fns_numeric_ret,
@@ -24625,6 +24702,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             elidable_self_methods,
             numeric_ret_self_methods,
             param_field_numeric: &param_field_numeric,
+            fnptr_numeric_ret: &fnptr_numeric_ret,
         };
         fn_body_definitely_non_allocating(&body.stmts, &ctx, &param_seed)
     }
