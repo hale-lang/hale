@@ -8,6 +8,20 @@ behavior.
 
 ## Unreleased
 
+- **@form iteration surface — `for e in m.entries` / `for x in
+  v.items`.** Hashmap iteration lowers to a cluster-aware
+  slot-cursor walk (`lotus_hashmap_iter_next`): O(cap) for a full
+  walk, where the index-based `key_at`/`entry_at` pair rescans from
+  slot 0 per element (O(cap×len) — the quadratic behavior that put
+  form_hashmap_walk_large 13× behind Rust). Vec iteration is a fully
+  inline buf walk with zero per-element calls. Loop var is a copy
+  (hashmap) / reference-to-cell (vec struct cells); mutation during
+  iteration is unsupported; break/continue work. Measured on
+  walk_large (100k entries): 1.22 ms → 0.30 ms — 4× faster and now
+  1.9× ahead of the hand-written C comparator; Rust's SwissTable
+  iterator still leads 3.4× (one C call per element remains — a
+  batched iterator is the follow-on). Ring iteration deferred.
+
 - **Fn-call protocol at C shape — exit-drain elision + fn-pointer
   classifier refinement.** Two changes driven by the first Rust/C bench
   comparators (fn_call/fn_modular ratio was 0.40 vs all three):

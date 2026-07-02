@@ -773,6 +773,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         arena_global.set_initializer(&ptr_t.const_null());
         arena_global.set_linkage(inkwell::module::Linkage::Internal);
 
+        // 2026-07-02 @form(hashmap) iteration surface:
+        // declare i64 @lotus_hashmap_iter_next(ptr map, i64 start_slot, ptr out_entry)
+        // Cluster-aware step for `for e in m.entries` — returns the
+        // next occupied slot index ≥ start_slot (copying the cell
+        // into out_entry) or -1 at end. O(cap) per full walk.
+        let hashmap_iter_next_ty = i64_t.fn_type(
+            &[ptr_t.into(), i64_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_hashmap_iter_next",
+            hashmap_iter_next_ty,
+            None,
+        );
+
         // m26 + m28b stage 1: cooperative scheduler — bus dispatch queue.
         // declare ptr  @lotus_bus_queue_create()
         // declare void @lotus_bus_queue_enqueue(ptr q, ptr handler, ptr self,

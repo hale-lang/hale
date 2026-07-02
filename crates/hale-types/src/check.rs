@@ -6647,7 +6647,30 @@ impl<'a> Checker<'a> {
             Stmt::If(if_stmt) => self.check_if(if_stmt),
             Stmt::Match(m) => self.check_match(m),
             Stmt::For { name, iter, body, .. } => {
-                let _ = self.check_expr(iter);
+                // 2026-07-02 @form iteration surface: `for e in
+                // m.entries` (hashmap) / `for x in v.items` (vec).
+                // `entries`/`items` are pseudo-fields the generic
+                // field check would reject — when the receiver is a
+                // locus, check only the receiver and bind the loop
+                // var Unknown (codegen resolves the cell type and
+                // rejects non-form receivers with a focused error).
+                let mut handled = false;
+                if let Expr::Field { receiver, name: fname, .. } = iter {
+                    if fname.name == "entries" || fname.name == "items" {
+                        let recv_ty = self.check_expr(receiver);
+                        if let Ty::Named(ln) = &recv_ty {
+                            if matches!(
+                                self.top.lookup(ln),
+                                Some(TopSymbol::Locus(_))
+                            ) {
+                                handled = true;
+                            }
+                        }
+                    }
+                }
+                if !handled {
+                    let _ = self.check_expr(iter);
+                }
                 self.locals.push();
                 self.locals.insert(&name.name, LocalSym { ty: Ty::Unknown, is_mut: false });
                 self.check_block(body);

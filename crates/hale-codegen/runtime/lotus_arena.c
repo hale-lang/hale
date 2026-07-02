@@ -3998,6 +3998,72 @@ static size_t lotus_hashmap_resolve_index_slot_striped(lotus_hashmap_t *m,
     return m->cap;
 }
 
+/* 2026-07-02 iteration surface: cluster-aware step. Scan slots from
+ * `start_slot` for the next occupied cell, copy its value (the whole
+ * cell struct) into `out_entry`, and return the slot index — the
+ * caller's `for e in m.entries` loop resumes at +1. Returns -1 past
+ * the end. A full walk is O(cap) TOTAL; the index-based
+ * key_at/entry_at resolve "the i-th occupied slot" by rescanning
+ * from slot 0 every call, making a naive walk O(cap × len) — the
+ * quadratic behavior the form_hashmap_walk_large bench measured at
+ * 13× behind Rust's native iterator.
+ *
+ * Occupancy: plain/serialized mark occupied with byte 1;
+ * striped/lockfree publish with COMMITTED(2) (CLAIMED means a
+ * writer holds the slot — skip it; TOMBSTONE is removed). Locking
+ * mirrors value_at per discipline. Mutating the map from the loop
+ * body is not supported (a grow rehashes slots under the cursor);
+ * the copied-out entry keeps reads safe either way. */
+int64_t lotus_hashmap_iter_next(void *map_ptr, int64_t start_slot,
+                                void *out_entry) {
+    if (!map_ptr || !out_entry || start_slot < 0) return -1;
+    lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
+    size_t es = lotus_hashmap_entry_size(m);
+    int64_t found = -1;
+
+    if (m->sync_mode == LOTUS_HASHMAP_SYNC_LOCKFREE) {
+        lotus_hashmap_lf_enter(m);
+        for (size_t s = (size_t)start_slot; s < m->cap; s++) {
+            char *slot = m->slots + s * es;
+            unsigned char occ =
+                __atomic_load_n((unsigned char *)slot, __ATOMIC_ACQUIRE);
+            if (occ == LOTUS_CELL_COMMITTED) {
+                memcpy(out_entry, slot + 1 + m->key_size, m->value_size);
+                found = (int64_t)s;
+                break;
+            }
+        }
+        lotus_hashmap_lf_exit(m);
+        return found;
+    }
+    if (m->sync_mode == LOTUS_HASHMAP_SYNC_STRIPED) {
+        pthread_rwlock_rdlock(m->mu_grow);
+        for (size_t s = (size_t)start_slot; s < m->cap; s++) {
+            char *slot = m->slots + s * es;
+            unsigned char occ =
+                __atomic_load_n((unsigned char *)slot, __ATOMIC_ACQUIRE);
+            if (occ == LOTUS_CELL_COMMITTED) {
+                memcpy(out_entry, slot + 1 + m->key_size, m->value_size);
+                found = (int64_t)s;
+                break;
+            }
+        }
+        pthread_rwlock_unlock(m->mu_grow);
+        return found;
+    }
+    lotus_hashmap_lock(m);
+    for (size_t s = (size_t)start_slot; s < m->cap; s++) {
+        char *slot = m->slots + s * es;
+        if (*(unsigned char *)slot) {
+            memcpy(out_entry, slot + 1 + m->key_size, m->value_size);
+            found = (int64_t)s;
+            break;
+        }
+    }
+    lotus_hashmap_unlock(m);
+    return found;
+}
+
 int lotus_hashmap_key_at(void *map_ptr, int64_t i, void *out_key) {
     if (!map_ptr || !out_key || i < 0) return 0;
     lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;

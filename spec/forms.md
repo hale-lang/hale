@@ -632,10 +632,20 @@ not behave the same under `@form(vec)`.
 Spec-level questions not blocking the current `@form(vec)`
 contract; will be answered as workloads surface demand.
 
-1. **Iteration surface.** A `for x in vec.items { ... }` form
-   is natural, but the loop construct's lowering depends on
-   what the existing `for` over F.22 heap slots does. Deferred
-   until the implementation pass.
+1. **Iteration surface — SHIPPED 2026-07-02.** `for x in
+   v.items { ... }` iterates a `@form(vec)` (fully inline buf
+   walk: len + buf loaded once, one GEP + load per element, no
+   C calls — vectorizes for scalar cells) and `for e in
+   m.entries { ... }` iterates a `@form(hashmap)` (cluster-aware
+   slot-cursor walk via `lotus_hashmap_iter_next`: O(cap) for a
+   full walk, where the index-based `key_at`/`entry_at` rescan
+   from slot 0 per call — O(cap×len)). The loop variable is a
+   per-iteration COPY for hashmap entries and a REFERENCE to the
+   vec-owned cell for vec struct cells (scalars are copies by
+   value). Mutating the form inside the body is unsupported (a
+   grow rehashes/reallocs under the cursor). `break`/`continue`
+   work. Ring-buffer iteration is still deferred (wrap-aware
+   oldest-first walk).
 2. **Bulk operations.** `extend(other: @form(vec))`, `clear()`,
    `truncate(n: Int)`. Useful but not foundational. Add after
    the core methods land.
