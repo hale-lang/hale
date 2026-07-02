@@ -1509,6 +1509,43 @@ pub enum Stmt {
     Expr(Expr),
 }
 
+impl Stmt {
+    /// The statement's source span. Used by DWARF line-table
+    /// emission (debug story stage 2) and available to any
+    /// diagnostic that has a Stmt in hand. Block statements
+    /// report their first inner statement's span (a bare `{ }`
+    /// carries no span of its own); an empty block falls back
+    /// to its tail expression or a zero span.
+    pub fn span(&self) -> Span {
+        match self {
+            Stmt::Let { span, .. }
+            | Stmt::LetTuple { span, .. }
+            | Stmt::Assign { span, .. }
+            | Stmt::For { span, .. }
+            | Stmt::While { span, .. }
+            | Stmt::Return(_, span)
+            | Stmt::Break(span)
+            | Stmt::Continue(span)
+            | Stmt::Fail { span, .. }
+            | Stmt::Yield(span)
+            | Stmt::Terminate(span)
+            | Stmt::Recovery { span, .. }
+            | Stmt::Violate { span, .. }
+            | Stmt::Send { span, .. }
+            | Stmt::ShmWrite { span, .. } => *span,
+            Stmt::If(i) => i.span,
+            Stmt::Match(m) => m.span,
+            Stmt::Expr(e) => e.span(),
+            Stmt::Block(b) => b
+                .stmts
+                .first()
+                .map(|s| s.span())
+                .or_else(|| b.tail.as_ref().map(|t| t.span()))
+                .unwrap_or(Span::new(0, 0)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Copy)]
 pub enum AssignOp {
     Eq,

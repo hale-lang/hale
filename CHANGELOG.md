@@ -8,6 +8,31 @@ behavior.
 
 ## Unreleased
 
+- **DWARF debug info — `hale build` binaries now carry line tables for
+  Hale code and full debug info for the runtime.** Every statement gets
+  a file:line location (emission kind LineTablesOnly, DWARF 5); the
+  lotus runtime TUs compile with `-g`. gdb sets breakpoints on `.hl`
+  lines, backtraces show `FxL.at () at inlarr.hl:7` with inline frames,
+  addr2line resolves Hale addresses, and ASAN reports carry real
+  file:line through both Hale and runtime frames. Zero runtime cost —
+  frame pointers are deliberately NOT forced (measured +22% on
+  bus_dispatch from `-fno-omit-frame-pointer` on the runtime's
+  dispatch fast paths); profile with `perf record --call-graph dwarf`.
+  Opt out with `LOTUS_NO_DEBUGINFO=1`. Stdlib and synthesized `__*`
+  helper bodies carry no line info (their spans live in other
+  coordinate spaces); `__lib_*` cross-seed imports keep theirs. The
+  module is verified whenever debug info is enabled, so a codegen
+  location bug surfaces as a readable error (dumped to a .ll file)
+  instead of a backend abort. Implementation notes: statement
+  locations are managed by a save/restore stack that never restores a
+  location across a function boundary (mid-expression fn synthesis),
+  and `alloca_in_entry`'s `position_before` — which silently ADOPTS
+  the target instruction's empty location per LLVM's SetInsertPoint
+  semantics — re-asserts the statement location after repositioning.
+  Inkwell's `get_current_debug_location` is avoided entirely (its
+  legacy value-based API materializes an empty MDNode for "none",
+  which then verifier-fails as `!dbg !{}`).
+
 - **Inline fixed arrays — scalar `[T; N]` fields are now laid out inline
   in their containing struct.** Previously every array field lowered to
   an out-of-line arena pointer, so a "flat" struct with an array field

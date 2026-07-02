@@ -1461,6 +1461,31 @@ fn run_build(target: &Path) -> ExitCode {
     );
     options.link_libs.extend(toml_opts.link_libs);
     options.csrc_files.extend(toml_opts.csrc_files);
+    // 2026-07-01 debug story stage 2: DWARF line tables, ON by
+    // default (debug sections cost binary bytes, zero runtime
+    // speed). LOTUS_NO_DEBUGINFO=1 opts out. The source table is
+    // the same (base, path, len) file map diagnostics demux with,
+    // plus each file's text for line-start computation.
+    let no_dbg = std::env::var("LOTUS_NO_DEBUGINFO")
+        .map(|v| v == "1" || v == "true" || v == "TRUE")
+        .unwrap_or(false);
+    if !no_dbg {
+        options.debug = Some(hale_codegen::DebugSources {
+            files: file_bases
+                .iter()
+                .filter_map(|(base, path, len)| {
+                    sources.get(path).map(|text| {
+                        hale_codegen::DebugSourceFile {
+                            base: *base,
+                            len: *len,
+                            path: path.clone(),
+                            text: text.clone(),
+                        }
+                    })
+                })
+                .collect(),
+        });
+    }
     match hale_codegen::build_executable_with_options(
         &program,
         &output,

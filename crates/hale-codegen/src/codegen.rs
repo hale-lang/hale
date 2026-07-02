@@ -519,6 +519,32 @@ pub struct BuildOptions {
     /// Backend CPU tuning for the native target. Ignored on wasm32
     /// (always generic).
     pub target_cpu: TargetCpu,
+    /// 2026-07-01 debug story stage 2: when present, emit DWARF
+    /// line tables (functions + statement locations) for the Hale
+    /// code, mapping the program's process-wide byte spans back to
+    /// (file, line) via these per-file base offsets + source texts.
+    /// The CLI populates this from its parse-time file table;
+    /// harness callers (tests) leave it None and get no Hale-side
+    /// DWARF (the runtime C always carries -g regardless).
+    pub debug: Option<DebugSources>,
+}
+
+/// The per-build source table for DWARF emission: each entry is one
+/// parsed file's (virtual base offset, byte length, path, text) —
+/// the same coordinate space `parse_source_at` shifts spans into,
+/// so `span.start` demultiplexes to a file by range and to a line
+/// by scanning that file's text.
+#[derive(Debug, Clone, Default)]
+pub struct DebugSources {
+    pub files: Vec<DebugSourceFile>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DebugSourceFile {
+    pub base: u32,
+    pub len: u32,
+    pub path: std::path::PathBuf,
+    pub text: String,
 }
 
 /// The compilation backend. `Native` is the host ELF/Mach-O path
@@ -1086,10 +1112,102 @@ pub fn build_executable_with_options(
         reclaim_fns: BTreeMap::new(),
         handler_reclaim_wrappers: BTreeMap::new(),
         vtables: BTreeMap::new(),
+        di: None,
+        di_loc_stack: Vec::new(),
+        di_current_loc: None,
     };
+
+    // 2026-07-01 debug story stage 2: DWARF line tables for the Hale
+    // code. Emission kind is LineTablesOnly — function names +
+    // file:line per statement — which is what perf flamegraphs,
+    // addr2line, ASAN reports, and gdb frame listings consume;
+    // variable info is a later stage. Native only (wasm DWARF is a
+    // separate story).
+    if !is_wasm {
+        if let Some(dbg) = &options.debug {
+            if !dbg.files.is_empty() {
+                let i32_t = cx.context.i32_type();
+                cx.module.add_basic_value_flag(
+                    "Debug Info Version",
+                    inkwell::module::FlagBehavior::Warning,
+                    i32_t.const_int(3, false),
+                );
+                cx.module.add_basic_value_flag(
+                    "Dwarf Version",
+                    inkwell::module::FlagBehavior::Warning,
+                    i32_t.const_int(5, false),
+                );
+                let entry = &dbg.files[0];
+                let (entry_name, entry_dir) = di_split_path(&entry.path);
+                let (dib, cu) = cx.module.create_debug_info_builder(
+                    true,
+                    // DW_LANG_C: the closest stable tag every DWARF
+                    // consumer understands; a registered Hale tag can
+                    // replace it without changing anything else here.
+                    inkwell::debug_info::DWARFSourceLanguage::C,
+                    &entry_name,
+                    &entry_dir,
+                    "hale",
+                    true,
+                    "",
+                    0,
+                    "",
+                    inkwell::debug_info::DWARFEmissionKind::LineTablesOnly,
+                    0,
+                    false,
+                    false,
+                    "",
+                    "",
+                );
+                let mut files = Vec::with_capacity(dbg.files.len());
+                for f in &dbg.files {
+                    let (name, dir) = di_split_path(&f.path);
+                    let difile = dib.create_file(&name, &dir);
+                    // Precompute the byte offset of each line start so
+                    // span→line is a binary search, not a rescan.
+                    let mut line_starts: Vec<u32> = vec![0];
+                    for (i, b) in f.text.bytes().enumerate() {
+                        if b == b'\n' {
+                            line_starts.push(i as u32 + 1);
+                        }
+                    }
+                    files.push(DiFileEntry {
+                        base: f.base,
+                        len: f.len,
+                        file: difile,
+                        line_starts,
+                    });
+                }
+                files.sort_by_key(|e| e.base);
+                cx.di = Some(DiState { builder: dib, cu, files });
+            }
+        }
+    }
 
     cx.declare_builtins();
     cx.lower_program()?;
+
+    // Debug info must be finalized before the module is verified /
+    // optimized — unresolved temporary MDNodes otherwise abort the
+    // pass pipeline.
+    if let Some(di) = &cx.di {
+        di.builder.finalize();
+        // DWARF emission is the one feature where a codegen mistake
+        // (a location scoped to the wrong subprogram, a call missing
+        // a !dbg in a debug-info'd function) surfaces as a hard LLVM
+        // abort deep in the backend. Verify the module here so the
+        // failure is a readable CodegenError instead.
+        if let Err(msg) = cx.module.verify() {
+            let dump = std::env::temp_dir().join("hale-di-verify-fail.ll");
+            let _ = cx.module.print_to_file(&dump);
+            return Err(CodegenError::LlvmEmit(format!(
+                "module verification failed with debug info enabled \
+                 (module dumped to {}): {}",
+                dump.display(),
+                msg.to_string()
+            )));
+        }
+    }
 
     // Emit object file, then link via clang. Target machine was
     // created above (before lowering) so its datalayout was set on
@@ -1198,6 +1316,12 @@ pub fn build_executable_with_options(
             "nounwind",
         );
         let nounwind = cx.context.create_enum_attribute(nounwind_kind, 0);
+        // Frame pointers are deliberately NOT forced (debug story
+        // stage 1 measured +22% on bus_dispatch from frame pointers
+        // on the hot C fast paths; the Hale-side attribute has the
+        // same cost profile). DWARF line tables + `perf record
+        // --call-graph dwarf` give full stacks without the register
+        // tax.
         let mut f = cx.module.get_first_function();
         while let Some(func) = f {
             if func.count_basic_blocks() > 0 {
@@ -1262,6 +1386,17 @@ pub fn build_executable_with_options(
     // (they gate the Hale-module emit format).
     let prefetch_disabled = env_flag("LOTUS_DISABLE_PREFETCH");
     let mut rt_cflags: Vec<String> = Vec::new();
+    // 2026-07-01 debug story stage 1: the runtime TUs always carry
+    // DWARF (-g). It costs zero runtime speed (debug sections aren't
+    // loaded at run time) and gives perf / gdb / ASAN full file:line
+    // through every lotus_* frame. Frame pointers are deliberately
+    // NOT forced — measured +22% on bus_dispatch (the direct-dispatch
+    // loop's per-iteration lotus_bus_static_* fast-path calls pay the
+    // push/pop + lost register). Profile with DWARF-based unwinding
+    // instead: `perf record --call-graph dwarf`. -g is part of the
+    // content-addressed cache key, so cached objects refresh
+    // automatically.
+    rt_cflags.push("-g".into());
     if lotus_tsan {
         // TSAN: -O1 keeps reports readable. The wrap-malloc shim
         // collides with TSAN's allocator interceptor, so the wrapper
@@ -2775,6 +2910,68 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// fat-pointer build site can take its address without a
     /// re-emit.
     vtables: BTreeMap<(String, String), inkwell::values::GlobalValue<'ctx>>,
+    /// 2026-07-01 debug story stage 2: DWARF line-table emission
+    /// state. None when the build carries no source table (test
+    /// harness) or targets wasm.
+    di: Option<DiState<'ctx>>,
+    /// Per-statement debug-location stack: (function the location
+    /// was set in, the location live before this statement). The
+    /// lower_stmt wrapper pushes on entry / pops on exit; the pop
+    /// restores the outer statement's location ONLY when still
+    /// positioned in the same function — a cross-function pop
+    /// (returning out of a mid-expression fn synthesis, e.g. a
+    /// generic monomorph body) unsets instead, so a location can
+    /// never attach to instructions of a function whose subprogram
+    /// it doesn't belong to (an LLVM verifier error).
+    di_loc_stack: Vec<(
+        inkwell::values::FunctionValue<'ctx>,
+        Option<inkwell::debug_info::DILocation<'ctx>>,
+    )>,
+    /// Shadow of the builder's current debug location. Inkwell's
+    /// `get_current_debug_location` routes through the LEGACY
+    /// value-based LLVM API, which materializes an EMPTY MDNode for
+    /// "no location" instead of returning null — restoring that
+    /// yields `!dbg !{}` on every subsequent instruction (an
+    /// "invalid !dbg metadata attachment" verifier error). All
+    /// location mutations go through di_enter_stmt/di_exit_stmt, so
+    /// this field is authoritative.
+    di_current_loc: Option<inkwell::debug_info::DILocation<'ctx>>,
+}
+
+/// DWARF emission state (debug story stage 2). One DIBuilder +
+/// compile unit per module; per-file DIFile handles plus the
+/// precomputed line-start offsets used to map process-wide span
+/// bytes to (file, line, col).
+pub(crate) struct DiState<'ctx> {
+    pub(crate) builder: inkwell::debug_info::DebugInfoBuilder<'ctx>,
+    #[allow(dead_code)]
+    pub(crate) cu: inkwell::debug_info::DICompileUnit<'ctx>,
+    pub(crate) files: Vec<DiFileEntry<'ctx>>,
+}
+
+pub(crate) struct DiFileEntry<'ctx> {
+    pub(crate) base: u32,
+    pub(crate) len: u32,
+    pub(crate) file: inkwell::debug_info::DIFile<'ctx>,
+    /// Byte offset (file-local) of each line's first byte; index i
+    /// is line i+1's start. Binary-searchable.
+    pub(crate) line_starts: Vec<u32>,
+}
+
+/// Split a path into (file name, directory) strings for DIFile
+/// creation. Falls back to the display string + "." when the path
+/// has no parent.
+fn di_split_path(p: &std::path::Path) -> (String, String) {
+    let name = p
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.display().to_string());
+    let dir = p
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map(|d| d.display().to_string())
+        .unwrap_or_else(|| ".".to_string());
+    (name, dir)
 }
 
 /// m60: paired serialize / deserialize fns synthesized per bus
@@ -12352,7 +12549,190 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.global_string(&name)
     }
 
+    /// 2026-07-01 debug story stage 2: per-statement DWARF line
+    /// locations. The wrapper (a) resolves the statement's span to
+    /// (file, line, col), (b) lazily attaches a DISubprogram to the
+    /// function currently being emitted into (derived from the
+    /// builder's insert block, NOT current_fn — so the scope always
+    /// matches the actual emission target), (c) sets the builder's
+    /// debug location for the statement's instructions, and (d) on
+    /// exit restores the enclosing statement's location — but only
+    /// when still positioned in the same function; a cross-function
+    /// pop (a mid-expression fn synthesis returned) unsets instead,
+    /// so a location never attaches to a foreign function's
+    /// instructions (LLVM verifier: "!dbg attachment points at
+    /// wrong subprogram"). No-op end to end when `di` is None.
     pub(crate) fn lower_stmt(
+        &mut self,
+        stmt: &Stmt,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        if self.di.is_none() {
+            return self.lower_stmt_inner(stmt, scope);
+        }
+        let entered = self.di_enter_stmt(stmt.span());
+        let r = self.lower_stmt_inner(stmt, scope);
+        if entered {
+            self.di_exit_stmt();
+        }
+        r
+    }
+
+    /// Set the debug location for a statement about to lower.
+    /// Returns true iff a stack frame was pushed (di_exit_stmt must
+    /// run). Skips stdlib-mangled functions (their spans live in the
+    /// separately-parsed STDLIB_AP_SOURCE coordinate space, which
+    /// overlaps user file ranges) and spans outside every known
+    /// file.
+    fn di_enter_stmt(&mut self, span: hale_syntax::Span) -> bool {
+        use inkwell::debug_info::{AsDIScope, DIFlagsConstants};
+        let Some(cur_bb) = self.builder.get_insert_block() else {
+            return false;
+        };
+        let Some(func) = cur_bb.get_parent() else {
+            return false;
+        };
+        let fn_name = func.get_name().to_string_lossy().into_owned();
+        // No debug info for (a) stdlib bodies — their spans live in
+        // the separately-parsed STDLIB_AP_SOURCE coordinate space,
+        // which overlaps user file ranges — and (b) synthesized
+        // `__*` helpers (json parsers / __replace_all / serializers /
+        // wrappers), whose ASTs carry copied or zero spans that map
+        // to garbage lines AND whose half-mapped bodies trip the
+        // "inlinable call needs !dbg" verifier rule. `__lib_*`
+        // import mangles are REAL user code parsed at real file
+        // bases and keep their debug info. Any location still live
+        // from an earlier statement must not leak onto skipped
+        // functions' instructions.
+        let skip_di = (fn_name.starts_with("__")
+            && !fn_name.starts_with("__lib_"))
+            || fn_name.starts_with("__Std")
+            || fn_name.starts_with("__std");
+        if skip_di {
+            if self.di_current_loc.is_some() {
+                self.builder.unset_current_debug_location();
+                self.di_current_loc = None;
+            }
+            return false;
+        }
+        let Some((file_idx, line, col)) = self.di_locate(span) else {
+            if std::env::var("LOTUS_DI_TRACE").is_ok() {
+                eprintln!(
+                    "di: unmapped span {}..{} in fn {}",
+                    span.start.0, span.end.0, fn_name
+                );
+            }
+            if self.di_current_loc.is_some() {
+                self.builder.unset_current_debug_location();
+                self.di_current_loc = None;
+            }
+            return false;
+        };
+        let di = self.di.as_ref().expect("di_enter_stmt gated on di");
+        let sp = match func.get_subprogram() {
+            Some(sp) => sp,
+            None => {
+                let file = di.files[file_idx].file;
+                let fn_ty = di.builder.create_subroutine_type(
+                    file,
+                    None,
+                    &[],
+                    inkwell::debug_info::DIFlags::PUBLIC,
+                );
+                let sp = di.builder.create_function(
+                    file.as_debug_info_scope(),
+                    &fn_name,
+                    None,
+                    file,
+                    line,
+                    fn_ty,
+                    // local_to_unit=false: symbols are external-ish;
+                    // definition=true; scope_line = first stmt's line
+                    // (close enough to the decl line for v1).
+                    false,
+                    true,
+                    line,
+                    inkwell::debug_info::DIFlags::PUBLIC,
+                    true,
+                );
+                func.set_subprogram(sp);
+                sp
+            }
+        };
+        let prev = self.di_current_loc;
+        let loc = di.builder.create_debug_location(
+            self.context,
+            line,
+            col,
+            sp.as_debug_info_scope(),
+            None,
+        );
+        self.builder.set_current_debug_location(loc);
+        self.di_current_loc = Some(loc);
+        if std::env::var("LOTUS_DI_TRACE").is_ok() {
+            eprintln!("di: SET {} line {} col {}", fn_name, line, col);
+        }
+        self.di_loc_stack.push((func, prev));
+        true
+    }
+
+    /// Pop the per-statement location frame pushed by di_enter_stmt.
+    fn di_exit_stmt(&mut self) {
+        let Some((frame_fn, prev)) = self.di_loc_stack.pop() else {
+            return;
+        };
+        let cur_fn = self
+            .builder
+            .get_insert_block()
+            .and_then(|b| b.get_parent());
+        if cur_fn == Some(frame_fn) {
+            match prev {
+                Some(loc) => {
+                    self.builder.set_current_debug_location(loc);
+                    self.di_current_loc = Some(loc);
+                }
+                None => {
+                    self.builder.unset_current_debug_location();
+                    self.di_current_loc = None;
+                }
+            }
+        } else {
+            // Returned into a different function than the one this
+            // statement's location was set in (mid-expression fn
+            // synthesis boundary). Never restore across functions.
+            self.builder.unset_current_debug_location();
+            self.di_current_loc = None;
+        }
+    }
+
+    /// Map a process-wide span start to (file index, 1-based line,
+    /// 1-based col) against the debug source table. None when the
+    /// span falls outside every file range (stdlib / synthesized
+    /// spans) or di is off.
+    fn di_locate(&self, span: hale_syntax::Span) -> Option<(usize, u32, u32)> {
+        let di = self.di.as_ref()?;
+        let off = span.start.0;
+        if span.start.0 == 0 && span.end.0 == 0 {
+            return None; // synthesized zero span
+        }
+        let idx = di
+            .files
+            .partition_point(|f| f.base <= off)
+            .checked_sub(1)?;
+        let f = di.files.get(idx)?;
+        if off < f.base || off >= f.base.saturating_add(f.len) {
+            return None;
+        }
+        let local = off - f.base;
+        let line_idx = f
+            .line_starts
+            .partition_point(|&s| s <= local)
+            .saturating_sub(1);
+        let col = local - f.line_starts[line_idx] + 1;
+        Some((idx, line_idx as u32 + 1, col))
+    }
+
+    fn lower_stmt_inner(
         &mut self,
         stmt: &Stmt,
         scope: &mut Scope<'ctx>,
@@ -16121,6 +16501,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         if let Some(bb) = saved {
             self.builder.position_at_end(bb);
+        }
+        // LLVM's SetInsertPoint(Instruction*) — the position_before
+        // above — ADOPTS that instruction's debug location, which for
+        // an entry-block alloca is empty. Re-assert the statement's
+        // location so the caller's remaining instructions keep their
+        // line info (debug story stage 2).
+        if let Some(loc) = self.di_current_loc {
+            self.builder.set_current_debug_location(loc);
         }
         Ok(slot)
     }
@@ -24552,6 +24940,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         if let Some(bb) = saved {
             self.builder.position_at_end(bb);
+        }
+        // position_before adopts the target instruction's (empty)
+        // debug location — re-assert ours (debug story stage 2).
+        if let Some(loc) = self.di_current_loc {
+            self.builder.set_current_debug_location(loc);
         }
         Ok(slot)
     }
