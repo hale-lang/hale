@@ -4064,6 +4064,90 @@ int64_t lotus_hashmap_iter_next(void *map_ptr, int64_t start_slot,
     return found;
 }
 
+/* 2026-07-03 batched iteration: fill up to `max` occupied-slot value
+ * copies into out_buf (stride = value_size) starting the scan at
+ * start_slot; return the count filled and write the resume slot to
+ * *out_next (-1 when the scan is exhausted). One lock/epoch per
+ * BATCH instead of per element — the follow-up to iter_next that
+ * closes the per-element call overhead against native iterators.
+ * Occupancy/locking discipline mirrors iter_next. */
+int64_t lotus_hashmap_iter_batch(void *map_ptr, int64_t start_slot,
+                                 void *out_buf, int64_t max,
+                                 int64_t *out_next) {
+    if (!map_ptr || !out_buf || !out_next || start_slot < 0 || max <= 0) {
+        if (out_next) *out_next = -1;
+        return 0;
+    }
+    lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
+    size_t es = lotus_hashmap_entry_size(m);
+    int64_t n = 0;
+    size_t s = (size_t)start_slot;
+    char *dst = (char *)out_buf;
+    *out_next = -1;
+
+    if (m->sync_mode == LOTUS_HASHMAP_SYNC_LOCKFREE
+        || m->sync_mode == LOTUS_HASHMAP_SYNC_STRIPED) {
+        int lf = (m->sync_mode == LOTUS_HASHMAP_SYNC_LOCKFREE);
+        if (lf) lotus_hashmap_lf_enter(m);
+        else pthread_rwlock_rdlock(m->mu_grow);
+        for (; s < m->cap && n < max; s++) {
+            char *slot = m->slots + s * es;
+            unsigned char occ =
+                __atomic_load_n((unsigned char *)slot, __ATOMIC_ACQUIRE);
+            if (occ == LOTUS_CELL_COMMITTED) {
+                memcpy(dst, slot + 1 + m->key_size, m->value_size);
+                dst += m->value_size;
+                n++;
+            }
+        }
+        if (s < m->cap) *out_next = (int64_t)s;
+        if (lf) lotus_hashmap_lf_exit(m);
+        else pthread_rwlock_unlock(m->mu_grow);
+        return n;
+    }
+    lotus_hashmap_lock(m);
+    for (; s < m->cap && n < max; s++) {
+        char *slot = m->slots + s * es;
+        if (*(unsigned char *)slot) {
+            memcpy(dst, slot + 1 + m->key_size, m->value_size);
+            dst += m->value_size;
+            n++;
+        }
+    }
+    if (s < m->cap) *out_next = (int64_t)s;
+    lotus_hashmap_unlock(m);
+    return n;
+}
+
+/* Pointer-mode batch for PLAIN (sync = none, single-pool) maps:
+ * fill out_buf with up to `max` pointers to the occupied slots'
+ * VALUE bytes — no copying at all. Sound only where codegen emits
+ * it: unsynced maps have no concurrent writers, and mutating the
+ * map inside an iteration body is contractually unsupported (the
+ * batched value-copy variant covers synced maps). */
+int64_t lotus_hashmap_iter_batch_ptrs(void *map_ptr, int64_t start_slot,
+                                      void *out_buf, int64_t max,
+                                      int64_t *out_next) {
+    if (!map_ptr || !out_buf || !out_next || start_slot < 0 || max <= 0) {
+        if (out_next) *out_next = -1;
+        return 0;
+    }
+    lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
+    size_t es = lotus_hashmap_entry_size(m);
+    int64_t n = 0;
+    size_t s = (size_t)start_slot;
+    void **dst = (void **)out_buf;
+    *out_next = -1;
+    for (; s < m->cap && n < max; s++) {
+        char *slot = m->slots + s * es;
+        if (*(unsigned char *)slot) {
+            dst[n++] = slot + 1 + m->key_size;
+        }
+    }
+    if (s < m->cap) *out_next = (int64_t)s;
+    return n;
+}
+
 int lotus_hashmap_key_at(void *map_ptr, int64_t i, void *out_key) {
     if (!map_ptr || !out_key || i < 0) return 0;
     lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;

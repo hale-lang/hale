@@ -788,6 +788,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
+        // 2026-07-03 batched hashmap iteration:
+        // declare i64 @lotus_hashmap_iter_batch(ptr map, i64 start,
+        //     ptr out_buf, i64 max, ptr out_next)
+        let hashmap_iter_batch_ty = i64_t.fn_type(
+            &[
+                ptr_t.into(),
+                i64_t.into(),
+                ptr_t.into(),
+                i64_t.into(),
+                ptr_t.into(),
+            ],
+            false,
+        );
+        self.module.add_function(
+            "lotus_hashmap_iter_batch",
+            hashmap_iter_batch_ty,
+            None,
+        );
+        // Pointer-mode sibling for plain (sync = none) maps.
+        self.module.add_function(
+            "lotus_hashmap_iter_batch_ptrs",
+            hashmap_iter_batch_ty,
+            None,
+        );
+
         // m26 + m28b stage 1: cooperative scheduler — bus dispatch queue.
         // declare ptr  @lotus_bus_queue_create()
         // declare void @lotus_bus_queue_enqueue(ptr q, ptr handler, ptr self,

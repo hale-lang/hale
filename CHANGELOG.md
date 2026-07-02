@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **Batched @form(hashmap) iteration — walk_large 0.30 → 0.82 vs
+  Rust.** `for e in m.entries` now fills a 64-entry stack batch per
+  C call instead of one call per element: plain (sync = none,
+  single-pool) maps take a POINTER-mode batch (zero copies — the
+  loop var references slot storage directly; sound because unsynced
+  maps have no concurrent writers and mutation-during-iteration is
+  already contractually unsupported), synced maps copy values out
+  under one lock/epoch per batch. 100k-entry walk: 301 µs → 109 µs
+  (and 5.3× ahead of the hand-written C comparator). The journey
+  from the original key_at walk: 1.31 ms → 109 µs, 12×.
+
+
 Behavior changes by release. The canonical spec lives in
 [`spec/`](./spec/) — each file there represents *current*
 behavior.

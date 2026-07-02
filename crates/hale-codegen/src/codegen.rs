@@ -16093,12 +16093,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// 2026-07-02 @form(hashmap) iteration: `for e in m.entries`.
-    /// Lowers to a slot-cursor loop over `lotus_hashmap_iter_next`
-    /// — each call scans forward from the cursor for the next
-    /// occupied slot and copies the cell into a loop-local alloca,
-    /// so a full walk is O(cap) TOTAL (the index-based key_at /
-    /// entry_at pair rescans from slot 0 per element: O(cap×len)).
-    /// The binding is a per-iteration copy of the cell struct.
+    /// 2026-07-03 BATCHED: one `lotus_hashmap_iter_batch` call fills
+    /// up to 64 cell copies into a stack buffer (one lock/epoch per
+    /// batch), and the inner loop walks the buffer with zero calls —
+    /// closing the per-element C-call overhead vs native iterators.
+    /// The binding is a per-iteration reference into the batch
+    /// buffer (already a copy of the cell). Mutating the map inside
+    /// the body remains unsupported.
     fn lower_for_hashmap_entries(
         &mut self,
         var_name: &Ident,
@@ -16130,12 +16131,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ))
             })?;
         let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
         let func = self
             .current_fn
             .expect("current_fn set while lowering a for");
 
-        // The inline hashmap struct's ADDRESS is the C-side handle
-        // (same convention as every lotus_hashmap_* call site).
         let map_handle = self
             .builder
             .build_struct_gep(
@@ -16145,9 +16145,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 "for.entries.map.ptr",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let entry_slot = self.alloca_in_entry(
-            cell_info.struct_ty.into(),
-            &format!("for.entries.{}", var_name.name),
+        const BATCH: u64 = 64;
+        // PLAIN (sync = none) maps take the pointer-mode batch —
+        // no per-entry copy; the loop var references slot storage
+        // directly (single pool ⇒ no concurrent writers; mutation
+        // during iteration is contractually unsupported either
+        // way). Synced maps copy values out under their lock.
+        let ptr_mode = slot.sync_mode == SyncMode::None;
+        let ptr_t_buf = self.context.ptr_type(AddressSpace::default());
+        let buf_ty: inkwell::types::ArrayType = if ptr_mode {
+            ptr_t_buf.array_type(BATCH as u32)
+        } else {
+            cell_info.struct_ty.array_type(BATCH as u32)
+        };
+        let buf = self.alloca_in_entry(
+            buf_ty.into(),
+            "for.entries.batch.buf",
         )?;
         let cursor_slot = self
             .builder
@@ -16156,92 +16169,158 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_store(cursor_slot, i64_t.const_int(0, false))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let count_slot = self
+            .builder
+            .build_alloca(i64_t, "for.entries.count")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let i_slot = self
+            .builder
+            .build_alloca(i64_t, "for.entries.i")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        let header_bb =
-            self.context.append_basic_block(func, "for.entries.cond");
+        let outer_bb =
+            self.context.append_basic_block(func, "for.entries.outer");
+        let fill_bb =
+            self.context.append_basic_block(func, "for.entries.fill");
+        let inner_bb =
+            self.context.append_basic_block(func, "for.entries.inner");
         let body_bb =
             self.context.append_basic_block(func, "for.entries.body");
+        let inc_bb =
+            self.context.append_basic_block(func, "for.entries.inc");
         let exit_bb =
             self.context.append_basic_block(func, "for.entries.end");
         self.builder
-            .build_unconditional_branch(header_bb)
+            .build_unconditional_branch(outer_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // header: slot = iter_next(map, cursor, &entry); advance the
-        // cursor to slot+1 (a `continue` re-enters here already
-        // advanced); loop while slot >= 0.
-        self.builder.position_at_end(header_bb);
+        // outer: exhausted when the cursor went negative.
+        self.builder.position_at_end(outer_bb);
         let cursor = self
             .builder
             .build_load(i64_t, cursor_slot, "for.entries.cursor.now")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .into_int_value();
-        let iter_fn = self
+        let live = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SGE,
+                cursor,
+                i64_t.const_int(0, false),
+                "for.entries.live",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(live, fill_bb, exit_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // fill: one batch call; count entries land in buf, the
+        // resume slot (or -1) lands in cursor_slot.
+        self.builder.position_at_end(fill_bb);
+        let batch_fn = self
             .module
-            .get_function("lotus_hashmap_iter_next")
-            .expect("lotus_hashmap_iter_next declared");
-        let found = self
+            .get_function(if ptr_mode {
+                "lotus_hashmap_iter_batch_ptrs"
+            } else {
+                "lotus_hashmap_iter_batch"
+            })
+            .expect("iter_batch declared");
+        let count = self
             .builder
             .build_call(
-                iter_fn,
-                &[map_handle.into(), cursor.into(), entry_slot.into()],
-                "for.entries.next",
+                batch_fn,
+                &[
+                    map_handle.into(),
+                    cursor.into(),
+                    buf.into(),
+                    i64_t.const_int(BATCH, false).into(),
+                    cursor_slot.into(),
+                ],
+                "for.entries.batch",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .try_as_basic_value()
             .left()
-            .expect("iter_next returns i64")
+            .expect("iter_batch returns i64")
             .into_int_value();
-        let next_cursor = self
-            .builder
-            .build_int_add(
-                found,
-                i64_t.const_int(1, false),
-                "for.entries.cursor.next",
-            )
+        self.builder
+            .build_store(count_slot, count)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
-            .build_store(cursor_slot, next_cursor)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let has = self
-            .builder
-            .build_int_compare(
-                inkwell::IntPredicate::SGE,
-                found,
-                i64_t.const_int(0, false),
-                "for.entries.has",
-            )
+            .build_store(i_slot, i64_t.const_int(0, false))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
-            .build_conditional_branch(has, body_bb, exit_bb)
+            .build_unconditional_branch(inner_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // body: bind the copied cell; `continue` → header (cursor
-        // already advanced), `break` → exit. TypeRef locals hold a
-        // POINTER alloca (the SSA repr of a struct value is a ptr),
-        // so bind an indirection slot pointing at the entry storage.
+        // inner: walk the buffer; done → back to outer.
+        self.builder.position_at_end(inner_bb);
+        let i = self
+            .builder
+            .build_load(i64_t, i_slot, "for.entries.i.now")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let cnt = self
+            .builder
+            .build_load(i64_t, count_slot, "for.entries.count.now")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let in_batch = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                i,
+                cnt,
+                "for.entries.in_batch",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(in_batch, body_bb, outer_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // body: bind the buffer slot's ADDRESS (TypeRef locals hold
+        // a pointer alloca; the buffer entry is already a copy).
         self.builder.position_at_end(body_bb);
-        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let elem_slot = unsafe {
+            self.builder
+                .build_in_bounds_gep(
+                    buf_ty,
+                    buf,
+                    &[i64_t.const_zero(), i],
+                    "for.entries.slot",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+        // ptr mode: the buffer holds the cell POINTER — load it.
+        // value mode: the buffer slot IS the cell — its address.
+        let entry_ptr: PointerValue = if ptr_mode {
+            self.builder
+                .build_load(ptr_t, elem_slot, "for.entries.cellptr")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value()
+        } else {
+            elem_slot
+        };
         let var_slot = self
             .builder
             .build_alloca(ptr_t, &var_name.name)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
-            .build_store(var_slot, entry_slot)
+            .build_store(var_slot, entry_ptr)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let prev = scope.locals.insert(
             var_name.name.clone(),
             (var_slot, CodegenTy::TypeRef(cell_name)),
         );
         self.loops.push(LoopFrame {
-            continue_bb: header_bb,
+            continue_bb: inc_bb,
             break_bb: exit_bb,
         });
         let body_end = self.lower_block(body, scope)?;
         self.loops.pop();
         if body_end == BlockEnd::Open {
             self.builder
-                .build_unconditional_branch(header_bb)
+                .build_unconditional_branch(inc_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         if let Some(prev) = prev {
@@ -16249,6 +16328,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         } else {
             scope.locals.remove(&var_name.name);
         }
+
+        self.builder.position_at_end(inc_bb);
+        let i_now = self
+            .builder
+            .build_load(i64_t, i_slot, "for.entries.i.inc")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let i_next = self
+            .builder
+            .build_int_add(
+                i_now,
+                i64_t.const_int(1, false),
+                "for.entries.i.next",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(i_slot, i_next)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(inner_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
         self.builder.position_at_end(exit_bb);
         Ok(BlockEnd::Open)
     }
