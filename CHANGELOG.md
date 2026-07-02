@@ -8,6 +8,22 @@ behavior.
 
 ## Unreleased
 
+- **Builds are 2.3–5.8× faster: dead-stdlib elimination before the
+  backend.** Every module carries the full merged stdlib; it was
+  being O3-optimized and machine-emitted on every build, used or
+  not (224 ms of a 462 ms trivial build). Defined fns except `main`
+  are now internalized and a leading `globaldce` strips the
+  unreferenced stdlib before the pipeline runs. Trivial builds
+  462 → 80 ms; the largest app (riskgw) 1.2 s → 526 ms. Plus:
+  `HALE_TIME=1` prints per-phase wall times; `hale build --dev`
+  (or HALE_DEV=1) selects an O1 pipeline for latency-critical
+  loops; `hale check --json` emits NDJSON diagnostics on stdout
+  (file/line/col/severity/kind/message) — with `hale check` at
+  ~10 ms on the largest apps, this is the LSP groundwork: an
+  editor save-hook needs nothing more. The staged rest (prebuilt
+  stdlib object, `hale lsp`, per-seed caching) is in
+  notes/build-latency-and-lsp.md.
+
 - **Unbounded-allocation warnings are DEFAULT-ON.** (M3 stage 5
   complete — Riley's flip call after the full-corpus audit.) Every
   `hale check`/`build` now surveys the whole program; run-to-exit

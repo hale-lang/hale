@@ -1,0 +1,59 @@
+# #8 — Build latency + LSP groundwork
+
+Status: measured + first wins SHIPPED (2026-07-02); the rest is
+staged below.
+
+## The measurements that reframed the task
+
+`HALE_TIME=1` (shipped) prints per-phase wall times. Baseline on
+this host, before the fixes:
+
+| phase | tiny (1 line) | riskgw (3.6k lines) |
+|---|---|---|
+| front-end + codegen | 10 ms | 35 ms |
+| LLVM O3 passes | 123 ms | 362 ms |
+| obj-emit | 224 ms | ~500 ms |
+| link (clang, non-LTO) | ~105 ms | ~250 ms |
+| **total** | **462 ms** | **1.2 s** |
+
+Two facts kill the classic incremental-compilation plan:
+1. The Hale FRONT-END is ~free (35 ms whole-program on the largest
+   app; `hale check` is 10 ms). Caching parse/typecheck buys nothing.
+2. 97% of wall time is LLVM — and most of THAT was the merged
+   stdlib being O3'd and machine-emitted in every module, used or
+   not.
+
+## Shipped (2026-07-02)
+
+- **Internalize + leading globaldce**: every defined fn except
+  `main` goes Internal before the pipeline; `globaldce` strips the
+  unreferenced stdlib before O3 touches it. Address-taken fns (bus
+  handlers, pinned entries, fn-pointer callees) survive through
+  their uses; anything referenced by name from C would fail LOUDLY
+  at link (nothing does — full suite green).
+  Result: tiny 462 → 80 ms (5.8×), riskgw 1.2 s → 526 ms (2.3×) —
+  release AND dev.
+- **`hale build --dev` / HALE_DEV=1**: O1 pipeline + Less machine
+  codegen. After DCE the delta vs release is small on small apps;
+  it scales with app size.
+- **`hale check --json`**: NDJSON diagnostics on stdout (file/line/
+  col/severity/kind/message) — with the 10 ms check, an editor
+  integration needs nothing more than a save-hook. This IS the LSP
+  groundwork: a future `hale lsp` server wraps the same
+  parse+check path; every M3 diagnostic already carries spans.
+
+## Staged next (in value order)
+
+1. **Prebuilt stdlib object (dev mode)**: cache the stdlib's .o per
+   compiler build (like ~/.cache/hale/runtime); dev links against
+   it instead of re-lowering + re-emitting stdlib fns the app DOES
+   use. Loses stdlib inlining in dev (fine). Projected: riskgw dev
+   ≈ 150–250 ms.
+2. **`hale lsp`**: a stdio LSP server over the existing
+   parse+check (publishDiagnostics only, v1). The --json shape is
+   the dry run for its payloads.
+3. **Per-seed object caching (release)**: content-hash each import
+   seed → cache its .o; only re-emit changed seeds; final link
+   combines. Real work (cross-seed inlining boundaries); only
+   worth it when apps reach ~50k+ lines or fleet builds hurt.
+4. **Watch mode** (`hale build --watch`): trivial once 1 lands.

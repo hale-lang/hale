@@ -519,6 +519,12 @@ impl std::error::Error for CodegenError {}
 /// `--link` and `--csrc` flags.
 #[derive(Default, Debug, Clone)]
 pub struct BuildOptions {
+    /// #8 dev profile (2026-07-02): trade runtime speed for build
+    /// latency — O1 module pipeline + Less machine codegen instead
+    /// of the O3/Aggressive release default. The 97%-of-build-time
+    /// LLVM share (HALE_TIME) is the whole target; the Hale
+    /// front-end is ~35 ms even on the largest apps.
+    pub dev_profile: bool,
     pub link_libs: Vec<String>,
     pub csrc_files: Vec<std::path::PathBuf>,
     /// Compilation target. Selects the LLVM triple + the link
@@ -729,6 +735,23 @@ pub fn build_executable_with_options(
     import_renames: &[(Vec<String>, String)],
     options: &BuildOptions,
 ) -> Result<(), CodegenError> {
+    // #8 (2026-07-02): HALE_TIME=1 prints per-phase wall times to
+    // stderr — the profiling surface the incremental design reads.
+    let time_phases = std::env::var("HALE_TIME").is_ok();
+    let t_start = std::time::Instant::now();
+    let mut t_last = t_start;
+    let mut phase = |name: &str, t_last: &mut std::time::Instant| {
+        if time_phases {
+            let now = std::time::Instant::now();
+            eprintln!(
+                "hale-time: {:<18} {:>7.1?} (total {:>7.1?})",
+                name,
+                now.duration_since(*t_last),
+                now.duration_since(t_start)
+            );
+            *t_last = now;
+        }
+    };
     // A7 (G16): resolve `BusSubject::QualifiedTopic(alias::Foo)`
     // — cross-seed topic refs the parser admits — to plain
     // single-segment `BusSubject::Topic(Ident(mangled_name))`
@@ -1027,6 +1050,8 @@ pub fn build_executable_with_options(
     };
     let opt_level = if is_wasm {
         OptimizationLevel::Default
+    } else if options.dev_profile {
+        OptimizationLevel::Less
     } else {
         OptimizationLevel::Aggressive
     };
@@ -1343,6 +1368,7 @@ pub fn build_executable_with_options(
         }
     }
 
+    phase("front-end+codegen", &mut t_last);
     let asan_diag = std::env::var("LOTUS_ASAN")
         .map(|v| v == "1" || v == "true" || v == "TRUE")
         .unwrap_or(false);
@@ -1350,12 +1376,46 @@ pub fn build_executable_with_options(
         let pb_opts = inkwell::passes::PassBuilderOptions::create();
         // Native runs the aggressive O3 module pipeline; wasm stays O2
         // (the browser bundle is size/compat-sensitive).
-        let pass_pipeline =
-            if is_wasm { "default<O2>" } else { "default<O3>" };
+        // #8 (2026-07-02): internalize + globaldce ahead of the
+        // main pipeline. Every module carries the FULL merged
+        // stdlib; without internalization the backend emits machine
+        // code for all of it on every build (~224 ms of the 460 ms
+        // trivial-build floor) and O3 optimizes dead fns. `main` is
+        // the only symbol the native link needs by name — bus
+        // handlers / pinned entries / fn-pointer callees are
+        // address-taken and survive DCE through their uses. wasm
+        // keeps its exports and skips internalization.
+        // Manual internalization (the textual `internalize` pass
+        // has no preserved-symbol parameter through
+        // PassBuilderOptions): every DEFINED fn except `main` goes
+        // Internal, then a leading globaldce strips the unreferenced
+        // stdlib before the main pipeline spends O3 on it.
+        if !is_wasm {
+            let mut f = cx.module.get_first_function();
+            while let Some(func) = f {
+                let name = func
+                    .get_name()
+                    .to_str()
+                    .unwrap_or("")
+                    .to_string();
+                if func.count_basic_blocks() > 0 && name != "main" {
+                    func.set_linkage(inkwell::module::Linkage::Internal);
+                }
+                f = func.get_next_function();
+            }
+        }
+        let pass_pipeline = if is_wasm {
+            "default<O2>"
+        } else if options.dev_profile {
+            "globaldce,default<O1>"
+        } else {
+            "globaldce,default<O3>"
+        };
         cx.module
             .run_passes(pass_pipeline, &machine, pb_opts)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
     }
+    phase("llvm-passes", &mut t_last);
 
     // Under LTO, emit the Hale module as plain LLVM bitcode (the LTO
     // link consumes it and re-runs the backend with cross-module
@@ -1373,6 +1433,7 @@ pub fn build_executable_with_options(
         machine
             .write_to_file(&cx.module, FileType::Object, &obj_path)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        phase("obj-emit", &mut t_last);
         obj_path.clone()
     };
 
@@ -1625,6 +1686,7 @@ pub fn build_executable_with_options(
         .arg(output_path)
         .status()
         .map_err(|e| CodegenError::Link(format!("clang invocation: {}", e)))?;
+    phase("emit+link", &mut t_last);
     // Only the per-build user input (object, or bitcode under LTO) is
     // transient; the cached runtime objects persist for reuse by later
     // builds.

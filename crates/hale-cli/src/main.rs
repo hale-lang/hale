@@ -941,17 +941,83 @@ fn run_check(target: &Path) -> ExitCode {
     if std::env::args().any(|a| a == "--warn-resource-leak") {
         diags.extend(hale_types::resource_leak_warnings(&bundle));
     }
+    // #8 LSP groundwork (2026-07-02): `hale check --json` emits
+    // NDJSON diagnostics on STDOUT (one object per line: file,
+    // line, col, severity, kind, message) for editor/LSP
+    // consumption. The human rendering stays on stderr otherwise.
+    // With `hale check` at ~10 ms on the largest apps, an
+    // on-save/on-keystroke loop needs nothing more than this.
+    let json_mode = std::env::args().any(|a| a == "--json");
     if !diags.is_empty() {
         for d in &diags {
-            eprintln!("{}", render_located(d, &file_bases, &sources));
+            if json_mode {
+                println!("{}", render_diag_json(d, &file_bases, &sources));
+            } else {
+                eprintln!("{}", render_located(d, &file_bases, &sources));
+            }
         }
         // Warnings print but don't fail the build; only errors do.
         if diags.iter().any(|d| d.is_error()) {
             return ExitCode::from(1);
         }
     }
-    eprintln!("ok: {} file(s) typechecked", files.len());
+    if !json_mode {
+        eprintln!("ok: {} file(s) typechecked", files.len());
+    }
     ExitCode::SUCCESS
+}
+
+/// One NDJSON diagnostic line for `hale check --json`.
+fn render_diag_json(
+    d: &hale_syntax::Diag,
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &BTreeMap<PathBuf, String>,
+) -> String {
+    fn esc(s: &str) -> String {
+        let mut out = String::with_capacity(s.len() + 8);
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\t' => out.push_str("\\t"),
+                '\r' => out.push_str("\\r"),
+                c if (c as u32) < 0x20 => {
+                    out.push_str(&format!("\\u{:04x}", c as u32))
+                }
+                c => out.push(c),
+            }
+        }
+        out
+    }
+    let off = d.span.start.as_usize() as u32;
+    let mut file = String::new();
+    let mut line = 0usize;
+    let mut col = 0usize;
+    for (base, path, len) in file_bases {
+        if off >= *base && off < base.saturating_add(*len) {
+            if let Some(src) = sources.get(path) {
+                let (l, c) = d
+                    .span
+                    .shifted(base.wrapping_neg())
+                    .line_col(src);
+                file = path.display().to_string();
+                line = l;
+                col = c;
+            }
+            break;
+        }
+    }
+    let severity = if d.is_error() { "error" } else { "warning" };
+    format!(
+        "{{\"file\":\"{}\",\"line\":{},\"col\":{},\"severity\":\"{}\",\"kind\":\"{}\",\"message\":\"{}\"}}",
+        esc(&file),
+        line,
+        col,
+        severity,
+        esc(d.kind_str()),
+        esc(&d.message)
+    )
 }
 
 /// Compile `program` to a temporary native binary and execute it,
@@ -1473,6 +1539,13 @@ fn run_build(target: &Path) -> ExitCode {
         .map(|v| v == "1" || v == "true" || v == "TRUE")
         .unwrap_or(false);
     if !no_dbg {
+        // #8 dev profile (2026-07-02): `hale build --dev` (or
+        // HALE_DEV=1) trades runtime speed for build latency —
+        // LLVM O1 instead of the O3 release default. Profiled: the
+        // front-end is ~35 ms even on the largest apps; LLVM is
+        // 97% of build wall time.
+        options.dev_profile = std::env::args().any(|a| a == "--dev")
+            || std::env::var("HALE_DEV").is_ok();
         options.debug = Some(hale_codegen::DebugSources {
             files: file_bases
                 .iter()
@@ -1670,6 +1743,13 @@ fn parse_build_options() -> Result<hale_codegen::BuildOptions, String> {
                     }
                 };
                 i += 2;
+            }
+            // #8 dev profile (2026-07-02): LLVM O1 instead of the
+            // O3 release default — build-latency mode. Consumed in
+            // run_build via env::args (options finalization);
+            // recognized here so the arg parser doesn't reject it.
+            "--dev" => {
+                i += 1;
             }
             other => {
                 return Err(format!(

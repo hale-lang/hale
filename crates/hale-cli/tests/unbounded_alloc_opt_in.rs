@@ -74,3 +74,33 @@ fn no_warn_flag_opts_out() {
         "the opt-out must silence the survey:\n{stderr}"
     );
 }
+
+// #8 (2026-07-02): `--json` NDJSON diagnostics — the LSP-groundwork
+// contract. Reuses this fixture (it has a default-on warning).
+#[test]
+fn json_mode_emits_ndjson_on_stdout() {
+    let out = Command::new(hale_bin())
+        .arg("check")
+        .arg(app())
+        .arg("--json")
+        .output()
+        .expect("invoke hale check --json");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.lines().count() >= 1,
+        "at least one diagnostic line: {stdout}"
+    );
+    for line in stdout.lines() {
+        assert!(
+            line.starts_with('{') && line.ends_with('}'),
+            "NDJSON object per line: {line}"
+        );
+        for key in ["\"file\":", "\"line\":", "\"col\":", "\"severity\":", "\"message\":"] {
+            assert!(line.contains(key), "missing {key} in {line}");
+        }
+    }
+    assert!(
+        out.status.success(),
+        "warnings are advisory in json mode too"
+    );
+}
