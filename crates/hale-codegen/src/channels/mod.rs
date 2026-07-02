@@ -275,6 +275,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .current_user_fn_exit_bb
             .expect("exit_bb set during fallible method body");
         self.builder.position_at_end(exit_bb);
+        // Synthesized epilogue (dissolve cascades, deep-copies)
+        // must carry a !dbg when the fn has a subprogram — the
+        // per-statement location may have been cleared by the
+        // body's last statement (DI verifier fix, 2026-07-03).
+        self.di_ensure_synthetic_loc(func);
 
         let ok_bb =
             self.context.append_basic_block(func, "fn.exit.ok");
@@ -345,6 +350,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_return(Some(&path_v))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // The synthetic epilogue location must not leak into the
+        // NEXT function's pre-statement instructions ("!dbg
+        // attachment points at wrong subprogram").
+        self.builder.unset_current_debug_location();
+        self.di_current_loc = None;
         Ok(())
     }
 
@@ -373,6 +383,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let fail_bb = self.context.append_basic_block(func, "fn.exit.fail");
         let cleanup_bb =
             self.context.append_basic_block(func, "fn.exit.cleanup");
+        // Synthesized epilogue needs a !dbg when the fn has a
+        // subprogram (DI verifier fix, 2026-07-03).
+        self.di_ensure_synthetic_loc(func);
 
         // Builder is positioned at exit_bb on entry (caller did so).
         // Load the path indicator and conditional-branch.
@@ -468,6 +481,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_return(Some(&path_v))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.unset_current_debug_location();
+        self.di_current_loc = None;
         Ok(())
     }
 

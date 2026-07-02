@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **DI verifier fix — synthesized fn-exit epilogues now carry a
+  !dbg location.** A fallible fn that dissolves a local locus at
+  scope exit emitted the dissolve-cascade calls with no !dbg while
+  the fn carried a DISubprogram — the DWARF verifier rejected the
+  whole module ("inlinable function call in a function with debug
+  info must have a !dbg location"). First reproducer: pond
+  http/client's round_trip_oneshot (keepalive) dissolving its local
+  HttpConn, which broke every fathom dashboard build. The epilogue
+  emitters now pin the LLVM-sanctioned synthetic location (line 0
+  in the fn's scope) when the per-statement location was cleared,
+  and unset it on completion so it can't leak into the next
+  function ("!dbg attachment points at wrong subprogram").
+
 - **Anchor retirement — the TP-3 leak class is fixed for
   @form(hashmap).** Overwriting or removing a map row used to orphan
   the old cell's String clones in the locus arena forever (the

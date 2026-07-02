@@ -3018,7 +3018,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// "invalid !dbg metadata attachment" verifier error). All
     /// location mutations go through di_enter_stmt/di_exit_stmt, so
     /// this field is authoritative.
-    di_current_loc: Option<inkwell::debug_info::DILocation<'ctx>>,
+    pub(crate) di_current_loc: Option<inkwell::debug_info::DILocation<'ctx>>,
 }
 
 /// DWARF emission state (debug story stage 2). One DIBuilder +
@@ -12903,7 +12903,42 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             eprintln!("di: SET {} line {} col {}", fn_name, line, col);
         }
         self.di_loc_stack.push((func, prev));
-        true
+        return true;
+    }
+
+    /// DI verifier fix (2026-07-03): synthesized epilogue code
+    /// (fn-exit local-locus dissolve cascades) can emit calls with
+    /// no !dbg while the enclosing fn carries a DISubprogram — the
+    /// verifier rejects the module ("inlinable function call in a
+    /// function with debug info must have a !dbg location"; first
+    /// hit: pond http/client round_trip_oneshot dissolving its
+    /// local HttpConn, which broke the dashboard build). When the
+    /// current location was cleared and the fn has a subprogram,
+    /// pin the LLVM-sanctioned synthetic location: line 0 in the
+    /// fn's scope.
+    pub(crate) fn di_ensure_synthetic_loc(
+        &mut self,
+        func: FunctionValue<'ctx>,
+    ) {
+        use inkwell::debug_info::AsDIScope;
+        if self.di_current_loc.is_some() {
+            return;
+        }
+        let Some(sp) = func.get_subprogram() else {
+            return;
+        };
+        let Some(di) = self.di.as_ref() else {
+            return;
+        };
+        let loc = di.builder.create_debug_location(
+            self.context,
+            0,
+            0,
+            sp.as_debug_info_scope(),
+            None,
+        );
+        self.builder.set_current_debug_location(loc);
+        self.di_current_loc = Some(loc);
     }
 
     /// Pop the per-statement location frame pushed by di_enter_stmt.
