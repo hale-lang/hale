@@ -3114,6 +3114,7 @@ void lotus_arena_retire_str(void *arena_ptr, char *s);
  * a pointer that survives into the new cell is NOT retired (the
  * RMW key-reuse idiom, the grow-rebuild re-insert). NULL = remove
  * path, everything retires. */
+__attribute__((noinline, cold))
 static void lotus_hashmap_retire_cell(lotus_hashmap_t *m, char *slot,
                                       const char *new_key,
                                       const char *new_v) {
@@ -3172,7 +3173,7 @@ static void lotus_hashmap_set_unlocked(lotus_hashmap_t *m,
      * grow-rebuild both pass the same pointer back; retiring a
      * pointer that is about to be stored again would corrupt at
      * flush). */
-    if (!was_empty) {
+    if (__builtin_expect(!was_empty && m->retire_n != 0, 0)) {
         lotus_hashmap_retire_cell(m, slot, (const char *)key,
                                   (const char *)value);
     }
@@ -3796,7 +3797,9 @@ static int lotus_hashmap_remove_unlocked(lotus_hashmap_t *m,
      * fields + string key) orphan in the arena — retire them.
      * The backward-shift below only MOVES surviving cells (same
      * pointers), so it needs nothing. */
-    lotus_hashmap_retire_cell(m, m->slots + i * es, NULL, NULL);
+    if (__builtin_expect(m->retire_n != 0, 0)) {
+        lotus_hashmap_retire_cell(m, m->slots + i * es, NULL, NULL);
+    }
     m->slots[i * es] = 0;
     m->len--;
     size_t j = (i + 1) & mask;
