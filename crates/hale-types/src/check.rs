@@ -7785,14 +7785,16 @@ impl<'a> Checker<'a> {
                 if let Expr::Ident(id) = callee.as_ref() {
                     if matches!(
                         id.name.as_str(),
-                        "push" | "at" | "count" | "clear"
+                        "push" | "at" | "set" | "count" | "clear"
+                            | "truncate"
                     ) && !args.is_empty()
                     {
                         let mark = self.diags.len();
                         let recv_ty = self.check_expr(&args[0]);
                         if let Ty::Bounded(elem, _cap) = recv_ty {
                             let want_args = match id.name.as_str() {
-                                "push" | "at" => 2,
+                                "push" | "at" | "truncate" => 2,
+                                "set" => 3,
                                 _ => 1,
                             };
                             if args.len() != want_args {
@@ -7807,6 +7809,74 @@ impl<'a> Checker<'a> {
                                         args.len()
                                     ),
                                 ));
+                            }
+                            if id.name == "set" {
+                                if let Some(i) = args.get(1) {
+                                    let it =
+                                        self.check_expr_addressed(i);
+                                    if !Ty::Prim(PrimType::Int)
+                                        .assignable_from(&it)
+                                    {
+                                        self.diags.push(Diag::ty(
+                                            i.span(),
+                                            format!(
+                                                "set: index must be \
+                                                 Int, got `{}`",
+                                                it.display()
+                                            ),
+                                        ));
+                                    }
+                                }
+                                if let Some(x) = args.get(2) {
+                                    let xt =
+                                        self.check_expr_addressed(x);
+                                    let widen_ok = matches!(
+                                        (elem.as_ref(), &xt),
+                                        (
+                                            Ty::Prim(PrimType::Float),
+                                            Ty::Prim(PrimType::Int)
+                                        )
+                                    );
+                                    if !widen_ok
+                                        && !elem.assignable_from(&xt)
+                                    {
+                                        self.diags.push(Diag::ty(
+                                            x.span(),
+                                            format!(
+                                                "set: element type `{}` \
+                                                 does not match bounded \
+                                                 element `{}`",
+                                                xt.display(),
+                                                elem.display()
+                                            ),
+                                        ));
+                                    }
+                                }
+                                return Ty::Fallible {
+                                    success: Box::new(Ty::Unit),
+                                    payload: Box::new(Ty::Named(
+                                        "IndexError".into(),
+                                    )),
+                                };
+                            }
+                            if id.name == "truncate" {
+                                if let Some(n) = args.get(1) {
+                                    let nt =
+                                        self.check_expr_addressed(n);
+                                    if !Ty::Prim(PrimType::Int)
+                                        .assignable_from(&nt)
+                                    {
+                                        self.diags.push(Diag::ty(
+                                            n.span(),
+                                            format!(
+                                                "truncate: n must be \
+                                                 Int, got `{}`",
+                                                nt.display()
+                                            ),
+                                        ));
+                                    }
+                                }
+                                return Ty::Prim(PrimType::Int);
                             }
                             match id.name.as_str() {
                                 "push" => {

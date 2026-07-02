@@ -4,7 +4,8 @@ Status: Stage 2 Option B SHIPPED for scalar elements (2026-07-02) —
 `bounded[T; N]` in types + locus params, `{ i64 len, [N x T] }`
 inline layout, push (fallible CapacityError { cap, count }) / at
 (fallible IndexError) / count / clear intrinsics, `for x in f`
-iteration, auto-empty init (literal init and whole-field assignment
+set/truncate (2026-07-02, second pass — drop-front/FIFO now
+expressible), iteration, auto-empty init (literal init and whole-field assignment
 rejected), flat under zero_copy for scalar T. Stage 1 SHIPPED same
 day: pointer-shaped elements (String/Bytes/user structs) — push
 arena-anchors elements into the receiver's owning arena

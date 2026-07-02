@@ -8,6 +8,14 @@ behavior.
 
 ## Unreleased
 
+- **bounded[T; N]: `set(f, i, x)` + `truncate(f, n)` intrinsics.**
+  `set` overwrites a live slot (fallible IndexError, arena-anchors
+  pointer-shaped elements like push); `truncate` clamps the count
+  down (never grows; returns the new count). Together they make the
+  drop-front/FIFO idiom expressible — shift live slots left with
+  set, then truncate — which unblocked migrating
+  pond/agent/conversation's history eviction off its TSV walker.
+
 - **`bounded[T; N]` — fixed-capacity counted collections in types.**
   Types can now hold a real bounded collection instead of the
   delimited-string workaround: `type Recent { vals: bounded[Int;

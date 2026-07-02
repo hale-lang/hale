@@ -282,3 +282,41 @@ fn scalar_bounded_travels_the_bus() {
         out
     );
 }
+
+#[test]
+fn set_truncate_drop_front_idiom() {
+    let out = build_and_run(
+        "settrunc",
+        r#"
+        type Buf { vals: bounded[String; 8]; }
+        fn main() {
+            let b = Buf { };
+            let mut i = 0;
+            while i < 6 {
+                push(b.vals, "m" + to_string(i)) or raise;
+                i = i + 1;
+            }
+            let n = count(b.vals);
+            let k = 2;
+            let mut j = 0;
+            while j < n - k {
+                let v = at(b.vals, j + k) or "?";
+                set(b.vals, j, v) or raise;
+                j = j + 1;
+            }
+            truncate(b.vals, n - k);
+            println("count=", count(b.vals));
+            let first = at(b.vals, 0) or "?";
+            let last = at(b.vals, 3) or "?";
+            println(first, " ", last);
+            set(b.vals, 99, "nope")
+                or println("oob idx=", err.index);
+            println("t0=", truncate(b.vals, 0));
+        }
+    "#,
+    );
+    assert!(out.contains("count=4"), "got: {:?}", out);
+    assert!(out.contains("m2 m5"), "got: {:?}", out);
+    assert!(out.contains("oob idx=99"), "got: {:?}", out);
+    assert!(out.contains("t0=0"), "got: {:?}", out);
+}

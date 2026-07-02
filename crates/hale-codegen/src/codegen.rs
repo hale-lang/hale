@@ -12927,25 +12927,36 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // Terminated up so the lower_block walker
                             // stops emitting IR after this stmt.
                             return self.lower_bubble_call(args, scope);
-                        } else if matches!(name, "count" | "clear")
-                            && args.len() == 1
+                        } else if matches!(
+                            name,
+                            "count" | "clear" | "truncate"
+                        ) && args.len()
+                            == if name == "truncate" { 2 } else { 1 }
                             && self
                                 .bounded_recv_spec(args, scope)
                                 .is_some()
                         {
-                            // bounded[T; N] count/clear at statement
-                            // position (clear is the common shape).
+                            // bounded[T; N] count/clear/truncate at
+                            // statement position.
                             let (elem, cap) = self
                                 .bounded_recv_spec(args, scope)
                                 .expect("guard checked");
-                            if name == "count" {
-                                let _ = self.lower_bounded_count(
-                                    args, &elem, cap, scope,
-                                )?;
-                            } else {
-                                let _ = self.lower_bounded_clear(
-                                    args, &elem, cap, scope,
-                                )?;
+                            match name {
+                                "count" => {
+                                    let _ = self.lower_bounded_count(
+                                        args, &elem, cap, scope,
+                                    )?;
+                                }
+                                "truncate" => {
+                                    let _ = self.lower_bounded_truncate(
+                                        args, &elem, cap, scope,
+                                    )?;
+                                }
+                                _ => {
+                                    let _ = self.lower_bounded_clear(
+                                        args, &elem, cap, scope,
+                                    )?;
+                                }
                             }
                         } else if name == "check_closures" {
                             // m44: explicit-epoch closure check
@@ -17760,17 +17771,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // (push/at are fallible — they route through
                 // lower_fallible_call's Ident arm under `or`).
                 Expr::Ident(i)
-                    if matches!(i.name.as_str(), "count" | "clear")
-                        && args.len() == 1
+                    if matches!(
+                        i.name.as_str(),
+                        "count" | "clear" | "truncate"
+                    ) && args.len()
+                        == if i.name == "truncate" { 2 } else { 1 }
                         && self.bounded_recv_spec(args, scope).is_some() =>
                 {
                     let (elem, cap) = self
                         .bounded_recv_spec(args, scope)
                         .expect("guard checked");
-                    if i.name == "count" {
-                        self.lower_bounded_count(args, &elem, cap, scope)
-                    } else {
-                        self.lower_bounded_clear(args, &elem, cap, scope)
+                    match i.name.as_str() {
+                        "count" => self
+                            .lower_bounded_count(args, &elem, cap, scope),
+                        "truncate" => self
+                            .lower_bounded_truncate(args, &elem, cap, scope),
+                        _ => self
+                            .lower_bounded_clear(args, &elem, cap, scope),
                     }
                 }
                 Expr::Ident(i) if i.name == "to_string" => {

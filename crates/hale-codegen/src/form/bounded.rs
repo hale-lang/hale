@@ -142,6 +142,66 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok((zero.into(), CodegenTy::Int))
     }
 
+    /// truncate(f, n) — len = clamp(n, 0, len). Never grows (slots
+    /// past len were never written). Returns the new count.
+    pub(crate) fn lower_bounded_truncate(
+        &mut self,
+        args: &[Expr],
+        elem: &CodegenTy,
+        cap: u64,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let (_, len_ptr, _) =
+            self.bounded_storage_ptrs(&args[0], elem, cap, scope)?;
+        let i64_t = self.context.i64_type();
+        let (nv, nty) = self.lower_expr(&args[1], scope)?;
+        if nty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "truncate(f, n): n must be Int, got {:?}",
+                nty
+            )));
+        }
+        let n = nv.into_int_value();
+        let len = self
+            .builder
+            .build_load(i64_t, len_ptr, "bounded.trunc.len")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let zero = i64_t.const_int(0, false);
+        let n_nonneg = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SGT,
+                n,
+                zero,
+                "bounded.trunc.nonneg",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let n_clamped_lo = self
+            .builder
+            .build_select(n_nonneg, n, zero, "bounded.trunc.lo")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let shrinks = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                n_clamped_lo,
+                len,
+                "bounded.trunc.shrinks",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let new_len = self
+            .builder
+            .build_select(shrinks, n_clamped_lo, len, "bounded.trunc.new")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        self.builder
+            .build_store(len_ptr, new_len)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((new_len.into(), CodegenTy::Int))
+    }
+
     /// push(f, x) / at(f, i) — the fallible pair, dispatched from
     /// `lower_fallible_call`'s Ident arm. Returns None when args[0]
     /// isn't bounded (the caller falls through to user fns).
@@ -151,7 +211,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
-        if !matches!(name, "push" | "at") || args.len() != 2 {
+        let want_args = match name {
+            "push" | "at" => 2,
+            "set" => 3,
+            _ => return Ok(None),
+        };
+        if args.len() != want_args {
             return Ok(None);
         }
         let Some((elem, cap)) = self.bounded_recv_spec(args, scope)
@@ -361,6 +426,113 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     out_val_slot: Some(out_val_slot),
                     out_err_slot,
                     success_ty: Some(elem),
+                    payload_ty: CodegenTy::TypeRef("IndexError".into()),
+                }))
+            }
+            "set" => {
+                let (iv, ity) = self.lower_expr(&args[1], scope)?;
+                if ity != CodegenTy::Int {
+                    return Err(CodegenError::Unsupported(format!(
+                        "set(f, i, x): index must be Int, got {:?}",
+                        ity
+                    )));
+                }
+                let idx = iv.into_int_value();
+                let (xv, xty) = self.lower_expr(&args[2], scope)?;
+                let xv = if elem == CodegenTy::Float
+                    && xty == CodegenTy::Int
+                {
+                    self.coerce_to_float(xv, &xty, "set element")?.into()
+                } else {
+                    xv
+                };
+                let neg = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::SLT,
+                        idx,
+                        i64_t.const_int(0, false),
+                        "bounded.set.neg",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let past = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::SGE,
+                        idx,
+                        len,
+                        "bounded.set.past",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let oob = self
+                    .builder
+                    .build_or(neg, past, "bounded.set.oob")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let ok_bb =
+                    self.context.append_basic_block(func, "bounded.set.ok");
+                let err_bb =
+                    self.context.append_basic_block(func, "bounded.set.err");
+                let join_bb = self
+                    .context
+                    .append_basic_block(func, "bounded.set.join");
+                let out_err_slot = self.alloca_for(
+                    &CodegenTy::TypeRef("IndexError".into()),
+                    "bounded.set.err.slot",
+                )?;
+                self.builder
+                    .build_conditional_branch(oob, err_bb, ok_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+                self.builder.position_at_end(ok_bb);
+                // Pointer-shaped elements anchor into the
+                // receiver's owning arena, same as push.
+                let xv = if Self::bounded_elem_is_ptr(&elem) {
+                    let target = self.bounded_target_arena(&args[0])?;
+                    self.emit_cross_arena_store_deep_copy_ptr(
+                        xv,
+                        &elem,
+                        target,
+                        "bounded.set",
+                    )?
+                } else {
+                    xv
+                };
+                let slot_ptr = unsafe {
+                    self.builder
+                        .build_gep(
+                            elem_llvm,
+                            data_ptr,
+                            &[idx],
+                            "bounded.set.slot",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                };
+                self.builder
+                    .build_store(slot_ptr, xv)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_unconditional_branch(join_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+                self.builder.position_at_end(err_bb);
+                let err_ptr = self.emit_index_error_alloc(
+                    "out_of_bounds",
+                    idx,
+                    len,
+                )?;
+                self.builder
+                    .build_store(out_err_slot, err_ptr)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_unconditional_branch(join_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+                self.builder.position_at_end(join_bb);
+                Ok(Some(FallibleCallResult {
+                    i1_path: oob,
+                    out_val_slot: None,
+                    out_err_slot,
+                    success_ty: None,
                     payload_ty: CodegenTy::TypeRef("IndexError".into()),
                 }))
             }
