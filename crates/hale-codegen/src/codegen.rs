@@ -25697,6 +25697,169 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 "method.scratch.destroy",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // Anchor retirement (2026-07-03): the method activation is
+        // over — clones retired by this activation's hashmap sets/
+        // removes become reusable. Sound here by the same argument
+        // as the scratch destroy itself: no raw pointer into the
+        // locus arena legally survives the activation except via
+        // re-anchored self-storage. Methods without a scratch are
+        // elidable (non-allocating) and cannot have retired.
+        if let Some(cs) = self.current_self.clone() {
+            let info = self
+                .user_loci
+                .get(&cs.locus_name)
+                .cloned()
+                .expect("current_self points to a declared locus");
+            // NOT in @form-synthesized methods: a form method (set/
+            // remove) is a leaf mutator INSIDE its caller's
+            // activation — flushing at ITS exit would free blobs a
+            // caller-held cell copy still references (and costs a
+            // call per set on every map). The USER activation above
+            // (which is the boundary the soundness argument needs)
+            // does the flushing. A form locus is recognizable by
+            // its form-annotated capacity slot.
+            let is_form_locus = info
+                .capacity_slots
+                .iter()
+                .any(|sl| sl.form.is_some());
+            if is_form_locus {
+                return Ok(());
+            }
+            // Skip entirely when nothing reachable from this locus
+            // can retire: no sync-free string-celled hashmap child
+            // and no string self-fields means no retire sites.
+            let has_retiring_child =
+                info.fields.values().any(|(_, fty)| {
+                    if let CodegenTy::LocusRef(child_name) = fty {
+                        self.user_loci
+                            .get(child_name)
+                            .map(|child| {
+                                child.capacity_slots.iter().any(|sl| {
+                                    matches!(
+                                        sl.form,
+                                        Some(SlotForm::Hashmap)
+                                    ) && sl.sync_mode == SyncMode::None
+                                        && matches!(
+                                            sl.elem_ty,
+                                            CodegenTy::TypeRef(_)
+                                        )
+                                })
+                            })
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    }
+                });
+            if !has_retiring_child {
+                return Ok(());
+            }
+            let flush_fn = self
+                .module
+                .get_function("lotus_arena_flush_retired")
+                .expect("lotus_arena_flush_retired declared");
+            // The locus's own arena (direct self-field stores)...
+            let arena_field_ptr = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    cs.self_ptr,
+                    info.arena_field_idx,
+                    "retire.flush.arena.ptr",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let arena = self
+                .builder
+                .build_load(ptr_t, arena_field_ptr, "retire.flush.arena")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_call(flush_fn, &[arena.into()], "retire.flush")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // ...and each @form-child field's arena: hashmap set/
+            // remove retire into the FORM locus's arena (anchors
+            // live where the map lives), so the mutating parent's
+            // activation boundary must flush there. Statically
+            // enumerable; only children that could have installed
+            // a retire descriptor (a sync-free hashmap slot with a
+            // TypeRef cell) get a flush call.
+            let mut child_flushes: Vec<(String, u32)> = Vec::new();
+            for (fname, (fidx, fty)) in &info.fields {
+                if let CodegenTy::LocusRef(child_name) = fty {
+                    if let Some(child) = self.user_loci.get(child_name)
+                    {
+                        let retires = child.capacity_slots.iter().any(
+                            |sl| {
+                                matches!(
+                                    sl.form,
+                                    Some(SlotForm::Hashmap)
+                                ) && sl.sync_mode == SyncMode::None
+                                    && matches!(
+                                        sl.elem_ty,
+                                        CodegenTy::TypeRef(_)
+                                    )
+                            },
+                        );
+                        if retires {
+                            child_flushes
+                                .push((fname.clone(), *fidx));
+                        }
+                    }
+                }
+            }
+            for (fname, fidx) in child_flushes {
+                let child_field_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        cs.self_ptr,
+                        fidx,
+                        &format!("retire.flush.{}.ptr", fname),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let child_ptr = self
+                    .builder
+                    .build_load(
+                        ptr_t,
+                        child_field_ptr,
+                        &format!("retire.flush.{}", fname),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_pointer_value();
+                let child_info = self
+                    .user_loci
+                    .get(
+                        match &info.fields[&fname].1 {
+                            CodegenTy::LocusRef(n) => n,
+                            _ => unreachable!(),
+                        },
+                    )
+                    .cloned()
+                    .expect("child locus declared");
+                let child_arena_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        child_info.struct_ty,
+                        child_ptr,
+                        child_info.arena_field_idx,
+                        &format!("retire.flush.{}.arena.ptr", fname),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let child_arena = self
+                    .builder
+                    .build_load(
+                        ptr_t,
+                        child_arena_ptr,
+                        &format!("retire.flush.{}.arena", fname),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_call(
+                        flush_fn,
+                        &[child_arena.into()],
+                        "retire.flush.child",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+        }
         Ok(())
     }
 

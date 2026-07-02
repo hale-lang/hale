@@ -806,6 +806,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             hashmap_iter_batch_ty,
             None,
         );
+        // Anchor retirement (2026-07-03):
+        // declare void @lotus_hashmap_set_retire_desc(ptr, ptr, i32, ptr)
+        // declare void @lotus_arena_flush_retired(ptr)
+        let i32_t2 = self.context.i32_type();
+        let retire_desc_ty = void_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), i32_t2.into(), ptr_t.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_hashmap_set_retire_desc",
+            retire_desc_ty,
+            None,
+        );
+        let flush_ty = void_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_arena_flush_retired",
+            flush_ty,
+            None,
+        );
+
         // Pointer-mode sibling for plain (sync = none) maps.
         self.module.add_function(
             "lotus_hashmap_iter_batch_ptrs",

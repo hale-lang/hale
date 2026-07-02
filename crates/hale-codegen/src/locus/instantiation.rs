@@ -1360,6 +1360,135 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                         }
                     }
+                    // Anchor retirement (2026-07-03, notes/anchor-
+                    // retirement.md): install the String-field
+                    // offset descriptor so the C set path can
+                    // retire the OLD slot's clones when an occupied
+                    // slot is overwritten with different pointers.
+                    // The offsets come from TargetData (exact ABI
+                    // layout, Decimal i128 padding included).
+                    {
+                        let cell_name = match &slot.elem_ty {
+                            CodegenTy::TypeRef(n) => Some(n.clone()),
+                            _ => None,
+                        };
+                        // sync = none ONLY: synced maps are read
+                        // cross-pool, and a reader on another
+                        // thread can hold a cell copy's string
+                        // pointer across THIS pool's activation
+                        // boundaries — retirement there needs an
+                        // epoch scheme, not a flush.
+                        let cell_name = if slot.sync_mode
+                            == SyncMode::None
+                        {
+                            cell_name
+                        } else {
+                            None
+                        };
+                        if let Some(cn) = cell_name {
+                            if let Some(ci) = self.user_types.get(&cn) {
+                                let mut offs: Vec<u32> = Vec::new();
+                                for fname in &ci.field_order {
+                                    let (idx, fty) = ci
+                                        .fields
+                                        .get(fname)
+                                        .cloned()
+                                        .expect("declared field");
+                                    if matches!(fty, CodegenTy::String) {
+                                        if let Some(off) = self
+                                            .target_data
+                                            .offset_of_element(
+                                                &ci.struct_ty,
+                                                idx,
+                                            )
+                                        {
+                                            offs.push(off as u32);
+                                        }
+                                    }
+                                }
+                                if !offs.is_empty() {
+                                    let i32_t = self.context.i32_type();
+                                    let vals: Vec<_> = offs
+                                        .iter()
+                                        .map(|o| {
+                                            i32_t.const_int(
+                                                *o as u64, false,
+                                            )
+                                        })
+                                        .collect();
+                                    let arr = i32_t.const_array(&vals);
+                                    let g = self.module.add_global(
+                                        arr.get_type(),
+                                        None,
+                                        &format!(
+                                            "__retire_desc.{}.{}",
+                                            locus_name, slot.name
+                                        ),
+                                    );
+                                    g.set_initializer(&arr);
+                                    g.set_constant(true);
+                                    g.set_linkage(
+                                        inkwell::module::Linkage::Internal,
+                                    );
+                                    let arena_field = self
+                                        .builder
+                                        .build_struct_gep(
+                                            info.struct_ty,
+                                            self_ptr,
+                                            info.arena_field_idx,
+                                            "retire.arena.ptr",
+                                        )
+                                        .map_err(|e| {
+                                            CodegenError::LlvmEmit(
+                                                e.to_string(),
+                                            )
+                                        })?;
+                                    let ptr_ty = self
+                                        .context
+                                        .ptr_type(AddressSpace::default());
+                                    let arena = self
+                                        .builder
+                                        .build_load(
+                                            ptr_ty,
+                                            arena_field,
+                                            "retire.arena",
+                                        )
+                                        .map_err(|e| {
+                                            CodegenError::LlvmEmit(
+                                                e.to_string(),
+                                            )
+                                        })?;
+                                    let desc_fn = self
+                                        .module
+                                        .get_function(
+                                            "lotus_hashmap_set_retire_desc",
+                                        )
+                                        .expect("retire_desc declared");
+                                    self.builder
+                                        .build_call(
+                                            desc_fn,
+                                            &[
+                                                slot_field_ptr.into(),
+                                                g.as_pointer_value().into(),
+                                                i32_t
+                                                    .const_int(
+                                                        offs.len() as u64,
+                                                        false,
+                                                    )
+                                                    .into(),
+                                                arena.into(),
+                                            ],
+                                            "retire.desc",
+                                        )
+                                        .map_err(|e| {
+                                            CodegenError::LlvmEmit(
+                                                e.to_string(),
+                                            )
+                                        })?;
+                                }
+                            }
+                        }
+                    }
                 }
                 None => {
                     // Default F.22 lowering: allocate via

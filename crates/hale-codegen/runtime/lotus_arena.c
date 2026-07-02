@@ -2799,6 +2799,15 @@ typedef struct {
      * (`lotus_hashmap_grow` via the lock pair). */
     int lf_grow_phase;
     int64_t lf_writers_in_flight;
+    /* 2026-07-03 anchor retirement (TAIL fields — the LLVM inline
+     * mirror in locus/decl.rs appends matching entries; mid-struct
+     * insertion would shift every offset). String-field byte
+     * offsets within the VALUE, installed once by codegen via
+     * lotus_hashmap_set_retire_desc; set_unlocked/remove retire
+     * the old cell's string clones into retire_arena. */
+    const int32_t *retire_offsets;
+    int32_t retire_n;
+    void *retire_arena;
 } lotus_hashmap_t;
 
 static size_t lotus_hashmap_entry_size(const lotus_hashmap_t *m) {
@@ -2872,6 +2881,9 @@ void lotus_hashmap_init(void *map_ptr,
     m->value_size = value_size;
     m->key_type_tag = key_type_tag;
     m->cell_stride = 1 + key_size + value_size;
+    m->retire_offsets = NULL;
+    m->retire_n = 0;
+    m->retire_arena = NULL;
     m->slots = (char *)calloc(m->cap, m->cell_stride);
     /* F.32-1α: default discipline = none. Methods inspect
      * `sync_mode` and skip locking. */
@@ -3094,6 +3106,44 @@ static void lotus_hashmap_grow(lotus_hashmap_t *m) {
     free(old_slots);
 }
 
+void lotus_arena_retire_str(void *arena_ptr, char *s);
+
+/* Retire every string blob a dying/overwritten cell owns: the
+ * descriptor's value fields plus (for string-keyed maps) the key
+ * clone itself. `new_v`/`new_key` non-NULL = overwrite path, and
+ * a pointer that survives into the new cell is NOT retired (the
+ * RMW key-reuse idiom, the grow-rebuild re-insert). NULL = remove
+ * path, everything retires. */
+static void lotus_hashmap_retire_cell(lotus_hashmap_t *m, char *slot,
+                                      const char *new_key,
+                                      const char *new_v) {
+    if (!m->retire_arena) return;
+    const char *old_v = slot + 1 + m->key_size;
+    for (int32_t ri = 0; ri < m->retire_n; ri++) {
+        int32_t off = m->retire_offsets[ri];
+        char *oldp;
+        memcpy(&oldp, old_v + off, sizeof(char *));
+        if (!oldp) continue;
+        if (new_v) {
+            char *newp;
+            memcpy(&newp, new_v + off, sizeof(char *));
+            if (oldp == newp) continue;
+        }
+        lotus_arena_retire_str(m->retire_arena, oldp);
+    }
+    if (m->key_type_tag == LOTUS_HASHMAP_KEY_STRING) {
+        char *oldk;
+        memcpy(&oldk, slot + 1, sizeof(char *));
+        if (oldk) {
+            char *newk = NULL;
+            if (new_key) memcpy(&newk, new_key, sizeof(char *));
+            if (oldk != newk) {
+                lotus_arena_retire_str(m->retire_arena, oldk);
+            }
+        }
+    }
+}
+
 static void lotus_hashmap_set_unlocked(lotus_hashmap_t *m,
                                         const void *key,
                                         const void *value) {
@@ -3116,6 +3166,16 @@ static void lotus_hashmap_set_unlocked(lotus_hashmap_t *m,
      * function during rebuild) must NOT leave entries in
      * CLAIMED state — otherwise a striped probe scanning the
      * rebuilt table would spin forever on every cell. */
+    /* Anchor retirement (2026-07-03): overwriting an occupied
+     * slot orphans its old string clones — retire each one whose
+     * pointer actually CHANGES (the RMW key-reuse idiom and the
+     * grow-rebuild both pass the same pointer back; retiring a
+     * pointer that is about to be stored again would corrupt at
+     * flush). */
+    if (!was_empty) {
+        lotus_hashmap_retire_cell(m, slot, (const char *)key,
+                                  (const char *)value);
+    }
     slot[0] = LOTUS_CELL_COMMITTED;
     memcpy(slot + 1, key, m->key_size);
     memcpy(slot + 1 + m->key_size, value, m->value_size);
@@ -3732,6 +3792,11 @@ static int lotus_hashmap_remove_unlocked(lotus_hashmap_t *m,
     size_t mask = m->cap - 1;
     size_t i = lotus_hashmap_find_slot(m, key);
     if (!m->slots[i * es]) return 0;
+    /* Anchor retirement: the removed cell's string clones (value
+     * fields + string key) orphan in the arena — retire them.
+     * The backward-shift below only MOVES surviving cells (same
+     * pointers), so it needs nothing. */
+    lotus_hashmap_retire_cell(m, m->slots + i * es, NULL, NULL);
     m->slots[i * es] = 0;
     m->len--;
     size_t j = (i + 1) & mask;
@@ -4177,16 +4242,14 @@ typedef struct lotus_retire_shell {
     struct lotus_retire_shell *next;
 } lotus_retire_shell_t;
 
-/* Retire a replaced String/Bytes blob. Gates: in THIS arena (never
- * another arena's block or a .rodata literal) and non-NULL. The
- * blob's bytes stay intact until the flush. */
-void lotus_arena_retire(void *arena_ptr, void *blob) {
-    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+/* Shared retire core: track (blob, size) on the pending list.
+ * Gates: in THIS arena (contains_ptr also excludes .rodata
+ * literals) and non-NULL. The blob's bytes stay intact until the
+ * flush. */
+static void lotus_arena_retire_sized(lotus_arena_t *a, void *blob,
+                                     size_t size) {
     if (!a || !blob) return;
     if (!lotus_arena_contains_ptr(a, blob)) return;
-    int64_t len = *(int64_t *)blob;
-    if (len < 0) return;
-    size_t size = (size_t)len + 9;           /* len prefix + NUL   */
     lotus_retire_shell_t *sh = (lotus_retire_shell_t *)a->retire_shells;
     if (sh) {
         a->retire_shells = sh->next;
@@ -4199,6 +4262,32 @@ void lotus_arena_retire(void *arena_ptr, void *blob) {
     sh->size = size;
     sh->next = (lotus_retire_shell_t *)a->retire_pending;
     a->retire_pending = sh;
+}
+
+/* Hale Strings are NUL-terminated char* — the clone family
+ * allocates exactly strlen+1 at align 1 (the assign_in_place
+ * capacity invariant), so strlen recovers the block size. */
+void lotus_arena_retire_str(void *arena_ptr, char *s) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (!a || !s) return;
+    if (!lotus_arena_contains_ptr(a, s)) return;
+    /* Clone allocations are floored at 16 bytes (see
+     * lotus_str_clone), so short strings still make viable
+     * freelist nodes. */
+    size_t n = strlen(s) + 1;
+    lotus_arena_retire_sized(a, s, n < 16 ? 16 : n);
+}
+
+/* Install the retire descriptor on a map (codegen, once at
+ * instantiation; offsets point at a static global). */
+void lotus_hashmap_set_retire_desc(void *map_ptr,
+                                   const int32_t *offsets,
+                                   int32_t n, void *arena) {
+    if (!map_ptr) return;
+    lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
+    m->retire_offsets = offsets;
+    m->retire_n = n;
+    m->retire_arena = arena;
 }
 
 /* Activation boundary: pending blobs become reusable. The intrusive
@@ -4214,9 +4303,11 @@ void lotus_arena_flush_retired(void *arena_ptr) {
     while (sh) {
         lotus_retire_shell_t *next = sh->next;
         if (sh->size >= 16) {
+            /* String blobs are align-1; unaligned on purpose
+             * (fine on x86-64, the only native target). */
             char *b = (char *)sh->blob;
-            *(size_t *)b = sh->size;
-            *(void **)(b + 8) = a->retire_free;
+            memcpy(b, &sh->size, sizeof(size_t));
+            memcpy(b + 8, &a->retire_free, sizeof(void *));
             a->retire_free = b;
         }
         sh->next = (lotus_retire_shell_t *)a->retire_shells;
@@ -4228,16 +4319,25 @@ void lotus_arena_flush_retired(void *arena_ptr) {
 /* Bounded first-fit pop for the allocator (mirrors the
  * child-struct recycler's probe discipline). Returns NULL on miss. */
 static void *lotus_retire_free_pop(lotus_arena_t *a, size_t size) {
-    void **prev = &a->retire_free;
+    void *cur = a->retire_free;
+    void *prev_blob = NULL;
     int probes = 0;
-    while (*prev && probes < 8) {
-        char *b = (char *)*prev;
-        size_t bsize = *(size_t *)b;
+    while (cur && probes < 8) {
+        char *b = (char *)cur;
+        size_t bsize;
+        void *next;
+        memcpy(&bsize, b, sizeof(size_t));
+        memcpy(&next, b + 8, sizeof(void *));
         if (bsize >= size && bsize <= size + (size >> 2) + 16) {
-            *prev = *(void **)(b + 8);
+            if (prev_blob) {
+                memcpy((char *)prev_blob + 8, &next, sizeof(void *));
+            } else {
+                a->retire_free = next;
+            }
             return b;
         }
-        prev = (void **)(b + 8);
+        prev_blob = cur;
+        cur = next;
         probes++;
     }
     return NULL;
@@ -7509,7 +7609,14 @@ char *lotus_str_clone(lotus_arena_t *a, const char *s) {
         return (char *)s;
     }
     size_t n = strlen(s);
-    char *out = (char *)lotus_arena_alloc(a, n + 1, 1);
+    /* 2026-07-03: consult the retired-block freelist first —
+     * steady-state re-anchors reuse the previous generation's
+     * clones instead of growing the arena. Floor of 16 bytes so
+     * every clone can later carry a freelist node (size@0,next@8);
+     * strlen stays the conservative capacity bound the
+     * assign_in_place path relies on. */
+    size_t alloc_n = n + 1 < 16 ? 16 : n + 1;
+    char *out = (char *)lotus_arena_alloc_reusable(a, alloc_n, 1);
     if (!out) return NULL;
     memcpy(out, s, n);
     out[n] = '\0';

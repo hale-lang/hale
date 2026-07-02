@@ -886,6 +886,11 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                             i64_t.into(),  // tombstone_count (F.32-1γ-v2 session 1)
                             i32_t.into(),  // lf_grow_phase (F.32-1γ-v2 session 3)
                             i64_t.into(),  // lf_writers_in_flight (4-byte pad inserted before)
+                            // 2026-07-03 anchor retirement tail
+                            // (mirrors lotus_hashmap_t exactly):
+                            ptr_t.into(),  // retire_offsets
+                            i32_t.into(),  // retire_n (4-byte pad after)
+                            ptr_t.into(),  // retire_arena
                         ],
                         false,
                     );

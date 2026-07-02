@@ -7,10 +7,16 @@
 #   manifest.json              — the example index (copied from examples/)
 #
 # Each example is authored as a normal Hale program ending in `fn main()`.
-# The wasm target has no `main` (the host drives `@export` entries), so we
-# wrap it: prepend `target wasm { }` and rewrite `fn main() { … }` into an
-# `@export locus __Tour { birth() { … } }`. The loader's `_hale_start` runs
-# birth() once on load; `println` is captured by the page.
+# The wasm target has no `main` (the host drives `@export` entries), so the
+# compiler's `--wrap-main` flag synthesizes the entry on the AST: it turns
+# `fn main` into an `@export locus` and injects the `target wasm { }` gate,
+# string/comment-safe and preserving source spans. The loader's
+# `_hale_start` runs the synthesized birth() once on load; `println` is
+# captured by the page.
+#
+# Examples already written as an `@export locus` (e.g. the frame()-driven
+# sim, and ui.hl) have no `fn main`, so `--wrap-main` leaves them alone and
+# does NOT inject the gate — those we still front with `target wasm { }`.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -31,20 +37,18 @@ shopt -s nullglob
 for src in examples/*.hl; do
   name="$(basename "$src" .hl)"
   built="$tmp/$name.hl"
-  if grep -q '^fn main() {$' "$src"; then
-    # batch program: wrap `fn main() { … }` as an @export entry locus
-    {
-      echo 'target wasm { }'; echo
-      sed 's/^fn main() {$/@export locus __Tour {\n    birth() {/' "$src"
-      echo '}'
-    } > "$built"
-  else
-    # already an @export locus (e.g. a frame()-driven sim): just set the target
+  if grep -q '@export' "$src"; then
+    # already an @export locus (e.g. a frame()-driven sim): --wrap-main is
+    # a no-op for it and won't add the gate, so front it with the target.
     { echo 'target wasm { }'; echo; cat "$src"; } > "$built"
+  else
+    # a normal `fn main` program: hand it over verbatim — --wrap-main
+    # synthesizes the @export entry and the target gate on the AST.
+    cp "$src" "$built"
   fi
 
   echo ">> building $name"
-  "$HALE" build "$built" --target wasm32
+  "$HALE" build "$built" --target wasm32 --wrap-main
   mv "$tmp/$name.wasm" "$tmp/$name.mjs" "$DIST/"
   cp "$src" "$DIST/$name.hl"
 done
@@ -56,7 +60,7 @@ cp examples/manifest.json "$DIST/manifest.json"
 if [ -f ui.hl ]; then
   echo ">> building ui (Hale @export locus controller)"
   { echo 'target wasm { }'; echo; cat ui.hl; } > "$tmp/ui.hl"
-  "$HALE" build "$tmp/ui.hl" --target wasm32
+  "$HALE" build "$tmp/ui.hl" --target wasm32 --wrap-main
   mv "$tmp/ui.wasm" "$tmp/ui.mjs" "$DIST/"
 fi
 

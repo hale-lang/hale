@@ -1,6 +1,21 @@
 # Anchor retirement — reclaiming replaced heap clones
 
-Status: DESIGN + runtime primitives (2026-07-03). The TP-3 class
+Status: SHIPPED for @form(hashmap) sync=none (2026-07-03) — set
+overwrite, remove, and string keys all retire; flush at USER-method
+scratch destroy (never in form-synthesized methods — a caller-held
+cell copy must survive its own activation, and that placement was
+also the per-set overhead); clones floor at 16 bytes so every blob
+can carry a freelist node. Validated: 4M-set churn over 16 keys with
+fresh key+value strings per set = 4.8 MB flat RSS (was 207 MB —
+~50 B/set, the audited on_mark shape). Full suite green; pond +
+fathom corpus builds; riskgw smoke passes. GOTCHA that cost a
+segfault: lotus_hashmap_t is mirrored FIELD-FOR-FIELD by an inline
+LLVM struct in locus/decl.rs — new C fields go at the TAIL of both.
+Remaining: compound self.field-store retire (assign_in_place covers
+the direct-String case; struct-store leaves the old field clones),
+synced maps (needs an epoch scheme — cross-thread readers), vec
+cells, run-loop direct sets (no activation boundary — pending list
+just holds; no worse than before). The TP-3 class
 from the stage-5 audit: 53 corpus sites where a hashmap `set` or a
 compound `self.field = Struct{...}` store anchors a fresh String
 clone into the locus arena and the PREVIOUS clone for the same slot

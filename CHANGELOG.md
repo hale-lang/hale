@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Anchor retirement — the TP-3 leak class is fixed for
+  @form(hashmap).** Overwriting or removing a map row used to orphan
+  the old cell's String clones in the locus arena forever (the
+  audit's biggest true-positive class: 53 corpus sites; riskgw's
+  marks/on_mark shape leaked per market-data frame). Now: sync=none
+  string-celled maps carry a String-field offset descriptor
+  (installed at instantiation from TargetData layout); set/remove
+  retire the replaced clones (pointer-difference guarded, so the
+  RMW key-reuse idiom and grow-rebuild stay no-ops); retired blobs
+  flush to a size-classed freelist at the USER activation boundary
+  (sound by the method-scratch argument — bytes stay intact while
+  any legal holder can exist); `lotus_str_clone` reuses flushed
+  blocks (16-byte floor so every clone can carry a freelist node).
+  Steady-state churn (4M sets, 16 keys, fresh strings per set):
+  4.8 MB flat RSS, was 207 MB. Synced maps, vec cells, and compound
+  self-store retire are staged in notes/anchor-retirement.md.
+
 - **Batched @form(hashmap) iteration — walk_large 0.30 → 0.82 vs
   Rust.** `for e in m.entries` now fills a 64-entry stack batch per
   C call instead of one call per element: plain (sync = none,
