@@ -8,6 +8,19 @@ behavior.
 
 ## Unreleased
 
+- **Fallible `or` handlers — `call() or handler(err)` now accepts a
+  handler that is itself `fallible(E2)`.** The handler's success value
+  substitutes; its failure propagates through the ENCLOSING fn's error
+  path (implicit `or raise` — sugar for the already-legal nested form
+  `call() or (handler(err) or raise)`). E2 must be assignable to the
+  enclosing fn's fallible payload; targeted diagnostics otherwise
+  ("handler's failure has nowhere to go" / "propagated payload must
+  match"). Free-fn, imported-path, and locus-member handlers are
+  classified; `@form` synthesized methods and stdlib path-calls still
+  need the explicit nested spelling. This closes the pond stash-bridge
+  idiom: `jobs::Queue`'s DbError→JobError conversion no longer needs
+  private stash fields, removing its non-reentrancy hazard.
+
 - **DWARF debug info — `hale build` binaries now carry line tables for
   Hale code and full debug info for the runtime.** Every statement gets
   a file:line location (emission kind LineTablesOnly, DWARF 5); the

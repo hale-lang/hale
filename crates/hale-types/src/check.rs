@@ -7960,6 +7960,73 @@ impl<'a> Checker<'a> {
                         } else {
                             false
                         };
+                        // 2026-07-02 fallible handlers: the substitute
+                        // may itself be a fallible call —
+                        // `db() or self.convert(err)` where `convert`
+                        // is `fallible(E2)`. Semantics are implicit
+                        // `or raise` on the handler: its success value
+                        // substitutes; its failure propagates through
+                        // the ENCLOSING fn's error path, so E2 must be
+                        // assignable to the enclosing fallible
+                        // payload. (Sugar for the already-legal
+                        // `db() or (self.convert(err) or raise)` —
+                        // this closes the pond stash-bridge idiom that
+                        // made jobs::Queue non-reentrant.)
+                        if let Ty::Fallible {
+                            success: h_success,
+                            payload: h_payload,
+                        } = &rhs_ty
+                        {
+                            if !success.assignable_from(h_success) {
+                                self.diags.push(Diag::ty(
+                                    *span,
+                                    format!(
+                                        "`or <handler>`: handler's success \
+                                         type `{}` does not match the \
+                                         call's success type `{}`",
+                                        h_success.display(),
+                                        success.display()
+                                    ),
+                                ));
+                            }
+                            match &self.fallible_ctx {
+                                None => self.diags.push(Diag::ty(
+                                    *span,
+                                    format!(
+                                        "`or <handler>`: handler is \
+                                         `fallible({})` but the enclosing \
+                                         fn is not fallible — the \
+                                         handler's failure has nowhere to \
+                                         go. Declare the enclosing fn \
+                                         `fallible({})`, or handle inside \
+                                         the handler and drop its \
+                                         `fallible`",
+                                        h_payload.display(),
+                                        h_payload.display()
+                                    ),
+                                )),
+                                Some((_, expected_payload)) => {
+                                    if !expected_payload
+                                        .assignable_from(h_payload)
+                                    {
+                                        self.diags.push(Diag::ty(
+                                            *span,
+                                            format!(
+                                                "`or <handler>`: handler \
+                                                 fails with `{}` but the \
+                                                 enclosing fn is \
+                                                 `fallible({})` — the \
+                                                 propagated payload must \
+                                                 match",
+                                                h_payload.display(),
+                                                expected_payload.display()
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
+                            return success;
+                        }
                         // The substitute RHS must produce a
                         // value of the success type (or be a
                         // nested `or` that ultimately produces
