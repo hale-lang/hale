@@ -115,11 +115,10 @@ that fall out: router::RouteParams, agent/llm messages,
 agent/conversation history, agent/embeddings vectors (stage 0
 already suffices for embeddings).
 
-Open questions for Riley:
-1. Keyword: `bounded[T; N]` vs `[T; N cap]` vs `vec[T; N]`?
-2. push-at-cap: `Bool` return (caller displaces) vs
-   `fallible(CapacityError)`? The H7 displacement reading favors
-   Bool; fallible matches the rest of the fallible surface.
-3. Should `for x in m.history` iterate live slots when the
-   @form iteration surface (task #11) lands? (Presumably yes —
-   same lowering.)
+Surface decisions — LOCKED by Riley 2026-07-02:
+1. Keyword: **`bounded[T; N]`**.
+2. push-at-cap: **`fallible(CapacityError)`** (consistent with the
+   fallible surface; callers that want H7 displacement write the
+   policy in the `or` arm).
+3. Iteration: **yes** — `for x in m.history` iterates live slots
+   (0..count), same lowering as the @form iteration surface.

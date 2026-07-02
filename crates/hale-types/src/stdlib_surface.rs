@@ -16,6 +16,128 @@
 //! `spec/stdlib.md`'s module-surface table. When those two
 //! disagree, the DISPATCH is reality; fix the spec.
 
+use hale_syntax::ast::PrimType;
+
+use crate::ty::Ty;
+
+/// M3 stage 2 (2026-07-02): const-constructible type vocabulary for
+/// the signature table. Maps to `Ty` at check time. `Any` types as
+/// Unknown — bidirectionally assignable — for the rare polymorphic
+/// arg; use it rather than guessing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SigTy {
+    Int,
+    Uint,
+    Float,
+    Bool,
+    Str,
+    Bytes,
+    BytesMut,
+    Decimal,
+    Duration,
+    Time,
+    Unit,
+    Any,
+}
+
+impl SigTy {
+    pub fn to_ty(self) -> Ty {
+        match self {
+            SigTy::Int => Ty::Prim(PrimType::Int),
+            SigTy::Uint => Ty::Prim(PrimType::Uint),
+            SigTy::Float => Ty::Prim(PrimType::Float),
+            SigTy::Bool => Ty::Prim(PrimType::Bool),
+            SigTy::Str => Ty::Prim(PrimType::String),
+            SigTy::Bytes => Ty::Prim(PrimType::Bytes),
+            SigTy::BytesMut => Ty::Prim(PrimType::BytesMut),
+            SigTy::Decimal => Ty::Prim(PrimType::Decimal),
+            SigTy::Duration => Ty::Prim(PrimType::Duration),
+            SigTy::Time => Ty::Prim(PrimType::Time),
+            SigTy::Unit => Ty::Unit,
+            SigTy::Any => Ty::Unknown,
+        }
+    }
+
+    /// Arg-position acceptance — strict prim equality plus the
+    /// coercions the LOWERING actually performs (verified per-fn,
+    /// 2026-07-02), permissive on Unknown either side:
+    /// - Bytes family: BytesView/BytesMut are runtime-identical
+    ///   windows; readers accept all three (raw `_raw` siblings).
+    /// - Str accepts StringView (unpack_view_if_needed at every
+    ///   String-arg position).
+    /// - Float accepts Int/Uint (math fns sitofp-coerce).
+    pub fn accepts(self, got: &Ty) -> bool {
+        if matches!(got, Ty::Unknown) || self == SigTy::Any {
+            return true;
+        }
+        match (self, got) {
+            (
+                SigTy::Bytes | SigTy::BytesMut,
+                Ty::Prim(
+                    PrimType::Bytes
+                    | PrimType::BytesView
+                    | PrimType::BytesMut,
+                ),
+            ) => true,
+            (
+                SigTy::Str,
+                Ty::Prim(PrimType::String | PrimType::StringView),
+            ) => true,
+            (
+                SigTy::Float,
+                Ty::Prim(
+                    PrimType::Float | PrimType::Int | PrimType::Uint,
+                ),
+            ) => true,
+            _ => self.to_ty().assignable_from(got),
+        }
+    }
+}
+
+/// One signature row. `fallible` carries the stdlib error type's
+/// NAME (users declare the shape locally; resolve.rs's
+/// check_stdlib_error_shadowing validates it), producing
+/// `Ty::Fallible { success: ret, payload: Named(name) }` so `or`
+/// dispositions check the substitute/handler against the REAL
+/// success type instead of Unknown.
+pub struct FnSig {
+    pub ns: &'static [&'static str],
+    pub name: &'static str,
+    pub params: &'static [SigTy],
+    pub ret: SigTy,
+    pub fallible: Option<&'static str>,
+}
+
+/// Look up the signature for a full `std::...` path (segs including
+/// the leading "std").
+pub fn signature_for(segs: &[&str]) -> Option<&'static FnSig> {
+    if segs.first() != Some(&"std") {
+        return None;
+    }
+    SIGS.iter().find(|s| {
+        segs.len() == s.ns.len() + 2
+            && segs[1..=s.ns.len()] == *s.ns
+            && segs[s.ns.len() + 1] == s.name
+    })
+}
+
+impl FnSig {
+    pub fn ret_ty(&self) -> Ty {
+        let ret = self.ret.to_ty();
+        match self.fallible {
+            Some(err) => Ty::Fallible {
+                success: Box::new(ret),
+                payload: Box::new(Ty::Named(err.to_string())),
+            },
+            None => ret,
+        }
+    }
+
+    pub fn display_path(&self) -> String {
+        format!("std::{}::{}", self.ns.join("::"), self.name)
+    }
+}
+
 /// One namespace's accepted surface.
 pub struct NsSurface {
     /// Path segments after `std` identifying the namespace
@@ -418,3 +540,172 @@ pub fn unknown_fn_error(segs: &[&str]) -> Option<String> {
         ns_path, name, hint
     ))
 }
+
+// M3 stage 2 signature rows — see FnSig. Filled from the
+// per-function lowering verification (each lowering fn's arg-count
+// checks + type coercions read directly, cross-checked against
+// spec/stdlib.md); UNCERTAIN rows are EXCLUDED, not guessed:
+// - str::builder_* / can_parse_decimal (spec lists it, dispatch
+//   doesn't implement it — flagged for the spec);
+// - everything io::fs/tcp/tls/udp/file (String-heavy tranche 2).
+macro_rules! sig {
+    ($ns:expr, $name:literal, [$($p:ident),*], $ret:ident) => {
+        FnSig { ns: $ns, name: $name,
+                params: &[$(SigTy::$p),*], ret: SigTy::$ret,
+                fallible: None }
+    };
+    ($ns:expr, $name:literal, [$($p:ident),*], $ret:ident, $err:literal) => {
+        FnSig { ns: $ns, name: $name,
+                params: &[$(SigTy::$p),*], ret: SigTy::$ret,
+                fallible: Some($err) }
+    };
+}
+
+const NS_MATH: &[&str] = &["math"];
+const NS_TIME: &[&str] = &["time"];
+const NS_ENV: &[&str] = &["env"];
+const NS_DEC: &[&str] = &["decimal"];
+const NS_PROC: &[&str] = &["process"];
+const NS_STR: &[&str] = &["str"];
+const NS_STDIN: &[&str] = &["io", "stdin"];
+const NS_STDOUT: &[&str] = &["io", "stdout"];
+const NS_BYTES: &[&str] = &["bytes"];
+const NS_CRYPTO: &[&str] = &["crypto"];
+const NS_B64: &[&str] = &["text", "base64"];
+const NS_RAND: &[&str] = &["rand"];
+
+pub const SIGS: &[FnSig] = &[
+    // std::math — unary/binary fns sitofp-coerce Int args.
+    sig!(NS_MATH, "sqrt", [Float], Float),
+    sig!(NS_MATH, "exp", [Float], Float),
+    sig!(NS_MATH, "log", [Float], Float),
+    sig!(NS_MATH, "floor", [Float], Float),
+    sig!(NS_MATH, "ceil", [Float], Float),
+    sig!(NS_MATH, "pow", [Float, Float], Float),
+    sig!(NS_MATH, "tanh", [Float], Float),
+    sig!(NS_MATH, "nan", [], Float),
+    sig!(NS_MATH, "inf", [], Float),
+    sig!(NS_MATH, "is_nan", [Float], Bool),
+    sig!(NS_MATH, "sin", [Float], Float),
+    sig!(NS_MATH, "cos", [Float], Float),
+    sig!(NS_MATH, "tan", [Float], Float),
+    sig!(NS_MATH, "asin", [Float], Float),
+    sig!(NS_MATH, "acos", [Float], Float),
+    sig!(NS_MATH, "atan", [Float], Float),
+    sig!(NS_MATH, "atan2", [Float, Float], Float),
+    sig!(NS_MATH, "int_to_float", [Int], Float),
+    sig!(NS_MATH, "float_to_int", [Float], Int),
+    sig!(NS_MATH, "round", [Float], Int),
+    sig!(NS_MATH, "trunc", [Float], Int),
+    // std::time — sleep takes Duration (Int rejected in lowering);
+    // now() is epoch SECONDS as Int; time_from_unix returns Time.
+    sig!(NS_TIME, "monotonic", [], Duration),
+    sig!(NS_TIME, "monotonic_ns", [], Int),
+    sig!(NS_TIME, "sleep", [Duration], Unit),
+    sig!(NS_TIME, "now", [], Int),
+    sig!(NS_TIME, "time_from_unix", [Int], Time),
+    // std::env
+    sig!(NS_ENV, "args_count", [], Int),
+    sig!(NS_ENV, "arg", [Int], Str),
+    sig!(NS_ENV, "arg_or", [Int, Str], Str),
+    sig!(NS_ENV, "var", [Str], Str),
+    sig!(NS_ENV, "var_exists", [Str], Bool),
+    // std::decimal
+    sig!(NS_DEC, "to_float", [Decimal], Float),
+    // std::process (scalar subset; run/spawn/wait/... in tranche 2)
+    sig!(NS_PROC, "pid", [], Int),
+    sig!(NS_PROC, "exit", [Int], Unit),
+    sig!(NS_PROC, "rss_bytes", [], Int),
+    sig!(NS_PROC, "dump_arena_residency", [], Int),
+    sig!(NS_PROC, "dump_pool_residency", [], Int),
+    // std::str (builder_* excluded — opaque handle API)
+    sig!(NS_STR, "parse_int", [Str], Int, "ParseError"),
+    sig!(NS_STR, "parse_float", [Str], Float, "ParseError"),
+    sig!(NS_STR, "parse_decimal", [Str], Decimal, "ParseError"),
+    sig!(NS_STR, "can_parse_int", [Str], Bool),
+    sig!(NS_STR, "can_parse_float", [Str], Bool),
+    sig!(NS_STR, "range_parse_int", [Str, Int, Int], Int, "ParseError"),
+    sig!(
+        NS_STR,
+        "range_parse_decimal",
+        [Str, Int, Int],
+        Decimal,
+        "ParseError"
+    ),
+    sig!(NS_STR, "range_eq", [Str, Int, Int, Str], Bool),
+    sig!(NS_STR, "byte_at_unchecked", [Str, Int], Int),
+    sig!(NS_STR, "index_of", [Str, Str], Int),
+    sig!(NS_STR, "lower", [Str], Str),
+    sig!(NS_STR, "upper", [Str], Str),
+    sig!(NS_STR, "trim", [Str], Str),
+    sig!(NS_STR, "substring", [Str, Int, Int], Str),
+    sig!(NS_STR, "replace", [Str, Str, Str], Str),
+    sig!(NS_STR, "repeat", [Str, Int], Str),
+    sig!(NS_STR, "pad_left", [Str, Int, Str], Str),
+    sig!(NS_STR, "pad_right", [Str, Int, Str], Str),
+    sig!(NS_STR, "from_bytes", [Bytes], Str),
+    sig!(NS_STR, "clone", [Str], Str),
+    // std::io::stdin / stdout
+    sig!(NS_STDIN, "read_line", [], Str),
+    sig!(NS_STDIN, "read_line_status", [], Int),
+    sig!(NS_STDIN, "read_byte", [Int], Int),
+    sig!(NS_STDOUT, "write_bytes", [Str], Int),
+    // std::bytes — reads accept Bytes/BytesView/BytesMut; writes
+    // require a BytesMut window (accepts() stays permissive on the
+    // family, favoring no-false-error over full strictness).
+    sig!(NS_BYTES, "at", [Bytes, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "slice", [Bytes, Int, Int], Bytes),
+    sig!(NS_BYTES, "from_string", [Str], Bytes),
+    sig!(NS_BYTES, "from_int", [Int], Bytes),
+    sig!(NS_BYTES, "concat", [Bytes, Bytes], Bytes),
+    sig!(NS_BYTES, "clone", [Bytes], Bytes),
+    sig!(NS_BYTES, "find_byte", [Bytes, Int, Int], Int),
+    sig!(NS_BYTES, "read_u8", [Bytes, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "read_u16_le", [Bytes, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "read_u16_be", [Bytes, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "read_u32_le", [Bytes, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "read_u32_be", [Bytes, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "read_u64_le", [Bytes, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "read_u64_be", [Bytes, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "read_i8", [Bytes, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "read_i16_le", [Bytes, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "read_i16_be", [Bytes, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "read_i32_le", [Bytes, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "read_i32_be", [Bytes, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "read_i64_le", [Bytes, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "read_i64_be", [Bytes, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "read_f32_le", [Bytes, Int], Float, "IndexError"),
+    sig!(NS_BYTES, "read_f64_le", [Bytes, Int], Float, "IndexError"),
+    sig!(NS_BYTES, "read_f64_be", [Bytes, Int], Float, "IndexError"),
+    sig!(NS_BYTES, "write_u8", [BytesMut, Int, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "write_u16_le", [BytesMut, Int, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "write_u16_be", [BytesMut, Int, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "write_u32_le", [BytesMut, Int, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "write_u32_be", [BytesMut, Int, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "write_u64_le", [BytesMut, Int, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "write_u64_be", [BytesMut, Int, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "write_i8", [BytesMut, Int, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "write_i16_le", [BytesMut, Int, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "write_i16_be", [BytesMut, Int, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "write_i32_le", [BytesMut, Int, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "write_i32_be", [BytesMut, Int, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "write_i64_le", [BytesMut, Int, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "write_i64_be", [BytesMut, Int, Int], Int, "IndexError"),
+    sig!(NS_BYTES, "write_f32_le", [BytesMut, Int, Float], Int, "IndexError"),
+    sig!(NS_BYTES, "write_f64_le", [BytesMut, Int, Float], Int, "IndexError"),
+    sig!(NS_BYTES, "write_f64_be", [BytesMut, Int, Float], Int, "IndexError"),
+    // std::crypto
+    sig!(NS_CRYPTO, "sha1", [Bytes], Bytes),
+    sig!(NS_CRYPTO, "sha256", [Bytes], Bytes),
+    sig!(NS_CRYPTO, "sha512", [Bytes], Bytes),
+    sig!(NS_CRYPTO, "crc32", [Bytes], Int),
+    sig!(NS_CRYPTO, "hmac_sha256", [Bytes, Bytes], Bytes),
+    sig!(NS_CRYPTO, "hmac_sha512", [Bytes, Bytes], Bytes),
+    // std::text::base64
+    sig!(NS_B64, "encode", [Bytes], Str),
+    sig!(NS_B64, "decode", [Str], Bytes),
+    sig!(NS_B64, "url_encode", [Bytes], Str),
+    // std::rand
+    sig!(NS_RAND, "next_int", [Int], Int),
+    sig!(NS_RAND, "seed_from_time", [], Unit),
+];

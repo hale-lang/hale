@@ -7689,6 +7689,53 @@ impl<'a> Checker<'a> {
                         {
                             self.diags.push(Diag::ty(qn.span, msg));
                         }
+                        // M3 stage 2 (2026-07-02): signature
+                        // enforcement — arity, arg types, and the
+                        // REAL return type (killing the Unknown
+                        // passthrough for tabled fns). Fallible rows
+                        // return Ty::Fallible, so `or 0` on an
+                        // Int-success call checks the substitute
+                        // against Int and codegen's must-address
+                        // rule gets a typecheck twin.
+                        if let Some(sig) =
+                            crate::stdlib_surface::signature_for(&segs)
+                        {
+                            if args.len() != sig.params.len() {
+                                self.diags.push(Diag::ty(
+                                    qn.span,
+                                    format!(
+                                        "`{}` takes {} argument{}, got {}",
+                                        sig.display_path(),
+                                        sig.params.len(),
+                                        if sig.params.len() == 1 {
+                                            ""
+                                        } else {
+                                            "s"
+                                        },
+                                        args.len()
+                                    ),
+                                ));
+                            }
+                            for (i, a) in args.iter().enumerate() {
+                                let got = self.check_expr_addressed(a);
+                                if let Some(want) = sig.params.get(i) {
+                                    if !want.accepts(&got) {
+                                        self.diags.push(Diag::ty(
+                                            a.span(),
+                                            format!(
+                                                "`{}` argument {}: expected \
+                                                 `{}`, got `{}`",
+                                                sig.display_path(),
+                                                i + 1,
+                                                want.to_ty().display(),
+                                                got.display()
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
+                            return sig.ret_ty();
+                        }
                     }
                 }
                 // m47-payloads: enum-variant construction with

@@ -8,6 +8,26 @@ behavior.
 
 ## Unreleased
 
+- **Typecheck M3 stage 2 — stdlib signatures for the scalar-heavy
+  namespaces.** 118 functions across std::math/time/env/decimal/
+  process(scalar)/str/io::stdin/io::stdout/bytes/crypto/
+  text::base64/rand now have full signature rows: arity and arg
+  types are enforced, and calls return their REAL type instead of
+  the permissive Unknown — `std::math::sqrt("four")`,
+  `std::math::pow(2.0)`, and `std::time::sleep(100)` (Int where
+  Duration is required) are now typecheck errors with spans.
+  Fallible rows return `Ty::Fallible`, so `parse_int(s) or ""`
+  is caught (`or` substitute checked against the Int success type).
+  The table's coercions mirror what each lowering actually does
+  (verified per-fn): math sitofp-coerces Int args, every String
+  position accepts StringView, readers accept the whole Bytes
+  family. Uncertain rows are names-only, not guessed —
+  str::builder_* (opaque handles) and can_parse_decimal (in the
+  spec, NOT in the dispatch — spec bug, flagged). io::fs/tcp/tls/
+  udp/file are the string-heavy tranche 2. Gate: zero new type
+  errors across pond, fathom, and the example corpus (the two hits
+  found were verified pre-existing at the unmodified baseline).
+
 - **Typecheck M3 stage 4 — expose-side contract validity + exposed-mode
   syntax.** Every `expose` entry must now bind against something real
   on the declaring locus — a params field, a mode, or a `fn` member —
