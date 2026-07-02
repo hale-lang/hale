@@ -663,6 +663,16 @@ struct TypeSizeInfo {
 fn type_size_info(ty: &TypeExpr, idx: &Index<'_>) -> TypeSizeInfo {
     match ty {
         TypeExpr::Primitive(p, _) => primitive_size_info(*p),
+        TypeExpr::Bounded { elem, cap, .. } => {
+            // { i64 len, [N x T] } inline.
+            let e = type_size_info(elem, idx);
+            let data = round_up(8, e.align) + e.size * *cap;
+            TypeSizeInfo {
+                size: round_up(data, 8.max(e.align)),
+                align: 8.max(e.align),
+                unbounded: e.unbounded,
+            }
+        }
         TypeExpr::Tuple(parts, _) => {
             let mut size: u64 = 0;
             let mut align: u64 = 1;

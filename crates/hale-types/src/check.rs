@@ -3733,6 +3733,9 @@ fn scan_flood_in_if(i: &IfStmt, locus: &str, diags: &mut Vec<Diag>) {
 fn type_expr_key(t: &TypeExpr) -> String {
     match t {
         TypeExpr::Primitive(p, _) => format!("{:?}", p),
+        TypeExpr::Bounded { elem, cap, .. } => {
+            format!("bounded[{}; {}]", type_expr_key(elem), cap)
+        }
         TypeExpr::Named { path, generic_args, .. } => {
             let base = path
                 .segments
@@ -3913,6 +3916,10 @@ fn collect_known_names(top: &TopScope) -> BTreeMap<String, Span> {
 /// of this predicate already handles that path.
 fn ffi_type_unportable(ty: &Ty) -> Option<&'static str> {
     match ty {
+        Ty::Bounded(_, _) => Some(
+            "bounded[T; N] has no portable C mapping — pass the \
+             element pointer + count separately",
+        ),
         Ty::Prim(p) => match p {
             PrimType::Int
             | PrimType::Float
@@ -6720,6 +6727,18 @@ impl<'a> Checker<'a> {
             Stmt::Assign { target, value, span, .. } => {
                 let got = self.check_expr_addressed(value);
                 let want = self.lvalue_ty(target);
+                // bounded[T; N] fields cannot be whole-assigned
+                // (even from another bounded of the same shape —
+                // no copy semantics exist; the mutation surface is
+                // push/clear).
+                if matches!(want, Ty::Bounded(_, _)) {
+                    self.diags.push(Diag::ty(
+                        *span,
+                        "bounded[T; N] fields cannot be assigned as a \
+                         whole — mutate through push(...) / clear(...)"
+                            .to_string(),
+                    ));
+                }
                 if !want.assignable_from(&got) {
                     self.diags.push(Diag::ty(
                         value.span(),
@@ -7718,6 +7737,8 @@ impl<'a> Checker<'a> {
                         if let Some(sig) =
                             crate::stdlib_surface::signature_for(&segs)
                         {
+                            // (bounded-intrinsic block is below —
+                            // stdlib paths never collide with it.)
                             if args.len() != sig.params.len() {
                                 self.diags.push(Diag::ty(
                                     qn.span,
@@ -7754,6 +7775,105 @@ impl<'a> Checker<'a> {
                             }
                             return sig.ret_ty();
                         }
+                    }
+                }
+                // bounded[T; N] intrinsics (2026-07-02):
+                // push/at/count/clear over a bounded-typed first
+                // arg. Probed speculatively — when arg0 isn't
+                // bounded, its diags are rolled back and the call
+                // falls through to the normal paths.
+                if let Expr::Ident(id) = callee.as_ref() {
+                    if matches!(
+                        id.name.as_str(),
+                        "push" | "at" | "count" | "clear"
+                    ) && !args.is_empty()
+                    {
+                        let mark = self.diags.len();
+                        let recv_ty = self.check_expr(&args[0]);
+                        if let Ty::Bounded(elem, _cap) = recv_ty {
+                            let want_args = match id.name.as_str() {
+                                "push" | "at" => 2,
+                                _ => 1,
+                            };
+                            if args.len() != want_args {
+                                self.diags.push(Diag::ty(
+                                    callee.span(),
+                                    format!(
+                                        "`{}(bounded, ...)` takes {} \
+                                         argument{}, got {}",
+                                        id.name,
+                                        want_args,
+                                        if want_args == 1 { "" } else { "s" },
+                                        args.len()
+                                    ),
+                                ));
+                            }
+                            match id.name.as_str() {
+                                "push" => {
+                                    if let Some(x) = args.get(1) {
+                                        let xt =
+                                            self.check_expr_addressed(x);
+                                        let widen_ok = matches!(
+                                            (elem.as_ref(), &xt),
+                                            (
+                                                Ty::Prim(PrimType::Float),
+                                                Ty::Prim(PrimType::Int)
+                                            )
+                                        );
+                                        if !widen_ok
+                                            && !elem.assignable_from(&xt)
+                                        {
+                                            self.diags.push(Diag::ty(
+                                                x.span(),
+                                                format!(
+                                                    "push: element type \
+                                                     `{}` does not match \
+                                                     bounded element `{}`",
+                                                    xt.display(),
+                                                    elem.display()
+                                                ),
+                                            ));
+                                        }
+                                    }
+                                    return Ty::Fallible {
+                                        success: Box::new(Ty::Unit),
+                                        payload: Box::new(Ty::Named(
+                                            "CapacityError".into(),
+                                        )),
+                                    };
+                                }
+                                "at" => {
+                                    if let Some(i) = args.get(1) {
+                                        let it =
+                                            self.check_expr_addressed(i);
+                                        if !Ty::Prim(PrimType::Int)
+                                            .assignable_from(&it)
+                                        {
+                                            self.diags.push(Diag::ty(
+                                                i.span(),
+                                                format!(
+                                                    "at: index must be \
+                                                     Int, got `{}`",
+                                                    it.display()
+                                                ),
+                                            ));
+                                        }
+                                    }
+                                    return Ty::Fallible {
+                                        success: elem,
+                                        payload: Box::new(Ty::Named(
+                                            "IndexError".into(),
+                                        )),
+                                    };
+                                }
+                                "count" => {
+                                    return Ty::Prim(PrimType::Int);
+                                }
+                                _ => return Ty::Unit,
+                            }
+                        }
+                        // Not bounded: roll back speculative diags.
+                        self.diags.truncate(mark);
                     }
                 }
                 // m47-payloads: enum-variant construction with
@@ -8609,7 +8729,24 @@ impl<'a> Checker<'a> {
             seen.insert(init.name.name.clone(), ());
         }
         if requires_all {
-            for (fname, _, has_default) in &fields {
+            for (fname, fty, has_default) in &fields {
+                // bounded[T; N] fields auto-init empty and cannot
+                // be spelled in a literal.
+                if matches!(fty, Ty::Bounded(_, _)) {
+                    if seen.contains_key(fname) {
+                        self.diags.push(Diag::ty(
+                            span,
+                            format!(
+                                "{} `{}` field `{}`: bounded[T; N] \
+                                 fields cannot be initialized in a \
+                                 literal — they start empty; use \
+                                 push(...)",
+                                kind_label, name, fname
+                            ),
+                        ));
+                    }
+                    continue;
+                }
                 if !seen.contains_key(fname) && !has_default {
                     self.diags.push(Diag::ty(
                         span,

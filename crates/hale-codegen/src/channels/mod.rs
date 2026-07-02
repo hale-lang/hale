@@ -837,7 +837,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         //     etc.) route to `try_lower_fallible_stdlib_path_call`
         //     for the per-path synthesis (see #68 / IoError flip).
         let resolved_name: String = match callee {
-            Expr::Ident(id) => id.name.clone(),
+            Expr::Ident(id) => {
+                // bounded[T; N] fallible intrinsics: push/at with a
+                // bounded-typed first arg. Falls through to the
+                // user-fn path when arg0 isn't bounded.
+                if let Some(result) = self
+                    .try_lower_bounded_fallible_intrinsic(
+                        &id.name, args, scope,
+                    )?
+                {
+                    return Ok(result);
+                }
+                id.name.clone()
+            }
             Expr::Field { receiver, name, .. } => {
                 return self.lower_fallible_method_call(
                     receiver, &name.name, args, scope,

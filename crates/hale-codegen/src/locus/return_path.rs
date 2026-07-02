@@ -137,6 +137,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         dest_arena: PointerValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         match ty {
+            CodegenTy::Bounded(_, _) => Err(CodegenError::Unsupported(
+                "bounded[T; N] is not a first-class value — it cannot \
+                 be deep-copied on its own"
+                    .into(),
+            )),
             CodegenTy::Int
             | CodegenTy::Float
             | CodegenTy::Bool

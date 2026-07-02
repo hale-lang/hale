@@ -1,7 +1,13 @@
 # Bounded collections in types
 
-Status: DESIGN (2026-07-02). Stage 0 shipped as a byproduct of
-inline fixed arrays; stages 1–2 are proposals for Riley to lock.
+Status: Stage 2 Option B SHIPPED for scalar elements (2026-07-02) —
+`bounded[T; N]` in types + locus params, `{ i64 len, [N x T] }`
+inline layout, push (fallible CapacityError { cap, count }) / at
+(fallible IndexError) / count / clear intrinsics, `for x in f`
+iteration, auto-empty init (literal init and whole-field assignment
+rejected), flat under zero_copy for scalar T. Stage 1
+(pointer-shaped elements — the RouteParams/TSV killer) remains the
+follow-up; stage 0 shipped earlier via inline fixed arrays.
 
 ## The problem
 

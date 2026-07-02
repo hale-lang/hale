@@ -8,6 +8,25 @@ behavior.
 
 ## Unreleased
 
+- **`bounded[T; N]` — fixed-capacity counted collections in types.**
+  Types can now hold a real bounded collection instead of the
+  delimited-string workaround: `type Recent { vals: bounded[Int;
+  32]; }` lays out inline as `{ i64 len, [N x T] }` (capacity is
+  part of the type — K made value-level per F.22). The operations
+  are grammar INTRINSICS, not methods, so the types-are-pure-data
+  axiom holds: `push(f, x)` (fallible `CapacityError { cap, count }`
+  when full — displacement policy lives in the caller's `or` arm),
+  `at(f, i)` (fallible IndexError), `count(f)`, `clear(f)`, and
+  `for x in f` iterates the live slots. Fields auto-initialize
+  EMPTY — literal init and whole-field assignment are rejected
+  (the intrinsics are the only mutation surface). Works in `type`
+  fields and locus `params`; whole-struct copies carry elements and
+  count by construction; scalar-element bounded is flat under
+  `zero_copy`. v1 covers scalar elements (Int/Float/Bool/Decimal/
+  Duration); pointer-shaped elements (`bounded[String; N]` — the
+  pond TSV-idiom killer) are the staged follow-up
+  (notes/bounded-collections.md stage 1).
+
 - **Typecheck M3 stage 2, tranche 2 — signatures for the I/O
   namespaces + dual-mode fallible semantics.** 60 more rows:
   io::fs/file/tcp/tls/udp, process child management, text

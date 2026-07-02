@@ -206,6 +206,9 @@ impl<'a> QualifiedRenameApplier<'a> {
                 self.rewrite_type_expr(inner);
             }
             TypeExpr::Array { elem, .. } => self.rewrite_type_expr(elem),
+            TypeExpr::Bounded { elem, .. } => {
+                self.rewrite_type_expr(elem)
+            }
             TypeExpr::Tuple(ts, _) => {
                 for t in ts {
                     self.rewrite_type_expr(t);
@@ -883,6 +886,7 @@ impl<'a> Mangler<'a> {
                     self.walk_expr(s);
                 }
             }
+            TypeExpr::Bounded { elem, .. } => self.walk_type_expr(elem),
             TypeExpr::Tuple(ts, _) => {
                 for t in ts {
                     self.walk_type_expr(t);

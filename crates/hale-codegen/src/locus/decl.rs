@@ -1453,6 +1453,13 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                         match &ret_codegen_ty {
                             None => void_t.fn_type(&llvm_param_tys, false),
                             Some(rt) => match rt {
+                                CodegenTy::Bounded(_, _) => {
+                                    return Err(CodegenError::Unsupported(
+                                        "bounded[T; N] cannot be returned \
+                                         by value"
+                                            .into(),
+                                    ));
+                                }
                                 CodegenTy::Int | CodegenTy::Duration => self
                                     .context
                                     .i64_type()
@@ -1639,6 +1646,13 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                         Some(t) => {
                             let rt = self.type_expr_to_codegen_ty(t)?;
                             match rt {
+                                CodegenTy::Bounded(_, _) => {
+                                    return Err(CodegenError::Unsupported(
+                                        "bounded[T; N] cannot be returned \
+                                         by value"
+                                            .into(),
+                                    ));
+                                }
                                 CodegenTy::Int | CodegenTy::Duration => self
                                     .context
                                     .i64_type()

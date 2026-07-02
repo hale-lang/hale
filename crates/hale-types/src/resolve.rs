@@ -132,9 +132,42 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
 /// so projects that don't use the form machinery don't get
 /// `IndexError` / similar names spuriously in scope.
 fn bundle_uses_form_machinery(bundle: &Bundle<'_>) -> bool {
+    fn te_has_bounded(t: &TypeExpr) -> bool {
+        match t {
+            TypeExpr::Bounded { .. } => true,
+            TypeExpr::Array { elem, .. } => te_has_bounded(elem),
+            TypeExpr::Projection { inner, .. } => te_has_bounded(inner),
+            TypeExpr::Tuple(parts, _) => {
+                parts.iter().any(te_has_bounded)
+            }
+            _ => false,
+        }
+    }
     fn scan_items(items: &[TopDecl]) -> bool {
         items.iter().any(|item| match item {
-            TopDecl::Locus(l) => l.form.is_some(),
+            TopDecl::Locus(l) => {
+                l.form.is_some()
+                    || l.members.iter().any(|m| match m {
+                        LocusMember::Params(p) => p
+                            .params
+                            .iter()
+                            .any(|param| {
+                                param
+                                    .ty
+                                    .as_ref()
+                                    .is_some_and(te_has_bounded)
+                            }),
+                        _ => false,
+                    })
+            }
+            // bounded[T; N] fields (2026-07-02) use the same
+            // injected error types (CapacityError / IndexError).
+            TopDecl::Type(td) => match &td.body {
+                TypeDeclBody::Struct(fields) => {
+                    fields.iter().any(|f| te_has_bounded(&f.ty))
+                }
+                _ => false,
+            },
             TopDecl::Module(m) => scan_items(&m.items),
             _ => false,
         })
@@ -1107,6 +1140,9 @@ pub fn resolve_type_expr(te: &TypeExpr, known: &BTreeMap<String, Span>) -> Ty {
         TypeExpr::Projection { class, inner, .. } => {
             Ty::Projection(*class, Box::new(resolve_type_expr(inner, known)))
         }
+        TypeExpr::Bounded { elem, cap, .. } => {
+            Ty::Bounded(Box::new(resolve_type_expr(elem, known)), *cap)
+        }
         TypeExpr::Array { elem, size, .. } => {
             let n = match size {
                 Some(Expr::Literal(Literal::Int(n), _)) if *n >= 0 => Some(*n as u64),
@@ -1446,6 +1482,32 @@ fn synthesize_form_ring_buffer_methods(
 /// for projects that already shipped their own error shapes.
 pub(crate) fn inject_form_stdlib_types(scope: &mut TopScope) {
     let zero = Span::new(0, 0);
+    // bounded[T; N] (2026-07-02): push-at-cap payload.
+    if !scope.symbols.contains_key("CapacityError") {
+        scope.symbols.insert(
+            "CapacityError".to_string(),
+            TopSymbol::Type(TypeInfo {
+                name: "CapacityError".to_string(),
+                kind: TypeKind::Struct(vec![
+                    FieldInfo {
+                        name: "cap".to_string(),
+                        ty: Ty::Prim(PrimType::Int),
+                        has_default: false,
+                        tag: None,
+                        span: zero,
+                    },
+                    FieldInfo {
+                        name: "count".to_string(),
+                        ty: Ty::Prim(PrimType::Int),
+                        has_default: false,
+                        tag: None,
+                        span: zero,
+                    },
+                ]),
+                span: zero,
+            }),
+        );
+    }
     if !scope.symbols.contains_key("IndexError") {
         scope.symbols.insert(
             "IndexError".to_string(),

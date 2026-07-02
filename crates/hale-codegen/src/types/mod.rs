@@ -29,6 +29,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         t: &TypeExpr,
     ) -> Result<CodegenTy, CodegenError> {
         match t {
+            TypeExpr::Bounded { elem, cap, .. } => {
+                let e = self.type_expr_to_codegen_ty(elem)?;
+                if !matches!(
+                    e,
+                    CodegenTy::Int
+                        | CodegenTy::Float
+                        | CodegenTy::Bool
+                        | CodegenTy::Decimal
+                        | CodegenTy::Duration
+                ) {
+                    return Err(CodegenError::Unsupported(format!(
+                        "bounded[T; N]: element type {:?} not supported \
+                         yet — v1 covers scalar elements (Int / Float / \
+                         Bool / Decimal / Duration); String/struct \
+                         elements are the stage-1 follow-up",
+                        e
+                    )));
+                }
+                Ok(CodegenTy::Bounded(Box::new(e), *cap))
+            }
             TypeExpr::Primitive(p, _) => match p {
                 PrimType::Int => Ok(CodegenTy::Int),
                 PrimType::Float => Ok(CodegenTy::Float),
@@ -572,6 +592,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         t: &CodegenTy,
     ) -> inkwell::types::BasicTypeEnum<'ctx> {
         match t {
+            CodegenTy::Bounded(_, _) => {
+                // SSA repr is a pointer to the inline
+                // { i64 len, [N x T] } storage (like inline
+                // arrays — never a loaded first-class value).
+                self.context.ptr_type(AddressSpace::default()).into()
+            }
             CodegenTy::Int | CodegenTy::Duration => {
                 self.context.i64_type().into()
             }
@@ -675,11 +701,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &self,
         ty: &CodegenTy,
     ) -> inkwell::types::BasicTypeEnum<'ctx> {
+        if let CodegenTy::Bounded(elem, n) = ty {
+            return self.llvm_bounded_storage_type(elem, *n).into();
+        }
         if let Some((elem, n)) = Self::array_inline_spec(ty) {
             self.llvm_array_storage_type(elem, n).into()
         } else {
             self.llvm_basic_type(ty)
         }
+    }
+
+    /// bounded[T; N] inline storage: `{ i64 len, [N x T] }`.
+    pub(crate) fn llvm_bounded_storage_type(
+        &self,
+        elem: &CodegenTy,
+        n: u64,
+    ) -> inkwell::types::StructType<'ctx> {
+        self.context.struct_type(
+            &[
+                self.context.i64_type().into(),
+                self.llvm_array_storage_type(elem, n).into(),
+            ],
+            false,
+        )
     }
 
     /// LLVM `[N x T]` for the element type + size of an Array
@@ -752,6 +796,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for fname in &info.field_order {
             if !by_name.contains_key(fname.as_str())
                 && !info.defaults.contains_key(fname.as_str())
+                && !matches!(
+                    info.fields.get(fname).map(|(_, t)| t),
+                    Some(CodegenTy::Bounded(_, _))
+                )
             {
                 return Err(CodegenError::Unsupported(format!(
                     "type `{}` literal missing field `{}`",
@@ -760,6 +808,43 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
         for fname in &info.field_order {
+            // bounded[T; N] (2026-07-02): auto-initialized EMPTY —
+            // zero the whole { len, data } slot (len = 0 gates
+            // reads; zeroed data keeps flat zero_copy payload bytes
+            // deterministic). An explicit init is rejected: the
+            // only mutation surface is the intrinsics.
+            if let Some((bidx, CodegenTy::Bounded(belem, bn))) =
+                info.fields.get(fname).cloned()
+            {
+                if by_name.contains_key(fname.as_str()) {
+                    return Err(CodegenError::Unsupported(format!(
+                        "type `{}` field `{}`: bounded[T; N] fields \
+                         cannot be initialized in a literal — they \
+                         start empty; use push(...)",
+                        type_name, fname
+                    )));
+                }
+                let slot = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        dest_ptr,
+                        bidx,
+                        &format!("{}.{}.bounded.slot", type_name, fname),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let st = self.llvm_bounded_storage_type(&belem, bn);
+                let size = st.size_of().expect("bounded storage sized");
+                self.builder
+                    .build_memset(
+                        slot,
+                        8,
+                        self.context.i8_type().const_zero(),
+                        size,
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                continue;
+            }
             let expr: &Expr = match by_name.get(fname.as_str()).copied() {
                 Some(e) => e,
                 None => info
@@ -1038,6 +1123,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// payload presence.
     pub(crate) fn ty_needs_self_field_deep_copy(ty: &CodegenTy) -> bool {
         match ty {
+            // bounded[T; N] is inline storage mutated through the
+            // push/at/clear intrinsics; whole-field assignment is
+            // rejected at lowering, so no deep-copy path exists.
+            CodegenTy::Bounded(_, _) => false,
             CodegenTy::Int
             | CodegenTy::Float
             | CodegenTy::Bool

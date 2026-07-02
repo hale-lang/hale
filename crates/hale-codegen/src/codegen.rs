@@ -114,6 +114,14 @@ pub(crate) enum CodegenTy {
     /// `std::bytes::write_*`. Never heap-backed; writes go straight into
     /// the mapped ring.
     BytesMut,
+    /// bounded[T; N] (2026-07-02): fixed-capacity counted buffer,
+    /// laid out INLINE in its containing struct as
+    /// `{ i64 len, [N x T] }`. Like inline fixed arrays, the SSA
+    /// repr of a bounded value is a POINTER to the storage (field
+    /// reads yield the slot address); it is only consumed by the
+    /// push/at/count/clear intrinsics and `for` iteration — never
+    /// a first-class copied value on its own.
+    Bounded(Box<CodegenTy>, u64),
     /// Pointer to a locus's struct. The string carries the locus
     /// name; the layout + field map live in `Cx.user_loci`. Used
     /// for the child param of `accept(g: ChildLocus)`.
@@ -6528,6 +6536,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // of `inject_form_stdlib_types` in
         // hale-types/src/resolve.rs.
         self.declare_builtin_index_error_type();
+        self.declare_builtin_capacity_error_type();
         // v1.x-FORM-4: synthesized @form(hashmap) `get` /
         // `remove` surface a typed `KeyError` payload. Mirror
         // of the typecheck-side injection alongside IndexError.
@@ -10073,6 +10082,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )?;
                 }
             }
+            TypeExpr::Bounded { elem, .. } => Self::collect_generic_uses(
+                elem,
+                generic_names,
+                seen,
+                requests,
+            )?,
             TypeExpr::Array { elem, .. } => Self::collect_generic_uses(
                 elem,
                 generic_names,
@@ -10321,6 +10336,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.context.bool_type().fn_type(&llvm_param_tys, false)
         } else {
             match &ret_ty {
+                Some(CodegenTy::Bounded(_, _)) => {
+                    return Err(CodegenError::Unsupported(
+                        "bounded[T; N] cannot be returned by value — it \
+                         lives inline in its containing type"
+                            .into(),
+                    ));
+                }
                 Some(CodegenTy::Int) | Some(CodegenTy::Duration) => self
                     .context
                     .i64_type()
@@ -10838,6 +10860,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<inkwell::types::BasicMetadataTypeEnum<'ctx>, CodegenError> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         match ty {
+            CodegenTy::Bounded(_, _) => {
+                return Err(CodegenError::Unsupported(format!(
+                    "@ffi fn `{}` param `{}`: bounded[T; N] has no \
+                     portable C mapping",
+                    fn_name, param_name
+                )));
+            }
             // `@ffi("js")`: i64-class scalars cross as f64 (JS number),
             // not i64 (BigInt). The call site sitofp's before the call.
             CodegenTy::Int | CodegenTy::Duration if is_js => {
@@ -11549,6 +11578,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// still anchor.
     fn field_needs_anchor(ty: &CodegenTy) -> bool {
         if Self::array_inline_spec(ty).is_some() {
+            return false;
+        }
+        // bounded[T; N] (scalar elems): inline bytes, travel with
+        // the parent's memcpy — nothing to anchor.
+        if matches!(ty, CodegenTy::Bounded(_, _)) {
             return false;
         }
         !matches!(
@@ -12874,6 +12908,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // Terminated up so the lower_block walker
                             // stops emitting IR after this stmt.
                             return self.lower_bubble_call(args, scope);
+                        } else if matches!(name, "count" | "clear")
+                            && args.len() == 1
+                            && self
+                                .bounded_recv_spec(args, scope)
+                                .is_some()
+                        {
+                            // bounded[T; N] count/clear at statement
+                            // position (clear is the common shape).
+                            let (elem, cap) = self
+                                .bounded_recv_spec(args, scope)
+                                .expect("guard checked");
+                            if name == "count" {
+                                let _ = self.lower_bounded_count(
+                                    args, &elem, cap, scope,
+                                )?;
+                            } else {
+                                let _ = self.lower_bounded_clear(
+                                    args, &elem, cap, scope,
+                                )?;
+                            }
                         } else if name == "check_closures" {
                             // m44: explicit-epoch closure check
                             // surface. `check_closures();` from
@@ -15537,6 +15591,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 return self.lower_for_drain(var_name, iter, &elem, body, scope);
             }
         }
+        // bounded[T; N] iteration (2026-07-02): `for x in m.history`
+        // where the iterand statically types as bounded — counted
+        // loop over the live slots [0, len).
+        if let Some(CodegenTy::Bounded(belem, bcap)) =
+            self.static_expr_codegen_ty(iter, scope)
+        {
+            return self.lower_for_bounded(
+                var_name,
+                iter,
+                belem.as_ref().clone(),
+                bcap,
+                body,
+                scope,
+            );
+        }
         // 2026-07-02 @form iteration surface: `for e in m.entries`
         // (hashmap — cluster-aware occupied-slot walk, O(cap) total
         // via lotus_hashmap_iter_next; the index-based key_at/
@@ -15737,6 +15806,149 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let i_next = self
             .builder
             .build_int_add(i_now, i64_t.const_int(1, false), "for.i.next")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(i_slot, i_next)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(exit_bb);
+        Ok(BlockEnd::Open)
+    }
+
+    /// bounded[T; N] iteration (2026-07-02): counted loop over
+    /// live slots — len + data base loaded once, per-element
+    /// GEP + load into the loop var (a copy). Mutating the
+    /// bounded field inside the body is unsupported (the len is
+    /// read once at entry).
+    fn lower_for_bounded(
+        &mut self,
+        var_name: &Ident,
+        iter: &Expr,
+        elem: CodegenTy,
+        cap: u64,
+        body: &Block,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let i64_t = self.context.i64_type();
+        let func = self
+            .current_fn
+            .expect("current_fn set while lowering a for");
+        let (v, ty) = self.lower_expr(iter, scope)?;
+        if !matches!(ty, CodegenTy::Bounded(_, _)) {
+            return Err(CodegenError::Unsupported(format!(
+                "bounded iteration receiver lowered to {:?}",
+                ty
+            )));
+        }
+        let storage = v.into_pointer_value();
+        let st = self.llvm_bounded_storage_type(&elem, cap);
+        let len_ptr = self
+            .builder
+            .build_struct_gep(st, storage, 0, "for.bounded.len.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let len = self
+            .builder
+            .build_load(i64_t, len_ptr, "for.bounded.len")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let data_ptr = self
+            .builder
+            .build_struct_gep(st, storage, 1, "for.bounded.data.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let elem_llvm = self.llvm_basic_type(&elem);
+
+        let var_slot = self.alloca_in_entry(
+            elem_llvm,
+            &format!("for.bounded.{}", var_name.name),
+        )?;
+        let i_slot = self
+            .builder
+            .build_alloca(i64_t, "for.bounded.i")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(i_slot, i64_t.const_int(0, false))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let header_bb =
+            self.context.append_basic_block(func, "for.bounded.cond");
+        let body_bb =
+            self.context.append_basic_block(func, "for.bounded.body");
+        let inc_bb =
+            self.context.append_basic_block(func, "for.bounded.inc");
+        let exit_bb =
+            self.context.append_basic_block(func, "for.bounded.end");
+        self.builder
+            .build_unconditional_branch(header_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(header_bb);
+        let i = self
+            .builder
+            .build_load(i64_t, i_slot, "for.bounded.i.now")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let in_range = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                i,
+                len,
+                "for.bounded.in_range",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(in_range, body_bb, exit_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(body_bb);
+        let slot_ptr = unsafe {
+            self.builder
+                .build_gep(elem_llvm, data_ptr, &[i], "for.bounded.slot")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+        let ev = self
+            .builder
+            .build_load(elem_llvm, slot_ptr, "for.bounded.elem")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(var_slot, ev)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let prev = scope
+            .locals
+            .insert(var_name.name.clone(), (var_slot, elem.clone()));
+        self.loops.push(LoopFrame {
+            continue_bb: inc_bb,
+            break_bb: exit_bb,
+        });
+        let body_end = self.lower_block(body, scope)?;
+        self.loops.pop();
+        if body_end == BlockEnd::Open {
+            self.builder
+                .build_unconditional_branch(inc_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        if let Some(prev) = prev {
+            scope.locals.insert(var_name.name.clone(), prev);
+        } else {
+            scope.locals.remove(&var_name.name);
+        }
+
+        self.builder.position_at_end(inc_bb);
+        let i_now = self
+            .builder
+            .build_load(i64_t, i_slot, "for.bounded.i.inc")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let i_next = self
+            .builder
+            .build_int_add(
+                i_now,
+                i64_t.const_int(1, false),
+                "for.bounded.i.next",
+            )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
             .build_store(i_slot, i_next)
@@ -16862,6 +17074,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int | CodegenTy::Duration => {
                 self.context.i64_type().into()
             }
+            CodegenTy::Bounded(_, _) => {
+                // SSA repr is a pointer to the inline storage.
+                self.context.ptr_type(AddressSpace::default()).into()
+            }
             CodegenTy::FnPtr { .. } => {
                 self.context.ptr_type(AddressSpace::default()).into()
             }
@@ -17245,7 +17461,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 // Inline fixed arrays: the slot IS the [N x T]
                 // storage; the array's SSA value is its address.
-                if Self::array_inline_spec(&ty).is_some() {
+                // Same for bounded[T; N] ({ i64 len, [N x T] }).
+                if Self::array_inline_spec(&ty).is_some()
+                    || matches!(ty, CodegenTy::Bounded(_, _))
+                {
                     return Ok((ptr.into(), ty));
                 }
                 let llvm_ty = self.llvm_basic_type(&ty);
@@ -17432,7 +17651,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // Inline fixed arrays: the field slot IS the [N x T]
                 // storage — the array's SSA value (a ptr to storage)
                 // is the slot's address, not a loaded pointer.
-                if Self::array_inline_spec(&field_ty).is_some() {
+                // Same for bounded[T; N] ({ i64 len, [N x T] }).
+                if Self::array_inline_spec(&field_ty).is_some()
+                    || matches!(field_ty, CodegenTy::Bounded(_, _))
+                {
                     return Ok((field_ptr.into(), field_ty));
                 }
                 let llvm_ty = self.llvm_basic_type(&field_ty);
@@ -17514,6 +17736,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Expr::Ident(i) if i.name == "len" => {
                     self.lower_len_builtin(args, scope)
+                }
+                // bounded[T; N] intrinsics (2026-07-02): count/clear
+                // (push/at are fallible — they route through
+                // lower_fallible_call's Ident arm under `or`).
+                Expr::Ident(i)
+                    if matches!(i.name.as_str(), "count" | "clear")
+                        && args.len() == 1
+                        && self.bounded_recv_spec(args, scope).is_some() =>
+                {
+                    let (elem, cap) = self
+                        .bounded_recv_spec(args, scope)
+                        .expect("guard checked");
+                    if i.name == "count" {
+                        self.lower_bounded_count(args, &elem, cap, scope)
+                    } else {
+                        self.lower_bounded_clear(args, &elem, cap, scope)
+                    }
                 }
                 Expr::Ident(i) if i.name == "to_string" => {
                     self.lower_to_string_builtin(args, scope)
@@ -18828,6 +19067,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             let (val, ty) = self.lower_expr(a, scope)?;
             match &ty {
+                CodegenTy::Bounded(_, _) => {
+                    return Err(CodegenError::Unsupported(
+                        "cannot print a bounded[T; N] value directly — \
+                         print count(f) or iterate its elements"
+                            .into(),
+                    ));
+                }
                 CodegenTy::Int => {
                     format.push_str("%lld");
                     printf_args.push(BasicMetadataValueEnum::IntValue(val.into_int_value()));

@@ -1303,6 +1303,17 @@ pub enum TypeExpr {
         size: Option<Expr>,
         span: Span,
     },
+    /// Bounded collection field type: `bounded[T; N]` — a
+    /// fixed-capacity counted buffer laid out inline as
+    /// `{ i64 len, [N x T] }`. Capacity is part of the type (K
+    /// made value-level per F.22). Operated on via the grammar
+    /// intrinsics `push`/`at`/`count`/`clear` and `for x in f`
+    /// iteration — types stay method-free.
+    Bounded {
+        elem: Box<TypeExpr>,
+        cap: u64,
+        span: Span,
+    },
     Tuple(Vec<TypeExpr>, Span),
     Function {
         params: Vec<TypeExpr>,
@@ -1318,6 +1329,7 @@ impl TypeExpr {
             TypeExpr::Named { span, .. } => *span,
             TypeExpr::Projection { span, .. } => *span,
             TypeExpr::Array { span, .. } => *span,
+            TypeExpr::Bounded { span, .. } => *span,
             TypeExpr::Tuple(_, s) => *s,
             TypeExpr::Function { span, .. } => *span,
         }
