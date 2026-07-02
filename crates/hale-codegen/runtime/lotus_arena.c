@@ -342,6 +342,21 @@ typedef struct lotus_arena {
      * block size. Guarded by `subregion_lock` under
      * multithreaded, same posture as the slot free-list. */
     void                *child_struct_free;
+    /* 2026-07-03 anchor retirement (notes/anchor-retirement.md):
+     * replaced heap clones (hashmap-set / compound-store anchors
+     * overwriting a slot's old String/Bytes pointer) are RETIRED —
+     * bytes untouched, tracked by side shells — until the
+     * activation boundary flushes them onto the size-classed reuse
+     * freelist. Readers holding the old pointer within the
+     * activation stay valid; nothing outlives an activation except
+     * via re-anchored self-storage (the method-scratch argument).
+     * retire_pending: shell list {blob, next} of blocks awaiting
+     *   the flush. retire_shells: recycled shells (allocation-free
+     *   steady state). retire_free: flushed blocks, intrusive
+     *   nodes IN the dead bytes (size@0, next@8). */
+    void                *retire_pending;
+    void                *retire_shells;
+    void                *retire_free;
     /* 2026-06-13: set to 1 only on the shared g_bus_payload_arena. That
      * arena is reachable lock-free via lotus_caller_arena_or_global() (the
      * fallback when the per-thread caller_arena TLS is unset) — e.g. a
@@ -1408,6 +1423,9 @@ static lotus_arena_t *lotus_arena_alloc_struct(void) {
     a->chunk_byte_cap   = 0;
     a->cap_diag_name    = NULL;
     a->child_struct_free = NULL;
+    a->retire_pending = NULL;
+    a->retire_shells = NULL;
+    a->retire_free = NULL;
     /* 2026-05-26 substrate-race fix: subregion freelist mutex.
      * Used by create_subregion / destroy via the PARENT arena's
      * pointer; arenas with no children never acquire the lock.
@@ -4146,6 +4164,97 @@ int64_t lotus_hashmap_iter_batch_ptrs(void *map_ptr, int64_t start_slot,
     }
     if (s < m->cap) *out_next = (int64_t)s;
     return n;
+}
+
+/* ── anchor retirement (2026-07-03) ─────────────────────────────
+ * See the retire_* field comment + notes/anchor-retirement.md. */
+
+int lotus_arena_contains_ptr(const lotus_arena_t *a, const void *p);
+
+typedef struct lotus_retire_shell {
+    void *blob;                    /* [i64 len][bytes][NUL] blob   */
+    size_t size;                   /* full block size              */
+    struct lotus_retire_shell *next;
+} lotus_retire_shell_t;
+
+/* Retire a replaced String/Bytes blob. Gates: in THIS arena (never
+ * another arena's block or a .rodata literal) and non-NULL. The
+ * blob's bytes stay intact until the flush. */
+void lotus_arena_retire(void *arena_ptr, void *blob) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (!a || !blob) return;
+    if (!lotus_arena_contains_ptr(a, blob)) return;
+    int64_t len = *(int64_t *)blob;
+    if (len < 0) return;
+    size_t size = (size_t)len + 9;           /* len prefix + NUL   */
+    lotus_retire_shell_t *sh = (lotus_retire_shell_t *)a->retire_shells;
+    if (sh) {
+        a->retire_shells = sh->next;
+    } else {
+        sh = (lotus_retire_shell_t *)lotus_arena_alloc(
+            a, sizeof(lotus_retire_shell_t), 8);
+        if (!sh) return;
+    }
+    sh->blob = blob;
+    sh->size = size;
+    sh->next = (lotus_retire_shell_t *)a->retire_pending;
+    a->retire_pending = sh;
+}
+
+/* Activation boundary: pending blobs become reusable. The intrusive
+ * free node lives in the now-dead bytes: size@0, next@8 (min block
+ * is 9 bytes ⇒ 16-byte nodes need size >= 16; smaller blobs are
+ * simply dropped back to the shell list without reuse — they cost
+ * almost nothing to leak and can't hold a node). */
+void lotus_arena_flush_retired(void *arena_ptr) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (!a) return;
+    lotus_retire_shell_t *sh = (lotus_retire_shell_t *)a->retire_pending;
+    a->retire_pending = NULL;
+    while (sh) {
+        lotus_retire_shell_t *next = sh->next;
+        if (sh->size >= 16) {
+            char *b = (char *)sh->blob;
+            *(size_t *)b = sh->size;
+            *(void **)(b + 8) = a->retire_free;
+            a->retire_free = b;
+        }
+        sh->next = (lotus_retire_shell_t *)a->retire_shells;
+        a->retire_shells = sh;
+        sh = next;
+    }
+}
+
+/* Bounded first-fit pop for the allocator (mirrors the
+ * child-struct recycler's probe discipline). Returns NULL on miss. */
+static void *lotus_retire_free_pop(lotus_arena_t *a, size_t size) {
+    void **prev = &a->retire_free;
+    int probes = 0;
+    while (*prev && probes < 8) {
+        char *b = (char *)*prev;
+        size_t bsize = *(size_t *)b;
+        if (bsize >= size && bsize <= size + (size >> 2) + 16) {
+            *prev = *(void **)(b + 8);
+            return b;
+        }
+        prev = (void **)(b + 8);
+        probes++;
+    }
+    return NULL;
+}
+
+/* Anchor-site allocator: reuse a flushed retired block when one
+ * fits, else bump-allocate. Only the anchor sites call this — the
+ * hot general alloc path stays branch-free. */
+void *lotus_arena_alloc_reusable(void *arena_ptr, uint64_t size,
+                                 uint64_t align) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (!a) return NULL;
+    if (align <= 8 && size >= 16) {
+        void *b = lotus_retire_free_pop(a, (size_t)size);
+        if (b) return b;
+    }
+    return lotus_arena_alloc(a, size, align);
 }
 
 int lotus_hashmap_key_at(void *map_ptr, int64_t i, void *out_key) {
