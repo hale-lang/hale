@@ -8,6 +8,19 @@ behavior.
 
 ## Unreleased
 
+- **Typecheck M3 stage 1 — stdlib typo detection.** A call to an
+  unknown function in a TABLED `std::` namespace is now a typecheck
+  error with a did-you-mean (`std::str::parse_itn` → "did you mean
+  `std::str::parse_int`?"). The table covers 26 namespaces
+  (mechanically extracted from the codegen dispatch's
+  `["std", ...]` patterns, unioned with spec/stdlib.md); namespaces
+  with non-literal dispatch (io::sockopt, io::mirror, shm, ts) stay
+  permissive, so table incompleteness degrades to the old Unknown
+  behavior, never to a false error. Gate: zero new errors across
+  pond, fathom, and the full example corpus. This is the first slice
+  of the M3 plan (notes/typecheck-m3.md); signatures (killing the
+  Unknown returns) are stage 2.
+
 - **@form iteration surface — `for e in m.entries` / `for x in
   v.items`.** Hashmap iteration lowers to a cluster-aware
   slot-cursor walk (`lotus_hashmap_iter_next`): O(cap) for a full

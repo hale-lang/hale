@@ -7563,6 +7563,28 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                // Typecheck M3 stage 1 (2026-07-02): stdlib fn-name
+                // validation. Within a TABLED namespace an unknown
+                // name is an error with a did-you-mean; untabled
+                // namespaces keep the permissive Unknown behavior,
+                // so table incompleteness degrades to the status
+                // quo, never to a false error.
+                if let Expr::Path(qn) = callee.as_ref() {
+                    if qn.segments.first().map(|s| s.name.as_str())
+                        == Some("std")
+                    {
+                        let segs: Vec<&str> = qn
+                            .segments
+                            .iter()
+                            .map(|s| s.name.as_str())
+                            .collect();
+                        if let Some(msg) =
+                            crate::stdlib_surface::unknown_fn_error(&segs)
+                        {
+                            self.diags.push(Diag::ty(qn.span, msg));
+                        }
+                    }
+                }
                 // m47-payloads: enum-variant construction with
                 // args. `EnumName::Variant(..)` resolves to the
                 // enum's named type. We still walk the args to

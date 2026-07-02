@@ -24,6 +24,7 @@
 pub mod alloc_summary;
 pub mod bus_graph;
 pub mod check;
+pub mod stdlib_surface;
 pub mod ownership_graph;
 pub mod purity;
 pub mod resolve;
