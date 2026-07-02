@@ -1,6 +1,6 @@
 # Typecheck Milestone 3 — full-fidelity checking
 
-Status: stages 1 + 2 + 4 SHIPPED, stage 3 FULLY SHIPPED (tranche 1: generic fn calls; tranche 2: generic struct literals + Box<Int>↔Box_Int unification — also fixed generic structs being CLI-unusable); 5 remains (+ stage-2 tranche 3: json/http sigs). The public-launch gate: errors fire at
+Status: stages 1 + 2 + 4 SHIPPED, stage 3 FULLY SHIPPED (tranche 1: generic fn calls; tranche 2: generic struct literals + Box<Int>↔Box_Int unification — also fixed generic structs being CLI-unusable); stage 5 COMPLETE — audited (402 triaged), gaps A/B/C/E fixed, DEFAULT-ON flipped 2026-07-02 by Riley's call. Remaining M3 odds and ends: stage-2 tranche 3 (json/http sigs), hard-error promotion once D-class annotations exist. The public-launch gate: errors fire at
 typecheck with source spans, not two phases later at codegen/link,
 and never as runtime corruption.
 

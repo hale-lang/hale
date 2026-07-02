@@ -73,18 +73,19 @@ fn carve_out_holds_under_survey_flag() {
 
 #[test]
 fn no_bounded_locus_is_silent_by_default() {
-    // `plain.hl`: the same leak shape with NO `@bounded` — Phase A says
-    // a script pays nothing by default.
+    // M3 stage 5 flip (2026-07-02): the survey is DEFAULT-ON — a
+    // plain locus with a real accumulation warns without any flag
+    // or `@bounded` annotation. The opt-OUT silences it.
     let (ok, stderr) = check("plain.hl", &[]);
     assert!(ok, "{stderr}");
     assert!(
-        !stderr.contains(NEEDLE),
-        "no @bounded locus → silent without the flag:\n{stderr}"
-    );
-    // ...but the survey flag still finds it.
-    let (_ok, stderr) = check("plain.hl", &["--warn-unbounded-alloc"]);
-    assert!(
         stderr.contains(NEEDLE),
-        "the survey flag reports it regardless of @bounded:\n{stderr}"
+        "default-on: the leak shape must warn without @bounded:\n{stderr}"
+    );
+    let (ok, stderr) = check("plain.hl", &["--no-warn-unbounded-alloc"]);
+    assert!(ok, "{stderr}");
+    assert!(
+        !stderr.contains(NEEDLE),
+        "--no-warn-unbounded-alloc must silence the survey:\n{stderr}"
     );
 }

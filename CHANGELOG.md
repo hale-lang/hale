@@ -8,6 +8,18 @@ behavior.
 
 ## Unreleased
 
+- **Unbounded-allocation warnings are DEFAULT-ON.** (M3 stage 5
+  complete — Riley's flip call after the full-corpus audit.) Every
+  `hale check`/`build` now surveys the whole program; run-to-exit
+  programs (a `main` with no `run` loop and no bus handler) warn
+  nothing, `@unbounded fn` stays the carve-out, and
+  `--no-warn-unbounded-alloc` is the opt-out (the old
+  `--warn-unbounded-alloc` spelling is accepted-and-ignored).
+  Warnings never fail the build. Expect real findings on the fathom
+  daemons: the audit confirmed 103 true accumulation sites
+  (riskgw/dashboard/prober/tui/websocket) — that visibility is the
+  point of the flip.
+
 - **M3 stage 5 (part 2) — run-to-exit programs don't warn; a
   tempting loop-bound extension rejected by the empirical model.**
   A program whose bundle has a `main` but no `run` loop and no bus

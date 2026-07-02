@@ -918,21 +918,24 @@ fn run_check(target: &Path) -> ExitCode {
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
     let mut diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
-    // GH #18 item 1: unbounded-allocation warnings — OPT-IN, like the
-    // `--warn-resource-leak` / `@locality` budget surfaces. A memory-bound
-    // proof only means something for long-lived processes (daemons, bus
-    // handlers, persistent loci); a script that allocates and exits owes it
-    // nothing, so it pays nothing by default.
+    // GH #18 item 1 → M3 stage 5 (2026-07-02): unbounded-allocation
+    // warnings are DEFAULT-ON (Riley's flip call after the 402-warning
+    // audit: every audited true positive preserved, every residual FP
+    // in a documented accepted class — see
+    // notes/unbounded-alloc-audit-2026-07-02.md). The analysis itself
+    // spares run-to-exit programs (a `main` with no run loop and no
+    // bus handler warns nothing), so scripts still owe nothing.
     //
-    // Two opt-in surfaces (Phase B):
-    //  - `@bounded locus { … }` — the in-source opt-in. Its sites are
-    //    reported on every `hale check`, no flag needed.
-    //  - `--warn-unbounded-alloc` — the whole-program advisory survey
-    //    (every site, regardless of `@bounded`).
-    // `@unbounded fn` carves a fn out of both. The warnings print but never
-    // fail the build (only errors do). `--no-warn-unbounded-alloc` is
-    // accepted-and-ignored for back-compat with the former default-on flag.
-    let survey_all = std::env::args().any(|a| a == "--warn-unbounded-alloc");
+    // Surfaces:
+    //  - default: the whole-program survey, every site.
+    //  - `--no-warn-unbounded-alloc` — the opt-OUT.
+    //  - `--warn-unbounded-alloc` — accepted-and-ignored (former
+    //    opt-in spelling).
+    //  - `@unbounded fn` carves a fn out; `@bounded locus` is now
+    //    redundant with the default but still accepted.
+    // Warnings print but never fail the build (only errors do).
+    let survey_all =
+        !std::env::args().any(|a| a == "--no-warn-unbounded-alloc");
     diags.extend(hale_types::unbounded_alloc_warnings(&bundle, survey_all));
     // GH #18 item 5: opt-in fd-resource-leak warnings.
     if std::env::args().any(|a| a == "--warn-resource-leak") {
