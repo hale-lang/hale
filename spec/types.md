@@ -48,6 +48,7 @@ the lifetime contract.
 | Construct | Form | Notes |
 |---|---|---|
 | Slice / array | `[T]` or `[T; N]` | Dynamic or fixed-size |
+| Bounded collection | `bounded[T; N]` | Fixed-capacity counted list, INLINE in its containing type/params (`{ i64 len, [N x T] }`). See § "bounded[T; N]" below. |
 | Tuple | `(A, B, C)` | Fixed-size heterogeneous |
 | Struct | `type Foo { x: Int; y: Int = 0; }` | Named record. Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time. |
 | Enum | `type Foo = enum { A, B(int) };` | Tagged union (sum type) |
@@ -410,7 +411,58 @@ runtime checks at each accept; exceeding k_max raises a
 typed `KMaxExceeded` failure handled by the parent's
 `on_failure`.)
 
+## bounded[T; N] — fixed-capacity collections in types (2026-07-02)
+
+Types are pure data, so they cannot hold a `@form(vec)` (a locus).
+`bounded[T; N]` is the type-level collection: a fixed-capacity
+counted buffer laid out inline as `{ i64 len, [N x T] }` — the
+capacity is part of the type (K made value-level, the F.22
+philosophy). Works in `type` fields and locus `params`.
+
+Operations are GRAMMAR INTRINSICS (like `len(s)`), not methods, so
+the types-have-no-methods axiom holds:
+
+```hale
+push(f, x)       -> ()  fallible(CapacityError)  // full = error;
+                                                 // displacement policy
+                                                 // lives in the or-arm
+at(f, i)         -> T   fallible(IndexError)
+set(f, i, x)     -> ()  fallible(IndexError)     // overwrite live slot
+count(f)         -> Int
+clear(f)                                          // len = 0
+truncate(f, n)   -> Int                           // len = clamp; returns it
+for x in f { }                                    // iterate live slots
+```
+
+Semantics:
+- Fields auto-initialize EMPTY. Literal init and whole-field
+  assignment are rejected — the intrinsics are the only mutation
+  surface. Whole-STRUCT copies carry elements + count by
+  construction (the storage is inline).
+- Scalar elements (Int/Float/Bool/Decimal/Duration) are flat under
+  `zero_copy` and travel the bus as raw bytes. Pointer-shaped
+  elements (String/Bytes/struct) work in-process — push/set
+  arena-anchor the element into the receiver's owning arena — but
+  are rejected in cross-process bus payloads (post-v1 polish).
+- Drop-front/FIFO is the shift-left idiom: `set` live slots down,
+  then `truncate`.
+- `CapacityError { cap: Int; count: Int }` and the shared
+  `IndexError` are the injected error shapes.
+- The unbounded-alloc analysis treats bounded fields as bounded by
+  construction. `@form(vec)` remains the unbounded, locus-owned
+  collection: unbounded data lives on a locus; bounded data can
+  live in a type.
+
 ## Generics
+
+**Generic type-expr ↔ monomorph unification (2026-07-02):** a
+generic instantiation type-expr (`Box<Int>`) resolves at typecheck
+to its mangled monomorph name (`Box_Int`) — the same name codegen
+synthesizes and that `Box_Int { ... }` literals produce — so
+declarations and literals unify, and a `Box_String` literal in a
+`Box<Int>` slot is a caught mismatch. Monomorph literal fields
+validate against the template with the type args substituted, and
+field reads on monomorph values type as the substituted field.
 
 Generic params are declared with angle brackets:
 
@@ -761,6 +813,19 @@ emits `error: error not addressed` at:
   type must be assignable to T. The fallback may itself be
   a call (`or handler(err)`), making `err` a regular
   expression-position binding inside the fallback.
+
+  **Fallible handlers (2026-07-02):** the handler may itself be
+  `fallible(E2)`. Its success value substitutes; its FAILURE
+  propagates through the ENCLOSING fn's error path — implicit
+  `or raise`, sugar for the already-legal nested spelling
+  `call() or (handler(err) or raise)`. E2 must be assignable to
+  the enclosing fn's declared payload ("handler's failure has
+  nowhere to go" / "propagated payload must match" otherwise).
+  User free fns, imported-path fns, and locus member fns are
+  classified; `@form`-synthesized methods and stdlib path-calls
+  still need the explicit nested spelling. In statement position
+  the substituted value is discarded, so the handler's success
+  type needn't match the call's.
 
   The fallback may be a **`{ block }`** — `or { … }`, with `err`
   in scope — for multi-statement recovery. Two cases:

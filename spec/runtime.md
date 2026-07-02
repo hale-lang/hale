@@ -250,6 +250,12 @@ Specifically:
 - **Cooperative yield points**: between handler invocations,
   between lifecycle transitions, on bus message dispatch, on
   explicit `yield` (rare, for long-running computations).
+  Plain fn exit is NOT a yield point — and since 2026-07-02 a
+  proven-non-allocating fn's exit provably skips the queue drain
+  (a non-allocating body cannot have published; payload copies
+  allocate). A cooperative compute-only loop that leaned on
+  helper-call returns for delivery never had that guarantee and
+  must use an explicit `yield;`.
 - **No preemption within a scheduler.** A locus's handler runs
   to completion or an explicit yield.
 - **Cross-scheduler is bus.** No shared memory; no locks.

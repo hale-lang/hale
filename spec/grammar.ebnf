@@ -368,9 +368,15 @@ contract_block    = "contract" ,
                     | "{" , { contract_member } "}"
                     ) ;
 contract_member   = ( "expose" | "consume" ) ,
-                    ( IDENTIFIER , ":" , type_expr , ";"
+                    ( contract_name , ":" , type_expr , ";"
                     | "inferred" , ";"
                     ) ;
+
+(* Mode keywords are admitted as contract names (2026-07-02, the
+   F.10 keyword-as-name fallback) so the exposed-mode pull rule is
+   expressible: `expose bulk: Float;`. The exposed type is checked
+   against the mode's declared return. *)
+contract_name     = IDENTIFIER | "bulk" | "harmonic" | "resolution" ;
 
 
 (* === 5. Bus block ============================================== *)
@@ -595,10 +601,20 @@ type_expr         = primitive_type
                   | named_type
                   | projection_type
                   | array_type
+                  | bounded_type
                   | tuple_type
                   | function_type
                   | "(" , type_expr , ")"
                   ;
+
+(* bounded[T; N] (2026-07-02): fixed-capacity counted collection,
+   laid out inline as { i64 len, [N x T] }. `bounded` is a
+   CONTEXTUAL keyword — only an identifier `bounded` immediately
+   followed by `[` in type position; capacity must be a positive
+   integer literal. Operated on via the push/at/set/count/clear/
+   truncate intrinsics and `for x in f` iteration — types stay
+   method-free. *)
+bounded_type      = "bounded" , "[" , type_expr , ";" , INT_LIT , "]" ;
 
 (* Predefined primitive type names. PascalCase. The lexer emits
    these as IDENTIFIER tokens; the parser recognizes them by

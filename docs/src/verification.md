@@ -69,15 +69,17 @@ fails the build:
   is checked for internal and cross-field consistency before a torn
   read is possible.
 
-**Memory-bound proofs** *(opt-in).* "Bounded per epoch" only means
-something for a long-lived process, so a script that allocates and
-exits owes nothing and pays nothing. Annotate a long-lived locus
-`@bounded` (or run the whole-program `--warn-unbounded-alloc` survey)
-and the compiler's escape/loop dataflow flags allocations that escape a
-per-message handler or unbounded loop and **accumulate until the locus
-dissolves** — with loop-ranking that *proves* a `while v < N` counter
-bounded. Advisory today; a hard `@bounded` contract is the intended end
-state once in-scope false positives reach a durable zero.
+**Memory-bound proofs** *(on by default).* Every `hale check` /
+`hale build` runs the whole-program survey: the compiler's
+escape/loop dataflow flags allocations that escape a per-message
+handler or unbounded loop and **accumulate until the locus
+dissolves** — with loop-ranking that *proves* a `while v < N`
+counter bounded. Run-to-exit programs (a `main` with no `run` loop
+and no bus handler) warn nothing — a script owes no bound proof.
+`@unbounded fn` is the in-source carve-out for an acknowledged
+site; `--no-warn-unbounded-alloc` opts a run out. Advisory today; a
+hard error contract is the intended end state once the remaining
+documented false-positive classes get their annotations.
 
 **Resource budgets** *(opt-in).* Static counts of file descriptors, OS
 threads, cooperative pools, and bus subjects, with a

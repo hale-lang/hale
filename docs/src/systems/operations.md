@@ -83,40 +83,42 @@ flags report on allocation shape:
 
 | Flag | Reports |
 |---|---|
-| `--warn-unbounded-alloc` | flag an allocation that escapes into an unbounded context and accumulates until its locus dissolves (advisory warnings) |
+| *(default on every check/build)* | flag an allocation that escapes into an unbounded context and accumulates until its locus dissolves (advisory warnings; `--no-warn-unbounded-alloc` opts out) |
 | `--dump-alloc-summary` | every allocation site, escape-tagged (local / returned / stored-to-self / sent), with the bounded-vs-unbounded verdict; plus each locus's storage shape (capacity slots, `@form`, projection cap) and the `self.<field>` / `self.<slot>` an allocation targets |
 | `--dump-resource-budget` | per-locus resource counts (allocations, held fds) against declared ceilings |
 | `--locality-report` | per-locus working-set size against cache-tier budgets |
 
-The memory-bound warnings are **opt-in** — a bound *per epoch* only
-means something for a long-lived process, so a script that allocates
-and exits pays nothing by default (the same stance as the `@locality`
-cache-tier budgets). There are two ways to opt in:
+The memory-bound warnings run **by default** on every `hale check`
+and `hale build` (since 2026-07-02 — the flip followed a full-corpus
+audit of all 402 warnings). Run-to-exit programs are exempt
+automatically: a binary whose `main` starts no `run` loop and
+subscribes no handler owes no memory-bound proof, so scripts and
+one-shot tools stay silent.
 
-- **Annotate the locus.** `@bounded locus L { … }` asks for the proof
-  on that locus specifically — its leak sites are reported on every
-  `hale check`, no flag. This is the in-source opt-in: the locus that
-  took on long-lived state requests the check on itself.
+For a long-lived service, the surface is:
+
+- **`@unbounded fn`** — the greppable in-source carve-out for an
+  acknowledged accumulation (an operator-sized cache, an
+  idempotency log). Silences that body's sites. Also valid on a
+  lifecycle hook (`@unbounded run { … }`).
 
   ```hale
-  @bounded locus Aggregator {
+  locus Aggregator {
       // ... handlers checked for unbounded accumulation ...
 
       @unbounded fn on_snapshot(s: Snapshot) {
           // acknowledged: this cache is operator-sized on purpose.
-          // @unbounded silences this body's sites — the greppable
-          // carve-out. Valid on a `fn` or a lifecycle hook (`@unbounded
-          // run { … }`).
       }
   }
   ```
 
-- **Survey the whole program.** `--warn-unbounded-alloc` flags every
-  site regardless of `@bounded` (a `@unbounded` fn is still suppressed).
+- **`--no-warn-unbounded-alloc`** — opts a whole run out.
+- `@bounded locus L { … }` is now redundant with the default and
+  still accepted.
 
-Either way the warnings are advisory — they print but don't fail the
-build. A warning here is the compile-time complement to the residency
-dump: it tells you *which site* can grow before you've watched it grow.
+The warnings are advisory — they print but don't fail the build. A
+warning here is the compile-time complement to the residency dump:
+it tells you *which site* can grow before you've watched it grow.
 
 ## Bus backpressure: bounding a flood
 
@@ -197,3 +199,23 @@ RSS — see [Memory](#memory-my-rss-is-growing) above).
    (`self.f.x = v`) over whole-value replace (`self.f = T{…}`), which
    bump-allocates fresh each time. `--dump-alloc-summary` names the
    site at compile time.
+
+## Debugging with the native toolchain
+
+Hale binaries carry DWARF line tables by default (zero runtime
+cost). That means real debugging:
+
+```sh
+hale build myservice
+gdb ./myservice
+(gdb) break myservice.hl:42
+(gdb) run
+(gdb) backtrace          # real .hl file:line frames, inline stacks
+```
+
+`addr2line -e ./myservice 0x4a2f10` resolves crash-dump addresses
+to source lines, and ASAN reports carry file:line through both the
+Hale code and the runtime. Profile with
+`perf record --call-graph dwarf` (frame pointers are deliberately
+not forced — they cost ~22% on runtime fast paths). Opt out of
+debug info with `LOTUS_NO_DEBUGINFO=1`.

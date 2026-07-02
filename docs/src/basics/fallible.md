@@ -118,3 +118,27 @@ whole story.
 
 Next, we put the pieces together: [Your first
 program](./first-program.md).
+
+## When the handler can fail too
+
+A recovery handler is often itself a fallible operation — read a
+fallback file, query a secondary source. Since 2026-07-02 you can
+write that directly:
+
+```hale
+fn load(primary: String, backup: String) -> String fallible(IoError) {
+    return std::io::fs::read_file(primary)
+        or (std::io::fs::read_file(backup) or raise);
+}
+```
+
+If the backup read succeeds, its value substitutes. If it *also*
+fails, `or raise` routes the error out through YOUR function's
+error path — which is why `load` must itself be `fallible` with a
+compatible error type.
+
+For your own fallible functions the inner `or raise` is implicit —
+`db_read(k) or self.rebuild(k)` propagates the handler's failure
+automatically. Stdlib calls and `@form` methods used as handlers
+still need the explicit nested spelling above (the compiler will
+tell you, with the exact rewrite, if you forget).

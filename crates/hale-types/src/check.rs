@@ -8796,6 +8796,45 @@ impl<'a> Checker<'a> {
                             }
                             return success;
                         }
+                        // Docs/spec pass find (2026-07-02): a
+                        // STDLIB fallible path-call used directly
+                        // as the handler compiles but silently
+                        // yields the un-addressed sret ("" / 0) on
+                        // the handler's OWN failure instead of
+                        // propagating — the codegen handler
+                        // classifier doesn't cover stdlib paths.
+                        // Reject with the working spelling until
+                        // it does.
+                        if let Expr::Call { callee, .. } = rhs.as_ref() {
+                            if let Expr::Path(qn) = callee.as_ref() {
+                                let segs: Vec<&str> = qn
+                                    .segments
+                                    .iter()
+                                    .map(|s| s.name.as_str())
+                                    .collect();
+                                let is_fallible_stdlib =
+                                    crate::stdlib_surface::signature_for(
+                                        &segs,
+                                    )
+                                    .map(|sig| sig.fallible.is_some())
+                                    .unwrap_or(false);
+                                if is_fallible_stdlib {
+                                    self.diags.push(Diag::ty(
+                                        *span,
+                                        format!(
+                                            "`or {}(...)`: a fallible \
+                                             stdlib call can't be the \
+                                             handler directly yet — \
+                                             write the nested form `or \
+                                             ({}(...) or raise)` so its \
+                                             own failure has a path",
+                                            segs.join("::"),
+                                            segs.join("::")
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
                         // The substitute RHS must produce a
                         // value of the success type (or be a
                         // nested `or` that ultimately produces

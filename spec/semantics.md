@@ -351,6 +351,14 @@ self.reg.counter("ticks").inc();   // would leak per call
 The `counter()` method declaration is the rejection site. The
 diagnostic names three canonical alternatives:
 
+**Mode keywords in contract names (2026-07-02):** mode names
+(`bulk` / `harmonic` / `resolution`) are admitted in expose-entry
+position — `expose bulk: Float;` — making the exposed-mode pull
+rule below expressible (it was a parse error before). The exposed
+type is checked against the mode's declared return; expose entries
+in general must bind a real params field, mode, or fn member at a
+matching type (M3 stage 4).
+
 1. **Parent-child + contract reads.** `Counter` becomes an
    accepted child of `Registry`; `Registry` reads counter
    state through the contract:

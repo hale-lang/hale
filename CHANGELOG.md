@@ -8,6 +8,16 @@ behavior.
 
 ## Unreleased
 
+- **Typecheck: fallible stdlib calls rejected as direct `or`
+  handlers.** `x() or std::io::fs::read_file(p)` compiled but
+  silently yielded the un-addressed sret value ("" / 0) when the
+  handler ITSELF failed, instead of propagating — found while
+  compile-testing doc examples. Now a typecheck error with the
+  exact rewrite ("write `or (std::io::fs::read_file(p) or raise)`
+  so its own failure has a path") until the codegen handler
+  classifier covers stdlib paths. Zero hits across pond + fathom +
+  examples.
+
 - **Aliasing stage 2 (tier 1) — `noalias self` on provably
   non-reentrant locus methods.** Rust's `&mut`-style guarantee,
   earned from Hale's own invariants: a method in the elidable

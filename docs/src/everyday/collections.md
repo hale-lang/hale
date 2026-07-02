@@ -39,15 +39,20 @@ Three things are happening:
   let x = names.get(99) or "(missing)";
   ```
 
-Iterate with `for` over the indices:
+Iterate with `for` over the items:
 
 ```hale
-let mut i = 0;
-while i < names.len() {
-    println(names.get(i) or "");
-    i = i + 1;
+for name in names.items {
+    println(name);
 }
 ```
+
+(The indexed `while i < names.len()` + `.get(i)` walk also works,
+and is what you want when you need the index — but prefer `.items`
+as the default: it reads better and, on hashmaps especially, it's
+dramatically faster. A hashmap walk via `key_at(i)`/`entry_at(i)`
+rescans from slot 0 on every call — O(cap×len) for the whole walk —
+while `for e in m.entries` visits each occupied slot once.)
 
 The element type can be anything — a primitive, or one of your
 own `type` records:
@@ -110,6 +115,54 @@ locus Recent {
 `push` returns a `Bool` — `false` when the buffer is full — so
 you decide whether to drop or apply backpressure. `pop` is
 fallible on empty.
+
+## A list inside a type — `bounded[T; N]`
+
+The forms above are *loci* — whole entities with their own
+lifecycle. A `type` is pure data, so it can't hold one. What it CAN
+hold (since 2026-07-02) is a **bounded** collection — a
+fixed-capacity list laid out inline in the value:
+
+```hale
+type Message {
+    id:   String;
+    tags: bounded[String; 32];
+}
+
+fn main() {
+    let msg = Message { id: "msg1" };   // tags starts empty —
+                                        // bounded fields can't be
+                                        // spelled in a literal
+    push(msg.tags, "urgent") or raise;
+    push(msg.tags, "billing") or raise;
+
+    for tag in msg.tags {
+        println(tag);
+    }
+    println(count(msg.tags));           // 2
+}
+```
+
+Six operations, all compiler intrinsics (types stay method-free,
+like `len(s)`):
+
+- `push(f, x)` — append; **fallible** with
+  `CapacityError { cap, count }` when full. What to do at capacity
+  is *your* policy, written in the `or` arm.
+- `at(f, i)` — read slot `i`; fallible `IndexError` out of range.
+- `set(f, i, x)` — overwrite a live slot; fallible `IndexError`.
+- `count(f)` — the live count (the capacity lives in the type).
+- `clear(f)` — reset to empty.
+- `truncate(f, n)` — shrink the count (never grows); with `set`,
+  this is the drop-front idiom for FIFO windows.
+
+Use `bounded` when the maximum is known and the list is a *field of
+a value* — per-message tags, route parameters, a chat window. The
+old workaround (a tab-separated string you re-parse on every read)
+is retired: pond's router, LLM, and conversation libraries all
+migrated. Whole-struct copies carry the elements automatically, and
+scalar-element bounded values even cross the zero-copy bus as flat
+bytes.
 
 ## Why a form instead of a generic type
 
