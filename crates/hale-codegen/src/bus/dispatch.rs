@@ -820,6 +820,22 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                                 // memory effects — sat in the publish loop body.
                                 let raw =
                                     info.user_methods.get(handler).copied()?;
+                                // A view-aggregate payload param
+                                // (BytesView/StringView) can't be
+                                // direct-called with the slot ptr —
+                                // leave those to the queue path,
+                                // which registers the (ptr,ptr)
+                                // shim (bus_handler_fn_or_shim).
+                                if matches!(
+                                    raw.get_type()
+                                        .get_param_types()
+                                        .get(1),
+                                    Some(
+                                        inkwell::types::BasicTypeEnum::StructType(_)
+                                    )
+                                ) {
+                                    return None;
+                                }
                                 if !distinct.iter().any(|f| *f == raw) {
                                     distinct.push(raw);
                                 }

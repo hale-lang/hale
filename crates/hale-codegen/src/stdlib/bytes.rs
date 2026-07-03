@@ -484,18 +484,30 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         self.builder.position_at_end(lazy_err_bb);
-        let len_fn = self
-            .module
-            .get_function("lotus_bytes_len")
-            .expect("lotus_bytes_len declared");
-        let len_ssa = self
-            .builder
-            .build_call(len_fn, &[b_val.into()], "bytes.read.len")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("returns i64")
-            .into_int_value();
+        // Per-repr len (2026-07-03): a BytesView is a { ptr, i64 }
+        // aggregate and a BytesMut has its own base/len shape —
+        // passing either raw to ptr-typed lotus_bytes_len was the
+        // magus-md DI-verifier failure.
+        let len_ssa = match &b_ty {
+            CodegenTy::BytesMut => self
+                .bytesmut_base_len(b_val)?
+                .1
+                .into_int_value(),
+            _ => {
+                let bv = self.unpack_view_if_needed(b_val, &b_ty)?;
+                let len_fn = self
+                    .module
+                    .get_function("lotus_bytes_len")
+                    .expect("lotus_bytes_len declared");
+                self.builder
+                    .build_call(len_fn, &[bv.into()], "bytes.read.len")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("returns i64")
+                    .into_int_value()
+            }
+        };
         let ie_ptr =
             self.emit_index_error_alloc("out_of_bounds", off_ssa, len_ssa)?;
         self.builder

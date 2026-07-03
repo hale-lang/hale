@@ -2587,6 +2587,13 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                             locus_name, subject, handler_name
                         ))
                     })?;
+                // View-aggregate payload params ride dispatch via
+                // the (ptr,ptr) shim (bus_handler_fn_or_shim).
+                let handler_fn = self.bus_handler_fn_or_shim(
+                    locus_name,
+                    handler_name,
+                    handler_fn,
+                )?;
                 // Form K6b (2026-05-20): subscriber-side branch.
                 // If the subject is shm_ring-bound, emit
                 // lotus_bus_register_subscriber_shm_ring instead
@@ -2755,6 +2762,12 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                                     locus_name, subject, handler_name
                                 ))
                             })?;
+                        let handler_fn = self
+                            .bus_handler_fn_or_shim(
+                                locus_name,
+                                handler_name,
+                                handler_fn,
+                            )?;
                         self.emit_bus_register(
                             subject,
                             self_ptr,

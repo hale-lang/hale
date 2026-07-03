@@ -1149,6 +1149,7 @@ pub fn build_executable_with_options(
         di: None,
         di_loc_stack: Vec::new(),
         di_current_loc: None,
+        view_handler_shims: std::collections::BTreeMap::new(),
     };
 
     // 2026-07-01 debug story stage 2: DWARF line tables for the Hale
@@ -3068,6 +3069,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// location mutations go through di_enter_stmt/di_exit_stmt, so
     /// this field is authoritative.
     pub(crate) di_current_loc: Option<inkwell::debug_info::DILocation<'ctx>>,
+    /// (locus, handler) → synthesized (ptr,ptr)-ABI shim for bus
+    /// handlers whose payload param is a by-value view aggregate
+    /// (BytesView/StringView). See bus_handler_fn_or_shim.
+    pub(crate) view_handler_shims:
+        std::collections::BTreeMap<String, FunctionValue<'ctx>>,
 }
 
 /// DWARF emission state (debug story stage 2). One DIBuilder +
@@ -5880,11 +5886,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("hwrap self")
                     .into_pointer_value();
                 let payload_arg = wrap.get_nth_param(1).expect("hwrap payload");
+                // View-aggregate payload params (BytesView/
+                // StringView = { ptr, i64 } by value): the queue
+                // hands the SLOT pointer; load the aggregate before
+                // the call. Passing the ptr raw was unverified-IR
+                // UB (garbage len half) until the DWARF verify gate
+                // exposed it (magus-md, 2026-07-03).
+                let payload_arg: inkwell::values::BasicMetadataValueEnum =
+                    match handler_fn.get_type().get_param_types().get(1)
+                    {
+                        Some(inkwell::types::BasicTypeEnum::StructType(
+                            vt,
+                        )) => self
+                            .builder
+                            .build_load(
+                                *vt,
+                                payload_arg.into_pointer_value(),
+                                "hwrap.view.load",
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?
+                            .into(),
+                        _ => payload_arg.into(),
+                    };
                 // Run the user handler.
                 self.builder
                     .build_call(
                         handler_fn,
-                        &[self_arg.into(), payload_arg.into()],
+                        &[self_arg.into(), payload_arg],
                         &format!("{}.hwrap.call", handler_name),
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -12955,6 +12985,85 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         return true;
     }
 
+    /// Bus-dispatch ABI adapter (2026-07-03): the C queue invokes
+    /// handlers as `void(self*, slot*)` — two pointers. A handler
+    /// whose payload param is a by-value VIEW aggregate
+    /// (BytesView/StringView = { ptr, i64 }) can't ride that ABI
+    /// directly; magus-md's BytesView topic only "worked" as
+    /// unverified-IR UB (the slot ptr landed in the ptr half, the
+    /// len half was garbage that usually passed bounds checks).
+    /// Synthesize a (ptr,ptr) shim that loads the aggregate from
+    /// the slot and calls the real method; dispatch registers the
+    /// shim, direct in-language calls keep the real method's ABI.
+    /// Detection is ABI-level: param 1 of the declared fn is a
+    /// struct type. Cached per shim name.
+    pub(crate) fn bus_handler_fn_or_shim(
+        &mut self,
+        locus_name: &str,
+        handler_name: &str,
+        raw: FunctionValue<'ctx>,
+    ) -> Result<FunctionValue<'ctx>, CodegenError> {
+        let params = raw.get_type().get_param_types();
+        let needs_shim = params.len() == 2
+            && matches!(
+                params[1],
+                inkwell::types::BasicTypeEnum::StructType(_)
+            );
+        if !needs_shim {
+            return Ok(raw);
+        }
+        let shim_name =
+            format!("__viewshim_{}_{}", locus_name, handler_name);
+        if let Some(f) = self.view_handler_shims.get(&shim_name) {
+            return Ok(*f);
+        }
+        let view_ty = match params[1] {
+            inkwell::types::BasicTypeEnum::StructType(t) => t,
+            _ => unreachable!(),
+        };
+        let saved_block = self.builder.get_insert_block();
+        let saved_di = self.di_current_loc.take();
+        self.builder.unset_current_debug_location();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let shim_ty = self
+            .context
+            .void_type()
+            .fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        let shim = self.module.add_function(&shim_name, shim_ty, None);
+        let entry = self.context.append_basic_block(shim, "entry");
+        self.builder.position_at_end(entry);
+        let slot_ptr = shim
+            .get_nth_param(1)
+            .expect("shim payload param")
+            .into_pointer_value();
+        let view_val = self
+            .builder
+            .build_load(view_ty, slot_ptr, "viewshim.load")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_call(
+                raw,
+                &[
+                    shim.get_nth_param(0).expect("self").into(),
+                    view_val.into(),
+                ],
+                "viewshim.call",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_return(None)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        if let Some(b) = saved_block {
+            self.builder.position_at_end(b);
+        }
+        if let Some(loc) = saved_di {
+            self.builder.set_current_debug_location(loc);
+            self.di_current_loc = Some(loc);
+        }
+        self.view_handler_shims.insert(shim_name, shim);
+        Ok(shim)
+    }
+
     /// DI verifier fix (2026-07-03): synthesized epilogue code
     /// (fn-exit local-locus dissolve cascades) can emit calls with
     /// no !dbg while the enclosing fn carries a DISubprogram — the
@@ -14544,6 +14653,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // m89: Bytes carries an explicit length prefix —
                 // not strlen, since binary data may have embedded
                 // NULs. lotus_bytes_len reads the i64 at offset 0.
+                // F.30b (2026-07-03): a BytesView is a { ptr, i64 }
+                // aggregate — unpack to the underlying Bytes-shaped
+                // data ptr first (into_pointer_value on the struct
+                // was the magus-md verifier failure).
+                let v = self.unpack_view_if_needed(v, &ty)?;
                 let len_fn = self
                     .module
                     .get_function("lotus_bytes_len")
