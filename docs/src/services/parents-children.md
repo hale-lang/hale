@@ -38,6 +38,55 @@ parent's `self.children` holds its accepted children (with
 `self.children.count` and `self.children.is_empty` for quick
 summaries).
 
+## Bubbling: the nearest accepting ancestor collects the child
+
+`accept` isn't limited to *direct* children. If you instantiate a
+child where the enclosing locus doesn't accept its type, the child
+doesn't become a detached throwaway — it **bubbles up to the
+nearest ancestor that does** accept it.
+
+```hale
+locus World {
+    accept(s: Ship) { }          // a top-level registry of ships
+}
+
+locus Fleet {
+    fn spawn() {
+        Ship { hull: 100 };      // Fleet doesn't accept Ship...
+    }                            // ...so this Ship bubbles to World
+}
+```
+
+`World` collects every `Ship` spawned anywhere beneath it — through
+a `Fleet` that never mentions ships — with no manual registration.
+It's the structural counterpart to the [bus](./bus.md): the bus
+carries ephemeral *messages*; this carries ephemeral *ownership* —
+a live collection the ancestor holds and cleans up.
+
+A few rules keep it predictable:
+
+- **Nearest wins.** If several ancestors accept the type, the
+  innermost one gets the child. A direct parent that accepts it is
+  the nearest of all — so nothing about ordinary parent/child
+  attachment changes; bubbling only fills the gap where a child
+  *had* no owner.
+- **No owner is fine.** A child whose type no ancestor accepts is
+  just a transient local — bubbling is opt-in via `accept`, and the
+  absence of an owner is never an error.
+- **Still vertical.** Bubbling travels *up* the tower to an
+  ancestor; it never reaches sideways. The child's region still
+  lives inside its owner's, so the whole "[flow is vertical
+  only](#flow-is-vertical-only)" cleanup story holds — the owner is
+  just possibly a grandparent, not always the direct parent.
+
+When the owner lives on a **different thread** — a `main locus`
+registry collecting entities that workers spawn on their own pools —
+the child is created over on the owner's thread, so the spawning
+side can't hold onto it. There a cross-pool spawn is
+**fire-and-forget**: write it as a bare statement, not
+`let s = Ship { ... }`. The compiler will tell you if you try to
+keep the value.
+
 ## The contract: what crosses the boundary
 
 A child decides what its parent may see by declaring a
