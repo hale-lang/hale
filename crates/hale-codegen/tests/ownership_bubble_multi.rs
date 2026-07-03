@@ -94,8 +94,54 @@ const ISOLATION_SRC: &str = r#"
     fn main() { Root { }; }
 "#;
 
+
+// Shares the cross-process bubble lock discipline with the sibling
+// bubble suites (see ownership_bubble.rs for the why): concurrent
+// bubble-program binaries starve each other's threaded delivery.
+struct BubbleLock(std::path::PathBuf);
+impl Drop for BubbleLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+fn bubble_lock() -> BubbleLock {
+    let path = std::env::temp_dir().join("hale_bubble_suite.lock");
+    let start = std::time::Instant::now();
+    loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => return BubbleLock(path),
+            Err(_) => {
+                if let Ok(md) = std::fs::metadata(&path) {
+                    if let Ok(age) = md.modified().and_then(|m| {
+                        std::time::SystemTime::now()
+                            .duration_since(m)
+                            .map_err(std::io::Error::other)
+                    }) {
+                        if age.as_secs() > 120 {
+                            let _ = std::fs::remove_file(&path);
+                            continue;
+                        }
+                    }
+                }
+                assert!(
+                    start.elapsed().as_secs() < 300,
+                    "bubble lock timed out"
+                );
+                std::thread::sleep(
+                    std::time::Duration::from_millis(100),
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn two_worlds_collect_only_their_own_ships() {
+    let _lock = bubble_lock();
     let bin = build_named("isolation", ISOLATION_SRC);
     let stdout = run(&bin);
     // THE prize: each World collects exactly its own two Ships, summed
@@ -115,6 +161,7 @@ fn two_worlds_collect_only_their_own_ships() {
 
 #[test]
 fn disable_flag_reverts_both_worlds_to_transient() {
+    let _lock = bubble_lock();
     // Control arm: gate #2b off. The Ships stay transient (dissolved at
     // Yard.run()'s scope exit), so BOTH Worlds collect nothing — proving
     // the flag empties the non-singleton plan + the forwarding fields and
@@ -133,6 +180,7 @@ fn disable_flag_reverts_both_worlds_to_transient() {
 
 #[test]
 fn threading_depth_two_intermediaries() {
+    let _lock = bubble_lock();
     // World -> A -> B -> Ship{}. Neither A nor B accepts Ship; the owner
     // pointer is forwarded through BOTH intermediaries' `__owner_for_Ship`
     // fields and still stitches to the correct World instance.
@@ -192,6 +240,7 @@ fn threading_depth_two_intermediaries() {
 
 #[test]
 fn ship_outside_any_world_stays_transient() {
+    let _lock = bubble_lock();
     // A `Depot` born directly under `Root` spawns a Ship with a sentinel
     // hull (999). Depot has no World ancestor → the site resolves to
     // Orphan → it is NOT in the plan, carries no `__owner_for_Ship`, and

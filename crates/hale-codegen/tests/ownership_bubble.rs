@@ -80,6 +80,14 @@ const BUBBLE_SRC: &str = r#"
         }
         run() {
             Yard { };
+            // Poll: threaded bubbles race this read under
+            // parallel-suite load (same de-flake as the crosspool
+            // suite). Each sleep slice drains the pool queue.
+            let mut waited: Int = 0;
+            while self.harmonic() < 2 && waited < 60 {
+                std::time::sleep(100ms);
+                waited = waited + 1;
+            }
             println("count=", self.harmonic());
             println("total=", self.bulk());
         }
@@ -87,8 +95,58 @@ const BUBBLE_SRC: &str = r#"
     fn main() { World { }; }
 "#;
 
+
+/// Cross-process serialization for the bubble-polling programs
+/// (this suite + ownership_bubble_crosspool): two of these running
+/// CONCURRENTLY reliably starve each other's threaded bubble
+/// delivery (count=0 even through a 6s poll window; the historical
+/// parallel-run flake was the same collision with a smaller overlap
+/// window). Channel unidentified — suspected shared default bus —
+/// so serialize the binaries outright; each completes in <1s alone.
+struct BubbleLock(std::path::PathBuf);
+impl Drop for BubbleLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+fn bubble_lock() -> BubbleLock {
+    let path = std::env::temp_dir().join("hale_bubble_suite.lock");
+    let start = std::time::Instant::now();
+    loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => return BubbleLock(path),
+            Err(_) => {
+                if let Ok(md) = std::fs::metadata(&path) {
+                    if let Ok(age) = md.modified().and_then(|m| {
+                        std::time::SystemTime::now()
+                            .duration_since(m)
+                            .map_err(std::io::Error::other)
+                    }) {
+                        if age.as_secs() > 120 {
+                            let _ = std::fs::remove_file(&path);
+                            continue;
+                        }
+                    }
+                }
+                assert!(
+                    start.elapsed().as_secs() < 300,
+                    "bubble lock timed out"
+                );
+                std::thread::sleep(
+                    std::time::Duration::from_millis(100),
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn world_collects_bubbled_ship() {
+    let _lock = bubble_lock();
     let bin = build_named("collect", BUBBLE_SRC);
     let stdout = run(&bin);
     // Both Ships bubbled up to World's __children.
@@ -107,6 +165,7 @@ fn world_collects_bubbled_ship() {
 
 #[test]
 fn disable_flag_reverts_to_transient() {
+    let _lock = bubble_lock();
     // Same program, but the bubble is gated off. The Ships stay
     // transient (dissolved at Yard.run()'s scope exit), so World
     // collects nothing — proving the flag empties the ownership plan and
@@ -131,6 +190,7 @@ fn disable_flag_reverts_to_transient() {
 
 #[test]
 fn self_owned_control_still_works() {
+    let _lock = bubble_lock();
     // Control: the main locus births Ship DIRECTLY and accepts it — the
     // SelfOwned path, which this artifact must leave byte-identical.
     let src = r#"
@@ -171,6 +231,7 @@ fn self_owned_control_still_works() {
 
 #[test]
 fn non_singleton_ancestor_now_bubbles_via_threading() {
+    let _lock = bubble_lock();
     // A plain (non-`main`) `Fleet` accepts Ship but reaches it only
     // through an intermediary `Yard`. The site resolves to
     // `Ancestor(Fleet)` with `OwnerKind::Ancestor` (NOT SingletonConst).
@@ -204,6 +265,14 @@ fn non_singleton_ancestor_now_bubbles_via_threading() {
             }
             run() {
                 Yard { };
+                    // Poll: threaded bubbles race this read under
+                // parallel-suite load (same de-flake as the crosspool
+                // suite). Each sleep slice drains the pool queue.
+                let mut waited: Int = 0;
+                while self.harmonic() < 2 && waited < 60 {
+                    std::time::sleep(100ms);
+                    waited = waited + 1;
+                }
                 println("fleet_count=", self.harmonic());
                 println("fleet_total=", self.bulk());
             }

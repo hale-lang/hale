@@ -23,8 +23,61 @@ fn fixtures_dir() -> PathBuf {
     p
 }
 
+/// Cross-PROCESS lock on the shared fixture dir: nextest runs each
+/// test in its own process, and both tests here delete + rebuild +
+/// exec the SAME `fixtures/three-hop-app/three-hop-app` binary (the
+/// per-directory seed model puts the binary next to the source, and
+/// the mangled-prefix assertion depends on the checked-in path, so
+/// a per-test tempdir copy isn't an option). Racing them was the
+/// recurring parallel-run flake. create_new is the portable
+/// dependency-free mutex; stale locks (a killed test) are stolen
+/// after 60s.
+struct FixtureLock(std::path::PathBuf);
+impl Drop for FixtureLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+fn lock_fixture() -> FixtureLock {
+    let path = fixtures_dir().join("three-hop-app.lock");
+    let start = std::time::Instant::now();
+    loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => return FixtureLock(path),
+            Err(_) => {
+                if let Ok(md) = std::fs::metadata(&path) {
+                    if let Ok(age) =
+                        md.modified().and_then(|m| {
+                            std::time::SystemTime::now()
+                                .duration_since(m)
+                                .map_err(std::io::Error::other)
+                        })
+                    {
+                        if age.as_secs() > 60 {
+                            let _ = std::fs::remove_file(&path);
+                            continue;
+                        }
+                    }
+                }
+                assert!(
+                    start.elapsed().as_secs() < 120,
+                    "fixture lock timed out"
+                );
+                std::thread::sleep(
+                    std::time::Duration::from_millis(100),
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn three_hop_app_builds_and_runs() {
+    let _lock = lock_fixture();
     let app_dir = fixtures_dir().join("three-hop-app");
 
     // Clean prior build artifacts so we test the fresh build path.
@@ -79,6 +132,7 @@ fn three_hop_app_builds_and_runs() {
 
 #[test]
 fn three_hop_uses_path_based_mangled_prefix() {
+    let _lock = lock_fixture();
     // 2026-05-22: the mangler switched from alias-based to path-
     // based identity. Two consumers importing the same lib under
     // different aliases now produce identical mangled symbols

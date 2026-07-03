@@ -824,8 +824,8 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                                 // (BytesView/StringView) can't be
                                 // direct-called with the slot ptr —
                                 // leave those to the queue path,
-                                // which registers the (ptr,ptr)
-                                // shim (bus_handler_fn_or_shim).
+                                // where __hwrap_ loads the
+                                // aggregate from the slot.
                                 if matches!(
                                     raw.get_type()
                                         .get_param_types()

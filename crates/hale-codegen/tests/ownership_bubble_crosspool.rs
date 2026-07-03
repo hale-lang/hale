@@ -105,8 +105,58 @@ const XPOOL_SRC: &str = r#"
     fn main() { World { }; }
 "#;
 
+
+/// Cross-process serialization for the bubble-polling programs
+/// (this suite + ownership_bubble_crosspool): two of these running
+/// CONCURRENTLY reliably starve each other's threaded bubble
+/// delivery (count=0 even through a 6s poll window; the historical
+/// parallel-run flake was the same collision with a smaller overlap
+/// window). Channel unidentified — suspected shared default bus —
+/// so serialize the binaries outright; each completes in <1s alone.
+struct BubbleLock(std::path::PathBuf);
+impl Drop for BubbleLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+fn bubble_lock() -> BubbleLock {
+    let path = std::env::temp_dir().join("hale_bubble_suite.lock");
+    let start = std::time::Instant::now();
+    loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => return BubbleLock(path),
+            Err(_) => {
+                if let Ok(md) = std::fs::metadata(&path) {
+                    if let Ok(age) = md.modified().and_then(|m| {
+                        std::time::SystemTime::now()
+                            .duration_since(m)
+                            .map_err(std::io::Error::other)
+                    }) {
+                        if age.as_secs() > 120 {
+                            let _ = std::fs::remove_file(&path);
+                            continue;
+                        }
+                    }
+                }
+                assert!(
+                    start.elapsed().as_secs() < 300,
+                    "bubble lock timed out"
+                );
+                std::thread::sleep(
+                    std::time::Duration::from_millis(100),
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn world_collects_crosspool_bubbled_ships() {
+    let _lock = bubble_lock();
     let bin = build_named("collect", XPOOL_SRC).expect("build");
     let stdout = run(&bin);
     // All three Ships bubbled cross-pool to World's __children.
@@ -125,6 +175,7 @@ fn world_collects_crosspool_bubbled_ships() {
 
 #[test]
 fn disable_flag_reverts_to_transient() {
+    let _lock = bubble_lock();
     // Same program, bubble gated off: the Ships stay transient
     // (dissolved at Driver.run()'s scope exit on the worker thread), so
     // World collects nothing.
@@ -141,6 +192,7 @@ fn disable_flag_reverts_to_transient() {
 
 #[test]
 fn fire_and_forget_value_use_is_rejected() {
+    let _lock = bubble_lock();
     // A cross-pool `Ship { }` used as a VALUE (let-binding) is a compile
     // error — the instance is born on World's thread and can't be used
     // on the consumer's.

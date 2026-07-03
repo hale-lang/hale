@@ -678,9 +678,17 @@ fn lockfree_sustained_write_rss_bounded() {
         .find(|l| l.starts_with("after_rss_mb="))
         .and_then(|l| l.trim_start_matches("after_rss_mb=").trim().parse::<i64>().ok())
         .unwrap_or_else(|| panic!("missing after_rss_mb in stdout: {:?}", stdout));
+    // 512 MB, not 128 (2026-07-03 de-flake): under the FULL
+    // parallel suite, allocator/page pressure from dozens of
+    // concurrent test binaries occasionally pushed RSS past the
+    // old 2.5x-margin bound (unreproducible in isolation, under
+    // synthetic CPU load, or 8x self-concurrency — all ~50 MB).
+    // The regression this guards (use-after-grow holding every
+    // OLD slots buffer) peaks in the GB range, so 512 MB still
+    // catches it with 10x margin while absorbing the noise.
     assert!(
-        after < 128,
-        "20k-insert sustained-write workload exceeded 128 MB RSS \
+        after < 512,
+        "20k-insert sustained-write workload exceeded 512 MB RSS \
          ({}MB) — likely a use-after-grow leak (OLD slots buffer \
          not being freed eagerly after migration). Pre-eager-free \
          design peaked in the GB range under this workload.",
