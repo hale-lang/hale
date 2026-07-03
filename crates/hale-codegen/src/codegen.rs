@@ -14653,11 +14653,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // m89: Bytes carries an explicit length prefix —
                 // not strlen, since binary data may have embedded
                 // NULs. lotus_bytes_len reads the i64 at offset 0.
-                // F.30b (2026-07-03): a BytesView is a { ptr, i64 }
-                // aggregate — unpack to the underlying Bytes-shaped
-                // data ptr first (into_pointer_value on the struct
-                // was the magus-md verifier failure).
-                let v = self.unpack_view_if_needed(v, &ty)?;
                 let len_fn = self
                     .module
                     .get_function("lotus_bytes_len")
