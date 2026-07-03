@@ -5864,14 +5864,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             };
             // Distinct handler names (a handler may serve several
             // subjects; one wrapper per handler suffices).
-            let mut handlers: Vec<String> = info
+            let mut handlers: Vec<(String, String)> = info
                 .subscriptions
                 .iter()
-                .map(|(_, h, _, _)| h.clone())
+                .map(|(_, h, pt, _)| (h.clone(), pt.clone()))
                 .collect();
             handlers.sort();
             handlers.dedup();
-            for handler_name in handlers {
+            for (handler_name, payload_ty) in handlers {
                 let handler_fn = match info.user_methods.get(&handler_name) {
                     Some(f) => *f,
                     None => continue,
@@ -5892,12 +5892,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // the call. Passing the ptr raw was unverified-IR
                 // UB (garbage len half) until the DWARF verify gate
                 // exposed it (magus-md, 2026-07-03).
+                // Gate on the DECLARED payload type, not ABI shape:
+                // non-view by-value struct params (cross-pool bubble
+                // cells) are already passed correctly by the queue,
+                // and loading through them segfaulted the crosspool
+                // suite on CI (2026-07-03).
+                let is_view_payload = payload_ty == "BytesView"
+                    || payload_ty == "StringView";
                 let payload_arg: inkwell::values::BasicMetadataValueEnum =
                     match handler_fn.get_type().get_param_types().get(1)
                     {
                         Some(inkwell::types::BasicTypeEnum::StructType(
                             vt,
-                        )) => self
+                        )) if is_view_payload => self
                             .builder
                             .build_load(
                                 *vt,
