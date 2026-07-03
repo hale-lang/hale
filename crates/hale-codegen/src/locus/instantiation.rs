@@ -2587,13 +2587,14 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                             locus_name, subject, handler_name
                         ))
                     })?;
-                // View-aggregate payload params ride dispatch via
-                // the (ptr,ptr) shim (bus_handler_fn_or_shim).
-                let handler_fn = self.bus_handler_fn_or_shim(
-                    locus_name,
-                    handler_name,
-                    handler_fn,
-                )?;
+                // NOTE (2026-07-03): do NOT shim view-param
+                // handlers here. The shm_ring C reader passes the
+                // view BY VALUE via a cast call (lotus_shm_ring.c
+                // "shm_lotus_view_t" invoke), so the raw method ABI
+                // is already correct on that path — shimming it
+                // segfaulted the bytesview ring suites. The arena-
+                // queue path adapts inside __hwrap_ instead (the
+                // slot-ptr load in synthesize_reclaim_fns).
                 // Form K6b (2026-05-20): subscriber-side branch.
                 // If the subject is shm_ring-bound, emit
                 // lotus_bus_register_subscriber_shm_ring instead
@@ -2762,12 +2763,6 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                                     locus_name, subject, handler_name
                                 ))
                             })?;
-                        let handler_fn = self
-                            .bus_handler_fn_or_shim(
-                                locus_name,
-                                handler_name,
-                                handler_fn,
-                            )?;
                         self.emit_bus_register(
                             subject,
                             self_ptr,
