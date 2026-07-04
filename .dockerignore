@@ -4,6 +4,8 @@
 # artifact. Everything codegen needs is include_str!'d from crates/.
 target/
 play/site/dist/
+dist/
+release/dist/
 .git/
 .github/
 docs/book/

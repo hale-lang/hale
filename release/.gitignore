@@ -1,0 +1,2 @@
+# Build output produced by `docker compose run --rm build`.
+/dist/

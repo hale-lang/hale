@@ -1,0 +1,34 @@
+# One-command reproducible release build for the `hale` compiler.
+#
+#   Produce the tarball on the host (writes ./dist/hale-<triple>.tar.gz):
+#       docker compose -f release/docker-compose.yml run --rm build
+#
+#   Run the clean-image acceptance test (compiles+runs a program in an
+#   image with NO llvm-18-dev installed, prints hale's ldd + output):
+#       docker compose -f release/docker-compose.yml run --rm smoketest
+#
+# Host paths below are relative to THIS file's directory (release/), so
+# `../dist` resolves to the repo-root `dist/` regardless of your cwd.
+
+services:
+  # Builds the workspace against the full LLVM-18 dev stack, assembles
+  # the release tarball, then copies it out to the bind-mounted ./dist.
+  build:
+    build:
+      context: ..                    # repo root (respects root .dockerignore)
+      dockerfile: release/Dockerfile
+      target: package                # stop before the smoketest stage
+    volumes:
+      - ../dist:/dist                # tarball + .sha256 land here on the host
+    # default CMD (in the `package` stage) copies /out/* -> /dist
+
+  # Clean-room acceptance test. Builds the `smoketest` stage, which
+  # installs ONLY clang + openssl + certs (NOT llvm-18-dev), extracts the
+  # tarball, and runs a real program — proving `hale` needs no LLVM 18.
+  # The build-time RUN already asserts success; this service re-runs it
+  # live so the output is captured on `docker compose run`.
+  smoketest:
+    build:
+      context: ..
+      dockerfile: release/Dockerfile
+      target: smoketest
