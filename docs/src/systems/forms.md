@@ -39,6 +39,20 @@ The three forms and what they require:
 empty); `push` on `vec` is infallible, on `ring_buffer` returns
 `Bool` (full is a normal condition, not an error).
 
+Both a `vec` and a `hashmap` also expose **batched iteration**
+(shipped 2026-07-02) — `for x in v.items { … }` walks the vec, and
+`for e in m.entries { … }` walks the map. The loop is an inline
+buffer/slot walk, not per-element method calls. (Don't mutate the
+form inside the body — a grow would rehash under the cursor.)
+
+By default a `@form(hashmap)` is single-pool: its densest layout
+has no synchronization, and a cross-pool call into it is rejected.
+Opt into concurrent access with the `sync = …` parameter —
+`@form(hashmap, sync = serialized)` (per-map mutex),
+`sync = striped` (concurrent readers), or `sync = lockfree`
+(CAS-only steady state) — trading layout density for the sharing
+discipline the workload needs.
+
 ## The performance contract
 
 Each form commits to a performance band, verified by

@@ -105,10 +105,11 @@ These are advisory warnings, not build failures:
   bound is *proven* bounded and left alone. Run-to-exit programs (a
   `main` with no `run` loop and no bus handler) are exempt
   automatically — a script that allocates and exits owes nothing.
-  Opt out of a run with `--no-warn-unbounded-alloc`; annotate the long-lived locus
-  `@bounded` to get the check on every `hale check` without the flag,
-  and `@unbounded` (on a `fn` or a lifecycle hook) to acknowledge an
-  intentional accumulation and silence it.
+  Opt out of a run with `--no-warn-unbounded-alloc`. Annotating a
+  long-lived locus `@bounded` is now redundant with the default —
+  the check already runs on every `hale check` — but it's still
+  accepted. Use `@unbounded` (on a `fn` or a lifecycle hook) to
+  acknowledge an intentional accumulation and silence it.
 - The same check flags an **insert into a growing collection** —
   `v.push(x)` / `m.set(x)` where `v` / `m` is a `@form(vec)` or
   `@form(hashmap)` — when it runs in an unbounded context. The backing
@@ -221,11 +222,19 @@ Two knobs matter when that default isn't what you want:
 ## Where Hale earns its overhead
 
 Hale is shaped to pay *coordination* cost well — bus dispatch,
-region setup, lifecycle — and it's competitive there. Pure
-tight-loop arithmetic with no coordination is not where it
-shines; that's substrate overhead with nothing to amortize it
-against. Reach for Hale's structure where the work is
-coordination-shaped, which is most real systems.
+region setup, lifecycle — and as of v0.9.0 that's where it
+*leads*. The lock-free bus plus static-dispatch devirtualization
+turned coordination from a deficit into an advantage over Go:
+`bus_dispatch` went from ~4× behind to **2.4× ahead**, and
+`bus_dispatch_cross_pool` from behind to **1.26× ahead**. Reach
+for Hale's structure where the work is coordination-shaped, which
+is most real systems.
+
+The tight loop caught up too. Pure arithmetic used to be the
+place the substrate showed through, but native codegen closed the
+gap: `fn_modular` reached **parity with clang `-O3` C** (~0.98 of
+the C time). Coordination is the lead; tight-loop arithmetic is no
+longer the price you pay for it.
 
 Next: what `@form` actually compiles to — [Forms under the
 hood](./forms.md).

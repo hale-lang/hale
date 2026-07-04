@@ -69,6 +69,25 @@ fails the build:
   is checked for internal and cross-field consistency before a torn
   read is possible.
 
+**Concurrency & placement**, keeping a program's placement coherent
+with how the runtime dispatches:
+
+- **Dead bus receiver** — a cooperative locus that subscribes to the
+  bus *and* blocks in `run()`, so the blocking call monopolizes the
+  pool thread and its handlers never fire — **error**.
+- **Blocking call on a cooperative pool** — a blocking `run()`
+  (`recv` / `accept` / `process::run`) on a pool that isn't
+  `where async_io`; it holds the pool's thread and stalls
+  co-scheduled loci — warning.
+- **Nested long-running child** — a non-`main` locus holding a
+  params field of a locus type whose `run()` never returns; the fix
+  is hoisting it to a `main` sibling with its own placement —
+  **error**.
+- **Unowned subscriber locus** — a bus-subscribing locus
+  instantiated *non-owned* in another locus's method body, so it
+  dissolves at scope exit before its subscription can fire —
+  **error**.
+
 **Memory-bound proofs** *(on by default).* Every `hale check` /
 `hale build` runs the whole-program survey: the compiler's
 escape/loop dataflow flags allocations that escape a per-message

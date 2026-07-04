@@ -44,12 +44,37 @@ fn double(n: Int) -> Int {
 Both styles are fine. Use whichever reads better; `return` is
 clearer for early exits.
 
-## Default parameter values aren't a thing here
+## Default parameter values
 
-Functions don't have default arguments. If you find yourself
-wanting them, you usually want a small record or a locus holding
-the configuration — covered later. Keep free functions
-positional and explicit.
+A parameter can carry a default, so the caller can leave off the
+trailing arguments:
+
+```hale
+fn pow(base: Int, exp: Int = 2) -> Int {
+    let mut acc = 1;
+    for _ in 0..exp { acc = acc * base; }
+    return acc;
+}
+
+fn main() {
+    println(pow(3));      // exp defaults to 2 → 9
+    println(pow(2, 5));   // override → 32
+}
+```
+
+Two rules keep the calling convention unambiguous:
+
+- **Defaults form a trailing suffix.** A required parameter can't
+  follow a defaulted one — otherwise it wouldn't be clear which
+  slot an omitted argument fills.
+- **Defaults are evaluated at the call site**, in the caller's
+  scope — not baked in when the function is defined. For a constant
+  literal (the common case) that's identical; for an expression
+  that names a caller-visible binding, it sees *that* binding.
+
+Locus methods support defaults too. One caveat: bus-handler
+methods and mode methods reject them — their argument shape is
+fixed by the runtime, so there's no slot to fill at dispatch time.
 
 ## Functions are values
 

@@ -43,13 +43,19 @@ the `accept()`:
 bus { subscribe "entity.first_seen" as on_seen of type Seen; }
 fn on_seen(s: Seen) {
     // First message for this key → spawn its child now.
-    self.accept(Child { id: s.id });
+    // Bare instantiation inside a parent method attaches the child:
+    // it triggers the enclosing accept(c) gatekeeper. `accept` is a
+    // lifecycle hook the runtime invokes, never a method you call.
+    Child { id: s.id };
 }
 ```
 
 The topology grows from the data. Combined with `release`, children
 appear on first contact and vanish when their flow ends — the
-process shape mirrors the live workload with no configuration.
+process shape mirrors the live workload with no configuration. (If
+the manager doesn't itself `accept` this child type, the child
+bubbles to the [nearest accepting ancestor](./parents-children.md)
+— v0.9.2.)
 
 ## 3. Hot-path counters & gauges (and the CQRS rejection)
 
