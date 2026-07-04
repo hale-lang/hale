@@ -1,8 +1,9 @@
 # Binary SHM-ring interop: `ring_layout` declarations + `std::bytes` pack primitives
 
-**Status:** Design proposal, 2026-06-06. Pre-implementation. Driven by a
-concrete first consumer (fathom ↔ the external stack). Two related but independently
-landable features. Awaiting compiler-team review + staging decision.
+**Status:** SHIPPED in v0.8.3 — both `ring_layout` declarations and the
+`std::bytes` pack primitives landed. This note is retained as the originating
+design proposal (2026-06-06), driven by a concrete first consumer (fathom ↔ the
+external stack).
 
 **Authors / context:** Raised from the fathom side while scoping
 interop with **an external trading stack** (a sister C++ system) whose

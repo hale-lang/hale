@@ -1,7 +1,8 @@
 # Proto-locus design: everything-is-a-locus
 
-**Status:** Design pass 2026-05-12. Pre-implementation. Awaiting
-worked example (`@form(vec)`) before any code lands.
+**Status:** SHIPPED — `@form(vec)` / `@form(hashmap)` /
+`@form(ring_buffer)` landed; see `spec/forms.md`. This note is
+retained as the originating design pass (2026-05-12).
 
 ## Premise
 

@@ -41,6 +41,12 @@ reuse.
 > per-handler flags). *Still deferred:* the `@unbounded` escape valve and
 > type-aware String-concat sites.
 >
+> **UPDATE (2026-07-02): default-on again (M3 stage 5).** The
+> whole-program advisory survey is now DEFAULT-ON; `--no-warn-unbounded-alloc`
+> is the opt-out (the `--warn-unbounded-alloc` spelling is accepted-and-ignored).
+> The 2026-06-25 opt-in reversal below is superseded — kept as history. See
+> `spec/verification.md` "whole-program advisory survey."
+>
 > **Reverted to opt-in (2026-06-25).** The warning was promoted to
 > default-on (#122) but later reversed: per Hale's descent-curve stance,
 > a bound *per epoch* only means something for a long-lived process, so a

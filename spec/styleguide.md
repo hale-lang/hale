@@ -559,11 +559,10 @@ above almost always fit — possibly with a workaround for a v1
 language gap (next section).
 
 If the author genuinely thinks the catalog is missing a pattern,
-the canonical move is to log a friction entry in
-`notes/hale-friction.md` or the app's `FRICTION.md`, with the
-smallest reproducible example. The catalog grows from real
-friction, not from speculation. See "The friction-log contract"
-in `notes/agent-onboarding/app-dev-brief.md` for the format.
+the canonical move is to log a friction entry in the app's
+`FRICTION.md`, with the smallest reproducible example. The
+catalog grows from real friction, not from speculation. See
+`AGENTS.md` for the agent workflow.
 
 ## Current language gaps (and idiomatic workarounds)
 
@@ -632,13 +631,9 @@ underlying surface lands.
   arena strategies; recognition sub-modes.
 - `spec/stdlib.md` — shipped stdlib surface; phase-by-phase
   history.
-- `notes/agent-onboarding/app-dev-brief.md` — agent-workflow
-  brief for sessions building apps in `apps/<name>/`. The
-  styleguide here is normative for code; the brief covers the
-  workflow conventions (friction-log contract, hard guardrails,
-  first-step protocol).
-- `notes/agent-onboarding/compiler-session-brief.md` —
-  agent-workflow brief for sessions modifying the compiler
-  itself (`crates/`, `spec/`, `docs/`).
+- `AGENTS.md` — the canonical agent prompt (workflow conventions,
+  hard guardrails, first-step protocol); `agents/compiler-dev.md`
+  covers sessions modifying the compiler itself (`crates/`,
+  `spec/`, `docs/`).
 - `notes/hale-types-vs-loci.md` — the source axiom.
 - `notes/hale-seed.md` — what a seed is and what it exports.

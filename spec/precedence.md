@@ -164,4 +164,4 @@ Note: `?` (try-propagation) was previously reserved at level
 disposition operator `or` covers the same use case at the
 expression level without re-introducing a parallel
 upward-propagation mechanism at the value layer. See
-`notes/agent-onboarding/hale-design-philosophy.md` § 2.
+`spec/design-rationale.md`.

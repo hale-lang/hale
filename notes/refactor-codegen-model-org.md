@@ -2,7 +2,7 @@
 
 **Branch:** `refactor/codegen-model-org`
 **Date drafted:** 2026-05-27
-**Status:** plan only; no code changes yet
+**Status:** EXECUTED — the split shipped; `crates/hale-codegen/src/` now carries `bus/`, `form/`, `locus/`, etc. and `codegen.rs` is ~26.5k lines (down from 45.5k). This note is retained as the delivery plan of record.
 **Spec anchor (post-delivery):** would land as `F.34 codegen-file-layout` in `spec/design-rationale.md` once Round 1 ships.
 
 ## TL;DR

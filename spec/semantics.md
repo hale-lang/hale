@@ -143,10 +143,14 @@ plumbing.
 `LocusName { params }`:
 
 1. Compute params (overrides applied to declared defaults).
-2. Locus type's `accept(c)` (if instantiated inside a parent's
-   lifecycle method) runs first; if it rejects, instantiation
-   fails (no region allocated).
-3. Region allocated as sub-region of enclosing locus's region;
+2. The nearest enclosing ancestor that declares `accept(c: I)`
+   for the child's interface is the **owner** (innermost-wins —
+   interest-based ownership / accept bubbling; see below and
+   `runtime.md`). Its `accept(c)` runs first; if it rejects,
+   instantiation fails (no region allocated). With no accepting
+   ancestor the child is a transient throwaway (no owner).
+3. Region allocated as a sub-region of the **owner's** region
+   (the accepting ancestor — not necessarily the direct parent);
    size determined by projection class.
 4. `birth(args)` runs synchronously.
 5. Bus subscriptions wire up.
@@ -154,6 +158,18 @@ plumbing.
 7. If `run` declared, scheduled to run on the locus's
    scheduler.
 8. Expression returns the locus handle.
+
+**Accept bubbling.** The owner in step 2 need not be the direct
+parent. An `I{}` instantiated anywhere in a subtree bubbles to
+the nearest enclosing ancestor that declares `accept(I)`
+(innermost-wins); resolution is entirely static (the closed-world
+instantiation graph fixes every owner edge at compile time). The
+owner may live in a different tower or on a different pool: a
+cross-pool owner is served by an async handoff over the bus, so a
+cross-pool `I{}` is **fire-and-forget** — it may only appear as a
+bare statement, and using the instance as a value is rejected at
+compile time. See `runtime.md` "Interest-based ownership (accept
+bubbling)."
 
 ### Dissolve timing rules
 
@@ -582,15 +598,18 @@ class slot-handle values.
 
 ### Slot 0 parent-override
 
-When a locus is accepted by a parent whose projection class is
-**Chunked** or **Recognition**, the child's slot 0 (arena) is
-allocated either as a sub-region of the parent's arena (Chunked,
-via `lotus_arena_create_subregion`) or out of the parent's
-recpool (Recognition with the matching sub-mode, via
+When a locus is accepted by an owner (the accepting ancestor —
+see "Accept bubbling," not necessarily the direct parent) whose
+projection class is **Chunked** or **Recognition**, the child's
+slot 0 (arena) is allocated either as a sub-region of the owner's
+arena (Chunked, via `lotus_arena_create_subregion`) or out of the
+owner's recpool (Recognition with the matching sub-mode, via
 `lotus_recpool_fixed_acquire` / `lotus_recpool_slab_acquire`).
-The child is freed wholesale when the parent dissolves.
-**Rich**-class parents do not sub-region-allocate; accepted
-children get their own top-level arenas. See `memory.md`
+The child is freed wholesale when the owner dissolves.
+**Rich**-class owners do not sub-region-allocate; accepted
+children get their own top-level arenas. When bubbling crosses a
+pool, the child is born in — and reclaimed by — the owner's
+thread via an async bus handoff (`runtime.md`). See `memory.md`
 Per-projection-class allocation table.
 
 F.22 names this as "projection class governs parent-override
@@ -2311,7 +2330,7 @@ Hale carries two **orthogonal** failure channels:
 The two channels meet at exactly one place: the implicit main
 locus's root boundary (see "Process exit" below). Everywhere
 else, the channels are independent. See
-`notes/agent-onboarding/hale-design-philosophy.md` § 2.
+`spec/design-rationale.md`.
 
 ### Where each channel lives (declaration sites)
 

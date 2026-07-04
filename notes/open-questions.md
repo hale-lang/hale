@@ -179,7 +179,8 @@ when the type-system / operational-semantics docs are drafted.
     `reorganize` (per #16) — five primitives, no overlap.
 
 24. **`fallible(E)` on user-declared locus member fns.**
-    **Open (2026-05-25): worth a focused proposal.**
+    **SHIPPED (2026-05-25): the blanket "no fallible on locus
+    methods" rule was lifted; see CHANGELOG + `spec/types.md`.**
 
     Friction signal: across multiple apps + libraries, devs
     work around the "no fallible on locus methods" rule by

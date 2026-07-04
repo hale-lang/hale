@@ -253,10 +253,10 @@ surprises:
 2. Pick the smallest target. State it out loud: app name,
    stdlib paths you'll need, what you're not sure about.
 3. Read 2-3 programs close to your target shape. The richest
-   in-tree sources are `apps/` (real working programs:
-   `cli-demo`, `log-router`, `ssg`, `tcp-echo`, `ws-echo`, ...)
-   and `crates/hale-codegen/tests/fixtures/examples/` (small
-   per-feature anchors, numbered).
+   in-tree sources are in
+   `crates/hale-codegen/tests/fixtures/examples/` (small
+   per-feature anchors, numbered — the broadest acceptance
+   surface).
 4. Write the smallest program that gets one thing working.
    `hale run <file-or-dir>` for fast feedback; `hale build`
    for the native binary.
@@ -329,7 +329,6 @@ are the supported form.
   `@form(ring_buffer)`): `spec/forms.md`.
 - Memory / capacity slots / projection classes:
   `spec/memory.md`.
-- Working programs (in-tree): `apps/`.
 - Per-feature anchor programs (in-tree):
   `crates/hale-codegen/tests/fixtures/examples/`.
 - Contrib libraries — protocols / parsers / shapes that don't

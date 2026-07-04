@@ -44,9 +44,7 @@ cargo run -p hale-cli --bin hale -- build path/to/prog.hl
 The in-tree `.hl` corpus lives at
 `crates/hale-codegen/tests/fixtures/examples/` (the broadest
 acceptance surface — `crates/hale-syntax/tests/examples.rs`
-parses all of them). Note: `AGENTS.md` and `README.md` mention
-an `apps/` directory of working programs; that directory is not
-present in this repo — use the fixture corpus instead.
+parses all of them).
 
 ## Repo conventions
 

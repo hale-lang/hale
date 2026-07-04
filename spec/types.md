@@ -722,8 +722,7 @@ A function declared `-> T fallible(E)` produces a value of
 type `T fallible(E)` at every call site. This type cannot be
 used where a plain `T` is expected — the caller MUST address
 the error before the value is consumable. See
-`notes/agent-onboarding/hale-design-philosophy.md` § 2 for
-the design rationale.
+`spec/design-rationale.md` for the design rationale.
 
 **Declaration sites are restricted by the two-channel rule
 (see `spec/semantics.md` § "Fallible call semantics"

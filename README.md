@@ -333,11 +333,16 @@ structural interfaces, the `@form(...)` collections, the
 `fallible(T)` error model, cooperative + pinned schedulers, and
 cross-process bus transports.
 
-**Performance** (v0.8.0, AMD Ryzen 7 9800X3D): on a coordinated
-workload (`tree_fanout`), 8.6× faster than Node and 20.5× faster
-than Python. On pure isolated-loop overhead, much slower — Hale is
-shaped to pay coordination cost well, not to win tight arithmetic
-loops. Methodology and current numbers:
+**Performance** (v0.9.2, AMD Ryzen 7 9800X3D): coordination is
+now a lead, not a cost. After v0.9.0's lock-free bus and
+static-dispatch devirtualization, `bus_dispatch` went from ~4×
+behind Go to **2.4× ahead** (1.79 ms → 196 µs) and
+`bus_dispatch_cross_pool` to **1.26× ahead**. Collections lead
+too (vec 3–4×, json_parse 2.3× vs Go), and native codegen brought
+tight-loop `fn_call` to **parity with clang -O3 C**. Headline
+shape: lock-free bus, static-dispatch devirtualization, native
+codegen, and interest-based ownership (accept bubbling).
+Methodology and current numbers:
 [hale-lang/bench](https://github.com/hale-lang/bench).
 
 ## Beyond the native runtime

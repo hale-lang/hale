@@ -1566,9 +1566,9 @@ Coverage: `crates/hale-codegen/tests/interface_dispatch.rs`,
 
 A second interface form, *cascading-dimension*, paired with F.20
 for the substrate-aware case: arena management + arbitrary
-n-dim cascading flow (the `std::lotus::Grow` family — see
-`docs/src/std/roadmap.md` "Future arc — Lotus harness for
-n-dim growth"). Where F.20 is "any locus matching these methods
+n-dim cascading flow (the `std::lotus::Grow` family — a future
+arc, Lotus harness for n-dim growth). Where F.20 is "any locus
+matching these methods
 satisfies," F.21 is "this locus participates in the cascade
 along these axes, with these arena-bound translation impls per
 axis." Specific shape lives in F.14 (three-way interface +

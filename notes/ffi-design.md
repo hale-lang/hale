@@ -1,9 +1,10 @@
 # FFI design — `@ffi` declarations for external `.hl` libraries
 
-**Status:** scoped, not yet implemented. Captures the agreement
-from the 2026-05-22 session that pivoted away from "ship
-`std::raylib` / `std::pty` in stdlib" toward a user-extensible
-FFI mechanism.
+**Status:** SHIPPED — `@ffi` landed 2026-05-22; the normative
+contract now lives in `spec/ffi.md`. This note is retained as the
+originating design record. It captures the agreement from the
+2026-05-22 session that pivoted away from "ship `std::raylib` /
+`std::pty` in stdlib" toward a user-extensible FFI mechanism.
 
 ## Why
 

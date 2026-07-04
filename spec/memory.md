@@ -799,7 +799,7 @@ void lotus.bus_dispatch(ptr subject, ptr payload, i64 size):
      if strcmp(bus.entries[i].subject, subject) == 0:
        sub_self  = bus.entries[i].self
        sub_arena = load (sub_self + 0)
-       copy      = lotus_arena_alloc(sub_arena, size, 8)
+       copy      = lotus_arena_alloc(sub_arena, size, 16)
        memcpy(copy, payload, size)
        bus.entries[i].handler(sub_self, copy)
 ```
