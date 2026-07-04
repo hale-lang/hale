@@ -1,0 +1,8 @@
+// A passing test: every assertion holds, so the program runs to
+// completion silently (exit 0, no stdout) — the pass signal the
+// `hale test` runner consumes.
+fn main() {
+    std::test::assert(2 + 2 == 4, "trivial arithmetic");
+    std::test::assert_eq_int(6 * 7, 42, "product");
+    std::test::assert_eq_str("con" + "cat", "concat", "string concat");
+}

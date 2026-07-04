@@ -1,0 +1,6 @@
+// A failing test, one directory deep — exercises recursive
+// discovery. The failing assert_eq_int emits `ASSERTION FAILED`
+// plus expected/actual on stdout and exits non-zero.
+fn main() {
+    std::test::assert_eq_int(2 + 2, 5, "math is broken");
+}

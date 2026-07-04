@@ -1,0 +1,4 @@
+// Passes silently.
+fn main() {
+    std::test::assert_eq_int(1 + 1, 2, "addition");
+}

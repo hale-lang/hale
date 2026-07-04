@@ -54,6 +54,17 @@ fn main() -> ExitCode {
         };
     }
 
+    // `test` is a discovery-driven subcommand: like `fetch` it
+    // defaults its target to the current working directory, so
+    // `hale test` (no path) is valid. An explicit file/dir and any
+    // `-run` / `--json` flags are parsed inside `run_test`. Handled
+    // here, before the `args.len() < 3` guard, so a bare `hale test`
+    // doesn't fall into the usage-error path.
+    if cmd == "test" {
+        let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+        return run_test(&rest);
+    }
+
     if args.len() < 3 {
         usage();
         return ExitCode::from(2);
@@ -93,6 +104,8 @@ fn usage() {
     eprintln!("    hale check <file.hl | dir>    parse + typecheck");
     eprintln!("    hale run   <file.hl | dir>    parse + typecheck + interpret");
     eprintln!("    hale build <file.hl | dir>    parse + typecheck + emit native binary");
+    eprintln!("    hale test  [file | dir]       compile + run *_test.hl (default: cwd)");
+    eprintln!("        [-run <substr>] [--json]");
     eprintln!("    hale fetch [repo-root]        fetch git deps from hale.toml into vendor/");
 }
 
@@ -1050,6 +1063,284 @@ fn compile_and_exec(
             eprintln!("could not execute compiled program: {}", e);
             ExitCode::from(1)
         }
+    }
+}
+
+/// Escape a string for embedding in a JSON string literal.
+/// Shared by `hale test --json` (mirrors the private `esc` inside
+/// `render_diag_json`).
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Verdict for one `*_test.hl` file.
+struct TestOutcome {
+    file: PathBuf,
+    passed: bool,
+    /// Failure detail: the captured `ASSERTION FAILED …` lines, the
+    /// nonzero-exit note, or the compile diagnostic. `None` on pass.
+    message: Option<String>,
+    elapsed_ms: u128,
+}
+
+/// Recursively collect `*_test.hl` files under `target`. A file
+/// target is taken as-is (an explicitly-named file runs regardless
+/// of suffix — the user asked for it); a directory is walked
+/// depth-first, gathering only names ending in `_test.hl`. Entries
+/// are visited in sorted order at every level for determinism.
+fn collect_test_files(target: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    if target.is_file() {
+        out.push(target.to_path_buf());
+        return Ok(());
+    }
+    if target.is_dir() {
+        let mut entries: Vec<PathBuf> = fs::read_dir(target)
+            .map_err(|e| format!("{}: {}", target.display(), e))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect();
+        entries.sort();
+        for p in entries {
+            if p.is_dir() {
+                collect_test_files(&p, out)?;
+            } else if p
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|n| n.ends_with("_test.hl"))
+                .unwrap_or(false)
+            {
+                out.push(p);
+            }
+        }
+        return Ok(());
+    }
+    Err(format!("not a file or directory: {}", target.display()))
+}
+
+/// Compile one test file to a temporary native binary, returning
+/// its path on success or a rendered diagnostic string on failure.
+/// A compile/typecheck error is a test failure — it comes back as
+/// the `Err` message. Mirrors `run_program`'s single-file pipeline
+/// (parse_with_imports → check_bundle_opts → build) but stops at
+/// the binary so the caller can `.output()`-capture the run.
+fn compile_test_binary(entry: &Path) -> Result<PathBuf, String> {
+    let (program, renames, sources, file_bases, _ctx) = match parse_with_imports(entry) {
+        Ok(x) => x,
+        Err(errors) => {
+            let mut msg = String::new();
+            for (path, d, src) in &errors {
+                msg.push_str(&format!("{}: {}\n", path.display(), d.render(src)));
+            }
+            return Err(msg.trim_end().to_string());
+        }
+    };
+    let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
+    bundle_programs.insert(entry.display().to_string(), &program);
+    let bundle = hale_types::Bundle { programs: bundle_programs };
+    let diags = hale_types::check_bundle_opts(&bundle, false);
+    if diags.iter().any(|d| d.is_error()) {
+        let mut msg = String::new();
+        for d in diags.iter().filter(|d| d.is_error()) {
+            msg.push_str(&render_located(d, &file_bases, &sources));
+            msg.push('\n');
+        }
+        return Err(msg.trim_end().to_string());
+    }
+    let mut bin = std::env::temp_dir();
+    let mut h = DefaultHasher::new();
+    h.write(entry.display().to_string().as_bytes());
+    h.write_u32(std::process::id());
+    bin.push(format!("hale_test_{:016x}", h.finish()));
+    if let Err(e) = hale_codegen::build_executable_with_imports(&program, &bin, &renames) {
+        return Err(format!("codegen error: {:?}", e));
+    }
+    Ok(bin)
+}
+
+/// `hale test [file | dir] [-run <substr>] [--json]`.
+///
+/// Discovers `*_test.hl` files, compiles+runs each as an ordinary
+/// Hale binary, and reports per the `spec/testing.md` exit-code
+/// contract: PASS iff the process exits 0 with empty stdout; any
+/// other outcome (nonzero exit, stdout, or a compile error) is a
+/// FAIL. Exits SUCCESS when every test passes, `1` when any fails.
+fn run_test(args: &[String]) -> ExitCode {
+    let mut target: Option<PathBuf> = None;
+    let mut run_filter: Option<String> = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        // Accept the spec's single-dash `-run` and the CLI's
+        // `--`-convention `--run`, in both space- and `=`-separated
+        // forms.
+        if a == "-run" || a == "--run" {
+            match args.get(i + 1) {
+                Some(v) => {
+                    run_filter = Some(v.clone());
+                    i += 2;
+                }
+                None => {
+                    eprintln!("hale test: {} requires a substring argument", a);
+                    return ExitCode::from(2);
+                }
+            }
+        } else if let Some(v) = a.strip_prefix("-run=").or_else(|| a.strip_prefix("--run=")) {
+            run_filter = Some(v.to_string());
+            i += 1;
+        } else if a == "--json" {
+            json = true;
+            i += 1;
+        } else if a.starts_with('-') {
+            eprintln!("hale test: unknown flag `{}`", a);
+            return ExitCode::from(2);
+        } else if target.is_none() {
+            target = Some(PathBuf::from(a));
+            i += 1;
+        } else {
+            eprintln!("hale test: unexpected extra argument `{}`", a);
+            return ExitCode::from(2);
+        }
+    }
+    let target = target
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    let mut files: Vec<PathBuf> = Vec::new();
+    if let Err(e) = collect_test_files(&target, &mut files) {
+        eprintln!("hale test: {}", e);
+        return ExitCode::from(2);
+    }
+    files.sort();
+    files.dedup();
+    if let Some(sub) = &run_filter {
+        files.retain(|f| f.to_string_lossy().contains(sub.as_str()));
+    }
+
+    if files.is_empty() {
+        if json {
+            println!("[]");
+        } else if let Some(sub) = &run_filter {
+            println!(
+                "no `_test.hl` files matching `{}` under {}",
+                sub,
+                target.display()
+            );
+        } else {
+            println!("no `_test.hl` files found under {}", target.display());
+        }
+        // Nothing to run is not an error.
+        return ExitCode::SUCCESS;
+    }
+
+    let mut outcomes: Vec<TestOutcome> = Vec::with_capacity(files.len());
+    for f in &files {
+        let start = std::time::Instant::now();
+        let (passed, message) = match compile_test_binary(f) {
+            Err(diag) => (false, Some(diag)),
+            Ok(bin) => {
+                let output = std::process::Command::new(&bin).output();
+                let _ = std::fs::remove_file(&bin);
+                match output {
+                    Ok(out) => {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        // spec/testing.md: pass = exit 0 AND empty stdout.
+                        if out.status.success() && out.stdout.is_empty() {
+                            (true, None)
+                        } else {
+                            let mut m = String::new();
+                            let body = stdout.trim_end();
+                            if !body.is_empty() {
+                                m.push_str(body);
+                            }
+                            if !out.status.success() {
+                                if !m.is_empty() {
+                                    m.push('\n');
+                                }
+                                match out.status.code() {
+                                    Some(c) => {
+                                        m.push_str(&format!("(exited with code {})", c))
+                                    }
+                                    None => m.push_str("(terminated by signal)"),
+                                }
+                            } else if !body.is_empty() {
+                                // Exit 0 but produced output — a passing
+                                // test must be silent (spec contract).
+                                m = format!(
+                                    "test exited 0 but produced stdout \
+                                     (a passing test must be silent):\n{}",
+                                    body
+                                );
+                            }
+                            (false, Some(m))
+                        }
+                    }
+                    Err(e) => {
+                        (false, Some(format!("could not execute compiled test: {}", e)))
+                    }
+                }
+            }
+        };
+        outcomes.push(TestOutcome {
+            file: f.clone(),
+            passed,
+            message,
+            elapsed_ms: start.elapsed().as_millis(),
+        });
+    }
+
+    let passed = outcomes.iter().filter(|o| o.passed).count();
+    let failed = outcomes.len() - passed;
+
+    if json {
+        let mut buf = String::from("[");
+        for (idx, o) in outcomes.iter().enumerate() {
+            if idx > 0 {
+                buf.push(',');
+            }
+            buf.push_str(&format!(
+                "{{\"file\":\"{}\",\"status\":\"{}\"",
+                json_escape(&o.file.display().to_string()),
+                if o.passed { "pass" } else { "fail" }
+            ));
+            if let Some(m) = &o.message {
+                buf.push_str(&format!(",\"message\":\"{}\"", json_escape(m)));
+            }
+            buf.push_str(&format!(",\"elapsed_ms\":{}}}", o.elapsed_ms));
+        }
+        buf.push(']');
+        println!("{}", buf);
+    } else {
+        for o in &outcomes {
+            if o.passed {
+                println!("ok   {}", o.file.display());
+            } else {
+                println!("FAIL {}", o.file.display());
+                if let Some(m) = &o.message {
+                    for line in m.lines() {
+                        println!("     {}", line);
+                    }
+                }
+            }
+        }
+        println!();
+        println!("{} passed, {} failed", passed, failed);
+    }
+
+    if failed == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     }
 }
 

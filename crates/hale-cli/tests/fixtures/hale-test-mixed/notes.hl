@@ -1,0 +1,5 @@
+// NOT a `_test.hl` file — the runner must ignore this during
+// directory discovery even though it is valid Hale.
+fn helper() -> int {
+    return 99;
+}

@@ -227,7 +227,7 @@ the same `.hl` programs unchanged.
 | `assert_closure(name, tolerance)` | not shipped — needs closure-test introspection |
 | `mock_locus<T>(...)` | not shipped |
 | `bench_iter(n, f)` | not shipped |
-| `hale test` CLI runner | not shipped — Rust harness fills the role today |
+| `hale test` CLI runner | shipped — discovery→compile→run→report driver over `*_test.hl` (`-run`, `--json`) |
 
 ## Property-based testing
 

@@ -1,0 +1,6 @@
+// A second passing test in the same directory, to exercise the
+// multi-file "N passed" summary.
+fn main() {
+    std::test::assert_eq_str("hello, " + "world", "hello, world", "greeting");
+    std::test::assert(1 < 2, "ordering");
+}
