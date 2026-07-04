@@ -3,8 +3,8 @@
 // visible to every other file.
 //
 // Build with the directory as the target:
-//   hale build examples/51-multi-file-app
-//   ./examples/51-multi-file-app/51-multi-file-app
+//   hale build examples/multi-file-seed
+//   ./examples/multi-file-seed/multi-file-seed
 //
 // File order is alphabetical: greet.hl then main.hl. Order
 // doesn't matter for resolution — the bundle flattens all

@@ -1,11 +1,15 @@
 # 05-bus
 
-Typed pub-sub on a transport-agnostic bus. An echo service:
-subscribes to `demo.greeting`, publishes `demo.ack` in response.
+Typed pub-sub on a transport-agnostic bus. Three loci wired
+through an in-memory router, self-driving from birth: `SenderL`
+publishes a `Greeting` on `demo.greeting` at birth; `EchoL`
+subscribes to `demo.greeting`, prints it, and sends an
+`Acknowledgment` on `demo.ack`; `AckLogL` subscribes to
+`demo.ack` and logs it. No external transport feeds the program.
 
 ```
-type Greeting        { text: string; sender: string; }
-type Acknowledgment  { received: string; }
+type Greeting        { text: String; sender: String; }
+type Acknowledgment  { received: String; }
 
 locus EchoL {
     bus {
@@ -15,12 +19,34 @@ locus EchoL {
 
     fn on_greeting(g: Greeting) {
         println("got: ", g.text, " from ", g.sender);
-        publish("demo.ack", Acknowledgment { received: g.text });
+        "demo.ack" <- Acknowledgment { received: g.text };
+    }
+}
+
+locus AckLogL {
+    bus {
+        subscribe "demo.ack" as on_ack of type Acknowledgment;
+    }
+
+    fn on_ack(a: Acknowledgment) {
+        println("ack: ", a.received);
+    }
+}
+
+locus SenderL {
+    bus {
+        publish "demo.greeting" of type Greeting;
+    }
+
+    birth() {
+        "demo.greeting" <- Greeting { text: "hello", sender: "sender-1" };
     }
 }
 
 fn main() {
     EchoL { };
+    AckLogL { };
+    SenderL { };  // born last, so the subscribers are ready
 }
 ```
 
@@ -28,28 +54,28 @@ Plus `deployment.yaml` mapping subjects to transports.
 
 ## What runs
 
-1. Process starts. Runtime reads `deployment.yaml`. For each
-   declared bus channel, the runtime instantiates the
-   appropriate transport adapter (`std::bus::in_memory`,
-   `std::bus::nats`, etc.) and registers the channel.
-2. `main()` invoked.
-3. `EchoL { }` instantiates as anonymous child of `main`'s
-   implicit locus.
-4. EchoL's bus subscription wires up: the runtime registers
-   `on_greeting` as the handler for `demo.greeting` on the
-   bound transport.
-5. EchoL's `birth()` runs (default, no-op).
-6. EchoL has a bus subscription, so it's long-lived (per the
-   updated §A rule). `main`'s implicit locus has one
-   long-lived anonymous child.
-7. Inbound `demo.greeting` messages on the bound transport
-   trigger `on_greeting(g)`. Each call prints the greeting and
-   publishes `demo.ack`.
-8. SIGINT triggers `drain()` on the runtime root. Cascade
-   reaches `main`'s implicit locus → reaches EchoL.
-9. EchoL's drain unbinds bus subscriptions (no new messages
-   accepted; in-flight handlers complete). Then dissolve.
-10. `main()` returns. Process exits.
+1. Process starts. For each declared bus channel, the runtime
+   binds the appropriate transport adapter (in-memory router
+   for v0; `nats` / `udp_multicast` in production) and
+   registers the channel.
+2. `main()` invoked. `EchoL`, `AckLogL`, `SenderL` instantiate
+   in that order as anonymous children of `main`'s implicit
+   locus.
+3. `EchoL` and `AckLogL` register their subscriptions at birth:
+   `on_greeting` for `demo.greeting`, `on_ack` for `demo.ack`.
+   Order matters in v0 — the subscribers must be born before
+   `SenderL` so they're ready when its `birth()` publishes.
+4. `SenderL` is born last. Its `birth()` sends
+   `"demo.greeting" <- Greeting { text: "hello", sender:
+   "sender-1" }`.
+5. The router delivers to `EchoL.on_greeting`, which prints
+   `got: hello from sender-1` and sends `"demo.ack" <-
+   Acknowledgment { received: "hello" }`.
+6. The router delivers to `AckLogL.on_ack`, which prints
+   `ack: hello`.
+7. `main` has no `run()` body, so it returns immediately after
+   instantiation. In production the SIGINT-triggered drain
+   cascade (per F.4) would dissolve the tree; v0 just exits.
 
 ## Transport binding
 
@@ -92,13 +118,13 @@ deployment selected. The locus source doesn't change.
 - **`subscribe SUBJECT as HANDLER of type T`** — handler is a
   named member function on the locus, takes one arg of type
   T, returns nothing (or a typed value if multi-publish is
-  needed; v0 uses explicit `publish(...)`).
+  needed; v0 uses explicit `<-` sends).
 - **`publish SUBJECT of type T`** — declares the locus may
   emit messages of type T on SUBJECT. Compiler verifies all
-  `publish(SUBJECT, msg)` calls have matching type.
-- **`publish(subject, msg)` builtin** — runtime function for
-  emitting a message. In scope inside a locus that has a
-  matching `bus { publish ... ; }` declaration; out of scope
+  `SUBJECT <- msg` sends have matching type.
+- **`SUBJECT <- msg` send operator** — emits a message on the
+  subject. In scope inside a locus that has a matching
+  `bus { publish ... ; }` declaration; a compile error
   otherwise.
 - **Long-lived unbound locus via bus subscription.** EchoL has
   no `run()` but does have a bus subscription. The updated §A
@@ -122,11 +148,11 @@ Three things, all resolved in this commit:
    (only birth + params) dissolves at statement boundary.
    Updated §A.
 
-2. **`publish` runtime builtin.** The publish function is
-   in scope inside a locus that declares `publish ...` in its
-   bus block. The compiler verifies the subject and type at
-   each call site against the declarations. Documented in
-   tokens.md "Built-in identifiers" and design-rationale §F.12.
+2. **`<-` send operator.** A `SUBJECT <- msg` send is in scope
+   inside a locus that declares `publish ...` in its bus block.
+   The compiler verifies the subject and type at each send site
+   against the declarations. Documented in tokens.md and
+   design-rationale §F.12.
 
 3. **Bus subscription handler signature.** A handler named in
    a `subscribe ... as HANDLER` declaration is a fn on the

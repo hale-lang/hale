@@ -12,12 +12,12 @@ field reads thread through `let` bindings, mixed-type println
 arguments, and as operands of further struct literals.
 
 ```
-$ lotus run examples/12-user-types/main.lt
+$ hale run examples/12-user-types/main.hl
 p.x=3 p.y=4
 q.x=13 q.y=8
 alice says hello (priority 7)
 
-$ lotus build examples/12-user-types/main.lt
+$ hale build examples/12-user-types/main.hl
 $ ./examples/12-user-types/main
 [same output]
 ```

@@ -13,7 +13,7 @@ parent's `drain()` fires, all descendants are already gone — the
 cascade is implicit in v0's synchronous-instantiation model.
 
 ```
-$ lotus run examples/11-drain-dissolve/main.lt
+$ hale run examples/11-drain-dissolve/main.hl
 parent: birth
 child-a: birth
 child-a: drain
@@ -24,7 +24,7 @@ child-b: dissolve
 parent: drain
 parent: dissolve
 
-$ lotus build examples/11-drain-dissolve/main.lt
+$ hale build examples/11-drain-dissolve/main.hl
 $ ./examples/11-drain-dissolve/main
 [same output]
 ```
@@ -33,7 +33,7 @@ $ ./examples/11-drain-dissolve/main
 
 This is the codegen-arc milestone that closes the lifecycle
 quartet (m10). Previously `drain` / `dissolve` declarations were
-rejected by `lotus build`; now they're lowered to LLVM functions
+rejected by `hale build`; now they're lowered to LLVM functions
 and dispatched at the end of `lower_locus_instantiation`,
 mirroring what the interpreter does inside `dissolve_locus`.
 

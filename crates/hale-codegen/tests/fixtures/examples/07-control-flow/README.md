@@ -10,10 +10,10 @@ Folds the hand-unrolled counter from `06-mutable-counter` into a
 loop that walks 1..=10, skips `n == 7`, and exits at `n == 9`.
 
 ```
-$ lotus run   examples/07-control-flow/main.lt
+$ hale run   examples/07-control-flow/main.hl
 sum=29 stopped at n=9
 
-$ lotus build examples/07-control-flow/main.lt
+$ hale build examples/07-control-flow/main.hl
 built: examples/07-control-flow/main
 $ ./examples/07-control-flow/main
 sum=29 stopped at n=9

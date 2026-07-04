@@ -4,9 +4,9 @@
 // Decimal literals carry a `d` suffix to disambiguate from
 // Float (which uses unsuffixed `1.5`). Decimal arithmetic
 // produces Decimal; mixing with Float / Int requires explicit
-// conversion (not yet provided). v0 codegen and v0 interpreter
-// both store Decimal as f64 internally — real fixed-point
-// representation lands when production-grade precision matters.
+// conversion (not yet provided). Decimal is an exact inline
+// i128 mantissa at scale 9; codegen and interpreter produce
+// identical exact output.
 
 fn fee(price: Decimal, rate: Decimal) -> Decimal {
     return price * rate;

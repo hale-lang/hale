@@ -32,7 +32,8 @@ GenMC v0.17.0 builds against the project's LLVM 18. See
 | Model | Mirrors | Status |
 |-------|---------|--------|
 | `lockfree_hashmap_model.c` | `lotus_hashmap_*_lockfree` in `crates/hale-codegen/runtime/lotus_arena.c` — the enter/exit writer-counter protocol, single-grower grow phase, writers-in-flight drain, and EMPTY→CLAIMED→COMMITTED set state machine | ✅ verified: **42 executions, no errors** |
-| `mailbox_model.c` | `lotus_mailbox_*` in `lotus_arena.c` — the pinned-locus mailbox monitor: mutex-protected post/drain/shutdown, the `while (empty && !shutdown)` wait predicate, and "drain pending even after shutdown" | ✅ verified: **10 executions, no errors** |
+| `mailbox_model.c` | `lotus_mailbox_*` / `lotus_mpsc_ring_*` in `lotus_arena.c` — the pinned-locus mailbox: a **lock-free Vyukov MPSC ring + signal-when-parked wake** (the `_Atomic int parked` flag + the seq_cst fences in post/drain_one, plus the missed-wakeup handshake) | ✅ verified: **10 executions, no errors** |
+| `coop_pool_model.c` | `lotus_coop_pool_*` / `lotus_mpsc_ring_*` in `lotus_arena.c` — the cooperative pool's classic consumer path after Phase-1b swapped the cell-buffer-under-mutex queue for the same lock-free Vyukov MPSC ring + signal-when-parked wake; the coop-pool twin of `mailbox_model.c` (byte-identical ring + wake handshake) | ✅ verified (mailbox-twin ring + wake) |
 | `bus_queue_model.c` | `lotus_bus_queue_*` in `lotus_arena.c` — the cooperative-pool queue's `g_bus_has_pinned`-gated **conditional lock** on enqueue/drain (concurrent enqueues under the lock; drain snapshots under the lock) | ✅ verified: **2 executions, no errors** |
 | `arena_subregion_model.c` | `lotus_arena_create_subregion` / `lotus_arena_destroy` in `lotus_arena.c` — the per-parent `subregion_lock` guarding the child-slot freelist (`free_list` / `free_count` / `next_slot`): concurrent create (pop-or-bump) + destroy (push) on the same parent must never hand the same slot to two live children. The per-thread chunk pool itself is `__thread` (no cross-thread surface); this is the real "arena locks" surface. | ✅ verified: **6 executions, no errors** |
 
@@ -84,18 +85,21 @@ configurations are for a deeper sweep, not the gate.
 
 GenMC does not model `pthread_cond_*` (condition variables are a
 liveness mechanism; they're commented out of its runtime `pthread.h`).
-For a lock + condvar monitor like the mailbox, the condvar governs only
-*sleep-vs-spin* — the **safety** properties (mutual exclusion, no
-lost/duplicated cell, no use-after-free) are independent of it. So
-those models replace `cond_wait`/`broadcast` with a lock-guarded spin
-that preserves the exact wait predicate, and check safety under all
-interleavings. Missed-wakeup *liveness* is out of scope for GenMC and
-would need a different tool (e.g. a TLA+ spec of the monitor).
+The mailbox and coop-pool ring are **lock-free** — a Vyukov bounded
+MPSC ring with no mutex on the handoff; the only condvar left is the
+signal-when-parked *wake* handshake that nudges a parked consumer.
+There the condvar governs only *sleep-vs-spin* — the **safety**
+properties (no lost/duplicated cell, no use-after-free) are independent
+of it. So those models replace the `cond_wait`/`signal` wake with a
+lock-guarded spin that preserves the exact parked/wake predicate, and
+check safety under all interleavings. Missed-wakeup *liveness* is out
+of scope for GenMC and would need a different tool (e.g. a TLA+ spec of
+the wake handshake).
 
 ## Roadmap
 
-Four primitives modeled: lockfree hashmap, mailbox, bus queue, and the
-arena subregion-slot lock. That covers the inventory in the issue thread
+Five primitives modeled: lockfree hashmap, mailbox, the coop-pool ring,
+bus queue, and the arena subregion-slot lock. That covers the inventory in the issue thread
 — the last entry, **"chunk pool / arena locks,"** resolved to the
 `arena_subregion_model.c` above: the chunk pool proper is `__thread`
 (thread-local, no cross-thread interleaving to check — its one historical

@@ -10,12 +10,12 @@ Exercises the multi-fn surface of codegen milestone 6:
   declares every user fn before lowering any body)
 
 ```
-$ lotus run   examples/09-functions/main.lt
+$ hale run   examples/09-functions/main.hl
 square(7)=49
 fib(12)=144
 square(square(3))=81
 
-$ lotus build examples/09-functions/main.lt
+$ hale build examples/09-functions/main.hl
 built: examples/09-functions/main
 $ ./examples/09-functions/main
 square(7)=49

@@ -15,8 +15,8 @@ seed (this directory), so they share one top-level scope.
 ## Build and run
 
 ```
-hale build examples/51-multi-file-app
-./examples/51-multi-file-app/51-multi-file-app
+hale build examples/multi-file-seed
+./examples/multi-file-seed/multi-file-seed
 ```
 
 Output: `hello, world!`

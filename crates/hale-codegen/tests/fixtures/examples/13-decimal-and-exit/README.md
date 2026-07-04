@@ -7,23 +7,20 @@ to the process exit code.
 
 `Decimal` is a distinct type from `Float` — `1.5d` literal,
 `Decimal` ascription, propagating through `+`, `-`, `*`, `/`.
-The two paths agree on arithmetic for values that are exact
-multiples of representable f64 quantities (the fitter-applier-demo
-case); for inputs like `100.40d` that aren't representable, v0
-output may differ in the last few digits between interpreter
-(Rust f64 `Display`, shortest-round-trip) and codegen (`printf
-%g`, 6 significant digits).
+`Decimal` is an exact inline i128 mantissa at scale 9 (mantissa
+× 10^-9), so the interpreter and codegen produce identical exact
+output — no float noise for inputs like `100.40d`.
 
 ```
-$ lotus run examples/13-decimal-and-exit/main.lt
-bid=100.40 ask=100.45
-spread=0.04999999999999716
-mid=100.42500000000001
-fee=0.10042500000000001
+$ hale run examples/13-decimal-and-exit/main.hl
+bid=100.4 ask=100.45
+spread=0.05
+mid=100.425
+fee=0.100425
 $ echo $?
 0
 
-$ lotus build examples/13-decimal-and-exit/main.lt
+$ hale build examples/13-decimal-and-exit/main.hl
 $ ./examples/13-decimal-and-exit/main
 bid=100.4 ask=100.45
 spread=0.05
@@ -33,10 +30,9 @@ $ echo $?
 0
 ```
 
-The numeric values are equivalent up to f64 representation; the
-differing display formats are a v0 hack. Real fixed-point or
-arbitrary-precision Decimal lands with the production
-deployment work, where price-tick precision actually matters.
+The display trims trailing zeros (`100.40d` prints `100.4`), and
+both backends agree exactly because the mantissa is stored, not
+a floating approximation.
 
 ## Why this is interesting
 

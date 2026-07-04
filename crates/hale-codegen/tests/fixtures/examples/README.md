@@ -12,7 +12,7 @@ introduces one new substrate primitive on top of the previous.
 
 - `hello-world/` — one locus, one lifecycle method, one
   built-in call.
-- `01-` through `50-` — the layered tutorial: lifecycle, types,
+- `01-` through `59-` — the layered tutorial: lifecycle, types,
   contracts, bus, closures, scheduling, recovery, accumulators,
   generics.
 - `fitter-applier-demo/` — single-process orchestration of the

@@ -7,14 +7,14 @@ Exercises the mutable-binding subset of codegen milestone 3:
 - compound assignments `+=` / `-=` / `*=` / `/=` / `%=`
 
 No control flow yet, so the counter steps are hand-unrolled. Compiles
-to a native ELF via `lotus build` and also runs under the tree-walking
-interpreter via `lotus run`. Both paths produce `n=2`.
+to a native ELF via `hale build` and also runs under the tree-walking
+interpreter via `hale run`. Both paths produce `n=2`.
 
 ```
-$ lotus run   examples/06-mutable-counter/main.lt
+$ hale run   examples/06-mutable-counter/main.hl
 n=2
 
-$ lotus build examples/06-mutable-counter/main.lt
+$ hale build examples/06-mutable-counter/main.hl
 built: examples/06-mutable-counter/main
 $ ./examples/06-mutable-counter/main
 n=2

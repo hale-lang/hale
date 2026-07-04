@@ -9,11 +9,11 @@ State flows through the alloca'd struct: what `birth` writes is
 what `run` reads.
 
 ```
-$ lotus run   examples/10-stateful-locus/main.lt
+$ hale run   examples/10-stateful-locus/main.hl
 total=160
 step=30
 
-$ lotus build examples/10-stateful-locus/main.lt
+$ hale build examples/10-stateful-locus/main.hl
 built: examples/10-stateful-locus/main
 $ ./examples/10-stateful-locus/main
 total=160
