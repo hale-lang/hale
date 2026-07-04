@@ -102,7 +102,9 @@ jobs:
           LLVM_SYS_180_PREFIX: ${{ matrix.llvm-prefix }}
         run: |
           set -eux
-          cargo build --release --bin hale
+          # --workspace (not --bin hale) so libhale_ts_shim.a is also
+          # built — codegen needs it beside the binary to link programs.
+          cargo build --release --workspace
 
       - name: Smoke-test the binary
         run: |
@@ -123,6 +125,11 @@ jobs:
           # Include LICENSE + README alongside the binary; both
           # become first-class in the user-visible tarball.
           cp target/release/hale dist/
+          # libhale_ts_shim.a MUST ship beside the binary: codegen
+          # path-probes $(dirname current_exe)/libhale_ts_shim.a to link
+          # any program using std::io. Omitting it (the pre-2026-07 bug)
+          # shipped tarballs that could not build real programs.
+          cp target/release/libhale_ts_shim.a dist/
           cp -v README.md dist/ 2>/dev/null || true
           cp -v LICENSE-MIT dist/ 2>/dev/null || true
           cp -v LICENSE-APACHE dist/ 2>/dev/null || true
