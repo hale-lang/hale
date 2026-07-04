@@ -1224,6 +1224,106 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
+                Some(SlotForm::LruCache) => {
+                    // v1.x-FORM-6: form-lru-cache slot. The field IS
+                    // the inline lotus_lru_t struct; lotus_lru_init
+                    // mallocs a fixed open-addressed table sized to
+                    // the cap and bakes key/value sizes + key type
+                    // tag. Keyed like @form(hashmap): the cell type
+                    // is a user struct whose indexed_by field is the
+                    // cache key. Distinct runtime (never grows,
+                    // evicts LRU on over-cap insert).
+                    let cell_name = match &slot.elem_ty {
+                        CodegenTy::TypeRef(n) => n.clone(),
+                        _ => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "@form(lru_cache) `{}`: slot `{}` cell type \
+                                 must be a user-declared struct; got {:?} \
+                                 (typecheck should have rejected this — \
+                                 contact compiler maintainer)",
+                                locus_name, slot.name, slot.elem_ty
+                            )));
+                        }
+                    };
+                    let cell_info = self
+                        .user_types
+                        .get(&cell_name)
+                        .cloned()
+                        .ok_or_else(|| CodegenError::Unsupported(format!(
+                            "@form(lru_cache) `{}`: cell type `{}` not \
+                             registered in user_types",
+                            locus_name, cell_name
+                        )))?;
+                    let field_name = slot
+                        .indexed_by
+                        .as_ref()
+                        .ok_or_else(|| CodegenError::Unsupported(format!(
+                            "@form(lru_cache) `{}`: slot `{}` missing \
+                             indexed_by clause (typecheck should have \
+                             rejected this — contact compiler maintainer)",
+                            locus_name, slot.name
+                        )))?;
+                    let (_field_idx, key_codegen_ty) = cell_info
+                        .fields
+                        .get(field_name)
+                        .cloned()
+                        .ok_or_else(|| CodegenError::Unsupported(format!(
+                            "@form(lru_cache) `{}`: indexed-by field `{}` \
+                             not on cell type `{}` (typecheck should have \
+                             rejected this — contact compiler maintainer)",
+                            locus_name, field_name, cell_name
+                        )))?;
+                    let key_type_tag: u64 = match key_codegen_ty {
+                        CodegenTy::Int => 0,
+                        CodegenTy::String => 1,
+                        other => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "@form(lru_cache) `{}`: indexed-by field \
+                                 `{}` has type {:?}; v1 supports Int and \
+                                 String key types only",
+                                locus_name, field_name, other
+                            )));
+                        }
+                    };
+                    let key_llvm_ty = self.llvm_basic_type(&key_codegen_ty);
+                    let key_size = self.size_to_usize(
+                        key_llvm_ty.size_of().expect("key type has known size"),
+                    )?;
+                    let value_size = self.size_to_usize(
+                        cell_info
+                            .struct_ty
+                            .size_of()
+                            .expect("cell struct has known size"),
+                    )?;
+                    let key_type_tag_const =
+                        self.context.i32_type().const_int(key_type_tag, false);
+                    let cap = slot.ring_buffer_cap.ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "@form(lru_cache) `{}`: slot `{}` missing `cap` \
+                             arg (typecheck should have rejected this — \
+                             contact compiler maintainer)",
+                            locus_name, slot.name
+                        ))
+                    })?;
+                    let cap_const = self.usize_type().const_int(cap, false);
+                    let init_fn = self
+                        .module
+                        .get_function("lotus_lru_init")
+                        .expect("lotus_lru_init extern declared");
+                    self.builder
+                        .build_call(
+                            init_fn,
+                            &[
+                                slot_field_ptr.into(),
+                                cap_const.into(),
+                                key_size.into(),
+                                value_size.into(),
+                                key_type_tag_const.into(),
+                            ],
+                            &format!("{}.{}.init", locus_name, slot.name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
                 Some(SlotForm::Hashmap) => {
                     // v1.x-FORM-4: form-hashmap slot. The field IS
                     // the inline lotus_hashmap_t struct;

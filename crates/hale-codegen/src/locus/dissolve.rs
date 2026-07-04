@@ -1184,6 +1184,22 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
+                Some(SlotForm::LruCache) => {
+                    // v1.x-FORM-6: free the LRU cache's malloc'd
+                    // slot table. The lotus_lru_t header itself is
+                    // inline in the locus and dies with the arena.
+                    let destroy_fn = self
+                        .module
+                        .get_function("lotus_lru_free")
+                        .expect("lotus_lru_free extern declared");
+                    self.builder
+                        .build_call(
+                            destroy_fn,
+                            &[slot_field_ptr.into()],
+                            &format!("{}.{}.destroy", locus_name, slot.name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
                 None => {
                     let allocator = self
                         .builder

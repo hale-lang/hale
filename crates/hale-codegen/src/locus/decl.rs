@@ -768,6 +768,11 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             .as_ref()
             .map(|f| f.name.name.as_str() == "ring_buffer")
             .unwrap_or(false);
+        let is_form_lru_cache = l
+            .form
+            .as_ref()
+            .map(|f| f.name.name.as_str() == "lru_cache")
+            .unwrap_or(false);
         let mut capacity_slots: Vec<CapacitySlotLayout> = Vec::new();
         let mut seen_slot_names: BTreeSet<String> = BTreeSet::new();
         for member in &l.members {
@@ -839,6 +844,34 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                     );
                     llvm_field_tys.push(rb_struct_ty.into());
                     Some(SlotForm::RingBuffer)
+                } else if is_form_lru_cache
+                    && matches!(slot.kind, CapacitySlotKind::Pool)
+                {
+                    // @form(lru_cache): inline { cap, len, key_size,
+                    // value_size, key_type_tag, tick, table_cap,
+                    // slots } struct. Layout matches the C-side
+                    // `lotus_lru_t` exactly — LLVM inserts the
+                    // 4-byte pad after the i32 key_type_tag so the
+                    // i64 tick lands on its natural 8-byte
+                    // boundary, matching the C compiler's padding.
+                    // Typecheck (FORM-6) verifies the pool-slot +
+                    // indexed_by + cap shape.
+                    let i32_t = self.context.i32_type();
+                    let lru_struct_ty = self.context.struct_type(
+                        &[
+                            i64_t.into(), // cap
+                            i64_t.into(), // len
+                            i64_t.into(), // key_size
+                            i64_t.into(), // value_size
+                            i32_t.into(), // key_type_tag (4-byte pad after)
+                            i64_t.into(), // tick
+                            i64_t.into(), // table_cap
+                            ptr_t.into(), // slots
+                        ],
+                        false,
+                    );
+                    llvm_field_tys.push(lru_struct_ty.into());
+                    Some(SlotForm::LruCache)
                 } else if is_form_hashmap
                     && matches!(slot.kind, CapacitySlotKind::Pool)
                 {
@@ -901,11 +934,16 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                     None
                 };
                 idx += 1;
-                let ring_buffer_cap = if matches!(form, Some(SlotForm::RingBuffer)) {
+                let ring_buffer_cap = if matches!(
+                    form,
+                    Some(SlotForm::RingBuffer) | Some(SlotForm::LruCache)
+                ) {
                     // Extract `cap = N` from the form annotation
                     // args. Typecheck guarantees presence + valid
-                    // form on @form(ring_buffer); codegen reads
-                    // the int literal directly.
+                    // form on @form(ring_buffer) / @form(lru_cache);
+                    // codegen reads the int literal directly. (The
+                    // `ring_buffer_cap` field name predates lru but
+                    // carries the same fixed-cap-literal role.)
                     l.form
                         .as_ref()
                         .and_then(|f| {

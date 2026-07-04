@@ -27,17 +27,22 @@ buffer and the methods over it — `push`, `get`, `set`, `pop`,
 (here: a `{cap, len, buf}` struct with doubling realloc) and the
 method surface.
 
-The three forms and what they require:
+The four forms and what they require:
 
 | Form | Backing slot | Lowers to | Synthesized surface |
 |---|---|---|---|
 | `@form(vec)` | one `heap` | doubling contiguous buffer | `push`, `get`, `set`, `pop`, `len`, `is_empty`, `sort*` |
 | `@form(hashmap)` | one `pool` + `indexed_by` | intrusive open-addressing table | `set`, `get`, `has`, `remove`, `len`, `is_empty` |
 | `@form(ring_buffer, cap=N)` | one `pool` | fixed circular buffer | `push -> Bool`, `pop`, `len`, `is_full` |
+| `@form(lru_cache, cap=N)` | one `pool` + `indexed_by` | fixed keyed table, LRU eviction | `put`, `get`, `contains`, `len` |
 
 `get` / `pop` / `remove` are `fallible` (bounds / missing-key /
 empty); `push` on `vec` is infallible, on `ring_buffer` returns
-`Bool` (full is a normal condition, not an error).
+`Bool` (full is a normal condition, not an error). `lru_cache` is
+the cap-bounded keyed form: `put` is infallible and silently
+evicts the least-recently-**used** entry over `cap` (a `get`
+counts as a use and saves an entry from eviction; `contains` does
+not). Its `get` is `fallible(KeyError)` on a miss.
 
 Both a `vec` and a `hashmap` also expose **batched iteration**
 (shipped 2026-07-02) — `for x in v.items { … }` walks the vec, and
@@ -79,6 +84,8 @@ declare an `interface`.
   (`indexed_by` names the key field).
 - **Bounded window, drop-or-backpressure on full** →
   `@form(ring_buffer, cap = N)`.
+- **Bounded keyed cache, evict least-recently-used on full** →
+  `@form(lru_cache, cap = N)` (`indexed_by` names the key field).
 
 One form per locus — a locus is one container. Need two? That's
 two loci, which is usually the cleaner decomposition anyway.

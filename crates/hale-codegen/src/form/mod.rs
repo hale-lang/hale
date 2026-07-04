@@ -2680,4 +2680,457 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// v1.x-FORM-6: inline-lower a synthesized `@form(lru_cache)`
+    /// infallible method (`put`, `contains`, `len`). `get` is
+    /// fallible — see `try_lower_form_lru_cache_fallible_method`.
+    ///
+    ///   Ok(None)        — receiver is not an lru_cache locus
+    ///   Ok(Some(None))  — handled, void return (put)
+    ///   Ok(Some(Some))  — handled, value return (contains, len)
+    ///
+    /// `put` mirrors `@form(hashmap).set`: it takes the whole cell
+    /// struct, deep-copies heap fields into the receiver's arena
+    /// (so they outlive the caller's method scratch), GEPs the
+    /// indexed_by field out as the key, and hands both to
+    /// `lotus_lru_put`, which inserts/updates and silently evicts
+    /// the LRU entry on over-cap.
+    pub(crate) fn try_lower_form_lru_cache_method(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        locus_self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        method_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<
+        Option<Option<(BasicValueEnum<'ctx>, CodegenTy)>>,
+        CodegenError,
+    > {
+        let Some(slot) = info
+            .capacity_slots
+            .iter()
+            .find(|s| s.form == Some(SlotForm::LruCache))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let is_synth = matches!(method_name, "put" | "contains" | "len");
+        if !is_synth {
+            return Ok(None);
+        }
+
+        let i32_t = self.context.i32_type();
+        let lru_field_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                locus_self_ptr,
+                slot.struct_field_idx,
+                &format!("{}.__lru_{}.ptr", locus_name, slot.name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        match method_name {
+            "put" => {
+                if args.len() != 1 {
+                    return Err(CodegenError::Unsupported(format!(
+                        "@form(lru_cache) `{}`.put: expects 1 arg, got {}",
+                        locus_name,
+                        args.len()
+                    )));
+                }
+                let cell_name = match &slot.elem_ty {
+                    CodegenTy::TypeRef(n) => n.clone(),
+                    other => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "@form(lru_cache) `{}`.put: slot cell type must \
+                             be a user-declared struct; got {:?}",
+                            locus_name, other
+                        )));
+                    }
+                };
+                let cell_info = self
+                    .user_types
+                    .get(&cell_name)
+                    .cloned()
+                    .ok_or_else(|| CodegenError::Unsupported(format!(
+                        "@form(lru_cache) `{}`.put: cell type `{}` \
+                         unregistered",
+                        locus_name, cell_name
+                    )))?;
+                let field_name = slot
+                    .indexed_by
+                    .as_ref()
+                    .ok_or_else(|| CodegenError::Unsupported(format!(
+                        "@form(lru_cache) `{}`.put: slot missing indexed_by",
+                        locus_name
+                    )))?
+                    .clone();
+                let (key_field_idx, _key_ty) = cell_info
+                    .fields
+                    .get(&field_name)
+                    .cloned()
+                    .ok_or_else(|| CodegenError::Unsupported(format!(
+                        "@form(lru_cache) `{}`.put: indexed-by field `{}` \
+                         not on cell `{}`",
+                        locus_name, field_name, cell_name
+                    )))?;
+
+                let (arg_val, arg_ty) = self.lower_expr(&args[0], scope)?;
+                let expected_value_ty = CodegenTy::TypeRef(cell_name.clone());
+                if arg_ty != expected_value_ty {
+                    return Err(CodegenError::Unsupported(format!(
+                        "@form(lru_cache) `{}`.put arg type mismatch: \
+                         expected {:?}, got {:?}",
+                        locus_name, expected_value_ty, arg_ty
+                    )));
+                }
+
+                // Deep-copy heap-pointer fields into the receiver
+                // locus's __arena before the put — the struct
+                // literal lives in the caller's per-call scratch and
+                // would dangle on method exit otherwise. Same shape
+                // as @form(hashmap).set.
+                let dest_arena_field_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        locus_self_ptr,
+                        info.arena_field_idx,
+                        &format!("{}.__arena.for_put.ptr", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let ptr_t_for_arena =
+                    self.context.ptr_type(AddressSpace::default());
+                let dest_arena = self
+                    .builder
+                    .build_load(
+                        ptr_t_for_arena,
+                        dest_arena_field_ptr,
+                        &format!("{}.__arena.for_put", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_pointer_value();
+                let arg_val = self.emit_cross_arena_store_deep_copy(
+                    arg_val,
+                    &expected_value_ty,
+                    dest_arena,
+                    &format!("{}.lru_put", locus_name),
+                )?;
+                let value_ptr = arg_val.into_pointer_value();
+                let key_field_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        cell_info.struct_ty,
+                        value_ptr,
+                        key_field_idx,
+                        &format!("{}.put.key.ptr", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+                let put_fn = self
+                    .module
+                    .get_function("lotus_lru_put")
+                    .expect("lotus_lru_put extern declared");
+                self.builder
+                    .build_call(
+                        put_fn,
+                        &[
+                            lru_field_ptr.into(),
+                            key_field_ptr.into(),
+                            value_ptr.into(),
+                        ],
+                        &format!("{}.put.call", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok(Some(None))
+            }
+            "contains" => {
+                if args.len() != 1 {
+                    return Err(CodegenError::Unsupported(format!(
+                        "@form(lru_cache) `{}`.contains: expects 1 arg, \
+                         got {}",
+                        locus_name,
+                        args.len()
+                    )));
+                }
+                let cell_name = match &slot.elem_ty {
+                    CodegenTy::TypeRef(n) => n.clone(),
+                    _ => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "@form(lru_cache) `{}`.contains: slot cell type \
+                             must be a user-declared struct",
+                            locus_name
+                        )));
+                    }
+                };
+                let cell_info = self
+                    .user_types
+                    .get(&cell_name)
+                    .cloned()
+                    .expect("cell type registered");
+                let field_name = slot
+                    .indexed_by
+                    .as_ref()
+                    .expect("indexed_by set on lru_cache slot")
+                    .clone();
+                let (_, key_codegen_ty) = cell_info
+                    .fields
+                    .get(&field_name)
+                    .cloned()
+                    .expect("indexed_by field on cell");
+
+                let (key_val, key_ty) = self.lower_expr(&args[0], scope)?;
+                if key_ty != key_codegen_ty {
+                    return Err(CodegenError::Unsupported(format!(
+                        "@form(lru_cache) `{}`.contains: key arg type \
+                         mismatch: expected {:?}, got {:?}",
+                        locus_name, key_codegen_ty, key_ty
+                    )));
+                }
+                let key_alloca =
+                    self.alloca_for(&key_codegen_ty, "lru.contains.key.slot")?;
+                self.builder
+                    .build_store(key_alloca, key_val)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let contains_fn = self
+                    .module
+                    .get_function("lotus_lru_contains")
+                    .expect("lotus_lru_contains extern declared");
+                let result_i32 = self
+                    .builder
+                    .build_call(
+                        contains_fn,
+                        &[lru_field_ptr.into(), key_alloca.into()],
+                        &format!("{}.contains.call", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_lru_contains returns i32")
+                    .into_int_value();
+                let zero = i32_t.const_int(0, false);
+                let result_i1 = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        result_i32,
+                        zero,
+                        &format!("{}.contains.bool", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok(Some(Some((result_i1.into(), CodegenTy::Bool))))
+            }
+            "len" => {
+                if !args.is_empty() {
+                    return Err(CodegenError::Unsupported(format!(
+                        "@form(lru_cache) `{}`.len: takes no args, got {}",
+                        locus_name,
+                        args.len()
+                    )));
+                }
+                let len_fn = self
+                    .module
+                    .get_function("lotus_lru_len")
+                    .expect("lotus_lru_len extern declared");
+                let result = self
+                    .builder
+                    .build_call(
+                        len_fn,
+                        &[lru_field_ptr.into()],
+                        &format!("{}.len.call", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_lru_len returns i64");
+                Ok(Some(Some((result, CodegenTy::Int))))
+            }
+            _ => unreachable!("is_synth guard"),
+        }
+    }
+
+    /// v1.x-FORM-6: inline-lower the synthesized `@form(lru_cache)`
+    /// fallible method `get(k: K) -> S fallible(KeyError)`. Mirrors
+    /// `@form(hashmap).get`: materialize the key into an alloca,
+    /// arena-allocate a value buffer for the runtime to memcpy the
+    /// hit into, call `lotus_lru_get` (which also bumps recency on
+    /// a hit), and lazily construct a `KeyError` on the miss path.
+    pub(crate) fn try_lower_form_lru_cache_fallible_method(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        locus_self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        method_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
+        let Some(slot) = info
+            .capacity_slots
+            .iter()
+            .find(|s| s.form == Some(SlotForm::LruCache))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        if method_name != "get" {
+            return Ok(None);
+        }
+
+        let cell_name = match &slot.elem_ty {
+            CodegenTy::TypeRef(n) => n.clone(),
+            other => {
+                return Err(CodegenError::Unsupported(format!(
+                    "@form(lru_cache) `{}`.get: slot cell type must be a \
+                     user-declared struct; got {:?}",
+                    locus_name, other
+                )));
+            }
+        };
+        let cell_info = self
+            .user_types
+            .get(&cell_name)
+            .cloned()
+            .ok_or_else(|| CodegenError::Unsupported(format!(
+                "@form(lru_cache) `{}`.get: cell type `{}` not registered",
+                locus_name, cell_name
+            )))?;
+        let field_name = slot
+            .indexed_by
+            .as_ref()
+            .ok_or_else(|| CodegenError::Unsupported(format!(
+                "@form(lru_cache) `{}`.get: slot missing indexed_by",
+                locus_name
+            )))?
+            .clone();
+        let (_field_idx, key_codegen_ty) = cell_info
+            .fields
+            .get(&field_name)
+            .cloned()
+            .ok_or_else(|| CodegenError::Unsupported(format!(
+                "@form(lru_cache) `{}`.get: indexed-by field `{}` not on \
+                 cell `{}`",
+                locus_name, field_name, cell_name
+            )))?;
+        if !matches!(key_codegen_ty, CodegenTy::Int | CodegenTy::String) {
+            return Err(CodegenError::Unsupported(format!(
+                "@form(lru_cache) `{}`.get: key type {:?} unsupported; v1 \
+                 supports Int and String keys only",
+                locus_name, key_codegen_ty
+            )));
+        }
+        let value_codegen_ty = CodegenTy::TypeRef(cell_name.clone());
+
+        let lru_field_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                locus_self_ptr,
+                slot.struct_field_idx,
+                &format!("{}.__lru_{}.fallible.ptr", locus_name, slot.name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let payload_ty = CodegenTy::TypeRef("KeyError".to_string());
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "@form(lru_cache) `{}`.get: expects 1 arg, got {}",
+                locus_name,
+                args.len()
+            )));
+        }
+        let (key_val, key_ty) = self.lower_expr(&args[0], scope)?;
+        if key_ty != key_codegen_ty {
+            return Err(CodegenError::Unsupported(format!(
+                "@form(lru_cache) `{}`.get: key arg type mismatch: expected \
+                 {:?}, got {:?}",
+                locus_name, key_codegen_ty, key_ty
+            )));
+        }
+        let key_alloca = self.alloca_for(&key_codegen_ty, "lru.get.key.slot")?;
+        self.builder
+            .build_store(key_alloca, key_val)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let out_err_slot =
+            self.alloca_for(&payload_ty, "lru.get.out_err.slot")?;
+        let i32_t = self.context.i32_type();
+        let zero_i32 = i32_t.const_int(0, false);
+
+        // Surface success value for a TypeRef cell is a pointer to
+        // the struct; arena-allocate the buffer the runtime memcpys
+        // the hit into, then stash its pointer in the surface slot.
+        let cell_struct_size = cell_info
+            .struct_ty
+            .size_of()
+            .expect("cell struct has known size");
+        let value_buf_ptr =
+            self.arena_alloc(cell_struct_size, "lru.get.value_buf")?;
+        let out_val_slot =
+            self.alloca_for(&value_codegen_ty, "lru.get.out_val.slot")?;
+        self.builder
+            .build_store(out_val_slot, value_buf_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let get_fn = self
+            .module
+            .get_function("lotus_lru_get")
+            .expect("lotus_lru_get declared");
+        let c_ret = self
+            .builder
+            .build_call(
+                get_fn,
+                &[
+                    lru_field_ptr.into(),
+                    key_alloca.into(),
+                    value_buf_ptr.into(),
+                ],
+                &format!("{}.get.call", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_lru_get returns i32")
+            .into_int_value();
+
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                c_ret,
+                zero_i32,
+                &format!("{}.get.is_err", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let func = self
+            .current_fn
+            .expect("fallible-method call inside fn body");
+        let lazy_err_bb =
+            self.context.append_basic_block(func, "lru.get.lazy_err");
+        let join_bb =
+            self.context.append_basic_block(func, "lru.get.lazy_join");
+        self.builder
+            .build_conditional_branch(is_err, lazy_err_bb, join_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(lazy_err_bb);
+        let ke_ptr = self.emit_key_error_alloc("missing_key")?;
+        self.builder
+            .build_store(out_err_slot, ke_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(join_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(join_bb);
+
+        Ok(Some(FallibleCallResult {
+            i1_path: is_err,
+            out_val_slot: Some(out_val_slot),
+            out_err_slot,
+            success_ty: Some(value_codegen_ty),
+            payload_ty,
+        }))
+    }
+
 }

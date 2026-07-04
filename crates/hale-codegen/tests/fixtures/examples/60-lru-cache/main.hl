@@ -1,0 +1,123 @@
+// 60-lru-cache — @form(lru_cache): cap-bounded keyed cache with
+// least-recently-used eviction.
+//
+// lru_cache is the "cap-bounded, never-flagged" keyed form. Like
+// @form(hashmap) it is intrusively keyed (the cell carries its own
+// key via `indexed_by`), so `put` takes the whole struct and the
+// substrate extracts the key. Unlike hashmap it NEVER grows:
+// inserting a new key over `cap` silently evicts the least-
+// recently-USED entry.
+//
+// Surface (synthesized):
+//   put(x: Entry) -> ()                    infallible; silent evict
+//   get(k: Int) -> Entry fallible(KeyError) lookup + recency touch
+//   contains(k: Int) -> Bool               membership, NO recency touch
+//   len() -> Int                           current entry count (<= cap)
+//
+// This fixture asserts the four semantics that matter:
+//   1. Bounded — len never exceeds cap no matter how many distinct
+//      keys are inserted.
+//   2. LRU, not FIFO — a `get` on an entry saves it from an
+//      eviction that a purely-oldest-inserted policy would take.
+//   3. contains does NOT touch recency (unlike get).
+//   4. Value round-trip + update-in-place.
+
+type Entry { id: Int; val: Int; }
+
+@form(lru_cache, cap = 3)
+locus Cache {
+    capacity { pool rows of Entry indexed_by id; }
+}
+
+fn expect(cond: Bool, label: String) {
+    if cond {
+        return;
+    }
+    println("ASSERTION FAILED (expected true): ", label);
+    std::process::exit(1);
+}
+
+fn expect_false(cond: Bool, label: String) {
+    if cond {
+        println("ASSERTION FAILED (expected false): ", label);
+        std::process::exit(1);
+    }
+    return;
+}
+
+fn main() {
+    // ---- Case 1: bounded — never grows past cap ----------------
+    // Insert 10 distinct keys into a cap-3 cache; len must stay
+    // <= 3 the whole way and land at exactly 3.
+    let b = Cache { };
+    let mut i = 1;
+    while i <= 10 {
+        b.put(Entry { id: i, val: i * 100 });
+        expect(b.len() <= 3, "case 1: len stays <= cap during churn");
+        i = i + 1;
+    }
+    std::test::assert_eq_int(b.len(), 3, "case 1: final len == cap");
+    // The three most-recently-inserted keys (8, 9, 10) survive;
+    // everything older was evicted.
+    expect(b.contains(10), "case 1: newest (10) present");
+    expect(b.contains(9),  "case 1: (9) present");
+    expect(b.contains(8),  "case 1: (8) present");
+    expect_false(b.contains(7), "case 1: (7) evicted");
+    expect_false(b.contains(1), "case 1: oldest (1) evicted");
+
+    // ---- Case 2: LRU vs FIFO discriminator ---------------------
+    // Insert A,B,C at cap=3; get(A) (touches A → most recent);
+    // insert D. A pure-FIFO policy would evict A (oldest inserted);
+    // LRU must evict B instead (the true least-recently-used).
+    let c = Cache { };
+    c.put(Entry { id: 1, val: 100 });   // A
+    c.put(Entry { id: 2, val: 200 });   // B
+    c.put(Entry { id: 3, val: 300 });   // C
+
+    let a_hit = c.get(1) or raise;      // touch A → most recently used
+    std::test::assert_eq_int(a_hit.val, 100, "case 2: get(A) round-trip");
+
+    c.put(Entry { id: 4, val: 400 });   // D — forces one eviction
+
+    std::test::assert_eq_int(c.len(), 3, "case 2: len still cap after evict");
+    expect(c.contains(1),        "case 2: A survived (was get-touched)");
+    expect_false(c.contains(2),  "case 2: B evicted (LRU, not FIFO)");
+    expect(c.contains(3),        "case 2: C survived");
+    expect(c.contains(4),        "case 2: D inserted");
+
+    // ---- Case 3: contains does NOT touch recency ---------------
+    // Fresh cache. Insert A,B,C; `contains(A)` (membership only,
+    // must NOT bump recency); insert D. A is still the LRU entry,
+    // so A — not B or C — is evicted. This is the mirror of case 2
+    // and proves contains and get differ.
+    let d = Cache { };
+    d.put(Entry { id: 1, val: 100 });   // A
+    d.put(Entry { id: 2, val: 200 });   // B
+    d.put(Entry { id: 3, val: 300 });   // C
+
+    expect(d.contains(1), "case 3: contains(A) sees A");  // must NOT touch
+
+    d.put(Entry { id: 4, val: 400 });   // D — forces one eviction
+
+    expect_false(d.contains(1), "case 3: A evicted (contains didn't touch it)");
+    expect(d.contains(2),       "case 3: B survived");
+    expect(d.contains(3),       "case 3: C survived");
+    expect(d.contains(4),       "case 3: D inserted");
+
+    // ---- Case 4: value round-trip + update-in-place ------------
+    let e = Cache { };
+    e.put(Entry { id: 5, val: 500 });
+    let g1 = e.get(5) or raise;
+    std::test::assert_eq_int(g1.val, 500, "case 4: initial value");
+    // Update the same key — must overwrite value, not grow len.
+    e.put(Entry { id: 5, val: 999 });
+    std::test::assert_eq_int(e.len(), 1, "case 4: update keeps len == 1");
+    let g2 = e.get(5) or raise;
+    std::test::assert_eq_int(g2.val, 999, "case 4: updated value");
+    // Missing key raises KeyError; the `or` fallback supplies a
+    // sentinel Entry, exercising the get miss path cleanly.
+    let miss = e.get(42) or Entry { id: 0, val: -1 };
+    std::test::assert_eq_int(miss.val, -1, "case 4: miss returns fallback");
+
+    println("all lru_cache tests passed");
+}

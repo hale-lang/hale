@@ -4593,6 +4593,282 @@ void lotus_ring_buffer_destroy(void *rb_ptr) {
     rb->len = 0;
 }
 
+/* ============================================================
+ * @form(lru_cache): fixed-capacity keyed cache, LRU eviction.
+ * ------------------------------------------------------------
+ * A keyed store (like @form(hashmap)) that is capacity-bounded:
+ * it holds at most `cap` live entries and NEVER grows. On an
+ * insert that would exceed `cap` it EVICTS the least-recently-
+ * USED entry — the one with the smallest access tick — to make
+ * room. `put` (insert OR update) and `get` bump the touched
+ * entry's tick (mark it recently used); `contains` does NOT
+ * (pure membership probe, no recency effect). This is the
+ * discriminator between LRU and FIFO: a `get` on an entry saves
+ * it from an eviction a purely-oldest-inserted policy would take.
+ *
+ * Deliberately NOT built on lotus_hashmap_*: that family auto-
+ * grows (lotus_hashmap_grow) and has no recency notion, both of
+ * which break the cap invariant that is the whole point of this
+ * form.
+ *
+ * Storage: an open-addressed linear-probing table sized to the
+ * next power of two >= 2*cap (load factor <= 0.5). Because
+ * len <= cap < table_cap there is always at least one EMPTY
+ * slot, so every probe terminates. Eviction removes an entry
+ * via backward-shift compaction (no tombstones), which keeps
+ * every surviving key findable and the table permanently
+ * reusable across unbounded insert/evict churn.
+ *
+ * Slot layout (all fields touched via memcpy — no alignment
+ * assumptions, ASan-clean): [occupied:1][tick:8][key][value],
+ * stride = 1 + 8 + key_size + value_size.
+ *
+ * Ticks are globally monotonic and assigned from a distinct
+ * increment on every put/get/touch, so no two live entries ever
+ * share a tick — eviction's "minimum tick" is unambiguous (no
+ * tie-break needed). The tick counter is uint64_t; a cache would
+ * have to service ~1.8e19 accesses to wrap, well beyond any
+ * process lifetime.
+ *
+ * The inline-header / heap-backing-buffer split mirrors
+ * @form(ring_buffer) and @form(hashmap): the header lives inline
+ * in the locus struct; `slots` is a single malloc pinned for the
+ * locus lifetime and freed by lotus_lru_free at dissolve. Key
+ * hashing / equality reuse the @form(hashmap) key ABI (Int key =
+ * 8-byte value in the slot; String key = char* stored inline).
+ * ============================================================ */
+
+typedef struct lotus_lru {
+    size_t   cap;           /* max live entries (fixed; never grows) */
+    size_t   len;           /* current live entries (<= cap) */
+    size_t   key_size;
+    size_t   value_size;
+    int      key_type_tag;  /* LOTUS_HASHMAP_KEY_INT / _STRING */
+    uint64_t tick;          /* monotonic access counter */
+    size_t   table_cap;     /* power-of-two slot count (>= 2*cap) */
+    char    *slots;         /* table_cap * lotus_lru_stride bytes */
+} lotus_lru_t;
+
+/* Per-slot stride: occupied byte + 8-byte tick + key + value. */
+static size_t lotus_lru_stride(const lotus_lru_t *c) {
+    return 1 + sizeof(uint64_t) + c->key_size + c->value_size;
+}
+
+static uint8_t *lotus_lru_occ(const lotus_lru_t *c, size_t i) {
+    return (uint8_t *)(c->slots + i * lotus_lru_stride(c));
+}
+static char *lotus_lru_keyp(const lotus_lru_t *c, size_t i) {
+    return c->slots + i * lotus_lru_stride(c) + 1 + sizeof(uint64_t);
+}
+static char *lotus_lru_valp(const lotus_lru_t *c, size_t i) {
+    return lotus_lru_keyp(c, i) + c->key_size;
+}
+static uint64_t lotus_lru_tick_at(const lotus_lru_t *c, size_t i) {
+    uint64_t t;
+    memcpy(&t, c->slots + i * lotus_lru_stride(c) + 1, sizeof t);
+    return t;
+}
+static void lotus_lru_set_tick(lotus_lru_t *c, size_t i, uint64_t t) {
+    memcpy(c->slots + i * lotus_lru_stride(c) + 1, &t, sizeof t);
+}
+
+/* Shares the @form(hashmap) key ABI so Int / String keys behave
+ * identically across the two keyed forms. */
+static size_t lotus_lru_hash(const lotus_lru_t *c, const void *key) {
+    if (c->key_type_tag == LOTUS_HASHMAP_KEY_INT) {
+        uint64_t k = *(const uint64_t *)key;
+        return (size_t)(k * 0x9E3779B97F4A7C15ULL);
+    }
+    const char *s = *(const char *const *)key;
+    if (!s) return 0;
+    uint64_t h = 0xcbf29ce484222325ULL;
+    for (const char *p = s; *p; ++p) {
+        h ^= (uint8_t)*p;
+        h *= 0x100000001b3ULL;
+    }
+    return (size_t)h;
+}
+
+static int lotus_lru_key_eq(const lotus_lru_t *c,
+                            const void *a,
+                            const void *b) {
+    if (c->key_type_tag == LOTUS_HASHMAP_KEY_INT) {
+        return *(const int64_t *)a == *(const int64_t *)b;
+    }
+    const char *sa = *(const char *const *)a;
+    const char *sb = *(const char *const *)b;
+    if (sa == sb) return 1;
+    if (!sa || !sb) return 0;
+    return strcmp(sa, sb) == 0;
+}
+
+/* Returns the index of the slot holding `key`, or the first EMPTY
+ * slot along the probe chain. Caller inspects the occupied byte to
+ * disambiguate. Terminates because len <= cap < table_cap. */
+static size_t lotus_lru_find(const lotus_lru_t *c, const void *key) {
+    size_t mask = c->table_cap - 1;
+    size_t i = lotus_lru_hash(c, key) & mask;
+    for (;;) {
+        if (!*lotus_lru_occ(c, i)) return i;
+        if (lotus_lru_key_eq(c, lotus_lru_keyp(c, i), key)) return i;
+        i = (i + 1) & mask;
+    }
+}
+
+static size_t lotus_lru_round_pow2(size_t n) {
+    size_t p = 1;
+    while (p < n) p <<= 1;
+    return p;
+}
+
+void lotus_lru_init(void *cache_ptr,
+                    size_t cap,
+                    size_t key_size,
+                    size_t value_size,
+                    int key_type_tag) {
+    if (!cache_ptr) return;
+    lotus_lru_t *c = (lotus_lru_t *)cache_ptr;
+    /* Typecheck requires `cap = N` with N > 0; the clamp is pure
+     * defense so a cap-0 that slips through can't produce a 0-slot
+     * table (which would make lotus_lru_find spin forever). */
+    if (cap == 0) cap = 1;
+    c->cap = cap;
+    c->len = 0;
+    c->key_size = key_size;
+    c->value_size = value_size;
+    c->key_type_tag = key_type_tag;
+    c->tick = 0;
+    /* >= 2*cap so load factor <= 0.5 and a probe always meets an
+     * EMPTY terminator; power of two so `& mask` folds the hash;
+     * min 8 to match the hashmap's small-table floor. */
+    size_t want = cap * 2;
+    if (want < 8) want = 8;
+    c->table_cap = lotus_lru_round_pow2(want);
+    c->slots = (char *)calloc(c->table_cap, lotus_lru_stride(c));
+}
+
+/* Backward-shift deletion for linear probing (Knuth 6.4 Algo R /
+ * the canonical open-addressing delete). Empties `hole`, then
+ * walks forward pulling back any entry whose home slot the hole
+ * displaced, so no surviving key becomes unreachable. No
+ * tombstones — the table stays clean under unbounded churn. */
+static void lotus_lru_delete_at(lotus_lru_t *c, size_t hole) {
+    size_t mask = c->table_cap - 1;
+    size_t stride = lotus_lru_stride(c);
+    size_t i = hole;
+    for (;;) {
+        *lotus_lru_occ(c, i) = 0;   /* current hole is now empty */
+        size_t j = i;
+        for (;;) {
+            j = (j + 1) & mask;
+            if (!*lotus_lru_occ(c, j)) {
+                /* probe chain ended; hole at i stays empty */
+                c->len--;
+                return;
+            }
+            size_t k = lotus_lru_hash(c, lotus_lru_keyp(c, j)) & mask;
+            /* Is k cyclically in (i, j]? If so, entry j is still
+             * correctly placed relative to the hole — leave it. */
+            int keep;
+            if (i <= j) keep = (i < k && k <= j);
+            else        keep = (i < k || k <= j);
+            if (keep) continue;
+            /* Move entry j back into the hole at i (whole stride:
+             * occupied + tick + key + value), then treat j as the
+             * new hole and re-scan from there. */
+            memcpy(c->slots + i * stride, c->slots + j * stride, stride);
+            i = j;
+            break;
+        }
+    }
+}
+
+/* Evict the least-recently-used entry: the occupied slot with the
+ * smallest tick. Ticks are globally unique, so the minimum is
+ * unambiguous (linear-index order only ever breaks a tie that
+ * can't occur). O(table_cap) — table_cap is fixed, so this is
+ * O(1) in the cache's population. */
+static void lotus_lru_evict_lru(lotus_lru_t *c) {
+    size_t best = c->table_cap;   /* sentinel: none found */
+    uint64_t best_tick = 0;
+    for (size_t i = 0; i < c->table_cap; ++i) {
+        if (!*lotus_lru_occ(c, i)) continue;
+        uint64_t t = lotus_lru_tick_at(c, i);
+        if (best == c->table_cap || t < best_tick) {
+            best = i;
+            best_tick = t;
+        }
+    }
+    if (best != c->table_cap) lotus_lru_delete_at(c, best);
+}
+
+/* Insert or update `key`->`value`. Infallible: silently evicts
+ * the LRU entry when inserting a new key over capacity. Update
+ * and insert both bump the entry's tick (recently used). */
+void lotus_lru_put(void *cache_ptr, const void *key, const void *value) {
+    if (!cache_ptr || !key || !value) return;
+    lotus_lru_t *c = (lotus_lru_t *)cache_ptr;
+    size_t i = lotus_lru_find(c, key);
+    if (*lotus_lru_occ(c, i)) {
+        /* Present: overwrite value, touch recency. */
+        memcpy(lotus_lru_valp(c, i), value, c->value_size);
+        lotus_lru_set_tick(c, i, ++c->tick);
+        return;
+    }
+    /* New key. Make room first if at capacity. */
+    if (c->len >= c->cap) {
+        lotus_lru_evict_lru(c);
+        /* The backward-shift may have relocated slots along this
+         * key's probe chain, so re-find the insertion point. */
+        i = lotus_lru_find(c, key);
+    }
+    *lotus_lru_occ(c, i) = 1;
+    memcpy(lotus_lru_keyp(c, i), key, c->key_size);
+    memcpy(lotus_lru_valp(c, i), value, c->value_size);
+    lotus_lru_set_tick(c, i, ++c->tick);
+    c->len++;
+}
+
+/* Lookup + recency touch. Returns 1 and writes value_size bytes
+ * into out_value on hit (bumping the entry's tick); 0 on miss.
+ * Codegen lifts the 0 into fallible(KeyError). */
+int lotus_lru_get(void *cache_ptr, const void *key, void *out_value) {
+    if (!cache_ptr || !key || !out_value) return 0;
+    lotus_lru_t *c = (lotus_lru_t *)cache_ptr;
+    if (c->len == 0) return 0;
+    size_t i = lotus_lru_find(c, key);
+    if (!*lotus_lru_occ(c, i)) return 0;
+    memcpy(out_value, lotus_lru_valp(c, i), c->value_size);
+    lotus_lru_set_tick(c, i, ++c->tick);   /* recency touch */
+    return 1;
+}
+
+/* Membership WITHOUT touching recency (unlike get). */
+int lotus_lru_contains(void *cache_ptr, const void *key) {
+    if (!cache_ptr || !key) return 0;
+    lotus_lru_t *c = (lotus_lru_t *)cache_ptr;
+    if (c->len == 0) return 0;
+    size_t i = lotus_lru_find(c, key);
+    return *lotus_lru_occ(c, i) ? 1 : 0;
+}
+
+/* int64_t (Hale `Int`) to match the i64 codegen decl of `len()`,
+ * not size_t (which is i32 on wasm32). Count is <= cap. */
+int64_t lotus_lru_len(void *cache_ptr) {
+    if (!cache_ptr) return 0;
+    return (int64_t)((lotus_lru_t *)cache_ptr)->len;
+}
+
+void lotus_lru_free(void *cache_ptr) {
+    if (!cache_ptr) return;
+    lotus_lru_t *c = (lotus_lru_t *)cache_ptr;
+    free(c->slots);
+    c->slots = NULL;
+    c->len = 0;
+    c->cap = 0;
+    c->table_cap = 0;
+}
+
 /*
  * Cooperative scheduler — bus dispatch queue (m26 + m28b stage 1).
  *

@@ -2050,6 +2050,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         {
             return Ok(result);
         }
+        if let Some(result) = self
+            .try_lower_form_lru_cache_fallible_method(
+                &info,
+                self_ptr,
+                &locus_name,
+                method_name,
+                args,
+                scope,
+            )?
+        {
+            return Ok(result);
+        }
         // Open-question #24 MVP (2026-05-25): user-declared
         // fallible locus member fns. The declare-time path
         // emitted the LLVM fn with the fallible ABI (i1 ret +

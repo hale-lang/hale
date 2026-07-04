@@ -910,6 +910,14 @@ fn register_locus(
                 let cell_ty = form_ring_buffer_cell_ty(decl, known);
                 synthesize_form_ring_buffer_methods(&mut methods, &cell_ty);
             }
+            "lru_cache" => {
+                // Same keyed shape as @form(hashmap): value struct S +
+                // key K from the `indexed_by` field. lru_cache pairs
+                // that key surface with a fixed `cap = N` (the only
+                // form needing BOTH), enforced in check.rs.
+                let (value_ty, key_ty) = form_hashmap_value_and_key_ty(decl, known, scope);
+                synthesize_form_lru_cache_methods(&mut methods, &value_ty, &key_ty);
+            }
             _ => {}
         }
     }
@@ -1526,6 +1534,54 @@ fn synthesize_form_ring_buffer_methods(
         name: "is_full".to_string(),
         params: Vec::new(),
         ret: Ty::Prim(PrimType::Bool),
+        fallible: None,
+    });
+}
+
+/// v1.x-FORM-6: synthesize the `@form(lru_cache)` method set over
+/// value type S (= cell struct) and key type K (= type of the
+/// `indexed_by` field), matching `spec/forms.md`:
+///   `put(x: S) -> ()`                 (infallible; silent LRU evict)
+///   `get(k: K) -> S fallible(KeyError)` (lookup + recency touch)
+///   `contains(k: K) -> Bool`          (membership, NO recency touch)
+///   `len() -> Int`                    (infallible; current count ≤ cap)
+///
+/// lru_cache is the "cap-bounded, never-flagged" keyed form: like
+/// `@form(hashmap)` it is intrusively keyed (the cell carries its
+/// own key), so `put` takes the whole struct and the substrate
+/// extracts the key at insertion time. Unlike hashmap it never
+/// grows — inserting over `cap` silently evicts the least-recently-
+/// used entry. `KeyError` (shared with hashmap) is the `get` miss
+/// payload; `put` is infallible (eviction is silent, matching the
+/// "never flagged / bounded" contract).
+fn synthesize_form_lru_cache_methods(
+    methods: &mut Vec<MethodInfo>,
+    value_ty: &Ty,
+    key_ty: &Ty,
+) {
+    let key_err = Ty::Named("KeyError".to_string());
+    methods.push(MethodInfo {
+        name: "put".to_string(),
+        params: vec![value_ty.clone()],
+        ret: Ty::Unit,
+        fallible: None,
+    });
+    methods.push(MethodInfo {
+        name: "get".to_string(),
+        params: vec![key_ty.clone()],
+        ret: value_ty.clone(),
+        fallible: Some(key_err),
+    });
+    methods.push(MethodInfo {
+        name: "contains".to_string(),
+        params: vec![key_ty.clone()],
+        ret: Ty::Prim(PrimType::Bool),
+        fallible: None,
+    });
+    methods.push(MethodInfo {
+        name: "len".to_string(),
+        params: Vec::new(),
+        ret: Ty::Prim(PrimType::Int),
         fallible: None,
     });
 }

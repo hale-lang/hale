@@ -5184,6 +5184,17 @@ pub(crate) enum SlotForm {
     /// the backing buffer is pre-allocated at locus birth and
     /// never grows.
     RingBuffer,
+    /// `@form(lru_cache, cap = N)` — pool slot becomes an inline
+    /// `{ i64 cap, i64 len, i64 key_size, i64 value_size,
+    ///   i32 key_type_tag, i64 tick, i64 table_cap, ptr slots }`
+    /// struct managed by `lotus_lru_*`. Layout matches the C-side
+    /// `lotus_lru_t` exactly (LLVM inserts the 4-byte pad after
+    /// the i32 key_type_tag before the i64 tick). The `cap`
+    /// annotation arg flows into the init call as the fixed live-
+    /// entry cap; the table is pre-allocated at locus birth and
+    /// evicts the least-recently-used entry on over-cap insert
+    /// (never grows). Reuses ring_buffer's `cap` extraction.
+    LruCache,
 }
 
 /// One locus param's default-initializer. Either pre-resolved
@@ -22283,6 +22294,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         )? {
             return Ok(form_result);
         }
+        // v1.x-FORM-6: intercept synthesized @form(lru_cache)
+        // methods on `self`. Parallel to ring_buffer dispatch.
+        if let Some(form_result) = self.try_lower_form_lru_cache_method(
+            &info,
+            cs.self_ptr,
+            &cs.locus_name,
+            method_name,
+            args,
+            scope,
+        )? {
+            return Ok(form_result);
+        }
         let func = info
             .user_methods
             .get(method_name)
@@ -22700,6 +22723,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // methods before the user_methods lookup. Parallel to vec
         // and hashmap dispatch.
         if let Some(form_result) = self.try_lower_form_ring_buffer_method(
+            &info,
+            recv_val.into_pointer_value(),
+            &locus_name,
+            method_name,
+            args,
+            scope,
+        )? {
+            return Ok(form_result);
+        }
+        // v1.x-FORM-6: @form(lru_cache) methods on an external
+        // receiver. Parallel to ring_buffer dispatch.
+        if let Some(form_result) = self.try_lower_form_lru_cache_method(
             &info,
             recv_val.into_pointer_value(),
             &locus_name,

@@ -10,8 +10,9 @@ form-before-parameter, F.22 capacity).
 
 This document specifies the form annotation system in general
 (syntax, contract, verification) and the `@form(vec)` contract
-in detail. Subsequent forms (`@form(hashmap)`, `@form(ring_buffer)`)
-get their own sections as they're committed.
+in detail. Subsequent forms (`@form(hashmap)`,
+`@form(ring_buffer)`, `@form(lru_cache)`) get their own sections
+as they're committed.
 
 ## Annotation syntax
 
@@ -36,7 +37,7 @@ locus ItemList<T> {
   user-defined forms are deferred to a future release.
 - **`form_arg`** — keyword arguments specific to the form. Used
   for tuning knobs that don't change storage discipline (e.g.
-  `max = 100` for `@form(lru_cache)`).
+  `cap = 100` for `@form(lru_cache)` / `@form(ring_buffer)`).
 - **One form per locus.** Composition (`@form(vec) @form(ordered)`)
   is rejected in v1.
 
@@ -120,7 +121,7 @@ locus CmdRegistry {
 }
 
 // Policy / tuning — annotation argument.
-@form(lru_cache, max = 100, ttl = 60s)
+@form(lru_cache, cap = 100)
 locus SessionCache {
     capacity { pool sessions of SessionEntry indexed_by id; }
 }
@@ -1439,3 +1440,158 @@ buffer should pick a generous cap up front, or use
    in `hale-lang/bench`, parallel to vec's and hashmap's.
    Ships as a separate milestone after a consumer workload
    surfaces.
+
+# `@form(lru_cache)`
+
+A fixed-capacity keyed cache with least-recently-used eviction.
+The keyed counterpart of `@form(ring_buffer)`: like
+`@form(hashmap)` it is intrusively keyed (the cell carries its own
+key via `indexed_by`), but like `@form(ring_buffer)` it is
+capacity-bounded and NEVER grows. Inserting a new key over `cap`
+silently evicts the least-recently-**used** entry to make room.
+This is the "cap-bounded, never-flagged" keyed form — the
+unbounded-allocation analysis (`spec/verification.md`) treats an
+`@form(lru_cache)` locus as bounded, exactly like `ring_buffer`.
+Shipped as the fourth form in v1 via v1.x-FORM-6.
+
+## Required capacity shape
+
+The locus MUST declare exactly one `pool` slot with an
+`indexed_by <fieldname>` clause over a user-declared struct cell —
+the same key surface as `@form(hashmap)` — AND the annotation arg
+`cap = N`. `lru_cache` is the one form that needs BOTH a key and a
+cap.
+
+```hale
+type SessionEntry { id: Int; token: String; }
+
+@form(lru_cache, cap = 1000)
+locus SessionCache {
+    capacity { pool sessions of SessionEntry indexed_by id; }
+}
+```
+
+Rules verified at typecheck:
+
+- Exactly one slot, of kind `pool`. Zero slots, more than one
+  slot, or a `heap` slot is rejected.
+- The slot MUST declare `indexed_by <fieldname>`; the named field
+  must exist on the cell struct and becomes the cache key type
+  `K` (Int or String at v1). The cell struct is the value type
+  `S`.
+- `cap = N` is required and must be a positive integer literal.
+  v1 doesn't const-evaluate expressions for form args.
+- The slot MUST NOT declare `as_parent_for` — form-lowered slots
+  own their own allocator.
+- The cell type MAY NOT be a locus reference — same restriction
+  as the other forms.
+
+## Synthesized methods
+
+```
+fn put(x: S) -> ()                          # infallible; silent LRU evict
+fn get(k: K) -> S fallible(KeyError)        # lookup + recency touch
+fn contains(k: K) -> Bool                   # membership, NO recency touch
+fn len() -> Int                             # infallible; count <= cap
+```
+
+`get`'s miss payload is the synthesized `KeyError` (shared with
+`@form(hashmap)`); no new payload type is introduced.
+
+### `put`
+
+```
+fn put(x: S) -> ()
+```
+
+Insert or update by the `indexed_by` key extracted from `x`. If
+the key is already present, its value is overwritten and its
+recency is refreshed. If the key is new and the cache is at
+capacity, the least-recently-used entry is silently evicted first.
+`put` is **infallible** — over-cap is a normal, silent operation
+(eviction), not a failure. This matches the "never flagged /
+bounded" contract: there is no `FullError`, unlike
+`@form(ring_buffer).push` which returns a Bool.
+
+Both insert and update mark the touched entry as recently used.
+
+### `get`
+
+```
+fn get(k: K) -> S fallible(KeyError)
+```
+
+Looks up the value for key `k`. On a hit it returns the value
+**and** marks the entry as recently used (a recency touch) — this
+is what makes the policy LRU rather than FIFO: a `get` on an entry
+saves it from an eviction that a purely-oldest-inserted policy
+would take. On a miss it raises `KeyError`, addressed at the
+call site's `or` clause.
+
+### `contains`
+
+```
+fn contains(k: K) -> Bool
+```
+
+Membership test. Returns `true` if `k` is present. Unlike `get`,
+`contains` does **NOT** touch recency — a `contains` on an entry
+leaves it exactly as recently-used as it was. This distinction is
+observable: after `contains(k)`, the entry `k` remains eligible
+for eviction if it was the LRU entry.
+
+### `len`
+
+```
+fn len() -> Int
+```
+
+Current live entry count, always `<= cap`. Infallible.
+
+## Lowering strategy
+
+`@form(lru_cache)` lowers the pool slot to an inline header struct
+plus a single heap-allocated open-addressed table, managed by the
+`lotus_lru_*` C runtime:
+
+```
+struct lotus_lru_t {
+    size_t   cap;           // fixed live-entry cap (never grows)
+    size_t   len;           // current live entries (<= cap)
+    size_t   key_size;
+    size_t   value_size;
+    int      key_type_tag;  // Int / String key ABI (shared w/ hashmap)
+    uint64_t tick;          // monotonic access counter
+    size_t   table_cap;     // power-of-two slot count (>= 2*cap)
+    char    *slots;         // table_cap * (occupied + tick + key + value)
+}
+```
+
+It deliberately does **not** reuse the `lotus_hashmap_*` family:
+that family auto-grows and has no recency notion, both of which
+break the cap invariant. The table is sized to the next power of
+two `>= 2*cap` (load factor `<= 0.5`, so a probe always meets an
+empty terminator). Each slot carries an access tick; eviction
+removes the occupied slot with the minimum tick (the LRU entry)
+via backward-shift compaction (no tombstones), keeping the table
+reusable under unbounded insert/evict churn. Ticks are globally
+unique per access, so the LRU entry is unambiguous.
+
+The backing table is pre-allocated at locus birth
+(`lotus_lru_init`) and freed at dissolve (`lotus_lru_free`); the
+inline header lives in the locus struct and dies with the arena —
+the same inline-header / heap-buffer split as `@form(vec)`,
+`@form(hashmap)`, and `@form(ring_buffer)`.
+
+## Open questions deferred to a future milestone
+
+1. **TTL eviction.** A `ttl = <duration>` annotation arg to
+   expire entries by age in addition to LRU by capacity. Deferred
+   — v1 evicts by capacity + recency only.
+2. **`remove(k)` / `clear()`.** Explicit eviction of a named key
+   and bulk clear. Add when a workload demonstrates demand.
+3. **Iteration surface.** `key_at` / `entry_at`-style indexed
+   iteration, parallel to `@form(hashmap)`. Deferred.
+4. **Bench protocol.** A `micro/form_lru_cache_*` family in
+   `hale-lang/bench`, parallel to the other forms'. Ships after a
+   consumer workload surfaces.

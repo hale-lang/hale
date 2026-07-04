@@ -5583,12 +5583,13 @@ impl<'a> Checker<'a> {
             "vec" => self.check_form_vec_shape(decl, form),
             "hashmap" => self.check_form_hashmap_shape(decl, form),
             "ring_buffer" => self.check_form_ring_buffer_shape(decl, form),
+            "lru_cache" => self.check_form_lru_cache_shape(decl, form),
             other => {
                 self.diags.push(Diag::ty(
                     form.name.span,
                     format!(
                         "unknown form `{}`; v1 recognizes: vec, hashmap, \
-                         ring_buffer",
+                         ring_buffer, lru_cache",
                         other
                     ),
                 ));
@@ -5727,6 +5728,223 @@ impl<'a> Checker<'a> {
                     ),
                 ));
             }
+        }
+    }
+
+    /// v1.x-FORM-6: `@form(lru_cache, cap = N)` is the one form
+    /// that needs BOTH a key and a cap. It borrows the
+    /// `@form(hashmap)` key surface — exactly one `pool` capacity
+    /// slot with an `indexed_by <fieldname>` clause over a
+    /// user-declared struct cell — AND the `@form(ring_buffer)`
+    /// required `cap = N` positive-int-literal arg (the cache is
+    /// pre-allocated at locus birth and evicts LRU on over-cap
+    /// insert; it never grows).
+    fn check_form_lru_cache_shape(
+        &mut self,
+        decl: &'a LocusDecl,
+        form: &'a FormAnnotation,
+    ) {
+        // Args: exactly one `cap = N`, positive int literal.
+        let mut cap_arg: Option<&FormArg> = None;
+        for arg in &form.args {
+            if arg.name.name == "cap" {
+                if cap_arg.is_some() {
+                    self.diags.push(Diag::ty(
+                        arg.name.span,
+                        "@form(lru_cache): duplicate `cap` arg".to_string(),
+                    ));
+                } else {
+                    cap_arg = Some(arg);
+                }
+            } else {
+                self.diags.push(Diag::ty(
+                    arg.name.span,
+                    format!(
+                        "@form(lru_cache): unknown arg `{}`; v1 accepts \
+                         `cap = N` only",
+                        arg.name.name
+                    ),
+                ));
+            }
+        }
+        match cap_arg {
+            None => {
+                self.diags.push(Diag::ty(
+                    form.span,
+                    "@form(lru_cache) requires a `cap = N` arg (fixed \
+                     capacity; the cache is pre-allocated at locus birth \
+                     and evicts the least-recently-used entry on over-cap \
+                     insert — it never grows)"
+                        .to_string(),
+                ));
+            }
+            Some(arg) => match &arg.value {
+                Expr::Literal(Literal::Int(n), _) if *n > 0 => { /* OK */ }
+                _ => {
+                    self.diags.push(Diag::ty(
+                        arg.name.span,
+                        "@form(lru_cache) `cap` must be a positive integer \
+                         literal (v1 doesn't const-evaluate expressions for \
+                         form args)"
+                            .to_string(),
+                    ));
+                }
+            },
+        }
+
+        // Capacity block: exactly one `pool` slot with `indexed_by`,
+        // cell = user struct, indexed-by field exists on it.
+        let capacity = decl.members.iter().find_map(|m| match m {
+            LocusMember::Capacity(cb) => Some(cb),
+            _ => None,
+        });
+        let cb = match capacity {
+            Some(cb) => cb,
+            None => {
+                self.diags.push(Diag::ty(
+                    form.span,
+                    "@form(lru_cache) requires exactly one `pool` capacity \
+                     slot with `indexed_by <fieldname>`; found no \
+                     `capacity { ... }` block on this locus"
+                        .to_string(),
+                ));
+                return;
+            }
+        };
+        if cb.slots.is_empty() {
+            self.diags.push(Diag::ty(
+                cb.span,
+                "@form(lru_cache) requires exactly one `pool` capacity slot \
+                 with `indexed_by <fieldname>`; found an empty capacity block"
+                    .to_string(),
+            ));
+            return;
+        }
+        if cb.slots.len() > 1 {
+            self.diags.push(Diag::ty(
+                cb.span,
+                format!(
+                    "@form(lru_cache) requires exactly one capacity slot; \
+                     found {} slots. lru_cache is a single keyed store.",
+                    cb.slots.len()
+                ),
+            ));
+            return;
+        }
+        let slot = &cb.slots[0];
+        match slot.kind {
+            CapacitySlotKind::Pool => {}
+            CapacitySlotKind::Heap => {
+                self.diags.push(Diag::ty(
+                    slot.span,
+                    format!(
+                        "@form(lru_cache) requires a `pool` slot; got `heap \
+                         {} of ...`. The cache recycles a fixed cell \
+                         population as entries are inserted and evicted — \
+                         that's the `pool` discipline.",
+                        slot.name.name
+                    ),
+                ));
+            }
+        }
+        let field_ident = match &slot.indexed_by {
+            Some(i) => i,
+            None => {
+                self.diags.push(Diag::ty(
+                    slot.span,
+                    format!(
+                        "@form(lru_cache) slot `{}` must declare `indexed_by \
+                         <fieldname>` naming the field of the cell type that \
+                         serves as the cache key",
+                        slot.name.name
+                    ),
+                ));
+                return;
+            }
+        };
+        let cell_name = match &slot.elem_ty {
+            TypeExpr::Named { path, .. } if path.segments.len() == 1 => {
+                path.segments[0].name.clone()
+            }
+            _ => {
+                self.diags.push(Diag::ty(
+                    slot.elem_ty.span(),
+                    "@form(lru_cache) cell type must be a user-declared \
+                     struct (so the `indexed_by` field can resolve to a \
+                     typed key); got a primitive, qualified path, or \
+                     composite type"
+                        .to_string(),
+                ));
+                return;
+            }
+        };
+        match self.top.lookup(&cell_name) {
+            Some(TopSymbol::Type(info)) => match &info.kind {
+                TypeKind::Struct(fields) => {
+                    if !fields.iter().any(|f| f.name == field_ident.name) {
+                        self.diags.push(Diag::ty(
+                            field_ident.span,
+                            format!(
+                                "@form(lru_cache) cell type `{}` has no field \
+                                 `{}` — the `indexed_by` field must exist on \
+                                 the cell struct",
+                                cell_name, field_ident.name
+                            ),
+                        ));
+                        return;
+                    }
+                }
+                TypeKind::Enum(_) => {
+                    self.diags.push(Diag::ty(
+                        slot.elem_ty.span(),
+                        format!(
+                            "@form(lru_cache) cell type `{}` is an enum; cell \
+                             must be a struct so `indexed_by` can resolve to a \
+                             typed key field",
+                            cell_name
+                        ),
+                    ));
+                    return;
+                }
+                TypeKind::Alias(_) => {
+                    self.diags.push(Diag::ty(
+                        slot.elem_ty.span(),
+                        format!(
+                            "@form(lru_cache) cell type `{}` is a type alias; \
+                             cell must be a struct so `indexed_by` can resolve",
+                            cell_name
+                        ),
+                    ));
+                    return;
+                }
+            },
+            Some(TopSymbol::Locus(_)) => {
+                self.diags.push(Diag::ty(
+                    slot.elem_ty.span(),
+                    format!(
+                        "@form(lru_cache) cell type `{}` is a locus. Cells \
+                         are data; loci are managed entities. Store data in \
+                         the cache and route entity membership through \
+                         `accept(c: ...)` instead.",
+                        cell_name
+                    ),
+                ));
+                return;
+            }
+            _ => {
+                // Cell type unresolved — separate error already
+                // raised by the type resolver. Skip so we don't
+                // double-report.
+                return;
+            }
+        }
+        if slot.as_parent_for.is_some() {
+            self.diags.push(Diag::ty(
+                slot.span,
+                "@form(lru_cache) slot cannot also be an `as_parent_for` \
+                 override; form-lowered slots own their own allocator"
+                    .to_string(),
+            ));
         }
     }
 

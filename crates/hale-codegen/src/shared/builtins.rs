@@ -501,6 +501,54 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_ring_buffer_destroy", rb_destroy_ty, None);
 
+        // @form(lru_cache): fixed-capacity keyed cache with LRU
+        // eviction. Init bakes `cap` + key/value sizes + key type
+        // tag; the table never grows and evicts the least-recently-
+        // used entry on over-cap insert. Keyed like @form(hashmap)
+        // (put/get/contains take key or value pointers) but built
+        // on a distinct `lotus_lru_*` runtime (hashmap auto-grows
+        // and has no recency, both fatal to the cap invariant).
+        //
+        // declare void    @lotus_lru_init(ptr c, i64 cap, i64 key_size,
+        //                                  i64 value_size, i32 key_type_tag)
+        // declare void    @lotus_lru_put(ptr c, ptr key, ptr value)
+        // declare i32     @lotus_lru_get(ptr c, ptr key, ptr out_value)
+        // declare i32     @lotus_lru_contains(ptr c, ptr key)
+        // declare i64     @lotus_lru_len(ptr c)
+        // declare void    @lotus_lru_free(ptr c)
+        // `cap` / `key_size` / `value_size` are C `size_t` — target-
+        // pointer-width (i32 wasm32 / i64 native), so `usize_t`.
+        let lru_init_ty = void_t.fn_type(
+            &[
+                ptr_t.into(),
+                usize_t.into(),
+                usize_t.into(),
+                usize_t.into(),
+                i32_t.into(),
+            ],
+            false,
+        );
+        self.module
+            .add_function("lotus_lru_init", lru_init_ty, None);
+        let lru_put_ty =
+            void_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false);
+        self.module
+            .add_function("lotus_lru_put", lru_put_ty, None);
+        let lru_get_ty =
+            i32_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false);
+        self.module
+            .add_function("lotus_lru_get", lru_get_ty, None);
+        let lru_contains_ty =
+            i32_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        self.module
+            .add_function("lotus_lru_contains", lru_contains_ty, None);
+        let lru_len_ty = i64_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_lru_len", lru_len_ty, None);
+        let lru_free_ty = void_t.fn_type(&[ptr_t.into()], false);
+        self.module
+            .add_function("lotus_lru_free", lru_free_ty, None);
+
         // m36: string runtime helpers. Each takes a `ptr` for the
         // destination arena (where the result lives) plus the
         // operands; results are NUL-terminated buffers owned by
