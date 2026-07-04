@@ -2595,6 +2595,20 @@ void lotus_vec_sort_string(void *vec_ptr) {
 typedef int (*lotus_vec_trampoline_t)(const void *a, const void *b, void *cookie);
 
 #if defined(__APPLE__)
+/* macOS has no clock_nanosleep. The codegen sleep lowering (stdlib/time.rs)
+ * calls it with flags=0 (RELATIVE sleep) — nanosleep is the exact equivalent
+ * (clockid is immaterial for a relative sleep). clock_nanosleep returns the
+ * error number directly (0 ok / EINTR on interrupt, remaining in *rem);
+ * nanosleep reports via -1/errno — translate so codegen's `== EINTR` retry
+ * loop works unchanged. */
+int clock_nanosleep(int clockid, int flags, const struct timespec *req,
+                    struct timespec *rem) {
+    (void)clockid; (void)flags;
+    return nanosleep(req, rem) == 0 ? 0 : errno;
+}
+#endif
+
+#if defined(__APPLE__)
 /* BSD/macOS qsort_r has a DIFFERENT signature + arg order than glibc:
  *   qsort_r(base, nmemb, size, thunk, int (*compar)(void *thunk,
  *                                                    const void *, const void *))
