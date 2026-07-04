@@ -1,0 +1,163 @@
+name: macos
+
+# Phase-1 macOS (Apple Silicon) portability guard.
+#
+# The compiler (Rust/inkwell) already builds on macOS in the release
+# workflow; what this job validates is the RUNTIME + codegen link line:
+# the lotus C runtime is now guarded so everything EXCEPT the epoll-based
+# `async_io` pool compiles + runs on macOS, and `where async_io` is
+# rejected at compile time with a clear diagnostic.
+#
+# This is the real validator for the macOS work (the dev box is Linux and
+# cannot compile for macOS). It:
+#   (a) builds the workspace,
+#   (b) compiles + RUNS a hello-world .hl,
+#   (c) compiles + RUNS a cooperative-pool + bus .hl,
+#   (d) asserts a `where async_io` .hl FAILS to build with the
+#       "aren't supported on macOS" diagnostic (proving the gate).
+#
+# Kept in its own workflow so it runs on push/PR without gating the
+# Linux-only required checks in tests.yml.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: build + run (macos-14, Apple Silicon)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install LLVM 18 + OpenSSL 3 (Homebrew)
+        # llvm@18: inkwell/llvm-sys links libLLVM.18 dynamically (must
+        # match the crate's llvm18-0 pin). openssl@3: lotus_tls.c is
+        # compiled on every build and #includes <openssl/ssl.h>; brew
+        # openssl is keg-only, so codegen needs its include/lib prefix
+        # (resolved from $LOTUS_OPENSSL_PREFIX). The C runtime itself is
+        # compiled + linked by the system (Apple) `clang` on PATH.
+        run: |
+          set -eux
+          brew install llvm@18 openssl@3
+          echo "LLVM_SYS_180_PREFIX=$(brew --prefix llvm@18)" >> "$GITHUB_ENV"
+          echo "LOTUS_OPENSSL_PREFIX=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-macos14-arm64-llvm18-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-macos14-arm64-llvm18-
+
+      - name: cargo build --release --workspace
+        # Build ALL workspace members so libhale_ts_shim.a lands at
+        # target/release/ before the `hale` binary links a compiled .hl
+        # (codegen appends the staticlib by path-probe).
+        run: cargo build --release --workspace
+
+      - name: (a) hello-world compiles + runs
+        run: |
+          set -eux
+          mkdir -p /tmp/hlci
+          cat > /tmp/hlci/hello.hl <<'HL'
+          locus Greeter {
+              run() {
+                  println("hello from hale on macos");
+              }
+          }
+          fn main() {
+              Greeter { };
+          }
+          HL
+          out="$(cargo run -q -p hale-cli --bin hale -- run /tmp/hlci/hello.hl)"
+          echo "program output: $out"
+          echo "$out" | grep -q "hello from hale on macos"
+
+      - name: (b) cooperative-pool + bus compiles + runs
+        run: |
+          set -eux
+          cat > /tmp/hlci/coop_bus.hl <<'HL'
+          type Tick { n: Int; }
+
+          locus Sub {
+              bus { subscribe "tick" as on_tick of type Tick; }
+              fn on_tick(t: Tick) {
+                  println("worker got tick ", t.n);
+              }
+          }
+
+          main locus App {
+              params {
+                  sub: Sub = Sub { };
+              }
+              placement {
+                  sub: cooperative(pool = jobs);
+              }
+              bus { publish "tick" of type Tick; }
+              run() {
+                  "tick" <- Tick { n: 7 };
+                  std::time::sleep(200ms);
+                  println("main done");
+              }
+          }
+
+          fn main() {
+              App { };
+          }
+          HL
+          out="$(cargo run -q -p hale-cli --bin hale -- run /tmp/hlci/coop_bus.hl)"
+          echo "program output: $out"
+          echo "$out" | grep -q "worker got tick 7"
+          echo "$out" | grep -q "main done"
+
+      - name: (c) `where async_io` is rejected with the macOS diagnostic
+        run: |
+          set -eux
+          cat > /tmp/hlci/async_io.hl <<'HL'
+          fn ignore_conn(s: std::io::tcp::Stream) { }
+
+          main locus App {
+              params {
+                  listener: std::io::tcp::Listener = std::io::tcp::Listener {
+                      host:          "127.0.0.1",
+                      port:          0,
+                      max_accepts:   -1,
+                      on_connection: ignore_conn,
+                  };
+              }
+              placement {
+                  listener: cooperative(pool = io) where async_io;
+              }
+          }
+
+          fn main() { App { }; }
+          HL
+          # Must FAIL to build, and the failure must be OUR diagnostic (not
+          # a link error / crash). Capture combined output; assert non-zero
+          # exit AND the guidance text.
+          set +e
+          out="$(cargo run -q -p hale-cli --bin hale -- build /tmp/hlci/async_io.hl 2>&1)"
+          rc=$?
+          set -e
+          echo "build output: $out"
+          echo "build exit code: $rc"
+          test "$rc" -ne 0
+          echo "$out" | grep -q "aren't supported on macOS"

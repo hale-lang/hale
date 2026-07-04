@@ -45,7 +45,14 @@
 #include <stdatomic.h>
 #include <inttypes.h>
 #include <limits.h>
+#if defined(__APPLE__)
+/* macOS has no <malloc.h>; malloc/free/calloc/posix_memalign are in
+ * <stdlib.h> (already included). <malloc/malloc.h> is the platform
+ * equivalent, pulled in for parity. */
+#include <malloc/malloc.h>
+#else
 #include <malloc.h>
+#endif
 #include <string.h>
 #include <pthread.h>
 #if defined(__x86_64__)
@@ -84,11 +91,41 @@
  * pools + ucontext-backed coroutine save/restore so blocking syscalls
  * inside locus methods can park-and-resume instead of blocking the
  * pool's OS thread. Dormant in this slice — the `async_io_enabled`
- * flag stays 0 until Slice 2 wires placement constraint to set it. */
+ * flag stays 0 until Slice 2 wires placement constraint to set it.
+ *
+ * macOS portability (Phase 1): epoll/eventfd/ucontext are Linux-only,
+ * so the whole async_io subsystem is Linux-gated. On macOS `where
+ * async_io` is rejected at compile time by the type checker and these
+ * headers are not pulled in. The cooperative / classic-pinned pools
+ * (pthread + condvars) remain fully portable. */
+#if defined(__linux__)
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <ucontext.h>
+#endif
 #endif /* __wasm__ */
+
+/* async_io pool backend availability. The per-pool epoll fd + eventfd
+ * wake channel + ucontext coroutines exist on Linux and behind the wasm
+ * POSIX shim (which stubs the syscalls); they are ABSENT on macOS / other
+ * BSDs. When unavailable, the async_io functions below become inert stubs
+ * and `where async_io` is rejected at compile time — the cooperative and
+ * classic-pinned pool backends stay available everywhere. */
+#if defined(__linux__) || defined(__wasm__)
+#define LOTUS_HAVE_ASYNC_IO 1
+#else
+#define LOTUS_HAVE_ASYNC_IO 0
+/* Inert epoll event-flag values so the portable socket/listener code's
+ * park-on-fd call sites still compile; lotus_coop_park_on_fd is a stub
+ * that always returns -1 here (never parks), so these are never used to
+ * actually wait on an fd. */
+#ifndef EPOLLIN
+#define EPOLLIN  0x001
+#endif
+#ifndef EPOLLOUT
+#define EPOLLOUT 0x004
+#endif
+#endif
 
 /* F.32-1γ-v2 session 2 (2026-05-26): TSAN suppressions.
  *
@@ -2557,6 +2594,23 @@ void lotus_vec_sort_string(void *vec_ptr) {
  * flag. */
 typedef int (*lotus_vec_trampoline_t)(const void *a, const void *b, void *cookie);
 
+#if defined(__APPLE__)
+/* BSD/macOS qsort_r has a DIFFERENT signature + arg order than glibc:
+ *   qsort_r(base, nmemb, size, thunk, int (*compar)(void *thunk,
+ *                                                    const void *, const void *))
+ * (thunk precedes compar, and compar takes the thunk FIRST). Adapt the
+ * GNU-shaped trampoline through a small context so the same call site is
+ * correct on both platforms. */
+typedef struct {
+    lotus_vec_trampoline_t cmp;
+    void                  *cookie;
+} lotus_qsort_bsd_ctx_t;
+static int lotus_qsort_bsd_adapter(void *ctx_, const void *a, const void *b) {
+    lotus_qsort_bsd_ctx_t *ctx = (lotus_qsort_bsd_ctx_t *)ctx_;
+    return ctx->cmp(a, b, ctx->cookie);
+}
+#endif
+
 void lotus_vec_sort_by(void *vec_ptr,
                        size_t elem_size,
                        lotus_vec_trampoline_t cmp,
@@ -2564,11 +2618,16 @@ void lotus_vec_sort_by(void *vec_ptr,
     if (!vec_ptr || !cmp) return;
     lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
     if (v->len < 2 || !v->buf) return;
+#if defined(__APPLE__)
+    lotus_qsort_bsd_ctx_t ctx = { cmp, cookie };
+    qsort_r(v->buf, v->len, elem_size, &ctx, lotus_qsort_bsd_adapter);
+#else
     /* qsort_r is GNU-extension; the arg order matches glibc's
      * `(base, nmemb, size, compar, arg)` form. */
     qsort_r(v->buf, v->len, elem_size,
             (int (*)(const void *, const void *, void *))cmp,
             cookie);
+#endif
 }
 
 void lotus_vec_destroy(void *vec_ptr) {
@@ -5922,7 +5981,8 @@ void lotus_mailbox_drain_pending(lotus_mailbox_t *mb) {
  * (swapcontext back to drain), let the pool service other work, and
  * later resume from where it parked. Linked into the pool's
  * `parked_head` list while waiting on epoll; freed when the handler
- * returns naturally. */
+ * returns naturally. Linux/wasm only — see LOTUS_HAVE_ASYNC_IO. */
+#if LOTUS_HAVE_ASYNC_IO
 typedef struct lotus_coro {
     ucontext_t        ctx;          /* saved registers + SP for resume */
     void             *stack;        /* mmap'd or malloc'd stack base */
@@ -5939,6 +5999,7 @@ typedef struct lotus_coro {
      * free-list of reusable coro slots (later). */
     struct lotus_coro *next;
 } lotus_coro_t;
+#endif /* LOTUS_HAVE_ASYNC_IO */
 
 /* Consumer-thread-local self-publish overflow node for the cooperative
  * pool — identical role to lotus_mailbox_overflow_t. A handler running on
@@ -5995,7 +6056,7 @@ typedef struct lotus_coop_pool {
      * `parked_head` is the linked list of coros parked on this
      * pool's epoll. epoll_wait wakeups walk it to find which coro
      * to resume. */
-    int               async_io_enabled;
+    int               async_io_enabled;   /* always 0 when !LOTUS_HAVE_ASYNC_IO */
     int               epoll_fd;
     /* 2026-05-30 wakeable park: an eventfd registered in this pool's
      * epoll (with data.ptr == the pool itself, distinguishing it from
@@ -6004,9 +6065,11 @@ typedef struct lotus_coop_pool {
      * shutdown, and cancels its parked coros instead of hanging the
      * join. -1 until async_io is enabled. */
     int               wake_fd;
+#if LOTUS_HAVE_ASYNC_IO
     ucontext_t        drain_ctx;
     lotus_coro_t     *current_coro;
     lotus_coro_t     *parked_head;
+#endif
 } lotus_coop_pool_t;
 
 /* F.35 Slice 1: per-coro stack size. 64 KiB is the same default the
@@ -6086,8 +6149,10 @@ lotus_coop_pool_t *lotus_coop_pool_register(const char *name) {
     p->async_io_enabled = 0;
     p->epoll_fd         = -1;
     p->wake_fd          = -1;
+#if LOTUS_HAVE_ASYNC_IO
     p->current_coro     = NULL;
     p->parked_head      = NULL;
+#endif
     /* Truncated copy — the bound is LOTUS_COOP_POOL_MAX-name's-
      * worth and pool names are conventionally short. Anything
      * longer than 63 bytes is the caller's fault and gets
@@ -6312,7 +6377,9 @@ static int lotus_coop_pool_drain_one(lotus_coop_pool_t *p) {
  * consults `g_current_coro_tls` to find itself, and the pool ptr is
  * cached on the coro at alloc time so park can reach the pool's
  * epoll fd + drain context. */
+#if LOTUS_HAVE_ASYNC_IO
 static __thread lotus_coro_t      *g_current_coro_tls = NULL;
+#endif
 static __thread lotus_coop_pool_t *g_current_pool_tls = NULL;
 
 /* Pool-inheritance fix (2026-05-29): the cooperative pool whose
@@ -6334,7 +6401,13 @@ lotus_coop_pool_t *lotus_coop_pool_current(void) {
  * checks `async_io_enabled` on each loop iteration). Called from
  * Slice 2's codegen for pools whose placement entries declare
  * `where async_io`. Returns 0 on success, -1 on epoll_create
- * failure (caller decides whether to fall back to blocking mode). */
+ * failure (caller decides whether to fall back to blocking mode).
+ *
+ * The whole async_io machinery below (epoll/eventfd/ucontext) is
+ * LOTUS_HAVE_ASYNC_IO-gated; on platforms without it (macOS) these two
+ * public entry points become -1 stubs — see the #else at the block end —
+ * and `where async_io` is rejected at compile time by the type checker. */
+#if LOTUS_HAVE_ASYNC_IO
 int lotus_coop_pool_enable_async_io(lotus_coop_pool_t *p) {
     if (!p) return -1;
     if (p->async_io_enabled) return 0;
@@ -6645,6 +6718,23 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
      * (Slice 3 wiring). */
     return 1;
 }
+#else /* !LOTUS_HAVE_ASYNC_IO — macOS / other BSDs */
+/* Async_io is unsupported on this platform. `where async_io` is rejected
+ * at compile time (type checker), and codegen does not emit an
+ * enable_async_io call, so these stubs exist only to satisfy the C
+ * translation unit's internal references (the portable socket/listener
+ * park-on-fd call sites resolve to the -1 park stub → they fall through
+ * to blocking I/O, exactly as on a non-async cooperative pool). */
+int lotus_coop_pool_enable_async_io(lotus_coop_pool_t *p) {
+    (void)p;
+    return -1;
+}
+int lotus_coop_park_on_fd(int fd, uint32_t events) {
+    (void)fd;
+    (void)events;
+    return -1;
+}
+#endif /* LOTUS_HAVE_ASYNC_IO */
 
 static void *lotus_coop_pool_worker(void *arg) {
     lotus_coop_pool_t *p = (lotus_coop_pool_t *)arg;
@@ -6656,11 +6746,18 @@ static void *lotus_coop_pool_worker(void *arg) {
     while (1) {
         int async = __atomic_load_n(&p->async_io_enabled, __ATOMIC_ACQUIRE);
         int progressed;
+#if LOTUS_HAVE_ASYNC_IO
         if (async) {
             progressed = lotus_coop_pool_drain_one_async(p);
         } else {
             progressed = lotus_coop_pool_drain_one(p);
         }
+#else
+        /* async is always 0 here (enable_async_io is a -1 stub), so the
+         * classic blocking drain is the only path. */
+        (void)async;
+        progressed = lotus_coop_pool_drain_one(p);
+#endif
         if (!progressed) break;
     }
     g_current_pool_tls = NULL;
@@ -6724,7 +6821,9 @@ void lotus_coop_pool_dump_parked_counts(int fd) {
          * stale snapshot, which is the right semantic for a residency
          * dump (it's diagnostic, not a synchronization point). */
         size_t parked = 0;
+#if LOTUS_HAVE_ASYNC_IO
         for (lotus_coro_t *c = p->parked_head; c; c = c->next) parked++;
+#endif
         const char *mode = p->async_io_enabled ? "async_io" : "blocking";
         n = snprintf(buf, sizeof(buf),
                      "  [%s] mode=%s parked=%zu pending=%zu\n",
@@ -6800,6 +6899,7 @@ void lotus_coop_pool_destroy_all(void) {
             close(p->epoll_fd);
             p->epoll_fd = -1;
         }
+#if LOTUS_HAVE_ASYNC_IO
         lotus_coro_t *c = p->parked_head;
         while (c) {
             lotus_coro_t *next = c->next;
@@ -6807,6 +6907,7 @@ void lotus_coop_pool_destroy_all(void) {
             c = next;
         }
         p->parked_head = NULL;
+#endif
         free(p);
         g_coop_pools[i] = NULL;
     }
@@ -7760,11 +7861,20 @@ void lotus_bus_router_destroy(void) {
  * declares doesn't refuse to start the binary.
  */
 void lotus_set_core_affinity(unsigned long tid, int core) {
+#if defined(__linux__)
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(core, &cpuset);
     (void)pthread_setaffinity_np(
         (pthread_t)tid, sizeof(cpu_set_t), &cpuset);
+#else
+    /* CPU affinity (cpu_set_t / pthread_setaffinity_np) is Linux-only.
+     * On other hosts (macOS) a pinned thread still runs — it just isn't
+     * bound to a specific core. Best-effort no-op, matching the "affinity
+     * failure falls back to normal scheduling" contract above. */
+    (void)tid;
+    (void)core;
+#endif
 }
 
 /*
@@ -10596,6 +10706,7 @@ void lotus_env_init(int argc, char *const *argv) {
      * insufficient. */
     const char *lock_mem_env = getenv("LOTUS_LOCK_MEMORY");
     if (lock_mem_env && (lock_mem_env[0] == '1' || lock_mem_env[0] == 't' || lock_mem_env[0] == 'T')) {
+#if defined(__linux__)
         if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
             fprintf(stderr,
                     "lotus: LOTUS_LOCK_MEMORY=%s requested but mlockall "
@@ -10604,6 +10715,14 @@ void lotus_env_init(int argc, char *const *argv) {
                     "CAP_IPC_LOCK to fix.\n",
                     lock_mem_env, errno, strerror(errno));
         }
+#else
+        /* mlockall (+ MCL_CURRENT/MCL_FUTURE) is Linux-only. On other
+         * hosts the request is honored best-effort as a no-op. */
+        fprintf(stderr,
+                "lotus: LOTUS_LOCK_MEMORY=%s requested but page locking is "
+                "unavailable on this platform; continuing unlocked.\n",
+                lock_mem_env);
+#endif
     }
 }
 

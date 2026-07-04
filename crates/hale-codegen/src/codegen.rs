@@ -620,6 +620,40 @@ fn runtime_cache_dir() -> PathBuf {
 /// repeat builds (and the parallel corpus oracle) just link. Entries
 /// are content-addressed: a source or flag change yields a fresh
 /// object and stale ones are simply never looked up again.
+/// macOS Phase-1 portability: locate a Homebrew-installed OpenSSL so the
+/// `lotus_tls.c` TU (which `#include`s `<openssl/ssl.h>` and is compiled on
+/// every build) can find its headers, and the link can find `-lssl`
+/// `-lcrypto`. On Linux OpenSSL is on the default include/lib path and this
+/// returns `None` (no flags added — the build stays byte-identical).
+///
+/// Resolution order: `$LOTUS_OPENSSL_PREFIX`, then `$OPENSSL_ROOT_DIR`
+/// (the CMake convention), then the standard brew keg locations for
+/// Apple Silicon and Intel. Returns the prefix whose
+/// `include/openssl/ssl.h` exists.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn macos_openssl_prefix() -> Option<PathBuf> {
+    for var in ["LOTUS_OPENSSL_PREFIX", "OPENSSL_ROOT_DIR"] {
+        if let Ok(p) = std::env::var(var) {
+            if !p.is_empty()
+                && Path::new(&p).join("include/openssl/ssl.h").exists()
+            {
+                return Some(PathBuf::from(p));
+            }
+        }
+    }
+    for cand in [
+        "/opt/homebrew/opt/openssl@3",
+        "/opt/homebrew/opt/openssl",
+        "/usr/local/opt/openssl@3",
+        "/usr/local/opt/openssl",
+    ] {
+        if Path::new(cand).join("include/openssl/ssl.h").exists() {
+            return Some(PathBuf::from(cand));
+        }
+    }
+    None
+}
+
 fn compile_cached_runtime_object(
     source: &str,
     stem: &str,
@@ -1537,7 +1571,15 @@ pub fn build_executable_with_options(
         // Default build: -O2 + the wrap-malloc wrapper bodies, paired
         // with the -Wl,--wrap link flags below.
         rt_cflags.push("-O2".into());
-        rt_cflags.push("-DLOTUS_ENABLE_WRAP_MALLOC".into());
+        // The __wrap_*/__real_* allocator + syscall-count shims need the
+        // GNU-ld `-Wl,--wrap` link flag, which macOS's ld64 does NOT
+        // support. Skip the wrapper bodies on macOS (matched by dropping
+        // the --wrap link flags below); the LOTUS_ARENA_LOG_BIG_CHUNKS
+        // diagnostic + std::diag::syscall_count are the only features that
+        // depend on them — inert on macOS for Phase 1.
+        if !cfg!(target_os = "macos") {
+            rt_cflags.push("-DLOTUS_ENABLE_WRAP_MALLOC".into());
+        }
         // LTO mode: compile the runtime TUs to LLVM bitcode (cache key
         // includes the cflags, so this recompiles to a distinct cached
         // object automatically). Keep -O2 here; the link-time -O3 drives
@@ -1564,7 +1606,15 @@ pub fn build_executable_with_options(
         // on a given machine and is never shared cross-machine. Not added
         // to the sanitizer -O1 branches above. Applied under LTO too (the
         // Hale bitcode carries matching host features, so inlining holds).
-        if options.target == CompileTarget::Native {
+        // `-march=native` is an x86/Linux idiom; on Apple-Silicon macOS
+        // clang prefers `-mcpu=native` and `-march=native` can be
+        // rejected. Skip host tuning on macOS for Phase 1 — clang already
+        // targets the host CPU by default on Darwin; correctness is
+        // unaffected, only some hand-tuned vectorization is left on the
+        // table.
+        if options.target == CompileTarget::Native
+            && !cfg!(target_os = "macos")
+        {
             match options.target_cpu {
                 TargetCpu::Native => rt_cflags.push("-march=native".into()),
                 TargetCpu::Baseline => {
@@ -1573,6 +1623,14 @@ pub fn build_executable_with_options(
                     }
                 }
             }
+        }
+    }
+    // macOS: point clang at Homebrew's OpenSSL headers so the always-
+    // compiled lotus_tls.c TU can find <openssl/ssl.h>. No-op on Linux
+    // (OpenSSL is on the default include path; the helper returns None).
+    if cfg!(target_os = "macos") {
+        if let Some(prefix) = macos_openssl_prefix() {
+            rt_cflags.push(format!("-I{}/include", prefix.display()));
         }
     }
     if prefetch_disabled {
@@ -1620,12 +1678,15 @@ pub fn build_executable_with_options(
     } else {
         clang.arg("-O2");
     }
+    // Form K5: SHM ring uses shm_open / shm_unlink which on Linux live in
+    // librt. On macOS POSIX shm is in libc and there is NO librt — `-lrt`
+    // would be a hard "library 'rt' not found" at link. Link it on Linux
+    // only. (macOS build stays otherwise byte-identical to Linux minus
+    // the platform-incompatible flags gated below.)
+    if !cfg!(target_os = "macos") {
+        clang.arg("-lrt");
+    }
     clang
-        // Form K5: SHM ring uses shm_open / shm_unlink which on
-        // Linux live in librt. The functions are no-ops on macOS
-        // (POSIX shm there is libc), but -lrt is portable on
-        // Linux and harmless on macOS via -Wl,--as-needed.
-        .arg("-lrt")
         // m27: pinned-class loci spawn pthreads via the
         // pthread_create / pthread_join externs declared in
         // codegen. Linker needs -lpthread to satisfy them. Link
@@ -1642,32 +1703,35 @@ pub fn build_executable_with_options(
         // but symbol GC at the codegen-level is moot since the
         // .c file references them at translation-unit scope.
         .arg("-lssl")
-        .arg("-lcrypto")
-        // 2026-05-21: -rdynamic exports the dynamic symbol table
-        // so backtrace_symbols_fd / addr2line can resolve symbol
-        // names from runtime stack frames. Used by the
-        // LOTUS_ARENA_LOG_BIG_CHUNKS diagnostic — without
-        // -rdynamic the backtrace prints raw offsets only,
-        // forcing the user to manually addr2line every frame.
-        // Cost: ~50 KB of extra symbol-table bytes in the final
-        // binary, no runtime overhead.
-        .arg("-rdynamic")
-        // 2026-05-21: linker --wrap intercepts for the libc
-        // allocator entry points. Routes every malloc / realloc
-        // / calloc / mmap through __wrap_<fn> in lotus_arena.c,
-        // which logs >threshold allocations when
-        // LOTUS_ARENA_LOG_BIG_CHUNKS is set (and is a no-op
-        // otherwise). Distinct labels per syscall so the report
-        // tells which path fired. Catches allocations that
-        // bypass the arena chunk path (BytesBuilder grow-by-
-        // doubling realloc, hashmap grow calloc, openssl /
-        // libc internals via mmap). `-D` is paired with the
-        // `-Wl,--wrap` flags so the wrapper bodies are only
-        // compiled when their `__real_*` counterparts will be
-        // resolvable at link time — sidecar test drivers that
-        // compile lotus_arena.c without the wrap flags skip
-        // the wrapper definitions entirely.
-        ;
+        .arg("-lcrypto");
+    // macOS: OpenSSL is keg-only under Homebrew, so `-lssl`/`-lcrypto`
+    // aren't on the default library path — add its lib dir. No-op on
+    // Linux (helper returns None).
+    if cfg!(target_os = "macos") {
+        if let Some(prefix) = macos_openssl_prefix() {
+            clang.arg(format!("-L{}/lib", prefix.display()));
+        }
+    }
+    // 2026-05-21: -rdynamic exports the dynamic symbol table so
+    // backtrace_symbols_fd / addr2line can resolve symbol names from
+    // runtime stack frames. Used by the LOTUS_ARENA_LOG_BIG_CHUNKS
+    // diagnostic (glibc-only: the backtrace call sites are __GLIBC__-
+    // gated). Linux-only here: macOS's linker spelling differs and the
+    // diagnostic is inert on macOS anyway.
+    if !cfg!(target_os = "macos") {
+        clang.arg("-rdynamic");
+    }
+    // 2026-05-21: linker --wrap intercepts for the libc allocator entry
+    // points. Routes every malloc / realloc / calloc / mmap through
+    // __wrap_<fn> in lotus_arena.c, which logs >threshold allocations
+    // when LOTUS_ARENA_LOG_BIG_CHUNKS is set (and is a no-op otherwise).
+    // Distinct labels per syscall so the report tells which path fired.
+    // `-D` is paired with the `-Wl,--wrap` flags so the wrapper bodies
+    // are only compiled when their `__real_*` counterparts will be
+    // resolvable at link time. macOS's ld64 has no `--wrap`, so both the
+    // wrapper bodies (LOTUS_ENABLE_WRAP_MALLOC, dropped above) and these
+    // flags (dropped below) are omitted there.
+    ;
     // LINK-time sanitizer / wrap-malloc flags. The runtime objects
     // were already compiled above with the matching
     // -fsanitize / -D{LOTUS_ENABLE_WRAP_MALLOC,LOTUS_DISABLE_PREFETCH}
@@ -1683,11 +1747,13 @@ pub fn build_executable_with_options(
     } else if lotus_asan {
         // Pulls the ASAN + LeakSanitizer runtimes.
         clang.arg("-fsanitize=address");
-    } else {
+    } else if !cfg!(target_os = "macos") {
         // Default build: intercept the libc allocator entry points
         // (the __wrap_* bodies live in the arena object, compiled
         // with LOTUS_ENABLE_WRAP_MALLOC above) for the
-        // LOTUS_ARENA_LOG_BIG_CHUNKS diagnostic.
+        // LOTUS_ARENA_LOG_BIG_CHUNKS diagnostic. macOS's ld64 has no
+        // `--wrap`; the wrapper bodies are also skipped there (no
+        // LOTUS_ENABLE_WRAP_MALLOC), so this whole block is Linux-only.
         clang
             .arg("-Wl,--wrap=malloc")
             .arg("-Wl,--wrap=realloc")
@@ -1708,8 +1774,13 @@ pub fn build_executable_with_options(
         clang.arg(p);
         // Rust staticlibs depend on libdl + libm via libstd.
         // Adding these unconditionally is harmless when no
-        // staticlib symbols are actually pulled in.
-        clang.arg("-ldl").arg("-lm");
+        // staticlib symbols are actually pulled in. macOS has no
+        // separate libdl (dlopen/dlsym are in libSystem), so `-ldl`
+        // would be "library 'dl' not found" — link it on Linux only.
+        if !cfg!(target_os = "macos") {
+            clang.arg("-ldl");
+        }
+        clang.arg("-lm");
     }
     // Stage-1 FFI: append the per-build link surface from
     // BuildOptions. Each `--csrc <path>` is passed as a translation
@@ -7397,7 +7468,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .left()
                     .expect("coop_pool_register returns ptr")
                     .into_pointer_value();
-                if self.async_io_pools.contains(name) {
+                // macOS Phase-1: never emit the enable_async_io call on
+                // macOS. The type checker already rejects `where async_io`
+                // there (so this is normally unreachable), but gating the
+                // emission too guarantees codegen never references the
+                // async_io C path on a host where it's a -1 stub — a clean
+                // diagnostic instead of a surprising runtime no-op.
+                if self.async_io_pools.contains(name)
+                    && !cfg!(target_os = "macos")
+                {
                     self.builder
                         .build_call(
                             enable_async_fn,

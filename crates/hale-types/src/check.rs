@@ -5381,6 +5381,28 @@ impl<'a> Checker<'a> {
             for c in &entry.constraints {
                 match c.kind {
                     PlacementConstraint::AsyncIo => {
+                        // Phase-1 macOS portability: the async_io pool
+                        // backend is epoll/eventfd/ucontext-based and
+                        // Linux-only. When the compiler is running on
+                        // macOS, reject `where async_io` at compile time
+                        // with actionable guidance — mirroring the
+                        // wasm-target stdlib gating. The C runtime's
+                        // async_io functions are inert stubs on macOS
+                        // (LOTUS_HAVE_ASYNC_IO == 0), so this diagnostic
+                        // is the clean-failure path (vs a link error).
+                        if cfg!(target_os = "macos") {
+                            self.diags.push(Diag::ty(
+                                c.span,
+                                format!(
+                                    "placement entry `{}`: `async_io` pools \
+                                     aren't supported on macOS yet — use a \
+                                     cooperative pool (drop `where async_io`), \
+                                     or build on Linux. (A kqueue/poll backend \
+                                     is planned.)",
+                                    entry.field.name
+                                ),
+                            ));
+                        }
                         match &entry.spec {
                             PlacementSpec::Pinned { .. } => {
                                 self.diags.push(Diag::ty(

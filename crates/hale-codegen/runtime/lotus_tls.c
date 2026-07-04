@@ -49,6 +49,16 @@
 #include <sys/uio.h>      /* struct iovec */
 #include <time.h>         /* clock_gettime, struct timespec */
 
+/* macOS portability (Phase 1): MSG_NOSIGNAL is a Linux extension. macOS
+ * suppresses SIGPIPE on a socket via the SO_NOSIGPIPE setsockopt instead.
+ * Define the flag to 0 so the send() call site compiles; on macOS a write
+ * to a peer-closed TLS socket may raise SIGPIPE unless the process ignores
+ * it. TODO(macos): set SO_NOSIGPIPE at socket-create time (lotus_arena.c)
+ * or install a process-wide SIG_IGN for SIGPIPE. */
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
 /* Forward decls — bodies live in lotus_arena.c. */
 int   lotus_tcp_connect(const char *host, uint16_t port);
 int   lotus_tcp_set_nodelay(int fd, int on);
