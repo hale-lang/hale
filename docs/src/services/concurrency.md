@@ -140,12 +140,18 @@ and every `pinned(node/l3)` must name a domain you declared.
 L3-domain names are ordinary identifiers, so a reserved word
 (like `bulk`) can't be a domain name — pick a plain name.
 
-> **This slice is thread affinity only.** `node = N` currently
-> pins the *thread* to the node's cores. Binding the locus's
-> *arena* to that node's memory — the thread + memory
-> co-location that makes NUMA targeting pay off — is the next
-> slice. Until then, `node =` and `l3 =` are a named, validated
-> way to spell a cpuset.
+**Thread *and* memory co-location.** `pinned(node = N)` binds
+more than the thread: the locus's arena — and its per-call
+method scratch — is allocated on that NUMA node's memory (via
+`mbind`), so its working set lives next to the thread that uses
+it. That's the point of NUMA targeting: cross-node memory access
+is what kills big-box performance, and a node-pinned locus
+avoids it on both axes. `pinned(l3 = fast)` binds the arena to
+the node containing that cache domain. Like affinity, memory
+binding is a Linux optimization and best-effort — it falls back
+to normal allocation where the node can't be honored, and it
+costs nothing (no extra dependency, the ordinary allocation
+path) for loci that don't ask for a node.
 
 Placement keys on the *field name*, not the locus type, so two
 instances of the same locus type can live on different threads —

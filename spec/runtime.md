@@ -340,19 +340,37 @@ topology {
 A `placement { }` entry then targets a domain: `pinned(node =
 0)` sets the thread's affinity mask to node 0's core set (the
 union of its L3 domains — here `{4..12}`), and `pinned(l3 =
-fast)` sets it to the named domain's cores (`{4..8}`). This is
-the same cpuset affinity mechanism as `pinned(cores = ...)`;
-the compiler resolves the domain to a concrete core set at
-compile time (closed-world: node ids and domain cores are
-literals). Resolution is **thread affinity only** in this
-slice — binding a node-pinned locus's *arena* to that node's
-memory (the thread + memory co-location payoff) is a follow-up.
-Validation (unique node ids, globally-unique L3 names,
+fast)` sets it to the named domain's cores (`{4..8}`). The
+compiler resolves the domain to a concrete core set at compile
+time (closed-world: node ids and domain cores are literals),
+reusing the same cpuset affinity mechanism as `pinned(cores =
+...)`. Validation (unique node ids, globally-unique L3 names,
 non-overlapping domains, no domain/reserved overlap, and every
-`pinned(node/l3)` referencing a declared domain) is static; the
-runtime honoring stays best-effort and Linux-only, exactly like
-`pinned(core = N)`. L3-domain names go through the identifier
-rule, so a hard keyword (e.g. `bulk`) can't name a domain.
+`pinned(node/l3)` referencing a declared domain) is static. L3
+domain names go through the identifier rule, so a hard keyword
+(e.g. `bulk`) can't name a domain.
+
+**Thread + memory co-location.** A `pinned(node = N)` /
+`pinned(l3 = name)` locus binds not just its thread but its
+*memory*: its arena is created via
+`lotus_arena_create_labeled_on_node`, which flags the arena's
+NUMA node, and every chunk that arena grows is `mmap`'d
+(page-aligned) and bound to the node with the `mbind` syscall
+(`MPOL_BIND`) before first touch — so pages fault in on the
+node regardless of which thread touches them first (the locus
+struct is instantiated on `main` but runs on its own pinned
+thread). Sub-regions inherit the node, so a node-pinned locus's
+**method scratch** — the dominant per-invocation allocation —
+lands on its node too. `mbind` is invoked as a raw syscall, so
+this adds **no libnuma dependency**; the whole feature is
+zero-cost for programs that don't opt in (an unbound arena, the
+default, takes the ordinary malloc / chunk-pool path
+byte-for-byte). Best-effort and Linux-only, exactly like
+`pinned(core = N)`: an `mbind` the box can't honor (node absent,
+capability denied) falls back to first-touch, and on non-Linux
+hosts the arena allocates normally. (Huge-page-backed chunks
+and node binding don't currently combine — a node-bound arena
+uses regular pages; a follow-up.)
 
 **Single-threaded-method invariant.** A locus's methods may
 be invoked only on the OS thread that owns its placement's

@@ -22,15 +22,19 @@
 //   picky:  pinned(l3 = fast);  // thread affinity = the `fast`
 //                               //   domain's cores
 //
-// This slice binds the *thread* to the domain's core set — it
-// reuses the Phase 1a cpuset affinity path (the OS schedules the
-// thread freely within the set). Arena-on-node *memory*
-// co-location (the "thread + memory" payoff) is the follow-up
-// slice.
+// A node/l3-pinned locus gets BOTH halves of co-location:
+//   - thread affinity: the thread's cpuset mask is the domain's
+//     cores (reusing the Phase 1a affinity path);
+//   - memory: the locus's arena (and its method scratch) is
+//     mmap'd and `mbind`-bound to the node, so its working set
+//     lives on the same NUMA node its thread runs on.
 //
 // Best-effort + Linux-only, exactly like `pinned(cores = ...)`:
-// cores absent on the deploy box are skipped, and on non-Linux
-// hosts the affinity call is a no-op (the loci still run).
+// cores absent on the deploy box are skipped, memory binding
+// falls back to first-touch if `mbind` can't honor the node, and
+// on non-Linux hosts both are no-ops (the loci still run). An
+// `l3`-pinned locus binds its arena to the node that contains
+// that cache domain.
 
 locus NodeWorker {
     run() {

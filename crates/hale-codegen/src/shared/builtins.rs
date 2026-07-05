@@ -113,6 +113,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             arena_create_labeled_ty,
             None,
         );
+        // Topology arena-on-node (2026-07-05): NUMA-bound variant.
+        // Emitted at the Fresh-strategy locus instantiation when the
+        // locus is placed `pinned(node = N)` / `pinned(l3 = name)`;
+        // the node (resolved from the `topology { }` block) is passed
+        // as the second arg, and the arena mmap+mbinds its chunks to
+        // that node so the locus's memory co-locates with its thread.
+        // declare ptr @lotus_arena_create_labeled_on_node(ptr label, i32 node)
+        let arena_create_on_node_ty =
+            ptr_t.fn_type(&[ptr_t.into(), i32_t.into()], false);
+        self.module.add_function(
+            "lotus_arena_create_labeled_on_node",
+            arena_create_on_node_ty,
+            None,
+        );
         // F.32-3 (2026-05-25): sized variant. Emitted at the
         // Fresh-strategy locus instantiation when the locus is
         // placed on a non-`main` cooperative pool — codegen

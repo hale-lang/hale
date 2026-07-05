@@ -84,6 +84,14 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         // arena_destroy via the existing is_pinned_entry path.
         let placement_override =
             std::mem::take(&mut self.placement_for_next_locus_instantiation);
+        // Topology arena-on-node: consume the parallel NUMA-node
+        // override (set for `pinned(node/l3)` fields) so the Fresh
+        // arena create below binds this locus's arena to its node.
+        // Taken here for the same reason as the placement override —
+        // a nested instantiation would otherwise clobber it.
+        let numa_node_override = std::mem::take(
+            &mut self.numa_node_for_next_locus_instantiation,
+        );
         // F.31 Phase 4: consume the parallel pool-name override
         // before any recursion happens (a nested instantiation
         // in this locus's params-init loop would otherwise
@@ -769,6 +777,30 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                             .build_call(
                                 sized_fn,
                                 &[label_ptr.into(), hint_val.into()],
+                                &format!("{}.arena", locus_name),
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    } else if let Some(node) = numa_node_override {
+                        // Topology arena-on-node: a `pinned(node/l3)`
+                        // locus binds its arena's memory to the node
+                        // its thread runs on. (Node-pinned loci are
+                        // pinned, never on a cooperative pool, so
+                        // this is exclusive with the sized-hint path
+                        // above.)
+                        let on_node_fn = self
+                            .module
+                            .get_function(
+                                "lotus_arena_create_labeled_on_node",
+                            )
+                            .expect(
+                                "lotus_arena_create_labeled_on_node declared",
+                            );
+                        let node_val =
+                            self.context.i32_type().const_int(node as u64, true);
+                        self.builder
+                            .build_call(
+                                on_node_fn,
+                                &[label_ptr.into(), node_val.into()],
                                 &format!("{}.arena", locus_name),
                             )
                             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
@@ -1728,6 +1760,13 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     .main_cooperative_pools
                     .get(fname.as_str())
                     .cloned();
+                // Topology arena-on-node: parallel NUMA-node set for
+                // `pinned(node/l3)` fields; None for every other
+                // placement (arena stays unbound).
+                self.numa_node_for_next_locus_instantiation = self
+                    .main_placement_node
+                    .get(fname.as_str())
+                    .copied();
             }
             // Phase-2 (2): set the parent-field flag so a locus
             // literal evaluated for this field doesn't run its
