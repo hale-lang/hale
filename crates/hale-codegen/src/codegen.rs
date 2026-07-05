@@ -7788,6 +7788,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// Topology Phase 1b: expand a [`PinAffinity`] to the
+    /// concrete [`CoreSpec`] the affinity path emits (`None` = no
+    /// mask, own thread, OS picks the core). `Cores` passes
+    /// through unchanged (Phase 1a). `Node` / `L3` resolve
+    /// against the `topology { }` block to a `CoreSpec::Set` — the
+    /// thread's affinity mask becomes that domain's cores, reusing
+    /// the exact 1a cpuset emission. Arena-on-node co-location is
+    /// the follow-up slice; this is thread affinity only.
+    fn resolve_pin_affinity(
+        affinity: &PinAffinity,
+        topology: Option<&TopologyBlock>,
+    ) -> Option<CoreSpec> {
+        match affinity {
+            PinAffinity::Any => None,
+            PinAffinity::Cores(spec) => Some(spec.clone()),
+            PinAffinity::Node(n) => topology
+                .and_then(|t| t.node_cores(*n))
+                .filter(|c| !c.is_empty())
+                .map(CoreSpec::Set),
+            PinAffinity::L3(name) => topology
+                .and_then(|t| t.l3_cores(&name.name))
+                .filter(|c| !c.is_empty())
+                .map(CoreSpec::Set),
+        }
+    }
+
     /// F.31 (2026-05-23): pre-pass over `main locus`'s
     /// `placement { }` block. Caches `main_locus_name` and
     /// populates `main_placement_map` keyed by field name with
@@ -7795,7 +7821,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///
     /// PlacementSpec → ScheduleClass mapping:
     /// - `pinned` → `ScheduleClass::Pinned(None)`
-    /// - `pinned(core = N)` → `ScheduleClass::Pinned(Some(N))`
+    /// - `pinned(core = N)` / `pinned(cores = …)` → `ScheduleClass::Pinned(Some(spec))`
+    /// - `pinned(node = N)` / `pinned(l3 = name)` → resolved
+    ///   against `topology { }` to `Pinned(Some(Set(cores)))`
+    ///   (topology Phase 1b)
     /// - `cooperative` / `cooperative(pool = X)` → `ScheduleClass::Cooperative`
     ///   (pool-routing — Phase 4 — extends ScheduleClass with the
     ///   pool tag; v1 of this phase honors pinned vs cooperative
@@ -7855,14 +7884,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
 
+        // Topology Phase 1b: the `topology { }` block (declare-
+        // only) that `pinned(node =)` / `pinned(l3 =)` resolve
+        // against. The typechecker has already validated that any
+        // node/l3 reference names a declared domain; codegen just
+        // expands it to a concrete core set (reusing the Phase 1a
+        // cpuset affinity path). An unresolvable reference here
+        // (only reachable if typecheck was bypassed) degrades to
+        // an unpinned own-thread locus rather than panicking.
+        let topology: Option<&TopologyBlock> =
+            l.members.iter().find_map(|m| match m {
+                LocusMember::Topology(tb) => Some(tb),
+                _ => None,
+            });
+
         // Walk placement entries: populate main_placement_map +
         // pinned_locus_types + (Phase 4) main_cooperative_pools.
         for m in &l.members {
             if let LocusMember::Placement(pb) = m {
                 for entry in &pb.entries {
                     let sc = match &entry.spec {
-                        PlacementSpec::Pinned { cores } => {
-                            ScheduleClass::Pinned(cores.clone())
+                        PlacementSpec::Pinned { affinity } => {
+                            let cores = Self::resolve_pin_affinity(
+                                affinity, topology,
+                            );
+                            ScheduleClass::Pinned(cores)
                         }
                         PlacementSpec::Cooperative { pool } => {
                             // F.31 Phase 4: capture the pool name
@@ -10238,6 +10284,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | LocusMember::Type(_)
             | LocusMember::Bindings(_)
             | LocusMember::Placement(_)
+            | LocusMember::Topology(_)
             | LocusMember::BirthCheck(_) => {}
             LocusMember::Capacity(_) => {
                 // F.22 slot cell types are concrete in v1; no

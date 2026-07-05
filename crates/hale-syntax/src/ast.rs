@@ -493,6 +493,116 @@ impl CoreSpec {
     }
 }
 
+/// Topology Phase 1b (2026-07-05): the affinity target on a
+/// `pinned(...)` placement entry. `Any` is a bare `pinned` (own
+/// thread, OS picks the core). `Cores` is the Phase 1a explicit
+/// CPU set. `Node` / `L3` target a domain declared in the
+/// `topology { }` block — the compiler resolves the domain to
+/// its core set (see [`TopologyBlock`]) and the thread's affinity
+/// mask becomes that set. In this slice `Node`/`L3` are *thread*
+/// affinity only; arena-on-node memory co-location is the
+/// follow-up slice (the note's "thread + memory" payoff).
+#[derive(Debug, Clone, PartialEq)]
+pub enum PinAffinity {
+    /// Bare `pinned` — own OS thread, no affinity mask (the OS
+    /// scheduler picks and may migrate the thread).
+    Any,
+    /// `pinned(core = N)` / `pinned(cores = A..B | {…})` — an
+    /// explicit logical-CPU set (Phase 1a).
+    Cores(CoreSpec),
+    /// `pinned(node = N)` — affinity to NUMA node `N`'s core set
+    /// (the union of its declared L3 domains), resolved against
+    /// `topology { }`.
+    Node(i64),
+    /// `pinned(l3 = <name>)` — affinity to the named L3 / cache
+    /// domain's core set, resolved against `topology { }`.
+    L3(Ident),
+}
+
+/// Topology Phase 1b (2026-07-05): the `topology { }` block on
+/// `main locus` — a static, declare-only description of the host
+/// machine's core partition. Parallel to `placement { }` /
+/// `bindings { }` (all three are main-only deployment seams).
+///
+/// Declare-only (closed-world): the block maps logical domains to
+/// physical cores explicitly; there is no sysfs/hwloc discovery
+/// in this slice. `pinned(node = N)` / `pinned(l3 = name)`
+/// placement entries resolve against it. Cores absent on the
+/// deploy box degrade best-effort at runtime, exactly like
+/// `pinned(core = N)` on a smaller machine.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TopologyBlock {
+    /// `reserve cores A..B;` entries — cores held back for the OS
+    /// / main thread. Advisory in this slice (validated against
+    /// domain overlap); a hint that placement should avoid them.
+    pub reserved: Vec<CoreSpec>,
+    pub nodes: Vec<TopologyNode>,
+    pub span: Span,
+}
+
+/// A `node N { ... }` NUMA-node declaration inside `topology { }`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TopologyNode {
+    /// The logical NUMA node id (`node 0`).
+    pub id: i64,
+    pub id_span: Span,
+    /// The node's L3 / cache domains. A node's core set is the
+    /// union of these.
+    pub domains: Vec<L3Domain>,
+    pub span: Span,
+}
+
+/// An `l3 <name> { cores R; }` cache-domain declaration inside a
+/// `node { }`. `name` is referenced by `pinned(l3 = <name>)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct L3Domain {
+    pub name: Ident,
+    /// The domain's cores — a `cores R;` statement (range or set).
+    pub cores: CoreSpec,
+    pub span: Span,
+}
+
+impl TopologyBlock {
+    /// Resolve `node = id` to its core set (the union of the
+    /// node's L3 domains' cores, sorted + deduped). `None` if no
+    /// node with that id is declared.
+    pub fn node_cores(&self, id: i64) -> Option<Vec<i64>> {
+        let node = self.nodes.iter().find(|n| n.id == id)?;
+        let mut cores: Vec<i64> = node
+            .domains
+            .iter()
+            .flat_map(|d| d.cores.expand())
+            .collect();
+        cores.sort_unstable();
+        cores.dedup();
+        Some(cores)
+    }
+
+    /// Resolve `l3 = name` to the named domain's core set. L3
+    /// names are globally unique across nodes (enforced at
+    /// typecheck), so the lookup ignores the node. `None` if no
+    /// domain with that name is declared.
+    pub fn l3_cores(&self, name: &str) -> Option<Vec<i64>> {
+        for node in &self.nodes {
+            for d in &node.domains {
+                if d.name.name == name {
+                    return Some(d.cores.expand());
+                }
+            }
+        }
+        None
+    }
+
+    /// All reserved cores, expanded/sorted/deduped.
+    pub fn reserved_cores(&self) -> Vec<i64> {
+        let mut v: Vec<i64> =
+            self.reserved.iter().flat_map(|s| s.expand()).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum LocusMember {
     Params(ParamsBlock),
@@ -521,6 +631,13 @@ pub enum LocusMember {
     /// deployment-seam shape as `bindings { }` — schedule was
     /// moved from a per-locus annotation to a main-only block.
     Placement(PlacementBlock),
+    /// Topology Phase 1b (2026-07-05): `topology { }` block —
+    /// a declare-only description of the host's core partition
+    /// (reserved cores, NUMA nodes, L3 domains). Valid only
+    /// inside `main locus`; a sibling deployment seam to
+    /// `placement { }` / `bindings { }`. `pinned(node =)` /
+    /// `pinned(l3 =)` placement entries resolve against it.
+    Topology(TopologyBlock),
     /// F.27 v2 (2026-05-20): `birth_check { EXPR } -> violate
     /// NAME;` synthesis hook. After birth() completes (and birth-
     /// epoch closures fire), each declared birth_check expression
@@ -597,14 +714,11 @@ pub enum PlacementSpec {
     /// main OS thread) — equivalent to writing
     /// `cooperative(pool = main)`.
     Cooperative { pool: Option<Ident> },
-    /// `pinned`, `pinned(core = N)`, `pinned(cores = A..B)` /
-    /// `pinned(cores = A..=B)`, or `pinned(cores = {a, b, c})`.
-    /// The locus owns its own OS thread; `Some(spec)` asks the
-    /// runtime to `pthread_setaffinity_np` the spawned thread
-    /// to the selected logical CPUs (one core, or a cpuset the
-    /// OS schedules within). Linux-only; best-effort no-op
-    /// elsewhere.
-    Pinned { cores: Option<CoreSpec> },
+    /// `pinned` and its affinity variants. The locus owns its
+    /// own OS thread; the [`PinAffinity`] says which logical CPUs
+    /// the runtime asks the OS to keep it on (`pthread_setaffinity_np`).
+    /// Linux-only; best-effort no-op elsewhere.
+    Pinned { affinity: PinAffinity },
 }
 
 /// F.35 (2026-05-28): operational-constraint keyword on a

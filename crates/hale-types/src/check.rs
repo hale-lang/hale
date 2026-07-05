@@ -5228,8 +5228,34 @@ impl<'a> Checker<'a> {
                 ),
             ));
         }
+        // Topology Phase 1b: the (declare-only) `topology { }`
+        // block that `pinned(node =)` / `pinned(l3 =)` resolve
+        // against. Validate its internal consistency, then thread
+        // it into placement validation for reference checking.
+        let topology_blocks: Vec<_> = decl
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                LocusMember::Topology(tb) => Some(tb),
+                _ => None,
+            })
+            .collect();
+        if topology_blocks.len() > 1 {
+            self.diags.push(Diag::ty(
+                topology_blocks[1].span,
+                format!(
+                    "locus `{}` declares multiple `topology {{ }}` blocks; \
+                     at most one is permitted",
+                    info.name
+                ),
+            ));
+        }
+        let topology = topology_blocks.first().copied();
+        if let Some(tb) = topology {
+            self.check_topology_block(info, tb);
+        }
         if let Some(pb) = placement_blocks.first() {
-            self.check_placement_block(info, pb);
+            self.check_placement_block(info, pb, topology);
         }
 
         // 2026-06-01: `release(c: T)` is the death-side bookend of
@@ -5295,6 +5321,7 @@ impl<'a> Checker<'a> {
         &mut self,
         info: &crate::symbol::LocusInfo,
         pb: &hale_syntax::ast::PlacementBlock,
+        topology: Option<&hale_syntax::ast::TopologyBlock>,
     ) {
         let mut seen: BTreeSet<String> = BTreeSet::new();
         for entry in &pb.entries {
@@ -5377,7 +5404,10 @@ impl<'a> Checker<'a> {
             // the cores exist on the deploy box stays best-effort
             // at runtime (same contract as `pinned(core = N)` on
             // a smaller CI machine).
-            if let PlacementSpec::Pinned { cores: Some(spec) } = &entry.spec {
+            if let PlacementSpec::Pinned {
+                affinity: PinAffinity::Cores(spec),
+            } = &entry.spec
+            {
                 match spec {
                     CoreSpec::Range { lo, hi, inclusive } => {
                         let empty =
@@ -5414,6 +5444,82 @@ impl<'a> Checker<'a> {
                         }
                     }
                     CoreSpec::Single(_) => {}
+                }
+            }
+
+            // Topology Phase 1b: `pinned(node = N)` / `pinned(l3 =
+            // name)` must reference a domain declared in the
+            // `topology { }` block. Using either with no topology
+            // block, or naming an undeclared node/domain, is a
+            // definite authoring error (closed-world resolution).
+            if let PlacementSpec::Pinned { affinity } = &entry.spec {
+                match affinity {
+                    PinAffinity::Node(n) => match topology {
+                        None => self.diags.push(Diag::ty(
+                            entry.span,
+                            format!(
+                                "placement entry `{}`: `pinned(node = {})` \
+                                 needs a `topology {{ }}` block to resolve \
+                                 the node to its cores — none is declared \
+                                 on `{}`",
+                                entry.field.name, n, info.name
+                            ),
+                        )),
+                        Some(tb) if tb.node_cores(*n).is_none() => {
+                            self.diags.push(Diag::ty(
+                                entry.span,
+                                format!(
+                                    "placement entry `{}`: `pinned(node = \
+                                     {})` references NUMA node `{}`, which \
+                                     the `topology {{ }}` block does not \
+                                     declare",
+                                    entry.field.name, n, n
+                                ),
+                            ));
+                        }
+                        Some(tb)
+                            if tb
+                                .node_cores(*n)
+                                .map(|c| c.is_empty())
+                                .unwrap_or(false) =>
+                        {
+                            self.diags.push(Diag::ty(
+                                entry.span,
+                                format!(
+                                    "placement entry `{}`: `pinned(node = \
+                                     {})` resolves to no cores — node `{}` \
+                                     declares no `l3` domains",
+                                    entry.field.name, n, n
+                                ),
+                            ));
+                        }
+                        _ => {}
+                    },
+                    PinAffinity::L3(name) => match topology {
+                        None => self.diags.push(Diag::ty(
+                            entry.span,
+                            format!(
+                                "placement entry `{}`: `pinned(l3 = {})` \
+                                 needs a `topology {{ }}` block to resolve \
+                                 the cache domain to its cores — none is \
+                                 declared on `{}`",
+                                entry.field.name, name.name, info.name
+                            ),
+                        )),
+                        Some(tb) if tb.l3_cores(&name.name).is_none() => {
+                            self.diags.push(Diag::ty(
+                                entry.span,
+                                format!(
+                                    "placement entry `{}`: `pinned(l3 = {})` \
+                                     references cache domain `{}`, which the \
+                                     `topology {{ }}` block does not declare",
+                                    entry.field.name, name.name, name.name
+                                ),
+                            ));
+                        }
+                        _ => {}
+                    },
+                    PinAffinity::Any | PinAffinity::Cores(_) => {}
                 }
             }
 
@@ -5544,6 +5650,143 @@ impl<'a> Checker<'a> {
                     ));
                 }
             }
+        }
+    }
+
+    /// Topology Phase 1b: validate the `topology { }` block's
+    /// internal consistency (declare-only, so everything is
+    /// checkable statically):
+    ///   - node ids are unique;
+    ///   - L3-domain names are globally unique (they're referenced
+    ///     by `pinned(l3 = name)` without node qualification);
+    ///   - each `cores` spec is well-formed (non-empty range, no
+    ///     duplicate set element — same rules as `pinned(cores)`);
+    ///   - no core belongs to two L3 domains (ambiguous affinity);
+    ///   - no domain core overlaps a `reserve`d core (reserved
+    ///     cores are held back for the OS / main).
+    /// Whether the cores exist on the deploy box stays best-effort
+    /// at runtime — the machine-match is not enforced here.
+    fn check_topology_block(
+        &mut self,
+        info: &crate::symbol::LocusInfo,
+        tb: &hale_syntax::ast::TopologyBlock,
+    ) {
+        let _ = info;
+        for spec in &tb.reserved {
+            self.check_core_spec_wellformed(spec, tb.span, "reserve cores");
+        }
+        let reserved: BTreeSet<i64> =
+            tb.reserved_cores().into_iter().collect();
+
+        let mut node_ids: BTreeSet<i64> = BTreeSet::new();
+        let mut l3_names: BTreeSet<String> = BTreeSet::new();
+        let mut core_owner: BTreeMap<i64, String> = BTreeMap::new();
+
+        for node in &tb.nodes {
+            if !node_ids.insert(node.id) {
+                self.diags.push(Diag::ty(
+                    node.id_span,
+                    format!(
+                        "topology: duplicate NUMA node id `{}` — each \
+                         `node N` must have a distinct id",
+                        node.id
+                    ),
+                ));
+            }
+            for d in &node.domains {
+                if !l3_names.insert(d.name.name.clone()) {
+                    self.diags.push(Diag::ty(
+                        d.name.span,
+                        format!(
+                            "topology: duplicate L3 domain name `{}` — \
+                             domain names are referenced by `pinned(l3 = \
+                             {})` and must be globally unique across nodes",
+                            d.name.name, d.name.name
+                        ),
+                    ));
+                }
+                self.check_core_spec_wellformed(
+                    &d.cores,
+                    d.span,
+                    &format!("l3 {}", d.name.name),
+                );
+                for c in d.cores.expand() {
+                    if let Some(prev) = core_owner.get(&c) {
+                        if prev != &d.name.name {
+                            self.diags.push(Diag::ty(
+                                d.span,
+                                format!(
+                                    "topology: core {} is claimed by both \
+                                     L3 domains `{}` and `{}` — a core \
+                                     belongs to at most one cache domain",
+                                    c, prev, d.name.name
+                                ),
+                            ));
+                        }
+                    } else {
+                        core_owner.insert(c, d.name.name.clone());
+                    }
+                    if reserved.contains(&c) {
+                        self.diags.push(Diag::ty(
+                            d.span,
+                            format!(
+                                "topology: core {} is both `reserve`d and \
+                                 assigned to L3 domain `{}` — reserved cores \
+                                 are held back for the OS / main and can't be \
+                                 placed on",
+                                c, d.name.name
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Shared well-formedness check for a `CoreSpec` literal
+    /// (used by both `topology { }` domain/reserve specs and the
+    /// `pinned(cores)` placement path): a range must select at
+    /// least one core, a set must have no duplicate element.
+    fn check_core_spec_wellformed(
+        &mut self,
+        spec: &CoreSpec,
+        span: hale_syntax::Span,
+        ctx: &str,
+    ) {
+        match spec {
+            CoreSpec::Range { lo, hi, inclusive } => {
+                let empty = if *inclusive { hi < lo } else { hi <= lo };
+                if empty {
+                    self.diags.push(Diag::ty(
+                        span,
+                        format!(
+                            "topology `{}`: `{}..{}{}` selects no cores — \
+                             the range is empty (`A..B` excludes B; use \
+                             `A..=B` to include it)",
+                            ctx,
+                            lo,
+                            if *inclusive { "=" } else { "" },
+                            hi,
+                        ),
+                    ));
+                }
+            }
+            CoreSpec::Set(v) => {
+                let mut sorted = v.clone();
+                sorted.sort_unstable();
+                sorted.dedup();
+                if sorted.len() != v.len() {
+                    self.diags.push(Diag::ty(
+                        span,
+                        format!(
+                            "topology `{}`: duplicate core index in the \
+                             `{{...}}` set",
+                            ctx
+                        ),
+                    ));
+                }
+            }
+            CoreSpec::Single(_) => {}
         }
     }
 
@@ -6560,6 +6803,13 @@ impl<'a> Checker<'a> {
                 // dedicated top-level pass (Phase 2 — pending).
                 // The parser already enforces "main-only" so the
                 // block's syntactic shape is OK here.
+            }
+            LocusMember::Topology(_) => {
+                // Topology Phase 1b: the `topology { }` block is
+                // validated by the dedicated placement pass
+                // (check_placement_block), alongside the
+                // `pinned(node =)` / `pinned(l3 =)` references
+                // that resolve against it. Nothing member-local.
             }
             LocusMember::Lifecycle(lc) => {
                 self.in_lifecycle = true;

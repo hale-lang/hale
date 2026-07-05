@@ -1866,6 +1866,24 @@ main locus App {
     skipped, exactly as `pinned(core = N)` degrades on a smaller
     machine). Linux-only affinity; a no-op on other hosts.
     (Topology Phase 1a, 2026-07-04.)
+14. **`topology { }` consistency + `pinned(node/l3)` resolution
+    (error).** The declare-only `topology { }` block is validated
+    statically: NUMA `node` ids must be unique; L3-domain names
+    must be globally unique (they're referenced by `pinned(l3 =
+    name)` without node qualification); each `cores` spec must be
+    well-formed (rule 13); a core may belong to at most one L3
+    domain (overlap is ambiguous affinity); and a domain core may
+    not overlap a `reserve`d range (reserved cores are held back
+    for the OS / main). A `pinned(node = N)` / `pinned(l3 = name)`
+    placement entry must reference a domain the block declares —
+    using either with no `topology { }` block, or naming an
+    undeclared node/domain, is an error. Resolution is
+    closed-world (ids and domain cores are literals), so the
+    selected core set is known at compile time. Whether those
+    cores exist on the deploy box stays best-effort at runtime.
+    This slice resolves `node`/`l3` to *thread* affinity (reusing
+    the Phase 1a cpuset path); arena-on-node memory co-location is
+    a follow-up. (Topology Phase 1b, 2026-07-05.)
 
 ### Single-threaded-method invariant
 
