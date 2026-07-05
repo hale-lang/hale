@@ -3031,7 +3031,11 @@ purpose compiled language.
 - Pinned placement (especially `pinned(core = N)`) → the OS
   keeps the worker on a specific core → the locus's working
   set stays resident in that core's L1/L2 across handler
-  fires.
+  fires. Topology Phase 1a (2026-07-04) widens this to a
+  cpuset: `pinned(cores = A..B)` / `{a, b, c}` masks the
+  thread to a core *set* — the isolation-domain form (keep a
+  locus on one CCD/L3 group, away from the OS cores) that the
+  fuller `topology { }` DSL builds on.
 - Per-method scratch (Phase 4, 2026-05-21) → tight
   allocate-touch-free loop on every method invocation →
   naturally L1-hot for the duration of one handler.

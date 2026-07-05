@@ -970,3 +970,130 @@ fn main() { App { }; }
         msgs
     );
 }
+
+// === Topology Phase 1a (2026-07-04): pinned(cores = ...) ======
+
+#[test]
+fn placement_pinned_cores_range_clean() {
+    let src = r#"
+locus Worker { run() { } }
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+    }
+    placement {
+        w: pinned(cores = 4..=11);
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().all(|m| !m.contains("placement")),
+        "expected pinned(cores = 4..=11) to typecheck clean, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn placement_pinned_cores_set_clean() {
+    let src = r#"
+locus Worker { run() { } }
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+    }
+    placement {
+        w: pinned(cores = {2, 4, 6});
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().all(|m| !m.contains("placement")),
+        "expected pinned(cores = {{2, 4, 6}}) to typecheck clean, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn placement_pinned_cores_empty_range_rejected() {
+    // `4..4` is exclusive and selects nothing — a definite
+    // authoring error, caught statically (bounds are literals).
+    let src = r#"
+locus Worker { run() { } }
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+    }
+    placement {
+        w: pinned(cores = 4..4);
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m|
+            m.contains("placement") && m.contains("selects no cores")),
+        "expected empty-range diagnostic, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn placement_pinned_cores_backwards_inclusive_range_rejected() {
+    let src = r#"
+locus Worker { run() { } }
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+    }
+    placement {
+        w: pinned(cores = 8..=4);
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m|
+            m.contains("placement") && m.contains("selects no cores")),
+        "expected empty-range diagnostic for 8..=4, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn placement_pinned_cores_duplicate_set_element_rejected() {
+    let src = r#"
+locus Worker { run() { } }
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+    }
+    placement {
+        w: pinned(cores = {2, 4, 2});
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m|
+            m.contains("placement") && m.contains("duplicate core")),
+        "expected duplicate-core diagnostic, got: {:?}",
+        msgs
+    );
+}

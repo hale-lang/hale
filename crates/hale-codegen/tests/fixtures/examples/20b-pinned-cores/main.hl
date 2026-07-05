@@ -1,0 +1,53 @@
+// 20b-pinned-cores — cpuset affinity for pinned loci
+// (topology placement, Phase 1a).
+//
+// `pinned(core = N)` binds a pinned locus's thread to exactly
+// one logical CPU. `pinned(cores = ...)` generalizes that to a
+// core SET: the thread's affinity mask is the whole set, and
+// the OS schedules it freely *within* the set. That makes a
+// range an isolation carve-out ("this locus lives on the 4..8
+// CCD, away from the OS/main cores") rather than a single-CPU
+// pin — the building block the `topology { }` DSL layers on.
+//
+// Three spellings:
+//   - `cores = A..B`    — range, exclusive hi (like `for i in A..B`)
+//   - `cores = A..=B`   — range, inclusive hi
+//   - `cores = {a, b, c}` — explicit set
+//
+// Same best-effort contract as `pinned(core = N)`: on a box
+// with fewer cores than declared (CI!) the invalid indices are
+// skipped, and if nothing valid remains the thread just runs
+// with normal OS scheduling. On non-Linux hosts the affinity
+// call is a no-op — the locus still runs, unpinned.
+
+locus RangeWorker {
+    run() {
+        std::time::sleep(20ms);
+        println("range worker: affinity mask cores 0..2");
+    }
+}
+
+locus SetWorker {
+    run() {
+        std::time::sleep(20ms);
+        println("set worker: affinity mask cores {0, 1}");
+    }
+}
+
+main locus CpusetApp {
+    params {
+        ranged: RangeWorker = RangeWorker { };
+        setted: SetWorker   = SetWorker { };
+    }
+    placement {
+        ranged: pinned(cores = 0..2);
+        setted: pinned(cores = {0, 1});
+    }
+    run() {
+        println("main: spawned two pinned workers with cpuset affinity");
+    }
+}
+
+fn main() {
+    CpusetApp { };
+}

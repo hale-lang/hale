@@ -1853,6 +1853,19 @@ main locus App {
     cross-compared). The fix is to declare a `topic` (one payload
     type, fixed in one place) or align the `of type` annotations.
     (GH #18 #4.)
+13. **Empty / degenerate `pinned(cores = …)` (error).** A cpuset
+    affinity spec that selects no cores is rejected statically: an
+    exclusive range whose upper bound is `≤` its lower (`4..4`,
+    `8..4`), an inclusive range that runs backwards (`8..=4`), or a
+    set with a duplicated element (`{2, 4, 2}`). Bounds/elements are
+    integer literals — placement is closed-world — so the selected
+    core list is known at compile time and a spec that reduces to
+    "no cores" (or a redundant one) is an authoring error, not a
+    deploy-box question. Whether the selected cores *exist* on the
+    target stays best-effort at runtime (out-of-range indices are
+    skipped, exactly as `pinned(core = N)` degrades on a smaller
+    machine). Linux-only affinity; a no-op on other hosts.
+    (Topology Phase 1a, 2026-07-04.)
 
 ### Single-threaded-method invariant
 

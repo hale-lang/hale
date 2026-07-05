@@ -324,13 +324,25 @@ binding_constraint = "intra_process"
    Unspecified main-locus `params` fields default to
    `cooperative(pool = main)`. Loci instantiated nested below
    main inherit their parent's pool — placement entries apply
-   only at the top-level main-locus surface. *)
+   only at the top-level main-locus surface.
+
+   Topology Phase 1a (2026-07-04): `pinned` gained a `cores = `
+   selector alongside the single-CPU `core = ` — a range
+   (`A..B` exclusive / `A..=B` inclusive) or an explicit set
+   (`{a, b, c}`) that becomes the thread's cpuset affinity
+   mask. Bounds/elements are INT_LITs (placement is closed-
+   world, so the set is static). `..`/`..=` are the same range
+   tokens the expression grammar uses. *)
 placement_block   = "placement" , "{" , { placement_entry } , "}" ;
 placement_entry   = IDENTIFIER , ":" , placement_spec ,
                     [ "where" , placement_constraint ,
                       { "," , placement_constraint } ] , ";" ;
 placement_spec    = "cooperative" , [ "(" , "pool" , "=" , IDENTIFIER , ")" ]
-                  | "pinned" , [ "(" , "core" , "=" , INT_LIT , ")" ] ;
+                  | "pinned" , [ "(" , pin_affinity , ")" ] ;
+pin_affinity      = "core" , "=" , INT_LIT
+                  | "cores" , "=" , core_set ;
+core_set          = INT_LIT , ( ".." | "..=" ) , INT_LIT
+                  | "{" , INT_LIT , { "," , INT_LIT } , [ "," ] , "}" ;
 
 (* F.35 (2026-05-28): operational constraints on a placement
    entry. v0.1 ships one keyword (`async_io`); the typechecker

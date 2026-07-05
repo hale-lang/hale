@@ -7861,8 +7861,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if let LocusMember::Placement(pb) = m {
                 for entry in &pb.entries {
                     let sc = match &entry.spec {
-                        PlacementSpec::Pinned { core } => {
-                            ScheduleClass::Pinned(*core)
+                        PlacementSpec::Pinned { cores } => {
+                            ScheduleClass::Pinned(cores.clone())
                         }
                         PlacementSpec::Cooperative { pool } => {
                             // F.31 Phase 4: capture the pool name

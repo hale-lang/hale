@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use hale_syntax::ast::{
     BirthCheckDecl, CapacitySlotKind, Expr, Literal, LocusMember,
-    ProjectionClass, RecognitionSubMode, ScheduleClass,
+    CoreSpec, ProjectionClass, RecognitionSubMode, ScheduleClass,
     StructInit, TopDecl,
 };
 use inkwell::types::BasicType;
@@ -3095,28 +3095,79 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             let _ = mailbox_ptr_opt;
 
-            // m28c: optional CPU-core affinity. If the locus
-            // declared `: schedule pinned(core = N)`, route the
+            // m28c: optional CPU-core affinity. If the placement
+            // entry declared `pinned(core = N)`, route the
             // freshly-created tid through pthread_setaffinity_np
             // (via the C-side helper) so the OS scheduler keeps
-            // this thread on the requested logical CPU.
-            if let ScheduleClass::Pinned(Some(core)) = info.schedule_class {
+            // this thread on the requested logical CPU. Topology
+            // Phase 1a: `pinned(cores = ...)` range/set specs
+            // expand statically to a constant i32 array and go
+            // through the cpuset helper instead — the thread's
+            // affinity mask is the whole set, and the OS
+            // schedules freely within it.
+            if let ScheduleClass::Pinned(Some(cores_spec)) =
+                &info.schedule_class
+            {
                 let tid_for_aff = self
                     .builder
                     .build_load(i64_t, tid_alloca, "pinned.tid.aff")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let core_const = i32_t.const_int(core as u64, true);
-                let set_aff_fn = self
-                    .module
-                    .get_function("lotus_set_core_affinity")
-                    .expect("lotus_set_core_affinity declared");
-                self.builder
-                    .build_call(
-                        set_aff_fn,
-                        &[tid_for_aff.into(), core_const.into()],
-                        &format!("{}.set_aff", locus_name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                match cores_spec {
+                    CoreSpec::Single(core) => {
+                        let core_const =
+                            i32_t.const_int(*core as u64, true);
+                        let set_aff_fn = self
+                            .module
+                            .get_function("lotus_set_core_affinity")
+                            .expect("lotus_set_core_affinity declared");
+                        self.builder
+                            .build_call(
+                                set_aff_fn,
+                                &[tid_for_aff.into(), core_const.into()],
+                                &format!("{}.set_aff", locus_name),
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?;
+                    }
+                    _ => {
+                        // Range / Set → sorted, deduped constant
+                        // array (typecheck rejected empty specs).
+                        let cores = cores_spec.expand();
+                        let vals: Vec<_> = cores
+                            .iter()
+                            .map(|c| i32_t.const_int(*c as u64, true))
+                            .collect();
+                        let arr = i32_t.const_array(&vals);
+                        let g = self.module.add_global(
+                            arr.get_type(),
+                            None,
+                            &format!("{}.cores", locus_name),
+                        );
+                        g.set_initializer(&arr);
+                        g.set_constant(true);
+                        g.set_linkage(inkwell::module::Linkage::Internal);
+                        let count_const =
+                            i32_t.const_int(cores.len() as u64, false);
+                        let set_aff_fn = self
+                            .module
+                            .get_function("lotus_set_core_affinity_set")
+                            .expect("lotus_set_core_affinity_set declared");
+                        self.builder
+                            .build_call(
+                                set_aff_fn,
+                                &[
+                                    tid_for_aff.into(),
+                                    g.as_pointer_value().into(),
+                                    count_const.into(),
+                                ],
+                                &format!("{}.set_aff_set", locus_name),
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?;
+                    }
+                }
             }
 
             // Defer pthread_join + arena destroy to scope exit.

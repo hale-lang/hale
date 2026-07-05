@@ -113,17 +113,21 @@ projection      rich            chunked         recognition
 ### Placement keywords (F.31)
 
 ```
-placement       cooperative     pinned          pool        core
+placement       cooperative     pinned          pool        core        cores
 ```
 
 `placement` introduces the `placement { }` block on `main
 locus` (F.31). `cooperative` / `pinned` are placement-spec
-keywords inside that block. `pool` and `core` are
+keywords inside that block. `pool`, `core`, and `cores` are
 **contextual idents** — recognized only as kwarg names inside
-`cooperative(pool = X)` / `pinned(core = N)` placement
-specs. Outside those positions, all five lex as ordinary
-Idents and can name fns / vars / fields. Same F.10-style
-narrowing the closure / mode keyword families use.
+`cooperative(pool = X)` / `pinned(core = N)` /
+`pinned(cores = A..B | A..=B | {a, b, c})` placement specs
+(topology Phase 1a, 2026-07-04). Outside those positions, all
+six lex as ordinary Idents and can name fns / vars / fields.
+Same F.10-style narrowing the closure / mode keyword families
+use. `cores` range bounds and set elements are integer
+literals; the range reuses the expression tokens `..`
+(exclusive) / `..=` (inclusive).
 
 The pre-F.31 `schedule` keyword is gone — the `: schedule
 cooperative | pinned` per-locus annotation no longer exists.
