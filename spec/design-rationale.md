@@ -3038,10 +3038,13 @@ purpose compiled language.
   (2026-07-05) adds the `topology { }` block (declare the host's
   nodes / L3 domains / reserved cores) and `pinned(node = N)` /
   `pinned(l3 = name)` — target a domain by name and the mask
-  becomes its cores. This slice is thread affinity only; binding
-  a node-pinned locus's *arena* to that node's memory (the
-  thread + memory co-location that motivates NUMA targeting) is
-  the follow-up slice.
+  becomes its cores. A node/l3-pinned locus gets the full
+  **thread + memory co-location** that motivates NUMA targeting:
+  its arena (and method scratch) is `mbind`-bound to the node, so
+  its working set lives on the node its thread runs on — cross-
+  node access, the thing that kills big-box perf, is avoided on
+  both axes. Raw `mbind` syscall, so no libnuma dependency;
+  best-effort and zero-cost off the opt-in path.
 - Per-method scratch (Phase 4, 2026-05-21) → tight
   allocate-touch-free loop on every method invocation →
   naturally L1-hot for the duration of one handler.

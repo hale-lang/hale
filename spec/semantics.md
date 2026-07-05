@@ -1881,9 +1881,15 @@ main locus App {
     closed-world (ids and domain cores are literals), so the
     selected core set is known at compile time. Whether those
     cores exist on the deploy box stays best-effort at runtime.
-    This slice resolves `node`/`l3` to *thread* affinity (reusing
-    the Phase 1a cpuset path); arena-on-node memory co-location is
-    a follow-up. (Topology Phase 1b, 2026-07-05.)
+    A `pinned(node/l3)` locus gets **thread + memory
+    co-location**: its thread is affinity-masked to the domain's
+    cores (Phase 1a cpuset path) *and* its arena — including
+    method-scratch sub-regions — is `mbind`-bound to the node, so
+    its working set lives on the node its thread runs on.
+    Node binding is a raw `mbind` syscall (no libnuma dependency),
+    Linux-only and best-effort (falls back to first-touch when
+    the node can't be honored); non-node arenas are unchanged.
+    (Topology Phase 1b, 2026-07-05.)
 
 ### Single-threaded-method invariant
 
