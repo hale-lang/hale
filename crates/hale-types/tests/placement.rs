@@ -1097,3 +1097,184 @@ fn main() { App { }; }
         msgs
     );
 }
+
+// === Topology Phase 1b (2026-07-05): topology { } + node/l3 ====
+
+#[test]
+fn topology_and_node_l3_placement_clean() {
+    let src = r#"
+locus W { run() { } }
+
+main locus App {
+    topology {
+        reserve cores 0..1;
+        node 0 {
+            l3 fast { cores 1..3; }
+            l3 slow { cores 3..5; }
+        }
+    }
+    params {
+        a: W = W { };
+        b: W = W { };
+    }
+    placement {
+        a: pinned(node = 0);
+        b: pinned(l3 = fast);
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().all(|m| !m.contains("topology") && !m.contains("placement")),
+        "expected clean topology + node/l3 placement, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn topology_undeclared_node_rejected() {
+    let src = r#"
+locus W { run() { } }
+main locus App {
+    topology { node 0 { l3 x { cores 1..3; } } }
+    params { w: W = W { }; }
+    placement { w: pinned(node = 7); }
+}
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("node `7`") && m.contains("does not declare")),
+        "expected undeclared-node diagnostic, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn topology_undeclared_l3_rejected() {
+    let src = r#"
+locus W { run() { } }
+main locus App {
+    topology { node 0 { l3 fast { cores 1..3; } } }
+    params { w: W = W { }; }
+    placement { w: pinned(l3 = nope); }
+}
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("cache domain `nope`") && m.contains("does not declare")),
+        "expected undeclared-l3 diagnostic, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn topology_node_l3_without_block_rejected() {
+    let src = r#"
+locus W { run() { } }
+main locus App {
+    params { w: W = W { }; }
+    placement { w: pinned(node = 0); }
+}
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("needs a `topology") ),
+        "expected 'needs a topology block' diagnostic, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn topology_duplicate_node_id_rejected() {
+    let src = r#"
+locus W { run() { } }
+main locus App {
+    topology {
+        node 0 { l3 a { cores 1..3; } }
+        node 0 { l3 b { cores 3..5; } }
+    }
+    params { w: W = W { }; }
+    placement { w: pinned(node = 0); }
+}
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("duplicate NUMA node id `0`")),
+        "expected duplicate-node diagnostic, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn topology_duplicate_l3_name_rejected() {
+    let src = r#"
+locus W { run() { } }
+main locus App {
+    topology {
+        node 0 { l3 hot { cores 1..3; } }
+        node 1 { l3 hot { cores 3..5; } }
+    }
+    params { w: W = W { }; }
+    placement { w: pinned(l3 = hot); }
+}
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("duplicate L3 domain name `hot`")),
+        "expected duplicate-l3-name diagnostic, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn topology_overlapping_domains_rejected() {
+    let src = r#"
+locus W { run() { } }
+main locus App {
+    topology {
+        node 0 {
+            l3 a { cores 1..4; }
+            l3 b { cores 3..6; }
+        }
+    }
+    params { w: W = W { }; }
+    placement { w: pinned(node = 0); }
+}
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("core 3 is claimed by both")),
+        "expected overlapping-domains diagnostic, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn topology_domain_overlaps_reserved_rejected() {
+    let src = r#"
+locus W { run() { } }
+main locus App {
+    topology {
+        reserve cores 0..3;
+        node 0 { l3 a { cores 2..5; } }
+    }
+    params { w: W = W { }; }
+    placement { w: pinned(node = 0); }
+}
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("both `reserve`d")),
+        "expected reserved-overlap diagnostic, got: {:?}",
+        msgs
+    );
+}

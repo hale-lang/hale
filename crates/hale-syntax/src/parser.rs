@@ -1164,6 +1164,17 @@ impl Parser {
                         ),
                     ));
                 }
+                if let LocusMember::Topology(tb) = m {
+                    return Err(Diag::parse(
+                        tb.span,
+                        format!(
+                            "`topology` block is only valid inside `main \
+                             locus`; locus `{}` is not declared with the \
+                             `main` modifier",
+                            name.name
+                        ),
+                    ));
+                }
                 if let LocusMember::Placement(pb) = m {
                     return Err(Diag::parse(
                         pb.span,
@@ -1456,6 +1467,13 @@ impl Parser {
             TokenKind::Ident(s) if s == "placement" => {
                 self.parse_placement_block().map(LocusMember::Placement)
             }
+            // Topology Phase 1b contextual keyword — `topology
+            // { ... }`. Lexes as Ident; recognized here. The
+            // "must be inside `main locus`" check fires in
+            // `parse_locus_decl` (parallel to placement/bindings).
+            TokenKind::Ident(s) if s == "topology" => {
+                self.parse_topology_block().map(LocusMember::Topology)
+            }
             // F.27 v2 contextual keyword — `birth_check { EXPR }
             // -> violate NAME;`. Lexes as Ident; recognized here.
             TokenKind::Ident(s) if s == "birth_check" => {
@@ -1615,6 +1633,162 @@ impl Parser {
         })
     }
 
+    /// Topology Phase 1b: parse the `topology { }` block —
+    /// `reserve cores R;` statements and `node N { l3 name { cores
+    /// R; } }` declarations. Declare-only; the parser builds the
+    /// static model, the typechecker validates it (unique ids /
+    /// names, non-overlapping domains) and resolves
+    /// `pinned(node =)` / `pinned(l3 =)` against it.
+    ///
+    /// The "must be inside `main locus`" check fires later in
+    /// `parse_locus_decl` (parallel to placement/bindings).
+    fn parse_topology_block(&mut self) -> Result<TopologyBlock, Diag> {
+        let kw_tok = self.peek_token().clone();
+        self.bump(); // consume `topology` ident
+        self.expect(TokenKind::LBrace, "{")?;
+        let mut reserved = Vec::new();
+        let mut nodes = Vec::new();
+        while !matches!(self.peek(), TokenKind::RBrace) {
+            let tok = self.peek_token().clone();
+            let head = match &tok.kind {
+                TokenKind::Ident(s) => s.clone(),
+                other => {
+                    return Err(Diag::parse(
+                        tok.span,
+                        format!(
+                            "expected `reserve` or `node` inside \
+                             `topology {{ }}`, got {:?}",
+                            other
+                        ),
+                    ));
+                }
+            };
+            match head.as_str() {
+                "reserve" => {
+                    self.bump(); // `reserve`
+                    let cores_tok = self.peek_token().clone();
+                    match &cores_tok.kind {
+                        TokenKind::Ident(s) if s == "cores" => {
+                            self.bump();
+                        }
+                        _ => {
+                            return Err(Diag::parse(
+                                cores_tok.span,
+                                "expected `cores` after `reserve` (e.g. \
+                                 `reserve cores 0..3;`)"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                    reserved.push(self.parse_core_set()?);
+                    self.expect(
+                        TokenKind::Semi,
+                        "expected `;` after `reserve cores ...`",
+                    )?;
+                }
+                "node" => {
+                    nodes.push(self.parse_topology_node()?);
+                }
+                other => {
+                    return Err(Diag::parse(
+                        tok.span,
+                        format!(
+                            "unknown `topology` item `{}`; expected \
+                             `reserve cores ...;` or `node N {{ ... }}`",
+                            other
+                        ),
+                    ));
+                }
+            }
+        }
+        let close = self.expect(TokenKind::RBrace, "}")?;
+        Ok(TopologyBlock {
+            reserved,
+            nodes,
+            span: kw_tok.span.merge(close.span),
+        })
+    }
+
+    /// One `node N { l3 name { cores R; } ... }` declaration.
+    fn parse_topology_node(&mut self) -> Result<TopologyNode, Diag> {
+        let kw_tok = self.peek_token().clone();
+        self.bump(); // `node`
+        let id_tok = self.peek_token().clone();
+        let id = match &id_tok.kind {
+            TokenKind::IntLit(v) => *v,
+            other => {
+                return Err(Diag::parse(
+                    id_tok.span,
+                    format!(
+                        "expected an integer NUMA node id after `node`, \
+                         got {:?}",
+                        other
+                    ),
+                ));
+            }
+        };
+        self.bump();
+        self.expect(TokenKind::LBrace, "expected `{` after `node N`")?;
+        let mut domains = Vec::new();
+        while !matches!(self.peek(), TokenKind::RBrace) {
+            domains.push(self.parse_l3_domain()?);
+        }
+        let close =
+            self.expect(TokenKind::RBrace, "expected `}` to close `node`")?;
+        Ok(TopologyNode {
+            id,
+            id_span: id_tok.span,
+            domains,
+            span: kw_tok.span.merge(close.span),
+        })
+    }
+
+    /// One `l3 <name> { cores R; }` cache-domain declaration.
+    fn parse_l3_domain(&mut self) -> Result<L3Domain, Diag> {
+        let kw_tok = self.peek_token().clone();
+        match &kw_tok.kind {
+            TokenKind::Ident(s) if s == "l3" => {
+                self.bump();
+            }
+            other => {
+                return Err(Diag::parse(
+                    kw_tok.span,
+                    format!(
+                        "expected `l3 <name> {{ ... }}` inside `node`, \
+                         got {:?}",
+                        other
+                    ),
+                ));
+            }
+        }
+        let name = self.expect_ident("l3 domain name")?;
+        self.expect(TokenKind::LBrace, "expected `{` after `l3 <name>`")?;
+        // Body: a single `cores R;` statement.
+        let cores_tok = self.peek_token().clone();
+        match &cores_tok.kind {
+            TokenKind::Ident(s) if s == "cores" => {
+                self.bump();
+            }
+            _ => {
+                return Err(Diag::parse(
+                    cores_tok.span,
+                    "expected `cores <range|set>;` inside the `l3` body \
+                     (e.g. `cores 4..11;`)"
+                        .to_string(),
+                ));
+            }
+        }
+        let cores = self.parse_core_set()?;
+        self.expect(TokenKind::Semi, "expected `;` after `cores ...`")?;
+        let close =
+            self.expect(TokenKind::RBrace, "expected `}` to close `l3`")?;
+        Ok(L3Domain {
+            name,
+            cores,
+            span: kw_tok.span.merge(close.span),
+        })
+    }
+
     /// F.35 (2026-05-28): the optional `where <c>, <c>, ...`
     /// suffix on a placement entry. Mirrors the binding-constraint
     /// shape (Form K) — same `where` keyword token, same comma
@@ -1726,7 +1900,7 @@ impl Parser {
                 Ok(PlacementSpec::Cooperative { pool })
             }
             "pinned" => {
-                let cores = if matches!(self.peek(), TokenKind::LParen) {
+                let affinity = if matches!(self.peek(), TokenKind::LParen) {
                     self.bump();
                     let kw_tok = self.peek_token().clone();
                     let kw = match &kw_tok.kind {
@@ -1735,14 +1909,14 @@ impl Parser {
                             return Err(Diag::parse(
                                 kw_tok.span,
                                 format!(
-                                    "expected `core` or `cores` inside \
-                                     `pinned(...)`, got {:?}",
+                                    "expected `core`, `cores`, `node`, or \
+                                     `l3` inside `pinned(...)`, got {:?}",
                                     other
                                 ),
                             ));
                         }
                     };
-                    let spec = match kw.as_str() {
+                    let affinity = match kw.as_str() {
                         "core" => {
                             self.bump();
                             self.expect(
@@ -1750,7 +1924,7 @@ impl Parser {
                                 "expected `=` after `core`",
                             )?;
                             let n = self.parse_core_index()?;
-                            CoreSpec::Single(n)
+                            PinAffinity::Cores(CoreSpec::Single(n))
                         }
                         "cores" => {
                             self.bump();
@@ -1758,15 +1932,39 @@ impl Parser {
                                 TokenKind::Eq,
                                 "expected `=` after `cores`",
                             )?;
-                            self.parse_core_set()?
+                            PinAffinity::Cores(self.parse_core_set()?)
+                        }
+                        // Topology Phase 1b: `node = N` / `l3 = name`
+                        // resolve against the `topology { }` block at
+                        // typecheck; the parser just captures the target.
+                        "node" => {
+                            self.bump();
+                            self.expect(
+                                TokenKind::Eq,
+                                "expected `=` after `node`",
+                            )?;
+                            let n = self.parse_core_index()?;
+                            PinAffinity::Node(n)
+                        }
+                        "l3" => {
+                            self.bump();
+                            self.expect(
+                                TokenKind::Eq,
+                                "expected `=` after `l3`",
+                            )?;
+                            let name = self.expect_ident("l3 domain name")?;
+                            PinAffinity::L3(name)
                         }
                         _ => {
                             return Err(Diag::parse(
                                 kw_tok.span,
                                 format!(
                                     "unknown pinned attribute `{}`; expected \
-                                     `core` (one CPU) or `cores` (a range \
-                                     `A..B` / `A..=B` or set `{{a, b, c}}`)",
+                                     `core` (one CPU), `cores` (a range \
+                                     `A..B` / `A..=B` or set `{{a, b, c}}`), \
+                                     `node` (a NUMA node), or `l3` (a cache \
+                                     domain) — the last two resolve against \
+                                     the `topology {{ }}` block",
                                     kw
                                 ),
                             ));
@@ -1776,11 +1974,11 @@ impl Parser {
                         TokenKind::RParen,
                         "expected `)` after pinned(...)",
                     )?;
-                    Some(spec)
+                    affinity
                 } else {
-                    None
+                    PinAffinity::Any
                 };
-                Ok(PlacementSpec::Pinned { cores })
+                Ok(PlacementSpec::Pinned { affinity })
             }
             other => Err(Diag::parse(
                 head_tok.span,
@@ -6297,8 +6495,8 @@ main locus App {
         assert_eq!(pb.entries.len(), 1);
         assert_eq!(pb.entries[0].field.name, "job");
         match &pb.entries[0].spec {
-            PlacementSpec::Pinned { cores: None } => {}
-            other => panic!("expected Pinned{{ cores: None }}, got {:?}", other),
+            PlacementSpec::Pinned { affinity: PinAffinity::Any } => {}
+            other => panic!("expected Pinned{{ affinity: Any }}, got {:?}", other),
         }
     }
 
@@ -6315,9 +6513,11 @@ main locus App {
         let prog = parse_str(src).expect("parse failed");
         let pb = placement_block_of(&prog);
         match &pb.entries[0].spec {
-            PlacementSpec::Pinned { cores: Some(CoreSpec::Single(3)) } => {}
+            PlacementSpec::Pinned {
+                affinity: PinAffinity::Cores(CoreSpec::Single(3)),
+            } => {}
             other => panic!(
-                "expected Pinned{{ cores: Some(Single(3)) }}, got {:?}",
+                "expected Pinned{{ affinity: Cores(Single(3)) }}, got {:?}",
                 other
             ),
         }
@@ -6337,7 +6537,8 @@ main locus App {
         let pb = placement_block_of(&prog);
         match &pb.entries[0].spec {
             PlacementSpec::Pinned {
-                cores: Some(CoreSpec::Range { lo: 4, hi: 12, inclusive: false }),
+                affinity:
+                    PinAffinity::Cores(CoreSpec::Range { lo: 4, hi: 12, inclusive: false }),
             } => {}
             other => panic!(
                 "expected Pinned cores 4..12 (exclusive), got {:?}",
@@ -6360,7 +6561,8 @@ main locus App {
         let pb = placement_block_of(&prog);
         match &pb.entries[0].spec {
             PlacementSpec::Pinned {
-                cores: Some(CoreSpec::Range { lo: 4, hi: 11, inclusive: true }),
+                affinity:
+                    PinAffinity::Cores(CoreSpec::Range { lo: 4, hi: 11, inclusive: true }),
             } => {}
             other => panic!(
                 "expected Pinned cores 4..=11 (inclusive), got {:?}",
@@ -6384,7 +6586,9 @@ main locus App {
         let prog = parse_str(src).expect("parse failed");
         let pb = placement_block_of(&prog);
         match &pb.entries[0].spec {
-            PlacementSpec::Pinned { cores: Some(CoreSpec::Set(v)) } => {
+            PlacementSpec::Pinned {
+                affinity: PinAffinity::Cores(CoreSpec::Set(v)),
+            } => {
                 assert_eq!(v, &[5, 1, 9]);
             }
             other => panic!("expected Pinned cores set, got {:?}", other),
@@ -6452,6 +6656,144 @@ main locus App {
             vec![1, 5, 9]
         );
         assert_eq!(CoreSpec::Single(7).expand(), vec![7]);
+    }
+
+    // === Topology Phase 1b: topology { } + pinned(node=/l3=) ===
+
+    fn topology_block_of(prog: &Program) -> &TopologyBlock {
+        let locus = prog
+            .items
+            .iter()
+            .find_map(|it| match it {
+                TopDecl::Locus(l) if l.is_main => Some(l),
+                _ => None,
+            })
+            .expect("main locus");
+        locus
+            .members
+            .iter()
+            .find_map(|m| match m {
+                LocusMember::Topology(t) => Some(t),
+                _ => None,
+            })
+            .expect("topology block")
+    }
+
+    #[test]
+    fn parse_topology_block_full() {
+        let src = r#"
+locus W { run() { } }
+
+main locus App {
+    topology {
+        reserve cores 0..2;
+        node 0 {
+            l3 fast { cores 4..8; }
+            l3 slow { cores 8..12; }
+        }
+        node 1 {
+            l3 heavy { cores 12..16; }
+        }
+    }
+    params { w: W = W { }; }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let tb = topology_block_of(&prog);
+        // one reserve spec
+        assert_eq!(tb.reserved.len(), 1);
+        assert_eq!(tb.reserved_cores(), vec![0, 1]);
+        // two nodes
+        assert_eq!(tb.nodes.len(), 2);
+        assert_eq!(tb.nodes[0].id, 0);
+        assert_eq!(tb.nodes[1].id, 1);
+        // node 0 has two domains; node cores are the union
+        assert_eq!(tb.nodes[0].domains.len(), 2);
+        assert_eq!(
+            tb.node_cores(0),
+            Some((4..12).collect::<Vec<i64>>())
+        );
+        // l3 resolution by (globally unique) name
+        assert_eq!(tb.l3_cores("fast"), Some((4..8).collect()));
+        assert_eq!(tb.l3_cores("heavy"), Some((12..16).collect()));
+        assert_eq!(tb.l3_cores("missing"), None);
+        assert_eq!(tb.node_cores(9), None);
+    }
+
+    #[test]
+    fn parse_pinned_node_affinity() {
+        let src = r#"
+locus W { run() { } }
+
+main locus App {
+    topology { node 0 { l3 fast { cores 4..8; } } }
+    params { w: W = W { }; }
+    placement { w: pinned(node = 0); }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let pb = placement_block_of(&prog);
+        match &pb.entries[0].spec {
+            PlacementSpec::Pinned { affinity: PinAffinity::Node(0) } => {}
+            other => panic!("expected Pinned node 0, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_pinned_l3_affinity() {
+        let src = r#"
+locus W { run() { } }
+
+main locus App {
+    topology { node 0 { l3 fast { cores 4..8; } } }
+    params { w: W = W { }; }
+    placement { w: pinned(l3 = fast); }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let pb = placement_block_of(&prog);
+        match &pb.entries[0].spec {
+            PlacementSpec::Pinned { affinity: PinAffinity::L3(name) } => {
+                assert_eq!(name.name, "fast");
+            }
+            other => panic!("expected Pinned l3 fast, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_topology_outside_main_rejected() {
+        let src = r#"
+locus NotMain {
+    topology { node 0 { l3 x { cores 1..3; } } }
+    run() { }
+}
+"#;
+        let err = parse_str(src).expect_err("should reject");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("topology") && msg.contains("main"),
+            "expected topology-is-main-only diagnostic; got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn parse_pinned_unknown_attr_mentions_node_l3() {
+        let src = r#"
+locus W { run() { } }
+
+main locus App {
+    params { w: W = W { }; }
+    placement { w: pinned(socket = 0); }
+}
+"#;
+        let err = parse_str(src).expect_err("should reject");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("node") && msg.contains("l3"),
+            "expected diagnostic naming node and l3; got: {}",
+            msg
+        );
     }
 
     #[test]

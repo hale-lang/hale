@@ -224,6 +224,7 @@ locus_member      = params_block
                   | type_decl
                   | bindings_block
                   | placement_block
+                  | topology_block
                   | birth_check_decl
                   ;
 
@@ -332,17 +333,39 @@ binding_constraint = "intra_process"
    (`{a, b, c}`) that becomes the thread's cpuset affinity
    mask. Bounds/elements are INT_LITs (placement is closed-
    world, so the set is static). `..`/`..=` are the same range
-   tokens the expression grammar uses. *)
+   tokens the expression grammar uses.
+
+   Topology Phase 1b (2026-07-05): `pinned` also gained `node = N`
+   / `l3 = name`, targeting a NUMA node / cache domain declared in
+   the `topology { }` block (see below). The compiler resolves the
+   domain to its core set; the thread's affinity mask becomes that
+   set (arena-on-node memory co-location is a follow-up slice). *)
 placement_block   = "placement" , "{" , { placement_entry } , "}" ;
 placement_entry   = IDENTIFIER , ":" , placement_spec ,
                     [ "where" , placement_constraint ,
                       { "," , placement_constraint } ] , ";" ;
 placement_spec    = "cooperative" , [ "(" , "pool" , "=" , IDENTIFIER , ")" ]
                   | "pinned" , [ "(" , pin_affinity , ")" ] ;
-pin_affinity      = "core" , "=" , INT_LIT
-                  | "cores" , "=" , core_set ;
+pin_affinity      = "core"  , "=" , INT_LIT
+                  | "cores" , "=" , core_set
+                  | "node"  , "=" , INT_LIT
+                  | "l3"    , "=" , IDENTIFIER ;
 core_set          = INT_LIT , ( ".." | "..=" ) , INT_LIT
                   | "{" , INT_LIT , { "," , INT_LIT } , [ "," ] , "}" ;
+
+(* Topology Phase 1b (2026-07-05): the `topology { }` block — a
+   declare-only description of the host's core partition. Main-only
+   (a sibling deployment seam to `placement` / `bindings`). Node
+   ids are unique; L3-domain names are globally unique (referenced
+   by `pinned(l3 = name)` without node qualification); a core
+   belongs to at most one domain and may not overlap a reserved
+   range. Cores absent on the deploy box degrade best-effort at
+   runtime — the machine-match is not enforced. *)
+topology_block    = "topology" , "{" ,
+                      { reserve_decl | node_decl } , "}" ;
+reserve_decl      = "reserve" , "cores" , core_set , ";" ;
+node_decl         = "node" , INT_LIT , "{" , { l3_decl } , "}" ;
+l3_decl           = "l3" , IDENTIFIER , "{" , "cores" , core_set , ";" , "}" ;
 
 (* F.35 (2026-05-28): operational constraints on a placement
    entry. v0.1 ships one keyword (`async_io`); the typechecker

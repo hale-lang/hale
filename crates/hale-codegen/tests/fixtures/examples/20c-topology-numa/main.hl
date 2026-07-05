@@ -1,0 +1,72 @@
+// 20c-topology-numa — describe the host with `topology { }` and
+// target NUMA nodes / L3 cache domains from `placement { }`
+// (topology placement, Phase 1b).
+//
+// `topology { }` is a declare-only description of the machine's
+// core partition: cores held back for the OS, NUMA nodes, and the
+// L3 / cache domains inside each node. It's a main-only deployment
+// seam, a sibling of `placement { }` and `bindings { }`.
+//
+//   topology {
+//       reserve cores 0..1;          // held back for OS / main
+//       node 0 {
+//           l3 fast { cores 1..3; }  // one CCD / shared-L3 group
+//           l3 slow { cores 3..5; }
+//       }
+//   }
+//
+// A `placement { }` entry then targets a domain by name:
+//
+//   worker: pinned(node = 0);   // thread affinity = node 0's cores
+//                               //   (the union of its L3 domains)
+//   picky:  pinned(l3 = fast);  // thread affinity = the `fast`
+//                               //   domain's cores
+//
+// This slice binds the *thread* to the domain's core set — it
+// reuses the Phase 1a cpuset affinity path (the OS schedules the
+// thread freely within the set). Arena-on-node *memory*
+// co-location (the "thread + memory" payoff) is the follow-up
+// slice.
+//
+// Best-effort + Linux-only, exactly like `pinned(cores = ...)`:
+// cores absent on the deploy box are skipped, and on non-Linux
+// hosts the affinity call is a no-op (the loci still run).
+
+locus NodeWorker {
+    run() {
+        std::time::sleep(20ms);
+        println("node worker: pinned to node 0's cores");
+    }
+}
+
+locus L3Worker {
+    run() {
+        std::time::sleep(20ms);
+        println("l3 worker: pinned to the `fast` cache domain");
+    }
+}
+
+main locus TopologyApp {
+    topology {
+        reserve cores 0..1;          // core 0 for the OS / main
+        node 0 {
+            l3 fast { cores 1..3; }  // cores 1, 2
+            l3 slow { cores 3..5; }  // cores 3, 4
+        }
+    }
+    params {
+        node_worker: NodeWorker = NodeWorker { };
+        l3_worker:   L3Worker   = L3Worker { };
+    }
+    placement {
+        node_worker: pinned(node = 0);   // → cores {1, 2, 3, 4}
+        l3_worker:   pinned(l3 = fast);  // → cores {1, 2}
+    }
+    run() {
+        println("main: described the host and placed two workers on it");
+    }
+}
+
+fn main() {
+    TopologyApp { };
+}
