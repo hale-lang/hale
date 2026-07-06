@@ -3185,6 +3185,8 @@ impl Parser {
                 Ok(PerspectiveMember::SerializeAs(ty))
             }
             TokenKind::Fn => self.parse_contract_fn().map(PerspectiveMember::Fn),
+            // Phase 2c: the perspective contract's bus surface.
+            TokenKind::Bus => self.parse_bus_block().map(PerspectiveMember::Bus),
             other => Err(Diag::parse(
                 self.peek_token().span,
                 format!("expected perspective member, got {:?}", other),
@@ -7528,6 +7530,25 @@ fn main() { }
         assert_eq!(l.serves.len(), 1);
         assert_eq!(l.serves[0].name, "Router");
         assert_eq!(l.annotations.len(), 1);
+    }
+
+    #[test]
+    fn parse_perspective_bus_surface() {
+        let src = r#"
+type Order { id: Int; }
+perspective OrderRouter {
+    fn health() -> Int;
+    bus { subscribe "orders" as on_order of type Order; }
+}
+fn main() { }
+"#;
+        let prog = parse_str(src).expect("parse");
+        let p = prog.items.iter().find_map(|d| match d {
+            TopDecl::Perspective(p) => Some(p),
+            _ => None,
+        }).expect("perspective");
+        let has_bus = p.members.iter().any(|m| matches!(m, PerspectiveMember::Bus(_)));
+        assert!(has_bus, "expected a Bus member in the perspective contract");
     }
 
     #[test]

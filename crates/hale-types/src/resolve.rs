@@ -983,6 +983,23 @@ fn register_type(
     register_symbol(scope, &decl.name.name, TopSymbol::Type(info), decl.span, diags);
 }
 
+/// Phase 2c: a canonical string key for a bus subject, used to
+/// compare a perspective contract's bus edges against a serving
+/// locus's. Literal subjects use their text; topic refs use the
+/// topic name; qualified refs join the segments.
+fn bus_subject_key(subject: &BusSubject) -> String {
+    match subject {
+        BusSubject::Literal { subject, .. } => subject.clone(),
+        BusSubject::Topic(id) => id.name.clone(),
+        BusSubject::QualifiedTopic(path) => path
+            .segments
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join("::"),
+    }
+}
+
 fn register_perspective(
     decl: &PerspectiveDecl,
     known: &BTreeMap<String, Span>,
@@ -992,8 +1009,23 @@ fn register_perspective(
     let mut params = Vec::new();
     let mut serialize_as = None;
     let mut methods: Vec<MethodInfo> = Vec::new();
+    let mut bus_subscribes: Vec<String> = Vec::new();
+    let mut bus_publishes: Vec<String> = Vec::new();
     for member in &decl.members {
         match member {
+            // Phase 2c: contract bus surface — collect subject keys.
+            PerspectiveMember::Bus(bb) => {
+                for bm in &bb.members {
+                    match bm {
+                        BusMember::Subscribe { subject, .. } => {
+                            bus_subscribes.push(bus_subject_key(subject));
+                        }
+                        BusMember::Publish { subject, .. } => {
+                            bus_publishes.push(bus_subject_key(subject));
+                        }
+                    }
+                }
+            }
             PerspectiveMember::Params(pb) => {
                 for p in &pb.params {
                     let ty = match &p.ty {
@@ -1051,6 +1083,8 @@ fn register_perspective(
         params,
         serialize_as,
         methods,
+        bus_subscribes,
+        bus_publishes,
         span: decl.span,
     };
     register_symbol(

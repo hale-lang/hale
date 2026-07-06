@@ -199,3 +199,88 @@ fn main() { App { }; }
         msgs
     );
 }
+
+// === Phase 2c: bus surface in the contract ====================
+
+#[test]
+fn bus_perspective_conforming_clean() {
+    let src = r#"
+type Order { id: Int; }
+perspective OrderRouter {
+    fn health() -> Int;
+    bus { subscribe "orders" as on_order of type Order; }
+}
+locus RouterV1 : serves OrderRouter {
+    fn health() -> Int { return 1; }
+    bus { subscribe "orders" as on_order of type Order; }
+    fn on_order(o: Order) { }
+}
+main locus App { params { r: perspective(OrderRouter) = RouterV1 { }; } run() { } }
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    // The only diagnostic is the orphan-topic warning (the demo has
+    // no publisher for "orders"); no conformance error should fire.
+    assert!(
+        msgs.iter().all(|m| !m.contains("does not subscribe")
+            && !m.contains("does not publish")
+            && !m.contains("missing contract method")),
+        "expected no conformance error on a conforming bus-perspective, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn bus_perspective_missing_subscription_rejected() {
+    let src = r#"
+type Order { id: Int; }
+perspective OrderRouter {
+    fn health() -> Int;
+    bus { subscribe "orders" as on_order of type Order; }
+}
+locus RouterV1 : serves OrderRouter {
+    fn health() -> Int { return 1; }
+}
+main locus App { params { r: RouterV1 = RouterV1 { }; } run() { } }
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("does not subscribe") && m.contains("orders")),
+        "expected missing-subscription diagnostic, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn reperspective_bus_perspective_gated() {
+    let src = r#"
+type Order { id: Int; }
+perspective OrderRouter {
+    fn health() -> Int;
+    bus { subscribe "orders" as on_order of type Order; }
+}
+locus RouterV1 : serves OrderRouter {
+    fn health() -> Int { return 1; }
+    bus { subscribe "orders" as on_order of type Order; }
+    fn on_order(o: Order) { }
+}
+locus RouterV2 : serves OrderRouter {
+    fn health() -> Int { return 2; }
+    bus { subscribe "orders" as on_order of type Order; }
+    fn on_order(o: Order) { }
+}
+locus Gateway {
+    params { r: perspective(OrderRouter) = RouterV1 { }; }
+    run() { reperspective self.r as RouterV2; }
+}
+main locus App { params { gw: Gateway = Gateway { }; } run() { } }
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("bus surface") && m.contains("supported yet")),
+        "expected bus-perspective swap gate, got: {:?}",
+        msgs
+    );
+}

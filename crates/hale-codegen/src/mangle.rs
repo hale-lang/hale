@@ -301,6 +301,20 @@ impl<'a> QualifiedRenameApplier<'a> {
                             }
                         }
                         PerspectiveMember::StableWhen(_) => {}
+                        // Phase 2c: contract bus surface — rewrite
+                        // subject payload types like a locus bus block.
+                        PerspectiveMember::Bus(bb) => {
+                            for bm in &mut bb.members {
+                                match bm {
+                                    BusMember::Subscribe { ty, .. }
+                                    | BusMember::Publish { ty, .. } => {
+                                        if let Some(t) = ty {
+                                            self.rewrite_type_expr(t);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -636,6 +650,30 @@ impl<'a> Mangler<'a> {
                 PerspectiveMember::StableWhen(b) => self.walk_block(b),
                 PerspectiveMember::SerializeAs(t) => self.walk_type_expr(t),
                 PerspectiveMember::Fn(f) => self.walk_fn_decl(f),
+                // Phase 2c: contract bus surface.
+                PerspectiveMember::Bus(bb) => {
+                    for bm in &mut bb.members {
+                        match bm {
+                            BusMember::Subscribe { subject, handler, ty, .. } => {
+                                if let BusSubject::Topic(id) = subject {
+                                    self.rewrite_ident(&mut id.name);
+                                }
+                                self.rewrite_ident(&mut handler.name);
+                                if let Some(t) = ty {
+                                    self.walk_type_expr(t);
+                                }
+                            }
+                            BusMember::Publish { subject, ty, .. } => {
+                                if let BusSubject::Topic(id) = subject {
+                                    self.rewrite_ident(&mut id.name);
+                                }
+                                if let Some(t) = ty {
+                                    self.walk_type_expr(t);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
