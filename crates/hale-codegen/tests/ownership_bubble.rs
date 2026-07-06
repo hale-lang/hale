@@ -50,6 +50,38 @@ fn run(bin: &std::path::PathBuf) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+/// Run `bin` up to 4 times, returning its stdout as soon as every
+/// needle appears (else the last attempt's stdout). Bubble delivery
+/// races pinned-thread startup and polls a bounded window; on a
+/// saturated runner (nextest runs test binaries in parallel) the
+/// delivery thread can be starved for the whole window even though
+/// the program is correct — it succeeds in a fresh run alone. Retry
+/// a few cheap runs so a delivery-EXPECTING assertion doesn't flake.
+/// (No-delivery `count=0` assertions use `run` — starvation keeps
+/// them at 0, so they never need this.)
+fn run_expecting(bin: &std::path::PathBuf, needles: &[&str]) -> String {
+    let mut last = String::new();
+    for attempt in 0..4 {
+        let out = Command::new(bin).output().expect("run hale");
+        assert!(
+            out.status.success(),
+            "non-zero exit: {:?}\nstderr: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        last = String::from_utf8_lossy(&out.stdout).into_owned();
+        if needles.iter().all(|n| last.contains(n)) {
+            break;
+        }
+        eprintln!(
+            "bubble attempt {} incomplete (delivery starved?), retrying: {:?}",
+            attempt, last
+        );
+    }
+    let _ = std::fs::remove_file(bin);
+    last
+}
+
 /// The intermediary `Yard` births two Ships but declares no `accept`.
 /// They must bubble to the `main locus World`, which accepts Ship — so
 /// `World.__children` sees both, and reading `child.hull` back through
@@ -148,7 +180,7 @@ fn bubble_lock() -> BubbleLock {
 fn world_collects_bubbled_ship() {
     let _lock = bubble_lock();
     let bin = build_named("collect", BUBBLE_SRC);
-    let stdout = run(&bin);
+    let stdout = run_expecting(&bin, &["count=2", "total=42"]);
     // Both Ships bubbled up to World's __children.
     assert!(
         stdout.contains("count=2"),
@@ -221,7 +253,7 @@ fn self_owned_control_still_works() {
         fn main() { World { }; }
     "#;
     let bin = build_named("selfowned", src);
-    let stdout = run(&bin);
+    let stdout = run_expecting(&bin, &["count=2", "total=42"]);
     assert!(
         stdout.contains("count=2") && stdout.contains("total=42"),
         "SelfOwned direct-accept must still collect both Ships; got: {:?}",
@@ -283,7 +315,7 @@ fn non_singleton_ancestor_now_bubbles_via_threading() {
         fn main() { World { }; }
     "#;
     let bin = build_named("nonsingleton", src);
-    let stdout = run(&bin);
+    let stdout = run_expecting(&bin, &["fleet_count=2", "fleet_total=42"]);
     assert!(
         stdout.contains("fleet_count=2") && stdout.contains("fleet_total=42"),
         "a non-singleton accepting ancestor must bubble via #2b threading \

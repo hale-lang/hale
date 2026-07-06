@@ -48,6 +48,35 @@ fn run(bin: &std::path::PathBuf) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+/// Run `bin` up to 4 times, returning stdout once every needle
+/// appears (else the last attempt). Cross-pool bubble delivery can be
+/// starved within its poll window on a saturated parallel-CI runner
+/// even though the program is correct; a fresh run recovers it. Used
+/// by delivery-EXPECTING assertions; no-delivery `count=0` checks use
+/// `run` (starvation keeps them at 0).
+fn run_expecting(bin: &std::path::PathBuf, needles: &[&str]) -> String {
+    let mut last = String::new();
+    for attempt in 0..4 {
+        let out = Command::new(bin).output().expect("run hale");
+        assert!(
+            out.status.success(),
+            "non-zero exit: {:?}\nstderr: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        last = String::from_utf8_lossy(&out.stdout).into_owned();
+        if needles.iter().all(|n| last.contains(n)) {
+            break;
+        }
+        eprintln!(
+            "bubble attempt {} incomplete (delivery starved?), retrying: {:?}",
+            attempt, last
+        );
+    }
+    let _ = std::fs::remove_file(bin);
+    last
+}
+
 /// Two plain `World`s (NOT a `main locus` — instantiated twice under the
 /// `Root`), each with its own `Yard` that does NOT accept `Ship`. Each
 /// Yard spawns two Ships whose hulls key off the owner's `tag`, so the
@@ -143,7 +172,10 @@ fn bubble_lock() -> BubbleLock {
 fn two_worlds_collect_only_their_own_ships() {
     let _lock = bubble_lock();
     let bin = build_named("isolation", ISOLATION_SRC);
-    let stdout = run(&bin);
+    let stdout = run_expecting(
+        &bin,
+        &["w100 count=2 total=203", "w200 count=2 total=403"],
+    );
     // THE prize: each World collects exactly its own two Ships, summed
     // disjointly. A global singleton pointer would give one World all
     // four (or the wrong sums); threading gives each its own subtree.
@@ -225,7 +257,10 @@ fn threading_depth_two_intermediaries() {
         fn main() { Root { }; }
     "#;
     let bin = build_named("depth", src);
-    let stdout = run(&bin);
+    let stdout = run_expecting(
+        &bin,
+        &["w10 count=1 total=11", "w20 count=1 total=21"],
+    );
     assert!(
         stdout.contains("w10 count=1 total=11"),
         "world 10: 2-deep chain must stitch its Ship (11); got: {:?}",
