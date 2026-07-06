@@ -298,7 +298,7 @@ loop) or it owns its own OS thread. There is no third position.
 | Class | Yield discipline | Resource |
 |---|---|---|
 | **`cooperative(pool = X)`** (default for unspecified main-locus params, with `X = main`) | Yields between substrate cells (handler exit, lifecycle transition, bus dispatch, `time::sleep`, explicit `yield`). `time::sleep` slices into ≤100ms intervals and folds in `lotus_bus_queue_drain` for the locus's pool after each slice, so cells posted by other threads deliver mid-loop even during a long keep-alive sleep. Handler bodies are atomic. | Shares pool `X`'s OS thread with other cooperative loci placed on the same pool. |
-| **`pinned`** / **`pinned(core = N)`** / **`pinned(cores = A..B \| A..=B \| {a, b, c})`** | No yield to siblings; owns its OS thread. Bus events to/from cross-thread boundaries via formal mailbox post. | Dedicated OS thread. `core = N` pins it to one CPU; `cores = ...` (topology Phase 1a) sets its affinity mask to a core *set* — the OS schedules freely within the set. Linux-only; best-effort no-op elsewhere. |
+| **`pinned`** / **`pinned(core = N)`** / **`pinned(cores = A..B \| A..=B \| {a, b, c})`** / **`pinned(node = N)`** / **`pinned(l3 = name)`** | No yield to siblings; owns its OS thread. Bus events to/from cross-thread boundaries via formal mailbox post. | Dedicated OS thread. `core = N` pins it to one CPU; `cores = ...` (topology Phase 1a) sets its affinity mask to a core *set*; `node = N` / `l3 = name` (topology Phase 1b) set the mask to a NUMA node / cache domain declared in `topology { }`. The OS schedules freely within the mask. Linux-only; best-effort no-op elsewhere. |
 
 **Pool inference rule.** The cooperative pool set is inferred
 from `cooperative(pool = X)` references in the `placement { }`
@@ -318,6 +318,41 @@ the parent's pool. There is no way to spell "this nested child
 runs on a different pool than its parent" — that would require
 the nested-instantiation expression to carry placement, which
 would re-mix the deployment and intrinsic layers F.31 separates.
+
+**Topology block (Phase 1b, 2026-07-05).** A `main locus` may
+also declare a `topology { }` block — a **declare-only**
+description of the host's core partition, a sibling deployment
+seam to `placement { }` / `bindings { }`:
+
+```hale
+topology {
+    reserve cores 0..2;              // held back for the OS / main
+    node 0 {
+        l3 fast { cores 4..8; }      // a CCD / shared-L3 group
+        l3 slow { cores 8..12; }
+    }
+    node 1 {
+        l3 heavy { cores 12..16; }
+    }
+}
+```
+
+A `placement { }` entry then targets a domain: `pinned(node =
+0)` sets the thread's affinity mask to node 0's core set (the
+union of its L3 domains — here `{4..12}`), and `pinned(l3 =
+fast)` sets it to the named domain's cores (`{4..8}`). This is
+the same cpuset affinity mechanism as `pinned(cores = ...)`;
+the compiler resolves the domain to a concrete core set at
+compile time (closed-world: node ids and domain cores are
+literals). Resolution is **thread affinity only** in this
+slice — binding a node-pinned locus's *arena* to that node's
+memory (the thread + memory co-location payoff) is a follow-up.
+Validation (unique node ids, globally-unique L3 names,
+non-overlapping domains, no domain/reserved overlap, and every
+`pinned(node/l3)` referencing a declared domain) is static; the
+runtime honoring stays best-effort and Linux-only, exactly like
+`pinned(core = N)`. L3-domain names go through the identifier
+rule, so a hard keyword (e.g. `bulk`) can't name a domain.
 
 **Single-threaded-method invariant.** A locus's methods may
 be invoked only on the OS thread that owns its placement's

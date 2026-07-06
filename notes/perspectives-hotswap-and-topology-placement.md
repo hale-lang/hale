@@ -80,6 +80,51 @@ program** — soundness *and* O(1) swap. Three tiers: baked/frozen (inlined,
 fastest, un-swappable) · single swappable slot (1-1, this) · dynamic registry
 (1-N / open-world).
 
+### The contract includes the bus surface, not just the sync ABI
+
+The dispatch split above already makes async a first-class perspective mode — the
+slot *is* a mailbox. That forces a completeness point on the **contract**: if a
+perspective can be reached over the bus, its bus edges are part of the ABI a swap
+is checked against, exactly like its `fn` signatures. The sync half checks
+`RouterV2 : serves Router` implements `fn route`; symmetrically, if the
+perspective subscribes/publishes, the new impl must present the **same** edges —
+same subscribed topics (so publishers still reach it), same published topics (so
+subscribers still hear it) — or the rebind silently drops wiring the "one atomic
+store redirects the whole program" guarantee is supposed to cover. So the
+contract grows an optional bus surface alongside its methods:
+
+```hale
+perspective OrderRouter {
+    fn route(r: Request) -> Response;   // sync ABI  → function-pointer slot
+    subscribe "orders" of Order;        // inbound edge → mailbox slot
+    publish   "fills"  of Fill;         // outbound edge (publisher identity)
+}
+
+locus RouterV2 : serves OrderRouter { ... }   // must satisfy BOTH sets
+reperspective self.router as RouterV2;         // re-points fn-ptr slot AND the
+                                                // "orders" mailbox slot, atomically
+```
+
+Load-bearing subtleties:
+- **Optional — keep the common case flat.** A pure sync `Router` you just call
+  declares zero bus edges; the slot stays a function pointer. Bus-in-contract is
+  an *impl-perspective* concern (state behind the slot), moot for *view*
+  perspectives (the `rich`/`chunked`/`recognition` read-projection end).
+- **1-1 is preserved.** A contract `subscribe "orders"` is a claim about the
+  *handle→impl* subscription identity ("the impl behind this handle is the thing
+  subscribed to orders"), not about the topic's global fanout. If other loci also
+  subscribe `"orders"`, the topic stays genuinely 1-N; the perspective owns one
+  edge into it, and the swap moves *that one edge*.
+- **Not net-new machinery.** Re-pointing a mailbox slot is the same `m28b`
+  cross-thread `lotus_mailbox_post` primitive already used for pinned/cross-pool
+  delivery — and it composes with Part 3: a `reperspective` that also *re-places*
+  the impl onto a different NUMA node just re-points the mailbox to a thread on
+  that node.
+- **It's a contract change, so it ripples — correctly.** Adding a subscribed
+  topic recompiles holders (per below); impls still swap freely. Bus edges sit on
+  the stable/versioned side of the wire boundary, exactly where the contract
+  belongs.
+
 ### State migration
 
 Model it as *deploying an app over a running DB*: `params` (+ capacity/@form
@@ -155,7 +200,7 @@ topology {
         l3 warm { cores 12..19; }
     }
     node 1 {
-        l3 bulk { cores 20..35; }
+        l3 heavy { cores 20..35; }   // (not `bulk` — a reserved word)
     }
 }
 ```

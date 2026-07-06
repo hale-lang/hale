@@ -387,6 +387,7 @@ impl<'a> QualifiedRenameApplier<'a> {
             | LocusMember::Closure(_)
             | LocusMember::Bindings(_)
             | LocusMember::Placement(_)
+            | LocusMember::Topology(_)
             | LocusMember::BirthCheck(_) => {}
         }
     }
@@ -591,6 +592,13 @@ impl<'a> Mangler<'a> {
                 // names (inside cooperative(pool = X)) are also
                 // local. Walk does nothing in v1.
                 let _ = pb;
+            }
+            LocusMember::Topology(tb) => {
+                // Topology Phase 1b: reserved cores, node ids, and
+                // L3-domain names/cores are all literals / local
+                // idents (no cross-seed type references). Nothing
+                // to rewrite.
+                let _ = tb;
             }
             LocusMember::BirthCheck(bc) => {
                 // F.27 v2: walk the cond + payload exprs so any

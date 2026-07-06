@@ -1247,10 +1247,11 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 }
                 LocusMember::Bindings(_)
                 | LocusMember::Placement(_)
+                | LocusMember::Topology(_)
                 | LocusMember::BirthCheck(_) => {
-                    // Bindings + placement emitted by main-locus
-                    // prelude pass; birth_check clauses are emitted
-                    // inline at instantiation (see
+                    // Bindings + placement + topology emitted by
+                    // main-locus prelude pass; birth_check clauses
+                    // are emitted inline at instantiation (see
                     // lower_locus_instantiation's F.27 v2 block).
                     // None contributes to the method table.
                 }

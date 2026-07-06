@@ -3034,8 +3034,14 @@ purpose compiled language.
   fires. Topology Phase 1a (2026-07-04) widens this to a
   cpuset: `pinned(cores = A..B)` / `{a, b, c}` masks the
   thread to a core *set* — the isolation-domain form (keep a
-  locus on one CCD/L3 group, away from the OS cores) that the
-  fuller `topology { }` DSL builds on.
+  locus on one CCD/L3 group, away from the OS cores). Phase 1b
+  (2026-07-05) adds the `topology { }` block (declare the host's
+  nodes / L3 domains / reserved cores) and `pinned(node = N)` /
+  `pinned(l3 = name)` — target a domain by name and the mask
+  becomes its cores. This slice is thread affinity only; binding
+  a node-pinned locus's *arena* to that node's memory (the
+  thread + memory co-location that motivates NUMA targeting) is
+  the follow-up slice.
 - Per-method scratch (Phase 4, 2026-05-21) → tight
   allocate-touch-free loop on every method invocation →
   naturally L1-hot for the duration of one handler.

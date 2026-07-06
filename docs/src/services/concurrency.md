@@ -82,15 +82,70 @@ main locus App {
   everything else") without hand-picking a single CPU. Ranges
   follow the usual rules — `..` excludes the upper bound, `..=`
   includes it.
+- `pinned(node = 0)` / `pinned(l3 = fast)` target a NUMA node or
+  cache domain *by name* instead of raw core numbers — see the
+  `topology { }` block below.
 - Unmentioned top-level loci default to `cooperative(pool =
   main)` — the program's main thread.
 
-Core affinity (both `core =` and `cores =`) is a Linux
-optimization and best-effort: indices that don't exist on the
-box are skipped, and on other platforms (macOS) the thread
-simply runs unpinned. Your program behaves identically either
-way — affinity only affects *where* the scheduler may run the
-thread.
+Core affinity (`core =`, `cores =`, and the `node =` / `l3 =`
+forms below) is a Linux optimization and best-effort: indices
+that don't exist on the box are skipped, and on other platforms
+(macOS) the thread simply runs unpinned. Your program behaves
+identically either way — affinity only affects *where* the
+scheduler may run the thread.
+
+## Describing the machine: `topology { }`
+
+Raw core numbers work, but on a big box you'd rather say "put
+this on the fast cache domain" than memorize which cores share
+an L3. A `topology { }` block on `main` describes the host's
+core partition once, and placement entries target it by name:
+
+```hale
+main locus App {
+    topology {
+        reserve cores 0..2;              // hands-off for the OS / main
+        node 0 {
+            l3 fast { cores 4..8; }      // a CCD / shared-L3 group
+            l3 slow { cores 8..12; }
+        }
+        node 1 {
+            l3 heavy { cores 12..16; }
+        }
+    }
+    params {
+        matcher: Matcher = Matcher { };
+        region:  Region  = Region  { };
+    }
+    placement {
+        matcher: pinned(l3 = fast);   // affinity = the `fast` domain, {4..8}
+        region:  pinned(node = 0);    // affinity = node 0's cores, {4..12}
+    }
+}
+```
+
+- `pinned(node = N)` masks the thread to node `N`'s cores — the
+  union of the node's L3 domains.
+- `pinned(l3 = name)` masks it to that one cache domain, so
+  cooperating loci sharing an L3 keep their cross-locus bus
+  traffic hot in that cache.
+- `reserve cores` holds cores back for the OS / main; a domain
+  may not claim a reserved core.
+
+The block is **declare-only** and checked at compile time: node
+ids must be unique, L3 names must be unique (so `pinned(l3 =
+name)` is unambiguous), a core belongs to at most one domain,
+and every `pinned(node/l3)` must name a domain you declared.
+L3-domain names are ordinary identifiers, so a reserved word
+(like `bulk`) can't be a domain name — pick a plain name.
+
+> **This slice is thread affinity only.** `node = N` currently
+> pins the *thread* to the node's cores. Binding the locus's
+> *arena* to that node's memory — the thread + memory
+> co-location that makes NUMA targeting pay off — is the next
+> slice. Until then, `node =` and `l3 =` are a named, validated
+> way to spell a cpuset.
 
 Placement keys on the *field name*, not the locus type, so two
 instances of the same locus type can live on different threads —
