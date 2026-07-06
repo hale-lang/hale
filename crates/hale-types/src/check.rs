@@ -5406,6 +5406,7 @@ impl<'a> Checker<'a> {
             // a smaller CI machine).
             if let PlacementSpec::Pinned {
                 affinity: PinAffinity::Cores(spec),
+                ..
             } = &entry.spec
             {
                 match spec {
@@ -5452,7 +5453,25 @@ impl<'a> Checker<'a> {
             // `topology { }` block. Using either with no topology
             // block, or naming an undeclared node/domain, is a
             // definite authoring error (closed-world resolution).
-            if let PlacementSpec::Pinned { affinity } = &entry.spec {
+            if let PlacementSpec::Pinned { affinity, replicas } =
+                &entry.spec
+            {
+                // Topology Phase 1c: `replicas = K` must be >= 1.
+                // `Some(0)` / negative fans out nothing (or is a
+                // typo); `None` / `Some(1)` is a single instance.
+                if let Some(k) = replicas {
+                    if *k < 1 {
+                        self.diags.push(Diag::ty(
+                            entry.span,
+                            format!(
+                                "placement entry `{}`: `replicas = {}` must \
+                                 be at least 1 (it fans the locus into K \
+                                 single-threaded instances)",
+                                entry.field.name, k
+                            ),
+                        ));
+                    }
+                }
                 match affinity {
                     PinAffinity::Node(n) => match topology {
                         None => self.diags.push(Diag::ty(

@@ -1890,6 +1890,22 @@ main locus App {
     Linux-only and best-effort (falls back to first-touch when
     the node can't be honored); non-node arenas are unchanged.
     (Topology Phase 1b, 2026-07-05.)
+15. **`replicas = K` (error on `K < 1`; pinned-only).** A
+    `pinned(..., replicas = K)` entry fans the field into K
+    single-threaded instances — replica `i` pinned to one core of
+    the affinity set (round-robin), each on its own OS thread.
+    `K` must be `>= 1` (`0` / negative is rejected). `replicas` is
+    valid only on `pinned`: K cooperative loci on one pool would
+    share a single thread (not parallel), so `cooperative(...,
+    replicas = K)` is rejected at parse with guidance toward the
+    pinned form. The point is that parallelism comes from *more
+    single-threaded units*, never a multi-worker pool — each
+    replica is its own single consumer, so the lock-free rings, bus
+    devirtualization, and single-threaded-method guarantee all hold.
+    Replicas compose with `node`/`l3` (each replica's arena binds to
+    the target node) and are non-addressable (no `field[i]` surface;
+    they are bus-subscribing or run-loop workers). All K are joined
+    and dissolved at parent teardown. (Topology Phase 1c, 2026-07-05.)
 
 ### Single-threaded-method invariant
 
