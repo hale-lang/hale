@@ -274,6 +274,13 @@ pub struct LocusDecl {
     /// emit no LLVM IR directly.
     pub generics: Vec<GenericParam>,
     pub annotations: Vec<LocusAnnotation>,
+    /// Phase 2a (perspectives): the perspective contracts this
+    /// locus declares it implements — `locus L : serves P, Q`.
+    /// Empty for loci that serve no perspective. Each name must
+    /// resolve to a `perspective` decl whose contract methods the
+    /// locus provides (checked at typecheck, like interface
+    /// conformance).
+    pub serves: Vec<Ident>,
     /// v1.x-FORM-1: optional `@form(<name>, <args>...)` annotation
     /// that sits above the `locus` keyword. Picks an efficient
     /// lowering and synthesizes a standard method set. One form
@@ -1507,6 +1514,13 @@ pub enum TypeExpr {
         ret: Option<Box<TypeExpr>>,
         span: Span,
     },
+    /// Phase 2a (perspectives): `perspective(P)` — a live-
+    /// rebindable handle to the perspective contract `P`. A
+    /// holder programs against `P`'s methods and reaches the
+    /// current impl only through the perspective's global slot;
+    /// the impl behind it can be re-pointed (Phase 2b
+    /// `reperspective`) without the holder changing.
+    Perspective { name: Ident, span: Span },
 }
 
 impl TypeExpr {
@@ -1519,6 +1533,7 @@ impl TypeExpr {
             TypeExpr::Bounded { span, .. } => *span,
             TypeExpr::Tuple(_, s) => *s,
             TypeExpr::Function { span, .. } => *span,
+            TypeExpr::Perspective { span, .. } => *span,
         }
     }
 }

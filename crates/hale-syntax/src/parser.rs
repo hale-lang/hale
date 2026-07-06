@@ -367,7 +367,7 @@ impl Parser {
                              `@locality(...)` / `@export locus`",
                         ));
                     }
-                    let mut fn_decl = self.parse_fn_decl_with_ffi(None)?;
+                    let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
                     if fn_decl.ffi.is_some() {
                         return Err(Diag::parse(
                             at.span,
@@ -410,7 +410,7 @@ impl Parser {
                         "expected `fn` after `@ffi(...)` annotation",
                     ));
                 }
-                let mut fn_decl = self.parse_fn_decl_with_ffi(Some(ffi.clone()))?;
+                let mut fn_decl = self.parse_fn_decl_with_ffi(Some(ffi.clone()), false)?;
                 fn_decl.span = ffi.span.merge(fn_decl.span);
                 return Ok(TopDecl::Fn(fn_decl));
             }
@@ -455,7 +455,7 @@ impl Parser {
                          `@bounded` instead",
                     ));
                 }
-                let mut fn_decl = self.parse_fn_decl_with_ffi(None)?;
+                let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
                 fn_decl.unbounded = true;
                 fn_decl.span = at.span.merge(fn_decl.span);
                 return Ok(TopDecl::Fn(fn_decl));
@@ -1134,10 +1134,15 @@ impl Parser {
         let generics = self.parse_generic_params_opt()?;
 
         let mut annotations = Vec::new();
+        // Phase 2a: `serves P, Q` conformance clauses share the
+        // post-`:` list with tier/projection annotations. Each
+        // comma-item is either `serves <Name>` (contextual ident)
+        // or a regular annotation.
+        let mut serves = Vec::new();
         if self.eat(&TokenKind::Colon) {
-            annotations.push(self.parse_locus_annotation()?);
+            self.parse_locus_header_item(&mut annotations, &mut serves)?;
             while self.eat(&TokenKind::Comma) {
-                annotations.push(self.parse_locus_annotation()?);
+                self.parse_locus_header_item(&mut annotations, &mut serves)?;
             }
         }
 
@@ -1194,12 +1199,31 @@ impl Parser {
             export: false,
             generics,
             annotations,
+            serves,
             form: None,
             locality: None,
             bounded: false,
             members,
             span: kw.span.merge(close.span),
         })
+    }
+
+    /// Phase 2a: one item in a locus header's post-`:` list —
+    /// either a `serves <Name>` conformance clause (contextual
+    /// ident `serves`) or a tier/projection annotation.
+    fn parse_locus_header_item(
+        &mut self,
+        annotations: &mut Vec<LocusAnnotation>,
+        serves: &mut Vec<Ident>,
+    ) -> Result<(), Diag> {
+        if matches!(self.peek(), TokenKind::Ident(s) if s == "serves") {
+            self.bump(); // `serves`
+            serves.push(self.expect_ident("perspective contract name")?);
+            Ok(())
+        } else {
+            annotations.push(self.parse_locus_annotation()?);
+            Ok(())
+        }
     }
 
     fn parse_locus_annotation(&mut self) -> Result<LocusAnnotation, Diag> {
@@ -3160,7 +3184,7 @@ impl Parser {
                 self.expect(TokenKind::Semi, ";")?;
                 Ok(PerspectiveMember::SerializeAs(ty))
             }
-            TokenKind::Fn => self.parse_fn_decl().map(PerspectiveMember::Fn),
+            TokenKind::Fn => self.parse_contract_fn().map(PerspectiveMember::Fn),
             other => Err(Diag::parse(
                 self.peek_token().span,
                 format!("expected perspective member, got {:?}", other),
@@ -3321,7 +3345,16 @@ impl Parser {
     }
 
     fn parse_fn_decl(&mut self) -> Result<FnDecl, Diag> {
-        self.parse_fn_decl_with_ffi(None)
+        self.parse_fn_decl_with_ffi(None, false)
+    }
+
+    /// Phase 2a: a perspective CONTRACT method — a bodyless `fn`
+    /// signature (`fn route(r: Request) -> Response;`) that
+    /// declares the ABI a `serves`-ing locus must provide. A
+    /// bodied `fn { ... }` in a perspective is still accepted
+    /// (a default / helper) via the same path.
+    fn parse_contract_fn(&mut self) -> Result<FnDecl, Diag> {
+        self.parse_fn_decl_with_ffi(None, true)
     }
 
     /// Stage-1 FFI: when `ffi` is `Some(_)`, the fn declaration
@@ -3335,6 +3368,7 @@ impl Parser {
     fn parse_fn_decl_with_ffi(
         &mut self,
         ffi: Option<FfiAnnotation>,
+        allow_bodyless: bool,
     ) -> Result<FnDecl, Diag> {
         let kw = self.expect(TokenKind::Fn, "fn")?;
         let name = self.expect_ident("function name")?;
@@ -3382,6 +3416,30 @@ impl Parser {
             // Synthesize an empty block so downstream consumers
             // keep the existing `body: Block` shape. The block's
             // span points at the trailing `;` of the declaration.
+            let body = Block {
+                stmts: Vec::new(),
+                tail: None,
+                span: semi.span,
+            };
+            return Ok(FnDecl {
+                name,
+                generics,
+                params,
+                ret,
+                fallible,
+                ffi,
+                export: false,
+                unbounded: false,
+                span: kw.span.merge(semi.span),
+                body,
+            });
+        }
+        // Phase 2a: a bodyless contract signature (`fn foo(...);`)
+        // — allowed only in a perspective contract. Synthesize an
+        // empty block so downstream keeps the `body: Block` shape,
+        // same as the FFI path above.
+        if allow_bodyless && matches!(self.peek(), TokenKind::Semi) {
+            let semi = self.bump();
             let body = Block {
                 stmts: Vec::new(),
                 tail: None,
@@ -3472,6 +3530,20 @@ impl Parser {
                 let prim = primitive_from_name(name).expect("prim_type lookup");
                 self.bump();
                 Ok(TypeExpr::Primitive(prim, start))
+            }
+            // Phase 2a: `perspective(P)` — a handle to contract P.
+            TokenKind::Perspective => {
+                let kw = self.bump();
+                self.expect(TokenKind::LParen, "expected `(` after `perspective`")?;
+                let name = self.expect_ident("perspective contract name")?;
+                let close = self.expect(
+                    TokenKind::RParen,
+                    "expected `)` after `perspective(P)`",
+                )?;
+                Ok(TypeExpr::Perspective {
+                    name,
+                    span: kw.span.merge(close.span),
+                })
             }
             TokenKind::Rich | TokenKind::Chunked | TokenKind::Recognition => {
                 let class_tok = self.bump();
@@ -7346,5 +7418,95 @@ fn main() { L { }; }
             _ => None,
         }).unwrap();
         assert!(kf.is_none());
+    }
+
+    // === Perspectives Phase 2a: contract fn / serves / slot type ==
+
+    #[test]
+    fn parse_perspective_contract_bodyless_fn() {
+        let src = r#"
+perspective Router {
+    fn route(code: Int) -> Int;
+    fn health() -> Int;
+}
+fn main() { }
+"#;
+        let prog = parse_str(src).expect("parse");
+        let p = prog.items.iter().find_map(|d| match d {
+            TopDecl::Perspective(p) => Some(p),
+            _ => None,
+        }).expect("perspective");
+        let fns: Vec<&str> = p.members.iter().filter_map(|m| match m {
+            PerspectiveMember::Fn(f) => Some(f.name.name.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(fns, vec!["route", "health"]);
+    }
+
+    #[test]
+    fn parse_locus_serves_clause() {
+        let src = r#"
+perspective Router { fn route(c: Int) -> Int; }
+locus RouterV1 : serves Router {
+    fn route(c: Int) -> Int { return c; }
+}
+fn main() { }
+"#;
+        let prog = parse_str(src).expect("parse");
+        let l = prog.items.iter().find_map(|d| match d {
+            TopDecl::Locus(l) if l.name.name == "RouterV1" => Some(l),
+            _ => None,
+        }).expect("locus");
+        assert_eq!(
+            l.serves.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            vec!["Router"]
+        );
+    }
+
+    #[test]
+    fn parse_serves_composes_with_annotation() {
+        // `: tier 2, serves Router` — serves shares the post-colon
+        // list with annotations, in any order.
+        let src = r#"
+perspective Router { fn route(c: Int) -> Int; }
+locus RouterV1 : serves Router, tier 2 {
+    fn route(c: Int) -> Int { return c; }
+}
+fn main() { }
+"#;
+        let prog = parse_str(src).expect("parse");
+        let l = prog.items.iter().find_map(|d| match d {
+            TopDecl::Locus(l) if l.name.name == "RouterV1" => Some(l),
+            _ => None,
+        }).expect("locus");
+        assert_eq!(l.serves.len(), 1);
+        assert_eq!(l.serves[0].name, "Router");
+        assert_eq!(l.annotations.len(), 1);
+    }
+
+    #[test]
+    fn parse_perspective_slot_type() {
+        let src = r#"
+perspective Router { fn route(c: Int) -> Int; }
+locus Gateway {
+    params { r: perspective(Router); }
+}
+fn main() { }
+"#;
+        let prog = parse_str(src).expect("parse");
+        let l = prog.items.iter().find_map(|d| match d {
+            TopDecl::Locus(l) if l.name.name == "Gateway" => Some(l),
+            _ => None,
+        }).expect("locus");
+        let params = l.members.iter().find_map(|m| match m {
+            LocusMember::Params(p) => Some(p),
+            _ => None,
+        }).expect("params");
+        match &params.params[0].ty {
+            Some(TypeExpr::Perspective { name, .. }) => {
+                assert_eq!(name.name, "Router");
+            }
+            other => panic!("expected perspective(Router) type, got {:?}", other),
+        }
     }
 }

@@ -2225,7 +2225,77 @@ bodies, bus-handler methods (`subscribe X as foo` → `fn foo`),
 `run()`, lifecycle methods (`birth()`, `dissolve()`, `drain()`),
 mode-method bodies. The same body shape gets the same primitive.
 
+## Perspectives: contract, `serves`, and the slot (Phase 2a)
+
+A `perspective P { ... }` is a **contract** — a set of bodyless
+`fn` signatures that form a stable ABI boundary — plus a
+program-global, live-rebindable **slot** that holders dispatch
+through. Phase 2a (2026-07-06) ships the contract, conformance,
+the slot type, and dispatch; the live swap (`reperspective`) is
+the next slice.
+
+```hale
+perspective Router {
+    fn route(code: Int) -> Int;   // bodyless contract signature
+    fn health() -> Int;
+}
+
+locus RouterV1 : serves Router {  // declares conformance
+    fn route(code: Int) -> Int { return code + 100; }
+    fn health() -> Int { return 1; }
+}
+
+locus Gateway {
+    params { router: perspective(Router) = RouterV1 { }; }  // holds the slot
+    fn handle(c: Int) -> Int { return self.router.route(c); } // calls through it
+}
+```
+
+**`serves` conformance (error).** A `locus L : serves P` must
+provide every contract method P declares — matching arity, param
+types, and return type. A missing or mismatched method, or
+`serves` naming an unknown / non-perspective symbol, is a
+typecheck error. This is the perspective analog of interface
+structural satisfaction (and reuses its shape). The synthesized
+`is_stable` (from `stable_when`) is not a contract method the impl
+must provide.
+
+**The slot type `perspective(P)`.** A holder programs against
+`perspective(P)`, never a concrete impl. It is a handle: at the
+LLVM level a single pointer stored in the holder's field, but
+dispatch does **not** read that field.
+
+**One global slot (1-1, not 1-N).** Each perspective P has exactly
+one program-global slot — a `{ data, vtable }` cell (the interface
+fat-pointer layout) named `__persp.<P>`. Every holder of
+`perspective(P)` funnels through it: `self.router.route(x)` loads
+the global slot, indexes the vtable at the contract-method
+position, and indirect-calls with `data` (the current impl's
+self) as the implicit receiver. Because the interop is closed-
+world and 1-1, the compiler sees every call site and there is
+exactly one target — which is what makes the Phase-2b swap a
+single atomic store that redirects the whole program. (Contrast
+`interface`, which is a *per-value* fat pointer, many impls, no
+global slot.)
+
+**Designation.** A `perspective(P) = Impl { }` field default
+*designates* the slot: it instantiates `Impl` (an owned child of
+the holder, torn down normally) and stores `{ impl_self, vtable(Impl,
+P) }` into the global slot. The field itself stores the impl's
+self-pointer for ownership; the slot holds the same pointer plus
+the vtable for dispatch.
+
+**Cost.** Steady state is one load + one predicted indirect call
+per call into a perspective — near-direct. The mechanism is
+Linux/native-agnostic (no new runtime dependency); a program that
+declares no perspectives pays nothing.
+
 ## Perspective hot-load
+
+> **Status:** the flow below is the aspirational *swap* path
+> (Phase 2b/3). Phase 2a ships the contract + slot + dispatch
+> above; `reperspective` (the atomic slot re-point) and state
+> migration land in the following slices.
 
 For each `perspective P { ... }` instance currently active:
 

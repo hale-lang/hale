@@ -150,6 +150,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Duration
             | CodegenTy::BytesMut
             | CodegenTy::Drain(_)
+            | CodegenTy::Perspective(_)
             | CodegenTy::FnPtr { .. } => Ok(value),
             CodegenTy::Enum(name) => {
                 let info = self

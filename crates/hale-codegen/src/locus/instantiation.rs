@@ -1996,6 +1996,48 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     iface,
                 )?;
                 (fat.into(), declared_ty.clone())
+            } else if let (
+                CodegenTy::Perspective(persp),
+                CodegenTy::LocusRef(impl_locus),
+            ) = (&declared_ty, &val_ty)
+            {
+                // Phase 2a designation: `perspective(P) = Impl { }`
+                // points P's program-global slot at this impl — its
+                // self_ptr (data) + a vtable of its contract methods
+                // — so every holder of `perspective(P)` dispatches to
+                // it. The field itself stores the impl self_ptr for
+                // ownership / teardown (the impl is an owned child).
+                let impl_self = val.into_pointer_value();
+                let vtable =
+                    self.ensure_perspective_vtable(impl_locus, persp)?;
+                let slot = self.ensure_perspective_slot(persp);
+                let fat_struct_ty = self.iface_fat_struct_ty();
+                let slot_ptr = slot.as_pointer_value();
+                let data_gep = self
+                    .builder
+                    .build_struct_gep(
+                        fat_struct_ty,
+                        slot_ptr,
+                        0,
+                        "persp.designate.data.gep",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(data_gep, impl_self)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let vt_gep = self
+                    .builder
+                    .build_struct_gep(
+                        fat_struct_ty,
+                        slot_ptr,
+                        1,
+                        "persp.designate.vtable.gep",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(vt_gep, vtable.as_pointer_value())
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                (val, declared_ty.clone())
             } else if came_from_literal
                 && matches!(
                     (&val_ty, &declared_ty),

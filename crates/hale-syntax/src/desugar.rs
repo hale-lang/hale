@@ -126,6 +126,7 @@ pub fn wrap_main_as_wasm_export(program: &mut Program) -> bool {
         export: true,
         generics: Vec::new(),
         annotations: Vec::new(),
+        serves: Vec::new(),
         form: None,
         locality: None,
         bounded: false,

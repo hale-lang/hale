@@ -1604,6 +1604,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                 | CodegenTy::Tuple(_)
                                 | CodegenTy::FnPtr { .. }
                                 | CodegenTy::Interface(_)
+                                | CodegenTy::Perspective(_)
                                 | CodegenTy::Cell(_, _)
                                 | CodegenTy::Drain(_) => self
                                     .context
@@ -1804,6 +1805,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                 | CodegenTy::Tuple(_)
                                 | CodegenTy::FnPtr { .. }
                                 | CodegenTy::Interface(_)
+                                | CodegenTy::Perspective(_)
                                 | CodegenTy::Cell(_, _)
                                 | CodegenTy::Drain(_) => self
                                     .context

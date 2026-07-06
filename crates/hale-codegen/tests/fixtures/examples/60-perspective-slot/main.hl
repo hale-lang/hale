@@ -1,0 +1,69 @@
+// 60-perspective-slot — a perspective as a live-rebindable handle
+// to a contract, dispatched through a program-global slot
+// (perspectives, Phase 2a).
+//
+// A `perspective` declares a CONTRACT — a set of bodyless method
+// signatures, the stable ABI a holder programs against:
+//
+//   perspective Router {
+//       fn route(code: Int) -> Int;
+//   }
+//
+// A locus `serves` that contract by providing every method
+// (checked structurally, like an interface):
+//
+//   locus RouterV1 : serves Router { fn route(...) -> Int { ... } }
+//
+// A holder programs against `perspective(Router)` — it never names
+// a concrete impl. Designating the slot (`= RouterV1 { }`) points
+// the perspective's ONE program-global slot at that impl; every
+// call through `self.router.route(...)` funnels through the slot
+// (a load + an indirect call). Because it's 1-1 and closed-world,
+// a future `reperspective` (Phase 2b) re-points that one slot with
+// a single atomic store — redirecting the whole program at
+// pointer-flip cost. This slice ships the contract + `serves` +
+// the slot + dispatch; the swap itself is the next slice.
+
+perspective Router {
+    fn route(code: Int) -> Int;
+    fn health() -> Int;
+}
+
+locus RouterV1 : serves Router {
+    fn route(code: Int) -> Int {
+        return code + 100;
+    }
+    fn health() -> Int {
+        return 1;
+    }
+}
+
+// The holder programs against the contract, not the impl. It
+// designates the slot with a conforming impl at construction.
+locus Gateway {
+    params {
+        router: perspective(Router) = RouterV1 { };
+    }
+    fn handle(code: Int) -> Int {
+        return self.router.route(code);
+    }
+    run() {
+        // Call through the perspective indirection.
+        println(self.router.route(41));   // 141
+        println(self.handle(7));          // 107
+        println(self.router.health());    // 1
+    }
+}
+
+main locus App {
+    params {
+        gw: Gateway = Gateway { };
+    }
+    run() {
+        println("gateway up, routing through a perspective slot");
+    }
+}
+
+fn main() {
+    App { };
+}
