@@ -3751,6 +3751,17 @@ impl Parser {
             stmts.push(self.parse_violate_stmt()?);
             return Ok(None);
         }
+        // Perspectives Phase 2b: `reperspective self.<field> as
+        // <Impl>;`. Contextual keyword at statement-leading position
+        // — triggers only when `reperspective` is followed by `self`
+        // (the target owner), so `let reperspective = 0;` and
+        // `reperspective()` stay ordinary ident uses.
+        if matches!(self.peek(), TokenKind::Ident(s) if s == "reperspective")
+            && matches!(self.peek_at(1), TokenKind::KwSelf)
+        {
+            stmts.push(self.parse_reperspective_stmt()?);
+            return Ok(None);
+        }
         // WS3.2 (2026-06-11): a *trailing* `if` (immediately before
         // the block's `}`, with no `;`) becomes the block's tail
         // expression *when it is value-producing* — i.e. every arm
@@ -3858,6 +3869,41 @@ impl Parser {
         Ok(Stmt::Violate {
             name,
             payload,
+            span: kw.span.merge(semi.span),
+        })
+    }
+
+    /// Perspectives Phase 2b: `reperspective self.<field> as
+    /// <Impl>;`. The target is a `self`-field of `perspective(P)`
+    /// type; `as <Impl>` names the new implementation. `as` is a
+    /// contextual keyword recognized only in this position here.
+    fn parse_reperspective_stmt(&mut self) -> Result<Stmt, Diag> {
+        let kw = self.bump(); // consume `reperspective` Ident
+        self.expect(TokenKind::KwSelf, "expected `self` after `reperspective`")?;
+        self.expect(
+            TokenKind::Dot,
+            "expected `.` after `self` in `reperspective self.<field>`",
+        )?;
+        let field = self.expect_ident("perspective field name")?;
+        // contextual `as`
+        match self.peek() {
+            TokenKind::Ident(s) if s == "as" => {
+                self.bump();
+            }
+            _ => {
+                return Err(Diag::parse(
+                    self.peek_token().span,
+                    "expected `as <Impl>` in `reperspective self.<field> \
+                     as <Impl>`"
+                        .to_string(),
+                ));
+            }
+        }
+        let impl_name = self.expect_ident("implementation locus name")?;
+        let semi = self.expect(TokenKind::Semi, ";")?;
+        Ok(Stmt::Reperspective {
+            field,
+            impl_name,
             span: kw.span.merge(semi.span),
         })
     }
@@ -7482,6 +7528,41 @@ fn main() { }
         assert_eq!(l.serves.len(), 1);
         assert_eq!(l.serves[0].name, "Router");
         assert_eq!(l.annotations.len(), 1);
+    }
+
+    #[test]
+    fn parse_reperspective_stmt() {
+        let src = r#"
+perspective Router { fn route(c: Int) -> Int; }
+locus RouterV2 : serves Router { fn route(c: Int) -> Int { return c; } }
+locus Gateway {
+    params { router: perspective(Router) = RouterV2 { }; }
+    run() { reperspective self.router as RouterV2; }
+}
+fn main() { }
+"#;
+        let prog = parse_str(src).expect("parse");
+        let l = prog.items.iter().find_map(|d| match d {
+            TopDecl::Locus(l) if l.name.name == "Gateway" => Some(l),
+            _ => None,
+        }).expect("locus");
+        let run = l.members.iter().find_map(|m| match m {
+            LocusMember::Lifecycle(lc) => Some(lc),
+            _ => None,
+        }).expect("run");
+        let found = run.body.stmts.iter().any(|s| matches!(
+            s, Stmt::Reperspective { field, impl_name, .. }
+               if field.name == "router" && impl_name.name == "RouterV2"));
+        assert!(found, "expected a Reperspective stmt");
+    }
+
+    #[test]
+    fn parse_reperspective_ident_not_stmt() {
+        // `reperspective` not followed by `self` stays an ordinary ident.
+        let src = r#"
+fn main() { let reperspective = 3; }
+"#;
+        parse_str(src).expect("reperspective as a plain binding parses");
     }
 
     #[test]

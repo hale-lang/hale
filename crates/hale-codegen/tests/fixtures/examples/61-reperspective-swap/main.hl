@@ -1,0 +1,52 @@
+// 61-reperspective-swap — the live redeploy (perspectives, Phase 2b).
+//
+// `reperspective self.<field> as <Impl>` re-points a perspective's
+// program-global slot at a fresh implementation. Because every
+// holder of `perspective(P)` funnels through that one slot, the
+// swap is a single pointer flip that redirects EVERY call site at
+// once — the same `self.router.route(...)` call resolves to the
+// new impl immediately after.
+//
+//   reperspective self.router as RouterV2;
+//
+// This slice is the FRESH-INSTANCE swap: the new impl is
+// instantiated with its own birth defaults; state does not carry
+// across (that's state migration — Phase 3). Rebind authority
+// follows ownership: the swap runs on the locus that owns the
+// slot (`self.router`), never a mere caller.
+
+perspective Router {
+    fn route(code: Int) -> Int;
+}
+
+locus RouterV1 : serves Router {
+    fn route(code: Int) -> Int { return code + 100; }
+}
+
+locus RouterV2 : serves Router {
+    fn route(code: Int) -> Int { return code + 200; }
+}
+
+locus Gateway {
+    params {
+        router: perspective(Router) = RouterV1 { };
+    }
+    run() {
+        println(self.router.route(1));       // V1 → 101
+        reperspective self.router as RouterV2;
+        println(self.router.route(1));       // V2 → 201  (same call site)
+        reperspective self.router as RouterV1;
+        println(self.router.route(1));       // V1 → 101  (swapped back)
+    }
+}
+
+main locus App {
+    params { gw: Gateway = Gateway { }; }
+    run() {
+        println("gateway redeployed its router twice, live");
+    }
+}
+
+fn main() {
+    App { };
+}

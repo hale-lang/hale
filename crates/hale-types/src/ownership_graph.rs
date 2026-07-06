@@ -836,7 +836,8 @@ fn collect_sites_stmt(
         Stmt::Block(b) => collect_sites_block(b, locus_types, out),
         Stmt::Expr(e) => collect_sites_expr(e, locus_types, out),
         // No sub-expressions to walk.
-        Stmt::Yield(_)
+        Stmt::Reperspective { .. }
+        | Stmt::Yield(_)
         | Stmt::Break(_)
         | Stmt::Continue(_)
         | Stmt::Terminate(_) => {}

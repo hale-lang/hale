@@ -813,12 +813,22 @@ statement         = let_stmt
                   | continue_stmt
                   | yield_stmt
                   | terminate_stmt
+                  | reperspective_stmt
                   | recovery_stmt
                   | violate_stmt
                   | fail_stmt
                   | block
                   | expr_stmt
                   ;
+
+(* Perspectives Phase 2b (2026-07-06): the live redeploy. Re-points
+   the perspective slot named by `self.<field>`'s `perspective(P)`
+   type at a fresh instance of the given impl locus (which must
+   `serve P`). `reperspective` is a contextual keyword — recognized
+   only as a statement head immediately followed by `self`; `as` is
+   contextual here too. *)
+reperspective_stmt = "reperspective" , "self" , "." , IDENTIFIER ,
+                     "as" , IDENTIFIER , ";" ;
 
 let_stmt          = "let" , [ "mut" ] , IDENTIFIER ,
                     [ ":" , type_expr ] , "=" , expression , ";" ;

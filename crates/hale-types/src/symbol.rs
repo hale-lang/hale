@@ -113,6 +113,11 @@ pub struct InterfaceMethodInfo {
 #[derive(Debug, Clone)]
 pub struct LocusInfo {
     pub name: String,
+    /// Phase 2a: perspective contracts this locus `serves` — the
+    /// `locus L : serves P, Q` clause names. Empty for non-impl
+    /// loci. Consulted by `reperspective` (Phase 2b) to verify the
+    /// new impl serves the target perspective.
+    pub serves: Vec<String>,
     pub params: Vec<ParamInfo>,
     pub bus_publishes: Vec<BusPublishInfo>,
     pub bus_subscribes: Vec<BusSubscribeInfo>,

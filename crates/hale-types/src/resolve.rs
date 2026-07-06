@@ -924,6 +924,7 @@ fn register_locus(
 
     let info = LocusInfo {
         name: decl.name.name.clone(),
+        serves: decl.serves.iter().map(|s| s.name.clone()).collect(),
         params,
         bus_publishes,
         bus_subscribes,
@@ -1988,7 +1989,8 @@ fn scan_stmt_for_stdlib_usage(s: &Stmt, out: &mut StdlibErrorUsage) {
         Stmt::Return(None, _)
         | Stmt::Break(_)
         | Stmt::Continue(_)
-        | Stmt::Yield(_) | Stmt::Terminate(_) => {}
+        | Stmt::Yield(_) | Stmt::Terminate(_)
+        | Stmt::Reperspective { .. } => {}
     }
 }
 

@@ -1954,7 +1954,8 @@ fn walk_stmt_pool(stmt: &Stmt, cx: &mut PoolCheckCx) {
             walk_expr_pool(value, cx);
         }
         Stmt::Expr(e) => walk_expr_pool(e, cx),
-        Stmt::Yield(_) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Terminate(_) => {}
+        Stmt::Yield(_) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Terminate(_)
+        | Stmt::Reperspective { .. } => {}
     }
 }
 
@@ -7602,6 +7603,9 @@ impl<'a> Checker<'a> {
                     ));
                 }
             }
+            Stmt::Reperspective { field, impl_name, span } => {
+                self.check_reperspective(field, impl_name, *span);
+            }
             Stmt::Fail { value, span } => {
                 // v1.x-FORM-1: `fail <expr>;` must appear inside
                 // a fallible fn body, and its payload type must
@@ -8274,6 +8278,88 @@ impl<'a> Checker<'a> {
                         ),
                     ));
                 }
+            }
+        }
+    }
+
+    /// Phase 2b: typecheck `reperspective self.<field> as <Impl>;`.
+    ///   - must be inside a locus method (there is a `self`);
+    ///   - `field` must be a `perspective(P)`-typed param of the
+    ///     current locus (the owner holds the slot);
+    ///   - `Impl` must be a locus that `serves P`.
+    fn check_reperspective(
+        &mut self,
+        field: &Ident,
+        impl_name: &Ident,
+        span: hale_syntax::Span,
+    ) {
+        let Some(locus) = self.current_locus else {
+            self.diags.push(Diag::ty(
+                span,
+                "`reperspective` is only valid inside a locus method — it \
+                 re-points a perspective slot the enclosing locus owns"
+                    .to_string(),
+            ));
+            return;
+        };
+        // Resolve the field's declared perspective contract.
+        let field_ty =
+            locus.params.iter().find(|p| p.name == field.name).map(|p| &p.ty);
+        let persp = match field_ty {
+            Some(Ty::Named(n))
+                if matches!(
+                    self.top.lookup(n),
+                    Some(TopSymbol::Perspective(_))
+                ) =>
+            {
+                n.clone()
+            }
+            Some(_) => {
+                self.diags.push(Diag::ty(
+                    span,
+                    format!(
+                        "`reperspective self.{}`: field `{}` is not a \
+                         `perspective(...)` handle",
+                        field.name, field.name
+                    ),
+                ));
+                return;
+            }
+            None => {
+                self.diags.push(Diag::ty(
+                    span,
+                    format!(
+                        "`reperspective self.{}`: locus `{}` has no field \
+                         `{}`",
+                        field.name, locus.name, field.name
+                    ),
+                ));
+                return;
+            }
+        };
+        // The new impl must be a locus that serves this perspective.
+        match self.top.lookup(&impl_name.name) {
+            Some(TopSymbol::Locus(impl_info)) => {
+                if !impl_info.serves.iter().any(|s| s == &persp) {
+                    self.diags.push(Diag::ty(
+                        span,
+                        format!(
+                            "`reperspective self.{} as {}`: locus `{}` does \
+                             not `serve {}` — only an impl of the same \
+                             perspective can be swapped in",
+                            field.name, impl_name.name, impl_name.name, persp
+                        ),
+                    ));
+                }
+            }
+            _ => {
+                self.diags.push(Diag::ty(
+                    span,
+                    format!(
+                        "`reperspective self.{} as {}`: `{}` is not a locus",
+                        field.name, impl_name.name, impl_name.name
+                    ),
+                ));
             }
         }
     }

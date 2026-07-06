@@ -88,3 +88,39 @@ Reach for a **perspective** when there's one current implementation
 behind a stable seam that the *system* owns and may redeploy — a
 router, a storage engine, a policy. Interface is a value; a
 perspective is a deployment slot.
+
+## Live redeploy: `reperspective`
+
+The whole point of the slot is that it can be re-pointed while the
+program runs. `reperspective` does exactly that:
+
+```hale
+locus Gateway {
+    params { router: perspective(Router) = RouterV1 { }; }
+    run() {
+        println(self.router.route(1));        // RouterV1
+        reperspective self.router as RouterV2;
+        println(self.router.route(1));        // RouterV2 — same call site
+    }
+}
+```
+
+The `self.router.route(...)` call didn't change. What changed is
+what's behind the slot: `reperspective` instantiated a fresh
+`RouterV2` and flipped the slot to it. Because every holder shares
+the one slot, that single flip redirects the entire program at
+once — no matter how many places call through the perspective.
+
+A few rules:
+
+- **You swap what you own.** `reperspective self.<field>` runs on
+  the locus holding the slot; the new impl must `serve` the same
+  perspective. A caller that merely *uses* a perspective can't
+  redeploy it — redeployment authority is ownership.
+- **Fresh start.** The new impl comes up on its own birth defaults;
+  state from the old impl does not carry over. (Carrying state
+  across a redeploy — migration — is a later slice.)
+- **Cost.** A swap is a pointer flip plus instantiating the new
+  impl. The old impl stays resident until the program exits (a
+  bounded, program-lifetime cost for now); reclaiming it at swap
+  time is a follow-up.

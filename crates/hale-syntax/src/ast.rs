@@ -1669,6 +1669,17 @@ pub enum Stmt {
     /// accept'd child (e.g. a connection that hit EOF) — it INVOKES
     /// the declarative teardown early, never a manual free.
     Terminate(Span),
+    /// Perspectives Phase 2b: `reperspective self.<field> as <Impl>;`
+    /// — the live redeploy. Re-points the perspective's global slot
+    /// (identified by `field`'s `perspective(P)` type) at a fresh
+    /// instance of `impl_name`, freeing the previous impl. `field`
+    /// is a `self`-field the current locus owns; `impl_name` is a
+    /// locus that `serves` the same perspective P.
+    Reperspective {
+        field: Ident,
+        impl_name: Ident,
+        span: Span,
+    },
     Block(Block),
     Recovery {
         op: RecoveryOp,
@@ -1743,6 +1754,7 @@ impl Stmt {
             | Stmt::Fail { span, .. }
             | Stmt::Yield(span)
             | Stmt::Terminate(span)
+            | Stmt::Reperspective { span, .. }
             | Stmt::Recovery { span, .. }
             | Stmt::Violate { span, .. }
             | Stmt::Send { span, .. }

@@ -787,6 +787,9 @@ impl<'a> Mangler<'a> {
                     self.walk_expr(e);
                 }
             }
+            Stmt::Reperspective { impl_name, .. } => {
+                self.rewrite_ident(&mut impl_name.name)
+            }
             Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) => {}
             Stmt::Fail { value, .. } => self.walk_expr(value),
             Stmt::Block(b) => self.walk_block(b),
