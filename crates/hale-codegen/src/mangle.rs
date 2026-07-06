@@ -176,6 +176,9 @@ impl<'a> QualifiedRenameApplier<'a> {
     fn rewrite_type_expr(&self, t: &mut TypeExpr) {
         match t {
             TypeExpr::Primitive(_, _) => {}
+            // Phase 2a: `perspective(P)` is a single-name ref; the
+            // qualified-path applier only rewrites 2+ segment paths.
+            TypeExpr::Perspective { .. } => {}
             TypeExpr::Named { path, generic_args, .. } => {
                 if path.segments.len() >= 2 {
                     let path_segs: Vec<String> = path
@@ -881,6 +884,11 @@ impl<'a> Mangler<'a> {
     fn walk_type_expr(&mut self, t: &mut TypeExpr) {
         match t {
             TypeExpr::Primitive(_, _) => {}
+            // Phase 2a: rewrite the perspective contract name like
+            // any other intra-seed single-name type reference.
+            TypeExpr::Perspective { name, .. } => {
+                self.rewrite_ident(&mut name.name)
+            }
             TypeExpr::Named { path, generic_args, .. } => {
                 self.rewrite_single_segment_path(path);
                 for g in generic_args {

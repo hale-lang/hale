@@ -197,7 +197,14 @@ bounded_annotation = "@" , "bounded" ;
 (* F.31 (2026-05-23): `schedule` removed from locus_annotation.
    Placement is a deployment seam; it lives in a `placement { }`
    block on `main` only. See `placement_block` below. *)
-locus_annotations = ":" , locus_annotation , { "," , locus_annotation } ;
+(* Phase 2a (perspectives): the post-`:` list may also carry
+   `serves P` conformance clauses, intermixed with annotations —
+   `locus RouterV1 : serves Router, tier 2 { ... }`. `serves` is a
+   contextual ident recognized only in this position. *)
+locus_annotations = ":" , locus_header_item ,
+                    { "," , locus_header_item } ;
+locus_header_item = locus_annotation
+                  | "serves" , IDENTIFIER ;
 locus_annotation  = "tier" , INT_LIT
                   | "projection" , projection_class
                   ;
@@ -610,8 +617,16 @@ perspective_decl  = "perspective" , IDENTIFIER , [ generic_params ] ,
 perspective_member= params_block
                   | "stable_when" , block
                   | "serialize_as" , type_expr , ";"
-                  | function_decl
+                  | contract_fn
                   ;
+(* Phase 2a: a perspective's `fn` members are CONTRACT signatures
+   — a bodyless `fn route(r: Req) -> Resp;` declares the ABI a
+   `serves`-ing locus must provide. A bodied `fn { ... }` is still
+   accepted (a default / helper). Same grammar as `function_decl`
+   except the body may be replaced by `;`. *)
+contract_fn       = "fn" , IDENTIFIER , [ generic_params ] ,
+                    "(" , [ param_list ] , ")" , [ "->" , type_expr ] ,
+                    [ fallible_marker ] , ( block | ";" ) ;
 
 
 (* === 11. Type declarations ==================================== *)
@@ -650,8 +665,15 @@ type_expr         = primitive_type
                   | bounded_type
                   | tuple_type
                   | function_type
+                  | perspective_type
                   | "(" , type_expr , ")"
                   ;
+
+(* Phase 2a: `perspective(P)` — a live-rebindable handle to the
+   perspective contract `P`. A holder programs against `P`'s
+   methods and reaches the current impl only through `P`'s
+   program-global slot. *)
+perspective_type  = "perspective" , "(" , IDENTIFIER , ")" ;
 
 (* bounded[T; N] (2026-07-02): fixed-capacity counted collection,
    laid out inline as { i64 len, [N x T] }. `bounded` is a

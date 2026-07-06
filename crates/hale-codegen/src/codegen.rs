@@ -177,6 +177,19 @@ pub(crate) enum CodegenTy {
     /// dispatch loads vtable[i] and indirect-calls with data
     /// as the implicit self arg.
     Interface(String),
+    /// Phase 2a (perspectives): a `perspective(P)` slot handle.
+    /// The string carries the perspective contract name; the
+    /// contract's method order lives on the `perspective` AST
+    /// decl. Lowered as a single `ptr` at the LLVM level (the
+    /// current impl's self pointer, stored in the holder's field
+    /// for ownership/teardown). Dispatch does NOT read the field
+    /// — it loads the program-global slot `__persp.<P>` (a
+    /// `{ i8* data, i8* vtable }` reusing the interface fat-pointer
+    /// layout) so every holder funnels through one indirection.
+    /// Designation (a `perspective(P) = Impl { }` field default)
+    /// sets that global slot; Phase 2b `reperspective` re-points
+    /// it with one atomic store.
+    Perspective(String),
     /// F.22 capacity-slot cell handle. `acquire()` / `alloc()`
     /// return one of these; `release(cell)` / `free(cell)`
     /// accept one. The boxed `CodegenTy` is the cell's element
@@ -9699,6 +9712,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             export: template.export,
             generics: Vec::new(),
             annotations: template.annotations.clone(),
+            serves: template.serves.clone(),
             form: template.form.clone(),
             locality: template.locality.clone(),
             bounded: template.bounded,
@@ -10497,7 +10511,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 seen,
                 requests,
             )?,
-            TypeExpr::Primitive(_, _) | TypeExpr::Function { .. } => {}
+            TypeExpr::Primitive(_, _)
+            | TypeExpr::Function { .. }
+            // Phase 2a: `perspective(P)` carries no generic args.
+            | TypeExpr::Perspective { .. } => {}
         }
         Ok(())
     }
@@ -10769,6 +10786,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 | Some(CodegenTy::Tuple(_))
                 | Some(CodegenTy::FnPtr { .. })
                 | Some(CodegenTy::Interface(_))
+                | Some(CodegenTy::Perspective(_))
                 | Some(CodegenTy::Cell(_, _))
                 | Some(CodegenTy::Drain(_)) => self
                     .context
@@ -11250,6 +11268,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Bounded(_, _) => {
                 return Err(CodegenError::Unsupported(format!(
                     "@ffi fn `{}` param `{}`: bounded[T; N] has no \
+                     portable C mapping",
+                    fn_name, param_name
+                )));
+            }
+            CodegenTy::Perspective(_) => {
+                return Err(CodegenError::Unsupported(format!(
+                    "@ffi fn `{}` param `{}`: a perspective handle has no \
                      portable C mapping",
                     fn_name, param_name
                 )));
@@ -17680,6 +17705,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Array(_, _)
             | CodegenTy::Tuple(_)
             | CodegenTy::Interface(_)
+            | CodegenTy::Perspective(_)
             | CodegenTy::Cell(_, _)
             | CodegenTy::Drain(_) => {
                 self.context.ptr_type(AddressSpace::default()).into()
@@ -19741,6 +19767,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     return Err(CodegenError::Unsupported(format!(
                         "println of a locus value (LocusRef `{}`) — \
                          lotus has no Display protocol yet",
+                        name
+                    )));
+                }
+                CodegenTy::Perspective(name) => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "println of a perspective handle (`{}`) — call a \
+                         contract method instead",
                         name
                     )));
                 }
@@ -22829,6 +22862,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 scope,
             );
         }
+        // Phase 2a: dispatch through a perspective's global slot.
+        // Unlike an interface (a per-value fat pointer), a
+        // perspective is 1-1 with ONE program-global slot that every
+        // holder funnels through — so we ignore the receiver value
+        // and load `__persp.<P>`. That is what makes a Phase-2b swap
+        // a single atomic store that redirects the whole program.
+        if let CodegenTy::Perspective(persp_name) = &recv_ty {
+            let persp_name = persp_name.clone();
+            return self.lower_perspective_method_call(
+                &persp_name,
+                method_name,
+                args,
+                scope,
+            );
+        }
         // v1.x-8: `record.field(args)` where `field` is a
         // fn-pointer field on a user struct lowers as a struct
         // GEP-load of the fn pointer followed by an indirect
@@ -23750,6 +23798,181 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("non-void interface dispatch yields a value");
+                Some((v, rt))
+            }
+        })
+    }
+
+    /// Phase 2a: dispatch `holder.method(args)` through perspective
+    /// `P`'s program-global slot `__persp.<P>` = `{ data, vtable }`.
+    /// Load data + vtable from the global (not from the receiver —
+    /// every holder shares the one slot), GEP the vtable at the
+    /// contract-method index, and indirect-call with data as the
+    /// implicit self. Same mechanics as `lower_iface_method_call`;
+    /// only the source of `{data, vtable}` differs (a loaded global
+    /// vs a per-value fat pointer). The typechecker has verified the
+    /// impl conforms, so the vtable slot's callee matches the
+    /// contract signature.
+    fn lower_perspective_method_call(
+        &mut self,
+        persp_name: &str,
+        method_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
+        // Contract method order + the target method's signature.
+        let persp_decl = self
+            .program
+            .items
+            .iter()
+            .find_map(|item| match item {
+                TopDecl::Perspective(p) if p.name.name == persp_name => {
+                    Some(p.clone())
+                }
+                _ => None,
+            })
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "perspective `{}` not declared",
+                    persp_name
+                ))
+            })?;
+        let contract_fns: Vec<&FnDecl> = persp_decl
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                PerspectiveMember::Fn(f) => Some(f),
+                _ => None,
+            })
+            .collect();
+        let (method_idx, method_fn) = contract_fns
+            .iter()
+            .enumerate()
+            .find(|(_, f)| f.name.name == method_name)
+            .map(|(i, f)| (i, (*f).clone()))
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "perspective `{}` has no contract method `{}`",
+                    persp_name, method_name
+                ))
+            })?;
+        if args.len() != method_fn.params.len() {
+            return Err(CodegenError::Unsupported(format!(
+                "{}.{} (perspective): expected {} arg(s), got {}",
+                persp_name,
+                method_name,
+                method_fn.params.len(),
+                args.len()
+            )));
+        }
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let fat_struct_ty = self.iface_fat_struct_ty();
+        let slot = self.ensure_perspective_slot(persp_name);
+        let slot_ptr = slot.as_pointer_value();
+        // Load data (impl self) + vtable from the global slot.
+        let data_slot_ptr = self
+            .builder
+            .build_struct_gep(fat_struct_ty, slot_ptr, 0, "persp.data.gep")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let data_ptr = self
+            .builder
+            .build_load(ptr_t, data_slot_ptr, "persp.data")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        let vtable_slot_ptr = self
+            .builder
+            .build_struct_gep(fat_struct_ty, slot_ptr, 1, "persp.vtable.gep")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let vtable_ptr = self
+            .builder
+            .build_load(ptr_t, vtable_slot_ptr, "persp.vtable")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        let vtable_ty = ptr_t.array_type(contract_fns.len() as u32);
+        let i32_t = self.context.i32_type();
+        let zero = i32_t.const_zero();
+        let idx = i32_t.const_int(method_idx as u64, false);
+        let fn_slot_ptr = unsafe {
+            self.builder
+                .build_in_bounds_gep(
+                    vtable_ty,
+                    vtable_ptr,
+                    &[zero, idx],
+                    &format!("persp.{}.{}.slot", persp_name, method_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+        let fn_ptr = self
+            .builder
+            .build_load(ptr_t, fn_slot_ptr, "persp.fn")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        // Lower args (self first), matching the contract signature.
+        let mut llvm_args: Vec<BasicMetadataValueEnum<'ctx>> =
+            Vec::with_capacity(args.len() + 1);
+        let mut llvm_param_tys: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
+            Vec::with_capacity(args.len() + 1);
+        llvm_args.push(data_ptr.into());
+        llvm_param_tys.push(ptr_t.into());
+        for (i, a) in args.iter().enumerate() {
+            let (v, ty) = self.lower_expr(a, scope)?;
+            let want = self.type_expr_to_codegen_ty(&method_fn.params[i].ty)?;
+            let (v, ty) = if view_coerces_to(&ty, &want) {
+                (self.unpack_view_if_needed(v, &ty)?, want.clone())
+            } else {
+                (v, ty)
+            };
+            if ty != want {
+                return Err(CodegenError::Unsupported(format!(
+                    "{}.{} (perspective) arg {} type mismatch: expected {:?}, got {:?}",
+                    persp_name, method_name, i, want, ty
+                )));
+            }
+            llvm_args.push(v.into());
+            llvm_param_tys.push(self.llvm_basic_type(&want).into());
+        }
+        let ret_codegen_ty = match &method_fn.ret {
+            Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
+            None => None,
+        };
+        let fn_ty = match &ret_codegen_ty {
+            None => self.context.void_type().fn_type(&llvm_param_tys, false),
+            Some(rt) => match self.llvm_basic_type(rt) {
+                inkwell::types::BasicTypeEnum::IntType(t) => {
+                    t.fn_type(&llvm_param_tys, false)
+                }
+                inkwell::types::BasicTypeEnum::FloatType(t) => {
+                    t.fn_type(&llvm_param_tys, false)
+                }
+                inkwell::types::BasicTypeEnum::PointerType(t) => {
+                    t.fn_type(&llvm_param_tys, false)
+                }
+                other => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "perspective method return type {:?} not yet \
+                         supported by dispatch",
+                        other
+                    )));
+                }
+            },
+        };
+        self.emit_set_caller_arena()?;
+        let call = self
+            .builder
+            .build_indirect_call(
+                fn_ty,
+                fn_ptr,
+                &llvm_args,
+                &format!("persp.{}.{}.call", persp_name, method_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(match ret_codegen_ty {
+            None => None,
+            Some(rt) => {
+                let v = call
+                    .try_as_basic_value()
+                    .left()
+                    .expect("non-void perspective dispatch yields a value");
                 Some((v, rt))
             }
         })
@@ -25162,6 +25385,104 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     pub(crate) fn iface_fat_struct_ty(&self) -> inkwell::types::StructType<'ctx> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         self.context.struct_type(&[ptr_t.into(), ptr_t.into()], false)
+    }
+
+    /// Phase 2a: the program-global slot for perspective contract
+    /// `P` — a single `{ i8* data, i8* vtable }` cell (the interface
+    /// fat-pointer layout) that EVERY holder of `perspective(P)`
+    /// funnels through. Zero-initialized; designation
+    /// (`perspective(P) = Impl { }`) stores `{impl_self, vtable}`
+    /// into it, and Phase 2b `reperspective` re-points it with one
+    /// atomic store. Idempotent (get-or-create by name).
+    pub(crate) fn ensure_perspective_slot(
+        &mut self,
+        persp_name: &str,
+    ) -> inkwell::values::GlobalValue<'ctx> {
+        let global_name = format!("__persp.{}", persp_name);
+        if let Some(g) = self.module.get_global(&global_name) {
+            return g;
+        }
+        let fat_ty = self.iface_fat_struct_ty();
+        let g = self.module.add_global(fat_ty, None, &global_name);
+        g.set_initializer(&fat_ty.const_zero());
+        g.set_linkage(inkwell::module::Linkage::Internal);
+        g
+    }
+
+    /// Phase 2a: the vtable for `(impl_locus, perspective)` — a
+    /// const array of the impl's method pointers in the contract's
+    /// declaration order. Mirrors `ensure_vtable` (interfaces) but
+    /// reads method order from the `perspective` decl's contract
+    /// `fn`s. Idempotent (get-or-create by name).
+    pub(crate) fn ensure_perspective_vtable(
+        &mut self,
+        locus_name: &str,
+        persp_name: &str,
+    ) -> Result<inkwell::values::GlobalValue<'ctx>, CodegenError> {
+        let global_name = format!("__vt.{}.{}", locus_name, persp_name);
+        if let Some(g) = self.module.get_global(&global_name) {
+            return Ok(g);
+        }
+        let method_names = self.perspective_contract_methods(persp_name)?;
+        let info = self.user_loci.get(locus_name).cloned().ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "perspective vtable synth: locus `{}` not declared",
+                locus_name
+            ))
+        })?;
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let mut entries: Vec<inkwell::values::PointerValue<'ctx>> =
+            Vec::with_capacity(method_names.len());
+        for method_name in &method_names {
+            let func = info.user_methods.get(method_name).ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "perspective vtable synth: locus `{}` has no method `{}` \
+                     (perspective `{}`)",
+                    locus_name, method_name, persp_name
+                ))
+            })?;
+            entries.push(func.as_global_value().as_pointer_value());
+        }
+        let array_ty = ptr_t.array_type(entries.len() as u32);
+        let init = ptr_t.const_array(&entries);
+        let g = self.module.add_global(array_ty, None, &global_name);
+        g.set_initializer(&init);
+        g.set_linkage(inkwell::module::Linkage::Internal);
+        g.set_constant(true);
+        Ok(g)
+    }
+
+    /// Phase 2a: the contract-method names of perspective `P` in
+    /// declaration order — the bodyless `fn` sigs (`is_stable`,
+    /// synthesized from `stable_when`, is not a contract method
+    /// the impl provides, so it's excluded).
+    pub(crate) fn perspective_contract_methods(
+        &self,
+        persp_name: &str,
+    ) -> Result<Vec<String>, CodegenError> {
+        self.program
+            .items
+            .iter()
+            .find_map(|item| match item {
+                TopDecl::Perspective(p) if p.name.name == persp_name => Some(
+                    p.members
+                        .iter()
+                        .filter_map(|m| match m {
+                            PerspectiveMember::Fn(f) => {
+                                Some(f.name.name.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "perspective `{}` not declared",
+                    persp_name
+                ))
+            })
     }
 
 

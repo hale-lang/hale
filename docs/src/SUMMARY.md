@@ -39,6 +39,7 @@
 - [The lifecycle](./services/lifecycle.md)
 - [The bus](./services/bus.md)
 - [Concurrency & placement](./services/concurrency.md)
+- [Perspectives](./services/perspectives.md)
 - [Parents & children](./services/parents-children.md)
 - [When things fail](./services/failure.md)
 - [Across binaries](./services/multi-binary.md)

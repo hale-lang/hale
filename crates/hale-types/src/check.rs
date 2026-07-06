@@ -3890,6 +3890,9 @@ fn scan_flood_in_if(i: &IfStmt, locus: &str, diags: &mut Vec<Diag>) {
 fn type_expr_key(t: &TypeExpr) -> String {
     match t {
         TypeExpr::Primitive(p, _) => format!("{:?}", p),
+        TypeExpr::Perspective { name, .. } => {
+            format!("perspective({})", name.name)
+        }
         TypeExpr::Bounded { elem, cap, .. } => {
             format!("bounded[{}; {}]", type_expr_key(elem), cap)
         }
@@ -5115,6 +5118,14 @@ impl<'a> Checker<'a> {
         // yet — that's expected for this PR).
         if let Some(form) = &decl.form {
             self.check_form_shape(decl, form);
+        }
+
+        // Phase 2a: `locus L : serves P` conformance — L must
+        // provide every contract method P declares (matching
+        // arity + param + return types), the perspective analog
+        // of interface structural satisfaction.
+        if !decl.serves.is_empty() {
+            self.check_serves_conformance(decl);
         }
 
         // #18.6 — Hale enforces CQRS at the locus boundary:
@@ -8157,6 +8168,116 @@ impl<'a> Checker<'a> {
     /// Both arguments are top-symbol names. Caller has already
     /// verified that `iface_name` resolves to a TopSymbol::Interface.
     /// `locus_name` may be any TopSymbol — non-locus returns Err.
+    /// Phase 2a: verify a `locus L : serves P` provides every
+    /// method of perspective contract `P`. Emits a diagnostic per
+    /// missing / mismatched method (arity, param types, return
+    /// type) — the perspective analog of `check_structural_impl`
+    /// for interfaces, reading the contract's method signatures.
+    fn check_serves_conformance(&mut self, decl: &LocusDecl) {
+        let Some(TopSymbol::Locus(locus)) =
+            self.top.lookup(&decl.name.name)
+        else {
+            return;
+        };
+        for persp_name in &decl.serves {
+            let persp = match self.top.lookup(&persp_name.name) {
+                Some(TopSymbol::Perspective(p)) => p,
+                Some(_) => {
+                    self.diags.push(Diag::ty(
+                        persp_name.span,
+                        format!(
+                            "locus `{}` serves `{}`, but `{}` is not a \
+                             perspective contract",
+                            decl.name.name, persp_name.name, persp_name.name
+                        ),
+                    ));
+                    continue;
+                }
+                None => {
+                    self.diags.push(Diag::ty(
+                        persp_name.span,
+                        format!(
+                            "locus `{}` serves unknown perspective `{}`",
+                            decl.name.name, persp_name.name
+                        ),
+                    ));
+                    continue;
+                }
+            };
+            for pm in &persp.methods {
+                // `is_stable` is synthesized on every perspective
+                // (from `stable_when`) — not a contract method the
+                // impl must provide.
+                if pm.name == "is_stable" {
+                    continue;
+                }
+                let lm = locus.methods.iter().find(|lm| lm.name == pm.name);
+                let lm = match lm {
+                    Some(m) => m,
+                    None => {
+                        self.diags.push(Diag::ty(
+                            persp_name.span,
+                            format!(
+                                "locus `{}` serves `{}` but is missing \
+                                 contract method `{}`",
+                                decl.name.name, persp_name.name, pm.name
+                            ),
+                        ));
+                        continue;
+                    }
+                };
+                if lm.params.len() != pm.params.len() {
+                    self.diags.push(Diag::ty(
+                        persp_name.span,
+                        format!(
+                            "locus `{}` method `{}` has {} arg(s) but \
+                             perspective `{}` requires {}",
+                            decl.name.name,
+                            pm.name,
+                            lm.params.len(),
+                            persp_name.name,
+                            pm.params.len()
+                        ),
+                    ));
+                    continue;
+                }
+                for (i, (lp, pp)) in
+                    lm.params.iter().zip(pm.params.iter()).enumerate()
+                {
+                    if !pp.assignable_from(lp) {
+                        self.diags.push(Diag::ty(
+                            persp_name.span,
+                            format!(
+                                "locus `{}` method `{}` arg #{}: perspective \
+                                 `{}` requires `{}`, locus has `{}`",
+                                decl.name.name,
+                                pm.name,
+                                i,
+                                persp_name.name,
+                                pp.display(),
+                                lp.display()
+                            ),
+                        ));
+                    }
+                }
+                if !pm.ret.assignable_from(&lm.ret) {
+                    self.diags.push(Diag::ty(
+                        persp_name.span,
+                        format!(
+                            "locus `{}` method `{}` returns `{}` but \
+                             perspective `{}` requires `{}`",
+                            decl.name.name,
+                            pm.name,
+                            lm.ret.display(),
+                            persp_name.name,
+                            pm.ret.display()
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
     fn check_structural_impl(
         &self,
         locus_name: &str,

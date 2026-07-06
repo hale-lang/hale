@@ -1171,6 +1171,12 @@ fn type_expr_mangle_token(
 pub fn resolve_type_expr(te: &TypeExpr, known: &BTreeMap<String, Span>) -> Ty {
     match te {
         TypeExpr::Primitive(p, _) => Ty::Prim(*p),
+        // Phase 2a: `perspective(P)` resolves to the contract name
+        // as a Named type — method/param resolution then goes
+        // through the `TopSymbol::Perspective` branch, exactly the
+        // way an interface-typed value resolves through
+        // `TopSymbol::Interface`.
+        TypeExpr::Perspective { name, .. } => Ty::Named(name.name.clone()),
         TypeExpr::Named { path, generic_args, .. } => {
             if path.segments.len() == 1 {
                 let name = &path.segments[0].name;
