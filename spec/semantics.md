@@ -2322,14 +2322,28 @@ swap redirects **every** call site at once: the same
   tree is the redeploy authority. The typechecker requires the field
   to be a `perspective(P)` param of the current locus and the new
   impl to `serve P`.
+- **Bus edges swap too (Phase 2c-runtime).** When the perspective
+  declares a bus surface, the swap also re-points its subscriptions:
+  it tombstones the current impl's registrations on the shared slot
+  `data` (`lotus_bus_quarantine_self`) and re-registers the new
+  impl's handlers on that same `data`. A message published after the
+  swap dispatches to the new handler, operating on the carried
+  state. Cooperative dispatch is deferred (a publish captures the
+  handler current at that moment; handlers run at drain), so the
+  swap boundary is respected per message. Perspective impls are
+  designated (never `placement`-pinned), so they are cooperative —
+  the re-registration routes through the global queue, no mailbox
+  hand-off. (Cost: tombstoned entries are skipped, not compacted — a
+  bounded per-swap cost.)
 
 ## Perspective hot-load
 
-> **Status:** Phase 2b + 3 ship the core `reperspective` swap
+> **Status:** Phase 2b + 3 + 2c ship the `reperspective` swap
 > (above): the atomic slot re-point, state-preserving across impls
-> of one footprint. A footprint-changing `migrate`, and the
-> bus-arrival / decode / `stable_when` / drain flow below (bus-driven
-> redeploy), remain the aspirational path (Phase 2c-runtime / later).
+> of one footprint, re-pointing sync dispatch AND bus subscriptions.
+> A footprint-changing `migrate`, and the bus-arrival / decode /
+> `stable_when` / drain flow below (transport-driven redeploy from
+> the wire), remain the aspirational path.
 
 For each `perspective P { ... }` instance currently active:
 

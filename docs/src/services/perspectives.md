@@ -157,8 +157,20 @@ A `serves` impl must provide every declared edge — the methods
 it must provide the `fn`s. This keeps a perspective's full ABI in
 one place.
 
-Today this ships the contract surface and its conformance check.
-Live-swapping a *bus-backed* perspective — atomically re-pointing
-its subscriptions to a new impl — is a follow-up; until it lands,
-`reperspective` on a perspective that declares a bus surface is a
-compile error (a sync-only perspective swaps fine).
+And `reperspective` re-points the bus edges too. The swap
+tombstones the current impl's subscriptions on the shared slot
+state and re-registers the new impl's handlers on that same state,
+so a message published *after* the swap lands on the new handler
+while state the old handler accumulated carries across — the async
+counterpart of the sync vtable flip:
+
+```hale
+"orders" <- Order { id: 1 };            // → the old impl's handler
+reperspective self.router as OrderV2;   // redeploy, live
+"orders" <- Order { id: 2 };            // → the new impl's handler
+```
+
+Cooperative bus dispatch is deferred (a publish enqueues a cell
+capturing the handler current at that moment; handlers run when
+the queue drains), so each message runs on whichever impl was live
+when it was published — the swap boundary is respected.
