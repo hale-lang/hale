@@ -284,3 +284,71 @@ fn main() { App { }; }
         msgs
     );
 }
+
+// === Phase 3: state-preserving swap footprint check ===========
+
+#[test]
+fn reperspective_matching_footprint_clean() {
+    let src = r#"
+perspective Counter { fn get() -> Int; }
+locus CounterV1 : serves Counter { params { n: Int = 0; } fn get() -> Int { return self.n; } }
+locus CounterV2 : serves Counter { params { n: Int = 0; } fn get() -> Int { return self.n; } }
+locus Service {
+    params { c: perspective(Counter) = CounterV1 { }; }
+    run() { reperspective self.c as CounterV2; }
+}
+main locus App { params { s: Service = Service { }; } run() { } }
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().all(|m| !m.contains("footprint")),
+        "expected matching-footprint swap clean, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn reperspective_footprint_change_rejected() {
+    // CounterV2 adds a field — a state-preserving swap can't
+    // reinterpret V1's bytes; this is the (deferred) migrate case.
+    let src = r#"
+perspective Counter { fn get() -> Int; }
+locus CounterV1 : serves Counter { params { n: Int = 0; } fn get() -> Int { return self.n; } }
+locus CounterV2 : serves Counter { params { n: Int = 0; extra: Int = 5; } fn get() -> Int { return self.n + self.extra; } }
+locus Service {
+    params { c: perspective(Counter) = CounterV1 { }; }
+    run() { reperspective self.c as CounterV2; }
+}
+main locus App { params { s: Service = Service { }; } run() { } }
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("different footprint") && m.contains("migrate")),
+        "expected footprint-change diagnostic, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn reperspective_footprint_type_change_rejected() {
+    // Same field name, different type — also a footprint change.
+    let src = r#"
+perspective Counter { fn get() -> Int; }
+locus CounterV1 : serves Counter { params { n: Int = 0; } fn get() -> Int { return self.n; } }
+locus CounterV2 : serves Counter { params { n: Bool = true; } fn get() -> Int { return 0; } }
+locus Service {
+    params { c: perspective(Counter) = CounterV1 { }; }
+    run() { reperspective self.c as CounterV2; }
+}
+main locus App { params { s: Service = Service { }; } run() { } }
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("different footprint")),
+        "expected footprint-type-change diagnostic, got: {:?}",
+        msgs
+    );
+}

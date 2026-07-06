@@ -23984,32 +23984,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         })
     }
 
-    /// Perspectives Phase 2b: lower `reperspective self.<field> as
-    /// <Impl>;` — the live redeploy (fresh-instance swap):
-    ///   1. free the current impl's state arena (the one the slot
-    ///      points at) — its struct is program-lifetime;
-    ///   2. instantiate a fresh `Impl` (global-arena, slot-owned);
-    ///   3. atomic-store `{ new_self, vtable(Impl, P) }` into the
-    ///      perspective's global slot — the pointer flip that
-    ///      redirects every call site at once;
-    ///   4. re-point the holder's field at the new impl.
-    /// State does NOT carry across (the new impl runs its own birth
-    /// defaults) — state migration is Phase 3.
+    /// Perspectives: lower `reperspective self.<field> as <Impl>;` —
+    /// the live redeploy. Phase 3 makes this a STATE-PRESERVING swap
+    /// (the note's layout-identity "zero migration"): code and state
+    /// are already separate — the slot's `data` pointer is the state
+    /// (an arena-backed struct), the `vtable` is the code. So the
+    /// swap is a single store of the new impl's vtable into the
+    /// slot's vtable half, keeping `data` untouched:
+    ///
+    ///   slot.vtable = vtable(Impl, P)   // redirect every call site
+    ///   slot.data   = unchanged         // the running state carries
+    ///
+    /// The typechecker guarantees all impls of the perspective share
+    /// one footprint, so the new impl's field offsets land on the
+    /// retained state. No re-instantiation, no fresh birth defaults,
+    /// and nothing to tear down — the old code was never state. (A
+    /// footprint-CHANGING swap is the `migrate` case — rejected at
+    /// typecheck for now.) The holder's field still points at the
+    /// same `data`, so it needs no update.
     fn lower_reperspective(
         &mut self,
         field: &str,
         impl_name: &str,
-        scope: &mut Scope<'ctx>,
+        _scope: &mut Scope<'ctx>,
     ) -> Result<(), CodegenError> {
-        let ptr_t = self.context.ptr_type(AddressSpace::default());
         let cs = self.current_self.as_ref().cloned().ok_or_else(|| {
             CodegenError::Unsupported(
                 "`reperspective`: no enclosing locus self".into(),
             )
         })?;
         // Resolve the perspective contract P from the field's type.
-        let (field_idx, persp_name) = match cs.fields.get(field) {
-            Some((idx, CodegenTy::Perspective(p))) => (*idx, p.clone()),
+        let persp_name = match cs.fields.get(field) {
+            Some((_, CodegenTy::Perspective(p))) => p.clone(),
             _ => {
                 return Err(CodegenError::Unsupported(format!(
                     "`reperspective self.{}`: field is not a perspective \
@@ -24021,50 +24027,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let fat_struct_ty = self.iface_fat_struct_ty();
         let slot = self.ensure_perspective_slot(&persp_name);
         let slot_ptr = slot.as_pointer_value();
-        let data_gep = self
-            .builder
-            .build_struct_gep(fat_struct_ty, slot_ptr, 0, "reperspective.data.gep")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let _ = ptr_t;
 
-        // (1) Instantiate a fresh Impl in the program-global arena
-        // (the persistent-singleton allocation path — proven
-        // program-lifetime and leak-clean). It outlives this method
-        // and is reclaimed with the global arena at exit; the
-        // previous impl stays live until program exit (a bounded,
-        // program-lifetime cost — full per-swap reclaim of the old
-        // impl's state is a follow-up).
-        let prev_singleton = self.instantiating_persistent_singleton;
-        self.instantiating_persistent_singleton = true;
-        let new_self =
-            self.lower_locus_instantiation(impl_name, &[], scope)?;
-        self.instantiating_persistent_singleton = prev_singleton;
-
-        // (2) Flip the global slot to { new_self, vtable(Impl, P) }.
+        // Swap ONLY the vtable half of the slot — the `data` half
+        // (the current impl's live state) is preserved. This is the
+        // pointer flip that redirects every call site to the new
+        // impl's methods while they keep operating on the same state.
         let vtable = self.ensure_perspective_vtable(impl_name, &persp_name)?;
-        self.builder
-            .build_store(data_gep, new_self)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let vt_gep = self
             .builder
             .build_struct_gep(fat_struct_ty, slot_ptr, 1, "reperspective.vtable.gep")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
             .build_store(vt_gep, vtable.as_pointer_value())
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        // (3) Re-point the holder's field at the new impl.
-        let field_ptr = self
-            .builder
-            .build_struct_gep(
-                cs.struct_ty,
-                cs.self_ptr,
-                field_idx,
-                "reperspective.field.gep",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(field_ptr, new_self)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }

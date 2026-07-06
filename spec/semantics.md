@@ -2295,39 +2295,41 @@ per call into a perspective — near-direct. The mechanism is
 Linux/native-agnostic (no new runtime dependency); a program that
 declares no perspectives pays nothing.
 
-### The live swap: `reperspective` (Phase 2b)
+### The live swap: `reperspective` (Phase 2b + 3)
 
 `reperspective self.<field> as <Impl>;` is the live redeploy. It
 re-points the perspective's global slot — identified by the
-`self`-field's `perspective(P)` type — at a fresh instance of
-`Impl` (which must `serve P`). Because every holder funnels through
-the one slot, the swap is a single store to `{ data, vtable }` that
-redirects **every** call site at once: the same `self.router.route(...)`
-resolves to the new impl immediately after.
+`self`-field's `perspective(P)` type — at `Impl` (which must
+`serve P`). Because every holder funnels through the one slot, the
+swap redirects **every** call site at once: the same
+`self.router.route(...)` resolves to the new impl immediately after.
 
-- **Fresh-instance semantics.** The new impl is instantiated with
-  its own birth defaults; state does **not** carry across the swap.
-  (State-preserving swap — layout-identity fast path + `migrate` —
-  is Phase 3.)
+- **State-preserving (Phase 3).** The slot is `{ data, vtable }`:
+  `data` is the running state (an arena-backed struct), `vtable` is
+  the code. They are already separate, so the swap is a single store
+  of the new impl's vtable into the slot — `data` is untouched and
+  the new impl's methods continue on the **same live state** (the
+  note's layout-identity "zero migration"). No re-instantiation, no
+  birth defaults, nothing to tear down.
+- **Footprint identity (soundness).** The vtable swap is layout-safe
+  only if the new impl's field offsets match the retained state, so
+  the typechecker requires **every** impl of a perspective to share
+  one footprint (same params, by name and type, in order). A
+  footprint *change* is the `migrate` case — rejected for now with an
+  actionable diagnostic rather than silently reinterpreting bytes.
 - **Rebind authority.** The statement runs on the locus that owns
   the slot (`self.<field>`), never a mere caller — the ownership
-  tree is the redeploy authority. The typechecker requires the
-  field to be a `perspective(P)` param of the current locus and the
-  new impl to `serve P`.
-- **Ownership / teardown.** Perspective impls (designated and
-  swapped-in) are owned by the global slot and live for the program
-  (reclaimed with the program-global arena at exit). The previous
-  impl is not freed at swap time in this slice — a bounded,
-  program-lifetime cost; per-swap reclaim of the retired impl's
-  state is a follow-up.
+  tree is the redeploy authority. The typechecker requires the field
+  to be a `perspective(P)` param of the current locus and the new
+  impl to `serve P`.
 
 ## Perspective hot-load
 
-> **Status:** Phase 2b ships the core `reperspective` swap
-> (above): the atomic slot re-point with fresh-instance semantics.
-> The bus-arrival / decode / `stable_when` / drain flow below is the
-> fuller aspirational path (bus-driven redeploy + state migration,
-> Phase 2c/3).
+> **Status:** Phase 2b + 3 ship the core `reperspective` swap
+> (above): the atomic slot re-point, state-preserving across impls
+> of one footprint. A footprint-changing `migrate`, and the
+> bus-arrival / decode / `stable_when` / drain flow below (bus-driven
+> redeploy), remain the aspirational path (Phase 2c-runtime / later).
 
 For each `perspective P { ... }` instance currently active:
 
