@@ -1768,6 +1768,61 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     .get(fname.as_str())
                     .copied();
             }
+            // Topology Phase 1c: fan out the extra replicas. For a
+            // `pinned(..., replicas = K)` field (K > 1) we emit K-1
+            // extra single-threaded instances HERE; replica 0 goes
+            // through the normal single-instance path below. Each
+            // replica is pinned to one core of the affinity set
+            // (round-robin) and arena-bound to the node; every one is
+            // tracked for teardown via the deferred-dissolve frame
+            // (each pinned instantiation pushes onto it), so all K
+            // join + dissolve at parent teardown. Parallelism = K
+            // single-threaded units — no multi-worker pool, so the
+            // single-consumer invariant holds per replica.
+            if is_main_locus {
+                if let Some((count, cores)) = self
+                    .main_placement_replicas
+                    .get(fname.as_str())
+                    .cloned()
+                {
+                    let node =
+                        self.main_placement_node.get(fname.as_str()).copied();
+                    let DefaultInit::Expr(rep_expr) = default else {
+                        return Err(CodegenError::Unsupported(format!(
+                            "locus `{}` field `{}`: `replicas = K` needs a \
+                             locus-literal default (e.g. `{}: T = T {{ }};`) \
+                             to fan out into K instances",
+                            locus_name, fname, fname
+                        )));
+                    };
+                    let rep_expr = rep_expr.clone();
+                    for i in 1..count {
+                        let core = if cores.is_empty() {
+                            None
+                        } else {
+                            Some(cores[(i as usize) % cores.len()])
+                        };
+                        self.placement_for_next_locus_instantiation = Some(
+                            ScheduleClass::Pinned(core.map(CoreSpec::Single)),
+                        );
+                        self.numa_node_for_next_locus_instantiation = node;
+                        let prev_flag = self.instantiating_for_parent_field;
+                        self.instantiating_for_parent_field = true;
+                        // The extra replica's self_ptr isn't stored in a
+                        // field (replicas are non-addressable workers);
+                        // it lives only in the deferred-dissolve frame.
+                        let _ = self.lower_expr(&rep_expr, scope)?;
+                        self.instantiating_for_parent_field = prev_flag;
+                    }
+                    // Restore replica 0's overrides for the normal path
+                    // below — the loop clobbered them.
+                    self.placement_for_next_locus_instantiation = self
+                        .main_placement_map
+                        .get(fname.as_str())
+                        .cloned();
+                    self.numa_node_for_next_locus_instantiation = node;
+                }
+            }
             // Phase-2 (2): set the parent-field flag so a locus
             // literal evaluated for this field doesn't run its
             // eager dissolve. The flag is taken on entry to

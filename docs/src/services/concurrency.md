@@ -153,6 +153,36 @@ to normal allocation where the node can't be honored, and it
 costs nothing (no extra dependency, the ordinary allocation
 path) for loci that don't ask for a node.
 
+## Parallelism: `replicas = K`
+
+To run a locus in parallel, you don't get a multi-worker pool —
+that would break the single-consumer invariant everything rests
+on (one cooperative pool is one thread; the lock-free rings and
+bus devirtualization assume it). Instead you fan it into **K
+single-threaded instances**:
+
+```hale
+placement {
+    // 8 workers, replica i on core 4+i, each its own thread
+    workers: pinned(cores = 4..12, replicas = 8);
+}
+```
+
+Each replica is a full instance on its own core, still
+single-threaded — parallelism comes from more units, not from
+sharing a thread, so every invariant survives per replica. With
+more replicas than cores the assignment wraps round-robin; with
+no `cores` the K instances are OS-scheduled. `replicas` composes
+with the topology targets — `pinned(node = 0, replicas = 4)` fans
+4 workers across node 0's cores, each with its arena on node 0.
+
+The replicas are **workers, not handles**: there's no
+`workers[i]` to call. They pull work — typically by subscribing a
+bus topic (all K register, so the topic fans out to every
+replica) or by running their own loop. `replicas` is pinned-only;
+`cooperative(..., replicas = K)` is rejected (K loci on one pool
+would share a thread, which isn't parallel).
+
 Placement keys on the *field name*, not the locus type, so two
 instances of the same locus type can live on different threads —
 the parallelism case (one gateway per core, say).

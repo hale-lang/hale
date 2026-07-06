@@ -298,7 +298,7 @@ loop) or it owns its own OS thread. There is no third position.
 | Class | Yield discipline | Resource |
 |---|---|---|
 | **`cooperative(pool = X)`** (default for unspecified main-locus params, with `X = main`) | Yields between substrate cells (handler exit, lifecycle transition, bus dispatch, `time::sleep`, explicit `yield`). `time::sleep` slices into ≤100ms intervals and folds in `lotus_bus_queue_drain` for the locus's pool after each slice, so cells posted by other threads deliver mid-loop even during a long keep-alive sleep. Handler bodies are atomic. | Shares pool `X`'s OS thread with other cooperative loci placed on the same pool. |
-| **`pinned`** / **`pinned(core = N)`** / **`pinned(cores = A..B \| A..=B \| {a, b, c})`** / **`pinned(node = N)`** / **`pinned(l3 = name)`** | No yield to siblings; owns its OS thread. Bus events to/from cross-thread boundaries via formal mailbox post. | Dedicated OS thread. `core = N` pins it to one CPU; `cores = ...` (topology Phase 1a) sets its affinity mask to a core *set*; `node = N` / `l3 = name` (topology Phase 1b) set the mask to a NUMA node / cache domain declared in `topology { }`. The OS schedules freely within the mask. Linux-only; best-effort no-op elsewhere. |
+| **`pinned`** / **`pinned(core = N)`** / **`pinned(cores = A..B \| A..=B \| {a, b, c})`** / **`pinned(node = N)`** / **`pinned(l3 = name)`** / **`pinned(..., replicas = K)`** | No yield to siblings; owns its OS thread. Bus events to/from cross-thread boundaries via formal mailbox post. | Dedicated OS thread. `core = N` pins it to one CPU; `cores = ...` (Phase 1a) sets its mask to a core *set*; `node = N` / `l3 = name` (Phase 1b) set the mask to a NUMA node / cache domain from `topology { }` (and bind the arena there); `replicas = K` (Phase 1c) fans into K single-threaded instances, one per core. The OS schedules freely within the mask. Linux-only; best-effort no-op elsewhere. |
 
 **Pool inference rule.** The cooperative pool set is inferred
 from `cooperative(pool = X)` references in the `placement { }`
@@ -349,6 +349,28 @@ non-overlapping domains, no domain/reserved overlap, and every
 `pinned(node/l3)` referencing a declared domain) is static. L3
 domain names go through the identifier rule, so a hard keyword
 (e.g. `bulk`) can't name a domain.
+
+**Replicas (Phase 1c).** `pinned(..., replicas = K)` is the
+parallelism sugar: it fans the field into **K single-threaded
+instances**, replica `i` pinned to one core of the affinity set
+(round-robin — `pinned(cores = 4..12, replicas = 8)` puts replica
+`i` on core `4 + i`; more replicas than cores wraps; with no
+affinity the K instances are OS-scheduled). This is deliberately
+*not* a multi-worker pool — a cooperative pool is one consumer
+thread, and the lock-free rings, bus devirtualization, and
+single-threaded-method guarantee all rest on that invariant.
+Parallelism instead comes from more single-threaded units, each
+its own single consumer, so every invariant survives. `replicas`
+is **pinned-only** (K cooperative loci on one pool would share a
+thread, which isn't parallel) and composes with the topology
+targets (`pinned(node = 0, replicas = 4)` fans across node 0's
+cores with each replica's arena bound to node 0). Codegen emits K
+instantiations at the field's init site; all K register their bus
+subscriptions (a subscribed topic fans out to every replica) and
+all K are joined + dissolved at parent teardown via the deferred-
+dissolve frame. The replicas are non-addressable — there is no
+`field[i]` surface; they are workers that pull from the bus or run
+their own loop.
 
 **Thread + memory co-location.** A `pinned(node = N)` /
 `pinned(l3 = name)` locus binds not just its thread but its

@@ -339,13 +339,24 @@ binding_constraint = "intra_process"
    / `l3 = name`, targeting a NUMA node / cache domain declared in
    the `topology { }` block (see below). The compiler resolves the
    domain to its core set; the thread's affinity mask becomes that
-   set (arena-on-node memory co-location is a follow-up slice). *)
+   set, and the locus's arena is `mbind`-bound to the node.
+
+   Topology Phase 1c (2026-07-05): `pinned(...)` takes a comma-
+   separated attribute list — at most one affinity plus an
+   optional `replicas = K`, which fans the field into K single-
+   threaded instances (replica i on core[i] of the set, round-
+   robin). `replicas` is pinned-only. *)
 placement_block   = "placement" , "{" , { placement_entry } , "}" ;
 placement_entry   = IDENTIFIER , ":" , placement_spec ,
                     [ "where" , placement_constraint ,
                       { "," , placement_constraint } ] , ";" ;
 placement_spec    = "cooperative" , [ "(" , "pool" , "=" , IDENTIFIER , ")" ]
-                  | "pinned" , [ "(" , pin_affinity , ")" ] ;
+                  | "pinned" , [ "(" , pin_attr , { "," , pin_attr } ,
+                                 [ "," ] , ")" ] ;
+(* At most one affinity attr and at most one `replicas` per
+   `pinned(...)`; enforced by the parser, not the grammar. *)
+pin_attr          = pin_affinity
+                  | "replicas" , "=" , INT_LIT ;
 pin_affinity      = "core"  , "=" , INT_LIT
                   | "cores" , "=" , core_set
                   | "node"  , "=" , INT_LIT

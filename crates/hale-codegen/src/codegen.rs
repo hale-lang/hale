@@ -1169,6 +1169,7 @@ pub fn build_executable_with_options(
         numa_node_for_next_locus_instantiation: None,
         main_placement_map: BTreeMap::new(),
         main_placement_node: BTreeMap::new(),
+        main_placement_replicas: BTreeMap::new(),
         main_locus_name: None,
         pinned_locus_types: BTreeSet::new(),
         params_init_self: None,
@@ -3006,6 +3007,15 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `main_placement_map` in `collect_main_placement`; absent
     /// fields (no node placement) simply don't appear.
     pub(crate) main_placement_node: BTreeMap<String, i64>,
+    /// Topology Phase 1c (replicas): per-main-locus map of `params`
+    /// field name → `(count, cores)` for a `pinned(..., replicas =
+    /// K)` entry with `K > 1`. `cores` is the resolved affinity set
+    /// (empty for a bare `pinned(replicas = K)`); replica `i` is
+    /// pinned to `cores[i % cores.len()]` (round-robin) or left
+    /// OS-scheduled when `cores` is empty. Only populated for
+    /// `K > 1`; `K <= 1` behaves as an ordinary single instance.
+    pub(crate) main_placement_replicas:
+        BTreeMap<String, (i64, Vec<i64>)>,
     /// F.31: name of the main locus (if any) for the bundle.
     /// Cached at startup so the params-init loop can detect
     /// "we're instantiating main" without re-walking the
@@ -7944,7 +7954,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if let LocusMember::Placement(pb) = m {
                 for entry in &pb.entries {
                     let sc = match &entry.spec {
-                        PlacementSpec::Pinned { affinity } => {
+                        PlacementSpec::Pinned { affinity, replicas } => {
                             let cores = Self::resolve_pin_affinity(
                                 affinity, topology,
                             );
@@ -7959,7 +7969,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     node,
                                 );
                             }
-                            ScheduleClass::Pinned(cores)
+                            // Topology Phase 1c: `replicas = K` (K > 1)
+                            // fans this field into K single-threaded
+                            // instances, replica `i` on one core of the
+                            // affinity set (round-robin). Record the
+                            // count + core list and give replica 0 a
+                            // single-core affinity; the params-init loop
+                            // emits the extra K-1 instances. K <= 1 is
+                            // an ordinary single instance (full mask).
+                            let k = replicas.unwrap_or(1);
+                            if k > 1 {
+                                let core_list = cores
+                                    .as_ref()
+                                    .map(|c| c.expand())
+                                    .unwrap_or_default();
+                                self.main_placement_replicas.insert(
+                                    entry.field.name.clone(),
+                                    (k, core_list.clone()),
+                                );
+                                let rep0 = core_list
+                                    .first()
+                                    .copied()
+                                    .map(CoreSpec::Single);
+                                ScheduleClass::Pinned(rep0)
+                            } else {
+                                ScheduleClass::Pinned(cores)
+                            }
                         }
                         PlacementSpec::Cooperative { pool } => {
                             // F.31 Phase 4: capture the pool name

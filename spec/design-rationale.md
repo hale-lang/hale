@@ -3044,7 +3044,13 @@ purpose compiled language.
   its working set lives on the node its thread runs on — cross-
   node access, the thing that kills big-box perf, is avoided on
   both axes. Raw `mbind` syscall, so no libnuma dependency;
-  best-effort and zero-cost off the opt-in path.
+  best-effort and zero-cost off the opt-in path. Phase 1c adds
+  `pinned(..., replicas = K)` — the parallelism sugar: fan a locus
+  into K single-threaded instances, one per core, rather than a
+  multi-worker pool. Parallelism = more single-threaded units,
+  each its own single consumer, so the lock-free rings, bus
+  devirt, and single-threaded-method guarantee all survive
+  untouched — the deliberate non-choice of a shared-thread pool.
 - Per-method scratch (Phase 4, 2026-05-21) → tight
   allocate-touch-free loop on every method invocation →
   naturally L1-hot for the duration of one handler.

@@ -731,7 +731,18 @@ pub enum PlacementSpec {
     /// own OS thread; the [`PinAffinity`] says which logical CPUs
     /// the runtime asks the OS to keep it on (`pthread_setaffinity_np`).
     /// Linux-only; best-effort no-op elsewhere.
-    Pinned { affinity: PinAffinity },
+    ///
+    /// `replicas` (topology Phase 1c, 2026-07-05) is the
+    /// parallelism sugar: `Some(k)` fans the field into `k`
+    /// single-threaded instances, replica `i` pinned to one core
+    /// of the affinity set (round-robin) so parallelism comes from
+    /// more single-threaded units — never a multi-worker pool, which
+    /// would break the single-consumer invariant. `None` / `Some(1)`
+    /// is one instance (the affinity applies as its full mask).
+    Pinned {
+        affinity: PinAffinity,
+        replicas: Option<i64>,
+    },
 }
 
 /// F.35 (2026-05-28): operational-constraint keyword on a

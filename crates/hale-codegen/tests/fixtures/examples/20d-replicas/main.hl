@@ -1,0 +1,56 @@
+// 20d-replicas — fan a locus into K single-threaded instances
+// (topology placement, Phase 1c).
+//
+// `replicas = K` is the parallelism sugar. Instead of a
+// multi-worker pool — which would break the single-consumer
+// invariant the lock-free rings, bus devirtualization, and
+// single-threaded-method guarantee all rest on — it fans one
+// locus type into K single-threaded instances, one per core in
+// the range (round-robin). Parallelism = more units, each still
+// single-threaded, so every invariant survives.
+//
+//   placement {
+//       workers: pinned(cores = 4..12, replicas = 8);
+//   }
+//
+// That's 8 Worker instances, each on its own OS thread, replica
+// i pinned to core (4 + i). If K exceeds the core count the
+// assignment wraps round-robin; with no `cores` the K instances
+// are OS-scheduled.
+//
+// `replicas` composes with the topology targets: `pinned(node =
+// 0, replicas = 4)` fans 4 workers across node 0's cores, each
+// with its arena bound to node 0's memory.
+//
+// The replicas are non-addressable workers — you don't call one
+// by name; they run their own lifecycle (and, if they subscribe
+// a bus topic, each registers as a subscriber so the bus fans
+// out to all K). Only valid on `pinned`: K cooperative loci on
+// one pool would share a single thread, which isn't parallel.
+//
+// Best-effort + Linux-only affinity, exactly like the other
+// pinned forms.
+
+locus Worker {
+    run() {
+        std::time::sleep(20ms);
+        println("worker replica ran on its own core");
+    }
+}
+
+main locus ReplicaApp {
+    params {
+        workers: Worker = Worker { };
+    }
+    placement {
+        // 4 single-threaded replicas, one per core in 0..4
+        workers: pinned(cores = 0..4, replicas = 4);
+    }
+    run() {
+        println("main: fanned one Worker into 4 pinned replicas");
+    }
+}
+
+fn main() {
+    ReplicaApp { };
+}

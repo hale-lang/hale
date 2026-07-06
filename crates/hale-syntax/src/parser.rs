@@ -1889,6 +1889,26 @@ impl Parser {
                     self.bump();
                     self.expect(TokenKind::Eq, "expected `=` after `pool`")?;
                     let name = self.expect_ident("pool name")?;
+                    // Topology Phase 1c: `replicas` is pinned-only —
+                    // K cooperative loci on one pool share a single
+                    // thread (not parallel), so `cooperative(...,
+                    // replicas = K)` is rejected with guidance.
+                    if matches!(self.peek(), TokenKind::Comma) {
+                        if let TokenKind::Ident(s) = self.peek_at(1) {
+                            if s == "replicas" {
+                                return Err(Diag::parse(
+                                    self.peek_token().span,
+                                    "`replicas` is only valid on a `pinned` \
+                                     placement — K cooperative loci on one \
+                                     pool would share a single thread, not \
+                                     run in parallel. Use `pinned(cores = \
+                                     A..B, replicas = K)` to fan out across \
+                                     cores."
+                                        .to_string(),
+                                ));
+                            }
+                        }
+                    }
                     self.expect(
                         TokenKind::RParen,
                         "expected `)` after cooperative(pool = X)",
@@ -1900,85 +1920,117 @@ impl Parser {
                 Ok(PlacementSpec::Cooperative { pool })
             }
             "pinned" => {
-                let affinity = if matches!(self.peek(), TokenKind::LParen) {
+                // `pinned` takes a comma-separated attribute list:
+                // at most one affinity (`core`/`cores`/`node`/`l3`)
+                // and, topology Phase 1c, an optional `replicas = K`.
+                // Bare `pinned` (no parens) is `Any` affinity, one
+                // instance.
+                let mut affinity = PinAffinity::Any;
+                let mut affinity_set = false;
+                let mut replicas: Option<i64> = None;
+                if matches!(self.peek(), TokenKind::LParen) {
                     self.bump();
-                    let kw_tok = self.peek_token().clone();
-                    let kw = match &kw_tok.kind {
-                        TokenKind::Ident(s) => s.clone(),
-                        other => {
-                            return Err(Diag::parse(
-                                kw_tok.span,
-                                format!(
-                                    "expected `core`, `cores`, `node`, or \
-                                     `l3` inside `pinned(...)`, got {:?}",
-                                    other
-                                ),
-                            ));
+                    loop {
+                        let kw_tok = self.peek_token().clone();
+                        let kw = match &kw_tok.kind {
+                            TokenKind::Ident(s) => s.clone(),
+                            other => {
+                                return Err(Diag::parse(
+                                    kw_tok.span,
+                                    format!(
+                                        "expected `core`, `cores`, `node`, \
+                                         `l3`, or `replicas` inside \
+                                         `pinned(...)`, got {:?}",
+                                        other
+                                    ),
+                                ));
+                            }
+                        };
+                        match kw.as_str() {
+                            "core" | "cores" | "node" | "l3" => {
+                                if affinity_set {
+                                    return Err(Diag::parse(
+                                        kw_tok.span,
+                                        format!(
+                                            "`pinned(...)` already has an \
+                                             affinity; `{}` is a second one \
+                                             (use just one of core / cores / \
+                                             node / l3)",
+                                            kw
+                                        ),
+                                    ));
+                                }
+                                self.bump();
+                                self.expect(
+                                    TokenKind::Eq,
+                                    "expected `=` after affinity attribute",
+                                )?;
+                                affinity = match kw.as_str() {
+                                    "core" => PinAffinity::Cores(
+                                        CoreSpec::Single(
+                                            self.parse_core_index()?,
+                                        ),
+                                    ),
+                                    "cores" => PinAffinity::Cores(
+                                        self.parse_core_set()?,
+                                    ),
+                                    "node" => PinAffinity::Node(
+                                        self.parse_core_index()?,
+                                    ),
+                                    // "l3"
+                                    _ => PinAffinity::L3(
+                                        self.expect_ident("l3 domain name")?,
+                                    ),
+                                };
+                                affinity_set = true;
+                            }
+                            // Topology Phase 1c: parallelism sugar.
+                            "replicas" => {
+                                if replicas.is_some() {
+                                    return Err(Diag::parse(
+                                        kw_tok.span,
+                                        "`pinned(...)` already has a \
+                                         `replicas` count"
+                                            .to_string(),
+                                    ));
+                                }
+                                self.bump();
+                                self.expect(
+                                    TokenKind::Eq,
+                                    "expected `=` after `replicas`",
+                                )?;
+                                replicas = Some(self.parse_core_index()?);
+                            }
+                            _ => {
+                                return Err(Diag::parse(
+                                    kw_tok.span,
+                                    format!(
+                                        "unknown pinned attribute `{}`; \
+                                         expected `core` (one CPU), `cores` \
+                                         (a range `A..B` / `A..=B` or set \
+                                         `{{a, b, c}}`), `node` / `l3` (a \
+                                         topology domain), or `replicas` (fan \
+                                         into K single-threaded instances)",
+                                        kw
+                                    ),
+                                ));
+                            }
                         }
-                    };
-                    let affinity = match kw.as_str() {
-                        "core" => {
-                            self.bump();
-                            self.expect(
-                                TokenKind::Eq,
-                                "expected `=` after `core`",
-                            )?;
-                            let n = self.parse_core_index()?;
-                            PinAffinity::Cores(CoreSpec::Single(n))
+                        if self.eat(&TokenKind::Comma) {
+                            // trailing comma before `)` is allowed
+                            if matches!(self.peek(), TokenKind::RParen) {
+                                break;
+                            }
+                            continue;
                         }
-                        "cores" => {
-                            self.bump();
-                            self.expect(
-                                TokenKind::Eq,
-                                "expected `=` after `cores`",
-                            )?;
-                            PinAffinity::Cores(self.parse_core_set()?)
-                        }
-                        // Topology Phase 1b: `node = N` / `l3 = name`
-                        // resolve against the `topology { }` block at
-                        // typecheck; the parser just captures the target.
-                        "node" => {
-                            self.bump();
-                            self.expect(
-                                TokenKind::Eq,
-                                "expected `=` after `node`",
-                            )?;
-                            let n = self.parse_core_index()?;
-                            PinAffinity::Node(n)
-                        }
-                        "l3" => {
-                            self.bump();
-                            self.expect(
-                                TokenKind::Eq,
-                                "expected `=` after `l3`",
-                            )?;
-                            let name = self.expect_ident("l3 domain name")?;
-                            PinAffinity::L3(name)
-                        }
-                        _ => {
-                            return Err(Diag::parse(
-                                kw_tok.span,
-                                format!(
-                                    "unknown pinned attribute `{}`; expected \
-                                     `core` (one CPU), `cores` (a range \
-                                     `A..B` / `A..=B` or set `{{a, b, c}}`), \
-                                     `node` (a NUMA node), or `l3` (a cache \
-                                     domain) — the last two resolve against \
-                                     the `topology {{ }}` block",
-                                    kw
-                                ),
-                            ));
-                        }
-                    };
+                        break;
+                    }
                     self.expect(
                         TokenKind::RParen,
                         "expected `)` after pinned(...)",
                     )?;
-                    affinity
-                } else {
-                    PinAffinity::Any
-                };
-                Ok(PlacementSpec::Pinned { affinity })
+                }
+                Ok(PlacementSpec::Pinned { affinity, replicas })
             }
             other => Err(Diag::parse(
                 head_tok.span,
@@ -6495,7 +6547,7 @@ main locus App {
         assert_eq!(pb.entries.len(), 1);
         assert_eq!(pb.entries[0].field.name, "job");
         match &pb.entries[0].spec {
-            PlacementSpec::Pinned { affinity: PinAffinity::Any } => {}
+            PlacementSpec::Pinned { affinity: PinAffinity::Any, .. } => {}
             other => panic!("expected Pinned{{ affinity: Any }}, got {:?}", other),
         }
     }
@@ -6515,6 +6567,7 @@ main locus App {
         match &pb.entries[0].spec {
             PlacementSpec::Pinned {
                 affinity: PinAffinity::Cores(CoreSpec::Single(3)),
+                ..
             } => {}
             other => panic!(
                 "expected Pinned{{ affinity: Cores(Single(3)) }}, got {:?}",
@@ -6539,6 +6592,7 @@ main locus App {
             PlacementSpec::Pinned {
                 affinity:
                     PinAffinity::Cores(CoreSpec::Range { lo: 4, hi: 12, inclusive: false }),
+                ..
             } => {}
             other => panic!(
                 "expected Pinned cores 4..12 (exclusive), got {:?}",
@@ -6563,6 +6617,7 @@ main locus App {
             PlacementSpec::Pinned {
                 affinity:
                     PinAffinity::Cores(CoreSpec::Range { lo: 4, hi: 11, inclusive: true }),
+                ..
             } => {}
             other => panic!(
                 "expected Pinned cores 4..=11 (inclusive), got {:?}",
@@ -6588,6 +6643,7 @@ main locus App {
         match &pb.entries[0].spec {
             PlacementSpec::Pinned {
                 affinity: PinAffinity::Cores(CoreSpec::Set(v)),
+                ..
             } => {
                 assert_eq!(v, &[5, 1, 9]);
             }
@@ -6734,7 +6790,7 @@ main locus App {
         let prog = parse_str(src).expect("parse failed");
         let pb = placement_block_of(&prog);
         match &pb.entries[0].spec {
-            PlacementSpec::Pinned { affinity: PinAffinity::Node(0) } => {}
+            PlacementSpec::Pinned { affinity: PinAffinity::Node(0), .. } => {}
             other => panic!("expected Pinned node 0, got {:?}", other),
         }
     }
@@ -6753,7 +6809,7 @@ main locus App {
         let prog = parse_str(src).expect("parse failed");
         let pb = placement_block_of(&prog);
         match &pb.entries[0].spec {
-            PlacementSpec::Pinned { affinity: PinAffinity::L3(name) } => {
+            PlacementSpec::Pinned { affinity: PinAffinity::L3(name), .. } => {
                 assert_eq!(name.name, "fast");
             }
             other => panic!("expected Pinned l3 fast, got {:?}", other),
@@ -6792,6 +6848,134 @@ main locus App {
         assert!(
             msg.contains("node") && msg.contains("l3"),
             "expected diagnostic naming node and l3; got: {}",
+            msg
+        );
+    }
+
+    // === Topology Phase 1c: replicas ==============================
+
+    #[test]
+    fn parse_pinned_cores_and_replicas() {
+        let src = r#"
+locus W { run() { } }
+
+main locus App {
+    params { w: W = W { }; }
+    placement { w: pinned(cores = 4..12, replicas = 8); }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let pb = placement_block_of(&prog);
+        match &pb.entries[0].spec {
+            PlacementSpec::Pinned {
+                affinity:
+                    PinAffinity::Cores(CoreSpec::Range { lo: 4, hi: 12, inclusive: false }),
+                replicas: Some(8),
+            } => {}
+            other => panic!("expected pinned cores 4..12 replicas 8, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_pinned_node_and_replicas() {
+        // replicas composes with a topology domain target
+        let src = r#"
+locus W { run() { } }
+
+main locus App {
+    topology { node 0 { l3 fast { cores 4..8; } } }
+    params { w: W = W { }; }
+    placement { w: pinned(node = 0, replicas = 4); }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let pb = placement_block_of(&prog);
+        match &pb.entries[0].spec {
+            PlacementSpec::Pinned {
+                affinity: PinAffinity::Node(0),
+                replicas: Some(4),
+            } => {}
+            other => panic!("expected pinned node 0 replicas 4, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_pinned_replicas_only() {
+        // replicas with no affinity → Any, K OS-scheduled instances
+        let src = r#"
+locus W { run() { } }
+
+main locus App {
+    params { w: W = W { }; }
+    placement { w: pinned(replicas = 3); }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let pb = placement_block_of(&prog);
+        match &pb.entries[0].spec {
+            PlacementSpec::Pinned {
+                affinity: PinAffinity::Any,
+                replicas: Some(3),
+            } => {}
+            other => panic!("expected pinned Any replicas 3, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_pinned_bare_has_no_replicas() {
+        let src = r#"
+locus W { run() { } }
+
+main locus App {
+    params { w: W = W { }; }
+    placement { w: pinned; }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let pb = placement_block_of(&prog);
+        match &pb.entries[0].spec {
+            PlacementSpec::Pinned {
+                affinity: PinAffinity::Any,
+                replicas: None,
+            } => {}
+            other => panic!("expected bare pinned, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_pinned_double_affinity_rejected() {
+        let src = r#"
+locus W { run() { } }
+
+main locus App {
+    params { w: W = W { }; }
+    placement { w: pinned(core = 1, cores = 2..4); }
+}
+"#;
+        let err = parse_str(src).expect_err("should reject");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("already has an affinity"),
+            "expected double-affinity diagnostic; got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn parse_cooperative_replicas_rejected() {
+        let src = r#"
+locus W { run() { } }
+
+main locus App {
+    params { w: W = W { }; }
+    placement { w: cooperative(pool = io, replicas = 4); }
+}
+"#;
+        let err = parse_str(src).expect_err("should reject");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("replicas") && msg.contains("pinned"),
+            "expected 'replicas is pinned-only' diagnostic; got: {}",
             msg
         );
     }

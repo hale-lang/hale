@@ -114,7 +114,7 @@ projection      rich            chunked         recognition
 
 ```
 placement       cooperative     pinned          pool        core        cores
-topology        node            l3              reserve
+topology        node            l3              reserve     replicas
 ```
 
 `placement` introduces the `placement { }` block on `main
@@ -126,8 +126,10 @@ kwarg names inside `cooperative(pool = X)` /
 `pinned(core = N)` / `pinned(cores = A..B | A..=B | {a, b, c})`
 placement specs (topology Phase 1a, 2026-07-04). Phase 1b adds
 `pinned(node = N)` / `pinned(l3 = name)`, plus the `topology`,
-`node`, `l3`, and `reserve` block keywords. All are contextual
-idents — outside their positions they lex as ordinary Idents
+`node`, `l3`, and `reserve` block keywords. Phase 1c adds
+`replicas` (a second `pinned(...)` kwarg, e.g. `pinned(cores =
+A..B, replicas = K)`). All are contextual idents — outside their
+positions they lex as ordinary Idents
 and can name fns / vars / fields (same F.10-style narrowing the
 closure / mode keyword families use). Note L3-domain names go
 through the identifier rule, so a **hard** keyword (e.g. `bulk`)
