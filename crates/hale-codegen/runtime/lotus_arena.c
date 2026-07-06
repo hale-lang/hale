@@ -222,6 +222,19 @@ const char *__tsan_default_suppressions(void) {
 #ifndef MAP_HUGETLB
 #  define MAP_HUGETLB 0x40000   /* Linux-specific; fallback for builds where it's missing */
 #endif
+/* Topology arena-on-node (2026-07-05): NUMA memory binding via the
+ * raw `mbind` syscall. We go through syscall() rather than link
+ * libnuma so a node-pinned arena costs no new dynamic dependency —
+ * the whole feature stays zero-cost for programs that don't opt in.
+ * `__NR_mbind` comes from <sys/syscall.h>; MPOL_BIND (2) is the
+ * numaif ABI value, defined locally to avoid a libnuma-dev header
+ * dependency. Linux-only; everything below is #ifdef __linux__. */
+#if defined(__linux__)
+#include <sys/syscall.h>
+#ifndef MPOL_BIND
+#  define MPOL_BIND 2
+#endif
+#endif
 
 /* Default chunk size: 64KB. Big enough that most loci fit in
  * one chunk, small enough that a leaf locus that allocates a
@@ -406,6 +419,15 @@ typedef struct lotus_arena {
      * arena). Per-instance arenas leave this 0 and keep the single-thread
      * lock-free fast path. */
     int                  shared_concurrent;
+    /* Topology arena-on-node (2026-07-05). When >= 0, this arena's
+     * chunks are mmap'd (page-aligned) and `mbind`-bound to this
+     * NUMA node, so a node-pinned locus's working memory is
+     * co-located with the node its thread runs on. -1 (the default)
+     * takes the ordinary malloc / chunk-pool path — every non-node
+     * arena is byte-identical to before. Linux-only; on other hosts
+     * the bind is a no-op and the arena allocates normally. Set at
+     * create time via `lotus_arena_create_labeled_on_node`. */
+    int                  numa_node;
 } lotus_arena_t;
 
 /* Per-thread freelist of default-sized chunks (2026-05-21
@@ -1294,10 +1316,71 @@ static int lotus_hugepages_enabled(void) {
     return g_hugepages_enabled_cached;
 }
 
+/* Topology arena-on-node (2026-07-05): allocate one chunk whose
+ * pages are bound to NUMA node `node`. The chunk is mmap'd (so it's
+ * page-aligned — a prerequisite for mbind) and the region is
+ * `mbind`'d MPOL_BIND before it's first touched, so every page
+ * faults in on `node` regardless of which thread touches it first
+ * (the locus struct is instantiated on `main` but runs on its own
+ * pinned thread). The chunk carries via_mmap=1, so the release path
+ * munmaps it and it never enters the node-agnostic chunk pool.
+ *
+ * Best-effort, matching the affinity contract: if mmap fails, or
+ * mbind fails (node absent on this box, or the process lacks the
+ * capability), we return what we can — an unbound-but-usable chunk
+ * on mmap success, or NULL to let the caller fall back to malloc.
+ * Non-Linux: no mbind, just an mmap'd chunk (still correct, just
+ * not node-bound). */
+static lotus_arena_chunk_t *lotus_arena_new_chunk_on_node(
+    int node, size_t cap)
+{
+    long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0) page = 4096;
+    size_t total = sizeof(lotus_arena_chunk_t) + cap;
+    size_t mmap_size =
+        (total + (size_t)page - 1) & ~((size_t)page - 1);
+    void *p = mmap(NULL, mmap_size, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) return NULL;
+#if defined(__linux__)
+    /* Bind the region to `node` before first touch. Single-word
+     * nodemask covers nodes 0..63 — well past any real machine;
+     * skip binding (leave first-touch policy) for node >= 64. */
+    if (node >= 0 && node < (int)(8 * sizeof(unsigned long))) {
+        unsigned long nodemask = 1UL << node;
+        (void)syscall(__NR_mbind, p, (unsigned long)mmap_size,
+                      MPOL_BIND, &nodemask,
+                      (unsigned long)(8 * sizeof(unsigned long)),
+                      0u);
+        /* Return value ignored on purpose: an mbind failure leaves
+         * the region under the default (first-touch) policy, which
+         * is still correct memory — just not node-pinned. */
+    }
+#else
+    (void)node;
+#endif
+    lotus_arena_chunk_t *c = (lotus_arena_chunk_t *)p;
+    c->next = NULL;
+    c->used = 0;
+    c->cap  = cap;
+    c->via_mmap = 1;
+    c->mmap_size = mmap_size;
+    return c;
+}
+
 static lotus_arena_chunk_t *lotus_arena_new_chunk_for(
     struct lotus_arena *target, size_t cap)
 {
     lotus_mark_thread_for_pool_dtor();
+    /* Topology arena-on-node: a NUMA-bound arena gets each chunk
+     * mmap'd + mbind'd to its node, bypassing the node-agnostic
+     * chunk pool (whose recycled chunks carry no node binding).
+     * Falls through to the ordinary path if the mmap fails. */
+    if (target && target->numa_node >= 0) {
+        lotus_arena_chunk_t *c =
+            lotus_arena_new_chunk_on_node(target->numa_node, cap);
+        if (c) return c;
+    }
     lotus_chunk_pool_prefill_if_needed();
     /* Pool only the common-case default chunk size. Mixing
      * sizes in one freelist would force a scan per pop. */
@@ -1463,6 +1546,7 @@ static lotus_arena_t *lotus_arena_alloc_struct(void) {
     a->retire_pending = NULL;
     a->retire_shells = NULL;
     a->retire_free = NULL;
+    a->numa_node = -1;  /* topology arena-on-node: unbound by default */
     /* 2026-05-26 substrate-race fix: subregion freelist mutex.
      * Used by create_subregion / destroy via the PARENT arena's
      * pointer; arenas with no children never acquire the lock.
@@ -1498,6 +1582,25 @@ lotus_arena_t *lotus_arena_create(void) {
  * literal so this is automatic. */
 lotus_arena_t *lotus_arena_create_labeled(const char *label) {
     lotus_arena_t *a = lotus_arena_alloc_struct();
+    lotus_arena_residency_register(a, label);
+    return a;
+}
+
+/* Topology arena-on-node (2026-07-05). Same as
+ * lotus_arena_create_labeled but flags the arena for NUMA-node
+ * memory co-location: every chunk it grows is mmap'd + `mbind`'d
+ * to `node` (see lotus_arena_new_chunk_on_node), so a node-pinned
+ * locus's working set lands on the same node its thread runs on.
+ * Codegen emits this variant for a `pinned(node = N)` /
+ * `pinned(l3 = name)` placement (the node resolved from the
+ * `topology { }` block). `node < 0` degrades to the ordinary
+ * unbound arena. Linux-only; a no-op bind elsewhere. */
+lotus_arena_t *lotus_arena_create_labeled_on_node(
+    const char *label, int node)
+{
+    lotus_arena_t *a = lotus_arena_alloc_struct();
+    if (!a) return NULL;
+    if (node >= 0) a->numa_node = node;
     lotus_arena_residency_register(a, label);
     return a;
 }
@@ -1721,6 +1824,13 @@ lotus_arena_t *lotus_arena_create_subregion(lotus_arena_t *parent) {
     lotus_arena_t *a = lotus_arena_alloc_struct();
     if (!a) return NULL;
     a->parent = parent;
+    /* Topology arena-on-node (2026-07-05): a sub-region holds its
+     * own chunks, so it must inherit the parent's NUMA binding for
+     * co-location to reach the hot path — method scratch (the
+     * dominant per-invocation allocation) is a sub-region of the
+     * locus arena. A node-pinned locus's transient scratch lands
+     * on its node too; unbound parents (-1) leave children unbound. */
+    a->numa_node = parent->numa_node;
     /* 2026-05-26 substrate-race fix: lock the parent's
      * subregion tracker. Without this, two threads
      * concurrently creating sub-regions of the same parent

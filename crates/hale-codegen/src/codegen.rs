@@ -1166,7 +1166,9 @@ pub fn build_executable_with_options(
         instantiating_for_parent_field: false,
         instantiating_into_payload_arena: false,
         placement_for_next_locus_instantiation: None,
+        numa_node_for_next_locus_instantiation: None,
         main_placement_map: BTreeMap::new(),
+        main_placement_node: BTreeMap::new(),
         main_locus_name: None,
         pinned_locus_types: BTreeSet::new(),
         params_init_self: None,
@@ -2981,6 +2983,15 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// the first nested locus instantiation absorbs the override
     /// and inner ones see None.
     pub(crate) placement_for_next_locus_instantiation: Option<ScheduleClass>,
+    /// Topology arena-on-node (2026-07-05): parallel to
+    /// `placement_for_next_locus_instantiation` — the resolved
+    /// NUMA node for the field being instantiated, when its
+    /// placement is `pinned(node = N)` / `pinned(l3 = name)`.
+    /// `Some(node)` routes the Fresh-strategy arena create through
+    /// `lotus_arena_create_labeled_on_node` so the locus's arena
+    /// co-locates with its thread's node. Consumed via `mem::take`
+    /// like its sibling.
+    pub(crate) numa_node_for_next_locus_instantiation: Option<i64>,
     /// F.31: per-main-locus map of `params` field name →
     /// effective placement. Built once at codegen startup from
     /// `main locus`'s `placement { }` block. Used by the
@@ -2989,6 +3000,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// absent field defaults to `Cooperative` (placement
     /// pool routing comes in Phase 4).
     pub(crate) main_placement_map: BTreeMap<String, ScheduleClass>,
+    /// Topology arena-on-node: per-main-locus map of `params`
+    /// field name → resolved NUMA node, for the `pinned(node/l3)`
+    /// entries whose arena binds to a node. Built alongside
+    /// `main_placement_map` in `collect_main_placement`; absent
+    /// fields (no node placement) simply don't appear.
+    pub(crate) main_placement_node: BTreeMap<String, i64>,
     /// F.31: name of the main locus (if any) for the bundle.
     /// Cached at startup so the params-init loop can detect
     /// "we're instantiating main" without re-walking the
@@ -7814,6 +7831,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// Topology arena-on-node: the NUMA node an affinity binds its
+    /// *memory* to (as opposed to which cores its thread runs on).
+    /// `node = N` binds to `N` directly; `l3 = name` binds to the
+    /// node containing that cache domain. `cores` / bare `pinned`
+    /// have no node — their arenas stay unbound (ordinary malloc).
+    fn resolve_pin_node(
+        affinity: &PinAffinity,
+        topology: Option<&TopologyBlock>,
+    ) -> Option<i64> {
+        match affinity {
+            PinAffinity::Node(n) => {
+                // Only bind if the node is actually declared (so a
+                // typecheck-rejected reference doesn't leak to a
+                // bogus node id at codegen).
+                topology.and_then(|t| t.node_cores(*n)).map(|_| *n)
+            }
+            PinAffinity::L3(name) => {
+                topology.and_then(|t| t.node_of_l3(&name.name))
+            }
+            PinAffinity::Any | PinAffinity::Cores(_) => None,
+        }
+    }
+
     /// F.31 (2026-05-23): pre-pass over `main locus`'s
     /// `placement { }` block. Caches `main_locus_name` and
     /// populates `main_placement_map` keyed by field name with
@@ -7908,6 +7948,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             let cores = Self::resolve_pin_affinity(
                                 affinity, topology,
                             );
+                            // Topology arena-on-node: record the
+                            // resolved node so the field's arena
+                            // create binds its memory to that node.
+                            if let Some(node) =
+                                Self::resolve_pin_node(affinity, topology)
+                            {
+                                self.main_placement_node.insert(
+                                    entry.field.name.clone(),
+                                    node,
+                                );
+                            }
                             ScheduleClass::Pinned(cores)
                         }
                         PlacementSpec::Cooperative { pool } => {

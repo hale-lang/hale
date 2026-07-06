@@ -593,6 +593,19 @@ impl TopologyBlock {
         None
     }
 
+    /// The NUMA node id that contains L3 domain `name` — used to
+    /// co-locate an `l3`-pinned locus's arena with the node its
+    /// cache domain lives on (topology arena-on-node). `None` if
+    /// no domain with that name is declared.
+    pub fn node_of_l3(&self, name: &str) -> Option<i64> {
+        for node in &self.nodes {
+            if node.domains.iter().any(|d| d.name.name == name) {
+                return Some(node.id);
+            }
+        }
+        None
+    }
+
     /// All reserved cores, expanded/sorted/deduped.
     pub fn reserved_cores(&self) -> Vec<i64> {
         let mut v: Vec<i64> =
