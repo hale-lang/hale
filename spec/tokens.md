@@ -199,15 +199,18 @@ subscribe       publish         on              of
 ### Perspective keywords
 
 ```
-stable_when     serialize_as    serves
+stable_when     serialize_as    serves          reperspective
 ```
 
 `serves` (Phase 2a, 2026-07-06) is a **contextual keyword** —
 recognized only in a locus header's post-`:` list, as the
 `serves P` conformance clause (`locus RouterV1 : serves Router`).
-Outside that position it lexes as an ordinary Ident, so
-`fn serves(...)` / `let serves = ...` stay admissible. Same
-F.10-style narrowing the placement / closure keyword families use.
+`reperspective` (Phase 2b, 2026-07-06) is a **contextual keyword**
+recognized only as a statement head followed by `self`
+(`reperspective self.<field> as <Impl>;`). Outside those positions
+both lex as ordinary Idents, so `fn serves(...)` /
+`let reperspective = ...` stay admissible. Same F.10-style
+narrowing the placement / closure keyword families use.
 
 `perspective` (a **hard** declaration keyword) doubles as a type
 constructor: `perspective(P)` in type position is a handle to the

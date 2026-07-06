@@ -2290,12 +2290,39 @@ per call into a perspective — near-direct. The mechanism is
 Linux/native-agnostic (no new runtime dependency); a program that
 declares no perspectives pays nothing.
 
+### The live swap: `reperspective` (Phase 2b)
+
+`reperspective self.<field> as <Impl>;` is the live redeploy. It
+re-points the perspective's global slot — identified by the
+`self`-field's `perspective(P)` type — at a fresh instance of
+`Impl` (which must `serve P`). Because every holder funnels through
+the one slot, the swap is a single store to `{ data, vtable }` that
+redirects **every** call site at once: the same `self.router.route(...)`
+resolves to the new impl immediately after.
+
+- **Fresh-instance semantics.** The new impl is instantiated with
+  its own birth defaults; state does **not** carry across the swap.
+  (State-preserving swap — layout-identity fast path + `migrate` —
+  is Phase 3.)
+- **Rebind authority.** The statement runs on the locus that owns
+  the slot (`self.<field>`), never a mere caller — the ownership
+  tree is the redeploy authority. The typechecker requires the
+  field to be a `perspective(P)` param of the current locus and the
+  new impl to `serve P`.
+- **Ownership / teardown.** Perspective impls (designated and
+  swapped-in) are owned by the global slot and live for the program
+  (reclaimed with the program-global arena at exit). The previous
+  impl is not freed at swap time in this slice — a bounded,
+  program-lifetime cost; per-swap reclaim of the retired impl's
+  state is a follow-up.
+
 ## Perspective hot-load
 
-> **Status:** the flow below is the aspirational *swap* path
-> (Phase 2b/3). Phase 2a ships the contract + slot + dispatch
-> above; `reperspective` (the atomic slot re-point) and state
-> migration land in the following slices.
+> **Status:** Phase 2b ships the core `reperspective` swap
+> (above): the atomic slot re-point with fresh-instance semantics.
+> The bus-arrival / decode / `stable_when` / drain flow below is the
+> fuller aspirational path (bus-driven redeploy + state migration,
+> Phase 2c/3).
 
 For each `perspective P { ... }` instance currently active:
 

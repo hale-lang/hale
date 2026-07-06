@@ -56,7 +56,7 @@ pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     "unix", "shm_ring", "role", "listen", "connect", "slot_count",
     "on_overflow", "block", "drop",
     "intra_process", "intra_machine", "cross_machine", "zero_copy",
-    "serves",
+    "serves", "reperspective",
 ];
 
 /// The union of [`HARD_KEYWORDS`] and [`CONTEXTUAL_KEYWORDS`], sorted and

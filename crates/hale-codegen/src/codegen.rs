@@ -4478,7 +4478,8 @@ fn count_self_fields_in_stmt(
             count_self_fields_in_block(body, counts, depth);
         }
         Stmt::Expr(e) => count_self_fields_in_expr(e, counts, depth),
-        Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) => {}
+        Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_)
+        | Stmt::Reperspective { .. } => {}
     }
 }
 
@@ -4681,7 +4682,8 @@ fn stmt_reads_self_children(s: &Stmt) -> bool {
         | Stmt::Break(_)
         | Stmt::Continue(_)
         | Stmt::Yield(_)
-        | Stmt::Terminate(_) => false,
+        | Stmt::Terminate(_)
+        | Stmt::Reperspective { .. } => false,
     }
 }
 
@@ -14259,6 +14261,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         other
                     ))),
                 }
+            }
+            Stmt::Reperspective { field, impl_name, .. } => {
+                self.lower_reperspective(&field.name, &impl_name.name, scope)?;
+                Ok(BlockEnd::Open)
             }
             Stmt::Send { subject, value, or_disposition, .. } => {
                 self.lower_send(subject, value, or_disposition.as_ref(), scope)?;
@@ -23976,6 +23982,91 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Some((v, rt))
             }
         })
+    }
+
+    /// Perspectives Phase 2b: lower `reperspective self.<field> as
+    /// <Impl>;` — the live redeploy (fresh-instance swap):
+    ///   1. free the current impl's state arena (the one the slot
+    ///      points at) — its struct is program-lifetime;
+    ///   2. instantiate a fresh `Impl` (global-arena, slot-owned);
+    ///   3. atomic-store `{ new_self, vtable(Impl, P) }` into the
+    ///      perspective's global slot — the pointer flip that
+    ///      redirects every call site at once;
+    ///   4. re-point the holder's field at the new impl.
+    /// State does NOT carry across (the new impl runs its own birth
+    /// defaults) — state migration is Phase 3.
+    fn lower_reperspective(
+        &mut self,
+        field: &str,
+        impl_name: &str,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let cs = self.current_self.as_ref().cloned().ok_or_else(|| {
+            CodegenError::Unsupported(
+                "`reperspective`: no enclosing locus self".into(),
+            )
+        })?;
+        // Resolve the perspective contract P from the field's type.
+        let (field_idx, persp_name) = match cs.fields.get(field) {
+            Some((idx, CodegenTy::Perspective(p))) => (*idx, p.clone()),
+            _ => {
+                return Err(CodegenError::Unsupported(format!(
+                    "`reperspective self.{}`: field is not a perspective \
+                     handle",
+                    field
+                )));
+            }
+        };
+        let fat_struct_ty = self.iface_fat_struct_ty();
+        let slot = self.ensure_perspective_slot(&persp_name);
+        let slot_ptr = slot.as_pointer_value();
+        let data_gep = self
+            .builder
+            .build_struct_gep(fat_struct_ty, slot_ptr, 0, "reperspective.data.gep")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let _ = ptr_t;
+
+        // (1) Instantiate a fresh Impl in the program-global arena
+        // (the persistent-singleton allocation path — proven
+        // program-lifetime and leak-clean). It outlives this method
+        // and is reclaimed with the global arena at exit; the
+        // previous impl stays live until program exit (a bounded,
+        // program-lifetime cost — full per-swap reclaim of the old
+        // impl's state is a follow-up).
+        let prev_singleton = self.instantiating_persistent_singleton;
+        self.instantiating_persistent_singleton = true;
+        let new_self =
+            self.lower_locus_instantiation(impl_name, &[], scope)?;
+        self.instantiating_persistent_singleton = prev_singleton;
+
+        // (2) Flip the global slot to { new_self, vtable(Impl, P) }.
+        let vtable = self.ensure_perspective_vtable(impl_name, &persp_name)?;
+        self.builder
+            .build_store(data_gep, new_self)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let vt_gep = self
+            .builder
+            .build_struct_gep(fat_struct_ty, slot_ptr, 1, "reperspective.vtable.gep")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(vt_gep, vtable.as_pointer_value())
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // (3) Re-point the holder's field at the new impl.
+        let field_ptr = self
+            .builder
+            .build_struct_gep(
+                cs.struct_ty,
+                cs.self_ptr,
+                field_idx,
+                "reperspective.field.gep",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(field_ptr, new_self)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
     }
 
     /// Lower one closure assertion `left ~~ right within tol` as

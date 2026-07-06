@@ -1324,6 +1324,10 @@ impl<'a> Walker<'a> {
             }
             Stmt::Return(Some(e), _) => self.walk_expr(e, depth, Escape::Returned),
             Stmt::Return(None, _) => {}
+            // Perspectives Phase 2b: `reperspective` instantiates a
+            // fresh impl (bounded, one per swap) — no expression to
+            // walk for the alloc summary.
+            Stmt::Reperspective { .. } => {}
             Stmt::Fail { value, .. } => self.walk_expr(value, depth, Escape::Returned),
             Stmt::Send { subject, value, .. } => {
                 self.walk_expr(subject, depth, Escape::Local);

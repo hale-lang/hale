@@ -698,7 +698,8 @@ fn acc_stmt(s: &mut Stmt, w: &WireLayouts) {
         | Stmt::Break(_)
         | Stmt::Continue(_)
         | Stmt::Yield(_)
-        | Stmt::Terminate(_) => {}
+        | Stmt::Terminate(_)
+        | Stmt::Reperspective { .. } => {}
     }
 }
 

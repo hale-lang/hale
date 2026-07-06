@@ -136,3 +136,66 @@ fn main() { App { }; }
         msgs
     );
 }
+
+// === Phase 2b: reperspective typecheck ========================
+
+#[test]
+fn reperspective_clean() {
+    let src = r#"
+perspective Router { fn route(c: Int) -> Int; }
+locus RouterV1 : serves Router { fn route(c: Int) -> Int { return c + 1; } }
+locus RouterV2 : serves Router { fn route(c: Int) -> Int { return c + 2; } }
+locus Gateway {
+    params { router: perspective(Router) = RouterV1 { }; }
+    run() { reperspective self.router as RouterV2; }
+}
+main locus App { params { gw: Gateway = Gateway { }; } run() { } }
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().all(|m| !m.contains("reperspective")),
+        "expected clean reperspective, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn reperspective_impl_not_serving_rejected() {
+    let src = r#"
+perspective Router { fn route(c: Int) -> Int; }
+locus RouterV1 : serves Router { fn route(c: Int) -> Int { return c; } }
+locus NotARouter { fn route(c: Int) -> Int { return c; } }
+locus Gateway {
+    params { router: perspective(Router) = RouterV1 { }; }
+    run() { reperspective self.router as NotARouter; }
+}
+main locus App { params { gw: Gateway = Gateway { }; } run() { } }
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("does not") && m.contains("serve")),
+        "expected does-not-serve diagnostic, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn reperspective_non_perspective_field_rejected() {
+    let src = r#"
+locus Plain { fn f() -> Int { return 1; } }
+locus Gateway {
+    params { p: Plain = Plain { }; }
+    run() { reperspective self.p as Plain; }
+}
+main locus App { params { gw: Gateway = Gateway { }; } run() { } }
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("not a `perspective")),
+        "expected not-a-perspective-handle diagnostic, got: {:?}",
+        msgs
+    );
+}

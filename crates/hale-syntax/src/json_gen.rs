@@ -516,7 +516,8 @@ fn rewrite_stmt(s: &mut Stmt, names: &HashSet<String>) {
         | Stmt::Break(_)
         | Stmt::Continue(_)
         | Stmt::Yield(_)
-        | Stmt::Terminate(_) => {}
+        | Stmt::Terminate(_)
+        | Stmt::Reperspective { .. } => {}
     }
 }
 
