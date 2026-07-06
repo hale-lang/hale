@@ -1278,3 +1278,66 @@ fn main() { App { }; }
         msgs
     );
 }
+
+// === Topology Phase 1c (2026-07-05): replicas ================
+
+#[test]
+fn replicas_clean() {
+    let src = r#"
+locus W { run() { } }
+
+main locus App {
+    params { workers: W = W { }; }
+    placement { workers: pinned(cores = 4..12, replicas = 8); }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().all(|m| !m.contains("placement") && !m.contains("replicas")),
+        "expected clean replicas placement, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn replicas_zero_rejected() {
+    let src = r#"
+locus W { run() { } }
+
+main locus App {
+    params { w: W = W { }; }
+    placement { w: pinned(cores = 4..12, replicas = 0); }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("replicas = 0") && m.contains("at least 1")),
+        "expected replicas>=1 diagnostic, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn replicas_composes_with_node() {
+    let src = r#"
+locus W { run() { } }
+
+main locus App {
+    topology { node 0 { l3 fast { cores 4..8; } } }
+    params { w: W = W { }; }
+    placement { w: pinned(node = 0, replicas = 4); }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().all(|m| !m.contains("placement") && !m.contains("replicas")),
+        "expected clean node+replicas placement, got: {:?}",
+        msgs
+    );
+}
