@@ -9,11 +9,11 @@
 //
 //   reperspective self.router as RouterV2;
 //
-// This slice is the FRESH-INSTANCE swap: the new impl is
-// instantiated with its own birth defaults; state does not carry
-// across (that's state migration — Phase 3). Rebind authority
-// follows ownership: the swap runs on the locus that owns the
-// slot (`self.router`), never a mere caller.
+// The swap replaces only the slot's vtable and keeps its data, so
+// any state carries across (see 63-reperspective-migrate). These
+// routers are stateless, so the swap is purely a code redirect.
+// Rebind authority follows ownership: the swap runs on the locus
+// that owns the slot (`self.router`), never a mere caller.
 
 perspective Router {
     fn route(code: Int) -> Int;

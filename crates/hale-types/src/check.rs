@@ -36,6 +36,19 @@ fn method_to_fn_ty(m: &MethodInfo) -> Ty {
     }
 }
 
+/// Phase 3 migration: two loci have the same *footprint* iff their
+/// params (the user-visible state fields) match by name and type in
+/// declaration order. A state-preserving `reperspective` keeps the
+/// current impl's data and swaps only the vtable, so the new impl's
+/// field accesses land on the retained state — sound exactly when
+/// the footprints are identical.
+fn footprints_match(a: &[ParamInfo], b: &[ParamInfo]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b.iter())
+            .all(|(x, y)| x.name == y.name && x.ty == y.ty)
+}
+
 /// True if the match arms cover every possible scrutinee
 /// value. v0 rules:
 ///   - Any arm without a guard whose pattern is wildcard `_`
@@ -8396,6 +8409,42 @@ impl<'a> Checker<'a> {
                             field.name, impl_name.name, impl_name.name, persp
                         ),
                     ));
+                    return;
+                }
+                // Phase 3 migration: the swap preserves state by
+                // keeping the slot's data pointer and re-pointing only
+                // the vtable (the note's layout-identity "zero
+                // migration" — code and state are already separate).
+                // That is layout-safe only if every impl of the
+                // perspective shares the same footprint, so the new
+                // impl's methods interpret the retained state
+                // correctly. A footprint change is the `migrate` case
+                // — deferred; reject it with an actionable message
+                // rather than silently reinterpreting bytes.
+                for (other_name, sym) in &self.top.symbols {
+                    if other_name == &impl_name.name {
+                        continue;
+                    }
+                    if let TopSymbol::Locus(other) = sym {
+                        if other.serves.iter().any(|s| s == &persp)
+                            && !footprints_match(&impl_info.params, &other.params)
+                        {
+                            self.diags.push(Diag::ty(
+                                span,
+                                format!(
+                                    "`reperspective self.{} as {}`: impl `{}` has \
+                                     a different footprint than `{}` (also serving \
+                                     `{}`). A state-preserving swap requires all \
+                                     impls of a perspective to share the same \
+                                     params; a footprint change needs `migrate`, \
+                                     which isn't supported yet.",
+                                    field.name, impl_name.name, impl_name.name,
+                                    other_name, persp
+                                ),
+                            ));
+                            return;
+                        }
+                    }
                 }
             }
             _ => {

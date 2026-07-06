@@ -1,0 +1,64 @@
+// 63-reperspective-migrate — the state-preserving redeploy
+// (perspectives, Phase 3).
+//
+// A perspective's slot is `{ data, vtable }`: the DATA pointer is
+// the running state (an arena-backed struct), the VTABLE is the
+// code. Because they're already separate, redeploying V2 over V1
+// is a single store — swap the vtable, keep the data:
+//
+//   reperspective self.counter as CounterV2;   // code := V2
+//                                              // state carries
+//
+// The new impl's methods pick up right where the old left off,
+// operating on the SAME live state. This is the note's
+// "layout-identity / zero-migration" swap: no re-instantiation, no
+// birth defaults, nothing to tear down. It is sound because the
+// typechecker requires every impl of a perspective to share one
+// footprint, so V2's field offsets land on V1's retained state. A
+// footprint CHANGE is the `migrate` case (a follow-up); until then
+// it's a compile error, not a silent reinterpretation of bytes.
+
+perspective Counter {
+    fn bump();
+    fn get() -> Int;
+}
+
+locus CounterV1 : serves Counter {
+    params { n: Int = 0; }
+    fn bump() { self.n = self.n + 1; }
+    fn get() -> Int { return self.n; }
+}
+
+// Same footprint (`n: Int`), different behavior — a bump now
+// advances by 10. Deployed over V1's accumulated count.
+locus CounterV2 : serves Counter {
+    params { n: Int = 0; }
+    fn bump() { self.n = self.n + 10; }
+    fn get() -> Int { return self.n; }
+}
+
+locus Service {
+    params { counter: perspective(Counter) = CounterV1 { }; }
+    run() {
+        self.counter.bump();
+        self.counter.bump();
+        println(self.counter.get());              // V1 counted 2
+
+        reperspective self.counter as CounterV2;   // redeploy, live
+        println(self.counter.get());              // 2 — state carried
+
+        self.counter.bump();                       // V2 adds 10
+        println(self.counter.get());              // 12
+    }
+}
+
+main locus App {
+    params { svc: Service = Service { }; }
+    run() {
+        println("service redeployed its counter without losing count");
+    }
+}
+
+fn main() {
+    App { };
+}

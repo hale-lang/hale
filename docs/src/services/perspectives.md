@@ -117,13 +117,25 @@ A few rules:
   the locus holding the slot; the new impl must `serve` the same
   perspective. A caller that merely *uses* a perspective can't
   redeploy it — redeployment authority is ownership.
-- **Fresh start.** The new impl comes up on its own birth defaults;
-  state from the old impl does not carry over. (Carrying state
-  across a redeploy — migration — is a later slice.)
-- **Cost.** A swap is a pointer flip plus instantiating the new
-  impl. The old impl stays resident until the program exits (a
-  bounded, program-lifetime cost for now); reclaiming it at swap
-  time is a follow-up.
+- **State carries over.** The slot holds `{ data, vtable }` — the
+  data *is* the running state, the vtable is the code. A swap
+  replaces only the vtable, so the new impl picks up right where the
+  old one left off, on the same live state:
+
+  ```hale
+  self.counter.bump();  self.counter.bump();   // count = 2 (V1)
+  reperspective self.counter as CounterV2;      // redeploy
+  println(self.counter.get());                  // still 2 — carried
+  ```
+
+  This is sound because every impl of a perspective must share the
+  same **footprint** (same params, same types). A version that
+  *changes* the footprint — adds a field, changes a type — can't
+  reinterpret the old state, so it's a compile error today: that's
+  the `migrate` case, a later slice.
+- **Cost.** A swap is a single pointer store (the vtable). Nothing
+  is re-instantiated and nothing is torn down — the state was never
+  the code.
 
 ## Contracts can declare a bus surface
 
