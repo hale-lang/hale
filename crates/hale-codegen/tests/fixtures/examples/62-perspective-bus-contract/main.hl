@@ -1,0 +1,52 @@
+// 62-perspective-bus-contract — a perspective contract that
+// declares its BUS surface, not just its sync methods
+// (perspectives, Phase 2c).
+//
+// The async slot: a perspective reached over the bus dispatches
+// to "the current impl's mailbox." So the CONTRACT — the stable
+// ABI a swap is checked against — must be able to name the bus
+// edges too, exactly as it names the sync `fn`s:
+//
+//   perspective OrderRouter {
+//       fn health() -> Int;                          // sync ABI
+//       bus { subscribe "orders" as on_order of type Order; }
+//   }
+//
+// A `serves` impl must provide every declared edge — the sync
+// methods AND the bus subscriptions — checked structurally.
+//
+// This slice ships the contract surface + conformance. The live
+// mailbox re-point on `reperspective` (re-pointing a bus-backed
+// perspective's subscriptions atomically) is the follow-up; until
+// it lands, swapping a bus-backed perspective is a compile error.
+
+type Order { id: Int; }
+
+perspective OrderRouter {
+    fn health() -> Int;
+    bus { subscribe "orders" as on_order of type Order; }
+}
+
+locus RouterV1 : serves OrderRouter {
+    fn health() -> Int { return 1; }
+    bus { subscribe "orders" as on_order of type Order; }
+    fn on_order(o: Order) {
+        println("routed an order");
+    }
+}
+
+main locus App {
+    params {
+        router: perspective(OrderRouter) = RouterV1 { };
+    }
+    run() {
+        // Sync dispatch through the perspective slot still works;
+        // the impl's bus subscription is live via the normal bus.
+        println(self.router.health());
+        println("order router up (contract declares its bus surface)");
+    }
+}
+
+fn main() {
+    App { };
+}

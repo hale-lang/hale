@@ -2253,9 +2253,14 @@ locus Gateway {
 
 **`serves` conformance (error).** A `locus L : serves P` must
 provide every contract method P declares — matching arity, param
-types, and return type. A missing or mismatched method, or
-`serves` naming an unknown / non-perspective symbol, is a
-typecheck error. This is the perspective analog of interface
+types, and return type — **and** (Phase 2c) every bus edge P's
+contract declares: a `bus { subscribe/publish ... }` block in the
+perspective is part of the ABI, so a serving impl must subscribe /
+publish each named subject. A missing or mismatched method, a
+missing bus edge, or `serves` naming an unknown / non-perspective
+symbol, is a typecheck error. Live-swapping a bus-backed
+perspective (re-pointing its subscriptions) is a follow-up; until
+then `reperspective` on such a perspective is rejected. This is the perspective analog of interface
 structural satisfaction (and reuses its shape). The synthesized
 `is_stable` (from `stable_when`) is not a contract method the impl
 must provide.

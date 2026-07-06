@@ -8279,6 +8279,32 @@ impl<'a> Checker<'a> {
                     ));
                 }
             }
+            // Phase 2c: bus-surface conformance — the impl must
+            // subscribe / publish every subject the contract declares.
+            for want in &persp.bus_subscribes {
+                if !locus.bus_subscribes.iter().any(|s| &s.subject == want) {
+                    self.diags.push(Diag::ty(
+                        persp_name.span,
+                        format!(
+                            "locus `{}` serves `{}` but does not subscribe \
+                             the contract subject `{}`",
+                            decl.name.name, persp_name.name, want
+                        ),
+                    ));
+                }
+            }
+            for want in &persp.bus_publishes {
+                if !locus.bus_publishes.iter().any(|s| &s.subject == want) {
+                    self.diags.push(Diag::ty(
+                        persp_name.span,
+                        format!(
+                            "locus `{}` serves `{}` but does not publish \
+                             the contract subject `{}`",
+                            decl.name.name, persp_name.name, want
+                        ),
+                    ));
+                }
+            }
         }
     }
 
@@ -8337,6 +8363,26 @@ impl<'a> Checker<'a> {
                 return;
             }
         };
+        // Phase 2c gate: swapping a perspective that has a BUS surface
+        // needs the async mailbox-swap runtime (re-point the current
+        // impl's subscriptions), which is not built yet. Reject with a
+        // clear message rather than silently leaving the old impl's
+        // subscriptions live.
+        if let Some(TopSymbol::Perspective(pi)) = self.top.lookup(&persp) {
+            if !pi.bus_subscribes.is_empty() || !pi.bus_publishes.is_empty() {
+                self.diags.push(Diag::ty(
+                    span,
+                    format!(
+                        "`reperspective self.{}`: perspective `{}` declares a \
+                         bus surface; swapping a bus-backed perspective isn't \
+                         supported yet (the async mailbox re-point is a \
+                         follow-up). A sync-only perspective can be swapped.",
+                        field.name, persp
+                    ),
+                ));
+                return;
+            }
+        }
         // The new impl must be a locus that serves this perspective.
         match self.top.lookup(&impl_name.name) {
             Some(TopSymbol::Locus(impl_info)) => {

@@ -124,3 +124,29 @@ A few rules:
   impl. The old impl stays resident until the program exits (a
   bounded, program-lifetime cost for now); reclaiming it at swap
   time is a follow-up.
+
+## Contracts can declare a bus surface
+
+A perspective reached over the bus dispatches to *the current
+impl's mailbox* — so the contract, the thing a swap is checked
+against, can name its bus edges too, not just its sync methods:
+
+```hale
+type Order { id: Int; }
+
+perspective OrderRouter {
+    fn health() -> Int;                            // sync ABI
+    bus { subscribe "orders" as on_order of type Order; }
+}
+```
+
+A `serves` impl must provide every declared edge — the methods
+*and* the bus subscriptions — checked structurally, the same way
+it must provide the `fn`s. This keeps a perspective's full ABI in
+one place.
+
+Today this ships the contract surface and its conformance check.
+Live-swapping a *bus-backed* perspective — atomically re-pointing
+its subscriptions to a new impl — is a follow-up; until it lands,
+`reperspective` on a perspective that declares a bus surface is a
+compile error (a sync-only perspective swaps fine).

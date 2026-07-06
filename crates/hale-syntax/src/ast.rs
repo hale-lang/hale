@@ -1368,6 +1368,13 @@ pub enum PerspectiveMember {
     StableWhen(Block),
     SerializeAs(TypeExpr),
     Fn(FnDecl),
+    /// Phase 2c (2026-07-06): the perspective contract's BUS surface
+    /// — `bus { subscribe "..." ...; publish "..." ...; }`. These
+    /// edges are part of the swappable ABI (a perspective reached
+    /// over the bus dispatches to "the current impl's mailbox"), so
+    /// a `serves` impl must provide them, exactly as it must provide
+    /// the contract `fn`s. Reuses the locus `bus { }` block shape.
+    Bus(BusBlock),
 }
 
 #[derive(Debug, Clone, PartialEq)]

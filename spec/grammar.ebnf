@@ -618,7 +618,14 @@ perspective_member= params_block
                   | "stable_when" , block
                   | "serialize_as" , type_expr , ";"
                   | contract_fn
+                  | bus_block
                   ;
+(* Phase 2c (2026-07-06): a perspective contract may declare its BUS
+   surface (`bus { subscribe/publish ... }`, the locus bus-block
+   shape). These edges are part of the swappable ABI; a `serves`
+   impl must provide each declared subject. Swapping a bus-backed
+   perspective needs the async mailbox re-point (a follow-up); until
+   then `reperspective` on such a perspective is rejected. *)
 (* Phase 2a: a perspective's `fn` members are CONTRACT signatures
    — a bodyless `fn route(r: Req) -> Resp;` declares the ABI a
    `serves`-ing locus must provide. A bodied `fn { ... }` is still

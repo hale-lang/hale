@@ -252,6 +252,12 @@ pub struct PerspectiveInfo {
     pub params: Vec<ParamInfo>,
     pub serialize_as: Option<Ty>,
     pub methods: Vec<MethodInfo>,
+    /// Phase 2c: the contract's bus surface — the subjects the
+    /// perspective subscribes / publishes (as canonical subject
+    /// keys). A `serves` impl must subscribe / publish each of
+    /// these. Empty for a sync-only perspective.
+    pub bus_subscribes: Vec<String>,
+    pub bus_publishes: Vec<String>,
     pub span: Span,
 }
 
