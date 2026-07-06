@@ -7892,6 +7892,44 @@ void lotus_set_core_affinity(unsigned long tid, int core) {
 }
 
 /*
+ * Topology Phase 1a: cpuset affinity for `pinned(cores = A..B)` /
+ * `pinned(cores = {a, b, c})` placement entries. Codegen emits a
+ * constant i32 array of the (statically expanded, sorted, deduped)
+ * core indices and calls this right after pthread_create. The
+ * thread's affinity mask becomes the whole set — the OS schedules
+ * it freely within those cores, so a range carves out an isolation
+ * domain rather than picking one CPU.
+ *
+ * Same best-effort contract as lotus_set_core_affinity: indices
+ * outside [0, CPU_SETSIZE) are skipped, and if nothing valid
+ * remains (or the syscall fails) the thread just runs with normal
+ * OS scheduling. Linux-only; a no-op on other hosts.
+ */
+void lotus_set_core_affinity_set(unsigned long tid,
+                                 const int32_t *cores,
+                                 int32_t count) {
+#if defined(__linux__)
+    cpu_set_t cpuset;
+    int32_t i, valid = 0;
+    CPU_ZERO(&cpuset);
+    for (i = 0; i < count; i++) {
+        if (cores[i] >= 0 && cores[i] < (int32_t)CPU_SETSIZE) {
+            CPU_SET(cores[i], &cpuset);
+            valid++;
+        }
+    }
+    if (valid > 0) {
+        (void)pthread_setaffinity_np(
+            (pthread_t)tid, sizeof(cpu_set_t), &cpuset);
+    }
+#else
+    (void)tid;
+    (void)cores;
+    (void)count;
+#endif
+}
+
+/*
  * Pinned-thread entry (m28a + m28b).
  *
  * The C-runtime adapter `lotus_thread_entry` is gone — m28a

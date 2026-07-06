@@ -437,14 +437,60 @@ pub enum RecognitionSubMode {
 /// loop). m27 ships pinned threads. m28a lifts pinned to full
 /// lifecycle. m28b adds cross-thread bus mailboxes. m28c adds
 /// optional `pinned(core=N)` for explicit CPU-core affinity.
-#[derive(Debug, Clone, PartialEq, Copy)]
+/// Topology Phase 1a (2026-07-04) generalizes the single core
+/// to a [`CoreSpec`] (range / set → cpuset affinity mask).
+#[derive(Debug, Clone, PartialEq)]
 pub enum ScheduleClass {
     Cooperative,
-    /// Pinned to its own thread. Optional CPU core: `Some(n)`
-    /// asks the runtime to `pthread_setaffinity_np` the spawned
-    /// thread to logical CPU `n`; `None` lets the OS scheduler
-    /// pick. Spec/runtime.md::Schedule classes.
-    Pinned(Option<i64>),
+    /// Pinned to its own thread. Optional core selector:
+    /// `Some(spec)` asks the runtime to `pthread_setaffinity_np`
+    /// the spawned thread to the selected logical CPUs; `None`
+    /// lets the OS scheduler pick. Spec/runtime.md::Schedule
+    /// classes.
+    Pinned(Option<CoreSpec>),
+}
+
+/// Topology Phase 1a (2026-07-04): the core selector on a
+/// `pinned(...)` placement entry. `Single` keeps the original
+/// one-core pin; `Range` / `Set` bind the thread's affinity
+/// mask to a *set* of logical CPUs (the OS schedules freely
+/// within the set) — the cpuset-carving building block the
+/// `topology { }` DSL layers on.
+///
+/// Bounds are integer literals (placement is a closed-world
+/// deployment seam, resolved statically), so the concrete core
+/// list is known at compile time — see [`CoreSpec::expand`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoreSpec {
+    /// `pinned(core = N)` — exactly one logical CPU.
+    Single(i64),
+    /// `pinned(cores = A..B)` / `pinned(cores = A..=B)`. Same
+    /// inclusivity rules as expression ranges: `..` excludes
+    /// `hi`, `..=` includes it.
+    Range { lo: i64, hi: i64, inclusive: bool },
+    /// `pinned(cores = {a, b, c})` — explicit core set.
+    Set(Vec<i64>),
+}
+
+impl CoreSpec {
+    /// The concrete, sorted, deduplicated list of logical CPU
+    /// indices this spec selects. Empty means the spec selects
+    /// no cores (e.g. `cores = 4..4`) — rejected at typecheck.
+    pub fn expand(&self) -> Vec<i64> {
+        match self {
+            CoreSpec::Single(n) => vec![*n],
+            CoreSpec::Range { lo, hi, inclusive } => {
+                let hi = if *inclusive { *hi } else { hi - 1 };
+                (*lo..=hi).collect()
+            }
+            CoreSpec::Set(v) => {
+                let mut v = v.clone();
+                v.sort_unstable();
+                v.dedup();
+                v
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -551,11 +597,14 @@ pub enum PlacementSpec {
     /// main OS thread) — equivalent to writing
     /// `cooperative(pool = main)`.
     Cooperative { pool: Option<Ident> },
-    /// `pinned` or `pinned(core = N)`. The locus owns its own
-    /// OS thread; `Some(n)` asks the runtime to
-    /// `pthread_setaffinity_np` the spawned thread to logical
-    /// CPU `n`.
-    Pinned { core: Option<i64> },
+    /// `pinned`, `pinned(core = N)`, `pinned(cores = A..B)` /
+    /// `pinned(cores = A..=B)`, or `pinned(cores = {a, b, c})`.
+    /// The locus owns its own OS thread; `Some(spec)` asks the
+    /// runtime to `pthread_setaffinity_np` the spawned thread
+    /// to the selected logical CPUs (one core, or a cpuset the
+    /// OS schedules within). Linux-only; best-effort no-op
+    /// elsewhere.
+    Pinned { cores: Option<CoreSpec> },
 }
 
 /// F.35 (2026-05-28): operational-constraint keyword on a

@@ -5370,6 +5370,53 @@ impl<'a> Checker<'a> {
                     ));
                 }
             }
+            // Topology Phase 1a: `pinned(cores = ...)` static
+            // validity. The spec is closed-world (literal bounds),
+            // so an empty range or a duplicated set element is a
+            // definite authoring error, catchable here. Whether
+            // the cores exist on the deploy box stays best-effort
+            // at runtime (same contract as `pinned(core = N)` on
+            // a smaller CI machine).
+            if let PlacementSpec::Pinned { cores: Some(spec) } = &entry.spec {
+                match spec {
+                    CoreSpec::Range { lo, hi, inclusive } => {
+                        let empty =
+                            if *inclusive { hi < lo } else { hi <= lo };
+                        if empty {
+                            self.diags.push(Diag::ty(
+                                entry.span,
+                                format!(
+                                    "placement entry `{}`: `cores = {}..{}{}` \
+                                     selects no cores — the range is empty. \
+                                     (`A..B` excludes B; use `A..=B` to \
+                                     include it.)",
+                                    entry.field.name,
+                                    lo,
+                                    if *inclusive { "=" } else { "" },
+                                    hi,
+                                ),
+                            ));
+                        }
+                    }
+                    CoreSpec::Set(v) => {
+                        let mut sorted = v.clone();
+                        sorted.sort_unstable();
+                        sorted.dedup();
+                        if sorted.len() != v.len() {
+                            self.diags.push(Diag::ty(
+                                entry.span,
+                                format!(
+                                    "placement entry `{}`: duplicate core \
+                                     index in `cores = {{...}}` set",
+                                    entry.field.name
+                                ),
+                            ));
+                        }
+                    }
+                    CoreSpec::Single(_) => {}
+                }
+            }
+
             // (The dead-bus-receiver check moved to
             // `check_cooperative_pool_blocking` and was corrected: a
             // non-main cooperative subscriber is dead only when its

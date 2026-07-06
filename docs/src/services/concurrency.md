@@ -75,8 +75,22 @@ main locus App {
   The runtime spawns one OS worker per pool name it sees.
 - `pinned` / `pinned(core = N)` gives the locus its own thread,
   optionally pinned to a CPU core.
+- `pinned(cores = 4..8)` (or `4..=7`, or `{4, 5, 6, 7}`) pins
+  the thread to a core *set* instead of one core: the OS
+  schedules it freely within the set, so a range carves out an
+  isolation domain ("this locus lives on these cores, away from
+  everything else") without hand-picking a single CPU. Ranges
+  follow the usual rules — `..` excludes the upper bound, `..=`
+  includes it.
 - Unmentioned top-level loci default to `cooperative(pool =
   main)` — the program's main thread.
+
+Core affinity (both `core =` and `cores =`) is a Linux
+optimization and best-effort: indices that don't exist on the
+box are skipped, and on other platforms (macOS) the thread
+simply runs unpinned. Your program behaves identically either
+way — affinity only affects *where* the scheduler may run the
+thread.
 
 Placement keys on the *field name*, not the locus type, so two
 instances of the same locus type can live on different threads —

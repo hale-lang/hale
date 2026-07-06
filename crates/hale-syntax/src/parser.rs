@@ -1666,8 +1666,9 @@ impl Parser {
     }
 
     /// F.31: parse one placement spec — `cooperative` /
-    /// `cooperative(pool = X)` / `pinned` / `pinned(core = N)`.
-    /// Both head keywords are contextual Idents.
+    /// `cooperative(pool = X)` / `pinned` / `pinned(core = N)` /
+    /// `pinned(cores = A..B | A..=B | {a, b, c})` (topology
+    /// Phase 1a). Both head keywords are contextual Idents.
     fn parse_placement_spec(&mut self) -> Result<PlacementSpec, Diag> {
         let head_tok = self.peek_token().clone();
         let head = match &head_tok.kind {
@@ -1725,7 +1726,7 @@ impl Parser {
                 Ok(PlacementSpec::Cooperative { pool })
             }
             "pinned" => {
-                let core = if matches!(self.peek(), TokenKind::LParen) {
+                let cores = if matches!(self.peek(), TokenKind::LParen) {
                     self.bump();
                     let kw_tok = self.peek_token().clone();
                     let kw = match &kw_tok.kind {
@@ -1734,47 +1735,52 @@ impl Parser {
                             return Err(Diag::parse(
                                 kw_tok.span,
                                 format!(
-                                    "expected `core` inside `pinned(...)`, got {:?}",
+                                    "expected `core` or `cores` inside \
+                                     `pinned(...)`, got {:?}",
                                     other
                                 ),
                             ));
                         }
                     };
-                    if kw != "core" {
-                        return Err(Diag::parse(
-                            kw_tok.span,
-                            format!(
-                                "unknown pinned attribute `{}`; only `core` \
-                                 is recognized",
-                                kw
-                            ),
-                        ));
-                    }
-                    self.bump();
-                    self.expect(TokenKind::Eq, "expected `=` after `core`")?;
-                    let n_tok = self.peek_token().clone();
-                    let n = match &n_tok.kind {
-                        TokenKind::IntLit(v) => *v,
-                        other => {
+                    let spec = match kw.as_str() {
+                        "core" => {
+                            self.bump();
+                            self.expect(
+                                TokenKind::Eq,
+                                "expected `=` after `core`",
+                            )?;
+                            let n = self.parse_core_index()?;
+                            CoreSpec::Single(n)
+                        }
+                        "cores" => {
+                            self.bump();
+                            self.expect(
+                                TokenKind::Eq,
+                                "expected `=` after `cores`",
+                            )?;
+                            self.parse_core_set()?
+                        }
+                        _ => {
                             return Err(Diag::parse(
-                                n_tok.span,
+                                kw_tok.span,
                                 format!(
-                                    "expected integer CPU index after `core =`, got {:?}",
-                                    other
+                                    "unknown pinned attribute `{}`; expected \
+                                     `core` (one CPU) or `cores` (a range \
+                                     `A..B` / `A..=B` or set `{{a, b, c}}`)",
+                                    kw
                                 ),
                             ));
                         }
                     };
-                    self.bump();
                     self.expect(
                         TokenKind::RParen,
-                        "expected `)` after pinned(core = N)",
+                        "expected `)` after pinned(...)",
                     )?;
-                    Some(n)
+                    Some(spec)
                 } else {
                     None
                 };
-                Ok(PlacementSpec::Pinned { core })
+                Ok(PlacementSpec::Pinned { cores })
             }
             other => Err(Diag::parse(
                 head_tok.span,
@@ -1784,6 +1790,66 @@ impl Parser {
                 ),
             )),
         }
+    }
+
+    /// One non-negative integer CPU index (an IntLit token).
+    fn parse_core_index(&mut self) -> Result<i64, Diag> {
+        let n_tok = self.peek_token().clone();
+        let n = match &n_tok.kind {
+            TokenKind::IntLit(v) => *v,
+            other => {
+                return Err(Diag::parse(
+                    n_tok.span,
+                    format!(
+                        "expected integer CPU index, got {:?}",
+                        other
+                    ),
+                ));
+            }
+        };
+        self.bump();
+        Ok(n)
+    }
+
+    /// Topology Phase 1a: the value of `pinned(cores = ...)` —
+    /// either a literal range `A..B` / `A..=B` (same inclusivity
+    /// rules as expression ranges) or a brace set `{a, b, c}`
+    /// (trailing comma allowed). Bounds are integer literals:
+    /// placement is a closed-world deployment seam, so the core
+    /// set must be static.
+    fn parse_core_set(&mut self) -> Result<CoreSpec, Diag> {
+        if matches!(self.peek(), TokenKind::LBrace) {
+            self.bump();
+            let mut cores = vec![self.parse_core_index()?];
+            while self.eat(&TokenKind::Comma) {
+                if matches!(self.peek(), TokenKind::RBrace) {
+                    break;
+                }
+                cores.push(self.parse_core_index()?);
+            }
+            self.expect(
+                TokenKind::RBrace,
+                "expected `}` after core set",
+            )?;
+            return Ok(CoreSpec::Set(cores));
+        }
+        let lo_tok = self.peek_token().clone();
+        let lo = self.parse_core_index()?;
+        let inclusive = if self.eat(&TokenKind::DotDot) {
+            false
+        } else if self.eat(&TokenKind::DotDotEq) {
+            true
+        } else {
+            return Err(Diag::parse(
+                lo_tok.span,
+                "expected a core range (`A..B` / `A..=B`) or set \
+                 (`{a, b, c}`) after `cores =` — for a single CPU \
+                 use `pinned(core = N)`"
+                    .to_string(),
+            ));
+        };
+        let hi = self.parse_core_index()?;
+        Ok(CoreSpec::Range { lo, hi, inclusive })
     }
 
     /// Form K (2026-05-20): the optional `where <c>, <c>, ...`
@@ -6231,8 +6297,8 @@ main locus App {
         assert_eq!(pb.entries.len(), 1);
         assert_eq!(pb.entries[0].field.name, "job");
         match &pb.entries[0].spec {
-            PlacementSpec::Pinned { core: None } => {}
-            other => panic!("expected Pinned{{ core: None }}, got {:?}", other),
+            PlacementSpec::Pinned { cores: None } => {}
+            other => panic!("expected Pinned{{ cores: None }}, got {:?}", other),
         }
     }
 
@@ -6249,9 +6315,143 @@ main locus App {
         let prog = parse_str(src).expect("parse failed");
         let pb = placement_block_of(&prog);
         match &pb.entries[0].spec {
-            PlacementSpec::Pinned { core: Some(3) } => {}
-            other => panic!("expected Pinned{{ core: Some(3) }}, got {:?}", other),
+            PlacementSpec::Pinned { cores: Some(CoreSpec::Single(3)) } => {}
+            other => panic!(
+                "expected Pinned{{ cores: Some(Single(3)) }}, got {:?}",
+                other
+            ),
         }
+    }
+
+    #[test]
+    fn parse_placement_pinned_cores_range_exclusive() {
+        let src = r#"
+locus Worker { run() { } }
+
+main locus App {
+    params { w: Worker = Worker { }; }
+    placement { w: pinned(cores = 4..12); }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let pb = placement_block_of(&prog);
+        match &pb.entries[0].spec {
+            PlacementSpec::Pinned {
+                cores: Some(CoreSpec::Range { lo: 4, hi: 12, inclusive: false }),
+            } => {}
+            other => panic!(
+                "expected Pinned cores 4..12 (exclusive), got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn parse_placement_pinned_cores_range_inclusive() {
+        let src = r#"
+locus Worker { run() { } }
+
+main locus App {
+    params { w: Worker = Worker { }; }
+    placement { w: pinned(cores = 4..=11); }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let pb = placement_block_of(&prog);
+        match &pb.entries[0].spec {
+            PlacementSpec::Pinned {
+                cores: Some(CoreSpec::Range { lo: 4, hi: 11, inclusive: true }),
+            } => {}
+            other => panic!(
+                "expected Pinned cores 4..=11 (inclusive), got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn parse_placement_pinned_cores_set() {
+        // Trailing comma allowed, order preserved in the AST
+        // (dedup/sort happens at expand()).
+        let src = r#"
+locus Worker { run() { } }
+
+main locus App {
+    params { w: Worker = Worker { }; }
+    placement { w: pinned(cores = {5, 1, 9,}); }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let pb = placement_block_of(&prog);
+        match &pb.entries[0].spec {
+            PlacementSpec::Pinned { cores: Some(CoreSpec::Set(v)) } => {
+                assert_eq!(v, &[5, 1, 9]);
+            }
+            other => panic!("expected Pinned cores set, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_placement_pinned_cores_single_int_rejected() {
+        // `cores = 5` (no range/set) should point at `core = N`.
+        let src = r#"
+locus Worker { run() { } }
+
+main locus App {
+    params { w: Worker = Worker { }; }
+    placement { w: pinned(cores = 5); }
+}
+"#;
+        let err = parse_str(src).expect_err("should reject");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("pinned(core = N)"),
+            "expected hint toward `pinned(core = N)`; got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn parse_placement_pinned_unknown_attr_mentions_cores() {
+        let src = r#"
+locus Worker { run() { } }
+
+main locus App {
+    params { w: Worker = Worker { }; }
+    placement { w: pinned(cpu = 5); }
+}
+"#;
+        let err = parse_str(src).expect_err("should reject");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("core") && msg.contains("cores"),
+            "expected diagnostic naming `core` and `cores`; got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn parse_placement_pinned_cores_expand_semantics() {
+        // The static expansion the typechecker + codegen share:
+        // exclusive drops hi, inclusive keeps it, sets are
+        // sorted + deduped.
+        assert_eq!(
+            CoreSpec::Range { lo: 4, hi: 12, inclusive: false }.expand(),
+            (4..=11).collect::<Vec<i64>>()
+        );
+        assert_eq!(
+            CoreSpec::Range { lo: 4, hi: 11, inclusive: true }.expand(),
+            (4..=11).collect::<Vec<i64>>()
+        );
+        assert_eq!(
+            CoreSpec::Range { lo: 4, hi: 4, inclusive: false }.expand(),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            CoreSpec::Set(vec![9, 1, 5, 1]).expand(),
+            vec![1, 5, 9]
+        );
+        assert_eq!(CoreSpec::Single(7).expand(), vec![7]);
     }
 
     #[test]

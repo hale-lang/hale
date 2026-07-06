@@ -46,7 +46,7 @@ pub const HARD_KEYWORDS: &[&str] = &[
 pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     "topic", "ring_layout", "as", "main",
     "mode", "bindings", "birth_check", "placement",
-    "cooperative", "pinned", "pool", "core", "heap",
+    "cooperative", "pinned", "pool", "core", "cores", "heap",
     "schedule", "fixed_cell", "shared_slab", "spillover", "summary_only", "cap",
     "payload", "subject",
     "captures", "inline", "tick", "duration", "explicit", "approx", "within",

@@ -1734,6 +1734,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_set_core_affinity", set_aff_ty, None);
 
+        // Topology Phase 1a: cpuset variant for `pinned(cores =
+        // A..B / {a, b, c})` — the affinity mask is the whole
+        // set, built C-side from a constant i32 array codegen
+        // emits per placement entry.
+        // declare void @lotus_set_core_affinity_set(i64 tid, ptr cores, i32 count)
+        let set_aff_set_ty = void_t
+            .fn_type(&[i64_t.into(), ptr_t.into(), i32_t.into()], false);
+        self.module.add_function(
+            "lotus_set_core_affinity_set",
+            set_aff_set_ty,
+            None,
+        );
+
         // The program-wide bus queue pointer. Initialized in
         // main's prelude alongside the arena; drained at
         // strategic points (before each deferred-dissolve flush)

@@ -298,7 +298,7 @@ loop) or it owns its own OS thread. There is no third position.
 | Class | Yield discipline | Resource |
 |---|---|---|
 | **`cooperative(pool = X)`** (default for unspecified main-locus params, with `X = main`) | Yields between substrate cells (handler exit, lifecycle transition, bus dispatch, `time::sleep`, explicit `yield`). `time::sleep` slices into ≤100ms intervals and folds in `lotus_bus_queue_drain` for the locus's pool after each slice, so cells posted by other threads deliver mid-loop even during a long keep-alive sleep. Handler bodies are atomic. | Shares pool `X`'s OS thread with other cooperative loci placed on the same pool. |
-| **`pinned`** / **`pinned(core = N)`** | No yield to siblings; owns its OS thread. Bus events to/from cross-thread boundaries via formal mailbox post. | Dedicated OS thread, optionally pinned to CPU core `N`. |
+| **`pinned`** / **`pinned(core = N)`** / **`pinned(cores = A..B \| A..=B \| {a, b, c})`** | No yield to siblings; owns its OS thread. Bus events to/from cross-thread boundaries via formal mailbox post. | Dedicated OS thread. `core = N` pins it to one CPU; `cores = ...` (topology Phase 1a) sets its affinity mask to a core *set* — the OS schedules freely within the set. Linux-only; best-effort no-op elsewhere. |
 
 **Pool inference rule.** The cooperative pool set is inferred
 from `cooperative(pool = X)` references in the `placement { }`
@@ -773,6 +773,27 @@ denied, the runtime silently falls back to ordinary OS
 scheduling rather than refusing to run the binary. The
 underlying bimodality is unchanged — `pinned(core = N)` is a
 refinement WITHIN the pinned mode, not a third position.
+
+**Topology Phase 1a (cpuset affinity, 2026-07-04):**
+`pinned(cores = A..B)` / `pinned(cores = A..=B)` /
+`pinned(cores = {a, b, c})` generalize the single core to a
+core **set**: the thread's affinity mask is the whole set and
+the OS schedules it freely within it — a range carves out an
+isolation domain rather than picking one CPU. Bounds are
+integer literals (placement is a closed-world deployment
+seam), so the compiler expands the spec statically — sorted,
+deduplicated — into a constant array and emits one call to
+`lotus_set_core_affinity_set(tid, cores, count)` after
+`pthread_create`. Range inclusivity follows expression
+ranges: `..` excludes the upper bound, `..=` includes it. The
+typechecker rejects a spec that selects no cores (`4..4`,
+`8..=4`) and a duplicated set element; whether the cores
+exist on the deploy box stays best-effort at runtime — the
+C helper skips out-of-range indices and applies the mask only
+if at least one valid core remains. CPU affinity is
+Linux-only: on other hosts (macOS) both helpers are compiled
+as no-ops and the loci run unpinned. `pinned(core = N)`
+continues to route through the single-core helper unchanged.
 
 Linker dependency: clang invocation now passes `-lpthread`
 unconditionally; small fixed cost in the resulting binary
