@@ -8381,21 +8381,14 @@ impl<'a> Checker<'a> {
         // impl's subscriptions), which is not built yet. Reject with a
         // clear message rather than silently leaving the old impl's
         // subscriptions live.
-        if let Some(TopSymbol::Perspective(pi)) = self.top.lookup(&persp) {
-            if !pi.bus_subscribes.is_empty() || !pi.bus_publishes.is_empty() {
-                self.diags.push(Diag::ty(
-                    span,
-                    format!(
-                        "`reperspective self.{}`: perspective `{}` declares a \
-                         bus surface; swapping a bus-backed perspective isn't \
-                         supported yet (the async mailbox re-point is a \
-                         follow-up). A sync-only perspective can be swapped.",
-                        field.name, persp
-                    ),
-                ));
-                return;
-            }
-        }
+        // Phase 2c-runtime: a bus-backed perspective now swaps its
+        // subscriptions too (the codegen tombstones the current
+        // impl's registrations on the shared slot data and
+        // re-registers the new impl's handlers). Perspective impls
+        // are designated via a field default, never a `placement`
+        // entry, so they are always cooperative — the re-registration
+        // routes through the global queue, no mailbox hand-off. No
+        // gate needed.
         // The new impl must be a locus that serves this perspective.
         match self.top.lookup(&impl_name.name) {
             Some(TopSymbol::Locus(impl_info)) => {

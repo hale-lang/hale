@@ -253,7 +253,10 @@ fn main() { App { }; }
 }
 
 #[test]
-fn reperspective_bus_perspective_gated() {
+fn reperspective_bus_perspective_allowed() {
+    // Phase 2c-runtime: swapping a bus-backed perspective is now
+    // supported (the codegen re-points the subscriptions), so long
+    // as the impls share a footprint like any other swap.
     let src = r#"
 type Order { id: Int; }
 perspective OrderRouter {
@@ -279,8 +282,10 @@ fn main() { App { }; }
 "#;
     let msgs = check(src);
     assert!(
-        msgs.iter().any(|m| m.contains("bus surface") && m.contains("supported yet")),
-        "expected bus-perspective swap gate, got: {:?}",
+        msgs.iter().all(|m| !m.contains("supported yet")
+            && !m.contains("bus surface")
+            && !m.contains("footprint")),
+        "expected bus-perspective swap to be allowed, got: {:?}",
         msgs
     );
 }

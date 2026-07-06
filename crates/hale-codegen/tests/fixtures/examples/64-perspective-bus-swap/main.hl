@@ -1,0 +1,65 @@
+// 64-perspective-bus-swap — hot-swapping a BUS-backed perspective
+// (perspectives, Phase 2c async runtime).
+//
+// A perspective's contract can declare a bus surface, and a
+// `reperspective` re-points that too: the swap tombstones the
+// current impl's subscriptions on the shared slot state and
+// re-registers the new impl's handlers on the SAME state. So a
+// message published after the swap lands on the new handler,
+// while state accumulated by the old handler carries across —
+// the async counterpart of the sync vtable flip.
+//
+//   "orders" <- Order { id: 1 };            // V1.on_order
+//   reperspective self.router as OrderV2;
+//   "orders" <- Order { id: 2 };            // V2.on_order, same state
+//
+// Note on ordering: cooperative bus dispatch is DEFERRED — a
+// publish enqueues a cell capturing the handler registered at
+// that moment, and the handlers run when the queue drains (after
+// run() returns). So the prints below appear after run()'s own
+// output, and each message runs on whichever impl was current
+// when it was published: message 1 on V1, message 2 on V2.
+
+type Order { id: Int; }
+
+perspective OrderRouter {
+    fn total() -> Int;
+    bus { subscribe "orders" as on_order of type Order; }
+}
+
+locus OrderV1 : serves OrderRouter {
+    params { sum: Int = 0; }
+    fn total() -> Int { return self.sum; }
+    bus { subscribe "orders" as on_order of type Order; }
+    fn on_order(o: Order) {
+        self.sum = self.sum + o.id;
+        println("v1 booked order ", o.id, ", running sum=", self.sum);
+    }
+}
+
+// Same footprint (`sum: Int`); a new pricing rule (10x weight).
+// Deployed live over V1's accumulated sum.
+locus OrderV2 : serves OrderRouter {
+    params { sum: Int = 0; }
+    fn total() -> Int { return self.sum; }
+    bus { subscribe "orders" as on_order of type Order; }
+    fn on_order(o: Order) {
+        self.sum = self.sum + (o.id * 10);
+        println("v2 booked order ", o.id, ", running sum=", self.sum);
+    }
+}
+
+locus Service {
+    params { router: perspective(OrderRouter) = OrderV1 { }; }
+    bus { publish "orders" of type Order; }
+    run() {
+        "orders" <- Order { id: 1 };             // → V1: sum 0 -> 1
+        reperspective self.router as OrderV2;     // redeploy the router
+        "orders" <- Order { id: 3 };             // → V2: sum 1 -> 31
+        println("service running; orders drain to the live router");
+    }
+}
+
+fn main() {
+    Service { };
+}

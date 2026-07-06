@@ -24040,6 +24040,80 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_store(vt_gep, vtable.as_pointer_value())
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Phase 2c-runtime: re-point the perspective's BUS
+        // subscriptions to the new impl's handlers. The old impl
+        // registered them under `slot.data` (its self ptr); Phase 3
+        // keeps that same `data`, so we tombstone every subscription
+        // on it (`quarantine_self`) and re-register each of the new
+        // impl's subscriptions on the SAME `data`. Published messages
+        // now land on the new impl's handler, operating on the shared
+        // preserved state — the async counterpart of the sync vtable
+        // flip. (A bounded per-swap cost: tombstoned entries are
+        // skipped, not compacted.)
+        let impl_info = self.user_loci.get(impl_name).cloned();
+        if let Some(impl_info) = impl_info {
+            if !impl_info.subscriptions.is_empty() {
+                let ptr_t = self.context.ptr_type(AddressSpace::default());
+                let data_gep = self
+                    .builder
+                    .build_struct_gep(fat_struct_ty, slot_ptr, 0, "reperspective.data.gep")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let data = self
+                    .builder
+                    .build_load(ptr_t, data_gep, "reperspective.data")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_pointer_value();
+                let quar = self
+                    .module
+                    .get_function("lotus_bus_quarantine_self")
+                    .expect("lotus_bus_quarantine_self declared");
+                self.builder
+                    .build_call(quar, &[data.into()], "reperspective.bus.deregister")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // Register the new impl's handlers. Set `current_self`
+                // to the new impl over the shared `data` so a subscribe
+                // key-filter's `self.X` resolves against it.
+                let prev_self = self.current_self.clone();
+                self.current_self = Some(SelfCx {
+                    locus_name: impl_name.to_string(),
+                    struct_ty: impl_info.struct_ty,
+                    self_ptr: data,
+                    fields: impl_info.fields.clone(),
+                });
+                for (subject, handler_name, payload_type, key_filter) in
+                    &impl_info.subscriptions
+                {
+                    let handler_fn =
+                        impl_info.user_methods.get(handler_name).copied().ok_or_else(
+                            || {
+                                CodegenError::Unsupported(format!(
+                                    "reperspective: impl `{}` subscribes `{}` \
+                                     with handler `{}` but no such method",
+                                    impl_name, subject, handler_name
+                                ))
+                            },
+                        )?;
+                    // Match the instantiation path: prefer the
+                    // handler-reclaim wrapper when one was synthesized.
+                    let reg_handler = self
+                        .handler_reclaim_wrappers
+                        .get(&(impl_name.to_string(), handler_name.clone()))
+                        .copied()
+                        .unwrap_or(handler_fn);
+                    self.emit_bus_register(
+                        subject,
+                        data,
+                        reg_handler,
+                        None,
+                        payload_type,
+                        key_filter.as_ref(),
+                        true,
+                    )?;
+                }
+                self.current_self = prev_self;
+            }
+        }
         Ok(())
     }
 
