@@ -606,10 +606,13 @@ epoch_spec        = "tick"
 
 (* === 10. Perspective declaration ============================== *)
 
-(* A perspective is a serializable parameter bundle within a
-   compiled-in shared schema. Both analyst and executor binaries
-   compile from the same lotus source, so the perspective type
-   is the contract. The bus carries only parameter values. *)
+(* Shipped (Phase 2): a perspective is a CONTRACT — bodyless `fn`
+   signatures (and optionally a bus surface) forming a stable ABI,
+   reached through a live-swappable program-global slot (see the
+   Phase 2a/2c comments below and spec/semantics.md). The
+   params_block / stable_when / serialize_as members below are the
+   serializable-parameter-bundle form used by the aspirational
+   transport-driven hot-load path. *)
 
 perspective_decl  = "perspective" , IDENTIFIER , [ generic_params ] ,
                     "{" , { perspective_member } , "}" ;

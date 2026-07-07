@@ -492,10 +492,13 @@ perspective Kernel<T> {
 }
 ```
 
-**Commits to.** A perspective is a serializable parameter bundle
-within a shared compiled-in schema. Both producer (fitter) and
-consumer (applier) compile from the same Hale source, so the
-type *is* the contract; the bus carries only parameter values.
+**Commits to.** In the transport-driven hot-load model (the
+aspirational path — see `semantics.md` § "Perspective hot-load"; the
+*shipped* perspective is the in-process contract + slot), a
+perspective is a serializable parameter bundle within a shared
+compiled-in schema. Both producer (fitter) and consumer (applier)
+compile from the same Hale source, so the type *is* the contract;
+the bus carries only parameter values.
 
 **Why.** This is the fitter/applier split: one process fits
 parameters from observations; another applies them at high
