@@ -1,5 +1,9 @@
 # Introduction
 
+**A concurrent systems language with a model-checked, GC-free
+runtime — typed message-bus concurrency, data-race-free by
+design.**
+
 *One language. Four altitudes.*
 
 Most languages pick a level and live there. Python and

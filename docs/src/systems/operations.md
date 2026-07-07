@@ -162,7 +162,7 @@ fork failure raises rather than returning a bogus output.
 For a long-running child you drive incrementally, the lower-level
 `spawn` / `wait` / `kill` / `write_stdin` / `read_stdout` /
 `read_stderr` surface over a `Child` handle is in
-[`spec/stdlib.md`](../../../spec/stdlib.md).
+[`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md).
 
 Other process self-introspection: `std::process::pid()`,
 `std::process::exit(code)`, and `std::process::rss_bytes()` (peak

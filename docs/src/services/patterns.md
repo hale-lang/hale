@@ -1,7 +1,7 @@
 # Composition patterns
 
-The [shape catalog](../../AGENTS.md) names the six building blocks —
-app locus, namespace lotus, service locus, spawned child, shape
+The [shape catalog](https://github.com/hale-lang/hale/blob/main/AGENTS.md) names the six building blocks —
+app locus, namespace locus, service locus, spawned child, shape
 type, free fn. This chapter is the next layer up: five *compositions*
 of those blocks that recur in real Hale services, distilled from
 production use. Reach for one of these when a problem feels like it
