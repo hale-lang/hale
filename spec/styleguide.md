@@ -577,9 +577,12 @@ underlying surface lands.
   (one directory), all `.hl` files share a top-level scope
   (F.19). Across seeds, vendor a library into your tree and
   write `import "lib/<name>" as <alias>;` at the top of the
-  importing file; references read as `<alias>::Name`. v1 has
-  no package manager, no fetch, no versioning — the source IS
-  the dependency. See `spec/projects.md` for project shapes,
+  importing file; references read as `<alias>::Name`. v1's
+  dependency step is minimal and git-based: `hale fetch` vendors
+  the deps declared in `hale.toml` into `vendor/` and pins their
+  commit SHAs in `hale.lock` (see `spec/packages.md`) — no central
+  registry and no semver resolution, so the pinned source IS the
+  dependency. See `spec/projects.md` for project shapes,
   resolution order, and the mangling scheme;
   `crates/hale-codegen/tests/fixtures/lib-toy/` is the
   worked-example fixture.

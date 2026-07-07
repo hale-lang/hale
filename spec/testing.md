@@ -7,8 +7,12 @@ discipline (closure tests, k_max bounds, projection-class
 invariants, multi-perspective stability commit-rules) needs
 testing infrastructure to be enforced.
 
-This document specifies the *design* of the testing pipeline.
-Implementation follows once the compiler exists.
+`hale test` (Layer 1 + Layer 2 discovery and execution) ships
+today. The benchmark, formatter, and standalone-verify tooling
+described below (`hale bench` / `hale fmt` / `hale verify`) is
+specified here but **not yet implemented** — the shipping CLI is
+`lex` / `parse` / `check` / `run` / `build` / `test` / `fetch`.
+Those sections describe the intended design, not current behavior.
 
 ## Three layers of correctness
 
@@ -176,12 +180,13 @@ tests by suffix (`_test.hl`) regardless of location.
 | `hale check` | Static checks: parse, typecheck, framework discipline |
 | `hale test` | Run all `*_test.hl` files in the project |
 | `hale test -run pattern` | Run matching tests only |
-| `hale bench` | Run all `*_bench.hl` files |
-| `hale bench -compare` | Build and run external equivalents alongside |
-| `hale verify` | Layer-2 discipline checks specifically (no execution) |
-| `hale fmt` | Canonical formatter (Go-style: zero config) |
+| `hale bench` *(planned)* | Run all `*_bench.hl` files |
+| `hale bench -compare` *(planned)* | Build and run external equivalents alongside |
+| `hale verify` *(planned)* | Layer-2 discipline checks specifically (no execution) |
+| `hale fmt` *(planned)* | Canonical formatter (Go-style: zero config) |
 
-`hale test` runs Layer 1 + Layer 2. `hale bench` runs Layer 3.
+`hale test` runs Layer 1 + Layer 2 today; `hale bench` (planned)
+runs Layer 3.
 
 ## Test assertion library
 
@@ -253,7 +258,7 @@ Actions annotations, etc.) are downstream conversions.
 ## What writing this surfaces (for resolution)
 
 1. **`bench` annotation: keyword, attribute, or naming convention?**
-   Go uses `BenchmarkName`. Rust uses `#[bench]`. Lotus has
+   Go uses `BenchmarkName`. Rust uses `#[bench]`. Hale has
    neither attributes nor magic-name conventions yet. Decision
    pending; probably an attribute (`@bench fn ...`) added to
    the grammar in v0.2.
