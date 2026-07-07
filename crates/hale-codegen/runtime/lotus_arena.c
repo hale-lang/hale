@@ -3291,12 +3291,52 @@ static void lotus_hashmap_grow(lotus_hashmap_t *m) {
 
 void lotus_arena_retire_str(void *arena_ptr, char *s);
 
+/* Does one of the OLD cell's String fields in [0, upto) retire the
+ * blob `p`? A field retires its old pointer iff it changed (overwrite
+ * path) or this is the remove path (new_v == NULL). Used to dedup the
+ * key clone and any repeated value-field pointers within a single
+ * retire_cell call: a blob that is reachable from more than one field
+ * — or from both the map key AND a value field (see the aliasing note
+ * in lotus_hashmap_retire_cell) — must be retired exactly ONCE.
+ * Retiring it twice pushes it onto retire_pending twice, which
+ * self-links the freelist node at flush (header.next = itself) and
+ * hands the same block to two owners → freelist corruption / SEGV.
+ * O(upto); upto is the value struct's String-field count (small) and
+ * this runs only on the cold retire path. */
+static int lotus_cell_field_retires_ptr(const lotus_hashmap_t *m,
+                                         const char *old_v,
+                                         const char *new_v,
+                                         const char *p, int32_t upto) {
+    for (int32_t ri = 0; ri < upto; ri++) {
+        int32_t off = m->retire_offsets[ri];
+        char *oldp;
+        memcpy(&oldp, old_v + off, sizeof(char *));
+        if (oldp != p) continue;
+        if (new_v) {
+            char *newp;
+            memcpy(&newp, new_v + off, sizeof(char *));
+            if (oldp == newp) continue; /* survives → not retired here */
+        }
+        return 1;
+    }
+    return 0;
+}
+
 /* Retire every string blob a dying/overwritten cell owns: the
  * descriptor's value fields plus (for string-keyed maps) the key
  * clone itself. `new_v`/`new_key` non-NULL = overwrite path, and
  * a pointer that survives into the new cell is NOT retired (the
  * RMW key-reuse idiom, the grow-rebuild re-insert). NULL = remove
- * path, everything retires. */
+ * path, everything retires.
+ *
+ * Aliasing (2026-07-06 fix): for a String-keyed map whose value
+ * struct carries the `indexed_by` field, codegen clones the key ONCE
+ * and stores the same pointer as both the map key (slot+1) and that
+ * value field. The value-field loop and the key-clone block would
+ * then each retire it — a double-push. So every retire is guarded
+ * against a prior retire of the same blob within this call: value
+ * fields dedup against earlier value fields, and the key clone dedups
+ * against all value fields. */
 __attribute__((noinline, cold))
 static void lotus_hashmap_retire_cell(lotus_hashmap_t *m, char *slot,
                                       const char *new_key,
@@ -3313,6 +3353,9 @@ static void lotus_hashmap_retire_cell(lotus_hashmap_t *m, char *slot,
             memcpy(&newp, new_v + off, sizeof(char *));
             if (oldp == newp) continue;
         }
+        /* dedup vs an earlier field aliasing the same blob */
+        if (lotus_cell_field_retires_ptr(m, old_v, new_v, oldp, ri))
+            continue;
         lotus_arena_retire_str(m->retire_arena, oldp);
     }
     if (m->key_type_tag == LOTUS_HASHMAP_KEY_STRING) {
@@ -3321,7 +3364,9 @@ static void lotus_hashmap_retire_cell(lotus_hashmap_t *m, char *slot,
         if (oldk) {
             char *newk = NULL;
             if (new_key) memcpy(&newk, new_key, sizeof(char *));
-            if (oldk != newk) {
+            if (oldk != newk &&
+                !lotus_cell_field_retires_ptr(m, old_v, new_v, oldk,
+                                              m->retire_n)) {
                 lotus_arena_retire_str(m->retire_arena, oldk);
             }
         }
