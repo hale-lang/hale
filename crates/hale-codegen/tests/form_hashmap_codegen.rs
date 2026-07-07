@@ -453,3 +453,114 @@ fn hashmap_set_bigcell_with_array_field_does_not_leak() {
         stderr
     );
 }
+
+/// Anchor-retirement freelist corruption regression (P0, fixed
+/// 2026-07-06). A String-keyed map whose value struct carries the
+/// `indexed_by` field aliases ONE clone as both the map key and that
+/// value field (codegen clones the key once, stores the same pointer
+/// in both). `lotus_hashmap_retire_cell` retired it twice — once in
+/// the value-field loop, once in the key-clone block — double-pushing
+/// the blob onto retire_pending; at flush the two shells self-linked
+/// the freelist node (header.next = itself), so a later pop walked
+/// string bytes as a next-pointer → SIGSEGV in lotus_retire_free_pop.
+/// The corruption needs a SECOND key of a DIFFERENT byte length in the
+/// map (the pop's size band lets a shorter request claim a longer
+/// block), so this churns two interleaved keys of different lengths.
+///
+/// Two assertions in one: (1) it must not crash — pre-fix this SEGVs
+/// within tens of thousands of churns; (2) reuse must be PRESERVED —
+/// the map arena's chunk count stays flat, proving the retire/reuse
+/// path still recycles blocks (the fix only DEDUPS the double retire).
+#[test]
+fn hashmap_string_key_two_length_churn_no_freelist_corruption() {
+    // The map is a FIELD churned via the owning locus's method — the
+    // real pattern (a locus holding a @form map, its methods churning
+    // it). The retire/flush/reuse cycle fires at the owning method's
+    // activation boundary; a direct-local map in a free fn never
+    // flushes (and would leak regardless of this fix), so the structure
+    // matters for the reuse half of the assertion.
+    let src = r#"
+        type Slot { key: String = ""; qty: Int = 0; }
+        @form(hashmap)
+        locus SkChurn { capacity { pool rows of Slot indexed_by key; } }
+        main locus Holder {
+            params { basis: SkChurn = SkChurn { }; }
+            fn churn(k: String) {
+                let cur = self.basis.get(k) or Slot { };
+                self.basis.set(Slot { key: k, qty: cur.qty + 1 });
+            }
+            run() {
+                let base = "KKN:S:btc-usd";
+                // Warm both keys into the map, then dump residency.
+                self.churn("signals|" + base);
+                self.churn("beta|" + base);
+                std::process::dump_arena_residency();
+                let mut i = 0;
+                while i < 60000 {
+                    // "signals|" (22B) : "beta|" (19B) interleaved 43:1 —
+                    // concat forces a dynamic (non-.rodata) key each set,
+                    // so the clone/retire/reuse path is exercised.
+                    self.churn(if i % 44 == 43 { "beta|" + base } else { "signals|" + base });
+                    i = i + 1;
+                }
+                std::process::dump_arena_residency();
+                let sig = self.basis.get("signals|" + base) or Slot { };
+                let bet = self.basis.get("beta|" + base) or Slot { };
+                println("total=", sig.qty + bet.qty);
+            }
+        }
+        fn main() { Holder { }; }
+    "#;
+    let bin = build("sk_two_length_churn", src);
+    let out = Command::new(&bin)
+        .env("LOTUS_ARENA_RESIDENCY", "1")
+        .output()
+        .expect("run");
+    let _ = std::fs::remove_file(&bin);
+    // (1) no crash — pre-fix this exits via SIGSEGV.
+    assert!(
+        out.status.success(),
+        "non-zero exit (freelist corruption regressed?): {:?} stderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // 2 warm-up churns + 60000 loop churns = 60002 increments split
+    // across the two keys; the sum must equal the total churn count
+    // (no lost updates from the retire/reuse cycle).
+    assert!(
+        stdout.contains("total=60002"),
+        "expected coherent total=60002, got: {:?}",
+        stdout
+    );
+    // (2) reuse preserved — the map arena's chunk count stays flat
+    // (the clones live in SkChurn's own arena; retire/reuse recycles
+    // them so it never grows past its initial chunk).
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let chunks: Vec<usize> = stderr
+        .lines()
+        .filter(|ln| ln.contains("label=SkChurn ") || ln.contains("label=SkChurn]"))
+        .filter_map(|ln| {
+            ln.split("chunks=")
+                .nth(1)
+                .and_then(|s| s.split_whitespace().next())
+                .and_then(|s| s.parse::<usize>().ok())
+        })
+        .collect();
+    assert!(
+        chunks.len() >= 2,
+        "expected two SkChurn-arena residency rows, got {:?} (stderr={})",
+        chunks,
+        stderr
+    );
+    let first = chunks[0];
+    let last = *chunks.last().unwrap();
+    assert!(
+        last <= first + 1,
+        "SkChurn arena grew across 60k two-length churns: chunks {} → {} \
+         (retire/reuse regressed to unbounded growth). stderr={}",
+        first,
+        last,
+        stderr
+    );
+}

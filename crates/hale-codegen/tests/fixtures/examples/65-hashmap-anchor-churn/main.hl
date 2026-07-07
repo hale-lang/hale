@@ -1,0 +1,86 @@
+// 65-hashmap-anchor-churn — anchor-retirement freelist regression.
+//
+// Guards the P0 fixed 2026-07-06: a use-after-free in the retired-block
+// freelist (lotus_arena.c). A String-keyed @form(hashmap) whose value
+// struct carries the `indexed_by` field aliases ONE clone as both the
+// map key (slot+1) and that value field — codegen clones the key once
+// and stores the same pointer in both places. lotus_hashmap_retire_cell
+// retired it in the value-field loop AND again in the key-clone block,
+// pushing the same blob onto retire_pending twice. At flush the two
+// shells self-linked the freelist node (header.next = itself); the next
+// clone popped it while it stayed linked, wrote string bytes over the
+// {size,next} header, and a later pop dereferenced string content as a
+// next-pointer → SIGSEGV in lotus_retire_free_pop.
+//
+// The trigger needs a SECOND key of a DIFFERENT byte length entering the
+// map mid-churn (the pop's size band lets a shorter request claim a
+// longer block), so this churns two interleaved keys:
+//   "signals|KKN:S:btc-usd" (22B) : "beta|KKN:S:btc-usd" (19B) = 43 : 1.
+// Pre-fix this SEGVs within ~50k churns; post-fix it completes and the
+// per-key totals stay coherent (retire is deduped to once per blob).
+//
+// Keys are rebuilt each churn from slices + concat (a static-literal key
+// short-circuits str_clone and never exercises the retire/reuse path).
+
+type ChurnSlot { key: String = ""; qty: Int = 0; }
+
+@form(hashmap)
+locus ChurnMap {
+    capacity { pool rows of ChurnSlot indexed_by key; }
+}
+
+main locus HashmapAnchorChurn {
+    params {
+        basis: ChurnMap = ChurnMap { };
+        iters: Int = 120000;
+    }
+
+    // One churn: rebuild the key from a line, read-modify-write the slot
+    // under it. Building the key HERE (not in run) keeps this method's
+    // scratch arena resetting each call, so only the map's own arena —
+    // the anchor-retirement reuse path under test — persists.
+    fn step(src: String) {
+        let desk   = col(src, 1);
+        let symbol = col(src, 2);
+        let k = desk + "|" + symbol;
+        let cur = self.basis.get(k) or ChurnSlot { };
+        self.basis.set(ChurnSlot { key: k, qty: cur.qty + 1 });
+    }
+
+    run() {
+        let line  = "TQ3ZXO\tsignals\tKKN:S:btc-usd\tbuy";
+        let line2 = "TQ3ZXO\tbeta\tKKN:S:btc-usd\tbuy";
+        let mut i = 0;
+        while i < self.iters {
+            self.step(if i % 44 == 43 { line2 } else { line });
+            i = i + 1;
+        }
+        let sig = self.basis.get("signals" + "|" + "KKN:S:btc-usd") or ChurnSlot { };
+        let bet = self.basis.get("beta" + "|" + "KKN:S:btc-usd") or ChurnSlot { };
+        // sig + bet must equal iters (no lost updates); each key advanced
+        // once per churn it owned.
+        println("churn done: signals=", sig.qty, " beta=", bet.qty,
+                " total=", sig.qty + bet.qty);
+    }
+}
+
+fn main() {
+    HashmapAnchorChurn { };
+}
+
+// col — the idx-th tab-separated column of a line.
+fn col(line: String, idx: Int) -> String {
+    let total = len(line);
+    let mut pos = 0;
+    let mut cur = 0;
+    while pos <= total {
+        let rest = line[pos..total];
+        let tab = std::str::index_of(rest, "\t");
+        let chunk = if tab < 0 { rest } else { rest[0..tab] };
+        if cur == idx { return chunk; }
+        if tab < 0 { return ""; }
+        pos = pos + tab + 1;
+        cur = cur + 1;
+    }
+    return "";
+}
