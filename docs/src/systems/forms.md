@@ -44,8 +44,8 @@ evicts the least-recently-**used** entry over `cap` (a `get`
 counts as a use and saves an entry from eviction; `contains` does
 not). Its `get` is `fallible(KeyError)` on a miss.
 
-Both a `vec` and a `hashmap` also expose **batched iteration**
-(shipped 2026-07-02) — `for x in v.items { … }` walks the vec, and
+Both a `vec` and a `hashmap` also expose **batched iteration** —
+`for x in v.items { … }` walks the vec, and
 `for e in m.entries { … }` walks the map. The loop is an inline
 buffer/slot walk, not per-element method calls. (Don't mutate the
 form inside the body — a grow would rehash under the cursor.)

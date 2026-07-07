@@ -105,7 +105,7 @@ the app's top-level state and entry point now have a home. (At
 the services level, `run()` becomes a special *lifecycle* method
 the runtime drives — but as an ordinary method it already works.)
 
-**The namespace lotus** — a home for a coherent vocabulary of
+**The namespace locus** — a home for a coherent vocabulary of
 helpers, with little or no state. Hale's stand-in for a "module
 of functions" or a static class:
 
