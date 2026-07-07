@@ -2230,8 +2230,8 @@ A `perspective P { ... }` is a **contract** — a set of bodyless
 `fn` signatures that form a stable ABI boundary — plus a
 program-global, live-rebindable **slot** that holders dispatch
 through. Phase 2a (2026-07-06) ships the contract, conformance,
-the slot type, and dispatch; the live swap (`reperspective`) is
-the next slice.
+the slot type, and dispatch; the live swap (`reperspective`)
+followed in Phase 2b + 3 (see "The live swap" below).
 
 ```hale
 perspective Router {

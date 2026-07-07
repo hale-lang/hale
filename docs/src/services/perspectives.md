@@ -8,9 +8,9 @@ swap a component's implementation without the code that calls it
 changing.
 
 > This chapter covers what ships today: declaring a contract, an
-> implementation that `serves` it, and calling through the slot.
-> The live swap (re-pointing the slot at a new implementation
-> while the program runs) is the next slice.
+> implementation that `serves` it, calling through the slot, and
+> the live swap — re-pointing the slot at a new implementation
+> while the program runs, via `reperspective` (last section).
 
 ## The contract
 
@@ -72,8 +72,8 @@ Every holder of `perspective(Router)` funnels through it. That's a
 deliberate design choice: because there's a single indirection and
 the compiler sees every call site, re-pointing that one slot will
 redirect the entire program at once — a single pointer flip, no
-matter how many holders. (That live re-point is the next slice;
-today the slot is set once, at designation.)
+matter how many holders. That live re-point is the `reperspective`
+statement — see [Live redeploy](#live-redeploy-reperspective) below.
 
 The cost is one load plus one predicted indirect call per call into
 a perspective — near-direct. A program that declares no

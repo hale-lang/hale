@@ -1320,12 +1320,16 @@ right release function reachable at child dissolve.
 
 ## Future work
 
-- **Hot-load preservation across perspective updates.** When a
-  perspective is hot-loaded, the receiving locus's arena state
-  is preserved across the swap; the new perspective's translation
-  functions replace the old. v0 specifies the perspective hot-
-  load mechanism (runtime.md); the memory-level interaction is
-  TBD.
+- **Hot-load preservation across perspective updates.** The
+  in-process live swap (`reperspective`, Phase 3) preserves the
+  receiving locus's arena state across the swap: the perspective
+  slot is `{ data, vtable }`, so re-pointing at a new impl of the
+  same footprint stores only the new vtable — `data` (the
+  arena-backed state) is untouched and the new impl's methods
+  continue on it. The remaining future piece is the same
+  preservation for a *transport-driven* wire redeploy whose new
+  impl changes the footprint (the `migrate` case). See
+  `spec/semantics.md` § "The live swap".
 - **Region size hints.** Initial chunk sizes per locus are
   taken from declared params. Per The Design's locus-as-region
   invariant, the load-bearing property is *lifetime* (wholesale
