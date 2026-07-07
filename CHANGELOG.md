@@ -9,7 +9,7 @@
   whole module ("inlinable function call in a function with debug
   info must have a !dbg location"). First reproducer: pond
   http/client's round_trip_oneshot (keepalive) dissolving its local
-  HttpConn, which broke every fathom dashboard build. The epilogue
+  HttpConn, which broke a downstream app build. The epilogue
   emitters now pin the LLVM-sanctioned synthetic location (line 0
   in the fn's scope) when the per-statement location was cleared,
   and unset it on completion so it can't leak into the next
@@ -18,8 +18,8 @@
 - **Anchor retirement — the TP-3 leak class is fixed for
   @form(hashmap).** Overwriting or removing a map row used to orphan
   the old cell's String clones in the locus arena forever (the
-  audit's biggest true-positive class: 53 corpus sites; riskgw's
-  marks/on_mark shape leaked per market-data frame). Now: sync=none
+  audit's biggest true-positive class: 53 corpus sites; a downstream
+  service's marks/on_mark shape leaked per market-data frame). Now: sync=none
   string-celled maps carry a String-field offset descriptor
   (installed at instantiation from TargetData layout); set/remove
   retire the replaced clones (pointer-difference guarded, so the
@@ -59,8 +59,8 @@ behavior.
   compile-testing doc examples. Now a typecheck error with the
   exact rewrite ("write `or (std::io::fs::read_file(p) or raise)`
   so its own failure has a path") until the codegen handler
-  classifier covers stdlib paths. Zero hits across pond + fathom +
-  examples.
+  classifier covers stdlib paths. Zero hits across pond + downstream
+  apps + examples.
 
 - **Aliasing stage 2 (tier 1) — `noalias self` on provably
   non-reentrant locus methods.** Rust's `&mut`-style guarantee,
@@ -81,7 +81,7 @@ behavior.
   not (224 ms of a 462 ms trivial build). Defined fns except `main`
   are now internalized and a leading `globaldce` strips the
   unreferenced stdlib before the pipeline runs. Trivial builds
-  462 → 80 ms; the largest app (riskgw) 1.2 s → 526 ms. Plus:
+  462 → 80 ms; the largest app 1.2 s → 526 ms. Plus:
   `HALE_TIME=1` prints per-phase wall times; `hale build --dev`
   (or HALE_DEV=1) selects an O1 pipeline for latency-critical
   loops; `hale check --json` emits NDJSON diagnostics on stdout
@@ -98,9 +98,9 @@ behavior.
   nothing, `@unbounded fn` stays the carve-out, and
   `--no-warn-unbounded-alloc` is the opt-out (the old
   `--warn-unbounded-alloc` spelling is accepted-and-ignored).
-  Warnings never fail the build. Expect real findings on the fathom
-  daemons: the audit confirmed 103 true accumulation sites
-  (riskgw/dashboard/prober/tui/websocket) — that visibility is the
+  Warnings never fail the build. Expect real findings on the
+  downstream daemons: the audit confirmed 103 true accumulation
+  sites across them and the pond libraries — that visibility is the
   point of the flip.
 
 - **M3 stage 5 (part 2) — run-to-exit programs don't warn; a
@@ -125,12 +125,12 @@ behavior.
 
 - **M3 stage 5 (part 1) — unbounded-alloc analysis: audited + three
   gap fixes.** A fresh-context audit triaged all 402
-  `--warn-unbounded-alloc` warnings across pond + fathom + examples:
-  103 true (26%) — including live production leaks (riskgw
-  `marks.set` per md frame, pond websocket `last_message.kind` per
-  message; the per-set anchor-clone class is filed in fathom
-  FRICTION.md as a runtime issue) — and 299 false (74%). Record in
-  notes/audit/. Three classifier gaps fixed:
+  `--warn-unbounded-alloc` warnings across pond + downstream apps +
+  examples: 103 true (26%) — including live production leaks (a
+  downstream service's `marks.set` per md frame, pond websocket's
+  `last_message.kind` per message; the per-set anchor-clone class is
+  filed as a downstream runtime issue) — and 299 false (74%). Three
+  classifier gaps fixed:
   (A) `Returned` values consumed inside a member fn's per-call
   scratch no longer flag — only returns consumed by a scratch-less
   long-lived frame (`main`/`run`/free-fn chains therefrom) accumulate;
@@ -142,7 +142,7 @@ behavior.
   growth (a single fresh heap subfield re-flags — that's the
   anchor-clone leak).
   Result: ~402 → ~165 warnings with every audited true positive
-  preserved (dashboard/tui/riskgw/jobs counts audit-exact);
+  preserved (downstream-app counts audit-exact);
   bounded[T; N] eviction loops no longer warn. Remaining for
   default-on: len()/param loop-bound recognition (the ~35% residual
   FP is main-reached runtime-bounded loops) and the accepted E/F
@@ -225,14 +225,14 @@ behavior.
   table (the Or arm consults it directly); (2) a statement-position
   `call() or handler(err);` discards its value, so the fallback/
   handler-return type no longer needs to match the success type
-  (the pond/fathom production pattern). Handle args at the
+  (a common production pattern). Handle args at the
   path-call level are plain Int fds. Still excluded-not-guessed:
   all std::json / std::http rows and process stdio (routed through
   Hale-stdlib __ fns — no codegen-level ground truth), the 7
   spec'd-but-unimplemented std::io::tls fns, tcp
   set_recv/send_timeout, io::file::write_line, io::fs::list_dir.
-  Gate: zero new errors across pond, fathom, and examples; the
-  three bring-up hits (fathom refdata, pond logfmt, io-demo) were
+  Gate: zero new errors across pond, downstream apps, and examples; the
+  three bring-up hits (a downstream app's refdata, pond logfmt, io-demo) were
   exactly the two semantic gaps above — all three now pass.
 
 - **Typecheck M3 stage 2 — stdlib signatures for the scalar-heavy
@@ -252,7 +252,7 @@ behavior.
   str::builder_* (opaque handles) and can_parse_decimal (in the
   spec, NOT in the dispatch — spec bug, flagged). io::fs/tcp/tls/
   udp/file are the string-heavy tranche 2. Gate: zero new type
-  errors across pond, fathom, and the example corpus (the two hits
+  errors across pond, downstream apps, and the example corpus (the two hits
   found were verified pre-existing at the unmodified baseline).
 
 - **Typecheck M3 stage 4 — expose-side contract validity + exposed-mode
@@ -268,7 +268,7 @@ behavior.
   the spec's exposed-mode pull rule (semantics.md — a parent may call
   a child's mode iff contract-exposed) expressible for the first time;
   the exposed type is checked against the mode's declared return.
-  Gate: zero errors across pond, fathom, and the example corpus (51
+  Gate: zero errors across pond, downstream apps, and the example corpus (51
   real contract lines, including pond websocket).
 
 - **Typecheck M3 stage 1 — stdlib typo detection.** A call to an
@@ -280,7 +280,7 @@ behavior.
   with non-literal dispatch (io::sockopt, io::mirror, shm, ts) stay
   permissive, so table incompleteness degrades to the old Unknown
   behavior, never to a false error. Gate: zero new errors across
-  pond, fathom, and the full example corpus. This is the first slice
+  pond, downstream apps, and the full example corpus. This is the first slice
   of the M3 plan (notes/typecheck-m3.md); signatures (killing the
   Unknown returns) are stage 2.
 
@@ -611,7 +611,7 @@ behavior.
   scope-bound temporary: birth ran, the pointer was stored, then the
   temporary was dissolved at the method's exit — leaving the field pointing
   at a torn-down locus (closed `@ffi` handles / freed arena → use-after-free
-  on next use; the fathom refgw-evm reconnect crash), while the old value
+  on next use; a downstream app's reconnect crash), while the old value
   leaked. It now reclaims the old instance (its `drain`/`dissolve` run) and
   constructs the new one into the owning locus's arena, owned by the field
   and not scope-dissolved. Clean-compile→segfault closed; regression-gated by
@@ -629,7 +629,7 @@ behavior.
   codegen and a "deferred" enum-pattern note in design-rationale — payload-
   bearing enum variants + exhaustiveness have shipped since (verified against
   fixture 45-enum-payloads). (Modes were left un-bannered: the audit's "not
-  yet exercised by real workloads" premise is false — fathom's orderbook
+  yet exercised by real workloads" premise is false — a downstream app's orderbook
   declares `mode bulk/harmonic/resolution`.)
 
 - **SQLite stays a library, not a language primitive (post-audit WS4).** The

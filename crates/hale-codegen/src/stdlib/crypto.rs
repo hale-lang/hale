@@ -230,7 +230,7 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
         Ok((ptr, CodegenTy::Bytes))
     }
 
-    /// 2026-06-25 (fathom Kraken/Gate.io): lower
+    /// 2026-06-25 ((a downstream app)): lower
     /// `std::crypto::hmac_sha512(key: Bytes, msg: Bytes) -> Bytes`.
     /// Returns the 64-byte HMAC tag per RFC 2104 — the sibling of
     /// `hmac_sha256`, with SHA-512 as the inner hash (128-byte block).
@@ -321,7 +321,7 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
         Ok((iv, CodegenTy::Int))
     }
 
-    /// fathom handoff (2026-06-02): lower
+    /// a downstream handoff (2026-06-02): lower
     /// `std::crypto::ecdsa_p256_sign(key: Bytes, message: Bytes) ->
     /// Bytes`. ES256 — SHA-256 the message, ECDSA over P-256, return
     /// the 64-byte raw r‖s signature (JWS/COSE form). `key` is a PEM
@@ -434,7 +434,7 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
         )
     }
 
-    /// fathom handoff (2026-06-02): lower
+    /// a downstream handoff (2026-06-02): lower
     /// `std::crypto::ecdsa_p256_verify(pubkey: Bytes, message: Bytes,
     /// sig: Bytes) -> Bool`. `pubkey` is a PEM SPKI EC public key;
     /// `sig` is the 64-byte raw r‖s. SHA-256 + ECDSA verify in

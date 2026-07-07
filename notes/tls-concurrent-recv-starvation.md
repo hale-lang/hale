@@ -1,6 +1,6 @@
 # Handoff: two concurrent blocking TLS recvs — the second is starved
 
-**Status:** **RE-AUDITED 2026-06-13 (hale side).** Two distinct symptoms have been reported under this title. (1) The *original* "blocks forever, zero notifications" is a half-open-connection hang in pond's `read_msg` — see the Corrected Verdict (2026-06-12) below; pond-side fix, primitive shipped. (2) fathom's *refined* repro (`apps/smoke-ws-concurrency`) shows a **different** symptom — the quiet connection gets a **valid** sub-ack but no pushes, payload-size-dependent — i.e. a *garbled subscribe frame*, not a hang. The substrate was re-audited for (2): a real latent shared-arena race was found and fixed (`lotus_tls_recv_bytes`), **but both of pond's actual WS paths were proven not to touch it**, so symptom (2) is still open and pond-side. See the 2026-06-13 section directly below.
+**Status:** **RE-AUDITED 2026-06-13 (hale side).** Two distinct symptoms have been reported under this title. (1) The *original* "blocks forever, zero notifications" is a half-open-connection hang in pond's `read_msg` — see the Corrected Verdict (2026-06-12) below; pond-side fix, primitive shipped. (2) a downstream app's *refined* repro (`a WS-concurrency repro`) shows a **different** symptom — the quiet connection gets a **valid** sub-ack but no pushes, payload-size-dependent — i.e. a *garbled subscribe frame*, not a hang. The substrate was re-audited for (2): a real latent shared-arena race was found and fixed (`lotus_tls_recv_bytes`), **but both of pond's actual WS paths were proven not to touch it**, so symptom (2) is still open and pond-side. See the 2026-06-13 section directly below.
 **Area (corrected):** `pond/websocket/client.hl` `read_msg` (half-open detection / recv timeout). **NOT** `std::io::tls` or the pinned-locus scheduler.
 **Severity:** real for any sparse/idle long-lived stream, but it's a connection-liveness bug, not a concurrency limit. Multi-connection ingest is *not* blocked by the substrate.
 
@@ -8,7 +8,7 @@
 
 ## UPDATE 2026-06-13 — garbled-subscribe-frame symptom: substrate re-audited, latent recv_bytes race fixed, pond WS paths exonerated
 
-fathom's `apps/smoke-ws-concurrency` repro is a **different** failure mode
+a downstream app's `a WS-concurrency repro` repro is a **different** failure mode
 from the half-open hang: the quiet connection receives a **valid
 subscribe-ack** (so the socket is alive and bidirectional — not half-open),
 then gets **zero pushes** with **flat `bytes_received`**, and the failure is
@@ -62,13 +62,13 @@ i.e. in `run()`/handlers.) Fix (lotus_arena.c): a per-arena
 `lotus_arena_alloc` serialize its bump on the arena's `subregion_lock`.
 Per-instance arenas keep the lock-free fast path (validated unchanged by the
 `corrupt=0` repro). This is genuine hardening — but pond's WsClient uses
-`recv_into`, **not** `recv_bytes`, so it does **not** explain fathom's bug.
+`recv_into`, **not** `recv_bytes`, so it does **not** explain a downstream app's bug.
 
 ### Next step for symptom (2) — instrument the actual bytes (pond-side)
 
 Static analysis + the substrate audit have exonerated the runtime; the
 divergence is now best found by capturing it directly. In
-`apps/smoke-ws-concurrency`, hexdump the **exact bytes handed to `write_all`**
+`a WS-concurrency repro`, hexdump the **exact bytes handed to `write_all`**
 for the quiet connection's subscribe frame, and compare against the bytes a
 **working single-connection** run writes for the same subscribe. Whatever
 differs (a mangled length, a wrong mask, a truncated payload, interleaved
@@ -94,7 +94,7 @@ order — an early read of mine was misled by stdout buffering and corrected).
 | OpenSSL | clean | 3.0.13 — per-object thread-safe, no app locking callbacks needed |
 | pond `WsClient` buffers | per-instance | `rx_buf` / `frag_buf` are per-locus child `BytesBuilder`s, not shared |
 | pond `read_msg` loop | per-instance, no shared state | single-threaded cooperative peel loop, nothing two clients contend on |
-| fathom instantiation | correct | `reader_eth` / `reader_base` = two independent `pinned(core=6/7)` loci |
+| a downstream app instantiation | correct | `reader_eth` / `reader_base` = two independent `pinned(core=6/7)` loci |
 
 **Root cause: `read_msg` has no liveness check.** The loop reacts only when
 `recv_into_rx()` *returns* `≤ 0` (clean EOF/error). A **half-open** socket —
@@ -144,7 +144,7 @@ When two pinned loci each hold their own blocking TLS connection and call `std::
 
 ## Symptom (the concrete case)
 
-fathom's `apps/mdgw/evm` is a demand-driven on-chain market-data gateway. To serve two chains it runs **one pinned `EvmReader` locus per chain**, each a pond `ws::WsClient` on its own TLS connection to a JSON-RPC websocket:
+The downstream multi-chain gateway is a demand-driven on-chain market-data gateway. To serve two chains it runs **one pinned `EvmReader` locus per chain**, each a pond `ws::WsClient` on its own TLS connection to a JSON-RPC websocket:
 
 - `reader_eth` (pinned core 6) → `wss://ethereum-rpc.publicnode.com`, `eth_subscribe("logs", …)` on a Uniswap-V3 pool (a swap ≈ every 12s, ~1KB notifications, plus other log traffic on the connection).
 - `reader_base` (pinned core 7) → `wss://base-rpc.publicnode.com`, `eth_subscribe("logs", …)` on an Aerodrome pool (a swap ≈ every 14s).
@@ -168,7 +168,7 @@ Every application-side cause was eliminated, live, on 2026-06-12:
 
 `std::io::tls::recv_into` is a *blocking* read that does not cooperatively yield while waiting, and/or the runtime does not fairly schedule blocking I/O across pinned loci. A connection with steady inbound traffic keeps its `recv_into` returning and re-entering, monopolizing whatever shared resource (event loop, poll set, lock) backs TLS reads, and starves a second pinned locus blocked in its own `recv_into`.
 
-The maintainers know the I/O model; the above is fathom's outside-in inference. The actionable, verified fact is: **two simultaneous blocking TLS `recv_into`s across two pinned loci do not both make progress; the busier one wins and the other never does.**
+The maintainers know the I/O model; the above is a downstream app's outside-in inference. The actionable, verified fact is: **two simultaneous blocking TLS `recv_into`s across two pinned loci do not both make progress; the busier one wins and the other never does.**
 
 ## Compounding issue (pond, separate but related)
 
@@ -176,7 +176,7 @@ pond's `read_msg` does not enforce `pong_timeout` (see `vendor/pond/websocket/FR
 
 ## Minimal reproducer (recipe)
 
-The shape, reducible to a standalone Hale binary with no fathom deps:
+The shape, reducible to a standalone Hale binary with no a downstream app deps:
 
 ```
 main:
@@ -188,7 +188,7 @@ Expected (correct): both counts climb.
 Observed (bug):     A climbs continuously; B stays at 0 (or only its handshake), forever.
 ```
 
-A reliable busy/quiet pair: two `*-rpc.publicnode.com` chains, both `eth_subscribe("logs", {address: <a pool>})`, where chain A's pool/连 sees more traffic than chain B's — or simply A subscribes `newHeads` on a fast chain and B subscribes `logs` on a single low-traffic contract. fathom can supply a packaged standalone repro on request; the live gateway (`apps/mdgw/evm`, run with both `rpc_ws ETH …` and `rpc_ws BASE …` configured) reproduces it deterministically today.
+A reliable busy/quiet pair: two public-RPC-endpoint chains, both `eth_subscribe("logs", {address: <a pool>})`, where chain A's pool sees more traffic than chain B's — or simply A subscribes `newHeads` on a fast chain and B subscribes `logs` on a single low-traffic contract. a downstream app can supply a packaged standalone repro on request; the live gateway (the multi-chain gateway, run with both `rpc_ws ETH …` and `rpc_ws BASE …` configured) reproduces it deterministically today.
 
 ## Candidate fixes (substrate)
 
@@ -200,15 +200,15 @@ A reliable busy/quiet pair: two `*-rpc.publicnode.com` chains, both `eth_subscri
 
 1. **Make `recv_into` cooperative / fairly scheduled across pinned loci** — the real fix. A blocking TLS read on one pinned locus must not prevent a blocking TLS read on another from being serviced (yield to the scheduler while waiting on the socket; or back blocking reads with a fair readiness poll). This unblocks N-connection ingest generally.
 2. **(pond, mitigation)** enforce `pong_timeout` in `read_msg` via `std::io::tcp::set_recv_timeout` so a starved/half-open recv is detected and reconnected — converts a silent hang into a recoverable drop. Does not fix starvation.
-3. **(documentation, if #1 is far off)** document the limitation and bless the app-side workaround: a single-threaded non-blocking/poll multiplex over both sockets in one locus (one `recv` with a timeout, round-robin the connections), or one OS process per connection. fathom can ship base/aero today via one gateway process per chain — but that is a workaround for a substrate limitation that every multi-connection ingest path will otherwise re-hit.
+3. **(documentation, if #1 is far off)** document the limitation and bless the app-side workaround: a single-threaded non-blocking/poll multiplex over both sockets in one locus (one `recv` with a timeout, round-robin the connections), or one OS process per connection. a downstream app can ship base/aero today via one gateway process per chain — but that is a workaround for a substrate limitation that every multi-connection ingest path will otherwise re-hit.
 
 ## Impact / scope
 
-Any Hale binary needing two or more concurrent long-lived TLS read streams across pinned loci. For fathom specifically: the multi-chain DEX md gateway (Ethereum + Base + future Arbitrum/BSC/Optimism), and more broadly any ingest that fans in several authenticated streaming sources. Single-connection gateways (all current CeFi mdgws, the single-chain ETH evm gateway) are unaffected.
+Any Hale binary needing two or more concurrent long-lived TLS read streams across pinned loci. For a downstream app specifically: the multi-chain DEX md gateway (Ethereum + Base + future Arbitrum/BSC/Optimism), and more broadly any ingest that fans in several authenticated streaming sources. Single-connection gateways (all current CeFi mdgws, the single-chain ETH evm gateway) are unaffected.
 
 ## Pointers
 
-- Demonstrating case + full evidence log: `fathom/apps/mdgw/evm/FRICTION.md` (§ "two concurrent blocking TLS recvs").
-- Gateway code (multi-chain structure is complete + correct; it is purely blocked here): `fathom/apps/mdgw/evm/main.hl` (`EvmReader` per chain, `EvmRepublisher` shared demand).
-- Verified Aerodrome/Solidly event topic0s and decode (unrelated to the bug, but in the same file) are also recorded in the fathom FRICTION.
+- Demonstrating case + full evidence log: the downstream gateway issue log (§ "two concurrent blocking TLS recvs").
+- Gateway code (multi-chain structure is complete + correct; it is purely blocked here): the downstream gateway source (`EvmReader` per chain, `EvmRepublisher` shared demand).
+- Verified Aerodrome/Solidly event topic0s and decode (unrelated to the bug, but in the same file) are also recorded in the downstream issue tracker.
 - Related pond gap: `pond/vendor/pond/websocket/FRICTION.md` (`pong_timeout` not enforced).

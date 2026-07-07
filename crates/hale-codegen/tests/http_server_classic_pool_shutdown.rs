@@ -2,7 +2,7 @@
 //! cooperative pool must shut down cleanly when the main locus's
 //! run() returns.
 //!
-//! Regression for the fathom refstore boot-blocker: the server's
+//! Regression for the a downstream app boot-blocker: the server's
 //! blocking accept() ran on a classic `cooperative(pool = io)`
 //! worker. When App.run() returned, the main locus dissolved its
 //! io-placed server field's arena while the io worker was still in

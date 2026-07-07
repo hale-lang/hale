@@ -303,8 +303,6 @@ The names mean things, and they fit together:
   pond.*
 - **heron** — the tree-sitter grammar; editors and the future LSP
   drink from it.
-- **iris** — the workbench for designing and visualizing locus
-  structures.
 
 ## State of the culture
 

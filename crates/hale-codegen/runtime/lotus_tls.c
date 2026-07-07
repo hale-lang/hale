@@ -593,7 +593,7 @@ int64_t lotus_tls_recv_stamped_into(int handle, void *builder, int64_t max_bytes
 }
 
 /* ----------------------------------------------------------------
- * ECDSA P-256 (ES256) — fathom handoff 2026-06-02.
+ * ECDSA P-256 (ES256) — a downstream handoff 2026-06-02.
  *
  * Lives in this TU (not lotus_arena.c) because it uses OpenSSL/
  * libcrypto, which is already linked for TLS; keeping it here leaves

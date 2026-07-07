@@ -1092,7 +1092,7 @@ reclaim on a real-world long-running workload:
      unconditional deep-copy: cells with a fixed-size array
      field (e.g. `BookSignalState`'s two `[BookLevel; 100]`)
      allocated a fresh element buffer on every `set` of the
-     same key. Fathom's `apps/mdgw/kraken` long-burn surfaced
+     same key. A downstream market-data app's long-burn surfaced
      this as ~3 KB / set × ~100 sets/sec → OOM at the
      container cap in ~20 min; the field-level gate folded the
      RMW back to zero allocations once the previously-stored

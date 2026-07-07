@@ -8,7 +8,7 @@ staged below.
 `HALE_TIME=1` (shipped) prints per-phase wall times. Baseline on
 this host, before the fixes:
 
-| phase | tiny (1 line) | riskgw (3.6k lines) |
+| phase | tiny (1 line) | a downstream service (3.6k lines) |
 |---|---|---|
 | front-end + codegen | 10 ms | 35 ms |
 | LLVM O3 passes | 123 ms | 362 ms |
@@ -31,7 +31,7 @@ Two facts kill the classic incremental-compilation plan:
   handlers, pinned entries, fn-pointer callees) survive through
   their uses; anything referenced by name from C would fail LOUDLY
   at link (nothing does — full suite green).
-  Result: tiny 462 → 80 ms (5.8×), riskgw 1.2 s → 526 ms (2.3×) —
+  Result: tiny 462 → 80 ms (5.8×), a downstream service 1.2 s → 526 ms (2.3×) —
   release AND dev.
 - **`hale build --dev` / HALE_DEV=1**: O1 pipeline + Less machine
   codegen. After DCE the delta vs release is small on small apps;
@@ -47,7 +47,7 @@ Two facts kill the classic incremental-compilation plan:
 1. **Prebuilt stdlib object (dev mode)**: cache the stdlib's .o per
    compiler build (like ~/.cache/hale/runtime); dev links against
    it instead of re-lowering + re-emitting stdlib fns the app DOES
-   use. Loses stdlib inlining in dev (fine). Projected: riskgw dev
+   use. Loses stdlib inlining in dev (fine). Projected: a downstream service dev
    ≈ 150–250 ms.
 2. **`hale lsp`**: a stdio LSP server over the existing
    parse+check (publishDiagnostics only, v1). The --json shape is

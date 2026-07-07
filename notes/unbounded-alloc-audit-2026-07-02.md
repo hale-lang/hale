@@ -1,10 +1,10 @@
 # --warn-unbounded-alloc false-positive audit (M3 stage 5)
 
-Date: 2026-07-02. Scope: every .hl dir in pond + fathom apps/lib +
+Date: 2026-07-02. Scope: every .hl dir in pond + downstream apps +
 hale examples (261 dirs). Method: fresh-context agent, 7 parallel
 triage passes, EVERY warning read-the-code triaged, calibrated
 against codegen ground truth. Per-warning record:
-notes/audit/merged.tsv + findings.txt.
+kept out-of-tree.
 
 ## Result: 402 warnings — 103 TRUE (26%), 299 FALSE (74%)
 
@@ -17,12 +17,12 @@ below; projected residual after A+B+C+D ≈ 26 warnings (~6%) against
 - TP-1 free-fn/run-loop scratch accumulation (41): pond/tui event
   structs leak per frame tick/keypress for the session lifetime;
   pond/jobs pool.hl:194.
-- TP-2 populations without eviction (9): riskgw open_orders
+- TP-2 populations without eviction (9): a downstream service open_orders
   (tombstoned but never deleted), fills_seen, recent_terms (window
   checked, never pruned); ledger fills_seen + attr.
 - TP-3 per-set anchor-clone (53): every hashmap.set / compound
   self-store with fresh String subfields leaks the old clone —
-  riskgw marks.set per md frame, dashboard wireskew, prober
+  a downstream service marks.set per md frame, dashboard wireskew, prober
   mark_set, websocket last_message.kind per message. SAME MECHANISM
   as the 2026-05-25 kraken bigcell OOM. Filed in FRICTION.md as a
   runtime issue — an arena-side fix (in-place String reuse for

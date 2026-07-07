@@ -1,4 +1,4 @@
-//! fathom Kraken/Gate.io handoff (2026-06-25) — `std::crypto::sha512` and
+//! (a downstream app) handoff (2026-06-25) — `std::crypto::sha512` and
 //! `std::crypto::hmac_sha512`. The 64-bit-word sibling of the
 //! `crypto_sha256_hmac` tests, same shape (decimal-byte stdout → hex).
 //!

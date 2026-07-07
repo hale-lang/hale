@@ -193,7 +193,7 @@ fn bare_fallible_calls_stay_legal_dual_mode() {
 fn statement_position_or_discards_value_type() {
     // `call() or handler(err);` in statement position discards the
     // value — a Bool-returning handler over a Unit-success call is
-    // fine (pond/fathom production pattern).
+    // fine (pond / downstream apps production pattern).
     let m = msgs(
         r#"
         fn boolish(e: Int) -> Bool {

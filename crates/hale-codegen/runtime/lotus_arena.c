@@ -413,7 +413,7 @@ typedef struct lotus_arena {
      * per-byte std::bytes::from_int in a hot send path on two pinned
      * threads. lotus_arena_alloc's bump (c->used) is otherwise unlocked, so
      * concurrent allocs into this one shared arena would race and corrupt
-     * each other's allocations (garbled WS frame bytes — the fathom
+     * each other's allocations (garbled WS frame bytes — the a downstream app
      * two-TLS-reader subscribe-corruption). When set, lotus_arena_alloc
      * serializes its body on subregion_lock (otherwise idle on this flat
      * arena). Per-instance arenas leave this 0 and keep the single-thread
@@ -11211,7 +11211,7 @@ int lotus_str_can_parse_decimal(const char *s) {
  * the byte range [start, end_exclusive), without requiring the
  * substring to be NUL-terminated. Used by std::str::range_eq /
  * range_parse_int / range_parse_decimal to enable allocation-
- * free JSON walks (the fathom workload identified
+ * free JSON walks (the a downstream app workload identified
  * `iter_find_string_field` returning an owned String per field
  * lookup as the dominant arena-pressure source).
  *
@@ -11425,7 +11425,7 @@ typedef struct lotus_bus_remote_entry {
  * lotus_bus_udp_reader_args_t.entry). With the array-of-structs
  * shape, a subsequent register_remote call that grew the array
  * could realloc-move the storage and dangle every previously-
- * spawned reader thread's `entry` pointer. Fathom hit this when
+ * spawned reader thread's `entry` pointer. A downstream app hit this when
  * priceview's LOTUS_BUS_CONFIG mixed 4 listens + 2 connects:
  * the 5th entry's realloc invalidated the first 4 reader
  * threads' entry pointers, segfaulting silently on the first
@@ -11717,7 +11717,7 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
      * which works for a single receiver but crosstalks with
      * any other socket bound to the same port: every joined-
      * group packet on that port lands on every wildcard-bound
-     * socket. Surfaced by fathom's priceview, which subscribes
+     * socket. Surfaced by a downstream app, which subscribes
      * to four distinct multicast groups sharing port 5000 —
      * each (group, port) is logically a distinct endpoint
      * carrying its own payload type, but the wildcard bind
@@ -14629,7 +14629,7 @@ void *lotus_crypto_hmac_sha256(const void *key_b, const void *msg_b) {
  * rotation amounts, a 128-byte block, and a 128-bit big-endian length
  * field. Output is 64 bytes; the HMAC block size is 128.
  *
- * Consumer: fathom's native order-entry rails — Kraken / Gate.io sign
+ * Consumer: a downstream app's native order-entry rails sign
  * with HMAC-SHA512 (see hale/notes; HANDOFF-crypto-hmac-sha512).
  */
 static const uint64_t lotus_sha512_k[80] = {

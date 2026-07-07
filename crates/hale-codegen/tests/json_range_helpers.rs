@@ -1,5 +1,5 @@
 //! 2026-05-26 — range-bearing JSON iter_find variants +
-//! std::str::range_* helpers. The fathom team identified
+//! std::str::range_* helpers. The a downstream app team identified
 //! `iter_find_string_field` returning an owned String per
 //! field lookup as the dominant arena-pressure source on
 //! large JSON-walk workloads (a 5 MB Coinbase level2 frame
@@ -119,7 +119,7 @@ fn range_parse_decimal_strict() {
 
 #[test]
 fn iter_find_field_range_walks_array() {
-    // The fathom headline shape: walk an L2 snapshot array,
+    // The a downstream app headline shape: walk an L2 snapshot array,
     // compare side, parse price + size as Decimal. Whole loop
     // runs allocation-free per element (after the source body
     // is in arena).
@@ -187,7 +187,7 @@ fn high_volume_walk_bounded_rss() {
     // hidden `std::bytes::from_string(json)` inside each scan loop
     // (and inside the iter_find_string_field_range quote check),
     // which allocated a fresh Bytes copy of the entire source JSON
-    // on every call. For fathom's coinbase L2 workload (~5 MB
+    // on every call. For a downstream app's coinbase L2 workload (~5 MB
     // snapshot × 100k elements × ~5 stdlib calls per iter) that
     // pushed peak RSS to 13+ GB on a single snapshot. The fix
     // routed scan loops through std::str::byte_at_unchecked, which
@@ -260,7 +260,7 @@ fn high_volume_walk_bounded_rss() {
         rss < 100,
         "50k-iter range walk exceeded 100 MB RSS ({}MB) — likely \
          a bytes_from_string regression in a scan helper. Pre-fix \
-         this OOM'd on fathom at 13+ GB.",
+         this OOM'd on a downstream app at 13+ GB.",
         rss
     );
 }

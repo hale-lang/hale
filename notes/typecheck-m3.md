@@ -47,7 +47,7 @@ Do it file-by-file against `spec/stdlib.md`'s module-surface table
 (the spec rows are the contract; the dispatch is the truth — diff
 them and fix the spec where they disagree, which is itself value).
 VALIDATION GATE: `hale check` over every program in hale/apps (via
-the corpus), all of pond, all of fathom — zero new errors before the
+the corpus), all of pond, all of a downstream app — zero new errors before the
 stage ships.
 
 ### Stage 2 — signature table for the scalar-heavy namespaces — SHIPPED 2026-07-02
@@ -100,7 +100,7 @@ expressible — it was a parse error before.
 Flip `--warn-unbounded-alloc` to default-on, and promote to error
 under a `--strict-bounds` flag first. Precondition (per
 spec/verification.md): a false-positive audit — run the analysis
-over pond + fathom + the corpus, triage every finding as
+over pond + a downstream app + the corpus, triage every finding as
 true/false, and fix the classifier's false positives (the
 store-latest scratch-accumulation verdict from the inline-arrays
 work is the model: the verdict was RIGHT for a subtle reason —

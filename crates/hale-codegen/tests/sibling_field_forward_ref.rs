@@ -1,11 +1,11 @@
-//! iris F.4 — forward-refs between sibling field defaults.
+//! a downstream tool F.4 — forward-refs between sibling field defaults.
 //!
 //! Pre-fix: `dispatcher: ProposalDispatcher = ProposalDispatcher
 //! { gate: self.gate }` errored with "self.gate read outside a
 //! locus method" because `current_self` was None during
 //! params-init expression lowering. The recursive instantiation
 //! set `params_init_self` to THIS locus (ProposalDispatcher),
-//! not the caller (Iris), so a `self.X` reference inside an
+//! not the caller (A downstream tool), so a `self.X` reference inside an
 //! override couldn't see the caller's earlier-declared sibling
 //! field.
 //!
@@ -47,7 +47,7 @@ fn build_and_run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
 
 #[test]
 fn override_self_x_resolves_to_outer_params_init() {
-    // Iris-shape: parent has `gate` and `dispatcher` fields;
+    // Workbench-shape: parent has `gate` and `dispatcher` fields;
     // dispatcher's default holds a borrow of gate via
     // `gate: self.gate`. Before the fix, self.gate failed to
     // resolve during ProposalDispatcher's instantiation. After:
@@ -60,14 +60,14 @@ fn override_self_x_resolves_to_outer_params_init() {
             params { gate: PermissionGate = PermissionGate { }; }
             run() { println("dispatcher tag=", self.gate.tag); }
         }
-        main locus Iris {
+        main locus Workbench {
             params {
-                gate: PermissionGate = PermissionGate { tag: "iris-gate" };
+                gate: PermissionGate = PermissionGate { tag: "demo-gate" };
                 dispatcher: ProposalDispatcher
                     = ProposalDispatcher { gate: self.gate };
             }
         }
-        fn main() { Iris { }; }
+        fn main() { Workbench { }; }
     "#;
     let (stdout, status) = build_and_run("borrow", src);
     assert!(
@@ -77,8 +77,8 @@ fn override_self_x_resolves_to_outer_params_init() {
         stdout
     );
     assert!(
-        stdout.contains("dispatcher tag=iris-gate"),
-        "expected 'dispatcher tag=iris-gate' (proves dispatcher \
+        stdout.contains("dispatcher tag=demo-gate"),
+        "expected 'dispatcher tag=demo-gate' (proves dispatcher \
          received the parent's gate field, not a freshly-defaulted \
          one); got: {}",
         stdout

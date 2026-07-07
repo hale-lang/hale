@@ -101,7 +101,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 } else if self.user_types.contains_key(name)
                     || self.pending_type_names.contains(name)
                 {
-                    // iris F.10 (2026-05-24): consult
+                    // a downstream tool F.10 (2026-05-24): consult
                     // `pending_type_names` as a forward-ref
                     // fallback for single-segment named paths.
                     // Pre-fix this branch only checked

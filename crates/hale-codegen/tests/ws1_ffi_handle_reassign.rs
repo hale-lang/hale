@@ -1,7 +1,7 @@
 //! WS1#4 — whole-value reassignment of a nested locus param that
 //! holds an `@ffi`-acquired resource handle.
 //!
-//! fathom (refgw-evm `set_rpc_ws`) reported that `self.conn =
+//! a downstream app (refgw-evm `set_rpc_ws`) reported that `self.conn =
 //! ws::WsClient { url: …, … }` to swap an endpoint left the new
 //! client half-initialized — `conn.url` logged `(null)` and the
 //! first `read_msg()` cored — while in-place mutation
@@ -146,7 +146,7 @@ fn ffi_handle_locus_whole_reassign() {
         "WS1#4 REPRODUCES: after `self.conn = Conn {{…}}` the new \
          instance's handle is already dead — the RHS locus literal was \
          dissolved as a scope-bound temporary, so `self.conn` points at \
-         a torn-down locus (in fathom: closed socket → read_msg cores). \
+         a torn-down locus (in a downstream app: closed socket → read_msg cores). \
          reconn line: {:?}",
         reconn
     );

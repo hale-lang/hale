@@ -14,7 +14,7 @@ hardcoded places: (1) C symbol in `crates/hale-codegen/runtime/`,
 `STDLIB_PATH_RENAMES`. There is no user-extensible mechanism.
 
 The cost: every new third-party C library requires a compiler
-change. Iris asks for raylib + pty, other downstream apps want
+change. The downstream tool asks for raylib + pty, other downstream apps want
 sqlite + a PostgreSQL client, curl / SDL / ffmpeg / etc. —
 each one becomes a "wait for the compiler team" handoff and a
 permanent expansion of stdlib's link surface.
@@ -24,7 +24,7 @@ bindings in pond (or any community repo), keeping stdlib's
 "libc + OpenSSL only" link floor and decoupling app development
 from compiler release cadence.
 
-`std::http::recv_chunk` (iris's third ask) stays a stdlib
+`std::http::recv_chunk` (the downstream tool's third ask) stays a stdlib
 addition — HTTP is already in stdlib, this is just an extension.
 
 ## Mechanism
@@ -42,7 +42,7 @@ A library author declares external C functions in a `.hl` file:
 type Color { r: Int = 0; g: Int = 0; b: Int = 0; a: Int = 255; }
 
 locus Window {
-    params { width: Int = 1280; height: Int = 720; title: String = "iris"; }
+    params { width: Int = 1280; height: Int = 720; title: String = "app"; }
     birth()    { raylib_init_window(self.width, self.height, self.title); }
     dissolve() { raylib_close_window(); }
 }
@@ -156,7 +156,7 @@ Minimum slice that compiles + links + runs an FFI fn end-to-end:
 
 ## Coordination
 
-- Iris's `iris/COMPILER_FFI.md` needs an update: pivot from
+- The downstream tool's FFI doc needs an update: pivot from
   "std::raylib in stdlib" to "pond/raylib via @ffi". Their stub
   surface stays unchanged (Window locus, Color type, etc. all
   match the same Hale surface either way).
@@ -171,12 +171,12 @@ Minimum slice that compiles + links + runs an FFI fn end-to-end:
 
 This pushes the user-visible "ship raylib/pty" timeline out. The
 fast path (write `std::raylib` lowerings, ship in 2-3 sessions)
-solves iris's near-term need but doesn't solve the next FFI need
+solves the downstream tool's near-term need but doesn't solve the next FFI need
 or the one after that — each is another 2-3 sessions and another
 expansion of stdlib's link surface. The `@ffi` path costs 1-2
 weeks upfront but every subsequent FFI binding becomes
 zero-compiler-cost.
 
-The tradeoff is fine because iris is not blocked — they have
+The tradeoff is fine because a downstream tool is not blocked — they have
 working stubs against the same surface contract. Their production
 code doesn't change when the bindings flip from stub to real.

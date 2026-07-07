@@ -231,7 +231,7 @@ fn large_publisher_src() -> &'static str {
 fn book_snapshot_subscriber_src() -> &'static str {
     // BookSignalSnapshot-shaped: two Strings (variable-length
     // length-prefixed on the wire) ahead of a long tail of
-    // fixed-size Decimals and Decimal arrays. The fathom
+    // fixed-size Decimals and Decimal arrays. The a downstream app
     // priceview crash report (2026-05-27) said inbound udp
     // datagrams trigger `g_bus_payload_arena` cap-hit on the
     // first message, with the diagnostic numbers matching a
@@ -327,7 +327,7 @@ fn book_snapshot_publisher_src() -> &'static str {
 
 #[test]
 fn udp_unicast_delivers_multi_string_payload() {
-    // Reproduces the fathom priceview crash shape: a payload
+    // Reproduces the a downstream app priceview crash shape: a payload
     // with two variable-length Strings followed by a tail of
     // fixed-size fields. Without the deserializer length
     // bound-check, the first udp datagram would trigger the
@@ -385,7 +385,7 @@ fn udp_unicast_delivers_payload_over_inline_threshold() {
 }
 
 fn multi_listener_subscriber_src() -> &'static str {
-    // 2026-05-27 — mirrors the fathom priceview shape: a
+    // 2026-05-27 — mirrors the a downstream app priceview shape: a
     // single subscriber binary with FOUR multicast listeners
     // on the same port, different groups, different payload
     // types. The reader threads each call into a different
@@ -503,7 +503,7 @@ fn udp_multi_listener_same_port_different_groups() {
     // its own group's datagrams. Pre-fix the
     // bind-to-INADDR_ANY shape would fan this single
     // datagram to all 4 handlers — the crosstalk that
-    // fathom's priceview reported.
+    // a downstream app reported.
     assert!(
         out.contains("kraken_book sym=BTC-USD"),
         "kraken_book handler should fire; stdout:\n{}",
@@ -532,7 +532,7 @@ fn udp_multi_listener_same_port_different_groups() {
 
 #[test]
 fn udp_mixed_listen_connect_survives_realloc() {
-    // 2026-05-27 — fathom priceview hit a silent SIGSEGV when
+    // 2026-05-27 — a downstream app priceview hit a silent SIGSEGV when
     // LOTUS_BUS_CONFIG mixed udp:// listen and udp:// connect
     // roles. Root cause: `g_bus_remote_entries` was an
     // array-of-structs with initial cap = 4. The udp listen
@@ -635,7 +635,7 @@ fn udp_mixed_listen_connect_survives_realloc() {
 #[test]
 fn udp_corrupt_length_prefix_rejected_cleanly() {
     // 2026-05-27 — proves the deserialize bound-check (added
-    // alongside the fathom priceview crash report) actually
+    // alongside the a downstream app priceview crash report) actually
     // engages. We bypass the publisher binary entirely and
     // send a malformed datagram straight from the test
     // harness: 8 bytes encoding length-prefix = 0x04000000

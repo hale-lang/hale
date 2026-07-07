@@ -2,10 +2,10 @@
 
 **Status:** SHIPPED in v0.8.3 — both `ring_layout` declarations and the
 `std::bytes` pack primitives landed. This note is retained as the originating
-design proposal (2026-06-06), driven by a concrete first consumer (fathom ↔ the
+design proposal (2026-06-06), driven by a concrete first consumer (a downstream app ↔ the
 external stack).
 
-**Authors / context:** Raised from the fathom side while scoping
+**Authors / context:** Raised from the downstream side while scoping
 interop with **an external trading stack** (a sister C++ system) whose
 inter-process transport is a lock-free shared-memory broadcast ring
 (its shared-memory ring-layout header — the `RingPrefix` struct). The
@@ -83,7 +83,7 @@ struct RingPrefix {
 - SPMC, single producer; cross-language by design (the external stack already has a
   Rust↔C++ SHM-transit perf test).
 
-fathom wants to read (and possibly write) this ring from Hale.
+a downstream app wants to read (and possibly write) this ring from Hale.
 
 ### Why not just use what we have
 
@@ -446,12 +446,12 @@ through the safety model.
 
 ## Driving use case & validation plan
 
-**fathom ↔ the external stack.** fathom (Hale) reads the external stack's `ForeignRing` (market
+**a downstream app ↔ the external stack.** a downstream app (Hale) reads the external stack's `ForeignRing` (market
 data / feed), and optionally publishes into the external stack's `ingress` ring.
 Same-host only (SHM). The payload structs are the external stack's POD messages,
 decoded via an injectable codec built on the Proposal-A primitives.
 
-**Validation (mirrors how fathom de-risked its grease UDP integration —
+**Validation (mirrors how a downstream app de-risked its grease UDP integration —
 a loopback against a faithful mock before any live wiring):**
 1. Pack primitives: unit tests, round-trip every width/endianness; fuzz
    against bounds.
@@ -619,10 +619,10 @@ The external stack (the driving consumer) — its shared-memory layer:
 
 ## Coordination
 
-fathom is the first consumer and will validate each stage against the external stack
+a downstream app is the first consumer and will validate each stage against the external stack
 (and a faithful mock, the same way it de-risked its grease UDP
 integration with a loopback before live wiring). Sequencing that unblocks
-fathom fastest: **Proposal A readers first** (immediately useful for any
+a downstream app fastest: **Proposal A readers first** (immediately useful for any
 binary codec), then **Proposal B read-only / `byte_records`** (reads
 the external stack's ring). Producer + zero-copy-write + `LotusRing` dogfood can
 follow.

@@ -1,5 +1,5 @@
 // WS1#2 carrier: cross-seed struct literal whose Decimal fields
-// come from a bus-deserialized struct. Mirrors fathom riskgw
+// come from a bus-deserialized struct. Mirrors a downstream app
 // `gx::GreaseOrderRequest { px: oi.px, qty: oi.qty }` from a
 // bus-received `d::OrderIntent`.
 

@@ -40,7 +40,7 @@ impl<'ctx, 'p> IoStdinStdlib<'ctx> for Cx<'ctx, 'p> {
             .module
             .get_function("lotus_stdin_read_line")
             .expect("lotus_stdin_read_line declared");
-        // F.5 fix (iris FRICTION.md, 2026-05-22): publish the
+        // F.5 fix (a downstream tool's issue tracker, 2026-05-22): publish the
         // current arena into the caller-arena TLS so the C-side
         // `lotus_bus_payload_arena_alloc` routes the returned
         // line through THIS frame's arena, not whatever stale

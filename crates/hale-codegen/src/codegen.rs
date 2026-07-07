@@ -1808,7 +1808,7 @@ pub fn build_executable_with_options(
     // because nothing pending referenced its symbols yet, then
     // `glue.c`'s `InitWindow` / `DrawText` calls surfaced as
     // undefined despite libraylib.a being on the path
-    // (iris FRICTION F.7). The `@ffi("c") fn ...` declarations
+    // (a downstream tool's notes F.7). The `@ffi("c") fn ...` declarations
     // in user code emit LLVM externs that the linker resolves
     // against this combined input set.
     for csrc in &options.csrc_files {
@@ -7919,7 +7919,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // falls back to the defensive synchronous-call path that
         // blocks the parent on a long-running accept loop
         // (2026-05-28: surfaced as the refstore-shaped main.run()
-        // starvation in fathom's FRICTION.md).
+        // starvation in a downstream issue tracker).
         let mut params_locus_types: BTreeMap<String, String> = BTreeMap::new();
         for m in &l.members {
             if let LocusMember::Params(pb) = m {
@@ -11900,7 +11900,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// in `emit_cross_arena_store_deep_copy_ptr`. Earlier this
     /// path went straight through `emit_return_value_deep_copy`
     /// for compound fields, which unconditionally allocates fresh
-    /// storage — that was the bigcell leak the 2026-05-25 fathom
+    /// storage — that was the bigcell leak the 2026-05-25 a downstream app
     /// kraken bench surfaced (`BookSignalState`'s two
     /// `[BookLevel; 100]` fields realloc'd on every set, ~3 KB
     /// per set × ~100 sets/sec until OOM).
@@ -13686,7 +13686,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // is a scope-bound temporary dissolved at this
                 // method's exit, leaving the field pointing at a
                 // torn-down locus (closed @ffi handles / freed arena
-                // → use-after-free; fathom refgw-evm reconnect). Route
+                // → use-after-free; a downstream app reconnect). Route
                 // it through the lifecycle-aware path instead.
                 if matches!(op, AssignOp::Eq)
                     && target.head.name == "self"
@@ -18006,7 +18006,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Expr::Field { receiver, name, .. }
                 if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
             {
-                // iris F.4 (2026-05-23): allow `self.X` reads in
+                // a downstream tool F.4 (2026-05-23): allow `self.X` reads in
                 // params-init context (sibling-field forward
                 // refs in default/override expressions). When
                 // there's no method-body `current_self`, fall
@@ -21768,7 +21768,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "math", "pow"] => {
                 self.lower_std_math_binary("pow", args, scope)
             }
-            // iris F.9 (2026-05-23): trig surface. Same libm
+            // a downstream tool F.9 (2026-05-23): trig surface. Same libm
             // pass-through shape as sqrt / exp / log.
             ["std", "math", "sin"] => {
                 self.lower_std_math_unary("sin", args, scope)
@@ -26079,7 +26079,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// treats the RHS locus literal as a scope-bound temporary
     /// (dissolved at this method's exit), so the field ends up
     /// pointing at a torn-down locus — closed `@ffi` handles, freed
-    /// arena, use-after-free on next use (the fathom refgw-evm
+    /// arena, use-after-free on next use (the a downstream app
     /// `self.conn = ws::WsClient { … }` reconnect crash). Instead:
     ///   (1) reclaim the OLD instance (`__reclaim_<L>` runs its
     ///       drain / dissolve so its resources are released);

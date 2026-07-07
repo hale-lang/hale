@@ -3,7 +3,7 @@
 // birth(). WS1#4 carrier: whole-reassigning a nested param of this
 // imported type (`self.conn = wsx::Conn { ... }`) must produce a
 // fully-initialized instance — birth() re-runs, params land, the
-// handle is live — not the half-init fathom saw (url logged (null),
+// handle is live — not the half-init a downstream app saw (url logged (null),
 // first read_msg() crashed).
 
 locus Conn {
