@@ -1,6 +1,6 @@
-# Downstream (pond / fathom) follow-up actions — post-audit pass
+# Downstream (pond / a downstream app) follow-up actions — post-audit pass
 
-Collected per `post-audit-hardening-handoff-2026-06-11.md` ("Fathom-side
+Collected per `post-audit-hardening-handoff-2026-06-11.md` ("Downstream-side
 and pond-side follow-up actions: do NOT implement; collect them here for
 separate handoffs"). These are **consumer-repo** cleanups, most gated on
 a language-repo change shipping first. Nothing here is language work.
@@ -15,8 +15,8 @@ a language-repo change shipping first. Nothing here is language work.
 | pond/term, pond/tui, pond/_util | Collapse local copies (`paint`/`badge`, glue) into `term::Styler` imports | the "G34" two-hop qualified-name-struct-literal codegen gap lifts |
 | pond/router | Restore `use(m)` method name; collapse 3 parallel vecs into one `RouteEntry{handler: Handler}`; restore `Context{req: std::http::Request}` | LocusRef→Interface coercion at method-arg/struct-field sites + pass-A0 ordering fix |
 | pond/metrics | Re-split the consolidated `metrics.hl` back into per-concern files | cross-file pass-A registration walk (WS3-adjacent: same family as WS3.4) |
-| fathom (book_consistency) | Wire the shipped `std::crypto::crc32` (hale #14) into the consistency check | already shipped — fathom-side only |
-| fathom (mdgw silence) | Wire `std::io::tcp::set_recv_timeout` (hale #15) into `WsClient` + wake the silence check | already shipped — pond/websocket-side only |
+| a downstream app (book_consistency) | Wire the shipped `std::crypto::crc32` (hale #14) into the consistency check | already shipped — downstream-side only |
+| a downstream app (mdgw silence) | Wire `std::io::tcp::set_recv_timeout` (hale #15) into `WsClient` + wake the silence check | already shipped — pond/websocket-side only |
 
 ## Resolved this pass (WS3.3) — downstream can revert workarounds
 
@@ -55,11 +55,11 @@ a language-repo change shipping first. Nothing here is language work.
 
 ## Not gated — consumer design choices already taken (record only)
 
-- **fathom/metrics factory leak** — resolved consumer-side via a
+- **a downstream app/metrics factory leak** — resolved consumer-side via a
   `MetricsCollector` child subscribing to a `MetricUpdate` topic
   (closed-world synchronous publish). No language action; this is the
   blessed pattern WS5.2c should document.
-- **fathom low_corrupt_rate windowed counter** — wants windowed-counter
+- **a downstream app low_corrupt_rate windowed counter** — wants windowed-counter
   machinery. Explicit language **non-goal** this pass (no
   closures-with-capture). Leave to a future language proposal.
 - **pond/supervisor** single-`accept`-type — F.11 design choice
@@ -71,9 +71,9 @@ a language-repo change shipping first. Nothing here is language work.
   (`ws1_cross_seed_locus_reassign`) proves the general cross-seed
   whole-reassignment path is sound, but cannot model `ws::WsClient`'s
   @ffi opaque-handle field + network `birth()`. To settle whether the
-  fathom mdgw-evm half-init is live at HEAD or was an artifact of an
+  a downstream app mdgw-evm half-init is live at HEAD or was an artifact of an
   older build, re-run the actual `self.conn = ws::WsClient { … }`
-  reconnect at HEAD in mdgw-evm (read-only repro on fathom's side). If
+  reconnect at HEAD in mdgw-evm (read-only repro on a downstream app's side). If
   it still half-inits, hand back a minimal `@ffi`-handle locus repro
   for an in-repo fix; if clean, close the item.
 

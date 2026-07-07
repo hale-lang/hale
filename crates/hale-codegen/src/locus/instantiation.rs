@@ -1903,7 +1903,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             }
             let (val, val_ty, owned_via_literal, came_from_literal) =
                 if let Some(expr) = overrides.get(fname.as_str()) {
-                    // iris F.4 (2026-05-23): override expressions
+                    // a downstream tool F.4 (2026-05-23): override expressions
                     // are written at the CALL site, so `self.X`
                     // inside them must resolve to the CALLER's
                     // params-init context — not this locus's. The
@@ -3717,7 +3717,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             // down a field's arena here while its pool worker is mid-
             // run() is a use-after-free (the worker's next subregion
             // op locks the freed parent arena → SIGSEGV; observed in
-            // fathom refstore). Join all pool workers FIRST so no
+            // a downstream app). Join all pool workers FIRST so no
             // worker can touch a field arena we're about to free.
             // This was added then reverted (b35a449) because a classic
             // pool worker blocked in std::http::Server's accept()

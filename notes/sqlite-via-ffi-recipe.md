@@ -6,7 +6,7 @@
 C-ABI binding surface a database driver needs: `@ffi("c")` (see
 `spec/ffi.md`, opening line: *"No stdlib expansion is required to bind a new
 library."*). A SQLite driver is therefore a **pure pond library**, built the
-same way `pond/term` / `pond/tui` once bound their C glue and the iris demo
+same way `pond/term` / `pond/tui` once bound their C glue and the downstream tool demo
 binds raylib. **The language repo should NOT add `std::db::sqlite`.**
 
 Why the friction read as a language block: AGENTS.md's *"Don't edit

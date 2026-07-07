@@ -229,7 +229,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
         // mode (corrupt or cross-routed datagram) that would
         // otherwise hand a giant `size` straight to
         // `lotus_bus_payload_arena_alloc`, triggering the arena
-        // cap-hit / NULL-deref symptom fathom reported.
+        // cap-hit / NULL-deref symptom a downstream app reported.
         let de_fail = self.context.append_basic_block(de_fn, "wire.fail");
         self.builder.position_at_end(de_fail);
         // -1 in the ssize_t return width (i32 0xFFFFFFFF on wasm32); the

@@ -1953,7 +1953,7 @@ codegen. Two apps importing the same lib produce the same
 `<lib_id>` regardless of which aliases they chose, so DTO seeds
 on a bus have symbol-identical types across consumers.
 
-**Qualified TypeExpr rewriting (brained F.1 / iris F.10).**
+**Qualified TypeExpr rewriting.**
 The codegen-side path-rename table resolves `alias::Name`
 references at call-position lowering — but expression-position
 resolution runs AFTER typecheck. Type-position uses of

@@ -1,4 +1,4 @@
-//! iris F.10 — cross-seed type forward-ref in struct field +
+//! a downstream tool F.10 — cross-seed type forward-ref in struct field +
 //! locus-method signature.
 //!
 //! Pre-fix: `apply_qualified_path_renames` collapsed

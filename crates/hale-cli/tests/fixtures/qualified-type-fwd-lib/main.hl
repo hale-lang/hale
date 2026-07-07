@@ -1,4 +1,4 @@
-// iris F.10 reproducer — cross-seed type definition.
+// a downstream tool F.10 reproducer — cross-seed type definition.
 // Imported by ../qualified-type-fwd-app via `as gfx;`.
 type Rect {
     x: Float = 0.0;

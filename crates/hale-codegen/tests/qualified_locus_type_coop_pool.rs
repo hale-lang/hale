@@ -1,5 +1,5 @@
 //! Regression for the refstore-shaped main.run() starvation
-//! (fathom FRICTION.md, surfaced 2026-05-28): when a main locus
+//! (a downstream issue tracker, surfaced 2026-05-28): when a main locus
 //! declared a params field with a *qualified-name* locus type
 //! (e.g. `std::http::Server`) and pinned it to a non-main
 //! cooperative pool via `placement { }`, the codegen's
@@ -24,7 +24,7 @@ use hale_codegen::build_executable;
 
 #[test]
 fn qualified_stdlib_locus_on_non_main_pool_does_not_starve_main_run() {
-    // Same shape as the fathom refstore: main locus with a
+    // Same shape as the a downstream app: main locus with a
     // qualified-path long-running child on its own pool, plus a
     // run() body that should fire on main. Pre-fix, the child's
     // run() ran synchronously on main and blocked the run() body

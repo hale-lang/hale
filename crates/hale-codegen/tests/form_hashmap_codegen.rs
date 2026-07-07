@@ -360,7 +360,7 @@ fn hashmap_self_dispatch_inside_locus_method() {
 }
 
 /// Regression for the BookSignalState bigcell leak (2026-05-25
-/// fathom handoff). Anchor-in-place at @form(hashmap).set worked
+/// a downstream handoff). Anchor-in-place at @form(hashmap).set worked
 /// for flat scalar cells (`f042806`), but cells with a fixed-size
 /// array field still allocated a fresh `[N x elem]` buffer in the
 /// hashmap's arena on every set — the per-field deep-copy path

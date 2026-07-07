@@ -210,7 +210,7 @@ impl<'ctx, 'p> TextStdlib<'ctx> for Cx<'ctx, 'p> {
         Ok((ptr, CodegenTy::String))
     }
 
-    /// fathom handoff (2026-06-02): lower
+    /// a downstream handoff (2026-06-02): lower
     /// `std::text::base64::url_encode(b: Bytes) -> String`. RFC 4648
     /// §5 URL-safe alphabet (`-`/`_` for 62/63) with NO padding —
     /// the form JWT/JWS, OAuth, and webhook signatures use. Same

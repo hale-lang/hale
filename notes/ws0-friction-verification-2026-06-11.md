@@ -3,8 +3,8 @@
 Date: 2026-06-11. Verifies the OPEN items in the consumer repos'
 FRICTION docs against language-repo HEAD, per
 `post-audit-hardening-handoff-2026-06-11.md`. Evidence sources
-(read-only): `fathom/FRICTION.md` (last reviewed 2026-05-28 — STALE),
-`fathom/MEMORY-LEAK-HUNTING-GOTCHAS.md`, `fathom/apps/*/FRICTION.md`,
+(read-only): the downstream issue tracker (last reviewed 2026-05-28 — STALE),
+the downstream leak-hunting notes, the downstream app issue logs,
 `pond/*/FRICTION.md`, `pond/CLAUDE.md`.
 
 Method: candidate closing commits confirmed present in HEAD; for each
@@ -41,17 +41,17 @@ reassigned whole — rather than the value-shape axes.
 | Class | Closing commit(s) | Gate at HEAD | Verdict |
 |---|---|---|---|
 | async_io inline-instantiation / subscriber starvation | f5e82a7 (wake_fd poke), 7a22f7b (in-method-body coop-pool inheritance) | `async_io_park_resume`, `coop_pool_run_dispatch`, `placement_where_async_io` (7), `coop_to_pinned_mid_program` — all pass | **CLOSED** (pool-inheritance + park/resume). *Fixture gap:* the precise "inline child that carries its **own bus subscription**, instantiated inside a handler on an `async_io` pool" shape has no direct fixture — see Follow-up F1. |
-| big-cell `@form(hashmap).set` fresh-alloc | cc090e4 (compound-pointer anchor) | `form_hashmap_codegen::hashmap_set_bigcell_with_array_field_does_not_leak` (array-field cell, chunk count flat across 400 same-key sets) | **CLOSED** for the *leak*. The fathom-cited *segfault* (riskgw P2.2, 10-field struct) does **not** reproduce single-seed (see WS1#3) → not width-driven. |
+| big-cell `@form(hashmap).set` fresh-alloc | cc090e4 (compound-pointer anchor) | `form_hashmap_codegen::hashmap_set_bigcell_with_array_field_does_not_leak` (array-field cell, chunk count flat across 400 same-key sets) | **CLOSED** for the *leak*. The a downstream app-cited *segfault* (a downstream service P2.2, 10-field struct) does **not** reproduce single-seed (see WS1#3) → not width-driven. |
 | http::Server-as-child starvation | ab4fbdf (reject nested long-running coop children), 60d649b / 60e3007 / 99f352a (dead-receiver + blocking-syscall diagnostics), c8aeff1 (classic-pool shutdown) | `nested_long_running_child` (5), `http_server_classic_pool_shutdown` | **DIAGNOSED** — the shape is now a typecheck rejection, not a silent starve. Acceptable per handoff ("working or diagnosed"). |
 
 ## WS1 soundness classes — single-seed reproduction at HEAD
 
-| WS1 | Fathom shape | Single-seed repro result | Verdict |
+| WS1 | A downstream app shape | Single-seed repro result | Verdict |
 |---|---|---|---|
 | #1 — N≥3 `@form(hashmap)` children through `fallible(E)` | refdata/persist load_snapshot | `locus_fallible_return_multichild` (4 children, fallible + plain) passes | **CLOSED + gated** (fix: `instantiating_into_payload_arena` routes child literals to payload arena). |
-| #3 — wide-struct `@form(hashmap).set` segfault | riskgw OpenOrder 10-field | `/tmp/ws0_widecell.hl` (10 scalar) and `/tmp/ws0_widecell2.hl` (String + Decimal) both exit 0, correct reads | **Does NOT reproduce.** Not a cell-width bug. Folds into #2 (the riskgw OpenOrder is built cross-seed from bus data). |
-| #4 — nested-locus param reassign half-init | mdgw-evm `self.conn = ws::WsClient {…}` | Single-seed plain + birth()-bearing pass; **cross-seed probe built** (`ws1_cross_seed_locus_reassign`, imported `wsx::Conn` with String params + a `birth()`-set Int handle): after whole-reassignment `url`=new value, `birth()` re-ran (`fd=7 ready=1`), `read_msg()` ran without crash. Passes at HEAD. | **Does NOT reproduce** across plain / birth() / cross-seed axes. The general reassignment-lowering path is sound. **Residual:** the fathom failure is specific to `ws::WsClient`'s real **@ffi opaque-handle field + network `birth()`**, which the synthetic `Int` handle does not model. Definitive closure needs either the pond `ws` type (downstream verify) or a synthetic `@ffi`-opaque-handle locus (C glue) — see Downstream note. |
-| #2 — cross-seed struct literal, Decimal fields from a **bus-deserialized** struct | riskgw `gx::GreaseOrderRequest { px: oi.px, … }` from `d::OrderIntent` | **F2 built** (`ws1_cross_seed_bus_decimal`, 3-seed `d`+`gx`+app): 3 Decimal shapes round-trip the bus + cross-seed i128 literal intact, and the persisted locus-arena sum is bit-exact (`acc=112345.660001`). Passes at HEAD. | **CLOSED** — by the 2026-05-20 i128-alignment fix (`lotus_arena_off_for`, lotus_arena.c:1491). The fathom "flaky segfault" was the `movaps`-on-8-byte-aligned-i128 trap; the arena now aligns the real pointer. F2 is the deterministic gate. |
+| #3 — wide-struct `@form(hashmap).set` segfault | a downstream service OpenOrder 10-field | `/tmp/ws0_widecell.hl` (10 scalar) and `/tmp/ws0_widecell2.hl` (String + Decimal) both exit 0, correct reads | **Does NOT reproduce.** Not a cell-width bug. Folds into #2 (the downstream service OpenOrder is built cross-seed from bus data). |
+| #4 — nested-locus param reassign half-init | mdgw-evm `self.conn = ws::WsClient {…}` | Single-seed plain + birth()-bearing pass; **cross-seed probe built** (`ws1_cross_seed_locus_reassign`, imported `wsx::Conn` with String params + a `birth()`-set Int handle): after whole-reassignment `url`=new value, `birth()` re-ran (`fd=7 ready=1`), `read_msg()` ran without crash. Passes at HEAD. | **Does NOT reproduce** across plain / birth() / cross-seed axes. The general reassignment-lowering path is sound. **Residual:** the downstream app failure is specific to `ws::WsClient`'s real **@ffi opaque-handle field + network `birth()`**, which the synthetic `Int` handle does not model. Definitive closure needs either the pond `ws` type (downstream verify) or a synthetic `@ffi`-opaque-handle locus (C glue) — see Downstream note. |
+| #2 — cross-seed struct literal, Decimal fields from a **bus-deserialized** struct | a downstream service `gx::GreaseOrderRequest { px: oi.px, … }` from `d::OrderIntent` | **F2 built** (`ws1_cross_seed_bus_decimal`, 3-seed `d`+`gx`+app): 3 Decimal shapes round-trip the bus + cross-seed i128 literal intact, and the persisted locus-arena sum is bit-exact (`acc=112345.660001`). Passes at HEAD. | **CLOSED** — by the 2026-05-20 i128-alignment fix (`lotus_arena_off_for`, lotus_arena.c:1491). The a downstream app "flaky segfault" was the `movaps`-on-8-byte-aligned-i128 trap; the arena now aligns the real pointer. F2 is the deterministic gate. |
 
 ## The unifying hypothesis
 

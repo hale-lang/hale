@@ -1,7 +1,7 @@
 //! WS3.5 — shm_ring subscriber instantiated as a *nested locus
 //! param* (not top-level in `fn main()`).
 //!
-//! pond/fathom reported (FRICTION § shm-ring remaining nit) that an
+//! pond / downstream apps reported (FRICTION § shm-ring remaining nit) that an
 //! shm_ring subscriber only spawned its reader thread when
 //! instantiated top-level (`Sub { }` directly in `fn main()`); as a
 //! nested locus-param (`params { sub: Sub = Sub { }; }`) it

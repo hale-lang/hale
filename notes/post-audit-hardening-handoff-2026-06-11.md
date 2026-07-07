@@ -7,11 +7,11 @@ user-visible behavior change updates spec/ in the same commit; record negative
 results and scope decisions in notes/.
 
 EVIDENCE SOURCES (read-only — do not modify these repos):
-- ~/code/hale-lang/fathom/FRICTION.md  — last reviewed 2026-05-28; STALE. Treat
+- the downstream issue tracker  — last reviewed 2026-05-28; STALE. Treat
   every OPEN entry as "unverified," not "open." Also: per-app FRICTION.md under
   apps/*/ and lib/venues/*/, and MEMORY-LEAK-HUNTING-GOTCHAS.md.
 - ~/code/hale-lang/pond/*/FRICTION.md and pond/CLAUDE.md "codegen-v0 limitations".
-Fathom-side and pond-side follow-up actions: do NOT implement; collect them in
+Downstream-side and pond-side follow-up actions: do NOT implement; collect them in
 notes/<this-session>-downstream-actions.md for separate handoffs.
 
 NON-GOALS for this pass: no pond source changes; no new language features (in
@@ -19,12 +19,12 @@ particular, no closures-with-capture work); no perf work.
 
 ## WS0 — Stale-friction verification (do first; cheap; prevents wasted work)
 
-For each fathom FRICTION item marked OPEN, check HEAD for a closing commit
+For each downstream issue-tracker item marked OPEN, check HEAD for a closing commit
 before doing anything. Known likely-closed candidates to verify against the
 original repro shapes:
 - async_io inline-instantiation / subscriber starvation → f5e82a7 (wake_fd poke),
   7a22f7b (in-method-body pool inheritance). Verify against the dashboard
-  WsDispatcher/PerConn shape described in fathom FRICTION.
+  WsDispatcher/PerConn shape described in the downstream issue tracker.
 - big-cell @form(hashmap).set fresh-alloc → cc090e4 (compound-pointer anchor).
   Verify it covers cells with fixed-size array fields (~2KB, [T; 100] × 2).
 - http::Server-as-child starvation class → ab4fbdf / 60d649b / 60e3007 / 99f352a
@@ -42,13 +42,13 @@ stays as the regression gate.
 
 1. Locus populated with N≥3 @form(hashmap) children returned through a
    fallible(E) fn: children 3+ corrupt (garbage len(), dangling storage).
-   100% reproducible per fathom. Repro shape: fathom lib/refdata/persist.hl
+   100% reproducible per the downstream report. Repro shape: a downstream persistence module
    header comment + apps/smoke-refdata-persist history (load_snapshot).
 2. Cross-seed struct literal whose Decimal fields come from a bus-deserialized
    struct → flaky segfault (heap corruption signature). Repro shape:
-   fathom apps/riskgw fwd_grease_order comment (FRICTION § riskgw P2 item 1).
+   a downstream app a downstream service fwd_grease_order comment (FRICTION § a downstream service P2 item 1).
 3. @form(hashmap).set with a wide struct cell (10 fields) → segfault
-   (FRICTION § riskgw P2 item 2). May be the same root as WS0's cc090e4
+   (FRICTION § a downstream service P2 item 2). May be the same root as WS0's cc090e4
    verification — confirm or split.
 4. Wholesale reassignment of a nested-locus param from a member fn
    (self.conn = ws::WsClient { ... }) → half-initialized locus, null fields,
@@ -108,7 +108,7 @@ pond/sqlite — just unblock it.
    --dump-alloc-summary / --dump-resource-budget / --locality-report, and a
    worked "my publish isn't arriving" + "my RSS is growing" triage walkthrough.
 2. Pattern-catalog additions (AGENTS.md + a docs page), distilled from
-   production usage (describe shapes generically; no fathom references):
+   production usage (describe shapes generically; no a downstream app references):
    a. The three-locus gateway: pinned reader → cooperative manager that
       accept()s → keyed per-entity children (subscribe ... where key == self.id).
       This is the canonical answer to "N dynamic keyed children with
@@ -145,4 +145,4 @@ DONE means: every WS1 item has a committed fixture; WS2 sweep is in CI at some
 tier; each WS3 item is fixed-or-spec'd (no silent gaps); WS4 primitives pass
 integration tests; WS5 pages render in the book build; spec/ and docs/ changes
 landed in the same commits as their behavior changes; downstream-actions note
-written for the pond/fathom handoffs.
+written for the pond/a downstream app handoffs.

@@ -1,6 +1,6 @@
 //! `std::crypto::ecdsa_p256_sign` / `ecdsa_p256_verify` — ES256
 //! (ECDSA over P-256 + SHA-256), the primitive Coinbase Advanced
-//! Trade (and most CDP/JWT) auth needs. Added for the fathom
+//! Trade (and most CDP/JWT) auth needs. Added for the a downstream app
 //! handoff. Signatures are raw r‖s (64 bytes, JWS/COSE form).
 //!
 //! Compiled-path test (the C is OpenSSL in lotus_tls.c, no

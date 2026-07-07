@@ -1401,7 +1401,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     // Previously it bundled the directory's files but silently
     // dropped every `import "..."`, so a dir-seed app importing a
     // vendored library failed on `alias::Name` references — the
-    // exact pond/fathom "qualified type not in path-renames table"
+    // exact pond / downstream apps "qualified type not in path-renames table"
     // friction, and the reason a topic decl had to live in the same
     // file as its publisher. `run` and `build` now produce the same
     // merged-and-resolved program for a directory; `run` execs it

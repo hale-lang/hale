@@ -1423,9 +1423,8 @@ remote subscribers that aren't visible at compile time.
 Phase 3 extends topic declarations with a per-message **routing
 key** so the bus can shard dispatch by key value at the
 `(subject, key)` granularity, rather than fanning every published
-message to every subscriber on the subject. Motivated by the
-fathom `apps/mdgw/kraken` workload (handoff
-`handoff-compiler-hashmap-bigcell-leak-2026-05-25.md`): one
+message to every subscriber on the subject. Motivated by a
+downstream market-data workload: one
 reader thread publishes book frames for N symbols; N per-symbol
 loci each want only their own symbol's frames. Without routing
 keys, every BookSignal would receive every L2Data frame and have

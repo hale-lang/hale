@@ -1,4 +1,4 @@
-// iris F.10 — cross-seed type used as a STRUCT FIELD type
+// a downstream tool F.10 — cross-seed type used as a STRUCT FIELD type
 // AND a locus-method RETURN type, in entry-program decls
 // that the codegen sees BEFORE the lib's mangled `Rect`
 // decl in items order.

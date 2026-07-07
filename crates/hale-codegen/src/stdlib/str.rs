@@ -1317,7 +1317,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
             .module
             .get_function("lotus_str_builder_finish")
             .expect("lotus_str_builder_finish declared");
-        // F.6/F.8 sweep (iris FRICTION): publish the current arena
+        // F.6/F.8 sweep (a downstream tool's notes): publish the current arena
         // into the caller-arena TLS so the C-side's
         // lotus_bus_payload_arena_alloc routes the returned String
         // through this frame's arena. Same prologue as

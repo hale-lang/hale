@@ -2506,7 +2506,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
         self.module
             .add_function("lotus_crypto_hmac_sha256", hmac_sha256_ty, None);
-        // 2026-06-25 (fathom Kraken/Gate.io): SHA-512 + HMAC-SHA512.
+        // 2026-06-25 ((a downstream app)): SHA-512 + HMAC-SHA512.
         // declare ptr @lotus_crypto_sha512(ptr bytes)
         let sha512_ty = ptr_t.fn_type(&[ptr_t.into()], false);
         self.module
@@ -2520,7 +2520,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let crc32_ty = i64_t.fn_type(&[ptr_t.into()], false);
         self.module
             .add_function("lotus_crypto_crc32", crc32_ty, None);
-        // fathom handoff (2026-06-02): ECDSA P-256 / ES256 (OpenSSL,
+        // a downstream handoff (2026-06-02): ECDSA P-256 / ES256 (OpenSSL,
         // bodies in lotus_tls.c).
         // declare ptr @lotus_crypto_ecdsa_p256_sign(ptr key, ptr msg)
         let ecdsa_sign_ty =
@@ -3253,7 +3253,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function("floor", math_unary_ty, None);
         self.module.add_function("ceil", math_unary_ty, None);
         self.module.add_function("pow", math_binary_ty, None);
-        // iris F.9 (2026-05-23): trig surface for spatial code
+        // a downstream tool F.9 (2026-05-23): trig surface for spatial code
         // (lotus_viz, polar→cartesian, animation phase). Each
         // is a direct libm extern, mirroring sqrt / exp / log
         // shape. Float-typed at the Hale surface.

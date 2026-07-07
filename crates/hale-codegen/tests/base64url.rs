@@ -1,5 +1,5 @@
 //! `std::text::base64::url_encode` — RFC 4648 §5 URL-safe base64,
-//! unpadded. Added for the fathom handoff (JWT/JWS minting needs
+//! unpadded. Added for the a downstream handoff (JWT/JWS minting needs
 //! base64url; the existing `base64::encode` is the padded standard
 //! alphabet). Compiled-path test: the interpreter has no base64
 //! encode surface, so this exercises the codegen + C runtime.

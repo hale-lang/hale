@@ -268,9 +268,9 @@ Cleanest: the parse-only test path.
 ## Other open items (parked, lower priority)
 
 ### Held — waiting on others
-- Fathom udp:// silent-drop verdict (waiting on
+- A downstream app udp:// silent-drop verdict (waiting on
   `LOTUS_BUS_LOG_DESERIALIZE_DROP=1` rebuild + report)
-- Fathom WS server bringup (compiler is ready; they're writing
+- A downstream app WS server bringup (compiler is ready; they're writing
   user-side WS protocol code)
 
 ### Compiler-substantial (deferred)
@@ -289,7 +289,7 @@ Cleanest: the parse-only test path.
 - #5 Resource-budget tracking (builds on #1)
 - #3 Closure-assertion lifting (builds on #1)
 
-### Fathom FRICTION substrate-side
+### Downstream substrate-side follow-ups
 - `@form(hashmap).set` large-cell anchor (~200 MB/min leak) —
   partly fight-Hale (BookSignalState wants per-symbol locus
   tower); substrate fix still useful for legit big-value-typed

@@ -1,7 +1,7 @@
 //! WS1#2 carrier — cross-seed struct literal whose Decimal (i128)
 //! fields come from a bus-deserialized struct.
 //!
-//! Fathom riskgw P2.1 reported a flaky segfault ("heap corruption
+//! A downstream app's P2.1 reported a flaky segfault ("heap corruption
 //! signature") constructing `gx::GreaseOrderRequest { px: oi.px,
 //! qty: oi.qty }` from a bus-received `d::OrderIntent`. The two
 //! contributing axes are (a) the value crossed a bus-delivery

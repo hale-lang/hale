@@ -8,7 +8,7 @@ also the per-set overhead); clones floor at 16 bytes so every blob
 can carry a freelist node. Validated: 4M-set churn over 16 keys with
 fresh key+value strings per set = 4.8 MB flat RSS (was 207 MB —
 ~50 B/set, the audited on_mark shape). Full suite green; pond +
-fathom corpus builds; riskgw smoke passes. GOTCHA that cost a
+a downstream app corpus builds; a downstream service smoke passes. GOTCHA that cost a
 segfault: lotus_hashmap_t is mirrored FIELD-FOR-FIELD by an inline
 LLVM struct in locus/decl.rs — new C fields go at the TAIL of both.
 Remaining: compound self.field-store retire (assign_in_place covers
@@ -19,7 +19,7 @@ just holds; no worse than before). The TP-3 class
 from the stage-5 audit: 53 corpus sites where a hashmap `set` or a
 compound `self.field = Struct{...}` store anchors a fresh String
 clone into the locus arena and the PREVIOUS clone for the same slot
-is never freed (arenas don't free per-allocation). riskgw was
+is never freed (arenas don't free per-allocation). a downstream service was
 hand-fixed with key-reuse idioms; dashboard/prober/websocket still
 leak, and every future app will. Same mechanism as the 2026-05-25
 kraken bigcell OOM.

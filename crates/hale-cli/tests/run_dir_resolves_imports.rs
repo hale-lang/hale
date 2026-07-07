@@ -5,7 +5,7 @@
 //! the run path bundled the directory's files yet silently dropped
 //! every `import "..."`, so qualified `alias::Name` references
 //! failed codegen ("qualified-name struct literal ... in expression
-//! position" / "missing payload type"). This was the pond/fathom
+//! position" / "missing payload type"). This was the pond / downstream apps
 //! "qualified type not in path-renames table" friction on the run
 //! path, and the reason a topic decl appeared to need to live in
 //! the same file as its publisher.

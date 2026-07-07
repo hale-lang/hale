@@ -560,7 +560,7 @@ fn main() { App { }; }
 }
 
 // ---------------------------------------------------------------
-// Dead bus receiver (fathom handoff 2026-06-02): a locus that
+// Dead bus receiver (a downstream handoff 2026-06-02): a locus that
 // subscribes to the bus but is placed cooperative on a non-main
 // pool never receives a cell — only main-cooperative or pinned
 // loci get delivery. The toolchain used to accept it silently.
@@ -568,7 +568,7 @@ fn main() { App { }; }
 // positives on pinned / main / non-subscribing / intra-locus).
 // ---------------------------------------------------------------
 
-// Corrected 2026-06-03 (fathom over-fire handoff): a non-main
+// Corrected 2026-06-03 (a downstream app over-fire handoff): a non-main
 // cooperative subscriber is a dead receiver only when its run() ALSO
 // makes a blocking call that starves the pool thread. Placement alone
 // over-fired on event-driven subscribers (PriceView/WsDispatcher),
@@ -720,7 +720,7 @@ fn main() { App { }; }
 }
 
 // ---------------------------------------------------------------
-// Blocking-syscall-on-a-cooperative-pool (fathom handoff #2). A
+// Blocking-syscall-on-a-cooperative-pool (a downstream handoff #2). A
 // cooperative (non-async_io) locus that calls a known-blocking
 // stdlib op in run() stalls co-scheduled loci. hale's first
 // WARNING (non-fatal) — a single-purpose blocking server is

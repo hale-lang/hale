@@ -1,6 +1,6 @@
 # Handoff: connection-liveness for pond WsClient.read_msg (the real fix for the "TLS recv starvation")
 
-**Context.** The fathom-reported "two concurrent blocking TLS recvs — the
+**Context.** The a downstream app-reported "two concurrent blocking TLS recvs — the
 second starves" is **not** a substrate bug. Full corrected verdict in
 `notes/tls-concurrent-recv-starvation.md`. Short version: every substrate /
 TLS / OpenSSL / pond-buffer layer handles two concurrent connections
