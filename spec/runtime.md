@@ -1089,15 +1089,24 @@ zero_copy binding produces.
 
 ### Perspective infrastructure
 
-- **Stable-perspective tracking.** For each `perspective T`,
-  the runtime tracks how many independent perspectives have
-  validated; `stable_when` is invoked to determine commit
-  status.
-- **Hot-load.** The runtime accepts a serialized
-  `T`-perspective from a transport, verifies the type
-  signature against the locally-compiled `T`, and atomically
-  installs it. Old perspective is preserved until the new one
-  is committed (no torn read).
+- **The global slot.** Each `perspective P` has one program-global
+  `{ data, vtable }` slot (`__persp.<P>`). Every holder of
+  `perspective(P)` dispatches through it — a load plus a predicted
+  indirect call, near-direct cost. A program that declares no
+  perspectives pays nothing.
+- **Live swap (`reperspective`).** Re-points the slot at a new
+  `serves P` impl with a single atomic store, redirecting every
+  call site at once. State-preserving across impls of one footprint:
+  the `{ data, vtable }` split means `data` — the live, arena-backed
+  state — is untouched and only the vtable changes. When the
+  perspective declares a bus surface, the swap also re-points its
+  subscriptions on that same `data`. (See `spec/semantics.md`
+  § Perspectives.)
+- **Wire hot-load (aspirational).** Transport-driven redeploy —
+  decode a serialized perspective against the compiled-in schema,
+  gate on `stable_when`, atomically install with no torn read — is
+  specified but not yet shipped. See `spec/semantics.md`
+  § "Perspective hot-load".
 
 ### Failure handling
 

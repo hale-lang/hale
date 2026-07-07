@@ -116,14 +116,18 @@ typecheck and codegen.
 
 ## Perspective types
 
-A `perspective P { ... }` declaration introduces a *perspective
-type* P — a serializable parameter bundle within a shared
-compiled-in schema. Used for fitter↔applier communication
-(among other things). Has:
-
-- Params (the parameter bundle)
-- A `stable_when { ... }` block (commit predicate)
-- Optional `serialize_as TypeV1` annotation
+A `perspective P { ... }` declaration introduces a *contract
+type* P — a set of bodyless `fn` signatures (optionally a
+`bus { subscribe/publish ... }` surface) that form a stable ABI
+boundary. Holders program against the **slot type**
+`perspective(P)` — never a concrete impl — and dispatch through a
+single program-global, live-rebindable slot. A locus
+`L : serves P` provides the contract and can be swapped in behind
+the slot at pointer-flip cost via `reperspective`. An optional
+`stable_when { ... }` predicate feeds the (aspirational)
+transport-driven hot-load path. See
+[`semantics.md` § Perspectives](./semantics.md) for the full model
+(contract / `serves` / slot / live swap).
 
 ## Interface types (F.20)
 

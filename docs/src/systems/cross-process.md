@@ -1,5 +1,17 @@
 # Cross-process & hot-load
 
+> **Status + terminology.** This chapter describes the
+> *transport-driven* perspective — a serializable state bundle
+> shipped between processes and hot-loaded from the wire. That path
+> is **design/aspirational**: it is specified but not yet shipped.
+> It reuses the `perspective` keyword but is distinct from the
+> shipped, in-process perspective — a live-swappable *contract* + a
+> program-global slot re-pointed with `reperspective` — covered in
+> [Perspectives](../services/perspectives.md) (and normatively in
+> `spec/semantics.md`). Both are the same idea (a stable, versioned
+> boundary you can re-point at pointer-flip cost); today only the
+> in-process contract/slot path runs.
+
 > **Coming from Rust / C++?** This is typed, versioned state
 > shipped between processes — but without a separate `.proto` and
 > a codegen step. A `perspective` is a serializable parameter
