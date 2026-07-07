@@ -1,6 +1,56 @@
 # Changelog
 
-## Unreleased
+Behavior changes by release. The canonical spec lives in
+[`spec/`](./spec/) — each file there represents *current*
+behavior.
+
+---
+
+## v0.10.0 — topology-aware placement + perspectives (live redeploy)
+
+- **Topology-aware placement (Phase 1).** Describe the host machine
+  and map loci onto its NUMA/cache/core hierarchy, memory co-located
+  to the thread. `pinned(cores = A..B | A..=B | {a, b, c})` sets a
+  thread's affinity mask to a core *set* (a range carves out an
+  isolation domain); a `topology { }` block declares the
+  socket → NUMA node → L3 domain → core hierarchy with
+  `pinned(node = N)` / `pinned(l3 = name)`; a node-pinned locus
+  allocates its *arena* on that node via a raw `mbind` (no libnuma
+  dependency) — the thread+memory co-location payoff; and
+  `replicas = K` fans a locus into K single-threaded instances, one
+  per core in the range (parallelism as more single-threaded units,
+  so the lock-free / devirtualization invariants survive). Linux-only
+  optimization; degrades to advisory no-ops on macOS/other. Opt-in —
+  existing placement lowers byte-identically.
+
+- **Perspectives — live redeploy (Phase 2–3).** A perspective is now
+  a first-class, live-rebindable handle to a *contract*: program
+  against a stable ABI (`serves`) reached through a single swappable
+  slot, and `reperspective` swaps the implementation behind it at
+  pointer-flip cost — no restart, no global pause. Bus
+  subscribe/publish edges are part of the swappable contract and
+  re-point across a swap; a layout-identity swap repoints code at the
+  existing arena (zero data movement), while a changed footprint runs
+  a `migrate`.
+
+- **macOS (Apple Silicon) support — phase 1.** The runtime builds and
+  runs on macOS 14. `async_io` is gated behind a clear compile
+  diagnostic pending a kqueue backend, and Linux-only socket options
+  (`SO_PRIORITY` / `IP_PKTINFO`) + CPU affinity degrade to no-ops.
+  Prebuilt, reproducible self-contained Linux releases ship via
+  Docker.
+
+- **`@form(lru_cache)`** — a bounded LRU cache form.
+
+- **`hale test`** — discover + run `*_test.hl` (see
+  [`spec/testing.md`](./spec/testing.md)).
+
+- **Anchor-retirement freelist double-free fixed.** A String-keyed
+  `@form(hashmap)` whose value struct carries the `indexed_by` field
+  aliases one clone as both the map key and that field; it was
+  retired twice, self-linking the reuse freelist and crashing under
+  multi-key churn. Retirement now dedups within the call; block reuse
+  is preserved.
 
 - **DI verifier fix — synthesized fn-exit epilogues now carry a
   !dbg location.** A fallible fn that dissolves a local locus at
@@ -42,15 +92,6 @@
   under one lock/epoch per batch. 100k-entry walk: 301 µs → 109 µs
   (and 5.3× ahead of the hand-written C comparator). The journey
   from the original key_at walk: 1.31 ms → 109 µs, 12×.
-
-
-Behavior changes by release. The canonical spec lives in
-[`spec/`](./spec/) — each file there represents *current*
-behavior.
-
----
-
-## Unreleased
 
 - **Typecheck: fallible stdlib calls rejected as direct `or`
   handlers.** `x() or std::io::fs::read_file(p)` compiled but
