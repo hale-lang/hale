@@ -242,7 +242,11 @@ line of Hale.
 
 **No install — [run Hale in your browser](https://hale-lang.github.io/hale/play/).** The
 playground runs real Hale compiled to WebAssembly, right on the page (the UI itself is a
-Hale `@export locus`). To build it locally:
+Hale `@export locus`).
+
+**Prebuilt binaries** for Linux are on the
+[releases page](https://github.com/hale-lang/hale/releases) — download, extract, and put
+`hale` on your `PATH`; no toolchain required. Or build from source:
 
 ```sh
 git clone https://github.com/hale-lang/hale
@@ -262,7 +266,7 @@ fn main() {
 }
 ```
 
-Run it interpreted for fast feedback, or compile a native binary:
+Run it, or compile a standalone native binary:
 
 ```sh
 cargo run -p hale-cli --bin hale -- run   hello.hl
@@ -274,7 +278,7 @@ Depending on Hale libraries? Declare them in `hale.toml`, then
 
 ```toml
 [deps]
-pond = { git = "https://github.com/hale-lang/pond", tag = "v0.1.0" }
+pond = { git = "https://github.com/hale-lang/pond", tag = "v0.8.0" }
 ```
 
 ## Where to go next
@@ -290,6 +294,10 @@ pond = { git = "https://github.com/hale-lang/pond", tag = "v0.1.0" }
   — ~70 working `.hl` programs.
 - **[hale-lang/pond](https://github.com/hale-lang/pond)** —
   contributed libraries: web, databases, observability, AI clients.
+- **[`CONTRIBUTING.md`](./CONTRIBUTING.md)** — how the repo is built
+  and how to send a change.
+- **[Issues](https://github.com/hale-lang/hale/issues)** — bugs,
+  questions, and ideas; the place to start a conversation.
 
 ## The ecosystem
 
