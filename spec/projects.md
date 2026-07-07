@@ -399,12 +399,14 @@ Explicit non-features of the v1 project / import system. A
 future milestone may relax some of them when concrete friction
 demonstrates the need.
 
-- **No transitive deduplication.** A library reached through two
-  different import paths ships as two compiled copies — per-
-  importer mangling, no shared identity. The recursive resolution
-  added in A4 (2026-05-17) follows each library's own imports
-  scoped to that library, but does not unify references across
-  importers.
+- **Deduplication is by canonical path, not content.** A library
+  reached through two different importers gets ONE shared identity
+  — its `<lib_id>` is derived from its canonical path and
+  deduplicated in the resolver's visited set (the 2026-05-22
+  change; see § "No re-exports" above), so the same source yields
+  the same symbols across consumers. What's *not* done is
+  content-level unification: two libraries vendored at different
+  paths are distinct symbols even if byte-identical.
 - **No registry / version ranges / semver.** Dependency pins
   are exact git refs. See `spec/packages.md` § "What's NOT in
   v1" for the full list of package-management non-features.

@@ -887,8 +887,11 @@ Transport surface:
   timeouts, point-to-point role for p2p shapes). The grammar
   distinguishes substrate vs adapter by the head's case
   (lowercase keyword `unix` vs capitalized locus name).
-  Inbound dispatch from an adapter into the local handler set
-  awaits the `__bus_local_dispatch` opening (deferred).
+  Inbound dispatch from an adapter into the local handler set is
+  handled by `std::bus::__local_dispatch(subject, bytes)` (m105):
+  it reconstructs the payload against the subject's registered
+  deserialize fn and fans into local subscribers via
+  `lotus_bus_dispatch_wire`.
 
 - `shm_ring("/name", slot_count: N, on_overflow: <policy>)` —
   POSIX SHM ring substrate backing the zero-copy route. Name
