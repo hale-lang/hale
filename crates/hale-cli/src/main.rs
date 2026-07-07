@@ -36,6 +36,15 @@ fn main() -> ExitCode {
     }
     let cmd = &args[1];
 
+    if cmd == "--version" || cmd == "-V" || cmd == "version" {
+        println!("hale {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+    if cmd == "--help" || cmd == "-h" || cmd == "help" {
+        usage();
+        return ExitCode::SUCCESS;
+    }
+
     // `fetch` is the one subcommand that doesn't take a target
     // file/dir — it defaults to the current working directory and
     // optionally accepts a repo-root override.
@@ -102,11 +111,14 @@ fn usage() {
     eprintln!("    hale lex   <file.hl>          tokenize and print tokens");
     eprintln!("    hale parse <file.hl>          parse and print the AST");
     eprintln!("    hale check <file.hl | dir>    parse + typecheck");
-    eprintln!("    hale run   <file.hl | dir>    parse + typecheck + interpret");
+    eprintln!("    hale run   <file.hl | dir>    compile + run as a native binary");
     eprintln!("    hale build <file.hl | dir>    parse + typecheck + emit native binary");
     eprintln!("    hale test  [file | dir]       compile + run *_test.hl (default: cwd)");
     eprintln!("        [-run <substr>] [--json]");
     eprintln!("    hale fetch [repo-root]        fetch git deps from hale.toml into vendor/");
+    eprintln!();
+    eprintln!("    hale --version               print the version");
+    eprintln!("    hale --help                  print this help");
 }
 
 fn run_lex_file(path: &Path) -> ExitCode {
