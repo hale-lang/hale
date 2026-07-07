@@ -83,8 +83,10 @@ a() or b() or raise
 ```
 
 The RHS of `or` is one of:
-- the contextual keyword `raise` (diverges via closure
-  violation routing), or
+- the contextual keyword `raise` (diverges by re-entering the
+  enclosing `fallible(E)` fn's error-return path — the value-error
+  channel, orthogonal to closure tests; past every fallible frame
+  it root-panics via `lotus_root_panic`), or
 - `discard` (swallow the error, substitute Unit; rejected at
   typecheck when the success type is non-Unit), or
 - `fail <expr>` (diverge like `raise`, but with a fresh payload

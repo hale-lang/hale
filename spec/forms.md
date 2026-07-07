@@ -134,7 +134,10 @@ commitment — it changes the pool's layout and access path.
 
 A locus without `@form(...)` gets the **literal F.22 default
 lowering**: pool slots become `lotus_pool_t*` chunked free-list;
-heap slots become `lotus_heap_t*` doubling buffer. The user's
+heap slots become a `lotus_heap_t*` doubly-linked live list
+(individual O(1) alloc/free, wholesale-freed at dissolve — the
+contiguous doubling buffer is the `@form(vec)` specialization,
+not the default). The user's
 own methods run as written; no synthesis, no shape verification
 beyond the normal capacity-slot machinery.
 
