@@ -269,7 +269,7 @@ Specifically:
 Just as **projection class** governs a locus's memory strategy,
 **placement class** governs its execution strategy. Placement
 is a *deployment seam*, not an intrinsic property of the locus
-(see `spec/design-rationale.md` § F.31). Placement entries
+(see `spec/decisions.md` § F.31). Placement entries
 live in a `placement { }` block on `main locus` only, parallel
 to `bindings { }` for bus topology:
 
@@ -622,7 +622,7 @@ Typecheck rules:
   runs inline on the binary's primary thread, with no dedicated
   worker to integrate epoll into.
 
-See `spec/design-rationale.md § F.35` (forthcoming) for the
+See `spec/decisions.md § F.35` (forthcoming) for the
 green-I/O substrate design + perf-axis trade-offs.
 
 (Compare: rich / chunked / recognition projection classes are
@@ -1079,7 +1079,7 @@ zero_copy binding produces.
   failures (OOM, divide-by-zero, null-deref from
   miscompilation) — those terminate the process directly
   without the ClosureViolation routing path. See
-  design-rationale §F.9.
+  decisions §F.9.
 - **Recovery-event interaction.** `persists_through(...)` and
   `resets_on(...)` clauses are honored at recovery time; the
   accumulator is preserved or zeroed per declaration. The
@@ -1294,7 +1294,7 @@ zero_copy binding produces.
   they're the C externs called by the
   `std::bytes::BytesBuilder` stdlib locus
   (`crates/hale-codegen/runtime/stdlib/bytes_builder.hl`).
-  See `spec/design-rationale.md` § F.28 for the rationale
+  See `spec/decisions.md` § F.28 for the rationale
   and the locus's method shape. The locus-side calls reach
   these via internal `std::bytes::builder::__*` path-call
   dispatch.

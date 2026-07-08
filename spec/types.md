@@ -80,7 +80,7 @@ Locus types have:
 
 - A set of **params** (name, type, default value or
   `: inferred`); these are also the locus's mutable state (per
-  F.3 / §3 in design-rationale).
+  F.3 / §3 in decisions).
 - Optional **contract** (expose / consume entries).
 - Optional **capacity slots** (F.22 — `pool X of T;` / `heap Y
   of T;` declarations naming slots 1..N beyond the implicit
@@ -304,7 +304,7 @@ The widening is **strictly one-way**. `Float → Int` narrowing
 remains explicit (round + cast). `Decimal` never participates
 in implicit cross-type conversion. The rule was added 2026-05-11
 as part of the float-surface-gaps friction-log resolution; see
-F.23 in `spec/design-rationale.md` and the Phase 2c entry in
+F.23 in `spec/decisions.md` and the Phase 2c entry in
 `spec/stdlib.md`.
 
 #### Explicit numeric conversions

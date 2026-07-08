@@ -21,7 +21,7 @@ that compose into a logical structure at parse time. Two
 projects with identical import graphs can ship totally
 different on-disk layouts; the lotus shape lives in the code.
 
-See `spec/design-rationale.md` F.19 and F.25 for the design
+See `spec/decisions.md` F.19 and F.25 for the design
 rationale; `notes/v1.x-IMPORT-handoff.md` for the v1.x-IMPORT
 milestone history.
 

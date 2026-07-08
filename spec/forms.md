@@ -5,7 +5,7 @@ declaration that picks an efficient lowering for the locus's
 storage and synthesizes a standard method set. Forms are the
 mechanism Hale uses in place of parametric collection types
 (`Map<K, V>`, `Vec<T>`, etc.). See
-`spec/design-rationale.md` for The Design's grounding (F.0
+`spec/decisions.md` for The Design's grounding (F.0
 form-before-parameter, F.22 capacity).
 
 This document specifies the form annotation system in general

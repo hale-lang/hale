@@ -97,7 +97,7 @@ feeds the phi at the outermost merge.
 
 Phase 2b (2026-05-11) introduced `if`-as-expression; WS3.2
 (2026-06-11) made a value-producing trailing `if` compose as a
-block tail. See F.24 in `spec/design-rationale.md` and the
+block tail. See F.24 in `spec/decisions.md` and the
 Phase 2b entry in `spec/stdlib.md`.
 
 ## Binary data — Bytes and conversion
@@ -1709,7 +1709,7 @@ The `placement { }` block on `main locus` controls per-locus
 thread placement, parallel to `bindings { }` for bus topology.
 Placement is a deployment seam — same library, different
 placement entries, different binary behavior. See
-`spec/design-rationale.md` § F.31 for the intrinsic-vs-
+`spec/decisions.md` § F.31 for the intrinsic-vs-
 deployment axis the block sits on, and `spec/runtime.md` §
 "Placement classes" for the runtime semantics.
 

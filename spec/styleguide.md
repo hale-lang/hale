@@ -369,7 +369,7 @@ locus DbPool {
   state — same audit shape the parent's `on_failure` already
   expects.
 
-See `spec/design-rationale.md` F.27 for the design and rejected
+See `spec/decisions.md` F.27 for the design and rejected
 alternatives; `spec/semantics.md` § "Inline closure violation"
 for runtime contract.
 
@@ -436,7 +436,7 @@ libraries build on.
 - **Cross-locus state via bus subjects**, not via field reads on
   a passed reference. The bus is the language-blessed channel for
   cross-locus coordination; vertical-only flow (see
-  `spec/design-rationale.md` F.6 / F.11) makes lateral
+  `spec/decisions.md` F.6 / F.11) makes lateral
   field-reads non-typeable.
 - **Fn-pointer callbacks** (e.g., `on_connection: fn(Stream)`)
   cannot capture surrounding state. Either route state through

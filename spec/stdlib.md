@@ -28,7 +28,7 @@ sibling), and implement one `lower_std_*` method.
 
 Cross-binary user code uses the F.25 cross-seed-imports mechanism
 (`import "path/to/lib" as alias;`) — distinct from the `std::*`
-magic path; see [`design-rationale.md` § F.25](./design-rationale.md).
+magic path; see [`decisions.md` § F.25](./decisions.md).
 
 ## Design principles
 
