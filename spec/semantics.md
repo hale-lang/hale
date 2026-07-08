@@ -1449,7 +1449,7 @@ type L2Data {
 
 topic MarketL2 {                            // (1) topic-decl additions
     payload:      L2Data;
-    subject:      "kraken.l2";
+    subject:      "market.l2";
     keyed_by      sym_id;                   //  ←  new
     on_unmatched: swallow;                  //  ←  new (default if absent)
 }

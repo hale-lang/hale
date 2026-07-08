@@ -22,7 +22,7 @@ clone into the locus arena and the PREVIOUS clone for the same slot
 is never freed (arenas don't free per-allocation). a downstream service was
 hand-fixed with key-reuse idioms; dashboard/prober/websocket still
 leak, and every future app will. Same mechanism as the 2026-05-25
-kraken bigcell OOM.
+a market-data bigcell OOM.
 
 ## Why the obvious fixes are unsound
 

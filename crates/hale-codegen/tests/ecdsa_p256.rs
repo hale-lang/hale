@@ -1,5 +1,5 @@
 //! `std::crypto::ecdsa_p256_sign` / `ecdsa_p256_verify` — ES256
-//! (ECDSA over P-256 + SHA-256), the primitive Coinbase Advanced
+//! (ECDSA over P-256 + SHA-256), the primitive several exchange APIs
 //! Trade (and most CDP/JWT) auth needs. Added for the a downstream app
 //! handoff. Signatures are raw r‖s (64 bytes, JWS/COSE form).
 //!

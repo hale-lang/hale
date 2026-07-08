@@ -24,7 +24,7 @@ below; projected residual after A+B+C+D ≈ 26 warnings (~6%) against
   self-store with fresh String subfields leaks the old clone —
   a downstream service marks.set per md frame, dashboard wireskew, prober
   mark_set, websocket last_message.kind per message. SAME MECHANISM
-  as the 2026-05-25 kraken bigcell OOM. Filed in FRICTION.md as a
+  as the 2026-05-25 a market-data bigcell OOM. Filed in FRICTION.md as a
   runtime issue — an arena-side fix (in-place String reuse for
   same-shape re-anchors) would moot ~half the TPs.
 

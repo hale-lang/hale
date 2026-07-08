@@ -11901,7 +11901,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// path went straight through `emit_return_value_deep_copy`
     /// for compound fields, which unconditionally allocates fresh
     /// storage — that was the bigcell leak the 2026-05-25 a downstream app
-    /// kraken bench surfaced (`BookSignalState`'s two
+    /// a bench surfaced (`BookSignalState`'s two
     /// `[BookLevel; 100]` fields realloc'd on every set, ~3 KB
     /// per set × ~100 sets/sec until OOM).
     fn anchor_struct_fields_in_place(

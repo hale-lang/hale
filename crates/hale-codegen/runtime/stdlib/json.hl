@@ -628,7 +628,7 @@ fn __json_array_step(json: String, start: Int) -> std::json::ArrayIter {
 // 2026-05-23 — the zero-element-copy walker friction: zero-element-copy array walker.
 //
 // The original ArrayIter (above) snapshots each array element as
-// a fresh String at every `array_next` step. For a 5 MB Coinbase
+// a fresh String at every `array_next` step. For a 5 MB market-data
 // level2 frame with 100 k+ elements that copy dominates arena
 // pressure — each element is hundreds of bytes, and the per-step
 // allocation reaches gigabytes of total arena growth before the

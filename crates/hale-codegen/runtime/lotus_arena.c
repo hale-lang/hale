@@ -11722,7 +11722,7 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
      * each (group, port) is logically a distinct endpoint
      * carrying its own payload type, but the wildcard bind
      * collapsed them into a single delivery set so every
-     * datagram fanned to all four handlers (kraken+coinbase
+     * datagram fanned to all four handlers (two venues
      * gauges converged to whichever venue's snapshot arrived
      * last). Matches the reference multicast-receiver shape
      * in Boost.Asio's `multicast::join_group` example and

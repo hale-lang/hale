@@ -7304,7 +7304,7 @@ fn main() { L { }; }
 type L2Data { sym_id: Int; }
 topic MarketL2 {
     payload: L2Data;
-    subject: "kraken.l2";
+    subject: "venue.l2";
     keyed_by sym_id;
     on_unmatched: swallow;
 }

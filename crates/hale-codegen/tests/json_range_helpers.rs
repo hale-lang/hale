@@ -2,7 +2,7 @@
 //! std::str::range_* helpers. The a downstream app team identified
 //! `iter_find_string_field` returning an owned String per
 //! field lookup as the dominant arena-pressure source on
-//! large JSON-walk workloads (a 5 MB Coinbase level2 frame
+//! large JSON-walk workloads (a 5 MB market-data level2 frame
 //! with 100k+ elements). The range variants return (start,
 //! end_exclusive) byte positions inside the source json
 //! String instead — paired with std::str::range_eq /
@@ -187,7 +187,7 @@ fn high_volume_walk_bounded_rss() {
     // hidden `std::bytes::from_string(json)` inside each scan loop
     // (and inside the iter_find_string_field_range quote check),
     // which allocated a fresh Bytes copy of the entire source JSON
-    // on every call. For a downstream app's coinbase L2 workload (~5 MB
+    // on every call. For a downstream app's market-data L2 workload (~5 MB
     // snapshot × 100k elements × ~5 stdlib calls per iter) that
     // pushed peak RSS to 13+ GB on a single snapshot. The fix
     // routed scan loops through std::str::byte_at_unchecked, which

@@ -21,7 +21,7 @@
 // branch.
 //
 // Wiring shape: the user instantiates a Stream / Listener
-// with `log_subject: "io.tcp.kraken"` (or any subject under
+// with `log_subject: "io.tcp.venue"` (or any subject under
 // `io.tcp.**`); a separate subscriber locus they own picks
 // the events up via `subscribe "io.tcp.**"` (or a more
 // specific subject) and routes them — stderr, structured
