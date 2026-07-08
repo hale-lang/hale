@@ -1,7 +1,7 @@
 //! WS3.1 — `std::math::int_to_float` / `std::math::float_to_int`
 //! in expression position.
 //!
-//! A downstream app mdgw-evm item 3 / pond reported these named conversions
+//! A downstream app a market-data gateway item 3 / pond reported these named conversions
 //! failing codegen ("unsupported in codegen v0 ... in expression
 //! position"), forcing numeric consumers to round-trip through
 //! ASCII (`to_string` + `parse_*`). They lower to the trivial

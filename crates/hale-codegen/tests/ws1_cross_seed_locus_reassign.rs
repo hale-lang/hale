@@ -1,7 +1,7 @@
 //! WS1#4 carrier — whole-reassignment of a nested locus param of a
 //! cross-seed (imported) type.
 //!
-//! A downstream app mdgw-evm reported that `self.conn = ws::WsClient { url:
+//! A downstream app a market-data gateway reported that `self.conn = ws::WsClient { url:
 //! …, … }` (reconnecting by swapping the whole nested-locus param)
 //! left the new instance half-initialized: `conn.url` logged
 //! `(null)` and the first `read_msg()` crashed. In-place field
@@ -111,7 +111,7 @@ fn cross_seed_nested_locus_param_whole_reassignment_is_fully_initialized() {
     assert!(
         stdout.contains("reconn url=wss://second fd=7 ready=1 read=8"),
         "reassigned cross-seed nested param is half-initialized \
-         (a downstream app mdgw-evm shape): {:?}",
+         (a downstream app a market-data gateway shape): {:?}",
         stdout
     );
 }

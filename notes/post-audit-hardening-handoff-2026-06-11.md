@@ -52,7 +52,7 @@ stays as the regression gate.
    verification — confirm or split.
 4. Wholesale reassignment of a nested-locus param from a member fn
    (self.conn = ws::WsClient { ... }) → half-initialized locus, null fields,
-   crash on first use (FRICTION § mdgw-evm item 1). Acceptable outcomes:
+   crash on first use (FRICTION § a market-data gateway item 1). Acceptable outcomes:
    make it work, or reject at typecheck with a clear diagnostic. Silent
    half-init is the only unacceptable outcome.
 

@@ -5,7 +5,7 @@ declaration that picks an efficient lowering for the locus's
 storage and synthesizes a standard method set. Forms are the
 mechanism Hale uses in place of parametric collection types
 (`Map<K, V>`, `Vec<T>`, etc.). See
-`spec/design-rationale.md` for The Design's grounding (F.0
+`spec/decisions.md` for The Design's grounding (F.0
 form-before-parameter, F.22 capacity).
 
 This document specifies the form annotation system in general
@@ -218,7 +218,7 @@ different bands:
 > contract is that fallible primitives are correct, predictable,
 > and competitive when amortized (the (b) band).
 >
-> **Update (2026-06-28): the isolated gap is largely closed.**
+> **Update: the isolated gap is largely closed.**
 > `@form(vec)` `.get` / `.set` / `.pop` / `.push` are now inlined
 > directly at codegen — bounds-check + typed GEP + load/store,
 > no `lotus_*` C-call boundary. `.get` indexed by a counted-loop
@@ -783,7 +783,7 @@ The `lockfree` discipline (F.32-1γ) drops the rwlock
 entirely. `cap = N` is an optional initial-size hint (was
 required pre-γ-v2 session 3 before grow shipped; now grows
 transparently when load factor crosses 0.6). Under γ-v1
-`remove` was a no-op; under γ-v2 session 1 (2026-05-26)
+`remove` was a no-op; under γ-v2 session 1
 `remove` is supported via tombstones (4-state cell machine:
 EMPTY → CLAIMED → COMMITTED → TOMBSTONE). Pure CAS on the
 occupancy byte; no kernel-mediated synchronization on the
@@ -1184,40 +1184,9 @@ reference, so this isn't reachable from user code today.
 Future iteration APIs that surface entry references will need
 to gate against indexed-by-field mutation.
 
-## Open questions deferred to a future milestone
-
-These are spec-level questions that don't block FORM-4 because
-the core surface above is independent of them.
-
-1. **Iteration surface.** `for entry in registry { ... }` is
-   natural but the loop construct's lowering depends on what
-   the existing `for` over capacity slots does — and a hashmap
-   iteration that visits each occupied slot once needs cluster-
-   aware traversal. Deferred.
-2. **Bulk operations.** `clear()`, `extend(other)`,
-   `take(key) -> S fallible(KeyError)` (get + remove fused).
-   Useful but not foundational. Add after a workload demands.
-3. **Additional key types.** `Bytes`, custom structs with a
-   hashable derivation, enum tags. Each adds a `key_type_tag`
-   to the runtime ABI. Workload-driven.
-4. **Capacity hints.** `@form(hashmap, cap = 64)` is rejected
-   in v1; no tuning knobs. Add when a workload demonstrates
-   the 0 → 8 → 16 → ... grow cascade is costing measurable
-   time.
-5. **Set type.** A `@form(set)` would be a hashmap-without-
-   value variant (the cell IS the key). Not part of FORM-4;
-   revisit if a workload needs it.
-
----
-
-# `@form(ring_buffer)`
-
-A fixed-capacity FIFO with push-back and pop-front semantics.
-The Hale analogue of a bounded circular buffer — same shape as
-a Go channel of capacity N, or a Java `ArrayBlockingQueue`, but
-without the synchronization machinery (the cooperative scheduler
-already serializes access). Shipped as the third form in v1
-via v1.x-FORM-5.
+> Forward-looking / deferred items for this area now live in the
+> decision log — see [`decisions.md` § Deferred & future
+> work](./decisions.md#deferred--future-work).
 
 ## Required capacity shape
 
@@ -1427,35 +1396,9 @@ no `grow` or `shrink_to_fit`. Apps that need a growable bounded
 buffer should pick a generous cap up front, or use
 `@form(vec)` if growth is the right semantic.
 
-## Open questions deferred to a future milestone
-
-1. **Iteration surface.** `for x in recent { ... }` is natural
-   but iteration over a ring buffer must respect head/tail wrap
-   — needs the `for` lowering to know about ring shapes.
-   Deferred.
-2. **Bulk operations.** `clear()`, `peek() -> T fallible`,
-   evict-oldest-on-full mode (cyclic-overwrite as a tuning
-   knob). Useful but not foundational; add when a workload
-   demonstrates demand.
-3. **Iteration in pop order without removing.** A "drain" or
-   "iter_pop" that visits elements oldest-first as a one-shot.
-4. **Bench protocol.** A `micro/form_ring_buffer_*` family
-   in `hale-lang/bench`, parallel to vec's and hashmap's.
-   Ships as a separate milestone after a consumer workload
-   surfaces.
-
-# `@form(lru_cache)`
-
-A fixed-capacity keyed cache with least-recently-used eviction.
-The keyed counterpart of `@form(ring_buffer)`: like
-`@form(hashmap)` it is intrusively keyed (the cell carries its own
-key via `indexed_by`), but like `@form(ring_buffer)` it is
-capacity-bounded and NEVER grows. Inserting a new key over `cap`
-silently evicts the least-recently-**used** entry to make room.
-This is the "cap-bounded, never-flagged" keyed form — the
-unbounded-allocation analysis (`spec/verification.md`) treats an
-`@form(lru_cache)` locus as bounded, exactly like `ring_buffer`.
-Shipped as the fourth form in v1 via v1.x-FORM-6.
+> Forward-looking / deferred items for this area now live in the
+> decision log — see [`decisions.md` § Deferred & future
+> work](./decisions.md#deferred--future-work).
 
 ## Required capacity shape
 
@@ -1586,15 +1529,6 @@ inline header lives in the locus struct and dies with the arena —
 the same inline-header / heap-buffer split as `@form(vec)`,
 `@form(hashmap)`, and `@form(ring_buffer)`.
 
-## Open questions deferred to a future milestone
-
-1. **TTL eviction.** A `ttl = <duration>` annotation arg to
-   expire entries by age in addition to LRU by capacity. Deferred
-   — v1 evicts by capacity + recency only.
-2. **`remove(k)` / `clear()`.** Explicit eviction of a named key
-   and bulk clear. Add when a workload demonstrates demand.
-3. **Iteration surface.** `key_at` / `entry_at`-style indexed
-   iteration, parallel to `@form(hashmap)`. Deferred.
-4. **Bench protocol.** A `micro/form_lru_cache_*` family in
-   `hale-lang/bench`, parallel to the other forms'. Ships after a
-   consumer workload surfaces.
+> Forward-looking / deferred items for this area now live in the
+> decision log — see [`decisions.md` § Deferred & future
+> work](./decisions.md#deferred--future-work).

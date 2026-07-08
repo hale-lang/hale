@@ -7302,9 +7302,9 @@ fn main() { L { }; }
     fn parse_topic_with_keyed_by_and_on_unmatched() {
         let src = r#"
 type L2Data { sym_id: Int; }
-topic KrakenL2 {
+topic MarketL2 {
     payload: L2Data;
-    subject: "kraken.l2";
+    subject: "venue.l2";
     keyed_by sym_id;
     on_unmatched: swallow;
 }
@@ -7314,7 +7314,7 @@ topic KrakenL2 {
             TopDecl::Topic(t) => Some(t),
             _ => None,
         }).expect("topic decl");
-        assert_eq!(topic.name.name, "KrakenL2");
+        assert_eq!(topic.name.name, "MarketL2");
         assert_eq!(
             topic.keyed_by.as_ref().map(|i| i.name.as_str()),
             Some("sym_id")

@@ -16,7 +16,7 @@ a language-repo change shipping first. Nothing here is language work.
 | pond/router | Restore `use(m)` method name; collapse 3 parallel vecs into one `RouteEntry{handler: Handler}`; restore `Context{req: std::http::Request}` | LocusRef→Interface coercion at method-arg/struct-field sites + pass-A0 ordering fix |
 | pond/metrics | Re-split the consolidated `metrics.hl` back into per-concern files | cross-file pass-A registration walk (WS3-adjacent: same family as WS3.4) |
 | a downstream app (book_consistency) | Wire the shipped `std::crypto::crc32` (hale #14) into the consistency check | already shipped — downstream-side only |
-| a downstream app (mdgw silence) | Wire `std::io::tcp::set_recv_timeout` (hale #15) into `WsClient` + wake the silence check | already shipped — pond/websocket-side only |
+| a downstream app (gateway silence) | Wire `std::io::tcp::set_recv_timeout` (hale #15) into `WsClient` + wake the silence check | already shipped — pond/websocket-side only |
 
 ## Resolved this pass (WS3.3) — downstream can revert workarounds
 
@@ -71,9 +71,9 @@ a language-repo change shipping first. Nothing here is language work.
   (`ws1_cross_seed_locus_reassign`) proves the general cross-seed
   whole-reassignment path is sound, but cannot model `ws::WsClient`'s
   @ffi opaque-handle field + network `birth()`. To settle whether the
-  a downstream app mdgw-evm half-init is live at HEAD or was an artifact of an
+  a downstream app a market-data gateway half-init is live at HEAD or was an artifact of an
   older build, re-run the actual `self.conn = ws::WsClient { … }`
-  reconnect at HEAD in mdgw-evm (read-only repro on a downstream app's side). If
+  reconnect at HEAD in a market-data gateway (read-only repro on a downstream app's side). If
   it still half-inits, hand back a minimal `@ffi`-handle locus repro
   for an in-repo fix; if clean, close the item.
 

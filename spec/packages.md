@@ -23,7 +23,7 @@ The single design commitment driving the shape:
   resolution. Each project lists its direct dependencies and
   the consumer vendors any transitive ones explicitly.
 
-See `spec/design-rationale.md` F.26 for the rationale.
+See `spec/decisions.md` F.26 for the rationale.
 
 ## Manifest (`hale.toml`)
 

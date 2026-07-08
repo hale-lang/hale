@@ -369,7 +369,7 @@ locus DbPool {
   state — same audit shape the parent's `on_failure` already
   expects.
 
-See `spec/design-rationale.md` F.27 for the design and rejected
+See `spec/decisions.md` F.27 for the design and rejected
 alternatives; `spec/semantics.md` § "Inline closure violation"
 for runtime contract.
 
@@ -426,7 +426,7 @@ libraries build on.
   name. Modes are callable the same way (`g.bulk()`,
   `g.harmonic()`, `g.resolution()`); the receiver expression
   must evaluate to a LocusRef of the mode-declaring locus.
-  Lifted from self-only dispatch in B11 / G25 (2026-05-17).
+  Lifted from self-only dispatch in B11 / G25.
 - **Let-bound locus literals** defer dissolve to scope-exit per
   the m82 dissolve-timing rule. Use when the locus's lifecycle
   should match a fn body's duration.
@@ -436,7 +436,7 @@ libraries build on.
 - **Cross-locus state via bus subjects**, not via field reads on
   a passed reference. The bus is the language-blessed channel for
   cross-locus coordination; vertical-only flow (see
-  `spec/design-rationale.md` F.6 / F.11) makes lateral
+  `spec/decisions.md` F.6 / F.11) makes lateral
   field-reads non-typeable.
 - **Fn-pointer callbacks** (e.g., `on_connection: fn(Stream)`)
   cannot capture surrounding state. Either route state through

@@ -23,7 +23,7 @@ the model: runtime is automatic; stdlib is explicit.
   on dissolution. Bump allocation within a region; no per-object
   metadata; no GC. The framework's lotus structure provides the
   scope; the allocator just respects it.
-- **Per-method scratch (2026-05-21).** A locus method body
+- **Per-method scratch.** A locus method body
   (lifecycle / user-fn / mode) opens a per-call subregion of
   `self.__arena` at entry and destroys it at every return —
   *unless* the body provably allocates nothing and returns a
@@ -113,7 +113,7 @@ the model: runtime is automatic; stdlib is explicit.
   dissolve` per locus; invokes `accept` on coordinatee
   attachment; invokes `on_failure` on child failure with the
   parent's policy.
-- **Interest-based ownership (accept bubbling)** (2026-07-01).
+- **Interest-based ownership (accept bubbling)**.
   `accept(c: I)` collects not only a *direct* child but the
   nearest such acceptor for an `I{}` instantiated anywhere in the
   subtree: when a locus instantiates `I{}` and its direct
@@ -159,7 +159,7 @@ the model: runtime is automatic; stdlib is explicit.
   OWN run-completion / `terminate` when it is a flow (see
   "Per-child reclamation" below) rather than waiting for the
   parent's cascade.
-- **Per-child reclamation** (2026-05-30). An `accept`'d child's
+- **Per-child reclamation**. An `accept`'d child's
   `run()` is posted to its pool as a coro, run through a
   synthesized `__coop_pool_run_<L>` wrapper. When that run()
   completes, the wrapper reclaims the child — drain → (for a
@@ -184,7 +184,7 @@ the model: runtime is automatic; stdlib is explicit.
   refinement), and the process is exiting anyway. Per-child
   reclamation proper (terminate / flow run-completion) never
   needs this: there the coro returns from `run()` on its own.
-- **Classic-pool blocking-accept shutdown (2026-06-01).** A
+- **Classic-pool blocking-accept shutdown.** A
   *classic* (non-`async_io`) pool worker blocked in a blocking
   `accept(2)` inside a locus's `run()` (e.g. `std::http::Server`
   or `std::io::tcp::Listener` placed on a plain
@@ -269,21 +269,21 @@ Specifically:
 Just as **projection class** governs a locus's memory strategy,
 **placement class** governs its execution strategy. Placement
 is a *deployment seam*, not an intrinsic property of the locus
-(see `spec/design-rationale.md` § F.31). Placement entries
+(see `spec/decisions.md` § F.31). Placement entries
 live in a `placement { }` block on `main locus` only, parallel
 to `bindings { }` for bus topology:
 
 ```hale
 main locus App {
     params {
-        gateway_kraken:   Gateway = Gateway { venue: "kraken" };
-        gateway_coinbase: Gateway = Gateway { venue: "coinbase" };
+        gateway_a:   Gateway = Gateway { venue: "venue-a" };
+        gateway_b: Gateway = Gateway { venue: "venue-b" };
         metrics:          MetricsServer = MetricsServer { port: 9100 };
         ui:               Renderer = Renderer { };
     }
     placement {
-        gateway_kraken:   pinned(core = 1);
-        gateway_coinbase: pinned(core = 2);
+        gateway_a:   pinned(core = 1);
+        gateway_b: pinned(core = 2);
         metrics:          cooperative(pool = io);
         ui:               cooperative(pool = render);
         // unspecified main-locus params → cooperative(pool = main)
@@ -319,7 +319,7 @@ runs on a different pool than its parent" — that would require
 the nested-instantiation expression to carry placement, which
 would re-mix the deployment and intrinsic layers F.31 separates.
 
-**Topology block (Phase 1b, 2026-07-05).** A `main locus` may
+**Topology block (Phase 1b).** A `main locus` may
 also declare a `topology { }` block — a **declare-only**
 description of the host's core partition, a sibling deployment
 seam to `placement { }` / `bindings { }`:
@@ -481,7 +481,7 @@ combination is what the dead-bus-receiver rule rejects (see
 "Type-check rules" in `spec/semantics.md`), **not** non-`main`
 placement on its own.
 
-**Long sleeps no longer starve main-pool handlers (2026-05-29).**
+**Long sleeps no longer starve main-pool handlers.**
 Before the slicing, the drain happened only *after the whole sleep
 returned*, so the natural keep-alive idiom
 
@@ -571,7 +571,7 @@ inheritance rule (children share their parent's pool by
 construction). Nested long-running children are an antipattern
 under F.31: hoist to main-locus siblings.
 
-**Typecheck enforcement (2026-05-28).** The compiler rejects
+**Typecheck enforcement.** The compiler rejects
 the antipattern at typecheck. A non-main locus with a non-trivial
 `run()` body holding a `params` field of a locus type whose own
 `run()` is also non-trivial — including `std::http::Server` and
@@ -622,7 +622,7 @@ Typecheck rules:
   runs inline on the binary's primary thread, with no dedicated
   worker to integrate epoll into.
 
-See `spec/design-rationale.md § F.35` (forthcoming) for the
+See `spec/decisions.md § F.35` (forthcoming) for the
 green-I/O substrate design + perf-axis trade-offs.
 
 (Compare: rich / chunked / recognition projection classes are
@@ -849,7 +849,7 @@ scheduling rather than refusing to run the binary. The
 underlying bimodality is unchanged — `pinned(core = N)` is a
 refinement WITHIN the pinned mode, not a third position.
 
-**Topology Phase 1a (cpuset affinity, 2026-07-04):**
+**Topology Phase 1a (cpuset affinity):**
 `pinned(cores = A..B)` / `pinned(cores = A..=B)` /
 `pinned(cores = {a, b, c})` generalize the single core to a
 core **set**: the thread's affinity mask is the whole set and
@@ -951,7 +951,7 @@ bytes, and fans into local subscribers via
 thread path; out-of-band recv loops (any code holding wire
 bytes for a bound subject) can use this too.
 
-**SHM ring substrate (Form K5, 2026-05-20).** POSIX shared-
+**SHM ring substrate (Form K5).** POSIX shared-
 memory ring backing the zero-copy bus route. Six C primitives in
 `runtime/lotus_shm_ring.c`, linked unconditionally so user
 programs that bind a topic to a zero_copy route resolve cleanly:
@@ -977,7 +977,7 @@ atomic seqno) followed by N slots of `slot_size` bytes each.
 Header magic + sizes are validated on attach to catch ABI
 mismatches across binaries pinned to the same ring name.
 
-**Foreign-layout consumer (Proposal B, 2026-06-06).** Two more
+**Foreign-layout consumer (Proposal B).** Two more
 primitives read an *externally*-defined ring described by a
 `ring_layout` (see semantics.md § "Foreign rings"), rather than
 the native LRSRNG1 shape:
@@ -1020,7 +1020,7 @@ modes, and named-ring registry are post-v1. The Hale-side
 `fallible(ClaimError)` signature is reserved for those; v1's
 `claim()` never actually fails.
 
-**Lifecycle / cleanup (2026-05-20).** Both
+**Lifecycle / cleanup.** Both
 `lotus_bus_register_shm_ring` (publisher) and
 `lotus_bus_register_subscriber_shm_ring` (subscriber) register
 a single `atexit` hook on first call. The hook:
@@ -1079,7 +1079,7 @@ zero_copy binding produces.
   failures (OOM, divide-by-zero, null-deref from
   miscompilation) — those terminate the process directly
   without the ClosureViolation routing path. See
-  design-rationale §F.9.
+  decisions §F.9.
 - **Recovery-event interaction.** `persists_through(...)` and
   `resets_on(...)` clauses are honored at recovery time; the
   accumulator is preserved or zeroed per declaration. The
@@ -1216,7 +1216,7 @@ zero_copy binding produces.
   the next mutation on the source builder. `free` disposes
   the malloc-backed buffer.
 
-  **F.30 (2026-05-20) type promotion.** The Hale-visible
+  **F.30 type promotion.** The Hale-visible
   method surface returns `BytesView` / `StringView`
   (typecheck-distinct from `Bytes` / `String`). The view-to-
   owned upgrade paths (`std::bytes::clone`, `std::str::clone`)
@@ -1294,12 +1294,12 @@ zero_copy binding produces.
   they're the C externs called by the
   `std::bytes::BytesBuilder` stdlib locus
   (`crates/hale-codegen/runtime/stdlib/bytes_builder.hl`).
-  See `spec/design-rationale.md` § F.28 for the rationale
+  See `spec/decisions.md` § F.28 for the rationale
   and the locus's method shape. The locus-side calls reach
   these via internal `std::bytes::builder::__*` path-call
   dispatch.
 
-  **ABI notes (2026-05-19).** `_new` takes `int64_t
+  **ABI notes.** `_new` takes `int64_t
   initial_cap` (previously zero-arg, hardcoded 64) — values
   `<= 0` are treated as the legacy default. `_append`
   returns `int64_t status` (1=ok, 0=fail on realloc-NULL
@@ -1393,7 +1393,7 @@ zero_copy binding produces.
   write to either stream without deadlocking; 16 MiB cap per
   stream.
 
-### stdout buffering (2026-05-17)
+### stdout buffering
 
 stdout is **line-buffered** for the lifetime of the program,
 regardless of whether it's attached to a TTY or a pipe. The
@@ -1657,7 +1657,7 @@ Defined in `crates/hale-codegen/runtime/lotus_arena.c`
   contract is "fixed cap; if init can't allocate, the buffer
   is permanently empty."
 
-## Native codegen defaults (2026-06-28)
+## Native codegen defaults
 
 What the compiler emits for a native `hale build`:
 

@@ -409,22 +409,22 @@ fn multi_listener_subscriber_src() -> &'static str {
         }
         locus Sub {
             bus {
-                subscribe "md.book.kraken"   as on_kraken_book   of type BookSnap;
-                subscribe "md.book.coinbase" as on_coinbase_book of type BookSnap;
-                subscribe "md.tick.kraken"   as on_kraken_tick   of type TickMsg;
-                subscribe "md.tick.coinbase" as on_coinbase_tick of type TickMsg;
+                subscribe "md.book.venue_a"   as on_venue_a_book   of type BookSnap;
+                subscribe "md.book.venue_b" as on_venue_b_book of type BookSnap;
+                subscribe "md.tick.venue_a"   as on_venue_a_tick   of type TickMsg;
+                subscribe "md.tick.venue_b" as on_venue_b_tick of type TickMsg;
             }
-            fn on_kraken_book(b: BookSnap) {
-                println("kraken_book sym=", b.symbol);
+            fn on_venue_a_book(b: BookSnap) {
+                println("venue_a_book sym=", b.symbol);
             }
-            fn on_coinbase_book(b: BookSnap) {
-                println("coinbase_book sym=", b.symbol);
+            fn on_venue_b_book(b: BookSnap) {
+                println("venue_b_book sym=", b.symbol);
             }
-            fn on_kraken_tick(t: TickMsg) {
-                println("kraken_tick sym=", t.symbol);
+            fn on_venue_a_tick(t: TickMsg) {
+                println("venue_a_tick sym=", t.symbol);
             }
-            fn on_coinbase_tick(t: TickMsg) {
-                println("coinbase_tick sym=", t.symbol);
+            fn on_venue_b_tick(t: TickMsg) {
+                println("venue_b_tick sym=", t.symbol);
             }
         }
         fn main() {
@@ -443,10 +443,10 @@ fn multi_listener_publisher_src() -> &'static str {
         }
         locus Pub {
             bus {
-                publish "md.book.kraken" of type BookSnap;
+                publish "md.book.venue_a" of type BookSnap;
             }
             birth() {
-                "md.book.kraken" <- BookSnap {
+                "md.book.venue_a" <- BookSnap {
                     symbol:   "BTC-USD",
                     venue_ts: "2026-05-27T10:00:00Z",
                     mid:      42000.5d,
@@ -465,8 +465,8 @@ fn udp_multi_listener_same_port_different_groups() {
     // case that priceview uses in production. Four reader
     // threads, each bound to the same port and joined to a
     // distinct multicast group. A single publisher fires one
-    // payload at the kraken-book group; the subscriber should
-    // dispatch exactly one handler (on_kraken_book) and not
+    // payload at the venue_a-book group; the subscriber should
+    // dispatch exactly one handler (on_venue_a_book) and not
     // crash even if SO_REUSEPORT delivers the packet to a
     // socket that hadn't joined that group (which would mean
     // the deserialize lookup picks a deserialize_fn for a
@@ -478,14 +478,14 @@ fn udp_multi_listener_same_port_different_groups() {
     let sub_cfg = unique_path("multi_sub", "conf");
     let pub_cfg = unique_path("multi_pub", "conf");
     std::fs::write(&sub_cfg, format!(
-        "md.book.kraken   = udp://239.42.1.1:{}:listen\n\
-         md.book.coinbase = udp://239.42.1.2:{}:listen\n\
-         md.tick.kraken   = udp://239.42.2.1:{}:listen\n\
-         md.tick.coinbase = udp://239.42.2.2:{}:listen\n",
+        "md.book.venue_a   = udp://239.42.1.1:{}:listen\n\
+         md.book.venue_b = udp://239.42.1.2:{}:listen\n\
+         md.tick.venue_a   = udp://239.42.2.1:{}:listen\n\
+         md.tick.venue_b = udp://239.42.2.2:{}:listen\n",
         port, port, port, port,
     )).expect("write sub cfg");
     std::fs::write(&pub_cfg, format!(
-        "md.book.kraken = udp://239.42.1.1:{}:connect\n",
+        "md.book.venue_a = udp://239.42.1.1:{}:connect\n",
         port,
     )).expect("write pub cfg");
 
@@ -496,7 +496,7 @@ fn udp_multi_listener_same_port_different_groups() {
     let _ = std::fs::remove_file(&sub_cfg);
     let _ = std::fs::remove_file(&pub_cfg);
 
-    // Only the kraken_book handler should fire. The other 3
+    // Only the venue_a_book handler should fire. The other 3
     // listeners are on distinct multicast groups; with the
     // bind-to-group fix (2026-05-27) per-(group, port)
     // endpoints are honored and each socket only receives
@@ -505,26 +505,26 @@ fn udp_multi_listener_same_port_different_groups() {
     // datagram to all 4 handlers — the crosstalk that
     // a downstream app reported.
     assert!(
-        out.contains("kraken_book sym=BTC-USD"),
-        "kraken_book handler should fire; stdout:\n{}",
+        out.contains("venue_a_book sym=BTC-USD"),
+        "venue_a_book handler should fire; stdout:\n{}",
         out
     );
     assert!(
-        !out.contains("coinbase_book"),
-        "coinbase_book must NOT fire (different group; \
+        !out.contains("venue_b_book"),
+        "venue_b_book must NOT fire (different group; \
          firing would indicate INADDR_ANY-bind crosstalk); \
          stdout:\n{}",
         out
     );
     assert!(
-        !out.contains("kraken_tick"),
-        "kraken_tick must NOT fire (different group); \
+        !out.contains("venue_a_tick"),
+        "venue_a_tick must NOT fire (different group); \
          stdout:\n{}",
         out
     );
     assert!(
-        !out.contains("coinbase_tick"),
-        "coinbase_tick must NOT fire (different group); \
+        !out.contains("venue_b_tick"),
+        "venue_b_tick must NOT fire (different group); \
          stdout:\n{}",
         out
     );
@@ -624,7 +624,7 @@ fn udp_mixed_listen_connect_survives_realloc() {
 
     assert!(out.contains("READY"),    "stdout: {}", out);
     assert!(out.contains("a sym=FROM-A"),
-        "the kraken-shaped listen handler must fire — \
+        "the venue_a-shaped listen handler must fire — \
          entry-pointer should survive the realloc that the \
          2 connect entries trigger; stdout:\n{}", out);
     assert!(out.contains("SURVIVED"),

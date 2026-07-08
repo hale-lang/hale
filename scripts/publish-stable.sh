@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Publish a stable Hale compiler binary to bin/hale for
-# downstream app teams (pond, mdgw, etc.) to pin against.
+# downstream consumers to pin against.
 #
-# The intent: my in-flight compiler refactors churn
-# target/release/hale on every build. App teams pinning to
+# The intent: in-flight compiler refactors churn
+# target/release/hale on every build. Consumers pinning to
 # bin/hale get a snapshot that only moves when this script runs.
 #
 # IMPORTANT: a publish is a SIDE-EFFECT that affects running app
@@ -83,8 +83,8 @@ DST="$ROOT/bin/hale"
 # codegen-link time — `std::io::fs::__StdSourceWalk` transitively
 # references `lotus_ts_*` symbols, so even a program that only
 # touches `std::io::fs::read_file` needs the shim to link.
-# Publishing it alongside `bin/hale` so app teams pinned to
-# `bin/` link cleanly (downstream friction, fixed 2026-05-20).
+# Publishing it alongside `bin/hale` so consumers pinned to
+# `bin/` link cleanly.
 TS_SHIM_SRC="$ROOT/target/release/libhale_ts_shim.a"
 TS_SHIM_DST="$ROOT/bin/libhale_ts_shim.a"
 

@@ -605,7 +605,7 @@ int64_t lotus_tls_recv_stamped_into(int handle, void *builder, int64_t max_bytes
  * ---------------------------------------------------------------- */
 
 /* Parse a PEM private key and confirm it is an EC key. Accepts both
- * SEC1 (`-----BEGIN EC PRIVATE KEY-----`, what Coinbase issues) and
+ * SEC1 (`-----BEGIN EC PRIVATE KEY-----`, a common format) and
  * PKCS#8 (`-----BEGIN PRIVATE KEY-----`) — PEM_read_bio_PrivateKey
  * handles both. Caller owns the returned EVP_PKEY. */
 static EVP_PKEY *lotus_ec_priv_from_pem(const unsigned char *pem, int64_t len) {

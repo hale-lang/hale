@@ -276,7 +276,7 @@ binding_entry     = IDENTIFIER , ":" , transport_spec ,
        fn decode(b: Bytes) -> T fallible(...)
    where T = topic's payload type. Both methods must be pure
    (compiler-inferred — no user-facing `pure` keyword). See
-   `spec/design-rationale.md § F.36`. *)
+   `spec/decisions.md § F.36`. *)
 codec_spec        = "codec" , "(" , IDENTIFIER , "{" ,
                     [ struct_init , { "," , struct_init } ] ,
                     "}" , ")" ;
@@ -699,7 +699,7 @@ bounded_type      = "bounded" , "[" , type_expr , ";" , INT_LIT , "]" ;
    name in type position only. In expression / namespace
    position, the lowercase forms (`time`, `string`, etc.) are
    ordinary identifiers and may be used as stdlib namespaces.
-   See F.15 in design-rationale.md. *)
+   See F.15 in decisions.md. *)
 primitive_type    = "Int"
                   | "Uint"
                   | "Float"
@@ -854,7 +854,7 @@ lvalue            = ( IDENTIFIER | "self" ) ,
    a subject declared in the enclosing locus's bus block; the
    right side is the typed payload. The compiler verifies the
    subject is declared and the type matches at each call site.
-   See F.12 in design-rationale.md. *)
+   See F.12 in decisions.md. *)
 send_stmt         = expression , "<-" , expression , ";" ;
 
 (* Zero-copy ring producer: `Recs.write(max) { w => ... ; len }`.

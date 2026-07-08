@@ -18,9 +18,9 @@ document tells you what's *meaningfully* valid.
 | `Time` | ptr (string-shaped, v0) | v0 codegen stores `Time` as a pointer to the literal's source-spelling String — a placeholder shape that the typechecker keeps distinct from `String`. Real `i64`-since-epoch lowering deferred. |
 | `Duration` | i64 | Nanoseconds. Suffix literals (`5s`, `100ms`). |
 | `Bytes` (m89) | ptr → `[i64 len][u8 data[len]]` | Binary-safe. Single-pointer ABI like String, but the underlying blob carries an explicit length prefix so embedded NUL bytes don't truncate. `len(b)` reads the prefix. Distinct from `String` at the type level; the typechecker keeps them apart. Operations: `std::io::fs::read_bytes` (m89), `Stream.send_bytes` (m89), `Stream.recv_bytes` (Phase 2g), `std::bytes::at` / `std::bytes::slice` / `std::bytes::from_string` (Phase 2g), `std::str::from_bytes` for the inverse direction (Phase 2g). |
-| `BytesView` (F.30, 2026-05-20) | `lotus_view_t { src: ptr, epoch: i64 }` (16 bytes, by-value; SysV AMD64 returns in `rax`/`rdx`) | Non-owning view over a `BytesBuilder`'s buffer. Returned by `BytesBuilder.view()`. `src` is the builder pointer; `epoch` snapshots the builder's `mutation_epoch`. The underlying Bytes-shaped data pointer (`buf - 8`) is *recomputed* at read time by `lotus_bytes_view_data`, so the view itself doesn't allocate or carry the data pointer. Coerces implicitly to `Bytes` at function-argument READ positions (e.g. `std::bytes::at(view, i)`, `len(view)`, user-defined fallible-fn args, self/external/interface method args, monomorphized-generic args); codegen emits a call to `lotus_bytes_view_data` which checks the stamped epoch against the builder's live epoch, panics on mismatch (F.30b mutation-while-view-live guard), and returns the recomputed data ptr on the OK path. Rejected at `Bytes`-typed storage sites — callers wanting owned storage must `std::bytes::clone(view)` for a deep-copy into the caller's arena. Storage typed `BytesView` is allowed; a `String` / `Bytes` literal at a `BytesView`/`StringView` storage default is wrapped via `lotus_view_from_static_data` with `epoch == LOTUS_VIEW_EPOCH_STATIC = -1` — the unpack helper sees the static sentinel and returns `src` directly without an epoch check (the literal lives in the global string table at program-lifetime, so there's no source builder to check against). 2026-05-22 PM: ABI compacted from a 24-byte heap-allocated struct to this 16-byte by-value shape; no arena allocation per `view()` call. |
-| `StringView` (F.30, 2026-05-20) | `lotus_view_t { src: ptr, epoch: i64 }` (16 bytes, by-value) | Non-owning view over a `BytesBuilder`'s NUL-terminated buffer. Returned by `BytesBuilder.text_view()`. Symmetric companion to `BytesView`: same layout, same epoch guard, same static sentinel. Coerces to `String` at read sites via `lotus_str_view_data` (which recomputes the C-string pointer as `b->buf` — the `buf[len] == '\0'` invariant maintained by every mutating op makes this well-formed); rejected at `String`-typed storage; `std::str::clone(view)` upgrades to owned. |
-| `BytesMut` (#3, 2026-06-13) | raw `{ptr, len}` window (by-value; no `[i64 len]` prefix) | A non-owning **raw writable/readable window** — distinct from `Bytes` (which carries a length prefix the handle points *into*) because `BytesMut` is a bare `{ptr, len}` pair over memory owned elsewhere. Handed out by the zero-copy ring producer (`Topic.write(max) { w => … }` binds `w: BytesMut` over the reserved slot) and by `std::io::MirrorRing` (`readable()` / `writable()` return a `BytesMut` over the live / free region). Read it zero-copy with the `_raw` siblings of the binary-pack family (`std::bytes::read_*` / `at` / `find_byte` accept a `BytesMut` directly — length is the window length, not a prefix); write into it with the binary-pack writers (`std::bytes::write_*`). The window is valid only until the next ring commit / mirror advance — no epoch guard, so the lifetime discipline is the caller's. |
+| `BytesView` (F.30) | `lotus_view_t { src: ptr, epoch: i64 }` (16 bytes, by-value; SysV AMD64 returns in `rax`/`rdx`) | Non-owning view over a `BytesBuilder`'s buffer. Returned by `BytesBuilder.view()`. `src` is the builder pointer; `epoch` snapshots the builder's `mutation_epoch`. The underlying Bytes-shaped data pointer (`buf - 8`) is *recomputed* at read time by `lotus_bytes_view_data`, so the view itself doesn't allocate or carry the data pointer. Coerces implicitly to `Bytes` at function-argument READ positions (e.g. `std::bytes::at(view, i)`, `len(view)`, user-defined fallible-fn args, self/external/interface method args, monomorphized-generic args); codegen emits a call to `lotus_bytes_view_data` which checks the stamped epoch against the builder's live epoch, panics on mismatch (F.30b mutation-while-view-live guard), and returns the recomputed data ptr on the OK path. Rejected at `Bytes`-typed storage sites — callers wanting owned storage must `std::bytes::clone(view)` for a deep-copy into the caller's arena. Storage typed `BytesView` is allowed; a `String` / `Bytes` literal at a `BytesView`/`StringView` storage default is wrapped via `lotus_view_from_static_data` with `epoch == LOTUS_VIEW_EPOCH_STATIC = -1` — the unpack helper sees the static sentinel and returns `src` directly without an epoch check (the literal lives in the global string table at program-lifetime, so there's no source builder to check against). 2026-05-22 PM: ABI compacted from a 24-byte heap-allocated struct to this 16-byte by-value shape; no arena allocation per `view()` call. |
+| `StringView` (F.30) | `lotus_view_t { src: ptr, epoch: i64 }` (16 bytes, by-value) | Non-owning view over a `BytesBuilder`'s NUL-terminated buffer. Returned by `BytesBuilder.text_view()`. Symmetric companion to `BytesView`: same layout, same epoch guard, same static sentinel. Coerces to `String` at read sites via `lotus_str_view_data` (which recomputes the C-string pointer as `b->buf` — the `buf[len] == '\0'` invariant maintained by every mutating op makes this well-formed); rejected at `String`-typed storage; `std::str::clone(view)` upgrades to owned. |
+| `BytesMut` (#3) | raw `{ptr, len}` window (by-value; no `[i64 len]` prefix) | A non-owning **raw writable/readable window** — distinct from `Bytes` (which carries a length prefix the handle points *into*) because `BytesMut` is a bare `{ptr, len}` pair over memory owned elsewhere. Handed out by the zero-copy ring producer (`Topic.write(max) { w => … }` binds `w: BytesMut` over the reserved slot) and by `std::io::MirrorRing` (`readable()` / `writable()` return a `BytesMut` over the live / free region). Read it zero-copy with the `_raw` siblings of the binary-pack family (`std::bytes::read_*` / `at` / `find_byte` accept a `BytesMut` directly — length is the window length, not a prefix); write into it with the binary-pack writers (`std::bytes::write_*`). The window is valid only until the next ring commit / mirror advance — no epoch guard, so the lifetime discipline is the caller's. |
 
 **FnPtr (m80):** First-class function values, type-spelled
 `fn(T1, T2) -> R` (or `fn(T1, T2)` for void-returning). LLVM
@@ -33,7 +33,7 @@ indirect calls prepend it before user-visible args. See
 `stdlib/io_tcp.hl` for the canonical use:
 `Listener.on_connection: fn(std::io::tcp::Stream)`.
 
-**FFI-portable subset (Stage-1 FFI, 2026-05-22):** the primitive
+**FFI-portable subset (Stage-1 FFI):** the primitive
 type set above carries an additional axis of distinction at the
 `@ffi("c")` boundary: which types have a stable C-ABI mapping.
 `Int` / `Float` / `Bool` / `Duration` / `Time` / `String` /
@@ -80,7 +80,7 @@ Locus types have:
 
 - A set of **params** (name, type, default value or
   `: inferred`); these are also the locus's mutable state (per
-  F.3 / §3 in design-rationale).
+  F.3 / §3 in decisions).
 - Optional **contract** (expose / consume entries).
 - Optional **capacity slots** (F.22 — `pool X of T;` / `heap Y
   of T;` declarations naming slots 1..N beyond the implicit
@@ -196,8 +196,7 @@ following positions:
   expression of LocusRef type satisfying `I` coerces
   (added 2026-05-18). E.g. `lookup(...) or Hello { }`
   where `lookup` returns `Greeter fallible(...)`.
-- **let-binding ascription with composite type (G20,
-  2026-05-23).** `let arr: [Greeter; 2] = [Hi {}, Hey {}];`
+- **let-binding ascription with composite type (G20).** `let arr: [Greeter; 2] = [Hi {}, Hey {}];`
   coerces each element through the ascription's element type;
   same shape for `let pair: (Greeter, Greeter) = (Hi {}, Hey
   {});` and `let arr: [Greeter; 3] = [Hi {}; 3];`. The codegen
@@ -218,7 +217,7 @@ struct itself is then deep-copied into the caller's arena by
 `emit_return_value_deep_copy`. Single-element coverage is in
 `crates/hale-codegen/tests/interface_return.rs`.
 
-**Composite-construction coercion (G20, 2026-05-23).** Interface
+**Composite-construction coercion (G20).** Interface
 elements inside fixed-size arrays, array-repeat literals, and
 tuples are now coerced at the construction site when the
 destination type is known. The let-RHS with a composite
@@ -288,7 +287,7 @@ surfaces:
   at the call site. Same rule applies to user-declared fns
   and to stdlib path-calls (`std::math::sqrt(n)` with `n: Int`
   works without `2.0` literals).
-- **binary-op promotion** (B13 / G30, 2026-05-17): when exactly
+- **binary-op promotion** (B13 / G30): when exactly
   one side of a numeric binop is `Int` and the other `Float`,
   the `Int` side widens to `Float` and the op produces `Float`.
   Same rule covers comparison ops (`<`, `>=`, `==`) so
@@ -304,7 +303,7 @@ The widening is **strictly one-way**. `Float → Int` narrowing
 remains explicit (round + cast). `Decimal` never participates
 in implicit cross-type conversion. The rule was added 2026-05-11
 as part of the float-surface-gaps friction-log resolution; see
-F.23 in `spec/design-rationale.md` and the Phase 2c entry in
+F.23 in `spec/decisions.md` and the Phase 2c entry in
 `spec/stdlib.md`.
 
 #### Explicit numeric conversions
@@ -319,7 +318,7 @@ for the narrowing direction (LLVM `fptosi` / `sitofp`):
   form. `Int(f)` narrows a `Float` to an `Int` (truncates toward
   zero); the cast is opt-in, so there is no silent `Float → Int`.
 - **`std::math::int_to_float(i: Int) -> Float` and
-  `std::math::float_to_int(f: Float) -> Int`** (WS3.1, 2026-06-11)
+  `std::math::float_to_int(f: Float) -> Int`** (WS3.1)
   — the named-function spelling, callable in any expression
   position. Semantically identical to the casts (`sitofp` /
   `fptosi`, round-toward-zero); provided so numeric code does not
@@ -415,7 +414,7 @@ runtime checks at each accept; exceeding k_max raises a
 typed `KMaxExceeded` failure handled by the parent's
 `on_failure`.)
 
-## bounded[T; N] — fixed-capacity collections in types (2026-07-02)
+## bounded[T; N] — fixed-capacity collections in types
 
 Types are pure data, so they cannot hold a `@form(vec)` (a locus).
 `bounded[T; N]` is the type-level collection: a fixed-capacity
@@ -459,7 +458,7 @@ Semantics:
 
 ## Generics
 
-**Generic type-expr ↔ monomorph unification (2026-07-02):** a
+**Generic type-expr ↔ monomorph unification:** a
 generic instantiation type-expr (`Box<Int>`) resolves at typecheck
 to its mangled monomorph name (`Box_Int`) — the same name codegen
 synthesizes and that `Box_Int { ... }` literals produce — so
@@ -510,7 +509,7 @@ is the full form. (Inference of param types from defaults is
 not supported in v0; explicit is preferred for the `inferred`-vs-
 `= default` distinction.)
 
-Three init shapes (2026-05-16):
+Three init shapes:
 
 - `name: T = expr;` — default. Used when the caller omits the
   field; evaluated in the caller's scope at instantiation time.
@@ -520,7 +519,7 @@ Three init shapes (2026-05-16):
   `Server { handler: ... }` where the handler is the whole
   reason the locus exists).
 
-  **Exception (B7 / G19, 2026-05-17):** if `T` is a user-defined
+  **Exception (B7 / G19):** if `T` is a user-defined
   `type` (struct) and every field of `T` has a declared default,
   the compiler synthesizes `T { }` as the param's default. So
   `params { cfg: Cfg; }` against `type Cfg { host: String =
@@ -530,7 +529,7 @@ Three init shapes (2026-05-16):
 - `name: T : inferred;` — F.3 inference path; compiler /
   runtime determines the value.
 
-**T may be another locus (B10 / G24, 2026-05-17).** A param
+**T may be another locus (B10 / G24).** A param
 typed as a locus name (`params { db: DB; }`) stores a `LocusRef`
 — a single-pointer borrow. The param-holding locus does **not**
 own the referenced locus; the caller keeps it alive. Cross-decl
@@ -817,7 +816,7 @@ emits `error: error not addressed` at:
   a call (`or handler(err)`), making `err` a regular
   expression-position binding inside the fallback.
 
-  **Fallible handlers (2026-07-02):** the handler may itself be
+  **Fallible handlers:** the handler may itself be
   `fallible(E2)`. Its success value substitutes; its FAILURE
   propagates through the ENCLOSING fn's error path — implicit
   `or raise`, sugar for the already-legal nested spelling
@@ -884,7 +883,7 @@ type with the same name wins.
 | `@form(ring_buffer)` | `EmptyError` | `kind: String` |
 | `std::io::fs::*` / `std::io::tcp::*` | `IoError` | `kind: String`, `errno: Int`, `path: String` |
 
-The `IoError` payload (2026-05-16) is the unified shape for the
+The `IoError` payload is the unified shape for the
 fallible I/O surface — see `spec/stdlib.md` § "IoError" for the
 errno → kind tag taxonomy.
 
@@ -930,7 +929,7 @@ static fallbacks 32 KB / 512 KB / 8 MB apply on non-Linux or
 when sysfs is unavailable. See `hale_types::working_set` for
 the engine.
 
-**Per-locus annotation** (F.32-2 v0.2, 2026-05-25):
+**Per-locus annotation** (F.32-2 v0.2):
 
 `@locality(L1)` / `@locality(L2)` / `@locality(L3)` declare
 a per-locus cache-tier expectation. `@locality(any)`
@@ -989,25 +988,9 @@ the working_set module doc for the full list):
   surface in `WorkingSetEstimate::unbounded_slots` rather
   than contributing zero silently.
 
-## What's deferred
-
-Per `notes/open-questions.md` and design-rationale §16:
-
-- **Trait system.** No `trait` keyword in v0 (reserved). The
-  structural `interface` form (F.20) ships as the v1 interface
-  mechanism — both Phase A (typecheck) and Phase B (codegen
-  vtable dispatch) landed 2026-05-11. Full traits with `impl I
-  for L` declarations and generic bounds remain deferred.
-- **Refinement types** (e.g., `int where x > 0`). Deferred.
-- **Effect / capability system.** Substrate-derivation tracking
-  is currently runtime-enforced via closure tests; future
-  version may move into type system as effects.
-- **Async / await.** Reserved keywords; no v0 typing.
-- **Macros.** Reserved keyword; no v0 typing.
-- **Sum-type-typed `self.children`** for multi-accept-type loci.
-  v0 is single-accept-type only (F.11).
-- **Projection-class-annotated translation impls** (per F.14
-  follow-on). Deferred until forced by an example.
+> Forward-looking / deferred items for this area now live in the
+> decision log — see [`decisions.md` § Deferred & future
+> work](./decisions.md#deferred--future-work).
 
 ## Verification responsibilities
 

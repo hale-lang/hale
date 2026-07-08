@@ -6046,7 +6046,7 @@ void lotus_mailbox_destroy(lotus_mailbox_t *mb) {
  * the coop→pinned drain friction (2026-05-23) — coop→pinned mid-program drain.
  *
  * Pre-fix: a pinned locus's mailbox loop only enters AFTER its
- * run() returns. Long-running pinned servers (typical mdgw
+ * run() returns. Long-running pinned servers (typical gateway
  * shape) never return from run(), so cooperative publishers
  * could enqueue cells but the handler never fired until
  * dissolve-time drain — far too late for any kind of CnC or
@@ -11722,7 +11722,7 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
      * each (group, port) is logically a distinct endpoint
      * carrying its own payload type, but the wildcard bind
      * collapsed them into a single delivery set so every
-     * datagram fanned to all four handlers (kraken+coinbase
+     * datagram fanned to all four handlers (two venues
      * gauges converged to whichever venue's snapshot arrived
      * last). Matches the reference multicast-receiver shape
      * in Boost.Asio's `multicast::join_group` example and
@@ -12355,7 +12355,7 @@ void lotus_bus_dispatch_wire(const char *subject,
      * lifecycle. Cost: deserialize is called once per matching
      * subscriber instead of once total — a real cost for high-
      * fan-out subjects, but the structural correctness win is
-     * load-bearing for production daemons (HYPERLOOP-MDGW).
+     * load-bearing for production daemons (a production daemon).
      *
      * The m20 spec's "subscriber's arena outlives the payload
      * pointer" guarantee now holds end-to-end: the pointer was
