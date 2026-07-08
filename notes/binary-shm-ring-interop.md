@@ -334,7 +334,7 @@ defaults to `LotusRing` (100% back-compat):
 ```hale
 bindings {
     // read the external stack's ring:
-    ForeignTick: shm_ring("/foreign.mdgw.ticks", layout: ForeignRing) where zero_copy;
+    ForeignTick: shm_ring("/foreign.gateway.ticks", layout: ForeignRing) where zero_copy;
     // unchanged today's form still means layout: LotusRing
     Tick:      shm_ring("/lotus.ticks", slot_count: 4096, on_overflow: drop) where zero_copy;
 }

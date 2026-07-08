@@ -94,7 +94,7 @@ drain           dissolve        on_failure
 bulk            harmonic        resolution
 ```
 
-`mode` is a **contextual keyword** (2026-05-22): recognized only
+`mode` is a **contextual keyword**: recognized only
 at locus-member position (as the leading token of a `mode_decl`
 production in `grammar.ebnf` § 11). Outside that position it
 lexes as an ordinary Ident, so `cam.mode: Int` and similar
@@ -119,12 +119,12 @@ topology        node            l3              reserve     replicas
 
 `placement` introduces the `placement { }` block on `main
 locus` (F.31); `topology` introduces the `topology { }` block
-(topology Phase 1b, 2026-07-05). `cooperative` / `pinned` are
+(topology Phase 1b). `cooperative` / `pinned` are
 placement-spec keywords inside `placement { }`. `pool`, `core`,
 and `cores` are **contextual idents** — recognized only as
 kwarg names inside `cooperative(pool = X)` /
 `pinned(core = N)` / `pinned(cores = A..B | A..=B | {a, b, c})`
-placement specs (topology Phase 1a, 2026-07-04). Phase 1b adds
+placement specs (topology Phase 1a). Phase 1b adds
 `pinned(node = N)` / `pinned(l3 = name)`, plus the `topology`,
 `node`, `l3`, and `reserve` block keywords. Phase 1c adds
 `replicas` (a second `pinned(...)` kwarg, e.g. `pinned(cores =
@@ -202,10 +202,10 @@ subscribe       publish         on              of
 stable_when     serialize_as    serves          reperspective
 ```
 
-`serves` (Phase 2a, 2026-07-06) is a **contextual keyword** —
+`serves` (Phase 2a) is a **contextual keyword** —
 recognized only in a locus header's post-`:` list, as the
 `serves P` conformance clause (`locus RouterV1 : serves Router`).
-`reperspective` (Phase 2b, 2026-07-06) is a **contextual keyword**
+`reperspective` (Phase 2b) is a **contextual keyword**
 recognized only as a statement head followed by `self`
 (`reperspective self.<field> as <Impl>;`). Outside those positions
 both lex as ordinary Idents, so `fn serves(...)` /
@@ -269,7 +269,7 @@ macro
 
 (`with` is no longer in this list — v1.x-VIOLATE recognizes it
 as a contextual keyword inside the `violate_stmt` production.
-`where` is no longer in this list either — Form K (2026-05-20)
+`where` is no longer in this list either — Form K
 recognizes it as the suffix keyword on `binding_entry` carrying
 operational constraints.)
 
@@ -277,7 +277,7 @@ operational constraints.)
 cooperative yield point; lowers to a bus-queue drain in
 codegen. Listed under cooperative-scheduler keywords.
 
-`terminate` (2026-05-30) is a statement keyword — ends the
+`terminate` is a statement keyword — ends the
 current locus's lifecycle from inside one of its own methods
 (the locus analogue of `return`). Only valid inside a locus
 method body. See spec/semantics.md § "terminate".

@@ -365,7 +365,7 @@ fn hashmap_self_dispatch_inside_locus_method() {
 /// array field still allocated a fresh `[N x elem]` buffer in the
 /// hashmap's arena on every set — the per-field deep-copy path
 /// lacked the `lotus_arena_contains_ptr` same-arena skip that
-/// String/Bytes get from `lotus_str_clone`. apps/mdgw/kraken's
+/// String/Bytes get from `lotus_str_clone`. a downstream gateway's
 /// `BookSignalStateMap` (cell carrying 2× `[BookLevel; 100]`) grew
 /// ~200 MB/min until OOM. Lock-in: chunk count for the hashmap's
 /// arena must stay flat across many sets on the same key.

@@ -3040,7 +3040,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             // can drain it without going through the post-run
             // mailbox loop. Closes the "cooperative→pinned dispatch
             // silent mid-program" issue — long-running pinned
-            // servers (typical mdgw shape) never return from run()
+            // servers (typical gateway shape) never return from run()
             // so the post-run drain loop never started.
             if let Some(mb_idx) = info.mailbox_field_idx {
                 let mb_slot = self

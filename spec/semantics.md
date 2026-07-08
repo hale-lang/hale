@@ -46,7 +46,7 @@ let-binding type ascriptions: `let nf: Float = self.n;`
 where `self.n: Int` succeeds. The widening is **one-way
 only** — `Float → Int` narrowing remains explicit, and
 `Decimal` never participates in implicit cross-type
-conversion. Phase 2c (2026-05-11). See F.23 in
+conversion. Phase 2c. See F.23 in
 `spec/design-rationale.md` and the Phase 2c entry in
 `spec/stdlib.md`.
 
@@ -73,7 +73,7 @@ discarded — semantically equivalent to having added the `;`.
   bindings are scoped to the arm).
 
 The two positions are distinguished by **shape, not syntactic
-context** (WS3.2, 2026-06-11). A trailing `if` — the last item
+context** (WS3.2). A trailing `if` — the last item
 of a block, with no `;` — becomes that block's tail expression
 when it is **value-producing**: every arm (then, else, and each
 `else if`) must end in a trailing expression. This is what lets
@@ -95,7 +95,7 @@ to yield.
 `ElseBranch::ElseIf` recurses and the innermost arm's tail
 feeds the phi at the outermost merge.
 
-Phase 2b (2026-05-11) introduced `if`-as-expression; WS3.2
+Phase 2b introduced `if`-as-expression; WS3.2
 (2026-06-11) made a value-producing trailing `if` compose as a
 block tail. See F.24 in `spec/decisions.md` and the
 Phase 2b entry in `spec/stdlib.md`.
@@ -205,7 +205,7 @@ free fn whose return is the per-iteration boundary (see
 
 ### `terminate`
 
-`terminate;` (2026-05-30) ends the current locus's lifecycle
+`terminate;` ends the current locus's lifecycle
 from inside one of its own methods — the locus analogue of
 `return` (which ends a fn). It is only valid inside a locus
 method body. It does **not** free anything directly: it sets
@@ -233,12 +233,12 @@ a still-executing frame. (A child that `terminate`s mid-`run()`
 exits `run()` immediately, like `return`; code after `terminate`
 in the same method does not execute.)
 
-**Validity (typecheck, 2026-06-01).** `terminate;` in a free
+**Validity (typecheck).** `terminate;` in a free
 function is a typecheck error — there is no enclosing locus whose
 lifecycle to end. It is accepted in any locus method body
 (lifecycle method or member `fn`).
 
-**From a bus handler (2026-06-01).** `terminate;` is no longer
+**From a bus handler.** `terminate;` is no longer
 limited to `run()`. A subscriber can end its own life from inside
 a bus handler (e.g. `on_close` receives a shutdown message and
 calls `terminate;`). The reclaim runs when the handler returns —
@@ -249,7 +249,7 @@ the resident-subscriber analogue of the connection child that
 
 ### `release(c)` and flow children
 
-`release(c: Child) { ... }` (2026-05-30) is the death-side
+`release(c: Child) { ... }` is the death-side
 bookend, symmetric to `accept(c: Child)`. Declaring it on a
 parent has two effects:
 
@@ -279,13 +279,13 @@ parent has two effects:
 `release` has the same shape as `accept` — one typed child
 param — and the same fn signature `(parent_self, child_self)`.
 
-**Validity (typecheck, 2026-06-01).** A `release(c: T)` with no
+**Validity (typecheck).** A `release(c: T)` with no
 matching `accept(c: T)` on the same locus is a typecheck error: a
 locus that never accepts a `T` child can never release one, so
 the declaration is dead (almost always a wrong child type or a
 forgotten `accept`).
 
-**Parent-dissolve reclaim (2026-06-01).** When a parent that
+**Parent-dissolve reclaim.** When a parent that
 `accept`s children dissolves, it reclaims each accept'd child it
 still tracks — running the child's full teardown (drain →
 dissolve → arena reclaim) before the parent's own arena (which
@@ -367,7 +367,7 @@ self.reg.counter("ticks").inc();   // would leak per call
 The `counter()` method declaration is the rejection site. The
 diagnostic names three canonical alternatives:
 
-**Mode keywords in contract names (2026-07-02):** mode names
+**Mode keywords in contract names:** mode names
 (`bulk` / `harmonic` / `resolution`) are admitted in expose-entry
 position — `expose bulk: Float;` — making the exposed-mode pull
 rule below expressible (it was a parse error before). The exposed
@@ -920,7 +920,7 @@ Transport surface:
   [[slot-locus-design]]) for the zero-memcpy path is
   post-v1; the implicit `<-` path covers the common case.
 
-  **Subscribers (Form K6b, 2026-05-20).** Hale-side
+  **Subscribers (Form K6b).** Hale-side
   `bus subscribe` for shm_ring-bound topics is wired.
   Codegen emits a `lotus_bus_register_subscriber_shm_ring(...)`
   call at the subscriber locus's birth lifecycle; the C
@@ -930,7 +930,7 @@ Transport surface:
   directly into the ring slot (no memcpy on the subscriber
   side).
 
-  **Batch / drain dispatch (`Drain<T>`, 2026-06-26).** The
+  **Batch / drain dispatch (`Drain<T>`).** The
   dispatch mode is selected by the handler's PARAMETER TYPE,
   using the *same* `subscribe Topic as on_x;` keyword:
 
@@ -975,7 +975,7 @@ Transport surface:
   returns NULL). Post-v1 work will generalize F.30b's
   stamped-epoch guard for per-field read checks.
 
-  **Back-pressure (Form K7, 2026-05-20).** `on_overflow:`
+  **Back-pressure (Form K7).** `on_overflow:`
   is required on every shm_ring binding — there's
   intentionally no default. Three policies:
 
@@ -1015,7 +1015,7 @@ Transport surface:
   different process and exists before the publisher
   process starts.)
 
-**Foreign rings via `ring_layout` (Proposal B, 2026-06-06).**
+**Foreign rings via `ring_layout` (Proposal B).**
 The shm_ring transport above reads/writes the *native* Lotus
 ring (the `LRSRNG1` header + equal-sized slots). To read a ring
 defined by *another* program — an externally-defined binary
@@ -1272,7 +1272,7 @@ binding entry is delivered same-process via the cooperative
 queue. There is no `in_memory` variant — the runtime default
 covers the case and explicit syntax would be ceremony.
 
-**Operational constraints (Form K, 2026-05-20).** A binding
+**Operational constraints (Form K).** A binding
 entry may carry an optional `where` clause listing
 constraint keywords the dev team asserts the route must
 satisfy:
@@ -1293,7 +1293,7 @@ Constraints split into two orthogonal axes:
   requires the payload type to satisfy `is_flat_shapeable`).
 
 The typechecker validates three classes of constraint issue
-(Form K4a, 2026-05-20):
+(Form K4a):
 
 1. **Intra-constraint consistency.** At most one scope
    keyword per binding (`intra_machine` + `intra_process` is
@@ -1421,7 +1421,7 @@ Out of scope for v1 (fall through to bus dispatch unchanged):
 A bound topic is never optimized: the binding may publish to
 remote subscribers that aren't visible at compile time.
 
-### Phase 3: routing keys (v0.1 proposal, 2026-05-25)
+### Phase 3: routing keys (v0.1 proposal)
 
 Phase 3 extends topic declarations with a per-message **routing
 key** so the bus can shard dispatch by key value at the
@@ -1447,7 +1447,7 @@ type L2Data {
     asks:     [BookLevel; 100];
 }
 
-topic KrakenL2 {                            // (1) topic-decl additions
+topic MarketL2 {                            // (1) topic-decl additions
     payload:      L2Data;
     subject:      "kraken.l2";
     keyed_by      sym_id;                   //  ←  new
@@ -1457,13 +1457,13 @@ topic KrakenL2 {                            // (1) topic-decl additions
 locus BookSignal {
     params { sym_id: Int = 0; ... }
     bus {                                   // (2) subscribe-clause filter
-        subscribe KrakenL2 as on_l2
+        subscribe MarketL2 as on_l2
                   where key == self.sym_id; //  ←  new
     }
     fn on_l2(d: L2Data) { /* d.sym_id == self.sym_id, statically */ }
 }
 
-main locus Mdgw {                           // (3) per-instance bindings
+main locus Ingest {                           // (3) per-instance bindings
     params {
         btc: BookSignal = BookSignal { sym_id: 1 };
         eth: BookSignal = BookSignal { sym_id: 2 };
@@ -1639,7 +1639,7 @@ and the dispatch dispatches uniformly. Existing programs need
 no source change to keep working; new programs opt in
 per-topic.
 
-**v0.2 (2026-05-26) — err-payload Send dispositions.**
+**v0.2 — err-payload Send dispositions.**
 
 On `on_unmatched: fail` topics, all four `or` disposition shapes
 are now supported:
@@ -1718,14 +1718,14 @@ deployment axis the block sits on, and `spec/runtime.md` §
 ```hale
 main locus App {
     params {
-        gateway_kraken:   Gateway = Gateway { venue: "kraken" };
-        gateway_coinbase: Gateway = Gateway { venue: "coinbase" };
+        gateway_a:   Gateway = Gateway { venue: "venue-a" };
+        gateway_b: Gateway = Gateway { venue: "venue-b" };
         metrics:          MetricsServer = MetricsServer { port: 9100 };
         ui:               Renderer = Renderer { };
     }
     placement {
-        gateway_kraken:   pinned(core = 1);
-        gateway_coinbase: pinned(core = 2);
+        gateway_a:   pinned(core = 1);
+        gateway_b: pinned(core = 2);
         metrics:          cooperative(pool = io);
         ui:               cooperative(pool = render);
         // unspecified main-locus params → cooperative(pool = main)
@@ -1916,7 +1916,7 @@ owns the locus's placement's pool. This is enforced at
 typecheck via a static call-graph walk starting from each
 top-level placement entry:
 
-1. Seed each placement entry with its pool: `gateway_kraken`
+1. Seed each placement entry with its pool: `gateway_a`
    → pinned (own thread), `metrics` → cooperative pool `io`,
    etc.
 2. For each method call expression `recv.foo(args)`, determine
@@ -2232,7 +2232,7 @@ mode-method bodies. The same body shape gets the same primitive.
 A `perspective P { ... }` is a **contract** — a set of bodyless
 `fn` signatures that form a stable ABI boundary — plus a
 program-global, live-rebindable **slot** that holders dispatch
-through. Phase 2a (2026-07-06) ships the contract, conformance,
+through. Phase 2a ships the contract, conformance,
 the slot type, and dispatch; the live swap (`reperspective`)
 followed in Phase 2b + 3 (see "The live swap" below).
 
@@ -2719,7 +2719,7 @@ for-loop vars, pattern bindings, generic params) shadow
 top-level names per ordinary lexical scope; the mangler's
 scope-aware walker leaves shadowed references unrewritten.
 
-**Per-importer scoped imports (A4, 2026-05-17).** Imports
+**Per-importer scoped imports (A4).** Imports
 declared inside imported library files **are** followed
 transitively by the resolver, but each library's imports land
 under that library's own alias namespace — they do not become
@@ -2732,7 +2732,7 @@ unblocks composition without leaking dependency identity. See
 `spec/projects.md` for the rationale and per-alias scoping rules.
 
 **`hale run` interaction.** `hale run` compiles through the same
-codegen path as `hale build`, and — as of WS3.3 (2026-06-11) —
+codegen path as `hale build`, and — as of WS3.3 —
 the same *import* path: both the single-file and directory forms
 (`hale run ./dir`) resolve cross-seed imports, build the per-build
 path-rename table, and rewrite qualified `alias::Name` references
@@ -2751,15 +2751,6 @@ Per `memory.md`:
 - No pointer-into-a-freed-region is reachable after region
   release (compile-time-checked + region-lifetime-checked).
 
-## What's deferred
-
-- **Formal small-step semantics.** Engineering-grade prose for
-  v0; formal operational rules in v1+ if needed for compiler
-  correctness proofs.
-- **Concurrency-correctness proofs.** Cooperative scheduler
-  + per-locus arena makes most concurrency questions trivial,
-  but full formal modeling deferred.
-- **Memory-model formalization** as a happens-before relation.
-  Currently informal; formal in v1+.
-- **Async / await semantics.** Reserved keywords; no operational
-  semantics in v0.
+> Forward-looking / deferred items for this area now live in the
+> decision log — see [`decisions.md` § Deferred & future
+> work](./decisions.md#deferred--future-work).

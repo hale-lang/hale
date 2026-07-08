@@ -204,7 +204,7 @@ A reliable busy/quiet pair: two public-RPC-endpoint chains, both `eth_subscribe(
 
 ## Impact / scope
 
-Any Hale binary needing two or more concurrent long-lived TLS read streams across pinned loci. For a downstream app specifically: the multi-chain DEX md gateway (Ethereum + Base + future Arbitrum/BSC/Optimism), and more broadly any ingest that fans in several authenticated streaming sources. Single-connection gateways (all current CeFi mdgws, the single-chain ETH evm gateway) are unaffected.
+Any Hale binary needing two or more concurrent long-lived TLS read streams across pinned loci — e.g. a multi-source gateway that fans in several authenticated streaming feeds. Single-connection gateways are unaffected.
 
 ## Pointers
 

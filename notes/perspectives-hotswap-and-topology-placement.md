@@ -1,11 +1,41 @@
 # Perspectives as live redeploy + topology-aware placement
 
-**Status:** design proposal, 2026-07-04. Pre-implementation — captures a
-multi-session design conversation. Two coupled features: (1) reframe the
-`perspective` feature as the hot-swap/live-redeploy mechanism; (2) extend the
-`placement` DSL to full host-machine topology. Together they make Hale a
-single-address-space distributed system: *describe the machine, place components
-onto it, live-redeploy them at pointer-flip cost.*
+**Status: ✅ SHIPPED (2026-07-06).** Designed 2026-07-04; the core of both
+coupled features landed over a 10-PR run. Hale is now a single-address-space
+distributed system: *describe the machine, place components onto it,
+live-redeploy them at pointer-flip cost.* This note is retained as the design
+record; the two boxes below map each slice to its PR and flag the deferred tail.
+
+**What shipped**
+
+| Slice | What | PR |
+| --- | --- | --- |
+| Topology 1a | `pinned(cores = A..B / {…})` cpuset affinity | #168 |
+| Topology 1b | `topology { }` + `pinned(node = N)` / `pinned(l3 = name)` | #173 |
+| Topology (arena) | arena-on-node NUMA memory co-location (`mbind`) | #174 |
+| Topology 1c | `replicas = K` single-threaded fan-out | #175 |
+| Perspective 2a | contract + `serves` + global slot + sync dispatch | #172 |
+| Perspective 2b | `reperspective` — the live redeploy (slot flip) | #176 |
+| Perspective 2c-contract | bus surface in the contract + conformance | #177 |
+| Perspective 3 | state-preserving swap (layout-identity zero-migration) | #179 |
+| Perspective 2c-runtime | bus subscriptions swap on `reperspective` | #180 |
+
+**Deferred (the note's aspirational tail — not blocking the core):**
+- **Transport-driven redeploy from the wire** — a new impl *version* arriving as
+  bytes over the bus → decode → `stable_when` gate → drain-in-flight → swap. The
+  in-process swap ships; ingesting a redeploy *from the wire* does not.
+- **Footprint-*changing* `migrate(old) -> Self`** — the state-preserving swap
+  requires all impls of a perspective to share one footprint; a footprint change
+  is a compile error pointing here. The `migrate` transform (in-scope native or
+  versioned-wire) is future work.
+- **Re-placing on swap** (Part 3's "redeploy onto a different NUMA node") and
+  **cross-thread/pinned bus-perspective swap** — the swap is cooperative +
+  same-placement today.
+
+The tell the design held up: **nothing shipped was net-new machinery** — the
+slot reused interface vtables, the bus swap reused `quarantine_self` +
+`emit_bus_register`, the state-preserving swap fell out of the arena/vtable split
+for free (it deleted more teardown code than it added).
 
 ---
 
@@ -24,6 +54,17 @@ onto it, live-redeploy them at pointer-flip cost.*
 ---
 
 ## Part 1 — perspective = the hot-swap unit
+
+> **✅ Shipped (#172, #176, #177, #179, #180).** The contract + `serves` + global
+> slot + sync dispatch (2a), the `reperspective` live redeploy (2b), the bus
+> surface in the contract (2c-contract), the state-preserving swap (3), and the
+> bus-subscription re-point on swap (2c-runtime) all landed. Shipped-syntax deltas
+> from the throwaway sketches below: the bus surface is a `bus { subscribe …; }`
+> block inside the contract (not bare `subscribe` lines); the swap is
+> **state-preserving by default** (keep the slot's `data`, flip only the vtable) —
+> there is no `drain V1` because the old code was never the state; a footprint
+> change is rejected pending `migrate` (deferred). See `spec/semantics.md`
+> §"Perspectives" and `docs/src/services/perspectives.md`.
 
 The current `perspective` feature is inert (a flat type over a topic + helper
 methods). Repurpose it: a perspective and a swappable-ABI slot are the same
@@ -127,6 +168,13 @@ Load-bearing subtleties:
 
 ### State migration
 
+> **✅ Shipped: the identical-footprint zero-migration case (#179).** The swap
+> keeps the slot's `data` and re-points only the vtable — code follows data on the
+> *existing* arena, no data moves. The compiler enforces layout-identity
+> structurally (all impls of a perspective must share params by name + type). The
+> **changed-footprint + `migrate`** case is deferred (compile error today); the
+> bytes/wire path over the versioned wire format is the aspirational tail.
+
 Model it as *deploying an app over a running DB*: `params` (+ capacity/@form
 slots — the full storage footprint) is the schema.
 - **Identical footprint → zero migration.** State and code are already separate
@@ -175,6 +223,15 @@ freely — the stable/mutable boundary the wire format already draws.
 ---
 
 ## Part 2 — placement DSL for full host topology
+
+> **✅ Shipped (#168, #173, #174, #175).** `pinned(cores = A..B / {…})` cpuset
+> affinity, `topology { }` with `pinned(node = N)` / `pinned(l3 = name)`,
+> node-local arena allocation (`mbind`), and `replicas = K` single-threaded
+> fan-out all landed. Affinity/NUMA are Linux-only and degrade gracefully
+> elsewhere (advisory), as designed. Topology is declare-only (the discover mode
+> below is not implemented). Note `bulk` is a reserved word, so an L3 domain can't
+> be named `bulk` (the sketch uses `heavy`). See `spec/runtime.md` §"Schedule
+> classes" / "Placement".
 
 Today: `pinned` / `pinned(core=N)` (one thread, one core), `cooperative(pool=X)`
 (share a pool's single thread), `where async_io`. Thread accounting: **1 OS
@@ -246,6 +303,14 @@ no-ops there. `topology { }` is advisory where unsupported.
 
 ## Part 3 — composition
 
+> **◐ Partially shipped.** Both halves exist independently — you can `topology`/
+> `placement`-map loci onto the machine, and you can `reperspective` a component
+> live. The composition tail — a `reperspective` that instantiates the new impl at
+> a *different* placement (live-rebalance across nodes) with `migrate` moving its
+> arena — is deferred: today's swap keeps the same placement (and, being
+> state-preserving, the same arena). The pieces are in place; wiring re-placement
+> into the swap is future work.
+
 A perspective's impl is a locus, so it *has* a placement — you place perspectives
 onto the topology. `reperspective` instantiates the new impl at a placement,
 which may **differ** from the old's: live-rebalance a component across nodes/core
@@ -267,16 +332,22 @@ where" is the naming that makes them one deployment feature.
 
 ## Open questions / hard edges
 
-1. **Rebind authority vs call authority** — many hold a perspective; only its
-   owner may `reperspective` it. Maps onto the ownership tree.
-2. **Cross-thread atomicity** — one flip visible to all holders at once (seq-cst
-   store) + drain-before-dissolve; cross-thread adds the signal-and-join.
-3. **Contract-change ripple** — impls swap freely; a *contract* change recompiles
-   holders. Version the wire contract.
-4. **Keep the common case flat** — the view/impl unification is the *mechanism*;
-   `observe c as recognition` and `reperspective r as V2` must each read as one
-   simple thing.
-5. **Topology declare-vs-discover + validation** — how strict is the
-   machine-match at startup; what happens on a smaller/larger box than declared.
-6. **State-migration mid-conversation** — a `migrate` transforms live data that
-   peers may be mid-exchange with; the drain bounds it but the semantics need care.
+1. ✅ **Rebind authority vs call authority** — resolved as designed: `reperspective
+   self.<field>` runs on the locus that owns the slot; holders only call. Enforced
+   at typecheck (the field must be a `perspective(P)` param of the current locus).
+2. ◐ **Cross-thread atomicity** — the swap is a single store visible to all
+   holders. Full cross-thread signal-and-join / drain-before-dissolve is moot for
+   the shipped state-preserving swap (nothing is dissolved); it returns with the
+   deferred footprint-changing `migrate`.
+3. ◐ **Contract-change ripple** — holds today (impls swap freely; the contract is
+   the stable side). Versioning the *wire* contract belongs with the deferred
+   transport-driven redeploy.
+4. ✅ **Keep the common case flat** — held: a pure-sync perspective declares no bus
+   edges and stays a function-pointer slot; non-perspective code emits zero
+   perspective machinery (verified — no slot/vtable in a program without one).
+5. ◐ **Topology declare-vs-discover + validation** — declare mode shipped;
+   discover (query hwloc/sysfs) is not implemented. Unsupported platforms treat
+   topology as advisory (graceful no-op).
+6. ⬜ **State-migration mid-conversation** — still open, and now gated behind the
+   deferred footprint-changing `migrate`: today a swap preserves state in place
+   (no transform, no mid-exchange hazard); the transform semantics land with it.

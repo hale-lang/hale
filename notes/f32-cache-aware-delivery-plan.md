@@ -845,7 +845,7 @@ Without `--target-cache`, no analysis runs (zero cost).
 2. Diagnostic site: post-typecheck, pre-codegen pass in
    `hale-cli/src/main.rs`. Emits `warning: locus 'L'
    working set ~38 KB exceeds @locality(L1) ≈ 32 KB; chain:
-   App → Mdgw → BookEngine (cells: 4096 × 8 bytes = 32 KB)`.
+   App → Gateway → BookEngine (cells: 4096 × 8 bytes = 32 KB)`.
 3. Cache-tier constants: build-time defaulted from
    `/sys/devices/system/cpu/cpu0/cache/index{0,2,3}/size`
    on Linux; fall back to 32K / 512K / 8M.

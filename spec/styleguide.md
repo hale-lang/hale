@@ -426,7 +426,7 @@ libraries build on.
   name. Modes are callable the same way (`g.bulk()`,
   `g.harmonic()`, `g.resolution()`); the receiver expression
   must evaluate to a LocusRef of the mode-declaring locus.
-  Lifted from self-only dispatch in B11 / G25 (2026-05-17).
+  Lifted from self-only dispatch in B11 / G25.
 - **Let-bound locus literals** defer dissolve to scope-exit per
   the m82 dissolve-timing rule. Use when the locus's lifecycle
   should match a fn body's duration.

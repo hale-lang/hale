@@ -257,7 +257,7 @@ The mangling shape mirrors the existing hand-spelled
 stdlib and moa seeds carry; cross-seed imports extend the same
 discipline automatically.
 
-### Scoped imports (A4, 2026-05-17)
+### Scoped imports (A4)
 
 If library A imports library B, B's decls become reachable
 **inside A's body only** under the alias A chose for B. A's own
@@ -358,7 +358,7 @@ sentinel for non-Cargo trees.
 ## `hale run` interaction
 
 `hale run` and `hale build` share the same codegen path, and as
-of WS3.3 (2026-06-11) they also share the same *import* path: both
+of WS3.3 they also share the same *import* path: both
 the single-file form and the directory form (`hale run ./dir`)
 resolve `import "..." as ...;` directives, build the per-build
 path-rename table, and rewrite qualified `alias::Name` references
@@ -440,7 +440,7 @@ End-to-end coverage lives in
 `tests/fixtures/import-toy-consumer/main.hl` (consumer with
 `import "../lib-toy" as toy;`).
 
-## Build flags + environment (2026-07-02)
+## Build flags + environment
 
 | Surface | Effect |
 |---|---|

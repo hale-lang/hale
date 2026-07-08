@@ -182,7 +182,7 @@ variable-length fields use the BytesBuilder pattern.
 ### 6. Hand-spelled per-instance code is a maintenance footgun
 
 `@form(vec)` of locus types isn't ergonomic yet. Per-symbol code
-in mdgw is hand-spelled across ~9 places per symbol; adding the
+in gateway is hand-spelled across ~9 places per symbol; adding the
 11th symbol means 9 edits. Not a correctness problem, but a real
 maintenance cost.
 

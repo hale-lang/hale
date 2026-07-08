@@ -466,7 +466,7 @@ For each locus, the compiler generates:
 The runtime provides the underlying bump allocators, free-list
 machinery, scheduler integration, and lifecycle dispatcher.
 
-**Arena alignment contract (2026-05-20).** `lotus_arena_alloc(a,
+**Arena alignment contract.** `lotus_arena_alloc(a,
 size, align)` returns a pointer whose address (not the within-
 chunk offset) is aligned to `align`. The chunk header
 (`{next, used, cap}` = 24 bytes on x86_64 LP64) sits before the
@@ -478,13 +478,13 @@ side passes `align = 16` from `arena_alloc` to cover the widest
 scalar type (i128 / Decimal) — earlier the codegen passed 8 and
 the C side only aligned the offset, leading to `movaps` segfaults
 on Decimal stores into struct fields (i128-alignment segfault,
-root cause for two downstream repros, 2026-05-20). Both layers are necessary: the codegen
+root cause for two downstream repros). Both layers are necessary: the codegen
 must ask for the natural alignment of the widest scalar it can
 emit, and the C arena must honor that alignment at the pointer
 level, not the offset level.
 
 The same discipline governs the **bus payload path**, which uses
-distinct allocation sites (2026-06-30). (a) The mailbox cell
+distinct allocation sites. (a) The mailbox cell
 `lotus_bus_cell_t.payload_inline` is forced to 16-byte alignment
 via a struct attribute: a *pinned* subscriber is handed
 `&cell.payload_inline` directly (unlike a cooperative drain, which
@@ -716,7 +716,7 @@ ordered: returned/payload-routed → lazy global payload arena;
 **`parent_owns_via_field`** → the owning locus's arena (see
 below); otherwise → entry-block stack alloca.
 
-#### Owned param-field child allocation (2026-05-29)
+#### Owned param-field child allocation
 
 An F.29 owned param-field child (`parent_owns_via_field` — e.g.
 `locus PerConn { params { reader: ConnReader = ConnReader { }; } }`)
@@ -756,7 +756,7 @@ only when neither reclamation trigger applied; declaring the
 flow's `release` closes it. See spec/semantics.md § "release(c)
 and flow children".)
 
-#### Accept'd-child struct recycling (2026-07-01)
+#### Accept'd-child struct recycling
 
 The child's **locus struct** (as opposed to its `__arena`
 contents) lives in the OWNER's arena — that's what keeps
@@ -866,7 +866,7 @@ of the round-trip cost when the publisher controls all
 subscribers and can guarantee the payload's pointer-aliasing
 discipline.
 
-**Phase-3 Task 9 m70 per-subscriber arena routing (2026-05-20).**
+**Phase-3 Task 9 m70 per-subscriber arena routing.**
 `lotus_bus_dispatch_wire` no longer parks deserialized String /
 Bytes pointers in the program-lifetime g_bus_payload_arena.
 Instead it iterates the matching subscribers, sets the TLS
@@ -925,14 +925,14 @@ subscribers; bounding it is forward work, not a follow-up to F.28
 "can we reclaim per dispatch?" finds the previously-investigated
 answer.
 
-**Phase-4 per-method scratch reclaim (2026-05-21).** Locus
+**Phase-4 per-method scratch reclaim.** Locus
 method bodies (lifecycle `birth` / `run` / `accept` / `drain` /
 `dissolve`, user-fn members, mode bodies) open a per-call
 scratch subregion of `self.__arena` on entry, route transient
 allocations through it via `current_arena_ptr()`, and destroy
 the subregion at every return point — except a body proven to
 allocate nothing that returns a by-value scalar (or Unit), where
-the scratch is elided entirely (2026-06-28). Eliding is sound
+the scratch is elided entirely. Eliding is sound
 because there is nothing to reclaim and no return value to
 deep-copy: it removes a `malloc`/`free` per call with no
 observable change to lifetimes or bounds. Before this, every
@@ -1009,7 +1009,7 @@ vec without the wrapping locus owning it would still
 dangle — same boundary the cross-seed-segv fix originally
 documented; the fix here doesn't widen or narrow it.
 
-**Phase-4 perf follow-ons (2026-05-21).** Three substrate
+**Phase-4 perf follow-ons.** Three substrate
 tunings that fell out of profiling the per-method scratch
 reclaim on a real-world long-running workload:
 
@@ -1184,8 +1184,7 @@ into `__caller_arena` is now a same-arena memcpy in the common
 case (correct, marginally wasteful; can be elided in a
 follow-up).
 
-**Subregion elision for non-allocating bodies (FORM-3,
-2026-05-13).** Codegen classifies each user fn at declare time
+**Subregion elision for non-allocating bodies (FORM-3).** Codegen classifies each user fn at declare time
 via a conservative syntactic walk
 (`fn_body_definitely_non_allocating`). A body is non-
 allocating iff every expression in it lowers to a known-non-
@@ -1244,7 +1243,7 @@ locus accepts coordinatees:
   O(concurrent children alive), not O(total children ever
   accepted). Per F.3. The free-list + `next_slot` counter are
   protected by a per-arena `pthread_mutex_t subregion_lock`
-  (2026-05-26) — without it, two threads concurrently
+  — without it, two threads concurrently
   creating or destroying children of the same parent (common
   under cross-pool cooperative placement where a worker's
   handler-scratch sub-region sits under the App arena) would
@@ -1253,7 +1252,7 @@ locus accepts coordinatees:
   indices, lost pushes. The lock window is O(1) per
   create/destroy (a counter increment or a freelist push);
   steady-state allocations within a sub-region remain
-  lock-free. **Single-thread fast-path (2026-05-29):** the
+  lock-free. **Single-thread fast-path:** the
   lock/unlock and `pthread_mutex_destroy` are skipped — and
   init is a const `PTHREAD_MUTEX_INITIALIZER` copy rather than
   a `pthread_mutex_init` call — until the program spawns a
@@ -1318,29 +1317,6 @@ corrupt the recpool's bookkeeping. The codegen dispatch
 discriminator (`__recpool_release_kind`) is what keeps the
 right release function reachable at child dissolve.
 
-## Future work
-
-- **Hot-load preservation across perspective updates.** The
-  in-process live swap (`reperspective`, Phase 3) preserves the
-  receiving locus's arena state across the swap: the perspective
-  slot is `{ data, vtable }`, so re-pointing at a new impl of the
-  same footprint stores only the new vtable — `data` (the
-  arena-backed state) is untouched and the new impl's methods
-  continue on it. The remaining future piece is the same
-  preservation for a *transport-driven* wire redeploy whose new
-  impl changes the footprint (the `migrate` case). See
-  `spec/semantics.md` § "The live swap".
-- **Region size hints.** Initial chunk sizes per locus are
-  taken from declared params. Per The Design's locus-as-region
-  invariant, the load-bearing property is *lifetime* (wholesale
-  free at dissolve), not *fixed size*. The C-runtime arena
-  grows linked-list chunks on demand: when the head chunk
-  can't fit a request, a fresh chunk is allocated and pushed
-  on the front. Declared params are sizing hints, not
-  ceilings — a locus that out-allocates its declared budget
-  doesn't panic, it just adds chunks. Compaction across
-  long-lived chunked loci stays deferred (see below).
-- **Compaction passes.** For long-running chunked-class loci
-  with high churn, periodic compaction may be needed. Currently
-  free-list reclamation is sufficient for v0; compaction passes
-  are deferred.
+> Forward-looking / deferred items for this area now live in the
+> decision log — see [`decisions.md` § Deferred & future
+> work](./decisions.md#deferred--future-work).

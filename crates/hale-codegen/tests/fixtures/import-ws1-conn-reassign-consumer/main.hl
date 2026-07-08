@@ -1,5 +1,5 @@
 // WS1#4 carrier: whole-reassignment of a nested locus param of an
-// IMPORTED (cross-seed) type. Mirrors a downstream app mdgw-evm
+// IMPORTED (cross-seed) type. Mirrors a downstream app a market-data gateway
 // `self.conn = ws::WsClient { url: ..., ... }` reconnect.
 
 import "../lib-ws1-conn" as wsx;

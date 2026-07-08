@@ -282,7 +282,7 @@ class loci. The cost reflects the projection class:
   favor of summary access (`self.children.count` vs the
   manual count-loop) once a workload exercises the surface.
 
-**Summary access (2026-06-01).** `self.children.count` (Int) and
+**Summary access.** `self.children.count` (Int) and
 `self.children.is_empty` (Bool) are the shipped summary surface —
 they read the accept'd-child tracker's live count directly (a load
 of `__child_count`) instead of a hand-rolled `for c in
@@ -697,7 +697,7 @@ program-lifetime payload arena rather than the fn subregion;
 `emit_return_value_deep_copy` deep-copies the 16-byte
 fat-pointer struct into the caller's arena.
 
-**G20 follow-up (2026-05-23):** interface elements inside fixed
+**G20 follow-up:** interface elements inside fixed
 arrays, array-repeat literals, and tuples now coerce at the
 construction site. The codegen routes the RHS through
 `lower_expr_into(expr, hint)` when a let-binding carries a
@@ -718,7 +718,7 @@ escape today, where the pointers in the returned tuple alias
 loci in the fn's stack frame and only happen to read correctly
 because the freed memory hasn't been clobbered yet.
 
-**m90 routing of nested-field children (2026-05-24).** A
+**m90 routing of nested-field children.** A
 returning locus whose `params` declares fields of locus type
 (e.g., `locus Mapper { params { a: AssetMap; b: VenueMap;
 c: ContractTypeMap; d: ContractMap; } }`, each an
@@ -1756,7 +1756,7 @@ ordering of the cascade (outer body → inner cascade → outer
 arena_destroy), and a 100k-iteration construct-destroy loop
 exercising the cascade path under load.
 
-### Per-child reclamation of accept'd children (2026-05-30)
+### Per-child reclamation of accept'd children
 
 **Problem.** An `accept`'d child lives in (a subregion of) its
 parent's arena and, at v1, was reclaimed only when the *parent*
@@ -2038,14 +2038,14 @@ locus` carries per-locus placement specifications:
 ```hale
 main locus App {
     params {
-        gateway_kraken:   Gateway = Gateway { venue: "kraken" };
-        gateway_coinbase: Gateway = Gateway { venue: "coinbase" };
+        gateway_a:   Gateway = Gateway { venue: "venue-a" };
+        gateway_b: Gateway = Gateway { venue: "venue-b" };
         metrics:          MetricsServer = MetricsServer { port: 9100 };
         ui:               Renderer = Renderer { };
     }
     placement {
-        gateway_kraken:   pinned(core = 1);
-        gateway_coinbase: pinned(core = 2);
+        gateway_a:   pinned(core = 1);
+        gateway_b: pinned(core = 2);
         metrics:          cooperative(pool = io);
         ui:               cooperative(pool = render);
         // unspecified main-locus params → cooperative(pool = main)
@@ -2148,7 +2148,7 @@ were previously `: schedule` annotations.
 - The "sibling-in-main pattern" workaround becomes the
   canonical shape rather than a friction routing.
 
-**Resolved (2026-06-01).**
+**Resolved.**
 
 - The cooperative-publisher → pinned-subscriber path
   (`spec/runtime.md` Item B) works: the mailbox condvar wakes a
@@ -2222,11 +2222,11 @@ purpose compiled language.
 - Pinned placement (especially `pinned(core = N)`) → the OS
   keeps the worker on a specific core → the locus's working
   set stays resident in that core's L1/L2 across handler
-  fires. Topology Phase 1a (2026-07-04) widens this to a
+  fires. Topology Phase 1a widens this to a
   cpuset: `pinned(cores = A..B)` / `{a, b, c}` masks the
   thread to a core *set* — the isolation-domain form (keep a
   locus on one CCD/L3 group, away from the OS cores). Phase 1b
-  (2026-07-05) adds the `topology { }` block (declare the host's
+  adds the `topology { }` block (declare the host's
   nodes / L3 domains / reserved cores) and `pinned(node = N)` /
   `pinned(l3 = name)` — target a domain by name and the mask
   becomes its cores. A node/l3-pinned locus gets the full
@@ -2242,7 +2242,7 @@ purpose compiled language.
   each its own single consumer, so the lock-free rings, bus
   devirt, and single-threaded-method guarantee all survive
   untouched — the deliberate non-choice of a shared-thread pool.
-- Per-method scratch (Phase 4, 2026-05-21) → tight
+- Per-method scratch (Phase 4) → tight
   allocate-touch-free loop on every method invocation →
   naturally L1-hot for the duration of one handler.
 - Cross-pool bus dispatch → memcpy at the layer boundary
@@ -2377,9 +2377,9 @@ v1 commitment.
 
 ### F.33 Fallible user-supplied bus adapters (sketch)
 
-**Status: design sketch (2026-05-28).** No grammar surface, no
+**Status: design sketch.** No grammar surface, no
 compiler behavior shipped. Captured here because the Phase-3
-routing-keys `on_unmatched: fail` impl (2026-05-25) opened a
+routing-keys `on_unmatched: fail` impl opened a
 path that this extension fits into cleanly; documenting now so
 a future session can pick it up without re-deriving the shape.
 F.36 (codecs, shipped 2026-05-28) has since landed the
@@ -2517,7 +2517,7 @@ the multi-source case can't be modeled cleanly.
 
 ### F.34 Per-epoch field reset (v1.x-WINDOWED)
 
-**Status: shipped (2026-05-28).** Grammar + typecheck +
+**Status: shipped.** Grammar + typecheck +
 codegen + runtime tree-walker all live. See
 `spec/grammar.ebnf § closure_clause`, `spec/semantics.md §
 Per-epoch field reset`, and the
@@ -2528,7 +2528,7 @@ integration tests.
 point-in-time invariants (`self.x ~~ self.y within 0`) and,
 post-m46, stream accumulators (`sum(self.delta) ~~ 0 within
 100`). Neither shape expresses a *rate budget*: "at most N
-events of type X per minute." The canonical use is mdgw
+events of type X per minute." The canonical use is gateway
 corruption-rate auditing — a parse-error counter that should
 average to zero over rolling 1-minute windows. Today users
 either give up the closure framing (track the counter
@@ -2607,7 +2607,7 @@ for booleans, strings, or structs.
 
 ### F.35 Green-I/O cooperative pools (`where async_io`)
 
-**Status: shipped (2026-05-28).** Substrate plumbing in
+**Status: shipped.** Substrate plumbing in
 `crates/hale-codegen/runtime/lotus_arena.c § lotus_coro_t /
 lotus_coop_park_on_fd / lotus_coop_pool_drain_one_async`. User
 surface in `spec/grammar.ebnf § placement_constraint`. Typecheck
@@ -2751,7 +2751,7 @@ shape.
 
 ### F.36 Pluggable codecs on bus bindings
 
-**Status: shipped (2026-05-28).** Grammar + typecheck + codegen
+**Status: shipped.** Grammar + typecheck + codegen
 all live. Bindings carry an optional `codec(L { ... })` clause;
 the binding-site assertion enforces both signature shape
 (`encode(v: T) -> Bytes fallible(E)` /
@@ -3033,3 +3033,161 @@ The grammar in v0 does **not** specify:
 Each of these is a known extension point. Closing them off in v0
 keeps the spec tractable; opening them later is a non-breaking
 addition.
+
+---
+
+## Deferred & future work
+
+Forward-looking items lifted from the spec files. These are design
+intent, **not current behavior** — grouped by the spec area they came
+from.
+
+### semantics — What's deferred
+
+
+- **Formal small-step semantics.** Engineering-grade prose for
+  v0; formal operational rules in v1+ if needed for compiler
+  correctness proofs.
+- **Concurrency-correctness proofs.** Cooperative scheduler
+  + per-locus arena makes most concurrency questions trivial,
+  but full formal modeling deferred.
+- **Memory-model formalization** as a happens-before relation.
+  Currently informal; formal in v1+.
+- **Async / await semantics.** Reserved keywords; no operational
+  semantics in v0.
+
+
+### types — What's deferred
+
+
+Per `notes/open-questions.md` and design-rationale §16:
+
+- **Trait system.** No `trait` keyword in v0 (reserved). The
+  structural `interface` form (F.20) ships as the v1 interface
+  mechanism — both Phase A (typecheck) and Phase B (codegen
+  vtable dispatch) landed 2026-05-11. Full traits with `impl I
+  for L` declarations and generic bounds remain deferred.
+- **Refinement types** (e.g., `int where x > 0`). Deferred.
+- **Effect / capability system.** Substrate-derivation tracking
+  is currently runtime-enforced via closure tests; future
+  version may move into type system as effects.
+- **Async / await.** Reserved keywords; no v0 typing.
+- **Macros.** Reserved keyword; no v0 typing.
+- **Sum-type-typed `self.children`** for multi-accept-type loci.
+  v0 is single-accept-type only (F.11).
+- **Projection-class-annotated translation impls** (per F.14
+  follow-on). Deferred until forced by an example.
+
+
+### memory — Future work
+
+
+- **Hot-load preservation across perspective updates.** The
+  in-process live swap (`reperspective`, Phase 3) preserves the
+  receiving locus's arena state across the swap: the perspective
+  slot is `{ data, vtable }`, so re-pointing at a new impl of the
+  same footprint stores only the new vtable — `data` (the
+  arena-backed state) is untouched and the new impl's methods
+  continue on it. The remaining future piece is the same
+  preservation for a *transport-driven* wire redeploy whose new
+  impl changes the footprint (the `migrate` case). See
+  `spec/semantics.md` § "The live swap".
+- **Region size hints.** Initial chunk sizes per locus are
+  taken from declared params. Per The Design's locus-as-region
+  invariant, the load-bearing property is *lifetime* (wholesale
+  free at dissolve), not *fixed size*. The C-runtime arena
+  grows linked-list chunks on demand: when the head chunk
+  can't fit a request, a fresh chunk is allocated and pushed
+  on the front. Declared params are sizing hints, not
+  ceilings — a locus that out-allocates its declared budget
+  doesn't panic, it just adds chunks. Compaction across
+  long-lived chunked loci stays deferred (see below).
+- **Compaction passes.** For long-running chunked-class loci
+  with high churn, periodic compaction may be needed. Currently
+  free-list reclamation is sufficient for v0; compaction passes
+  are deferred.
+
+
+### forms — Open questions deferred to a future milestone
+
+
+These are spec-level questions that don't block FORM-4 because
+the core surface above is independent of them.
+
+1. **Iteration surface.** `for entry in registry { ... }` is
+   natural but the loop construct's lowering depends on what
+   the existing `for` over capacity slots does — and a hashmap
+   iteration that visits each occupied slot once needs cluster-
+   aware traversal. Deferred.
+2. **Bulk operations.** `clear()`, `extend(other)`,
+   `take(key) -> S fallible(KeyError)` (get + remove fused).
+   Useful but not foundational. Add after a workload demands.
+3. **Additional key types.** `Bytes`, custom structs with a
+   hashable derivation, enum tags. Each adds a `key_type_tag`
+   to the runtime ABI. Workload-driven.
+4. **Capacity hints.** `@form(hashmap, cap = 64)` is rejected
+   in v1; no tuning knobs. Add when a workload demonstrates
+   the 0 → 8 → 16 → ... grow cascade is costing measurable
+   time.
+5. **Set type.** A `@form(set)` would be a hashmap-without-
+   value variant (the cell IS the key). Not part of FORM-4;
+   revisit if a workload needs it.
+
+---
+
+# `@form(ring_buffer)`
+
+A fixed-capacity FIFO with push-back and pop-front semantics.
+The Hale analogue of a bounded circular buffer — same shape as
+a Go channel of capacity N, or a Java `ArrayBlockingQueue`, but
+without the synchronization machinery (the cooperative scheduler
+already serializes access). Shipped as the third form in v1
+via v1.x-FORM-5.
+
+
+### forms — Open questions deferred to a future milestone
+
+
+1. **Iteration surface.** `for x in recent { ... }` is natural
+   but iteration over a ring buffer must respect head/tail wrap
+   — needs the `for` lowering to know about ring shapes.
+   Deferred.
+2. **Bulk operations.** `clear()`, `peek() -> T fallible`,
+   evict-oldest-on-full mode (cyclic-overwrite as a tuning
+   knob). Useful but not foundational; add when a workload
+   demonstrates demand.
+3. **Iteration in pop order without removing.** A "drain" or
+   "iter_pop" that visits elements oldest-first as a one-shot.
+4. **Bench protocol.** A `micro/form_ring_buffer_*` family
+   in `hale-lang/bench`, parallel to vec's and hashmap's.
+   Ships as a separate milestone after a consumer workload
+   surfaces.
+
+# `@form(lru_cache)`
+
+A fixed-capacity keyed cache with least-recently-used eviction.
+The keyed counterpart of `@form(ring_buffer)`: like
+`@form(hashmap)` it is intrusively keyed (the cell carries its own
+key via `indexed_by`), but like `@form(ring_buffer)` it is
+capacity-bounded and NEVER grows. Inserting a new key over `cap`
+silently evicts the least-recently-**used** entry to make room.
+This is the "cap-bounded, never-flagged" keyed form — the
+unbounded-allocation analysis (`spec/verification.md`) treats an
+`@form(lru_cache)` locus as bounded, exactly like `ring_buffer`.
+Shipped as the fourth form in v1 via v1.x-FORM-6.
+
+
+### forms — Open questions deferred to a future milestone
+
+
+1. **TTL eviction.** A `ttl = <duration>` annotation arg to
+   expire entries by age in addition to LRU by capacity. Deferred
+   — v1 evicts by capacity + recency only.
+2. **`remove(k)` / `clear()`.** Explicit eviction of a named key
+   and bulk clear. Add when a workload demonstrates demand.
+3. **Iteration surface.** `key_at` / `entry_at`-style indexed
+   iteration, parallel to `@form(hashmap)`. Deferred.
+4. **Bench protocol.** A `micro/form_lru_cache_*` family in
+   `hale-lang/bench`, parallel to the other forms'. Ships after a
+   consumer workload surfaces.
+

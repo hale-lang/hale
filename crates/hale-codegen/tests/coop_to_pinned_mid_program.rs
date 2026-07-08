@@ -36,7 +36,7 @@ fn unique_path(tag: &str) -> PathBuf {
 #[test]
 fn pinned_run_loop_drains_mailbox_via_sleep() {
     // Bootstrapper (cooperative, default main pool) publishes
-    // SubscribeRequest cells from its run(). Mdgw (pinned) is a
+    // SubscribeRequest cells from its run(). Gateway (pinned) is a
     // subscriber; its own run() spins in a sleep loop emulating
     // a forever-server shape. The handler bumps a global-ish
     // counter via println so we can observe whether cells fired
@@ -48,7 +48,7 @@ fn pinned_run_loop_drains_mailbox_via_sleep() {
     let src = r#"
         type Req { n: Int; }
 
-        locus Mdgw {
+        locus Gateway {
             bus { subscribe "sub" as on_sub of type Req; }
             fn on_sub(r: Req) {
                 println("handled n=", r.n);
@@ -68,9 +68,9 @@ fn pinned_run_loop_drains_mailbox_via_sleep() {
         locus Boot {
             bus { publish "sub" of type Req; }
             run() {
-                // Three publishes spaced so Mdgw's sleep loop
+                // Three publishes spaced so Gateway's sleep loop
                 // has a chance to wake between each. Total
-                // sleep budget: ~30ms < Mdgw's ~100ms.
+                // sleep budget: ~30ms < Gateway's ~100ms.
                 std::time::sleep(5ms);
                 "sub" <- Req { n: 1 };
                 std::time::sleep(5ms);
@@ -82,14 +82,14 @@ fn pinned_run_loop_drains_mailbox_via_sleep() {
 
         main locus App {
             params {
-                mdgw: Mdgw = Mdgw { };
+                gw: Gateway = Gateway { };
                 boot: Boot = Boot { };
             }
             placement {
-                mdgw: pinned;
+                gw: pinned;
             }
             run() {
-                // Wait long enough that Mdgw's run() loop is
+                // Wait long enough that Gateway's run() loop is
                 // still spinning when we print 'main done'.
                 // Without the mailbox-drain fold-in, handler
                 // prints land AFTER 'main done'.
