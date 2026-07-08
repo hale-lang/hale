@@ -33,6 +33,7 @@
 - [Hashing, encoding & randomness](./everyday/crypto.md)
 - [CLI & config](./everyday/cli-config.md)
 - [Logging](./everyday/logging.md)
+- [Testing](./everyday/testing.md)
 
 # Concurrent services
 

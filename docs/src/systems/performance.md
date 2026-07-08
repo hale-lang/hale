@@ -119,9 +119,13 @@ These are advisory warnings, not build failures:
   loop) is the fix. (Detection reads the receiver's *declared* type, so
   it sees `fn f(v: IntVec)` and `self.buf: IntVec` but not an untyped
   `let`.)
-- `hale check app.hl --warn-resource-leak` is the same idea for file
-  descriptors: an `open` / `connect` / `accept` whose result is
-  stored resident in an unbounded context, so fds pile up.
+The same idea extends to file descriptors and resource budgets. The
+full diagnostic surface — runtime residency dumps,
+`--dump-alloc-summary`, the fd-leak and resource-budget checks, and
+the `@unbounded` carve-out — is the operator's toolkit, documented in
+[Operations & debugging](./operations.md). This chapter is about
+writing code that doesn't accumulate in the first place; that one is
+about pinning it down when it does.
 
 For the resource *surface* — thread / pool / subject / fd counts,
 not a leak — there's a budget you can read or gate on:

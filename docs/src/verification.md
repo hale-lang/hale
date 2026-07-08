@@ -105,6 +105,25 @@ threads, cooperative pools, and bus subjects, with a
 `--check-resource-budget budget.toml` ceiling gate for CI and fd-leak
 detection.
 
+## Invariants you declare, checked as it runs
+
+The checks above are the compiler's. You can add your own with a
+**closure** — a property a locus promises to keep, written as a
+first-class block and audited by the runtime while the program runs:
+
+```hale
+closure balanced {
+    self.debits ~~ self.credits within 0.01d;
+}
+```
+
+`~~` is "approximately equal, within tolerance." When the invariant
+breaks, it routes to the owner's failure handler (or, unhandled, stops
+the program) — a declared property enforced by the substrate, not a
+comment you hope holds. Closures are taught in full in
+[When things fail](./services/failure.md#declaring-an-invariant-closure);
+they're the runtime half of "verified by construction."
+
 ## What Hale does *not* claim
 
 Hale is **not** a whole-program functional-correctness prover — that is
