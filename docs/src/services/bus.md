@@ -94,8 +94,8 @@ dispatch cost; if the topic later grows a second subscriber or a
 deployment binding, the real bus path comes back automatically,
 and your code doesn't change.
 
-As of v0.9.0 the static-dispatch devirtualization is broader than
-that intra-locus-type case: any *quiet*, flat-payload, same-thread
+The static-dispatch devirtualization is broader than that
+intra-locus-type case: any *quiet*, flat-payload, same-thread
 handler on a closed-world local subject lowers to a direct
 synchronous call — even when the publisher and subscriber are
 distinct locus types.

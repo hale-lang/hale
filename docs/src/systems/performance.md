@@ -222,19 +222,20 @@ Two knobs matter when that default isn't what you want:
 ## Where Hale earns its overhead
 
 Hale is shaped to pay *coordination* cost well — bus dispatch,
-region setup, lifecycle — and as of v0.9.0 that's where it
-*leads*. The lock-free bus plus static-dispatch devirtualization
-turned coordination from a deficit into an advantage over Go:
-`bus_dispatch` went from ~4× behind to **2.4× ahead**, and
-`bus_dispatch_cross_pool` from behind to **1.26× ahead**. Reach
-for Hale's structure where the work is coordination-shaped, which
-is most real systems.
+region setup, lifecycle — and that's where it *leads*. The
+lock-free bus plus static-dispatch devirtualization turned
+coordination from a deficit into an advantage over Go: message
+dispatch, once several times behind, now runs ahead. Reach for
+Hale's structure where the work is coordination-shaped, which is
+most real systems.
 
 The tight loop caught up too. Pure arithmetic used to be the
 place the substrate showed through, but native codegen closed the
-gap: `fn_modular` reached **parity with clang `-O3` C** (~0.98 of
-the C time). Coordination is the lead; tight-loop arithmetic is no
-longer the price you pay for it.
+gap to **parity with `clang -O3` C**. Coordination is the lead;
+tight-loop arithmetic is no longer the price you pay for it.
+
+Current benchmark numbers and methodology live in
+[hale-lang/bench](https://github.com/hale-lang/bench).
 
 Next: what `@form` actually compiles to — [Forms under the
 hood](./forms.md).

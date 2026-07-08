@@ -30,8 +30,9 @@ locus Api {
 }
 
 fn main() {
-    let server = std::http::Server { port: 8080, handler: Api { } };
-    // Server runs its accept loop until the process is stopped.
+    // A statement-position locus literal fires its lifecycle: this
+    // runs the accept loop until the process is stopped.
+    std::http::Server { port: 8080, handler: Api { } };
 }
 ```
 

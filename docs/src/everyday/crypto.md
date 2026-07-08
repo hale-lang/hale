@@ -24,8 +24,8 @@ let tag512    = std::crypto::hmac_sha512(key, data);  // 64 bytes
 `sha1` (20 bytes) is there too for legacy interop; reach for
 `sha256` by default. The 64-bit-word SHA-512 siblings —
 `sha512` / `hmac_sha512` (64-byte) — are the same non-fallible
-shape, for venues that sign with HMAC-SHA512 (e.g. Kraken,
-Gate.io). The hashes and `crc32` are hand-rolled — no OpenSSL
+shape, for services that sign requests with HMAC-SHA512. The
+hashes and `crc32` are hand-rolled — no OpenSSL
 dependency.
 
 Raw hash bytes aren't printable, so encode one to show or
@@ -49,7 +49,7 @@ both alphabets.
 
 ## Signing — ECDSA P-256 (`ES256`)
 
-For JWT / venue auth, `std::crypto` ships ECDSA over NIST P-256
+For JWT / API-request signing, `std::crypto` ships ECDSA over NIST P-256
 with SHA-256 (the `ES256` JWS algorithm), OpenSSL-backed:
 
 ```hale
