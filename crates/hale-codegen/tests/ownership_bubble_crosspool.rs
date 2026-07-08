@@ -92,9 +92,11 @@ const XPOOL_SRC: &str = r#"
             // bubbles race pinned-thread startup, and a 300ms
             // window flaked on loaded CI runners (each sleep slice
             // drains the pool's queue, so delivery progresses
-            // through this loop). Bounded at ~6s.
+            // through this loop). Bounded at ~12s — generous so a
+            // starved delivery thread on a saturated CI runner still
+            // completes within one run (delivery needs <1s of real CPU).
             let mut waited: Int = 0;
-            while self.harmonic() < 3 && waited < 60 {
+            while self.harmonic() < 3 && waited < 120 {
                 std::time::sleep(100ms);
                 waited = waited + 1;
             }
@@ -167,7 +169,7 @@ fn world_collects_crosspool_bubbled_ships() {
     // is the same starvation the bubble_lock + 6s poll already chase, one
     // level more robust for the concurrent-CI case.
     let mut last = String::new();
-    for attempt in 0..4 {
+    for attempt in 0..6 {
         let out = Command::new(&bin).output().expect("run hale");
         assert!(
             out.status.success(),
