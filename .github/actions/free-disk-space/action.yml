@@ -1,0 +1,26 @@
+name: Free disk space
+description: >
+  Reclaim the ~40GB of preinstalled toolchains ubuntu-latest ships but
+  this workspace never uses, so the LLVM-linked release/sanitizer build
+  (dozens of statically-linked test binaries) doesn't exhaust the runner
+  disk with "No space left on device".
+
+# This job only needs Rust — installed by rust-toolchain into ~/.rustup,
+# NOT the hosted-tool cache — plus apt-installed LLVM. Everything removed
+# below is unused by the build. An earlier, smaller purge
+# (dotnet/ghc/android/CodeQL only) still tipped over on unlucky runners,
+# hence the wider set + the before/after `df` so a recurrence is legible
+# in the log. Shared by every heavy job in tests.yml so the set is
+# maintained in one place (it used to be copy-pasted and drifted).
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        echo "disk before:"; df -h / | tail -1
+        sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+                    /usr/local/lib/android /opt/hostedtoolcache \
+                    /usr/share/swift /usr/local/share/boost \
+                    /usr/local/share/powershell /usr/lib/jvm
+        sudo docker image prune -af 2>/dev/null || true
+        echo "disk after:";  df -h / | tail -1
