@@ -122,7 +122,7 @@ program](./first-program.md).
 ## When the handler can fail too
 
 A recovery handler is often itself a fallible operation — read a
-fallback file, query a secondary source. Since 2026-07-02 you can
+fallback file, query a secondary source. You can
 write that directly:
 
 ```hale

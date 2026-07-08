@@ -54,14 +54,13 @@ The topology grows from the data. Combined with `release`, children
 appear on first contact and vanish when their flow ends — the
 process shape mirrors the live workload with no configuration. (If
 the manager doesn't itself `accept` this child type, the child
-bubbles to the [nearest accepting ancestor](./parents-children.md)
-— v0.9.2.)
+bubbles to the [nearest accepting ancestor](./parents-children.md).)
 
 ## 3. Hot-path counters & gauges (and the CQRS rejection)
 
 You will want to write `let n = self.metrics.incr("hits")` on a hot
 path. Hale **rejects** locus methods that return locus values
-(GH #18.6 / the "CQRS" shape) — a method call that hands back a live
+(the "CQRS" shape) — a method call that hands back a live
 locus reference breaks the closed-world ownership the substrate
 relies on. The rejection without a replacement strands you, so here
 is the migration:

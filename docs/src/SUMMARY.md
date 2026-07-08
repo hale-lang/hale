@@ -33,6 +33,7 @@
 - [Hashing, encoding & randomness](./everyday/crypto.md)
 - [CLI & config](./everyday/cli-config.md)
 - [Logging](./everyday/logging.md)
+- [Testing](./everyday/testing.md)
 
 # Concurrent services
 
@@ -53,7 +54,6 @@
 - [Zero-copy & the high-frequency bus](./systems/zero-copy-bus.md)
 - [Binding C](./systems/binding-c.md)
 - [WebAssembly & the browser](./systems/webassembly.md)
-- [Cross-process & hot-load](./systems/cross-process.md)
 - [Operations & debugging](./systems/operations.md)
 - [Modes](./systems/modes.md)
 

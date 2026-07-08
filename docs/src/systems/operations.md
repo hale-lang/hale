@@ -89,8 +89,7 @@ flags report on allocation shape:
 | `--locality-report` | per-locus working-set size against cache-tier budgets |
 
 The memory-bound warnings run **by default** on every `hale check`
-and `hale build` (since 2026-07-02 — the flip followed a full-corpus
-audit of all 402 warnings). Run-to-exit programs are exempt
+and `hale build`. Run-to-exit programs are exempt
 automatically: a binary whose `main` starts no `run` loop and
 subscribes no handler owes no memory-bound proof, so scripts and
 one-shot tools stay silent.
@@ -137,7 +136,7 @@ a single-threaded cooperative producer inline-drains the queue
 a pinned mailbox blocks on a condvar until the consumer drains a
 slot. Every message is still delivered — only the timing and memory
 profile change. Lower the cap to tighten the memory bound; raise it
-to reduce drain bursts. (See GH #125 for the full mechanism.)
+to reduce drain bursts.
 
 ## Shelling out to other programs
 

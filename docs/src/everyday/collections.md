@@ -120,7 +120,7 @@ fallible on empty.
 
 The forms above are *loci* — whole entities with their own
 lifecycle. A `type` is pure data, so it can't hold one. What it CAN
-hold (since 2026-07-02) is a **bounded** collection — a
+hold is a **bounded** collection — a
 fixed-capacity list laid out inline in the value:
 
 ```hale
@@ -159,8 +159,7 @@ like `len(s)`):
 Use `bounded` when the maximum is known and the list is a *field of
 a value* — per-message tags, route parameters, a chat window. The
 old workaround (a tab-separated string you re-parse on every read)
-is retired: pond's router, LLM, and conversation libraries all
-migrated. Whole-struct copies carry the elements automatically, and
+is retired. Whole-struct copies carry the elements automatically, and
 scalar-element bounded values even cross the zero-copy bus as flat
 bytes.
 

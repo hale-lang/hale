@@ -141,8 +141,8 @@ and `unescape_string` are there.
 deeply-nested documents you walk level by level with
 `find_field_raw`, treating each nested object as its own flat
 document. If you're parsing a genuinely complex or
-performance-critical format, the [wire-format
-techniques](./files.md) and the systems-tier
+performance-critical format, the [zero-copy binary
+techniques](../systems/zero-copy-bus.md) and the systems-tier
 [performance](../systems/performance.md) chapter cover building
 your own parser over `Bytes`.
 

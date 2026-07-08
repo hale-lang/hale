@@ -101,5 +101,5 @@ layout.
 > host. Same declare-and-bind shape, different boundary — see
 > [WebAssembly & the browser](./webassembly.md).
 
-Next: state that outlives one process — [Cross-process &
-hot-load](./cross-process.md).
+Next: running it in production — [Operations &
+debugging](./operations.md).
