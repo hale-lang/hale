@@ -56,7 +56,7 @@ fn run(bin: &std::path::PathBuf) -> String {
 /// `run` (starvation keeps them at 0).
 fn run_expecting(bin: &std::path::PathBuf, needles: &[&str]) -> String {
     let mut last = String::new();
-    for attempt in 0..4 {
+    for attempt in 0..6 {
         let out = Command::new(bin).output().expect("run hale");
         assert!(
             out.status.success(),

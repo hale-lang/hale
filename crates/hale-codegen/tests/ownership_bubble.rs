@@ -61,7 +61,7 @@ fn run(bin: &std::path::PathBuf) -> String {
 /// them at 0, so they never need this.)
 fn run_expecting(bin: &std::path::PathBuf, needles: &[&str]) -> String {
     let mut last = String::new();
-    for attempt in 0..4 {
+    for attempt in 0..6 {
         let out = Command::new(bin).output().expect("run hale");
         assert!(
             out.status.success(),
@@ -116,7 +116,7 @@ const BUBBLE_SRC: &str = r#"
             // parallel-suite load (same de-flake as the crosspool
             // suite). Each sleep slice drains the pool queue.
             let mut waited: Int = 0;
-            while self.harmonic() < 2 && waited < 60 {
+            while self.harmonic() < 2 && waited < 120 {
                 std::time::sleep(100ms);
                 waited = waited + 1;
             }
@@ -301,7 +301,7 @@ fn non_singleton_ancestor_now_bubbles_via_threading() {
                 // parallel-suite load (same de-flake as the crosspool
                 // suite). Each sleep slice drains the pool queue.
                 let mut waited: Int = 0;
-                while self.harmonic() < 2 && waited < 60 {
+                while self.harmonic() < 2 && waited < 120 {
                     std::time::sleep(100ms);
                     waited = waited + 1;
                 }

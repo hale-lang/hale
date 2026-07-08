@@ -28,5 +28,13 @@ slow-timeout = { period = "60s", terminate-after = 8 }
 filter = 'binary(three_hop_import)'
 test-group = 'shared-fixture-dir'
 
+[[profile.default.overrides]]
+# UDP tests hardcode multicast groups (239.255.x) + ports; two running
+# concurrently cross-talk / collide on the group:port pair (the #178
+# loopback flake class). Serialize them against each other.
+filter = 'binary(bus_udp_transport) | binary(udp_multicast) | binary(udp_p4_source_and_timeout) | binary(udp_primitives)'
+test-group = 'serial-udp'
+
 [test-groups]
 shared-fixture-dir = { max-threads = 1 }
+serial-udp = { max-threads = 1 }
