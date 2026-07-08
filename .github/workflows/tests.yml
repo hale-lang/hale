@@ -57,23 +57,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ubuntu-latest ships ~25-30GB of preinstalled toolchains this
-      # build never uses (dotnet, Android SDK, GHC, CodeQL). Reclaim
-      # them up front — the release build + nextest archive of an
-      # LLVM-linked workspace had been intermittently exhausting the
-      # runner disk ("No space left on device" in build+archive).
-      # ubuntu-latest ships ~25-30GB of preinstalled toolchains this
-      # build never uses (dotnet, Android SDK, GHC, CodeQL). Reclaim
-      # them up front — the release build of an LLVM-linked workspace
-      # had been intermittently exhausting the runner disk. Fixtures
-      # resolve via CARGO_MANIFEST_DIR against this checkout, so the
-      # build + run happen in-place with no path remap.
+      # Fixtures resolve via CARGO_MANIFEST_DIR against this checkout,
+      # so build + run happen in-place with no path remap.
       - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
-                      /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
-          sudo docker image prune -af 2>/dev/null || true
-          df -h /
+        uses: ./.github/actions/free-disk-space
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -151,17 +138,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ubuntu-latest ships ~25-30GB of preinstalled toolchains this
-      # build never uses (dotnet, Android SDK, GHC, CodeQL). Reclaim
-      # them up front — the release build + nextest archive of an
-      # LLVM-linked workspace had been intermittently exhausting the
-      # runner disk ("No space left on device" in build+archive).
       - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
-                      /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
-          sudo docker image prune -af 2>/dev/null || true
-          df -h /
+        uses: ./.github/actions/free-disk-space
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -233,17 +211,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ubuntu-latest ships ~25-30GB of preinstalled toolchains this
-      # build never uses (dotnet, Android SDK, GHC, CodeQL). Reclaim
-      # them up front — the release build + nextest archive of an
-      # LLVM-linked workspace had been intermittently exhausting the
-      # runner disk ("No space left on device" in build+archive).
       - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
-                      /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
-          sudo docker image prune -af 2>/dev/null || true
-          df -h /
+        uses: ./.github/actions/free-disk-space
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -325,10 +294,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
-                      /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
-          df -h /
+        uses: ./.github/actions/free-disk-space
 
       - name: Install LLVM 18 + clang + cmake
         run: |
