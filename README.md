@@ -116,10 +116,9 @@ whether `MatchReady` is an in-process queue or a Unix socket, or whether
 system once and redeploy it — test, single binary, many hosts — by editing
 `main`.
 
-This isn't aspirational. It's the pattern the language leans on hardest: the
-production system it's built alongside wires **~90 binaries** and **~200
-typed topics** this way, with the loci themselves oblivious to how they're
-deployed.
+This isn't aspirational — the same source runs as a test, one binary, or a
+mesh of binaries wired over sockets and shared memory, with the loci
+themselves oblivious to how they're deployed. Only `main` changes.
 
 And you can redeploy a system **while it runs.** A `perspective` is a live,
 swappable handle to a contract; `reperspective` re-points it at a new
@@ -229,19 +228,18 @@ Platform-specific setup (Linux, macOS/Apple Silicon) is in
 
 ## Where the language stands
 
-Hale is **young** — the first public commits are weeks old — but it is not a
-toy. It's developed alongside a real production system, and the language
-surface is **stable**: most work between here and v1 is bugs, performance,
-and polish, not new syntax. Pin to a commit if you build on it.
+Hale is **young** — the first public commits are weeks old, and it moves
+fast — but the language surface is **stable**: most work between here and v1
+is bugs, performance, and polish, not new syntax. Pin to a commit if you
+build on it.
 
 The proven core is the typed topic bus, `placement` / `bindings` deployment,
 `@form` collections, structural `interface`s, `@ffi` C bindings, and the
-`fallible(T)` error model — all self-hosted by the native compiler and
-carrying a real production system and its library ecosystem. The **frontier
-is moving fast**: NUMA-aware `topology` placement with `replicas`, and live
-`reperspective` hot-swap, both landed in the last few weeks and are rolling
-into that workload now. (`mode` projections and `closure` assertions round
-out the surface; reach for them when your problem calls for them.)
+`fallible(T)` error model — all self-hosted by the native compiler. The
+**frontier is moving fast**: NUMA-aware `topology` placement with `replicas`,
+and live `reperspective` hot-swap, both landed in the last few weeks.
+(`mode` projections and `closure` assertions round out the surface; reach for
+them when your problem calls for them.)
 
 **Performance** is a lead, not a cost: at matched workloads, message dispatch
 and `@form` collections run ahead of Go after the lock-free bus and
