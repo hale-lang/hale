@@ -228,18 +228,15 @@ Platform-specific setup (Linux, macOS/Apple Silicon) is in
 
 ## Where the language stands
 
-Hale is **young** — the first public commits are weeks old, and it moves
-fast — but the language surface is **stable**: most work between here and v1
-is bugs, performance, and polish, not new syntax. Pin to a commit if you
-build on it.
+The language surface is **stable** — most work from here is bugs,
+performance, and polish, not new syntax.
 
 The proven core is the typed topic bus, `placement` / `bindings` deployment,
 `@form` collections, structural `interface`s, `@ffi` C bindings, and the
 `fallible(T)` error model — all self-hosted by the native compiler. The
-**frontier is moving fast**: NUMA-aware `topology` placement with `replicas`,
-and live `reperspective` hot-swap, both landed in the last few weeks.
-(`mode` projections and `closure` assertions round out the surface; reach for
-them when your problem calls for them.)
+**frontier**: NUMA-aware `topology` placement with `replicas`, and live
+`reperspective` hot-swap. (`mode` projections and `closure` assertions round
+out the surface; reach for them when your problem calls for them.)
 
 **Performance** is a lead, not a cost: at matched workloads, message dispatch
 and `@form` collections run ahead of Go after the lock-free bus and
