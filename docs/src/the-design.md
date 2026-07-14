@@ -59,10 +59,10 @@ the guarantees.
 
 ## Going deeper
 
-- **[`AGENTS.md`](https://github.com/hale-lang/hale/blob/main/AGENTS.md)** — the
-  condensed rules and the six-pattern catalog for authoring
-  `.hl`. Written for agents, but the tightest statement of the
-  design for a human too.
+- **[`AGENTS.md`](https://github.com/hale-lang/hale/blob/main/AGENTS.md)** — the formal model in one
+  page: nodes, hyperedges, and invariants, with the `locus ↔ Σ`
+  mapping. Written for agents authoring `.hl`, but it's the
+  tightest statement of the design for a human too.
 - **[`spec/design-rationale.md`](https://github.com/hale-lang/hale/blob/main/spec/design-rationale.md)**
   — every numbered design decision (`F.1` … `F.36`), the
   alternatives considered, and why each commitment is shaped the
