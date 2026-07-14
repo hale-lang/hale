@@ -438,7 +438,18 @@ int lotus_tls_connect(const char *host, uint16_t port) {
      * double as regression coverage for this dial+upgrade refactor. */
     int handle = lotus_tls_upgrade(raw_fd, host, /*verify=*/1);
     if (handle < 0) {
+        /* upgrade() already set errno (e.g. ECONNREFUSED/ENOMEM) so
+         * the Hale layer can derive IoError.kind from it via
+         * lotus_get_errno. close() is free to clobber errno (glibc
+         * makes no promise it won't), so save/restore around it —
+         * otherwise the caller's error branch reads whatever close()
+         * left behind instead of upgrade's real failure reason. */
+        int saved_errno = errno;
+        fprintf(stderr,
+                "lotus_tls_connect: handshake failed (host=%s port=%u)\n",
+                host, (unsigned)port);
         close(raw_fd);
+        errno = saved_errno;
         return -1;
     }
     return handle;
