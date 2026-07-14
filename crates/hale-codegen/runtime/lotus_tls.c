@@ -10,6 +10,9 @@
  *
  * Client-only scope for v1:
  *   - lotus_tls_connect(host, port) -> int handle
+ *   - lotus_tls_upgrade(fd, host, verify) -> int handle  (wrap an
+ *       already-connected fd; STARTTLS-style. Does NOT own/close the
+ *       fd on failure — see the fn header for the ownership contract.)
  *   - lotus_tls_send_bytes(handle, bytes) -> int 0/-1
  *   - lotus_tls_recv_bytes(handle, max_bytes) -> Bytes
  *   - lotus_tls_close(handle) -> int 0/-1
@@ -301,28 +304,50 @@ static const BIO_METHOD *lotus_tls__recvmsg_bio(void) {
     return r;
 }
 
-int lotus_tls_connect(const char *host, uint16_t port) {
-    if (!host) {
+/* lotus_tls_upgrade(raw_fd, host, verify) — wrap an ALREADY-CONNECTED
+ * TCP socket in a client TLS session (STARTTLS-style: the caller has
+ * already dialed the fd, optionally spoken a plaintext protocol prologue
+ * on it, and now wants the rest of the stream encrypted). Returns the
+ * same opaque int handle as lotus_tls_connect — fully interchangeable
+ * across send_bytes/recv_bytes/recv_into/close/set_nodelay/etc — or -1
+ * on failure.
+ *
+ * FD OWNERSHIP (asymmetric with lotus_tls_connect — read carefully):
+ * upgrade does NOT close raw_fd on failure. The caller owned the fd
+ * before this call (it came from std::io::tcp::connect, not from here),
+ * so ownership and teardown stay with the caller on every error path.
+ * This is the OPPOSITE of lotus_tls_connect, which dials its own fd and
+ * therefore closes it on any failure. On SUCCESS the returned handle
+ * owns the fd (lotus_tls_close closes it), same as connect.
+ *
+ * SNI (SSL_set_tlsext_host_name) is ALWAYS sent — harmless when not
+ * verifying, and many servers select a cert by it. Peer verification is
+ * governed by `verify`:
+ *   verify != 0: hostname-checked against the cert via SSL_set1_host,
+ *                relying on the ctx-level SSL_VERIFY_PEER + system trust
+ *                store (same as connect).
+ *   verify == 0: SSL_set_verify(ssl, SSL_VERIFY_NONE, NULL) as a
+ *                per-connection override + skip SSL_set1_host — encrypt
+ *                without authenticating the peer (sslmode=require
+ *                semantics: e.g. AWS RDS, whose CA is not in the system
+ *                trust store). SNI is still sent.
+ */
+int lotus_tls_upgrade(int raw_fd, const char *host, int verify) {
+    if (raw_fd < 0 || !host) {
         errno = EINVAL;
-        return -1;
-    }
-    int raw_fd = lotus_tcp_connect(host, port);
-    if (raw_fd < 0) {
-        /* lotus_tcp_connect already set errno + logged. */
         return -1;
     }
     pthread_mutex_lock(&g_tls_mutex);
     SSL_CTX *ctx = lotus_tls__ctx_get();
     if (!ctx) {
         pthread_mutex_unlock(&g_tls_mutex);
-        close(raw_fd);
+        /* Caller owns raw_fd — do NOT close it here. */
         errno = ENOMEM;
         return -1;
     }
     SSL *ssl = SSL_new(ctx);
     if (!ssl) {
         pthread_mutex_unlock(&g_tls_mutex);
-        close(raw_fd);
         errno = ENOMEM;
         return -1;
     }
@@ -333,9 +358,15 @@ int lotus_tls_connect(const char *host, uint16_t port) {
     if (SSL_set_tlsext_host_name(ssl, host) != 1) {
         ERR_print_errors_fp(stderr);
     }
-    if (SSL_set1_host(ssl, host) != 1) {
-        fprintf(stderr, "lotus_tls_connect: SSL_set1_host failed\n");
-        ERR_print_errors_fp(stderr);
+    if (verify) {
+        if (SSL_set1_host(ssl, host) != 1) {
+            fprintf(stderr, "lotus_tls_upgrade: SSL_set1_host failed\n");
+            ERR_print_errors_fp(stderr);
+        }
+    } else {
+        /* Per-connection opt-out of the ctx-level SSL_VERIFY_PEER:
+         * encrypt but don't authenticate the peer. */
+        SSL_set_verify(ssl, SSL_VERIFY_NONE, NULL);
     }
     /* Use the recvmsg BIO so the kernel SCM_TIMESTAMPNS stamp is captured on
      * the socket fill (see lotus_tls__recvmsg_bio). Falls back to the default
@@ -354,11 +385,11 @@ int lotus_tls_connect(const char *host, uint16_t port) {
     if (r != 1) {
         int err = SSL_get_error(ssl, r);
         fprintf(stderr,
-                "lotus_tls_connect: handshake failed (host=%s port=%u err=%d)\n",
-                host, (unsigned)port, err);
+                "lotus_tls_upgrade: handshake failed (host=%s verify=%d err=%d)\n",
+                host, verify, err);
         ERR_print_errors_fp(stderr);
         SSL_free(ssl);
-        close(raw_fd);
+        /* Caller owns raw_fd — do NOT close it here. */
         errno = ECONNREFUSED;
         return -1;
     }
@@ -375,7 +406,7 @@ int lotus_tls_connect(const char *host, uint16_t port) {
             pthread_mutex_unlock(&g_tls_mutex);
             SSL_shutdown(ssl);
             SSL_free(ssl);
-            close(raw_fd);
+            /* Caller owns raw_fd — do NOT close it here. */
             errno = ENOMEM;
             return -1;
         }
@@ -387,6 +418,29 @@ int lotus_tls_connect(const char *host, uint16_t port) {
     g_tls_entries[handle].raw_fd = raw_fd;
     g_tls_count++;
     pthread_mutex_unlock(&g_tls_mutex);
+    return handle;
+}
+
+int lotus_tls_connect(const char *host, uint16_t port) {
+    if (!host) {
+        errno = EINVAL;
+        return -1;
+    }
+    int raw_fd = lotus_tcp_connect(host, port);
+    if (raw_fd < 0) {
+        /* lotus_tcp_connect already set errno + logged. */
+        return -1;
+    }
+    /* connect OWNS the fd it dialed, so it must close raw_fd on any
+     * upgrade failure — the inverse of upgrade's caller-owns contract.
+     * verify=1 preserves connect's existing external contract (system
+     * trust store + SNI hostname match), so the io_tls network tests
+     * double as regression coverage for this dial+upgrade refactor. */
+    int handle = lotus_tls_upgrade(raw_fd, host, /*verify=*/1);
+    if (handle < 0) {
+        close(raw_fd);
+        return -1;
+    }
     return handle;
 }
 

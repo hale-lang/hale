@@ -13,6 +13,11 @@ pub(crate) trait IoTlsStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
+    fn lower_std_io_tls_upgrade_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
     fn lower_std_io_tls_send_bytes(
         &mut self,
         args: &[Expr],
@@ -107,6 +112,97 @@ impl<'ctx, 'p> IoTlsStdlib<'ctx> for Cx<'ctx, 'p> {
             host_val,
             Some((h_i64.into(), CodegenTy::Int)),
             "tls.connect",
+        )
+    }
+
+    /// `std::io::tls::upgrade(fd: Int, host: String, verify: Bool)
+    /// -> Int fallible(IoError)`. Wraps an already-connected TCP fd in
+    /// a client TLS session (STARTTLS-style). Same fallible shape and
+    /// IoError path convention as `connect` (path anchor = host); the
+    /// C primitive returns the opaque handle (>=0) or -1 on error. The
+    /// fd-ownership asymmetry (upgrade does NOT close the fd on
+    /// failure — the caller owns it) lives in the C runtime, not here.
+    fn lower_std_io_tls_upgrade_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 3 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tls::upgrade takes 3 args (fd, host, verify), got {}",
+                args.len()
+            )));
+        }
+        let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
+        if fd_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tls::upgrade: fd must be Int, got {:?}",
+                fd_ty
+            )));
+        }
+        let (host_val, host_ty) = self.lower_expr(&args[1], scope)?;
+        if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tls::upgrade: host must be String, got {:?}",
+                host_ty
+            )));
+        }
+        let host_val = self.unpack_view_if_needed(host_val, &host_ty)?;
+        let (verify_val, verify_ty) = self.lower_expr(&args[2], scope)?;
+        if verify_ty != CodegenTy::Bool {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tls::upgrade: verify must be Bool, got {:?}",
+                verify_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let fd_i32 = self
+            .builder
+            .build_int_truncate(fd_val.into_int_value(), i32_t, "tls.up.fd.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let verify_i32 = self
+            .builder
+            .build_int_z_extend(
+                verify_val.into_int_value(),
+                i32_t,
+                "tls.up.verify.zext",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_tls_upgrade")
+            .expect("lotus_tls_upgrade declared");
+        let h_i32 = self
+            .builder
+            .build_call(
+                f,
+                &[fd_i32.into(), host_val.into(), verify_i32.into()],
+                "tls.upgrade.handle",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                h_i32,
+                i32_t.const_zero(),
+                "tls.upgrade.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let h_i64 = self
+            .builder
+            .build_int_s_extend(h_i32, i64_t, "tls.upgrade.handle.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.complete_io_fallible_call(
+            is_err,
+            host_val,
+            Some((h_i64.into(), CodegenTy::Int)),
+            "tls.upgrade",
         )
     }
 

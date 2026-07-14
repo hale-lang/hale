@@ -66,6 +66,37 @@ fn https_get_example_com_returns_200() {
 }
 
 #[test]
+fn upgrade_bad_fd_returns_fallible_error() {
+    // `upgrade` wraps an already-connected fd in a TLS session. On an
+    // invalid fd (-1) the underlying socket I/O fails immediately, so
+    // the TLS handshake can't complete and the fallible(IoError)
+    // surface must fire on the `or`. No network / DNS / trust store
+    // needed, so this runs in the default (non-ignored) suite and is
+    // the fast regression guard for the `upgrade` plumbing.
+    let src = r#"
+        fn main() {
+            let h = std::io::tls::upgrade(-1, "example.com", true) or {
+                println("upgrade_err");
+                return;
+            };
+            println("unexpected ok handle=" + h);
+        }
+    "#;
+    let (stdout, status) = build_and_run("upgrade_bad_fd", src);
+    assert!(status.success(), "non-zero: {:?}", status);
+    assert!(
+        stdout.contains("upgrade_err"),
+        "expected fallible-err branch; got: {:?}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("unexpected ok"),
+        "should NOT have reached success branch: {:?}",
+        stdout
+    );
+}
+
+#[test]
 #[ignore = "requires network + DNS + system trust store"]
 fn handshake_failure_returns_fallible_error() {
     // Connecting on the wrong port (e.g. port 80 expecting plain
@@ -90,6 +121,93 @@ fn handshake_failure_returns_fallible_error() {
     assert!(
         !stdout.contains("unexpected ok"),
         "should NOT have reached success branch: {:?}",
+        stdout
+    );
+}
+
+#[test]
+#[ignore = "requires network + DNS + system trust store"]
+fn upgrade_verify_true_reproduces_connect_200() {
+    // Manually dial a plain TCP socket with std::io::tcp::connect,
+    // then upgrade that fd to a *verified* TLS session. connect is now
+    // internally dial + upgrade(verify=1), so getting the same 200-OK
+    // result here regression-proves the refactor is behavior-
+    // preserving and that upgrade+verify goes through the system trust
+    // store exactly as connect did.
+    let src = r#"
+        fn main() {
+            let fd = std::io::tcp::connect("example.com", 443) or raise;
+            let h = std::io::tls::upgrade(fd, "example.com", true) or {
+                std::io::tcp::close_fd(fd);
+                println("upgrade_err");
+                return;
+            };
+            let req = std::bytes::from_string(
+                "GET / HTTP/1.0\r\nHost: example.com\r\nConnection: close\r\n\r\n"
+            );
+            let _ = std::io::tls::send_bytes(h, req);
+            let resp = std::io::tls::recv_bytes(h, 256);
+            let s = std::str::from_bytes(resp);
+            let nl = std::str::index_of(s, "\r\n");
+            if nl > 0 {
+                println(s[0..nl]);
+            }
+            std::io::tls::close(h);
+        }
+    "#;
+    let (stdout, status) = build_and_run("upgrade_verify_true", src);
+    assert!(status.success(), "non-zero: {:?}", status);
+    assert!(
+        !stdout.contains("upgrade_err"),
+        "verified upgrade should have handshaked; got: {:?}",
+        stdout
+    );
+    assert!(
+        stdout.contains("200"),
+        "expected 200 status in first line; got: {:?}",
+        stdout
+    );
+}
+
+#[test]
+#[ignore = "requires network + DNS + system trust store"]
+fn upgrade_verify_false_handshakes() {
+    // verify=false skips peer authentication (sslmode=require
+    // semantics — encrypt without checking the cert chain against the
+    // trust store), the mode used against endpoints whose CA is not in
+    // the system store (e.g. AWS RDS). It must still complete the
+    // handshake and exchange application data; SNI is still sent.
+    let src = r#"
+        fn main() {
+            let fd = std::io::tcp::connect("example.com", 443) or raise;
+            let h = std::io::tls::upgrade(fd, "example.com", false) or {
+                std::io::tcp::close_fd(fd);
+                println("upgrade_err");
+                return;
+            };
+            let req = std::bytes::from_string(
+                "GET / HTTP/1.0\r\nHost: example.com\r\nConnection: close\r\n\r\n"
+            );
+            let _ = std::io::tls::send_bytes(h, req);
+            let resp = std::io::tls::recv_bytes(h, 256);
+            let s = std::str::from_bytes(resp);
+            let nl = std::str::index_of(s, "\r\n");
+            if nl > 0 {
+                println(s[0..nl]);
+            }
+            std::io::tls::close(h);
+        }
+    "#;
+    let (stdout, status) = build_and_run("upgrade_verify_false", src);
+    assert!(status.success(), "non-zero: {:?}", status);
+    assert!(
+        !stdout.contains("upgrade_err"),
+        "unverified upgrade should still handshake; got: {:?}",
+        stdout
+    );
+    assert!(
+        stdout.contains("200"),
+        "expected 200 status in first line; got: {:?}",
         stdout
     );
 }

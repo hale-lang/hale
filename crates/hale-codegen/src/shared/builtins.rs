@@ -1969,6 +1969,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i32_t.fn_type(&[ptr_t.into(), i16_t.into()], false);
         self.module
             .add_function("lotus_tls_connect", tls_connect_ty, None);
+        // declare i32 @lotus_tls_upgrade(i32 raw_fd, ptr host, i32 verify)
+        // — wrap an already-connected fd in a client TLS session
+        // (STARTTLS-style). `verify` is a Bool lowered to i32 (0/1).
+        let tls_upgrade_ty =
+            i32_t.fn_type(&[i32_t.into(), ptr_t.into(), i32_t.into()], false);
+        self.module
+            .add_function("lotus_tls_upgrade", tls_upgrade_ty, None);
         // declare i32 @lotus_tls_send_bytes(i32 handle, ptr bytes)
         let tls_send_bytes_ty =
             i32_t.fn_type(&[i32_t.into(), ptr_t.into()], false);
