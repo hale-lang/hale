@@ -57,41 +57,18 @@ you get the cost model the runtime can plan against. The
 constraints aren't restrictions bolted on — they're the source of
 the guarantees.
 
-## Why one shape spans human, LLM, and machine
-
-There's a structural reason the matchmaker from the introduction
-decomposes the same way on paper, in Hale, and inside an LLM's
-plan. When *K* things attach to one coordination point, the
-working state to hold them together costs about *K* log₂ *K*
-bits. That ceiling — roughly 4 to 10 — shows up everywhere
-coordination happens: human working memory, spans of control,
-mixture-of-experts active counts, multi-agent LLM saturation. The
-same bound, substrate-invariant.
-
-A Hale program is the literal shape of that bound: loci are
-vertices, topics are hyperedges, capacity declarations bound each
-vertex's *K*. So translation across the human → LLM → machine
-boundary stays cheap — each layer uses the same vertices and
-edges, and no representation has to be rebuilt in a foreign
-idiom. It's the same reason the locus survives the move from the
-native runtime to the browser to any future substrate: substrate
-variance doesn't reach into the shape.
-
 ## Going deeper
 
-- **[`AGENTS.md`](https://github.com/hale-lang/hale/blob/main/AGENTS.md)** — the formal model in one
-  page: nodes, hyperedges, and invariants, with the `locus ↔ Σ`
-  mapping. Written for agents authoring `.hl`, but it's the
-  tightest statement of the design for a human too.
+- **[`AGENTS.md`](https://github.com/hale-lang/hale/blob/main/AGENTS.md)** — the
+  condensed rules and the six-pattern catalog for authoring
+  `.hl`. Written for agents, but the tightest statement of the
+  design for a human too.
 - **[`spec/design-rationale.md`](https://github.com/hale-lang/hale/blob/main/spec/design-rationale.md)**
   — every numbered design decision (`F.1` … `F.36`), the
   alternatives considered, and why each commitment is shaped the
   way it is.
-- **[hale-lang/papers](https://github.com/hale-lang/papers)** —
-  the structural mathematics and the cross-substrate evidence for
-  the *k̄* ∈ [4, 10] bound.
 
 You now have the whole arc: a small language at the top, a
 systems substrate at the bottom, one shape connecting them. Build
-something — and if the decomposition into loci feels natural, that
-fit is the thesis working.
+something — and if the decomposition into loci feels natural,
+that fit is the point.
