@@ -1,19 +1,84 @@
 # AGENTS.md — Hale for agents writing `.hl` programs
 
 You are writing programs in Hale. This file is the load-bearing
-prompt for authoring `.hl`. Read it once before you write any
-code.
+prompt: encoding first, then operational. Read it once before
+you write any `.hl` code.
+
+## The Design (recursive hypergraph)
+
+Hale operationalizes **The Design** — a recursive hypergraph — at
+the language substrate. Every rule about how Hale code is shaped
+traces back here. Quote node / hyperedge / invariant IDs when
+citing a rule (e.g. `H8`, `I4`).
+
+```
+%DESIGN v1
+
+nodes:
+  α   axiom                ; declared, irreducible
+  Σ   system               ; α with 1→N decomposition
+  Δ   dimension            ; projection of Σ's 1→N
+  Π   perspective          ; choice of Δ
+  K   capacity             ; bound on Σ
+  D   displacement         ; K-full + new → drop-least
+  ↑   failure-up           ; D insufficient → Σ.parent
+  ⊥   root-as-boundary     ; recursion stops at horizon
+  ∥   vertical-only        ; edges ⊆ {parent↔child}
+  ⋈   multi-DAG-projection ; substrate-DAGs join via form
+
+hyperedges:                              ; arity ≥ 2
+  H1  unfold     (α, Σ, [α₁..αₙ])        ; α-as-Σ has children
+  H2  recurse    (Σ, αᵢ)                 ; each child read-as-α
+  H3  compose-Δ  (Δ₁, Δ₂) → Δ₃           ; ⊗-closed
+  H4  observe    (Π, Δ)                  ; perspective picks Δ
+  H5  depth-Δ    (Π, Δd)                 ; cross-depth Π IS a Δ
+  H6  bound      (Σ, K)
+  H7  displace   (Σ, K-full, new) → kept ; drop reveals priority
+  H8  bubble     (Σ, ↑) → Σ.parent.on_fail
+  H9  vertical   ∀ edge ∈ Σ-tree : edge ∈ ∥
+  H10 lateral-Δ  compose-Δ is licit-lateral-at-Δ-layer only
+  H11 root       (Σ.root, ⊥) = current-observable-horizon
+  H12 DAG-join   (⋈, DAGᵢ) via form
+
+invariants:
+  I1 form         : portable across deployment substrates
+  I2 params       : substrate-local
+  I3 pyramid      : ∀ d ∈ depths(Σ-tree), ∃ stability-tuple_d
+  I4 MS2          : ∀ q ∈ model, q ∈ exactly-one-Σ-tower
+                    floating-q ⟹ modeling-error
+  I5 form-content : form claims are perspective-invariant;
+                    content reduction claims are perspective-conditioned
+
+hale ≜ operationalization(DESIGN, substrate=language)
+map:
+  locus               ↔ Σ
+  type                ↔ Σ-proto (no lifecycle/flow)
+  contract            ↔ Π@depth-edge
+  expose | consume    ↔ Π↑ | Π↓
+  capacity{pool,heap} ↔ K-tuple, slot-0 implicit Arena
+  on_failure          ↔ ↑
+  drain (cascade)     ↔ ∥ depth-first
+  projection class    ↔ K-conditioned Π-resolution (rich|chunked|recognition)
+  bus                 ↔ Δ-composed channel, ⋈ when bound to transport
+  closure-test        ↔ I3 local check at Σ
+  perspective T       ↔ Π serialized across processes
+  fallible(E)         ↔ value-channel Π↑ (orthogonal to ↑)
+  @form(...)          ↔ K-discipline lowering, application-layer Σ
+
+hale.root: ⊥(language-graph) = DESIGN itself
+```
 
 ## The locus axiom
 
-Everything named and structural is a **locus**. If it has
+Everything named and structural is a **locus** (Σ). If it has
 lifecycle, contracts, bus participation, modes, closures,
 capacity slots, or projection class, it is a fully-grown
 locus. If it is pure data — record, returnable by value, no
 flow — it is a **type**, a locus still in proto-form. There is
-no third primitive at the structural layer. Every named quantity
-must be assignable to exactly one locus in one locus tower;
-floating quantities signal modeling error, not framework gap.
+no third primitive at the structural layer. By `I4` (MS2),
+every named quantity must be assignable to exactly one locus
+in one locus tower; floating quantities signal modeling error,
+not framework gap.
 
 ## The pattern catalog
 
@@ -122,12 +187,12 @@ Filter these reflexes before they cost you time.
   declaration would describe a contract that can't be
   satisfied. User-declared `fn` members on a locus and free
   fns DO carry `fallible(E)` — they have a real caller. The
-  narrowed two-channel rule (2026-05-25) keeps structural failure
-  and `fallible` separate at the substrate boundary; everywhere else they
+  narrowed two-channel rule (2026-05-25) keeps `↑` and `fallible`
+  separate at the substrate boundary; everywhere else they
   compose. See `spec/semantics.md § fallible-on-locus`.
 - **No `panic(msg)` / `assert(cond)`.** Failure is structural,
-  routed through closure-tests + `on_failure`, or value-level
-  via `fallible(E)`.
+  routed through closure-tests + `on_failure` (the `↑` channel)
+  or value-level via `fallible(E)`.
 
 ## Operational rules
 
@@ -170,12 +235,12 @@ surprises:
 - Topic ref used as expression value → topics aren't values;
   they address bus channels only.
 - `self` outside a method body → you're in a free fn or top
-  level; no enclosing locus.
+  level; no enclosing Σ.
 - Lifecycle / mode / closure-assertion / bus-handler method
   declared `fallible(E)` → the substrate orchestrates these,
   so the error channel has no caller to address. Drop the
-  `fallible(E)` and route failure through the structural channel
-  (closure-test + `on_failure`), OR factor the body into a user-declared
+  `fallible(E)` and route failure through `↑` (closure-test
+  + `on_failure`), OR factor the body into a user-declared
   `fn` member that the lifecycle method calls with `or` to
   bridge the channels.
 - "Error not addressed" on a `fallible` call → add `or raise` /
