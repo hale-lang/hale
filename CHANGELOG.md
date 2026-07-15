@@ -27,6 +27,11 @@ Eight substrate findings from a downstream service built on hale
   `Content-Length` body bytes, so python-urllib-style clients
   (headers and body in separate segments) work. New guards: 1 MiB
   request cap (413 on declared overflow) and a 5s recv timeout.
+- **New warning: cooperative pool starvation.** Two or more
+  statically non-returning `run()` bodies on one cooperative pool
+  (including fields with no placement entry and the main locus's
+  own `run()`) warn naming every offender — the second-born
+  `run()` never starts, and the failure was silent.
 - Filed as issues: migrating `Stream.send`/`recv` to
   `fallible(IoError)` (finding 5) and implicit error propagation
   on tail-position `return` (finding 8).

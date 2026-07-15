@@ -1341,3 +1341,367 @@ fn main() { App { }; }
         msgs
     );
 }
+
+// ---------------------------------------------------------------
+// Pool starvation (downstream handoff 2026-07-14): two statically
+// non-returning run() bodies on one cooperative pool — the pool
+// runs each run() to completion in birth order, so the second
+// never starts. Silent at runtime (bus handlers still fire at
+// sleep/yield drains), so the typechecker warns. The real-world
+// shape: a publish-only 1s metronome on pool `main` starved the
+// main locus's own run() — boot "completed" with no ports bound.
+// ---------------------------------------------------------------
+
+const STARVED: &str = "never start";
+
+#[test]
+fn two_nonreturning_runs_on_one_pool_warn() {
+    let src = r#"
+locus W1 { run() { while true { std::time::sleep(1ms); } } }
+locus W2 { run() { while true { std::time::sleep(1ms); } } }
+
+main locus App {
+    params {
+        a: W1 = W1 { };
+        b: W2 = W2 { };
+    }
+    placement {
+        a: cooperative(pool = io);
+        b: cooperative(pool = io);
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    let warn = msgs.iter().find(|m| m.contains(STARVED));
+    let warn = warn.unwrap_or_else(|| {
+        panic!("expected a pool-starvation warning, got: {:?}", msgs)
+    });
+    assert!(warn.contains("`io`"), "should name the pool: {}", warn);
+    assert!(warn.contains("`a`") && warn.contains("`b`"), "should name both fields: {}", warn);
+}
+
+#[test]
+fn metronome_starves_main_locus_run_warns() {
+    // The exact real-world shape: `while !self.draining { sleep; publish }`
+    // metronome with NO placement entry (defaults to pool main) + a main
+    // locus whose own run() never returns.
+    let src = r#"
+type TickMsg { n: Int; }
+
+locus Metronome {
+    params { n: Int = 0; }
+    bus { publish "tick" of type TickMsg; }
+    run() {
+        while !self.draining {
+            std::time::sleep(1s);
+            "tick" <- TickMsg { n: self.n };
+        }
+    }
+}
+
+main locus App {
+    params {
+        metro: Metronome = Metronome { };
+    }
+    run() {
+        while true { std::time::sleep(1s); }
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    let warn = msgs.iter().find(|m| m.contains(STARVED));
+    let warn = warn.unwrap_or_else(|| {
+        panic!("expected the metronome-vs-main starvation warning, got: {:?}", msgs)
+    });
+    assert!(warn.contains("`Metronome`"), "should name the metronome: {}", warn);
+    assert!(warn.contains("`App`"), "should name the main locus: {}", warn);
+    assert!(
+        warn.contains("params-init"),
+        "the pool-main flavor should explain the boot-hang shape: {}",
+        warn
+    );
+}
+
+#[test]
+fn metronome_with_explicit_pool_main_also_warns() {
+    let src = r#"
+locus Metronome {
+    run() { while !self.draining { std::time::sleep(1s); } }
+}
+
+main locus App {
+    params { metro: Metronome = Metronome { }; }
+    placement { metro: cooperative(pool = main); }
+    run() { while true { std::time::sleep(1s); } }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(STARVED)),
+        "explicit pool=main must warn like the default: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn one_nonreturning_plus_event_driven_no_warning() {
+    let src = r#"
+locus Loop { run() { while true { std::time::sleep(1s); } } }
+locus Quiet { run() { std::time::sleep(1ms); } }
+
+main locus App {
+    params {
+        l: Loop = Loop { };
+        q: Quiet = Quiet { };
+    }
+    placement {
+        l: cooperative(pool = io);
+        q: cooperative(pool = io);
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(STARVED)),
+        "one forever-run + one event-driven locus is the sanctioned shape: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn nonreturning_runs_on_different_pools_no_warning() {
+    let src = r#"
+locus W1 { run() { while true { std::time::sleep(1ms); } } }
+locus W2 { run() { while true { std::time::sleep(1ms); } } }
+
+main locus App {
+    params {
+        a: W1 = W1 { };
+        b: W2 = W2 { };
+    }
+    placement {
+        a: cooperative(pool = io);
+        b: cooperative(pool = net);
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(STARVED)),
+        "separate pools each run their own run(): {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn bounded_and_breaking_loops_no_warning() {
+    let src = r#"
+locus Counted {
+    run() {
+        let mut i = 0;
+        while i < 3 { std::time::sleep(1ms); i = i + 1; }
+    }
+}
+locus Breaks {
+    run() {
+        while true { std::time::sleep(1ms); break; }
+    }
+}
+
+main locus App {
+    params {
+        c: Counted = Counted { };
+        b: Breaks = Breaks { };
+    }
+    placement {
+        c: cooperative(pool = io);
+        b: cooperative(pool = io);
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(STARVED)),
+        "loops that exit are not statically non-returning: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn flag_flipped_by_handler_no_warning() {
+    // `while !self.stop` where a bus handler assigns the flag: the loop
+    // can exit (handlers fire during sleep-slice drains) — must not warn.
+    let src = r#"
+type Halt { n: Int; }
+
+locus Stoppable {
+    params { stop: Bool = false; }
+    bus { subscribe "halt" as on_halt of type Halt; }
+    fn on_halt(h: Halt) { self.stop = true; }
+    run() { while !self.stop { std::time::sleep(1s); } }
+}
+locus Loop { run() { while true { std::time::sleep(1s); } } }
+
+main locus App {
+    params {
+        s: Stoppable = Stoppable { };
+        l: Loop = Loop { };
+    }
+    placement {
+        s: cooperative(pool = io);
+        l: cooperative(pool = io);
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(STARVED)),
+        "a handler-assigned exit flag makes the loop exitable: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn never_assigned_flag_warns() {
+    // `while !self.f` where nothing ever assigns `f` (default false):
+    // provably never flips — counts as non-returning.
+    let src = r#"
+locus Stuck {
+    params { f: Bool = false; }
+    run() { while !self.f { std::time::sleep(1s); } }
+}
+locus Loop { run() { while true { std::time::sleep(1s); } } }
+
+main locus App {
+    params {
+        s: Stuck = Stuck { };
+        l: Loop = Loop { };
+    }
+    placement {
+        s: cooperative(pool = io);
+        l: cooperative(pool = io);
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(STARVED)),
+        "a never-assigned false flag is a forever loop: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn pinned_partner_no_warning() {
+    let src = r#"
+locus W1 { run() { while true { std::time::sleep(1ms); } } }
+locus W2 { run() { while true { std::time::sleep(1ms); } } }
+
+main locus App {
+    params {
+        a: W1 = W1 { };
+        b: W2 = W2 { };
+    }
+    placement {
+        a: cooperative(pool = io);
+        b: pinned;
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(STARVED)),
+        "pinned owns its thread — no pool sharing: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn async_io_pool_no_starvation_warning() {
+    let src = r#"
+locus W1 { run() { while true { std::time::sleep(1ms); } } }
+locus W2 { run() { while true { std::time::sleep(1ms); } } }
+
+main locus App {
+    params {
+        a: W1 = W1 { };
+        b: W2 = W2 { };
+    }
+    placement {
+        a: cooperative(pool = io) where async_io;
+        b: cooperative(pool = io) where async_io;
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(STARVED)),
+        "async_io run-cells are parkable coros — runs interleave: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn dead_receiver_error_suppresses_starvation_warning() {
+    // When the dead-receiver ERROR fires for a pool, the starvation
+    // warning for that pool stays quiet (the error already says the
+    // thread is monopolized).
+    let src = r#"
+type Tick { n: Int; }
+
+locus Gateway {
+    bus { subscribe "tick" as on_tick of type Tick; }
+    fn on_tick(t: Tick) { }
+    run() { while true { let n = std::io::tls::recv_into(0, 0, 64); } }
+}
+
+locus Feed {
+    bus { publish "tick" of type Tick; }
+    run() { while true { "tick" <- Tick { n: 1 }; } }
+}
+
+main locus App {
+    params {
+        gw: Gateway = Gateway { };
+        feed: Feed  = Feed { };
+    }
+    placement {
+        gw: cooperative(pool = ws);
+        feed: cooperative(pool = ws);
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(DEAD_RX)),
+        "the dead-receiver error should fire: {:?}",
+        msgs
+    );
+    assert!(
+        !msgs.iter().any(|m| m.contains(STARVED)),
+        "the starvation warning is suppressed when the error already fired: {:?}",
+        msgs
+    );
+}

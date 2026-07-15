@@ -79,6 +79,14 @@ with how the runtime dispatches:
   (`recv` / `accept` / `process::run`) on a pool that isn't
   `where async_io`; it holds the pool's thread and stalls
   co-scheduled loci — warning.
+- **Cooperative pool starvation** — two or more loci on one
+  cooperative pool whose `run()` bodies statically never return
+  (`while true`, `while !self.draining`, a never-assigned flag): the
+  pool runs each `run()` to completion in birth order, so the later
+  ones never start — including the main locus's own `run()` when a
+  forever-looping locus shares pool `main`. Bus handlers keep firing
+  at sleep/yield drains, which makes the hang look like a healthy
+  idle; the warning names every offender — warning.
 - **Nested long-running child** — a non-`main` locus holding a
   params field of a locus type whose `run()` never returns; the fix
   is hoisting it to a `main` sibling with its own placement —

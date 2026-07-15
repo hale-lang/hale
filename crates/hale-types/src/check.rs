@@ -687,6 +687,174 @@ fn locus_has_nontrivial_run(l: &LocusDecl) -> bool {
     })
 }
 
+// === statically non-returning run() (pool starvation) =========
+//
+// A cooperative pool runs each posted `run()` cell to completion, so
+// two loci on one pool whose `run()` bodies never return means the
+// second never starts — silently (bus handlers still fire at
+// sleep/yield drains, which makes the hang look like a healthy idle).
+// The predicate below is deliberately conservative (same style as
+// `while_counter_bounded` in alloc_summary.rs): it only claims
+// "statically never returns" for shapes it can prove, so the
+// starvation warning never false-fires on a loop that can exit.
+
+/// Does this block contain a statement that can exit the enclosing
+/// `run()` loop — `break`, `return`, `terminate`, `fail`, or
+/// `violate`? Walked recursively through nested statement bodies but
+/// NOT into expressions (a `return` inside a failure-closure exits
+/// the closure, not `run()`). A `break` in a *nested* loop only exits
+/// that loop, but counting it as an exit here is the conservative
+/// direction (a missed warning, never a false one).
+fn block_has_loop_exit(block: &Block) -> bool {
+    block.stmts.iter().any(stmt_has_loop_exit)
+}
+
+fn stmt_has_loop_exit(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Break(_)
+        | Stmt::Return(..)
+        | Stmt::Terminate(_)
+        | Stmt::Fail { .. }
+        | Stmt::Violate { .. } => true,
+        Stmt::If(if_stmt) => if_has_loop_exit(if_stmt),
+        Stmt::Match(m) => m.arms.iter().any(|arm| match &arm.body {
+            MatchArmBody::Block(b) => block_has_loop_exit(b),
+            MatchArmBody::Expr(_) => false,
+        }),
+        Stmt::For { body, .. } | Stmt::While { body, .. } => block_has_loop_exit(body),
+        Stmt::Block(b) => block_has_loop_exit(b),
+        Stmt::ShmWrite { body, .. } => block_has_loop_exit(body),
+        _ => false,
+    }
+}
+
+fn if_has_loop_exit(if_stmt: &IfStmt) -> bool {
+    if block_has_loop_exit(&if_stmt.then_block) {
+        return true;
+    }
+    match if_stmt.else_block.as_deref() {
+        Some(ElseBranch::Else(b)) => block_has_loop_exit(b),
+        Some(ElseBranch::ElseIf(inner)) => if_has_loop_exit(inner),
+        None => false,
+    }
+}
+
+/// `Some(field_name)` iff the expression is a bare `self.<field>` read.
+fn self_bool_field(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Field { receiver, name, .. }
+            if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
+        {
+            Some(name.name.as_str())
+        }
+        _ => None,
+    }
+}
+
+/// Is `self.<field> = ...` (or a compound assign to it) present in any
+/// member body of the locus? Walked through nested statement bodies.
+fn locus_assigns_self_field(decl: &LocusDecl, field: &str) -> bool {
+    fn block_assigns(block: &Block, field: &str) -> bool {
+        block.stmts.iter().any(|s| stmt_assigns(s, field))
+    }
+    fn if_assigns(if_stmt: &IfStmt, field: &str) -> bool {
+        block_assigns(&if_stmt.then_block, field)
+            || match if_stmt.else_block.as_deref() {
+                Some(ElseBranch::Else(b)) => block_assigns(b, field),
+                Some(ElseBranch::ElseIf(inner)) => if_assigns(inner, field),
+                None => false,
+            }
+    }
+    fn stmt_assigns(stmt: &Stmt, field: &str) -> bool {
+        match stmt {
+            Stmt::Assign { target, .. } => {
+                target.head.name == "self"
+                    && matches!(
+                        target.tail.first(),
+                        Some(LValueSeg::Field(f)) if f.name == field
+                    )
+            }
+            Stmt::If(if_stmt) => if_assigns(if_stmt, field),
+            Stmt::Match(m) => m.arms.iter().any(|arm| match &arm.body {
+                MatchArmBody::Block(b) => block_assigns(b, field),
+                MatchArmBody::Expr(_) => false,
+            }),
+            Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                block_assigns(body, field)
+            }
+            Stmt::Block(b) => block_assigns(b, field),
+            Stmt::ShmWrite { body, .. } => block_assigns(body, field),
+            _ => false,
+        }
+    }
+    decl.members.iter().any(|m| match m {
+        LocusMember::Fn(f) => block_assigns(&f.body, field),
+        LocusMember::Lifecycle(l) => block_assigns(&l.body, field),
+        LocusMember::Mode(md) => block_assigns(&md.body, field),
+        LocusMember::Failure(fd) => block_assigns(&fd.body, field),
+        _ => false,
+    })
+}
+
+/// The literal Bool default of a params field, if it has one.
+fn param_bool_default(decl: &LocusDecl, field: &str) -> Option<bool> {
+    decl.members.iter().find_map(|m| {
+        let LocusMember::Params(pb) = m else { return None };
+        pb.params.iter().find_map(|p| {
+            if p.name.name != field {
+                return None;
+            }
+            match &p.init {
+                ParamInit::Value(Expr::Literal(Literal::Bool(b), _)) => Some(*b),
+                _ => None,
+            }
+        })
+    })
+}
+
+/// `Some(span of the terminal while)` iff this `run()` body statically
+/// never returns: its last statement is a `while` whose body contains
+/// no exit statement and whose condition provably never flips false —
+///   - `while true`,
+///   - `while !self.draining` (the synthetic drain flag flips only at
+///     shutdown, so for the pool's purposes the loop runs forever),
+///   - `while !self.f` / `while self.f` where `f` is a Bool params
+///     field that no member body ever assigns and whose declared
+///     default keeps the loop live (`false` / `true` respectively).
+fn run_statically_nonreturning(run_body: &Block, decl: &LocusDecl) -> Option<Span> {
+    let Some(Stmt::While { cond, body, span }) = run_body.stmts.last() else {
+        return None;
+    };
+    if block_has_loop_exit(body) {
+        return None;
+    }
+    let never_flips = match cond {
+        Expr::Literal(Literal::Bool(true), _) => true,
+        Expr::Unary { op: UnaryOp::Not, operand, .. } => {
+            match self_bool_field(operand) {
+                Some("draining") => true,
+                Some(f) => {
+                    !locus_assigns_self_field(decl, f)
+                        && param_bool_default(decl, f) == Some(false)
+                }
+                None => false,
+            }
+        }
+        _ => match self_bool_field(cond) {
+            Some(f) if f != "draining" => {
+                !locus_assigns_self_field(decl, f)
+                    && param_bool_default(decl, f) == Some(true)
+            }
+            _ => false,
+        },
+    };
+    if never_flips {
+        Some(*span)
+    } else {
+        None
+    }
+}
+
 /// Stdlib path calls that block the calling OS thread until the I/O
 /// completes. A cooperative (non-`async_io`) locus that runs one in
 /// its `run()` loop holds the pool's thread for the call's whole
@@ -1274,12 +1442,14 @@ fn check_cooperative_pool_blocking(
             if !main.is_main {
                 continue;
             }
-            let Some(pb) = main.members.iter().find_map(|m| match m {
+            // The placement block is optional: phase 1 (blocking-call
+            // diagnostics) needs entries, but phase 2 (run() starvation)
+            // also covers fields with no entry (they default to pool
+            // `main`).
+            let pb = main.members.iter().find_map(|m| match m {
                 LocusMember::Placement(pb) => Some(pb),
                 _ => None,
-            }) else {
-                continue;
-            };
+            });
             // field name -> single-segment locus type name.
             let mut field_locus: BTreeMap<&str, &str> = BTreeMap::new();
             for m in &main.members {
@@ -1296,7 +1466,12 @@ fn check_cooperative_pool_blocking(
                 }
             }
 
-            for entry in &pb.entries {
+            // Pools where the dead-receiver ERROR fired — the pool-
+            // starvation warning (phase 2) is suppressed there; the
+            // error already says the pool thread is monopolized.
+            let mut errored_pools: BTreeSet<String> = BTreeSet::new();
+
+            for entry in pb.map(|pb| pb.entries.as_slice()).unwrap_or(&[]) {
                 let PlacementSpec::Cooperative { pool } = &entry.spec else {
                     continue;
                 };
@@ -1370,6 +1545,7 @@ fn check_cooperative_pool_blocking(
                 let dead = external_subscription_handlers(decl);
                 if pool_name != "main" && !dead.is_empty() && direct.is_some() {
                     let (call, span) = direct.expect("is_some checked");
+                    errored_pools.insert(pool_name.to_string());
                     // DEAD RECEIVER (error). A non-main cooperative
                     // subscriber whose run() blocks: cross-process
                     // dispatch reaches a cooperative locus only when its
@@ -1428,6 +1604,153 @@ fn check_cooperative_pool_blocking(
                         ),
                     ));
                 }
+            }
+
+            // === phase 2: pool starvation ======================
+            //
+            // Two (or more) statically non-returning `run()` bodies on
+            // one cooperative pool: the pool runs each `run()` cell to
+            // completion in birth order, so the first-born runs forever
+            // and the later `run()` bodies never start. Distinct from
+            // the blocking-call diagnostics above — the archetypal
+            // shape (a `sleep` metronome) contains no blocking call,
+            // and the starved locus needn't be a subscriber. A locus
+            // can legitimately draw both warnings (blocking AND
+            // starving a sibling); they name different defects.
+            let mut by_pool: BTreeMap<String, Vec<(String, Span)>> =
+                BTreeMap::new();
+            for m in &main.members {
+                let LocusMember::Params(params) = m else { continue };
+                for pd in &params.params {
+                    let field = pd.name.name.as_str();
+                    let entry = pb.and_then(|pb| {
+                        pb.entries.iter().find(|e| e.field.name == field)
+                    });
+                    let pool_name: String = match entry.map(|e| (&e.spec, e)) {
+                        Some((PlacementSpec::Pinned { .. }, _)) => continue,
+                        Some((PlacementSpec::Cooperative { pool }, e)) => {
+                            // `where async_io` run-cells are parkable
+                            // coros — co-scheduled runs interleave at
+                            // park points, so no starvation claim.
+                            if e.constraints.iter().any(|c| {
+                                matches!(c.kind, PlacementConstraint::AsyncIo)
+                            }) {
+                                continue;
+                            }
+                            pool.as_ref()
+                                .map(|i| i.name.clone())
+                                .unwrap_or_else(|| "main".to_string())
+                        }
+                        // No placement entry: fields default to pool
+                        // `main` (mirrors compute_pool_of_locus_type).
+                        None => "main".to_string(),
+                    };
+                    // Stdlib loci with known non-terminating run()
+                    // (typecheck can't see their bodies).
+                    if let Some(TypeExpr::Named { path, .. }) = &pd.ty {
+                        let segs: Vec<&str> = path
+                            .segments
+                            .iter()
+                            .map(|s| s.name.as_str())
+                            .collect();
+                        if is_known_long_running_stdlib(&segs) {
+                            by_pool.entry(pool_name).or_default().push((
+                                format!(
+                                    "locus `{}` (field `{}`)",
+                                    segs.join("::"),
+                                    field
+                                ),
+                                pd.span,
+                            ));
+                            continue;
+                        }
+                    }
+                    let Some(locus_name) = field_locus.get(field) else {
+                        continue;
+                    };
+                    let Some(decl) = local_loci.get(locus_name) else {
+                        continue;
+                    };
+                    let Some(run_body) = decl.members.iter().find_map(|m| {
+                        match m {
+                            LocusMember::Lifecycle(LifecycleDecl {
+                                kind: LifecycleKind::Run,
+                                body,
+                                ..
+                            }) => Some(body),
+                            _ => None,
+                        }
+                    }) else {
+                        continue;
+                    };
+                    let Some(span) = run_statically_nonreturning(run_body, decl)
+                    else {
+                        continue;
+                    };
+                    by_pool.entry(pool_name).or_default().push((
+                        format!("locus `{}` (field `{}`)", locus_name, field),
+                        span,
+                    ));
+                }
+            }
+            // The main locus itself runs on pool `main`; its run()
+            // begins only after params-init completes, so it is
+            // birth-ordered last.
+            let mut main_starved_on_main = false;
+            if let Some(main_run) = main.members.iter().find_map(|m| match m {
+                LocusMember::Lifecycle(LifecycleDecl {
+                    kind: LifecycleKind::Run,
+                    body,
+                    ..
+                }) => Some(body),
+                _ => None,
+            }) {
+                if let Some(span) = run_statically_nonreturning(main_run, main) {
+                    by_pool.entry("main".to_string()).or_default().push((
+                        format!("the main locus `{}`", main.name.name),
+                        span,
+                    ));
+                    main_starved_on_main = true;
+                }
+            }
+            for (pool_name, members) in &by_pool {
+                if members.len() < 2 || errored_pools.contains(pool_name) {
+                    continue;
+                }
+                let names = members
+                    .iter()
+                    .map(|(d, _)| d.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let (first_name, first_span) = &members[0];
+                let main_note = if pool_name == "main" && main_starved_on_main {
+                    format!(
+                        " For pool `main` the last of these is the main \
+                         locus's own `run()`, which begins only after \
+                         params-init — boot appears to complete, then the \
+                         process sits idle."
+                    )
+                } else {
+                    String::new()
+                };
+                diags.push(Diag::warn(
+                    *first_span,
+                    format!(
+                        "cooperative pool `{}` is shared by {}, whose `run()` \
+                         bodies all statically never return (terminal `while` \
+                         loop with no `break`/`return`/`terminate`). A \
+                         cooperative pool runs each `run()` to completion in \
+                         birth order: {}'s `run()` starts first and never \
+                         finishes, so the later `run()` bodies never start. \
+                         Bus handlers still fire at sleep/yield drains, which \
+                         makes the starvation look like a healthy idle.{} Use \
+                         `pinned` (its own thread + a mailbox drained at \
+                         sleep/yield) for all but one of them, or keep the \
+                         extra `run()` bodies non-blocking and event-driven \
+                         (handlers plus a bounded loop).",
+                        pool_name, names, first_name, main_note,
+                    ),
+                ));
             }
         }
     }
