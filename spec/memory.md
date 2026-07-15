@@ -890,6 +890,37 @@ reclaim the global arena but to skip it entirely — the m20 spec
 holds by construction because the deserialize-time allocator IS
 the subscriber's arena.
 
+**Cross-thread wire cell per-delivery reclaim (2026-07-15;
+refines Task 9 for the owner-routed path).** Task 9 deserializes
+into the subscriber's arena on the *publisher's* thread. When the
+target subscriber lives on a *different* thread (a `pinned`
+publisher fanning out to a `where async_io` pool subscriber),
+that write races the subscriber's own unlocked arena mutations —
+so the owner-routed dispatch instead posts a *wire cell* carrying
+the payload's wire bytes plus its deserializer, and the
+subscriber's own thread deserializes it just before invoking the
+handler (`lotus_bus_cell_materialize`). The first cut of that
+path deserialized directly into the subscriber's locus arena —
+correct for lifetime, but a per-delivery **leak**: on a
+long-lived subscriber whose `run()` is parked (the canonical
+server loop — an accept / recv that never returns), the locus
+arena never dissolves, so every delivery's payload fields
+(String / Bytes) piled up unboundedly (~one payload's heap per
+message; measured ~320 MiB over 20k 16-KiB deliveries). The fix
+deserializes each wire cell into a fresh **per-delivery
+subregion** of the subscriber's arena, destroyed the instant the
+handler returns (alongside the existing per-cell payload free).
+This gives the deserialized payload exactly the lifetime the
+same-thread (inline) delivery path already gives it — alive for
+the handler, reclaimed after — and is safe for the
+`self.current_kernel = msg` retention pattern because a
+locus-field store deep-copies nested String / Bytes fields into
+the *locus* arena (the only way user code can retain payload
+data: address-taking is disallowed, so the payload pointer itself
+never escapes the handler). A subscriber on the same thread as
+its publisher, or a payload with no owned fields, is unaffected
+(no wire cell, no subregion).
+
 **Phase-2 (4) `g_bus_payload_arena` reclaim investigation
 (2026-05-19; superseded by Phase-3 Task 9).**
 The handoff posed: "should `lotus_bus_dispatch_wire`'s

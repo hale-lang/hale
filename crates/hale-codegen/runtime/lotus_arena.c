@@ -5204,6 +5204,24 @@ typedef struct lotus_bus_cell {
      * the drain path calls lotus_bus_cell_materialize() on the
      * OWNER thread just before invoking the handler. */
     void  *deserialize;
+    /* Per-delivery payload arena (downstream handoff 2026-07-15,
+     * P0 leak). NULL for every non-wire cell and until materialize
+     * runs. When a wire cell is materialized, its deserializer
+     * allocates the payload's String/Bytes fields somewhere — and
+     * routing that into the subscriber's LOCUS arena (program-
+     * lifetime) leaks one payload's worth of heap PER DELIVERY on a
+     * long-lived subscriber. So materialize deserializes into a
+     * fresh subregion of the subscriber's arena instead, recorded
+     * here; each drain path destroys it right after the handler
+     * returns, exactly alongside the payload_heap free. This gives
+     * the deserialized payload the same lifetime the same-thread
+     * (inline) delivery path already gives it — alive for the
+     * handler, reclaimed after — so a handler that stashes a
+     * payload field into self still deep-copies into the locus
+     * arena (as it must for the inline path too). NULL region =>
+     * nothing to destroy (non-wire cell, or self_ptr was NULL and
+     * the deserialize fell back to the global arena). */
+    void  *payload_region;
     /* 16-byte aligned. The inline buffer holds a verbatim copy of a
      * bus payload struct, which may carry an i128 / Decimal (align-16)
      * field. A subscriber handler reads such a field with an aligned
@@ -5530,6 +5548,10 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q) {
     void  *handler_self = cell->self_ptr;
     size_t psize        = cell->payload_size;
     void  *heap_ptr     = cell->payload_heap;
+    /* Snapshot the per-delivery region alongside heap_ptr — both must
+     * survive a handler-driven q->cells realloc. NULL on this
+     * single-threaded inline path (no wire cells); kept uniform. */
+    void  *region_ptr   = cell->payload_region;
     unsigned char stack_payload[LOTUS_PAYLOAD_INLINE]
         __attribute__((aligned(16)));
     void *payload_ptr = NULL;
@@ -5543,6 +5565,7 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q) {
     ((lotus_handler_fn)handler_fn)(handler_self, payload_ptr);
     g_bus_inline_drain_depth--;
     if (heap_ptr) free(heap_ptr);
+    if (region_ptr) lotus_arena_destroy((lotus_arena_t *)region_ptr);
 }
 
 /* Re-entrancy guard: set while THIS THREAD is inside a drain. A nested
@@ -5603,6 +5626,8 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             ((lotus_handler_fn)cell_copy.handler)(
                 cell_copy.self_ptr, payload_ptr);
             if (cell_copy.payload_heap) free(cell_copy.payload_heap);
+            if (cell_copy.payload_region)
+                lotus_arena_destroy(cell_copy.payload_region);
         }
     } else {
         /* Single-threaded cooperative path: no concurrent producer
@@ -5626,6 +5651,11 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             void *handler_self = cell->self_ptr;
             size_t psize = cell->payload_size;
             void *heap_ptr = cell->payload_heap;
+            /* Snapshot the per-delivery region too: like heap_ptr it
+             * must survive a handler-driven q->cells realloc. Always
+             * NULL on this single-threaded path (no wire cells), but
+             * kept uniform with the concurrent drain. */
+            void *region_ptr = cell->payload_region;
             void *payload_ptr = NULL;
             if (heap_ptr) {
                 /* Heap pointer is stable across handler-driven
@@ -5642,6 +5672,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             }
             ((lotus_handler_fn)handler_fn)(handler_self, payload_ptr);
             if (heap_ptr) free(heap_ptr);
+            if (region_ptr) lotus_arena_destroy((lotus_arena_t *)region_ptr);
         }
     }
 }
@@ -5917,6 +5948,7 @@ static void lotus_mailbox_dispatch_cell(lotus_bus_cell_t *cell) {
     }
     ((lotus_handler_fn)cell->handler)(cell->self_ptr, payload_ptr);
     if (cell->payload_heap) free(cell->payload_heap);
+    if (cell->payload_region) lotus_arena_destroy(cell->payload_region);
 }
 
 /* A ring slot just freed (the consumer dequeued). Wake any producer
@@ -6456,6 +6488,7 @@ static void lotus_coop_pool_dispatch_cell(lotus_bus_cell_t *cell) {
     }
     ((lotus_handler_fn)cell->handler)(cell->self_ptr, payload_ptr);
     if (cell->payload_heap) free(cell->payload_heap);
+    if (cell->payload_region) lotus_arena_destroy(cell->payload_region);
 }
 
 /* A ring slot just freed (the consumer dequeued). Wake any producer
@@ -7068,6 +7101,8 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
         ((lotus_handler_fn)cell_copy.handler)(
             cell_copy.self_ptr, payload_ptr);
         if (cell_copy.payload_heap) free(cell_copy.payload_heap);
+        if (cell_copy.payload_region)
+            lotus_arena_destroy(cell_copy.payload_region);
         return 1;
     }
     g_current_coro_tls = c;
@@ -7075,11 +7110,13 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
     g_current_coro_tls = NULL;
     if (c->done) {
         if (cell_copy.payload_heap) free(cell_copy.payload_heap);
+        if (cell_copy.payload_region)
+            lotus_arena_destroy(cell_copy.payload_region);
         lotus_coro_free(c);
     }
-    /* If c is not done (it parked), the cell's payload_heap is
-     * retained by the coro and freed when it resumes-and-completes
-     * (Slice 3 wiring). */
+    /* If c is not done (it parked), the cell's payload_heap and
+     * payload_region are retained by the coro and freed when it
+     * resumes-and-completes (Slice 3 wiring). */
     return 1;
 }
 #else /* !LOTUS_HAVE_ASYNC_IO — macOS / other BSDs */
@@ -7899,21 +7936,43 @@ extern __thread lotus_arena_t *lotus_current_caller_arena;
  * (deserializers do no I/O), so the shared TLS struct buffer is
  * safe even on async-pool workers. */
 static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
-    if (!c->deserialize) return 1;
+    /* Defined for every cell the drain paths destroy after the
+     * handler: non-wire cells (the common case) carry no per-delivery
+     * region, so pin it NULL before the early return — the region
+     * destroy at each drain site reads this unconditionally. */
+    if (!c->deserialize) { c->payload_region = NULL; return 1; }
     void *wire = c->payload_heap ? c->payload_heap
                                  : (void *)c->payload_inline;
     char *sbuf = g_tls_bus_struct_buf;
-    lotus_arena_t *prev = lotus_current_caller_arena;
-    lotus_current_caller_arena =
+    lotus_arena_t *sub_arena =
         c->self_ptr ? *(lotus_arena_t **)c->self_ptr : NULL;
+    /* Deserialize the payload's owned fields (String / Bytes) into a
+     * fresh per-delivery subregion of the subscriber's arena, NOT the
+     * locus arena itself — otherwise every delivery's payload piles
+     * up in the program-lifetime locus arena (the P0 leak). The
+     * subregion is destroyed after the handler returns (see the drain
+     * paths); a self-field stash inside the handler deep-copies into
+     * the locus arena, just as it must on the inline path. If the
+     * subscriber has no arena (self_ptr NULL), fall back to the prior
+     * behavior (deserialize into the global arena) and leave
+     * payload_region NULL. */
+    lotus_arena_t *region =
+        sub_arena ? lotus_arena_create_subregion(sub_arena) : NULL;
+    lotus_arena_t *prev = lotus_current_caller_arena;
+    lotus_current_caller_arena = region ? region : sub_arena;
     ssize_t ssz = ((lotus_deserialize_fn)c->deserialize)(
         wire, c->payload_size, sbuf, LOTUS_PAYLOAD_MAX);
     lotus_current_caller_arena = prev;
     c->deserialize = NULL;
+    c->payload_region = region;
     if (ssz <= 0) {
         if (c->payload_heap) {
             free(c->payload_heap);
             c->payload_heap = NULL;
+        }
+        if (c->payload_region) {
+            lotus_arena_destroy(c->payload_region);
+            c->payload_region = NULL;
         }
         c->payload_size = 0;
         return 0;                       /* drop the cell */
@@ -7923,6 +7982,10 @@ static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
         if (c->payload_heap) {
             free(c->payload_heap);
             c->payload_heap = NULL;
+        }
+        if (c->payload_region) {
+            lotus_arena_destroy(c->payload_region);
+            c->payload_region = NULL;
         }
         c->payload_size = 0;
         return 0;                       /* drop on OOM */
