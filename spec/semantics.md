@@ -143,6 +143,17 @@ plumbing.
 `LocusName { params }`:
 
 1. Compute params (overrides applied to declared defaults).
+   `self` resolves **lexically**: inside a *default* expression —
+   including the field inits of a nested locus literal written in
+   that default — `self.X` reads the locus being instantiated
+   (earlier-declared siblings only; a default that reads a
+   later-declared sibling is a compile error, since defaults run
+   in declaration order). Inside an *override* expression, `self`
+   belongs to the code that wrote the literal — the enclosing
+   method's locus, or the enclosing params block when the literal
+   itself sits in a default (F.4 call-site rule). This holds
+   regardless of where the instantiation executes (fn main, a
+   params-init, or another locus's method body — 2026-07-14 fix).
 2. The nearest enclosing ancestor that declares `accept(c: I)`
    for the child's interface is the **owner** (innermost-wins —
    interest-based ownership / accept bubbling; see below and

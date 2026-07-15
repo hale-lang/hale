@@ -32,6 +32,13 @@ Eight substrate findings from a downstream service built on hale
   (including fields with no placement entry and the main locus's
   own `run()`) warn naming every offender — the second-born
   `run()` never starts, and the failure was silent.
+- **`self.<scalar>` in nested-literal param defaults works.**
+  `conn: Ws = Ws { conn_fd: self.fd }` now resolves `self`
+  lexically (the declaring locus) even when the instantiation
+  happens inside another locus's method body; call-site overrides
+  keep resolving to the caller (F.4). A default reading a
+  later-declared sibling is now a compile error instead of an
+  uninitialized read.
 - Filed as issues: migrating `Stream.send`/`recv` to
   `fallible(IoError)` (finding 5) and implicit error propagation
   on tail-position `return` (finding 8).
