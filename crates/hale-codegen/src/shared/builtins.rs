@@ -2289,6 +2289,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i64_t.fn_type(&[], false),
             None,
         );
+        // #209 — errno-style status for the fallible Stream methods.
+        // declare i64 @lotus_tcp_last_io_status()
+        self.module.add_function(
+            "lotus_tcp_last_io_status",
+            i64_t.fn_type(&[], false),
+            None,
+        );
+        // declare ptr @lotus_tcp_io_status_kind(i64 errno)
+        self.module.add_function(
+            "lotus_tcp_io_status_kind",
+            ptr_t.fn_type(&[i64_t.into()], false),
+            None,
+        );
         // declare i64 @lotus_tls_recv_into(i32 handle, ptr builder, i64 max_bytes)
         let tls_recv_into_ty = i64_t.fn_type(
             &[i32_t.into(), ptr_t.into(), i64_t.into()],

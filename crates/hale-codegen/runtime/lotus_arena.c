@@ -10152,14 +10152,40 @@ void *lotus_udp_recv_bytes_global(int fd, int max_bytes) {
 
 /* Forward decl — defined later in this file. */
 void *lotus_bus_payload_arena_alloc(uint64_t size, uint64_t align);
+const char *lotus_io_error_kind(int32_t errno_val);
+
+/* #209 — errno-style status for the Stream send/recv family.
+ * The `.hl`-level `__StdIoTcpStream` method bodies can't read
+ * errno, and the recv primitives return empty on BOTH genuine
+ * error and clean EOF, so each primitive below records its
+ * outcome here: 0 = success / EOF / recv-timeout (the empty
+ * return stays the documented timeout shape), errno = genuine
+ * failure. Read immediately after the call via
+ * `std::io::tcp::__last_io_status()` — same read-right-after
+ * contract as lotus_get_errno / last_recv_kernel_ns. */
+static __thread int64_t g_tcp_last_io_status = 0;
+
+int64_t lotus_tcp_last_io_status(void) {
+    return g_tcp_last_io_status;
+}
+
+/* errno → stable IoError kind tag, surfaced to `.hl` bodies as
+ * `std::io::tcp::__io_error_kind(e)`. Thin wrapper so the Hale
+ * side never needs the raw table. */
+const char *lotus_tcp_io_status_kind(int64_t errno_val) {
+    return lotus_io_error_kind((int32_t)errno_val);
+}
 
 int lotus_tcp_send_str(int fd, const char *msg) {
+    g_tcp_last_io_status = 0;
     if (fd < 0) {
         errno = EBADF;
+        g_tcp_last_io_status = EBADF;
         return -1;
     }
     if (!msg) {
         errno = EINVAL;
+        g_tcp_last_io_status = EINVAL;
         return -1;
     }
     /* F.35 Slice 3: park on EPOLLOUT for async_io pools. */
@@ -10181,7 +10207,8 @@ int lotus_tcp_send_str(int fd, const char *msg) {
         if (w < 0 && async && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             if (lotus_coop_park_on_fd(fd, EPOLLOUT) == 0) continue;
         }
-            perror("lotus_tcp_send_str: write");
+        g_tcp_last_io_status = errno ? errno : EIO;
+        perror("lotus_tcp_send_str: write");
         return -1;
     }
     return 0;
@@ -10194,17 +10221,21 @@ int lotus_tcp_send_str(int fd, const char *msg) {
  * writes; returns 0 on full send, -1 on error.
  */
 int lotus_tcp_send_bytes(int fd, const void *bytes_ptr) {
+    g_tcp_last_io_status = 0;
     if (fd < 0) {
         errno = EBADF;
+        g_tcp_last_io_status = EBADF;
         return -1;
     }
     if (!bytes_ptr) {
         errno = EINVAL;
+        g_tcp_last_io_status = EINVAL;
         return -1;
     }
     int64_t total = lotus_bytes_len(bytes_ptr);
     if (total < 0) {
         errno = EINVAL;
+        g_tcp_last_io_status = EINVAL;
         return -1;
     }
     /* F.35 Slice 3: on async_io pools, park on EPOLLOUT when the
@@ -10227,7 +10258,8 @@ int lotus_tcp_send_bytes(int fd, const void *bytes_ptr) {
         if (w < 0 && async && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             if (lotus_coop_park_on_fd(fd, EPOLLOUT) == 0) continue;
         }
-            perror("lotus_tcp_send_bytes: write");
+        g_tcp_last_io_status = errno ? errno : EIO;
+        perror("lotus_tcp_send_bytes: write");
         return -1;
     }
     return 0;
@@ -10238,18 +10270,26 @@ const char *lotus_tcp_recv_str(int fd, int max_bytes) {
      * but local to this function-family because m81 may run
      * before lotus_env_init has cleared the env globals. */
     static const char empty[1] = { 0 };
+    g_tcp_last_io_status = 0;
     if (fd < 0 || max_bytes <= 0) {
+        g_tcp_last_io_status = (fd < 0) ? EBADF : EINVAL;
         return empty;
     }
     /* F.35 Slice 3: park on EAGAIN for async_io pools, classic
-     * blocking read otherwise. */
+     * blocking read otherwise. 2026-07-15 (#209 sweep): same
+     * timed park as recv_bytes — the park deadline mirrors the
+     * socket's SO_RCVTIMEO, so `set_recv_timeout` bounds this
+     * recv on async pools too (expiry returns empty, status 0). */
     int async = lotus_io_on_async_io_pool();
+    int64_t deadline = 0;
     if (async) {
         lotus_io_set_nonblock(fd);
+        deadline = lotus_recv_park_deadline(fd);
     }
     size_t cap = (size_t)max_bytes;
     char *buf = (char *)lotus_bus_payload_arena_alloc(cap + 1, 1);
     if (!buf) {
+        g_tcp_last_io_status = ENOMEM;
         return empty;
     }
     ssize_t n;
@@ -10257,13 +10297,20 @@ const char *lotus_tcp_recv_str(int fd, int max_bytes) {
         n = read(fd, buf, cap);
         if (n >= 0) break;
         if (errno == EINTR) continue;
-        if (async && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (lotus_coop_park_on_fd(fd, EPOLLIN) == 0) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (async
+                && lotus_coop_park_on_fd_deadline(fd, EPOLLIN, deadline) == 0) {
+                continue;
+            }
+            /* SO_RCVTIMEO expiry (or async park deadline): the
+             * empty return IS the documented timeout shape —
+             * status stays 0 (not a genuine error). */
+            return empty;
         }
-        /* Treat read errors as "got nothing" at this level —
-         * the buffer is in the lazy arena so it persists; the
-         * stable empty-string sentinel signals "no data" to
-         * the caller. */
+        /* Genuine read error: empty return + errno in the status
+         * TLS so the fallible Stream.recv wrapper can fail with
+         * a real IoError instead of conflating error with EOF. */
+        g_tcp_last_io_status = errno ? errno : EIO;
         return empty;
     }
     /* NUL-terminate at the actual bytes-read offset; a zero-byte
@@ -14005,7 +14052,9 @@ int64_t lotus_bytes_is_alloc_fail(const void *blob) {
  * primitive is exactly the case where length-on-the-wire matters.
  */
 void *lotus_tcp_recv_bytes(int fd, int max_bytes) {
+    g_tcp_last_io_status = 0;
     if (fd < 0 || max_bytes <= 0) {
+        g_tcp_last_io_status = (fd < 0) ? EBADF : EINVAL;
         return lotus_bytes_empty_global();
     }
     /* F.35 Slice 3: same async_io park-on-EAGAIN dance as
@@ -14027,6 +14076,7 @@ void *lotus_tcp_recv_bytes(int fd, int max_bytes) {
      * need the prefix corrected so callers see the true length. */
     void *blob = lotus_caller_or_global_bytes_create((int64_t)max_bytes);
     if (!blob) {
+        g_tcp_last_io_status = ENOMEM;
         return lotus_bytes_empty_global();
     }
     char *body = (char *)lotus_bytes_data(blob);
@@ -14035,15 +14085,22 @@ void *lotus_tcp_recv_bytes(int fd, int max_bytes) {
         n = read(fd, body, (size_t)max_bytes);
         if (n >= 0) break;
         if (errno == EINTR) continue;
-        if (async && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (lotus_coop_park_on_fd_deadline(fd, EPOLLIN, deadline) == 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (async
+                && lotus_coop_park_on_fd_deadline(fd, EPOLLIN, deadline) == 0) {
                 continue;
             }
+            /* SO_RCVTIMEO expiry / park deadline expiry: the empty
+             * Bytes IS the documented timeout shape — status stays
+             * 0, not a genuine error (#209). */
+            return lotus_bytes_empty_global();
         }
-        /* read error / park deadline expiry: hand back an empty
-         * Bytes so downstream code sees length=0 and can detect
-         * "nothing read". The reserved arena memory leaks until
-         * program exit (matches recv_str's convention). */
+        /* Genuine read error: empty Bytes + errno in the status
+         * TLS so the fallible Stream.recv_bytes wrapper can fail
+         * with a real IoError instead of conflating error with
+         * EOF. The reserved arena memory leaks until program exit
+         * (matches recv_str's convention). */
+        g_tcp_last_io_status = errno ? errno : EIO;
         return lotus_bytes_empty_global();
     }
     /* Patch the length prefix down to the actual bytes read. */

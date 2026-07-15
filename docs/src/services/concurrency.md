@@ -253,7 +253,7 @@ placement {
 The pool's worker runs an event loop (epoll under the hood), and
 blocking I/O calls inside loci on that pool — `recv`, `accept`,
 `send` — *park and resume* instead of holding the thread. Your
-locus code stays synchronous-shaped: `stream.recv(4096)` is the
+locus code stays synchronous-shaped: `stream.recv(4096) or ""` is the
 same call either way; the substrate picks the parking lowering at
 the syscall boundary. This is how you get async-style throughput
 without async-style function coloring.

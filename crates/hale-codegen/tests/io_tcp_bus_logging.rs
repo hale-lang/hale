@@ -53,7 +53,7 @@ fn stream_with_empty_log_subject_emits_nothing() {
             let client_fd = std::io::tcp::connect("127.0.0.1", 47841) or raise;
             let _peer_fd  = std::io::tcp::accept_one(listen_fd) or raise;
             let client = std::io::tcp::Stream { conn_fd: client_fd };  // no log_subject
-            let _n = client.send("hello");
+            client.send("hello") or raise;
             println("did_send");
             // Stream falls out of scope at fn end → dissolve closes
             // fd; with empty log_subject, no close-phase publish.
@@ -90,10 +90,9 @@ fn stream_with_log_subject_publishes_one_event_per_op() {
             let client = std::io::tcp::Stream { conn_fd: client_fd, log_subject: "io.tcp.test" };
             let peer   = std::io::tcp::Stream { conn_fd: peer_fd };
 
-            let sent = client.send("hello");
+            client.send("hello") or raise;
             // Peer reads what the client sent.
-            let got  = peer.recv(64);
-            println("client_sent=", sent);
+            let got  = peer.recv(64) or raise;
             println("peer_got=", got);
             // Both Streams dissolve at fn-exit; client's dissolve
             // also publishes a close-phase event.

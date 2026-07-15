@@ -22,7 +22,7 @@
 //     server that runs until killed.
 
 fn handle_request(s: std::io::tcp::Stream) {
-    let raw = s.recv(8192);
+    let raw = s.recv(8192) or "";
     let req = std::http::parse_request(raw);
     println("http-hello: ", req.method, " ", req.path);
 

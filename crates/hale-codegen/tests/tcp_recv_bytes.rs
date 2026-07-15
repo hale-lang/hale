@@ -64,7 +64,7 @@ fn recv_bytes_preserves_nul_in_payload() {
         fn main() {{
             let fd = std::io::tcp::__connect("127.0.0.1", {});
             let s = std::io::tcp::Stream {{ conn_fd: fd }};
-            let b = s.recv_bytes(32);
+            let b = s.recv_bytes(32) or raise;
             println("len=", len(b));
             println("b0=", std::bytes::at(b, 0));
             println("b3=", std::bytes::at(b, 3));
@@ -188,7 +188,7 @@ fn recv_bytes_on_eof_returns_zero_len() {
         fn main() {{
             let fd = std::io::tcp::__connect("127.0.0.1", {});
             let s = std::io::tcp::Stream {{ conn_fd: fd }};
-            let b = s.recv_bytes(64);
+            let b = s.recv_bytes(64) or raise;
             println("len=", len(b));
         }}
         "#,
@@ -226,7 +226,7 @@ fn from_string_then_send_bytes_round_trips_via_tcp() {
             let fd = std::io::tcp::__connect("127.0.0.1", {});
             let s = std::io::tcp::Stream {{ conn_fd: fd }};
             let b = std::bytes::from_string("hello world");
-            s.send_bytes(b);
+            s.send_bytes(b) or raise;
         }}
         "#,
         port

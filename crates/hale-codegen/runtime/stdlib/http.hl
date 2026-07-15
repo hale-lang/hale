@@ -277,8 +277,11 @@ fn __write_http_response(s: std::io::tcp::Stream, resp: std::http::Response) {
     };
     let blank_line = "\r\n";
     let header = status_line + ct_header + cl_header + conn_line + extra_headers + blank_line;
-    s.send(header);
-    s.send(resp.body);
+    // #209: send is fallible(IoError) now. A response-write
+    // failure means the peer is gone — nothing useful to do
+    // per-connection, so discard (the conn closes at scope exit).
+    s.send(header) or discard;
+    s.send(resp.body) or discard;
 }
 
 // 2026-05-16 — std::http::Handler interface. The contract a
@@ -366,7 +369,10 @@ fn __http_handle_one_conn(conn_fd: Int, h: std::http::Handler) {
             too_large = true;
             done = true;
         } else {
-            let chunk = s.recv(8192);
+            // #209: recv is fallible(IoError); a genuine read error
+            // is folded into the same "stop reading, serve what we
+            // have" shape as EOF/timeout (empty chunk).
+            let chunk = s.recv(8192) or "";
             if len(chunk) == 0 {
                 // EOF or recv timeout: serve what we have.
                 done = true;

@@ -58,7 +58,7 @@ fn connect_numeric_host_still_uses_fast_path() {
         fn main() {{
             let fd = std::io::tcp::connect("127.0.0.1", {}) or raise;
             let s = std::io::tcp::Stream {{ conn_fd: fd }};
-            s.send("hello-numeric");
+            s.send("hello-numeric") or raise;
         }}
         "#,
         port
@@ -101,7 +101,7 @@ fn connect_localhost_resolves_via_getaddrinfo() {
         fn main() {{
             let fd = std::io::tcp::connect("localhost", {}) or raise;
             let s = std::io::tcp::Stream {{ conn_fd: fd }};
-            s.send("hello-dns");
+            s.send("hello-dns") or raise;
         }}
         "#,
         port

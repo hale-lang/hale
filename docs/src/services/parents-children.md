@@ -144,7 +144,7 @@ locus Conn {
     run() {
         let stream = std::io::tcp::Stream { conn_fd: self.conn_fd, owns_fd: false };
         loop {
-            let chunk = stream.recv(4096);
+            let chunk = stream.recv(4096) or "";
             if len(chunk) == 0 { return; }   // client closed → run() ends
             // ... handle chunk
         }

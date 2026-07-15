@@ -53,7 +53,7 @@ fn tcp_recv_blocks_under_timeout_returns_promptly() {
 
             let client = std::io::tcp::Stream { conn_fd: client_fd };
             let start  = std::time::monotonic_ns();
-            let got    = client.recv_bytes(16);
+            let got    = client.recv_bytes(16) or raise;
             let elapsed_ms = (std::time::monotonic_ns() - start) / 1000000;
             println("elapsed_ms=", elapsed_ms);
             println("got_len=", len(got));

@@ -50,7 +50,7 @@ fn server_src(port: u16) -> String {
             let got = std::io::tcp::recv_into(s.conn_fd, b, 256);
             println("got=", got);
             let resp = std::bytes::from_string("DONE\n");
-            s.send_bytes(resp);
+            s.send_bytes(resp) or raise;
         }}
 
         main locus App {{
@@ -204,10 +204,10 @@ fn recv_bytes_honors_recv_deadline_on_async_io() {
         fn handle(s: std::io::tcp::Stream) {{
             let _ = std::io::tcp::__set_recv_timeout_ns(
                 s.conn_fd, 300000000);
-            let got = s.recv_bytes(256);
+            let got = s.recv_bytes(256) or raise;
             println("len=", len(got));
             let resp = std::bytes::from_string("DONE\n");
-            s.send_bytes(resp);
+            s.send_bytes(resp) or raise;
         }}
 
         main locus App {{

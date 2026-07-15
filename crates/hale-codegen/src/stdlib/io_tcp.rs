@@ -74,6 +74,11 @@ pub(crate) trait IoTcpStdlib<'ctx> {
         c_fn: &str,
         label: &str,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_io_tcp_io_error_kind(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
     fn lower_std_io_tcp_close_fd(
         &mut self,
         args: &[Expr],
@@ -781,6 +786,44 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
             .left()
             .expect("returns i64");
         Ok((v, CodegenTy::Int))
+    }
+
+    /// `std::io::tcp::__io_error_kind(errno: Int) -> String` (#209).
+    /// Maps a raw errno (from `__last_io_status`) to the stable
+    /// IoError kind tag via the runtime's `lotus_io_error_kind`
+    /// table, so the fallible `Stream` method bodies in `io_tcp.hl`
+    /// can build a `fail IoError { kind: ..., errno: ..., ... }`
+    /// without duplicating the taxonomy.
+    fn lower_std_io_tcp_io_error_kind(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__io_error_kind takes 1 arg (errno), got {}",
+                args.len()
+            )));
+        }
+        let (e_val, e_ty) = self.lower_expr(&args[0], scope)?;
+        if e_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__io_error_kind: errno must be Int, got {:?}",
+                e_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_tcp_io_status_kind")
+            .expect("lotus_tcp_io_status_kind declared");
+        let v = self
+            .builder
+            .build_call(f, &[e_val.into_int_value().into()], "tcp.errkind.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((v, CodegenTy::String))
     }
 
     /// Lower `std::io::tcp::__close_fd(fd: Int) -> Int`. Returns

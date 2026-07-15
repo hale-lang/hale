@@ -131,7 +131,7 @@ fn __render_doc(name: String) -> String {
 }
 
 fn handle_request(s: std::io::tcp::Stream) {
-    let raw = s.recv(8192);
+    let raw = s.recv(8192) or "";
     let req = std::http::parse_request(raw);
     println("docs-server: ", req.method, " ", req.path);
 
