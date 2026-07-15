@@ -51,7 +51,10 @@ them — because the `Api` locus is alive for the whole run.
 - **`std::http::Server`** takes a `port` and a `handler`, then
   owns the listen-accept-parse-dispatch loop. `max_accepts: N`
   bounds it to N requests (handy for tests); the default runs
-  until stopped.
+  until stopped. POST bodies are reassembled per `Content-Length`,
+  so clients that write headers and body in separate segments
+  (python's urllib, for one) work; requests are capped at 1 MiB
+  (oversized declared bodies get a `413`).
 
 ## A first taste of interfaces
 
