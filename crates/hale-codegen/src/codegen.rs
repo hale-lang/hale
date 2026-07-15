@@ -1186,6 +1186,8 @@ pub fn build_executable_with_options(
         main_locus_name: None,
         pinned_locus_types: BTreeSet::new(),
         params_init_self: None,
+        in_params_default: false,
+        params_init_initialized: None,
         main_cooperative_pools: BTreeMap::new(),
         async_io_pools: BTreeSet::new(),
         cooperative_pool_for_next_locus_instantiation: None,
@@ -3051,6 +3053,28 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `lower_locus_instantiation` calls preserve their own
     /// prior value via the save/restore in the loop's setup.
     pub(crate) params_init_self: Option<SelfCx<'ctx>>,
+    /// downstream handoff 2026-07-14 (finding 4): true while lowering a
+    /// params-DEFAULT expression (the text written inside the
+    /// instantiated locus's own `params { }` block), false for
+    /// call-site override expressions and method bodies. Decides
+    /// `self.X` precedence in the `Expr::Field`/KwSelf arm:
+    /// default text resolves against `params_init_self` (the
+    /// declaring locus) even when a method body's `current_self`
+    /// is live — a locus instantiated inside another locus's
+    /// handler must not have its defaults' `self.X` captured by
+    /// the enclosing method's locus. Override expressions restore
+    /// the flag saved at frame entry, mirroring the F.4
+    /// `prev_params_init_self` swap (an override inherits the
+    /// context of the code that wrote the literal).
+    pub(crate) in_params_default: bool,
+    /// Finding 4 companion: the params fields already stored by the
+    /// innermost params-init loop, so a default that reads a
+    /// LATER-declared sibling (`a: Int = self.b; b: Int = 1;`) is
+    /// rejected instead of GEP+loading an uninitialized slot.
+    /// Swapped alongside `params_init_self` (frame entry, override
+    /// lowering, frame exit). Typecheck currently skips default
+    /// exprs entirely (Milestone-2 cut), so codegen owns this rule.
+    pub(crate) params_init_initialized: Option<BTreeSet<String>>,
     /// F.31 Phase 3b: set of locus type names that are
     /// instantiated pinned-equivalent SOMEWHERE in the bundle.
     /// Populated from: (a) `placement { field: pinned[(core=N)]; }`
@@ -18015,17 +18039,61 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // Sibling fields stored earlier in the params-
                 // init loop are readable; field-order discipline
                 // ensures the GEP+load sees an initialized slot.
-                let cs = self
-                    .current_self
-                    .as_ref()
-                    .cloned()
-                    .or_else(|| self.params_init_self.as_ref().cloned())
-                    .ok_or_else(|| {
-                        CodegenError::Unsupported(format!(
-                            "self.{} read outside a locus method",
-                            name.name
-                        ))
-                    })?;
+                //
+                // downstream handoff 2026-07-14 (finding 4): precedence
+                // is by LEXICAL context, not just liveness. While
+                // lowering a params-DEFAULT expression
+                // (`in_params_default`), `self.X` is text written
+                // inside the instantiated locus's own params
+                // block, so it resolves against `params_init_self`
+                // (the declaring locus) even when the
+                // instantiation happens inside another locus's
+                // method body and `current_self` is live —
+                // pre-fix, a `Ws { conn_fd: self.fd }` default
+                // lowered under a handler's `current_self` and
+                // died with "no field `fd` on locus self".
+                // Override / method-body expressions keep the
+                // original current_self-first order (F.4).
+                let cs = if self.in_params_default {
+                    if let Some(pis) = self.params_init_self.as_ref() {
+                        // Defaults run in declaration order; a read
+                        // of a later-declared sibling would GEP+load
+                        // an uninitialized slot — reject it.
+                        if pis.fields.contains_key(&name.name) {
+                            if let Some(init) =
+                                self.params_init_initialized.as_ref()
+                            {
+                                if !init.contains(&name.name) {
+                                    return Err(CodegenError::Unsupported(
+                                        format!(
+                                            "param default reads `self.{}` \
+                                             before it is initialized — \
+                                             defaults run in declaration \
+                                             order; declare `{}` earlier or \
+                                             pass the value at the creation \
+                                             site",
+                                            name.name, name.name
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                        Some(pis.clone())
+                    } else {
+                        self.current_self.as_ref().cloned()
+                    }
+                } else {
+                    self.current_self
+                        .as_ref()
+                        .cloned()
+                        .or_else(|| self.params_init_self.as_ref().cloned())
+                }
+                .ok_or_else(|| {
+                    CodegenError::Unsupported(format!(
+                        "self.{} read outside a locus method",
+                        name.name
+                    ))
+                })?;
                 // F.16 / F.27 synthetic fields. B14 lifted the bodies
                 // into helpers so non-`self` locus receivers
                 // (`g.k_max`, `g.draining`) hit the same lowering.

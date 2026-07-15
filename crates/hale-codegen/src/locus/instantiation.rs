@@ -5,7 +5,7 @@
 //! spawn, and the deferred-dissolve frame for long-lived loci.
 //! Round 4d of the codegen model-org refactor — the heavyweight.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
     BirthCheckDecl, CapacitySlotKind, Expr, Literal, LocusMember,
@@ -1736,6 +1736,14 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         // resolve_failure_route consults as a fallback when
         // current_self is None.
         let prev_params_init_self = self.params_init_self.take();
+        // Finding 4 (downstream handoff 2026-07-14): remember whether the
+        // code that WROTE this instantiation was itself params-
+        // default text — override expressions inherit that context
+        // (they're written at the literal's site), while this
+        // locus's own default expressions set the flag true below.
+        let prev_in_params_default = self.in_params_default;
+        let prev_params_init_initialized = self.params_init_initialized.take();
+        self.params_init_initialized = Some(BTreeSet::new());
         self.params_init_self = Some(SelfCx {
             locus_name: locus_name.to_string(),
             struct_ty: info.struct_ty,
@@ -1811,7 +1819,11 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                         // The extra replica's self_ptr isn't stored in a
                         // field (replicas are non-addressable workers);
                         // it lives only in the deferred-dissolve frame.
+                        // Finding 4: replica exprs are default text.
+                        let saved_ipd = self.in_params_default;
+                        self.in_params_default = true;
                         let _ = self.lower_expr(&rep_expr, scope)?;
+                        self.in_params_default = saved_ipd;
                         self.instantiating_for_parent_field = prev_flag;
                     }
                     // Restore replica 0's overrides for the normal path
@@ -1889,6 +1901,11 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                         size,
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // Zero-init counts as initialized for later
+                // siblings' default reads.
+                if let Some(init) = self.params_init_initialized.as_mut() {
+                    init.insert(fname.clone());
+                }
                 continue;
             }
             let prev_field_flag = self.instantiating_for_parent_field;
@@ -1914,7 +1931,20 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     // put ours back.
                     let inner_pis = self.params_init_self.take();
                     self.params_init_self = prev_params_init_self.clone();
+                    // Finding 4: the override's `self.X` precedence
+                    // follows the context that wrote the literal
+                    // (default text of an outer locus → true; a
+                    // method body / fn main → false), mirroring the
+                    // params_init_self swap above. The initialized-
+                    // fields set travels with its SelfCx.
+                    let inner_ipd = self.in_params_default;
+                    self.in_params_default = prev_in_params_default;
+                    let inner_init = self.params_init_initialized.take();
+                    self.params_init_initialized =
+                        prev_params_init_initialized.clone();
                     let r = self.lower_expr(expr, scope)?;
+                    self.params_init_initialized = inner_init;
+                    self.in_params_default = inner_ipd;
                     self.params_init_self = inner_pis;
                     let owned = !self.instantiating_for_parent_field;
                     self.instantiating_for_parent_field = prev_field_flag;
@@ -1937,7 +1967,16 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                             (r.0, r.1, false, from_lit)
                         }
                         DefaultInit::Expr(e) => {
+                            // Finding 4: this is the declaring
+                            // locus's own default text — `self.X`
+                            // inside it (including nested-literal
+                            // field inits) resolves against
+                            // params_init_self even under a live
+                            // method-body current_self.
+                            let saved_ipd = self.in_params_default;
+                            self.in_params_default = true;
                             let r = self.lower_expr(e, scope)?;
+                            self.in_params_default = saved_ipd;
                             let owned = !self.instantiating_for_parent_field;
                             self.instantiating_for_parent_field =
                                 prev_field_flag;
@@ -2173,6 +2212,11 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
             }
+            // Finding 4: this field's slot is now stored — later
+            // siblings' defaults may read it.
+            if let Some(init) = self.params_init_initialized.as_mut() {
+                init.insert(fname.clone());
+            }
         }
         self.current_arena_override = prev_arena_override;
         // F.31 Phase 3b: restore params-init-parent context.
@@ -2180,6 +2224,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         // have already stored their __parent_self values via
         // resolve_failure_route's lookup of params_init_self.
         self.params_init_self = prev_params_init_self;
+        self.params_init_initialized = prev_params_init_initialized;
         // F.31 Phase 4: cooperative-pool restore is deferred to
         // function exit (after the run_bb code that consumes it
         // — see end of fn + the pinned-branch early-return).
@@ -2804,7 +2849,12 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             // new locus so the key-filter EXPR's `self.X` reads
             // resolve correctly. Save / restore around the loop
             // (same pattern birth_check_decls uses below).
+            // Finding 4: the where-clause is member text of THIS
+            // locus, not params-default text of the outer one —
+            // clear in_params_default so current_self wins even
+            // when this instantiation sits inside an outer default.
             let prev_self = self.current_self.clone();
+            let prev_ipd_sub = std::mem::replace(&mut self.in_params_default, false);
             self.current_self = Some(SelfCx {
                 locus_name: locus_name.to_string(),
                 struct_ty: info.struct_ty,
@@ -2872,6 +2922,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     )?;
                 }
             }
+            self.in_params_default = prev_ipd_sub;
             self.current_self = prev_self;
         }
 
@@ -2977,8 +3028,12 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     // Phase 3 same setup as the cooperative path
                     // above — set current_self for the key-filter
-                    // EXPR's `self.X` reads.
+                    // EXPR's `self.X` reads (and clear
+                    // in_params_default: member text, not default
+                    // text — see finding 4).
                     let prev_self_pinned = self.current_self.clone();
+                    let prev_ipd_pinned =
+                        std::mem::replace(&mut self.in_params_default, false);
                     self.current_self = Some(SelfCx {
                         locus_name: locus_name.to_string(),
                         struct_ty: info.struct_ty,
@@ -3009,6 +3064,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                             owned_beyond_scope,
                         )?;
                     }
+                    self.in_params_default = prev_ipd_pinned;
                     self.current_self = prev_self_pinned;
                     Some(mb_ptr)
                 } else {
@@ -3401,8 +3457,10 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         if !birth_check_decls.is_empty() {
             // We need current_self set for `self.X` reads in the
             // cond expressions to resolve against the newly-
-            // constructed locus.
+            // constructed locus. (in_params_default cleared:
+            // birth_check conds are member text — finding 4.)
             let prev_self = self.current_self.clone();
+            let prev_ipd_bc = std::mem::replace(&mut self.in_params_default, false);
             self.current_self = Some(SelfCx {
                 locus_name: locus_name.to_string(),
                 struct_ty: info.struct_ty,
@@ -3413,6 +3471,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             for bc in &birth_check_decls {
                 self.emit_birth_check(&bc, self_ptr, &info, &locus_name, &mut scope)?;
             }
+            self.in_params_default = prev_ipd_bc;
             self.current_self = prev_self;
         }
         // m41: gate run() on __quarantined. If a parent's
