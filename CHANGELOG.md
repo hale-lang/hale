@@ -22,6 +22,11 @@ Eight substrate findings from a downstream service built on hale
   `set_recv_timeout` on async_io (it parked indefinitely before),
   and `udp::recv_into` returns `-2` retryable on timeout (was `-1`
   fatal).
+- **`std::http::Server` reassembles split-written requests.** The
+  per-connection loop reads to the header terminator, then to
+  `Content-Length` body bytes, so python-urllib-style clients
+  (headers and body in separate segments) work. New guards: 1 MiB
+  request cap (413 on declared overflow) and a 5s recv timeout.
 - Filed as issues: migrating `Stream.send`/`recv` to
   `fallible(IoError)` (finding 5) and implicit error propagation
   on tail-position `return` (finding 8).

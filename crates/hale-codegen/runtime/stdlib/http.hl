@@ -72,6 +72,7 @@ fn __status_phrase(status: Int) -> String {
     if status == 301 { return "Moved Permanently"; }
     if status == 400 { return "Bad Request"; }
     if status == 404 { return "Not Found"; }
+    if status == 413 { return "Payload Too Large"; }
     if status == 500 { return "Internal Server Error"; }
     return "Status";
 }
@@ -87,11 +88,11 @@ fn __status_phrase(status: Int) -> String {
 // fields rather than erroring; callers that care should
 // check `req.method == ""` and respond with 400.
 //
-// v0 assumption: the entire request-line + headers fit in
-// the recv buffer. Real-world browser GETs are well within
-// 4-8KB, so the m83 Listener's Stream.recv(8192) call covers
-// the common case. Streaming reassembly for oversized
-// requests is a later milestone.
+// The caller is responsible for handing in a COMPLETE request:
+// `__http_handle_one_conn` reassembles multi-segment requests
+// (accumulate to `\r\n\r\n`, then to Content-Length bytes,
+// 1 MiB cap) before parsing. This fn itself takes body =
+// everything after the blank line and never re-reads.
 fn __parse_http_request(raw: String) -> std::http::Request {
     // Locate end of request line.
     let line_end = std::str::index_of(raw, "\r\n");
@@ -329,15 +330,71 @@ interface __StdHttpHandler {
 // per-connection Stream dissolution) and the wire protocol;
 // the handler-locus owns routing + state.
 
-// Per-connection helper. Recv up to 8KB (matches the Listener
-// default; spec/runtime.md notes the streaming-reassembly
-// follow-up for oversized requests), parse it, dispatch to
-// the user's handler via interface vtable, ship the response.
+// Per-connection helper. Reassembles one full request before
+// dispatch: accumulate recv(8192) chunks until the `\r\n\r\n`
+// header terminator arrives, then until `Content-Length` body
+// bytes follow it. Clients that write headers and body in
+// separate TCP segments (python urllib, some Go/Node clients)
+// land as multiple recvs — the downstream handoff's single-recv
+// truncation bug (2026-07-14). Then parse, dispatch to the
+// user's handler via interface vtable, ship the response.
 // The Stream locus dissolves at fn-exit per the m82
 // scope-flush mechanism, which closes the conn fd.
+//
+// Guards: a 5s recv timeout bounds a stalled (slowloris-style)
+// client on classic/pinned pools, where recv blocks the worker
+// thread; on async_io pools the fd is epoll-parked and a
+// stalled conn parks only its coroutine. A 1 MiB cap bounds
+// total request bytes: a declared Content-Length over the cap
+// answers 413 before buffering; overflow without a complete
+// header block closes without a response (the framing can't be
+// trusted). Keep-alive stays unsupported (Connection: close);
+// Transfer-Encoding: chunked is not parsed.
 fn __http_handle_one_conn(conn_fd: Int, h: std::http::Handler) {
+    let _ = std::io::tcp::__set_recv_timeout_ns(conn_fd, 5000000000);
     let s = std::io::tcp::Stream { conn_fd: conn_fd };
-    let raw = s.recv(8192);
+    let max_request = 1048576;
+    let mut raw = "";
+    let mut header_end = 0 - 1;
+    let mut need = 0;
+    let mut done = false;
+    let mut too_large = false;
+    while !done {
+        if header_end >= 0 && len(raw) - (header_end + 4) >= need {
+            done = true;
+        } else if len(raw) >= max_request || (header_end >= 0 && need > max_request) {
+            too_large = true;
+            done = true;
+        } else {
+            let chunk = s.recv(8192);
+            if len(chunk) == 0 {
+                // EOF or recv timeout: serve what we have.
+                done = true;
+            } else {
+                raw = raw + chunk;
+                if header_end < 0 {
+                    header_end = std::str::index_of(raw, "\r\n\r\n");
+                    if header_end >= 0 {
+                        let partial = std::http::parse_request(raw);
+                        need = std::str::parse_int(
+                            std::http::header(partial, "Content-Length")) or 0;
+                    }
+                }
+            }
+        }
+    }
+    if header_end < 0 {
+        // Never saw a complete header block: close without a
+        // response (Stream scope-exit closes the fd).
+        return;
+    }
+    if too_large {
+        std::http::write_response(s, std::http::Response {
+            status: 413,
+            body: "payload too large"
+        });
+        return;
+    }
     let req = std::http::parse_request(raw);
     let resp = h.handle(req);
     std::http::write_response(s, resp);
