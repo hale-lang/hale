@@ -101,9 +101,9 @@ fn listener_user_callback_receives_usable_stream() {
     let src = format!(
         r#"
         fn echo_handler(s: std::io::tcp::Stream) {{
-            let req = s.recv(64);
+            let req = s.recv(64) or raise;
             println("server got=", req);
-            s.send("server says hi back");
+            s.send("server says hi back") or raise;
         }}
 
         fn main() {{
@@ -165,9 +165,9 @@ fn listener_handles_multiple_connections_in_sequence() {
     let src = format!(
         r#"
         fn counted(s: std::io::tcp::Stream) {{
-            let req = s.recv(64);
+            let req = s.recv(64) or raise;
             println("handled=", req);
-            s.send("ack");
+            s.send("ack") or raise;
         }}
 
         fn main() {{

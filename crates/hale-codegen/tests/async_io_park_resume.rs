@@ -56,14 +56,14 @@ fn async_io_pool_multiplexes_two_listeners() {
     let src = format!(
         r#"
         fn handle_a(s: std::io::tcp::Stream) {{
-            let _req = s.recv_bytes(64);
+            let _req = s.recv_bytes(64) or raise;
             let resp = std::bytes::from_string("A-OK\n");
-            s.send_bytes(resp);
+            s.send_bytes(resp) or raise;
         }}
         fn handle_b(s: std::io::tcp::Stream) {{
-            let _req = s.recv_bytes(64);
+            let _req = s.recv_bytes(64) or raise;
             let resp = std::bytes::from_string("B-OK\n");
-            s.send_bytes(resp);
+            s.send_bytes(resp) or raise;
         }}
 
         main locus App {{

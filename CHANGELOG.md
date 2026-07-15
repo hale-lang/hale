@@ -46,9 +46,21 @@ Eight substrate findings from a downstream service built on hale
 - **Parser: reserved keywords in binding position are named.**
   `let accept = …` now says ``expected variable name, but `accept`
   is a reserved lifecycle keyword in Hale — pick another name``.
-- Filed as issues: migrating `Stream.send`/`recv` to
-  `fallible(IoError)` (finding 5) and implicit error propagation
-  on tail-position `return` (finding 8).
+- **BREAKING: `Stream.send` / `send_bytes` / `recv` / `recv_bytes`
+  are `fallible(IoError)`** (#209, finding 5). Every call site
+  must address the error (`or raise` / `or discard` / `or
+  <fallback>` / `or handler(err)`). send/send_bytes succeed with
+  Unit (the old Int was only ever a 0/-1 status). recv/recv_bytes
+  fail **only on genuine I/O errors** — EOF and a
+  `set_recv_timeout` expiry still return empty, so liveness loops
+  keep their shape. `IoError` is now declared in the stdlib seed
+  and can be constructed / `fail`ed from user code. Bonus:
+  `Stream.recv` joins the async_io timed park (its siblings got
+  it in the recv_into fix above). Migration for sentinel-checking
+  callers: `let n = s.send(x); if n < 0 {…}` becomes
+  `s.send(x) or handler(err);`.
+- Filed as an issue: implicit error propagation on tail-position
+  `return` (finding 8).
 
 ---
 

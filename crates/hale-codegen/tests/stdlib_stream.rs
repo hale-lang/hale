@@ -181,8 +181,8 @@ fn stream_let_binding_round_trips_via_send_recv() {
         fn main() {{
             let fd = std::io::tcp::__connect("127.0.0.1", {});
             let s = std::io::tcp::Stream {{ conn_fd: fd }};
-            s.send("via-let");
-            let resp = s.recv(64);
+            s.send("via-let") or raise;
+            let resp = s.recv(64) or raise;
             println("got=", resp);
         }}
         "#,
@@ -251,11 +251,11 @@ fn borrowed_stream_does_not_close_shared_fd() {
             // that dissolves at fn-exit — must not close self.fd.
             fn ping(tag: String) {{
                 let s = std::io::tcp::Stream {{ conn_fd: self.fd, owns_fd: false }};
-                s.send(tag);
+                s.send(tag) or raise;
             }}
             fn ack() -> String {{
                 let s = std::io::tcp::Stream {{ conn_fd: self.fd, owns_fd: false }};
-                return s.recv(64);
+                return s.recv(64) or raise;
             }}
         }}
         fn main() {{

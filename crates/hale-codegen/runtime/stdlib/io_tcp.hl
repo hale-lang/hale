@@ -41,6 +41,24 @@ type __StdIoTcpLogEvent {
     fd:     Int    = -1;
 }
 
+// #209 — the shared I/O error payload, declared in-source so
+// stdlib method bodies (and user code) can `fail IoError { ... }`.
+// MUST stay field-for-field identical to the two other places
+// that know this shape: the hale-types injection in
+// `resolve.rs` (which skips itself when this declaration is
+// present) and codegen's `emit_io_error_alloc` (which builds
+// the struct by index 0/1/2 for the fallible path-calls).
+//   kind  — stable tag: "not_found", "connection_refused",
+//           "connection_reset", "broken_pipe", "timeout",
+//           "would_block", ... ("io" is the catch-all).
+//   errno — raw platform errno for callers that want it.
+//   path  — file path / connection target / "" (diagnostic).
+type IoError {
+    kind:  String;
+    errno: Int;
+    path:  String;
+}
+
 // m81: Stream locus — owns one connected TCP fd, exposes
 // send/recv via fn members, closes on dissolve. User code
 // receives a Stream as the parameter to a callback (via
@@ -75,29 +93,55 @@ locus __StdIoTcpStream {
     bus {
         publish "io.tcp.**" of type __StdIoTcpLogEvent;
     }
-    fn send(msg: String) -> Int {
+    // #209 (2026-07-15): the send/recv family is `fallible(IoError)`.
+    // Previously these returned -1/0 sentinels (send) or empty
+    // (recv — indistinguishable from EOF). Now a genuine I/O error
+    // fails with a real IoError built from the errno the primitive
+    // recorded in the `__last_io_status` thread-local; EOF and a
+    // `set_recv_timeout` expiry are NOT errors — recv returns
+    // empty for both, preserving the documented timeout shape.
+    // send/send_bytes succeed with Unit (the old Int was only ever
+    // a 0/-1 status), so fire-and-forget callers write
+    // `s.send(x) or discard;` and strict ones `or raise`.
+    fn send(msg: String) fallible(IoError) {
         let n = std::io::tcp::__send(self.conn_fd, msg);
-        if len(self.log_subject) > 0 {
-            self.log_subject <- __StdIoTcpLogEvent {
-                phase: "send", bytes: n, fd: self.conn_fd,
+        if n < 0 {
+            let e = std::io::tcp::__last_io_status();
+            fail IoError {
+                kind: std::io::tcp::__io_error_kind(e), errno: e, path: "",
             };
         }
-        return n;
+        if len(self.log_subject) > 0 {
+            self.log_subject <- __StdIoTcpLogEvent {
+                phase: "send", bytes: len(msg), fd: self.conn_fd,
+            };
+        }
     }
     // m89: binary-safe send. Use this for image bodies, raw
     // protocol frames, or anything where embedded NUL bytes
     // would cause `send`'s strlen-based shipping to truncate.
-    fn send_bytes(b: Bytes) -> Int {
+    fn send_bytes(b: Bytes) fallible(IoError) {
         let n = std::io::tcp::__send_bytes(self.conn_fd, b);
-        if len(self.log_subject) > 0 {
-            self.log_subject <- __StdIoTcpLogEvent {
-                phase: "send", bytes: n, fd: self.conn_fd,
+        if n < 0 {
+            let e = std::io::tcp::__last_io_status();
+            fail IoError {
+                kind: std::io::tcp::__io_error_kind(e), errno: e, path: "",
             };
         }
-        return n;
+        if len(self.log_subject) > 0 {
+            self.log_subject <- __StdIoTcpLogEvent {
+                phase: "send", bytes: len(b), fd: self.conn_fd,
+            };
+        }
     }
-    fn recv(max_bytes: Int) -> String {
+    fn recv(max_bytes: Int) -> String fallible(IoError) {
         let s = std::io::tcp::__recv(self.conn_fd, max_bytes);
+        let e = std::io::tcp::__last_io_status();
+        if e != 0 {
+            fail IoError {
+                kind: std::io::tcp::__io_error_kind(e), errno: e, path: "",
+            };
+        }
         if len(self.log_subject) > 0 {
             self.log_subject <- __StdIoTcpLogEvent {
                 phase: "recv", bytes: len(s), fd: self.conn_fd,
@@ -111,8 +155,14 @@ locus __StdIoTcpStream {
     // for binary protocols (WebSocket frames, raw market feeds,
     // file uploads, custom RPC formats) or any read whose payload
     // may contain zero bytes.
-    fn recv_bytes(max_bytes: Int) -> Bytes {
+    fn recv_bytes(max_bytes: Int) -> Bytes fallible(IoError) {
         let b = std::io::tcp::__recv_bytes(self.conn_fd, max_bytes);
+        let e = std::io::tcp::__last_io_status();
+        if e != 0 {
+            fail IoError {
+                kind: std::io::tcp::__io_error_kind(e), errno: e, path: "",
+            };
+        }
         if len(self.log_subject) > 0 {
             self.log_subject <- __StdIoTcpLogEvent {
                 phase: "recv", bytes: len(b), fd: self.conn_fd,

@@ -21192,6 +21192,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     "lotus_tcp_last_recv_user_ns",
                     "last_recv_user_ns",
                 ),
+            // #209 — status pair backing the fallible Stream methods.
+            ["std", "io", "tcp", "__last_io_status"] => self
+                .lower_std_io_tcp_last_recv_ns(
+                    args,
+                    "lotus_tcp_last_io_status",
+                    "__last_io_status",
+                ),
+            ["std", "io", "tcp", "__io_error_kind"] => {
+                self.lower_std_io_tcp_io_error_kind(args, scope)
+            }
             ["std", "io", "tls", "recv_into"] => {
                 self.lower_std_io_tls_recv_into(args, scope)
             }

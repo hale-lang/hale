@@ -329,7 +329,8 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["io", "tcp"],
         fns: &[
-            "__accept_one", "__close_fd", "__connect", "__listen_socket",
+            "__accept_one", "__close_fd", "__connect", "__io_error_kind",
+            "__last_io_status", "__listen_socket",
             "__recv", "__recv_bytes", "__send", "__send_bytes",
             "__set_recv_timeout_ns", "__shutdown_listen_socket",
             "accept_one", "close_fd", "connect", "last_recv_kernel_ns",

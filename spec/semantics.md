@@ -113,8 +113,9 @@ Producing a `Bytes`:
 - `std::io::fs::read_bytes(path) -> Bytes fallible(IoError)` (m89;
   IoError flip 2026-05-16). Caller addresses with
   `or raise` / `or fallback(err)`.
-- `Stream.recv_bytes(max: Int) -> Bytes` — binary-safe TCP
-  receive (Phase 2g).
+- `Stream.recv_bytes(max: Int) -> Bytes fallible(IoError)` —
+  binary-safe TCP receive (Phase 2g; fallible since #209 —
+  EOF/timeout return empty, only genuine errors fail).
 - `std::bytes::from_string(s: String) -> Bytes` — copies the
   strlen-measured body into a length-prefixed blob (Phase 2g).
 - `std::bytes::slice(b, lo, hi) -> Bytes` — half-open range
@@ -127,7 +128,8 @@ Consuming a `Bytes`:
   (0..255). Address out-of-bounds via `or` clause (Phase 2g;
   IoError flip 2026-05-16 swapped the pre-flip `-1` sentinel for
   the fallible channel).
-- `Stream.send_bytes(b)` — length-preserving TCP send (m89).
+- `Stream.send_bytes(b)` — length-preserving TCP send (m89;
+  `fallible(IoError)` with Unit success since #209).
 - `std::str::from_bytes(b) -> String` — copies into a
   NUL-terminated buffer; embedded NULs persist but downstream
   strlen-based String operations truncate at the first
@@ -194,7 +196,7 @@ Three shapes, three timings (m82 — "locus all the way down"):
   **deferred to the enclosing fn's scope-exit flush**. The
   user-visible binding `h` is the handle; the locus instance
   lives until `h` goes out of scope. This is what makes
-  `let s = Stream { conn_fd: fd }; s.send(msg);` work — `s`
+  `let s = Stream { conn_fd: fd }; s.send(msg) or raise;` work — `s`
   stays valid for the method call because dissolve hasn't
   fired yet.
 - **Long-lived** (locus has `bus subscribe`): always deferred,

@@ -164,7 +164,7 @@ fn stream_send_bytes_ships_full_body_through_tcp() {
             let fd = std::io::tcp::__connect("127.0.0.1", {});
             let s = std::io::tcp::Stream {{ conn_fd: fd }};
             let body = std::io::fs::read_bytes("{}");
-            s.send_bytes(body);
+            s.send_bytes(body) or raise;
         }}
         "#,
         port,
