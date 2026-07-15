@@ -149,6 +149,24 @@ impl Parser {
             }
             other => {
                 let span = self.peek_token().span;
+                if let Some(kw) = other.keyword_lexeme() {
+                    let category = match other {
+                        TokenKind::Birth
+                        | TokenKind::Accept
+                        | TokenKind::Run
+                        | TokenKind::Drain
+                        | TokenKind::Dissolve
+                        | TokenKind::OnFailure => "a reserved lifecycle keyword",
+                        _ => "a reserved keyword",
+                    };
+                    return Err(Diag::parse(
+                        span,
+                        format!(
+                            "expected {}, but `{}` is {} in Hale — pick another name",
+                            what, kw, category
+                        ),
+                    ));
+                }
                 Err(Diag::parse(
                     span,
                     format!("expected {}, got {:?}", what, other),
@@ -5183,6 +5201,31 @@ fn main() {
             }
             _ => panic!("expected fn"),
         }
+    }
+
+    #[test]
+    fn let_with_lifecycle_keyword_names_the_keyword() {
+        let errs = parse_str("fn main() { let accept = 1; }").unwrap_err();
+        let msg = &errs[0].message;
+        assert!(msg.contains("`accept`"), "got: {msg}");
+        assert!(msg.contains("reserved lifecycle keyword"), "got: {msg}");
+    }
+
+    #[test]
+    fn let_with_reserved_keyword_names_the_keyword() {
+        let errs = parse_str("fn main() { let match = 1; }").unwrap_err();
+        let msg = &errs[0].message;
+        assert!(msg.contains("`match`"), "got: {msg}");
+        assert!(msg.contains("is a reserved keyword"), "got: {msg}");
+        assert!(!msg.contains("lifecycle"), "got: {msg}");
+    }
+
+    #[test]
+    fn let_with_non_keyword_token_keeps_debug_fallback() {
+        let errs = parse_str("fn main() { let 5 = 1; }").unwrap_err();
+        let msg = &errs[0].message;
+        assert!(msg.contains("got"), "got: {msg}");
+        assert!(!msg.contains("reserved"), "got: {msg}");
     }
 
     // === v1.x-FORM-1 PR1 tests ============================
