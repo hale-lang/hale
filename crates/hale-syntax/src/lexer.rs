@@ -260,6 +260,91 @@ pub enum TokenKind {
     Eof,
 }
 
+impl TokenKind {
+    /// The source lexeme for a reserved-keyword token (`Some("accept")`
+    /// for [`TokenKind::Accept`]), or `None` for any token that isn't a
+    /// keyword. The reverse of the keyword match in
+    /// `lex_ident_or_keyword`; `tests/keyword_sync.rs` keeps the two in
+    /// sync via `keywords::HARD_KEYWORDS`.
+    pub fn keyword_lexeme(&self) -> Option<&'static str> {
+        Some(match self {
+            TokenKind::Locus => "locus",
+            TokenKind::Perspective => "perspective",
+            TokenKind::Type => "type",
+            TokenKind::Const => "const",
+            TokenKind::Fn => "fn",
+            TokenKind::Import => "import",
+            TokenKind::Export => "export",
+            TokenKind::Module => "module",
+            TokenKind::Params => "params",
+            TokenKind::Contract => "contract",
+            TokenKind::Bus => "bus",
+            TokenKind::Capacity => "capacity",
+            TokenKind::AsParentFor => "as_parent_for",
+            TokenKind::IndexedBy => "indexed_by",
+            TokenKind::Birth => "birth",
+            TokenKind::Accept => "accept",
+            TokenKind::Run => "run",
+            TokenKind::Drain => "drain",
+            TokenKind::Dissolve => "dissolve",
+            TokenKind::OnFailure => "on_failure",
+            TokenKind::Bulk => "bulk",
+            TokenKind::Harmonic => "harmonic",
+            TokenKind::Resolution => "resolution",
+            TokenKind::Projection => "projection",
+            TokenKind::Rich => "rich",
+            TokenKind::Chunked => "chunked",
+            TokenKind::Recognition => "recognition",
+            TokenKind::Closure => "closure",
+            TokenKind::Epoch => "epoch",
+            TokenKind::PersistsThrough => "persists_through",
+            TokenKind::ResetsOn => "resets_on",
+            TokenKind::ResetsPerEpoch => "resets_per_epoch",
+            TokenKind::Restart => "restart",
+            TokenKind::RestartInPlace => "restart_in_place",
+            TokenKind::Quarantine => "quarantine",
+            TokenKind::Reorganize => "reorganize",
+            TokenKind::Bubble => "bubble",
+            TokenKind::Expose => "expose",
+            TokenKind::Consume => "consume",
+            TokenKind::Inferred => "inferred",
+            TokenKind::Subscribe => "subscribe",
+            TokenKind::Publish => "publish",
+            TokenKind::On => "on",
+            TokenKind::Of => "of",
+            TokenKind::StableWhen => "stable_when",
+            TokenKind::SerializeAs => "serialize_as",
+            TokenKind::Let => "let",
+            TokenKind::Mut => "mut",
+            TokenKind::If => "if",
+            TokenKind::Else => "else",
+            TokenKind::Match => "match",
+            TokenKind::For => "for",
+            TokenKind::In => "in",
+            TokenKind::While => "while",
+            TokenKind::Return => "return",
+            TokenKind::Break => "break",
+            TokenKind::Continue => "continue",
+            TokenKind::True => "true",
+            TokenKind::False => "false",
+            TokenKind::Nil => "nil",
+            TokenKind::Tier => "tier",
+            TokenKind::KwSelf => "self",
+            TokenKind::Interface => "interface",
+            TokenKind::Trait => "trait",
+            TokenKind::Impl => "impl",
+            TokenKind::Async => "async",
+            TokenKind::Await => "await",
+            TokenKind::Yield => "yield",
+            TokenKind::Terminate => "terminate",
+            TokenKind::Release => "release",
+            TokenKind::Macro => "macro",
+            TokenKind::Where => "where",
+            _ => return None,
+        })
+    }
+}
+
 /// Lex a source string into tokens. Returns either a token stream
 /// (with [`TokenKind::Eof`] appended) or one or more diagnostics.
 pub fn lex(source: &str) -> Result<Vec<Token>, Vec<Diag>> {

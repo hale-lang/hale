@@ -43,6 +43,9 @@ Eight substrate findings from a downstream service built on hale
   longer flag.** Both diverge — the payload allocates at most once
   per invocation. Removes the false-positive class on strict
   parsers (`fail E { … }` inside `while`).
+- **Parser: reserved keywords in binding position are named.**
+  `let accept = …` now says ``expected variable name, but `accept`
+  is a reserved lifecycle keyword in Hale — pick another name``.
 - Filed as issues: migrating `Stream.send`/`recv` to
   `fallible(IoError)` (finding 5) and implicit error propagation
   on tail-position `return` (finding 8).
