@@ -42,6 +42,20 @@ fn keyword_lists_match_the_lexer() {
     }
 }
 
+#[test]
+fn keyword_lexeme_round_trips_every_hard_keyword() {
+    for kw in keywords::HARD_KEYWORDS {
+        let toks = lex(kw).unwrap_or_else(|e| panic!("lex `{kw}`: {e:?}"));
+        assert_eq!(
+            toks[0].kind.keyword_lexeme(),
+            Some(*kw),
+            "TokenKind::keyword_lexeme is out of sync with the lexer for \
+             `{kw}` (token {:?}) — update the match in lexer.rs.",
+            toks[0].kind
+        );
+    }
+}
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
