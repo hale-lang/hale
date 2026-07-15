@@ -215,6 +215,10 @@ int isatty(int);
 /* ---- threads / scheduling ----------------------------------------- */
 int pthread_create(pthread_t *, const pthread_attr_t *, void *(*)(void *), void *);
 int pthread_join(pthread_t, void **);
+/* Single-threaded wasm: pthread_t equality is plain == (pthread_self
+ * is already stubbed elsewhere in the shim). Static inline so the bus
+ * queue's owner-thread gate (2026-07-15) compiles without a libc stub. */
+static inline int pthread_equal(pthread_t a, pthread_t b) { return a == b; }
 int pthread_cond_init(pthread_cond_t *, const pthread_condattr_t *);
 int pthread_cond_destroy(pthread_cond_t *);
 int pthread_cond_wait(pthread_cond_t *, pthread_mutex_t *);

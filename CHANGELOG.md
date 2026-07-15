@@ -59,6 +59,24 @@ Eight substrate findings from a downstream service built on hale
   it in the recv_into fix above). Migration for sentinel-checking
   callers: `let n = s.send(x); if n < 0 {…}` becomes
   `s.send(x) or handler(err);`.
+- **Fixed: SIGSEGV under cross-pool ingest load** (downstream
+  handoff 2026-07-15) — three layered runtime bugs:
+  (1) the global cooperative queue now drains **only on its owner
+  thread** — a pinned publisher's scope-exit flush used to execute
+  main-pool subscribers' handlers on the publisher's thread,
+  concurrently with main's drains (two threads in one locus);
+  (2) `lotus_arena_retire_str` records the honest blob size —
+  the old 16-byte floor let the freelist flush write a 16-byte
+  node over smaller same-arena-skipped concat/slice blobs
+  (heap corruption at high `indexed_by` churn, even
+  single-threaded);
+  (3) non-flat bus payloads for **cross-thread** subscribers are
+  now enqueued as wire bytes and deserialized into the
+  subscriber's arena on its OWNER thread at drain — dispatch used
+  to deserialize into foreign arenas on the publisher's thread
+  (TSan-verified race). Same-thread publishes keep the
+  deserialize-at-dispatch fast path. See spec/runtime.md
+  § Owner-executed handlers.
 - Filed as an issue: implicit error propagation on tail-position
   `return` (finding 8).
 

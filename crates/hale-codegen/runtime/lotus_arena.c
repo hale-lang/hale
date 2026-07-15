@@ -4502,11 +4502,24 @@ void lotus_arena_retire_str(void *arena_ptr, char *s) {
     lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
     if (!a || !s) return;
     if (!lotus_arena_contains_ptr(a, s)) return;
-    /* Clone allocations are floored at 16 bytes (see
-     * lotus_str_clone), so short strings still make viable
-     * freelist nodes. */
-    size_t n = strlen(s) + 1;
-    lotus_arena_retire_sized(a, s, n < 16 ? 16 : n);
+    /* Downstream handoff 2026-07-15 (heap corruption at ≥~300k
+     * churn): the recorded size must NEVER exceed the blob's true
+     * allocation, and strlen+1 is the only bound this fn can
+     * prove (every String producer allocates AT LEAST strlen+1).
+     * The old code floored the size up to 16 on the assumption
+     * that all retired blobs come from lotus_str_clone (which
+     * floors its allocations) — but the clone's same-arena skip
+     * stores UNFLOORED producer blobs (str_concat / str_slice
+     * allocate exactly strlen+1) straight into retire-tracked
+     * slots. Flooring a 6-byte concat blob to 16 made the flush
+     * write a 16-byte freelist node over the neighboring
+     * allocations (and past chunk ends). Record the honest size;
+     * the flush's existing `size >= 16` guard drops blobs too
+     * small to carry a node — they leak, which costs almost
+     * nothing and corrupts nothing. (Flooring str_concat /
+     * str_slice allocations so short strings recycle again is a
+     * possible follow-up optimization.) */
+    lotus_arena_retire_sized(a, s, strlen(s) + 1);
 }
 
 /* Install the retire descriptor on a map (codegen, once at
@@ -5179,6 +5192,18 @@ typedef struct lotus_bus_cell {
      * in a per-cell malloc'd buffer of `payload_size` bytes;
      * drain paths free it after handler returns. */
     void  *payload_heap;
+    /* Owner-routed wire cells (downstream handoff 2026-07-15,
+     * bug 3). NULL (the overwhelmingly common case): the payload
+     * is the handler-ready STRUCT bytes, exactly as always.
+     * Non-NULL: the payload is the WIRE bytes of a serialized
+     * publish whose target lives on a DIFFERENT thread — the
+     * publisher must not deserialize into the subscriber's arena
+     * from its own thread (unlocked cross-thread arena writes,
+     * the TSan-proven race behind the ingest-load SIGSEGV), so it
+     * defers: this field carries the `lotus_deserialize_fn` and
+     * the drain path calls lotus_bus_cell_materialize() on the
+     * OWNER thread just before invoking the handler. */
+    void  *deserialize;
     /* 16-byte aligned. The inline buffer holds a verbatim copy of a
      * bus payload struct, which may carry an i128 / Decimal (align-16)
      * field. A subscriber handler reads such a field with an aligned
@@ -5202,9 +5227,45 @@ typedef struct lotus_bus_queue {
     size_t            tail;     /* next slot to fill */
     size_t            cap;
     pthread_mutex_t   lock;
+    /* Downstream handoff 2026-07-15 (SIGSEGV under ingest load):
+     * the only thread allowed to RUN this queue's handlers. The
+     * queue carries cells for main-pool cooperative subscribers,
+     * whose loci are single-threaded by contract (F.31) — but the
+     * scope-exit flush emitted at the end of every fn/method body
+     * calls lotus_bus_queue_drain on WHATEVER thread ran the body.
+     * A pinned publisher that published into this queue would then
+     * execute the subscriber's handler on its own thread — and
+     * because the locked drain releases q->lock before invoking
+     * each handler, main's sleep-slice drain could be inside the
+     * SAME subscriber concurrently. Two threads in one locus =
+     * concurrent arena clone/retire on an unlocked freelist =
+     * crash (lotus_retire_free_pop). Set at create (main's
+     * prelude); lotus_bus_queue_drain no-ops on any other thread,
+     * so foreign publishers' cells simply wait for main's next
+     * drain point (sleep slice / yield / scope exit — the
+     * documented main-pool delivery cadence). Enqueue stays
+     * cross-thread (mutex-protected); only handler EXECUTION is
+     * owner-bound, matching the mailbox / pool-ring channels which
+     * were always owner-executed. */
+    pthread_t         owner;
 } lotus_bus_queue_t;
 
 #define LOTUS_BUS_QUEUE_INITIAL_CAP 64
+
+/* TLS side-channel feeding lotus_bus_cell_t.deserialize. The wire
+ * dispatch paths set it around their post call for a cross-thread
+ * target; every cell builder (queue enqueue / mailbox post / pool
+ * post) copies-and-consumes it. TLS keeps it race-free and scoped
+ * to exactly the one post call, with no signature change on the
+ * three hot post entry points. NULL for every other caller. */
+static __thread void *g_bus_pending_wire_deser = NULL;
+
+/* Materialize a wire cell on its OWNER thread: deserialize the wire
+ * payload into the subscriber's arena and replace the cell payload
+ * with the handler-ready struct bytes. Defined after the TLS wire
+ * buffers below; declared here for the drain paths. Returns 0 when
+ * the cell must be dropped (deserialize failure). */
+static int lotus_bus_cell_materialize(lotus_bus_cell_t *c);
 
 /* Single-thread fast path. Set to non-zero before any thread
  * beyond main can touch the bus queue. Set by:
@@ -5254,6 +5315,7 @@ lotus_bus_queue_t *lotus_bus_queue_create(void) {
     q->head = 0;
     q->tail = 0;
     pthread_mutex_init(&q->lock, NULL);
+    q->owner = pthread_self();
     return q;
 }
 
@@ -5381,6 +5443,7 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
     slot->self_ptr     = self_ptr;
     slot->payload_size = payload_size;
     slot->payload_heap = heap_buf;
+    slot->deserialize  = g_bus_pending_wire_deser;
     if (!heap_buf && payload_size > 0 && payload_src) {
         memcpy(slot->payload_inline, payload_src, payload_size);
     }
@@ -5462,6 +5525,7 @@ typedef void (*lotus_handler_fn)(void *self, void *payload);
  * at the cap). */
 static void bus_inline_drain_one(lotus_bus_queue_t *q) {
     lotus_bus_cell_t *cell = &q->cells[q->head++];
+    if (!lotus_bus_cell_materialize(cell)) return;
     void  *handler_fn   = cell->handler;
     void  *handler_self = cell->self_ptr;
     size_t psize        = cell->payload_size;
@@ -5499,6 +5563,13 @@ static __thread int g_bus_drain_active = 0;
 
 void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
     if (!q) return;
+    /* Owner-only handler execution (see the `owner` field comment).
+     * A foreign thread reaching this via its scope-exit flush /
+     * sleep-slice must NOT run main-pool subscribers' handlers —
+     * that dynamically re-introduces the cross-thread locus access
+     * the type system rejects statically. Its cells stay queued for
+     * the owner's next drain point. */
+    if (!pthread_equal(pthread_self(), q->owner)) return;
     if (g_bus_drain_active) return;
     g_bus_drain_active = 1;
     int locked = __atomic_load_n(&g_bus_has_pinned, __ATOMIC_ACQUIRE);
@@ -5519,6 +5590,10 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             lotus_bus_cell_t cell_copy = q->cells[q->head++];
             pthread_mutex_unlock(&q->lock);
 
+            /* Wire cell from a cross-thread publisher: deserialize
+             * into the subscriber's arena here, on the queue's
+             * owner thread (bug 3). */
+            if (!lotus_bus_cell_materialize(&cell_copy)) continue;
             void *payload_ptr = NULL;
             if (cell_copy.payload_size > 0) {
                 payload_ptr = cell_copy.payload_heap
@@ -5544,6 +5619,9 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
                 return;
             }
             lotus_bus_cell_t *cell = &q->cells[q->head++];
+            /* Single-threaded programs never build wire cells, but
+             * keep the drain paths uniform (one NULL check). */
+            if (!lotus_bus_cell_materialize(cell)) continue;
             void *handler_fn = cell->handler;
             void *handler_self = cell->self_ptr;
             size_t psize = cell->payload_size;
@@ -5828,6 +5906,9 @@ lotus_mailbox_t *lotus_mailbox_create(void) {
 /* Run a dequeued cell's handler, then free its heap payload (if any).
  * Two-tier inline/heap payload, identical to the cooperative drain. */
 static void lotus_mailbox_dispatch_cell(lotus_bus_cell_t *cell) {
+    /* Wire cell? Deserialize into the subscriber's arena HERE, on
+     * its owner thread (bug 3, downstream handoff 2026-07-15). */
+    if (!lotus_bus_cell_materialize(cell)) return;
     void *payload_ptr = NULL;
     if (cell->payload_size > 0) {
         payload_ptr = cell->payload_heap
@@ -5876,6 +5957,7 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
     cell.self_ptr     = self_ptr;
     cell.payload_size = payload_size;
     cell.payload_heap = heap_buf;
+    cell.deserialize  = g_bus_pending_wire_deser;
     if (!heap_buf && payload_size > 0 && payload_src) {
         memcpy(cell.payload_inline, payload_src, payload_size);
     }
@@ -6363,6 +6445,9 @@ lotus_coop_pool_t *lotus_coop_pool_current(void);
  * the classic drain (the async drain runs the handler on a coro stack and
  * frees the payload after the coro completes, so it can't use this). */
 static void lotus_coop_pool_dispatch_cell(lotus_bus_cell_t *cell) {
+    /* Wire cell? Deserialize into the subscriber's arena HERE, on
+     * its owner thread (bug 3, downstream handoff 2026-07-15). */
+    if (!lotus_bus_cell_materialize(cell)) return;
     void *payload_ptr = NULL;
     if (cell->payload_size > 0) {
         payload_ptr = cell->payload_heap
@@ -6411,6 +6496,7 @@ void lotus_coop_pool_post(lotus_coop_pool_t *p,
     cell.self_ptr     = self_ptr;
     cell.payload_size = payload_size;
     cell.payload_heap = heap_buf;
+    cell.deserialize  = g_bus_pending_wire_deser;
     if (!heap_buf && payload_size > 0 && payload_src) {
         memcpy(cell.payload_inline, payload_src, payload_size);
     }
@@ -6955,6 +7041,11 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
          * was already consumed. Loop. */
         return 1;
     }
+    /* Wire cell from a cross-thread publisher: deserialize into the
+     * subscriber's arena here, on this pool's worker (bug 3,
+     * downstream handoff 2026-07-15). Completes before the coro is
+     * created, so the TLS struct buffer can't be aliased by a park. */
+    if (!lotus_bus_cell_materialize(&cell_copy)) return 1;
     void *payload_ptr = NULL;
     if (cell_copy.payload_size > 0) {
         payload_ptr = cell_copy.payload_heap
@@ -7795,6 +7886,68 @@ void lotus_bus_dispatch_wire(const char *subject,
  * sets it per-subscriber to route deserialize allocations into
  * each subscriber's own __arena. */
 extern __thread lotus_arena_t *lotus_current_caller_arena;
+
+/* Owner-routed wire cells (downstream handoff 2026-07-15, bug 3):
+ * materialize a deferred cell on its OWNER thread. The publisher
+ * posted the WIRE bytes + deserialize fn (see the cell field
+ * comment); here — running on the thread that owns the
+ * subscriber's arena — we deserialize into that arena via the TLS
+ * caller-arena routing and swap the cell payload to the
+ * handler-ready struct bytes (exact-size heap buffer; malloc is
+ * 16-aligned on x86-64, so Decimal/i128 payload fields keep their
+ * aligned-move contract). Runs to completion without parking
+ * (deserializers do no I/O), so the shared TLS struct buffer is
+ * safe even on async-pool workers. */
+static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
+    if (!c->deserialize) return 1;
+    void *wire = c->payload_heap ? c->payload_heap
+                                 : (void *)c->payload_inline;
+    char *sbuf = g_tls_bus_struct_buf;
+    lotus_arena_t *prev = lotus_current_caller_arena;
+    lotus_current_caller_arena =
+        c->self_ptr ? *(lotus_arena_t **)c->self_ptr : NULL;
+    ssize_t ssz = ((lotus_deserialize_fn)c->deserialize)(
+        wire, c->payload_size, sbuf, LOTUS_PAYLOAD_MAX);
+    lotus_current_caller_arena = prev;
+    c->deserialize = NULL;
+    if (ssz <= 0) {
+        if (c->payload_heap) {
+            free(c->payload_heap);
+            c->payload_heap = NULL;
+        }
+        c->payload_size = 0;
+        return 0;                       /* drop the cell */
+    }
+    void *out = malloc((size_t)ssz);
+    if (!out) {
+        if (c->payload_heap) {
+            free(c->payload_heap);
+            c->payload_heap = NULL;
+        }
+        c->payload_size = 0;
+        return 0;                       /* drop on OOM */
+    }
+    memcpy(out, sbuf, (size_t)ssz);
+    if (c->payload_heap) free(c->payload_heap);
+    c->payload_heap = out;
+    c->payload_size = (size_t)ssz;
+    return 1;
+}
+
+/* Which thread runs a subscriber's handlers? Mailbox targets are
+ * pinned loci (their own thread — the publisher is never it,
+ * self-publish being devirtualized upstream). Pool targets run on
+ * the pool's worker (current iff this thread IS that worker).
+ * Global-queue targets run on the queue's owner (main). Used by
+ * the non-flat dispatch paths to decide deserialize-now (owner)
+ * vs post-wire-and-defer (foreign). */
+static int lotus_bus_target_owner_is_current(const lotus_bus_entry_t *e,
+                                             const lotus_bus_queue_t *q) {
+    if (e->mailbox) return 0;
+    if (e->coop_pool) return g_current_pool_tls == e->coop_pool;
+    if (q) return pthread_equal(pthread_self(), q->owner) != 0;
+    return 1;
+}
 
 /* m70: lotus_bus_dispatch's signature grew a 5th arg — a per-
  * subject serialize fn pointer (NULL for cooperative-only
@@ -12457,6 +12610,23 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
             /* kind == 2: skip in the specific pass. */
             continue;
         }
+        /* Bug 3: cross-thread target — post WIRE bytes + deserialize
+         * fn; the owner thread materializes at drain. */
+        if (!lotus_bus_target_owner_is_current(e, g_bus_queue_for_remote)) {
+            g_bus_pending_wire_deser = (void *)e->deserialize;
+            if (e->mailbox) {
+                lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
+                                   wire_bytes, wire_size);
+            } else if (e->coop_pool) {
+                lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
+                                     wire_bytes, wire_size);
+            } else if (g_bus_queue_for_remote) {
+                lotus_bus_queue_enqueue(g_bus_queue_for_remote, e->handler,
+                                        e->self_ptr, wire_bytes, wire_size);
+            }
+            g_bus_pending_wire_deser = NULL;
+            continue;
+        }
         lotus_arena_t *sub_arena =
             e->self_ptr ? *(lotus_arena_t **)e->self_ptr : NULL;
         lotus_current_caller_arena = sub_arena;
@@ -12489,6 +12659,23 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
             if (!lotus_subject_match(e->subject, subject)) continue;
             if (!e->deserialize) continue;
             if (e->key_filter_kind != 2) continue;
+            /* Bug 3: cross-thread target — post WIRE bytes + deserialize
+             * fn; the owner thread materializes at drain. */
+            if (!lotus_bus_target_owner_is_current(e, g_bus_queue_for_remote)) {
+                g_bus_pending_wire_deser = (void *)e->deserialize;
+                if (e->mailbox) {
+                        lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
+                                                   wire_bytes, wire_size);
+                } else if (e->coop_pool) {
+                        lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
+                                                     wire_bytes, wire_size);
+                } else if (g_bus_queue_for_remote) {
+                        lotus_bus_queue_enqueue(g_bus_queue_for_remote, e->handler,
+                                                            e->self_ptr, wire_bytes, wire_size);
+                }
+                g_bus_pending_wire_deser = NULL;
+                continue;
+            }
             lotus_arena_t *sub_arena =
                 e->self_ptr ? *(lotus_arena_t **)e->self_ptr : NULL;
             lotus_current_caller_arena = sub_arena;
@@ -12572,6 +12759,27 @@ void lotus_bus_dispatch_wire(const char *subject,
          * bypassing the routing-key contract. */
         if (e->key_filter_kind != 0) continue;
         matched++;
+        /* Bug 3 (downstream handoff 2026-07-15): deserializing here
+         * writes the SUBSCRIBER's arena — legal only on the thread
+         * that owns it. For a cross-thread target, post the WIRE
+         * bytes + deserialize fn instead; the owner materializes at
+         * drain (lotus_bus_cell_materialize). */
+        if (!lotus_bus_target_owner_is_current(e, g_bus_queue_for_remote)) {
+            g_bus_pending_wire_deser = (void *)e->deserialize;
+            if (e->mailbox) {
+                lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
+                                   wire_bytes, wire_size);
+            } else if (e->coop_pool) {
+                lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
+                                     wire_bytes, wire_size);
+            } else if (g_bus_queue_for_remote) {
+                lotus_bus_queue_enqueue(g_bus_queue_for_remote, e->handler,
+                                        e->self_ptr, wire_bytes, wire_size);
+            }
+            g_bus_pending_wire_deser = NULL;
+            delivered++;
+            continue;
+        }
         /* Load the subscriber's __arena via the m20 fixed-offset
          * GEP: slot 0 of every locus struct is `__arena: ptr`. */
         lotus_arena_t *sub_arena =
@@ -12784,6 +12992,27 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
             if (!e->subject) continue;             /* quarantined */
             if (e->key_filter_kind != 0) continue;
             if (!e->deserialize) continue;
+            /* Bug 3: cross-thread target — post WIRE bytes +
+             * deserialize fn; the owner materializes at drain. */
+            if (!lotus_bus_target_owner_is_current(e,
+                                                   g_bus_queue_for_remote)) {
+                g_bus_pending_wire_deser = (void *)e->deserialize;
+                if (e->mailbox) {
+                    lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
+                                       wire_buf, (size_t)wire_size);
+                } else if (e->coop_pool) {
+                    lotus_coop_pool_post(e->coop_pool, e->handler,
+                                         e->self_ptr, wire_buf,
+                                         (size_t)wire_size);
+                } else if (g_bus_queue_for_remote) {
+                    lotus_bus_queue_enqueue(g_bus_queue_for_remote,
+                                            e->handler, e->self_ptr,
+                                            wire_buf, (size_t)wire_size);
+                }
+                g_bus_pending_wire_deser = NULL;
+                delivered++;
+                continue;
+            }
             lotus_arena_t *sub_arena =
                 e->self_ptr ? *(lotus_arena_t **)e->self_ptr : NULL;
             lotus_current_caller_arena = sub_arena;
