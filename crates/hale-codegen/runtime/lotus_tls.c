@@ -445,8 +445,13 @@ int lotus_tls_connect(const char *host, uint16_t port) {
          * otherwise the caller's error branch reads whatever close()
          * left behind instead of upgrade's real failure reason. */
         int saved_errno = errno;
+        /* Log connect-level context (host+port, which upgrade doesn't
+         * have) but stay generic: upgrade fails for alloc reasons too
+         * (ctx/SSL_new/realloc → ENOMEM), so don't claim "handshake
+         * failed" here — that would both mislabel those paths and, on a
+         * genuine handshake failure, duplicate upgrade's own line. */
         fprintf(stderr,
-                "lotus_tls_connect: handshake failed (host=%s port=%u)\n",
+                "lotus_tls_connect: upgrade failed (host=%s port=%u)\n",
                 host, (unsigned)port);
         close(raw_fd);
         errno = saved_errno;

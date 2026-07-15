@@ -122,13 +122,18 @@ fn upgrade_failure_leaves_fd_open() {
     // fails for a genuine I/O reason rather than an argument-
     // validation short-circuit.
     //
+    // Bind port 0 so the kernel assigns an ephemeral port: the test
+    // never connects to this socket, so it needs no fixed port — a
+    // hardcoded port only adds a CI collision / TIME_WAIT-reuse flake
+    // hazard for zero benefit.
+    //
     // After the fallible branch fires, close the fd ourselves and
     // assert the close succeeds (0) — proving `upgrade` left it
     // open rather than closing it out from under the caller (had
     // upgrade already closed it, closing again would fail).
     let src = r#"
         fn main() {
-            let listen_fd = std::io::tcp::listen_socket("127.0.0.1", 47847) or raise;
+            let listen_fd = std::io::tcp::listen_socket("127.0.0.1", 0) or raise;
             let h = std::io::tls::upgrade(listen_fd, "x", false) or {
                 println("upgrade_err");
                 let close_ret = std::io::tcp::close_fd(listen_fd);
