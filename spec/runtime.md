@@ -505,6 +505,43 @@ The pinned-mailbox path is unchanged: pinned subscribers wake
 on `lotus_mailbox_post`'s condvar broadcast regardless of what
 the cooperative scheduler is doing.
 
+#### Owner-executed handlers (2026-07-15, downstream handoff)
+
+Two runtime rules restore the single-threaded-locus invariant
+(F.31) *dynamically* — the compiler already enforces it for
+direct calls, but two bus paths used to violate it under load
+(reproduced as a SIGSEGV in a 10k msg/s ingest bench):
+
+1. **The global cooperative queue is drained only by its owner
+   thread** (`main`, recorded at queue creation). The scope-exit
+   flush emitted at the end of every fn/method body — and the
+   sleep-slice / `yield` drains — call `lotus_bus_queue_drain` on
+   whatever thread ran the body; on any thread but the owner the
+   call is now a no-op. Previously a pinned publisher's flush
+   would execute a main-pool subscriber's handler on the
+   publisher's thread, concurrently with `main`'s own drains (the
+   locked drain releases the queue mutex before each handler
+   invocation) — two threads inside one locus.
+2. **Payload deserialization happens on the subscriber's owner
+   thread.** The non-flat dispatch paths deserialize each
+   published payload into the subscriber's arena (Task-11 arena
+   routing); for a target owned by a different thread this write
+   used to happen on the *publisher's* thread — an unlocked
+   cross-thread write into a foreign arena. Now a cross-thread
+   publish enqueues the *wire bytes* plus the deserialize fn in
+   the cell, and the owner materializes (deserializes into its
+   own arena) at drain, just before invoking the handler.
+   Same-thread targets keep the deserialize-at-dispatch fast
+   path, so single-pool programs are unchanged.
+
+Consequences: a main-pool subscriber's handlers run **only on
+`main`** (at sleep-slice / yield / scope-exit drains — worst-case
+~100ms after a cross-thread publish, per the slicing above);
+pool subscribers run only on their pool's worker; pinned
+subscribers only on their own thread. Flat (pointer-free POD)
+payloads are exempt from rule 2 — a verbatim byte copy writes no
+arena. Delivery and FIFO order per subscriber are unchanged.
+
 **Item B from the 2026-05-21 friction log** (a cooperative
 publisher's `<-` to a pinned subscriber) is **resolved as of
 2026-06-01** — the earlier "drains only at dissolve in some
