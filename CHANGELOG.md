@@ -6,6 +6,28 @@ behavior.
 
 ---
 
+## Unreleased — downstream-handoff substrate fixes (2026-07-14)
+
+Eight substrate findings from a downstream service built on hale
+0.10.0; six fixed here, two filed as issues.
+
+- **`recv_into` now parks on `async_io` pools (timed park).**
+  `std::io::tcp/udp/tls` `recv_into` / `recv_stamped_into` (and
+  `recv_bytes`) on a `where async_io` pool park the coroutine on
+  epoll until the fd is readable or the fd's `set_recv_timeout`
+  deadline expires — `-2` again means "deadline expired" on every
+  pool type, never an instant would-block. Fixes pond/websocket's
+  liveness machinery tearing down every idle connection on
+  async_io pools. Two contract alignments: `recv_bytes` now honors
+  `set_recv_timeout` on async_io (it parked indefinitely before),
+  and `udp::recv_into` returns `-2` retryable on timeout (was `-1`
+  fatal).
+- Filed as issues: migrating `Stream.send`/`recv` to
+  `fallible(IoError)` (finding 5) and implicit error propagation
+  on tail-position `return` (finding 8).
+
+---
+
 ## v0.10.0 — topology-aware placement + perspectives (live redeploy)
 
 - **Topology-aware placement (Phase 1).** Describe the host machine

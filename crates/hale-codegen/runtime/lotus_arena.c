@@ -6144,6 +6144,15 @@ void lotus_mailbox_drain_pending(lotus_mailbox_t *mb) {
  * only ever fire on that pool's thread.
  */
 
+/* Monotonic now in ns — the basis for timed parks and their epoll
+ * timeout math. Shared with the recv wrappers' deadline computation
+ * (common code, all platforms). */
+static int64_t lotus_now_mono_ns(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
+
 /* F.35 Slice 1: ucontext-backed coroutine state for one in-flight
  * handler invocation on an async_io pool. Each pool worker maintains
  * a per-invocation `lotus_coro_t` so the handler can `park_on_fd`
@@ -6158,6 +6167,16 @@ typedef struct lotus_coro {
     size_t            stack_size;   /* alloc'd size of `stack` */
     int               parked_fd;    /* fd this coro is parked on (-1 when running) */
     int               done;         /* 1 once the handler has returned */
+    /* Timed park (downstream handoff 2026-07-14, finding 1): absolute
+     * CLOCK_MONOTONIC deadline for a park armed via
+     * lotus_coop_park_on_fd_deadline; 0 = no deadline (park until
+     * readable). The drain loop bounds its epoll_wait by the minimum
+     * parked deadline and resumes expired coros with
+     * `park_timed_out = 1`, which the park call surfaces as
+     * return 1 so recv wrappers can hand back their -2 timeout
+     * sentinel only on GENUINE deadline expiry. */
+    int64_t           park_deadline_ns;
+    int               park_timed_out;
     /* Handler invocation parameters captured at coro creation. The
      * thunk reads them after swapcontext and tail-calls the handler. */
     void             *handler;
@@ -6648,6 +6667,8 @@ static lotus_coro_t *lotus_coro_alloc(lotus_coop_pool_t *p,
     c->stack_size  = LOTUS_CORO_STACK_BYTES;
     c->parked_fd   = -1;
     c->done        = 0;
+    c->park_deadline_ns = 0;
+    c->park_timed_out   = 0;
     c->handler     = handler;
     c->self_ptr    = self_ptr;
     c->payload_ptr = payload_ptr;
@@ -6681,7 +6702,21 @@ static void lotus_coro_free(lotus_coro_t *c) {
  * wants to wait for. EPOLLET / EPOLLONESHOT are not exposed; the
  * runtime uses level-triggered + manual deregistration so a coro
  * that wakes can re-park without an extra epoll_ctl cycle. */
-int lotus_coop_park_on_fd(int fd, uint32_t events) {
+/* Timed park (downstream handoff 2026-07-14, finding 1). Same contract as
+ * lotus_coop_park_on_fd plus an absolute CLOCK_MONOTONIC deadline:
+ *   0  → fd became ready (caller retries its syscall);
+ *   1  → the deadline expired first (caller returns its timeout
+ *        sentinel — e.g. recv_into's -2);
+ *   -1 → park unavailable (non-async context, epoll error).
+ * `deadline_ns == 0` parks with no deadline (identical to the plain
+ * park). A deadline already in the past returns 1 without touching
+ * epoll. This is what makes SO_RCVTIMEO meaningful on async_io
+ * pools, where fds are nonblocking and the kernel timeout is inert:
+ * the recv wrappers translate the socket's configured timeout into
+ * a park deadline, so `-2` keeps meaning "deadline expired" and
+ * never "instant would-block". */
+int lotus_coop_park_on_fd_deadline(int fd, uint32_t events,
+                                   int64_t deadline_ns) {
     lotus_coop_pool_t *p = g_current_pool_tls;
     lotus_coro_t      *c = g_current_coro_tls;
     if (!p || !c) {
@@ -6693,6 +6728,9 @@ int lotus_coop_park_on_fd(int fd, uint32_t events) {
     if (!p->async_io_enabled || p->epoll_fd < 0) {
         return -1;
     }
+    if (deadline_ns > 0 && lotus_now_mono_ns() >= deadline_ns) {
+        return 1;
+    }
     struct epoll_event ev;
     memset(&ev, 0, sizeof(ev));
     ev.events   = events;
@@ -6700,18 +6738,28 @@ int lotus_coop_park_on_fd(int fd, uint32_t events) {
     if (epoll_ctl(p->epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
         return -1;
     }
-    c->parked_fd = fd;
+    c->parked_fd        = fd;
+    c->park_deadline_ns = deadline_ns;
+    c->park_timed_out   = 0;
     /* Link onto parked head — single-threaded access (only the
      * worker touches this list), no lock needed. */
     c->next = p->parked_head;
     p->parked_head = c;
     /* Swap to drain. Returns here when the worker swaps back in
-     * after epoll_wait wakeup. The fd has already been removed
-     * from epoll by the resume path before swap-back. */
+     * after epoll_wait wakeup (fd ready) or deadline expiry. The fd
+     * has already been removed from epoll by the resume path before
+     * swap-back. */
     swapcontext(&c->ctx, &p->drain_ctx);
-    /* Resumed. The resume path cleared parked_fd to -1 and
-     * detached us from parked_head. */
-    return 0;
+    /* Resumed. The resume path cleared parked_fd to -1, detached us
+     * from parked_head, and set park_timed_out on the expiry path. */
+    c->park_deadline_ns = 0;
+    int timed_out = c->park_timed_out;
+    c->park_timed_out = 0;
+    return timed_out ? 1 : 0;
+}
+
+int lotus_coop_park_on_fd(int fd, uint32_t events) {
+    return lotus_coop_park_on_fd_deadline(fd, events, 0);
 }
 
 /* F.35 Slice 1: async-aware drain. Runs in the pool worker thread.
@@ -6785,6 +6833,27 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
              * hang. Normal async pools always have wake_fd >= 0. */
             timeout_ms = 20;
         }
+        /* Timed parks bound the wait: wake at the earliest parked
+         * deadline so expiry is serviced promptly. Rounded UP so a
+         * sub-ms remainder doesn't busy-spin at timeout 0. */
+        if (timeout_ms != 0) {
+            int64_t min_deadline = 0;
+            for (lotus_coro_t *dc = p->parked_head; dc; dc = dc->next) {
+                if (dc->park_deadline_ns > 0
+                    && (min_deadline == 0
+                        || dc->park_deadline_ns < min_deadline)) {
+                    min_deadline = dc->park_deadline_ns;
+                }
+            }
+            if (min_deadline > 0) {
+                int64_t rem = min_deadline - lotus_now_mono_ns();
+                int64_t ms = rem <= 0 ? 0 : (rem + 999999) / 1000000;
+                if (ms > (int64_t)INT_MAX) ms = INT_MAX;
+                if (timeout_ms < 0 || (int64_t)timeout_ms > ms) {
+                    timeout_ms = (int)ms;
+                }
+            }
+        }
         struct epoll_event events[16];
         int n = epoll_wait(p->epoll_fd, events, 16, timeout_ms);
         if (n < 0) {
@@ -6823,6 +6892,41 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
             g_current_coro_tls = NULL;
             if (c->done) {
                 lotus_coro_free(c);
+            }
+        }
+        /* Expiry sweep (timed parks): resume every parked coro whose
+         * deadline has passed, with park_timed_out set so the park
+         * call returns 1. Runs AFTER the readiness loop — a coro
+         * resumed by readiness in the same pass is already detached,
+         * so it can't be double-resumed. Restart the scan from
+         * parked_head after each resume: the resumed coro may have
+         * re-parked (mutating the list) before yielding back. */
+        for (;;) {
+            int64_t now = lotus_now_mono_ns();
+            lotus_coro_t *expired = NULL;
+            lotus_coro_t **epp = &p->parked_head;
+            while (*epp) {
+                lotus_coro_t *ec = *epp;
+                if (ec->park_deadline_ns > 0 && now >= ec->park_deadline_ns) {
+                    *epp = ec->next;
+                    expired = ec;
+                    break;
+                }
+                epp = &ec->next;
+            }
+            if (!expired) break;
+            if (expired->parked_fd >= 0) {
+                (void)epoll_ctl(p->epoll_fd, EPOLL_CTL_DEL,
+                                expired->parked_fd, NULL);
+            }
+            expired->next           = NULL;
+            expired->parked_fd      = -1;
+            expired->park_timed_out = 1;
+            g_current_coro_tls = expired;
+            swapcontext(&p->drain_ctx, &expired->ctx);
+            g_current_coro_tls = NULL;
+            if (expired->done) {
+                lotus_coro_free(expired);
             }
         }
         /* If we just blocked (no cell to drain this pass), return to the
@@ -6901,6 +7005,13 @@ int lotus_coop_pool_enable_async_io(lotus_coop_pool_t *p) {
 int lotus_coop_park_on_fd(int fd, uint32_t events) {
     (void)fd;
     (void)events;
+    return -1;
+}
+int lotus_coop_park_on_fd_deadline(int fd, uint32_t events,
+                                   int64_t deadline_ns) {
+    (void)fd;
+    (void)events;
+    (void)deadline_ns;
     return -1;
 }
 #endif /* LOTUS_HAVE_ASYNC_IO */
@@ -9310,7 +9421,9 @@ int lotus_tcp_listen_socket(const char *host, uint16_t port) {
  * coro; outside a worker context (e.g. fn main() prelude, pinned
  * thread bodies) the pointer is NULL and the check returns 0,
  * preserving the classic blocking semantics. */
-static int lotus_io_on_async_io_pool(void) {
+/* Non-static: lotus_tls.c shares it (plus set_nonblock below) for
+ * the wss:// recv timed park. */
+int lotus_io_on_async_io_pool(void) {
     lotus_coop_pool_t *p = g_current_pool_tls;
     return p && p->async_io_enabled;
 }
@@ -9323,7 +9436,7 @@ static int lotus_io_on_async_io_pool(void) {
  * on its pinned thread, publishes it via the bus, worker reads
  * on the async_io pool) and the worker can't know if the
  * upstream already set the flag. */
-static void lotus_io_set_nonblock(int fd) {
+void lotus_io_set_nonblock(int fd) {
     if (fd < 0) return;
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0) return;
@@ -9931,6 +10044,30 @@ static int sock_set_timeout_ns(int fd, int name, int64_t ns) {
     tv.tv_sec = (time_t)(ns / 1000000000);
     tv.tv_usec = (suseconds_t)((ns % 1000000000) / 1000);
     return setsockopt(fd, SOL_SOCKET, name, &tv, sizeof(tv));
+}
+
+/* Read back the socket's configured recv timeout (SO_RCVTIMEO) in
+ * ns; 0 = unset / error ("no timeout", matching the set-side "0
+ * disables" contract). The socket is the single source of truth
+ * for the timed-park deadline — it survives fd transfer across the
+ * bus and timeouts armed from another thread/pool, with no
+ * fd-reuse invalidation hazard a lotus-side table would carry.
+ * Non-static: lotus_tls.c shares it for wss:// recv deadlines. */
+int64_t lotus_sock_get_recv_timeout_ns(int fd) {
+    if (fd < 0) return 0;
+    struct timeval tv;
+    socklen_t len = sizeof(tv);
+    if (getsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, &len) != 0) return 0;
+    return (int64_t)tv.tv_sec * 1000000000LL + (int64_t)tv.tv_usec * 1000LL;
+}
+
+/* The absolute park deadline for one recv call: computed ONCE at
+ * call entry (before the first park) so spurious wakeups re-park
+ * with the REMAINING time, not a fresh full window. 0 = no
+ * deadline (park until readable). */
+static int64_t lotus_recv_park_deadline(int fd) {
+    int64_t t = lotus_sock_get_recv_timeout_ns(fd);
+    return t > 0 ? lotus_now_mono_ns() + t : 0;
 }
 
 int lotus_udp_set_recv_timeout_ns(int fd, int64_t ns) {
@@ -13875,8 +14012,14 @@ void *lotus_tcp_recv_bytes(int fd, int max_bytes) {
      * accept_one. Off-pool callers (pinned threads, main) keep
      * the classic blocking read. */
     int async = lotus_io_on_async_io_pool();
+    int64_t deadline = 0;
     if (async) {
         lotus_io_set_nonblock(fd);
+        /* Timed park: honor the socket's SO_RCVTIMEO as the park
+         * deadline (the kernel timeout is inert on a nonblocking
+         * fd). Expiry returns the empty Bytes — the documented
+         * recv_bytes timeout shape on blocking pools. */
+        deadline = lotus_recv_park_deadline(fd);
     }
     /* Allocate the body at the cap, read into it, then patch the
      * length prefix down to the actual bytes read. lotus_bytes_create
@@ -13893,12 +14036,14 @@ void *lotus_tcp_recv_bytes(int fd, int max_bytes) {
         if (n >= 0) break;
         if (errno == EINTR) continue;
         if (async && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (lotus_coop_park_on_fd(fd, EPOLLIN) == 0) continue;
+            if (lotus_coop_park_on_fd_deadline(fd, EPOLLIN, deadline) == 0) {
+                continue;
+            }
         }
-        /* read error: hand back an empty Bytes so downstream code
-         * sees length=0 and can detect "nothing read". The reserved
-         * arena memory leaks until program exit (matches recv_str's
-         * convention). */
+        /* read error / park deadline expiry: hand back an empty
+         * Bytes so downstream code sees length=0 and can detect
+         * "nothing read". The reserved arena memory leaks until
+         * program exit (matches recv_str's convention). */
         return lotus_bytes_empty_global();
     }
     /* Patch the length prefix down to the actual bytes read. */
@@ -16417,6 +16562,18 @@ int lotus_bytes_builder_xor_mask_into(void *handle, const void *src,
 
 int64_t lotus_tcp_recv_into(int fd, void *builder, int64_t max_bytes) {
     if (fd < 0 || max_bytes <= 0) return -1;
+    /* downstream handoff 2026-07-14 (finding 1): on an async_io pool, park
+     * on EPOLLIN instead of surfacing EAGAIN — the fd is nonblocking
+     * there, so pre-fix every idle read returned -2 in microseconds
+     * and pond/websocket's -2-based liveness declared healthy peers
+     * dead. The park deadline mirrors the socket's SO_RCVTIMEO, so
+     * -2 keeps meaning "recv deadline expired" on every pool type. */
+    int async = lotus_io_on_async_io_pool();
+    int64_t deadline = 0;
+    if (async) {
+        lotus_io_set_nonblock(fd);
+        deadline = lotus_recv_park_deadline(fd);
+    }
     char *tail = (char *)lotus_bytes_builder_reserve(builder, max_bytes);
     if (!tail) return -1;
     ssize_t n;
@@ -16428,7 +16585,15 @@ int64_t lotus_tcp_recv_into(int fd, void *builder, int64_t max_bytes) {
          * not fatal. Distinguish it (-2) so a caller that set a recv timeout
          * can run a liveness check instead of treating it as a dead
          * connection. -1 stays "fatal". See std::io::tcp::recv_into. */
-        if (errno == EAGAIN || errno == EWOULDBLOCK) return -2;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (async) {
+                int r = lotus_coop_park_on_fd_deadline(fd, EPOLLIN, deadline);
+                if (r == 0) continue;       /* readable — retry */
+                /* r==1 deadline expired; r<0 park unavailable →
+                 * fall through to -2 (pre-fix behavior). */
+            }
+            return -2;
+        }
         return -1;
     }
     lotus_bytes_builder_advance(builder, (int64_t)n);
@@ -16462,6 +16627,13 @@ int64_t lotus_tcp_recv_stamped(int fd, void *builder, int64_t max_bytes) {
     g_last_recv_kernel_ns = 0;
     g_last_recv_user_ns = 0;
     if (fd < 0 || max_bytes <= 0) return -1;
+    /* Same async_io timed park as lotus_tcp_recv_into. */
+    int async = lotus_io_on_async_io_pool();
+    int64_t deadline = 0;
+    if (async) {
+        lotus_io_set_nonblock(fd);
+        deadline = lotus_recv_park_deadline(fd);
+    }
     char *tail = (char *)lotus_bytes_builder_reserve(builder, max_bytes);
     if (!tail) return -1;
 
@@ -16488,7 +16660,13 @@ int64_t lotus_tcp_recv_stamped(int fd, void *builder, int64_t max_bytes) {
         if (errno == EINTR) continue;
         /* SO_RCVTIMEO timeout → EAGAIN/EWOULDBLOCK: retryable (-2),
          * not fatal (-1). Same contract as lotus_tcp_recv_into. */
-        if (errno == EAGAIN || errno == EWOULDBLOCK) return -2;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (async) {
+                int r = lotus_coop_park_on_fd_deadline(fd, EPOLLIN, deadline);
+                if (r == 0) continue;
+            }
+            return -2;
+        }
         return -1;
     }
 
@@ -16530,6 +16708,13 @@ int64_t lotus_tcp_last_recv_user_ns(void)   { return g_last_recv_user_ns; }
 
 int64_t lotus_udp_recv_into(int fd, void *builder, int64_t max_bytes) {
     if (fd < 0 || max_bytes <= 0) return -1;
+    /* Same async_io timed park as lotus_tcp_recv_into. */
+    int async = lotus_io_on_async_io_pool();
+    int64_t deadline = 0;
+    if (async) {
+        lotus_io_set_nonblock(fd);
+        deadline = lotus_recv_park_deadline(fd);
+    }
     char *tail = (char *)lotus_bytes_builder_reserve(builder, max_bytes);
     if (!tail) return -1;
     /* Datagram boundaries preserved: a single recvfrom delivers
@@ -16539,6 +16724,17 @@ int64_t lotus_udp_recv_into(int fd, void *builder, int64_t max_bytes) {
         n = recvfrom(fd, tail, (size_t)max_bytes, 0, NULL, NULL);
         if (n >= 0) break;
         if (errno == EINTR) continue;
+        /* 2026-07-14: EAGAIN/EWOULDBLOCK now returns -2 (retryable —
+         * SO_RCVTIMEO expiry or async park deadline), matching the
+         * tcp recv_into contract; it previously fell into -1 fatal.
+         * See spec/stdlib.md (udp row). */
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (async) {
+                int r = lotus_coop_park_on_fd_deadline(fd, EPOLLIN, deadline);
+                if (r == 0) continue;
+            }
+            return -2;
+        }
         return -1;
     }
     lotus_bytes_builder_advance(builder, (int64_t)n);
