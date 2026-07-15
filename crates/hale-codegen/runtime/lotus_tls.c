@@ -78,6 +78,26 @@ typedef struct lotus_arena lotus_arena_t;
 lotus_arena_t *lotus_bus_payload_arena_get(void);
 void          *lotus_bytes_create(lotus_arena_t *a, int64_t len);
 
+/* downstream handoff 2026-07-14 (finding 1): async_io timed park, shared
+ * with the plain-tcp recv family in lotus_arena.c. On an async_io
+ * pool an SSL_ERROR_WANT_READ must park the coro on the raw fd
+ * (deadline = the socket's SO_RCVTIMEO) instead of surfacing -2
+ * instantly. On non-async paths (and non-Linux, where the park
+ * stub returns -1) behavior is unchanged. */
+int     lotus_io_on_async_io_pool(void);
+void    lotus_io_set_nonblock(int fd);
+int64_t lotus_sock_get_recv_timeout_ns(int fd);
+int     lotus_coop_park_on_fd_deadline(int fd, uint32_t events,
+                                       int64_t deadline_ns);
+/* Level-triggered epoll event bits; values mirror sys/epoll.h
+ * (fallbacks match lotus_arena.c's non-Linux inert defines). */
+#ifndef EPOLLIN
+#define EPOLLIN  0x001
+#endif
+#ifndef EPOLLOUT
+#define EPOLLOUT 0x004
+#endif
+
 /* Local equivalent of lotus_arena.c's static lotus_bytes_empty_global:
  * the canonical "empty Bytes" return for error / EOF paths. Inline
  * here because the original is `static` in its TU. */
@@ -450,15 +470,31 @@ int64_t lotus_tls_recv_into(int handle, void *builder, int64_t max_bytes) {
     if (max_bytes <= 0) return -1;
     SSL *ssl = lotus_tls__handle_ssl(handle);
     if (!ssl) return -1;
+    /* downstream handoff 2026-07-14 (finding 1): on an async_io pool, a
+     * WANT_READ/WANT_WRITE parks the coro on the raw fd with a
+     * deadline mirroring the socket's SO_RCVTIMEO — same contract
+     * as lotus_tcp_recv_into (-2 = genuine deadline expiry only).
+     * Off-pool: blocking fd, single SSL_read, -2 on the kernel
+     * timeout — unchanged. */
+    int async = lotus_io_on_async_io_pool();
+    int raw_fd = lotus_tls__handle_fd(handle);
+    int64_t deadline = 0;
+    if (async && raw_fd >= 0) {
+        lotus_io_set_nonblock(raw_fd);
+        int64_t t = lotus_sock_get_recv_timeout_ns(raw_fd);
+        if (t > 0) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            deadline = (int64_t)ts.tv_sec * 1000000000LL
+                     + (int64_t)ts.tv_nsec + t;
+        }
+    }
     char *tail = (char *)lotus_bytes_builder_reserve(builder, max_bytes);
     if (!tail) return -1;
-    /* SSL_read returns >0 bytes, 0 on clean shutdown, <0 on
-     * error. We don't retry on SSL_ERROR_WANT_READ here because
-     * the underlying fd is blocking in pond/websocket's shape;
-     * callers driving non-blocking sockets must wrap this with
-     * their own poll() loop. */
-    int n = SSL_read(ssl, tail, (int)max_bytes);
-    if (n < 0) {
+    int n;
+    for (;;) {
+        n = SSL_read(ssl, tail, (int)max_bytes);
+        if (n >= 0) break;
         int err = SSL_get_error(ssl, n);
         /* A `SO_RCVTIMEO` timeout on the underlying blocking fd surfaces as
          * SSL_ERROR_WANT_READ (or WANT_WRITE during a renegotiation read).
@@ -468,6 +504,12 @@ int64_t lotus_tls_recv_into(int handle, void *builder, int64_t max_bytes) {
          * for "would-block / timed out"; -1 stays "fatal". No error print on
          * the timeout path (it's expected). See std::io::tls::recv_into. */
         if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+            if (async && raw_fd >= 0) {
+                uint32_t ev = (err == SSL_ERROR_WANT_WRITE) ? EPOLLOUT
+                                                            : EPOLLIN;
+                int r = lotus_coop_park_on_fd_deadline(raw_fd, ev, deadline);
+                if (r == 0) continue;   /* ready — retry SSL_read */
+            }
             return -2;
         }
         fprintf(stderr,
@@ -567,12 +609,34 @@ int64_t lotus_tls_recv_stamped_into(int handle, void *builder, int64_t max_bytes
     if (max_bytes <= 0) return -1;
     SSL *ssl = lotus_tls__handle_ssl(handle);
     if (!ssl) return -1;
+    /* Same async_io timed park as lotus_tls_recv_into. */
+    int async = lotus_io_on_async_io_pool();
+    int raw_fd = lotus_tls__handle_fd(handle);
+    int64_t deadline = 0;
+    if (async && raw_fd >= 0) {
+        lotus_io_set_nonblock(raw_fd);
+        int64_t t = lotus_sock_get_recv_timeout_ns(raw_fd);
+        if (t > 0) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            deadline = (int64_t)ts.tv_sec * 1000000000LL
+                     + (int64_t)ts.tv_nsec + t;
+        }
+    }
     char *tail = (char *)lotus_bytes_builder_reserve(builder, max_bytes);
     if (!tail) return -1;
-    int n = SSL_read(ssl, tail, (int)max_bytes);
-    if (n < 0) {
+    int n;
+    for (;;) {
+        n = SSL_read(ssl, tail, (int)max_bytes);
+        if (n >= 0) break;
         int err = SSL_get_error(ssl, n);
         if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+            if (async && raw_fd >= 0) {
+                uint32_t ev = (err == SSL_ERROR_WANT_WRITE) ? EPOLLOUT
+                                                            : EPOLLIN;
+                int r = lotus_coop_park_on_fd_deadline(raw_fd, ev, deadline);
+                if (r == 0) continue;
+            }
             return -2;
         }
         fprintf(stderr,
