@@ -1229,6 +1229,24 @@ impl<'a> Walker<'a> {
         });
     }
 
+    /// `fail` / `return` terminate the enclosing invocation, so their
+    /// payload allocates at most once per call no matter how many loops
+    /// enclose the statement — walk it with the loop context cleared
+    /// (depth 0, no unbounded/infinite flags). The payload still escapes
+    /// to the caller (`Escape::Returned`): a fail payload is allocated
+    /// into the per-call subregion and stored to the caller's err slot,
+    /// so the cross-fn unbounded-invocation arm (GAP A in
+    /// `final_verdict`) must keep seeing it. `violate` also diverges but
+    /// its payload is walked `Local` (framework-consumed) — see the
+    /// `Stmt::Violate` arm.
+    fn walk_diverging_payload(&mut self, e: &Expr) {
+        let saved_loops = std::mem::take(&mut self.loop_stack);
+        let saved_infinite = std::mem::take(&mut self.infinite_stack);
+        self.walk_expr(e, 0, Escape::Returned);
+        self.loop_stack = saved_loops;
+        self.infinite_stack = saved_infinite;
+    }
+
     /// D2: if `recv` is a value whose *declared* type is a growing
     /// `@form(vec | hashmap)` locus, the form name. Resolves a bare var via
     /// `var_types` and a `self.<field>` via `field_types`.
@@ -1322,13 +1340,13 @@ impl<'a> Walker<'a> {
                 self.walk_expr(value, depth, esc);
                 self.store_target = prev;
             }
-            Stmt::Return(Some(e), _) => self.walk_expr(e, depth, Escape::Returned),
+            Stmt::Return(Some(e), _) => self.walk_diverging_payload(e),
             Stmt::Return(None, _) => {}
             // Perspectives Phase 2b: `reperspective` instantiates a
             // fresh impl (bounded, one per swap) — no expression to
             // walk for the alloc summary.
             Stmt::Reperspective { .. } => {}
-            Stmt::Fail { value, .. } => self.walk_expr(value, depth, Escape::Returned),
+            Stmt::Fail { value, .. } => self.walk_diverging_payload(value),
             Stmt::Send { subject, value, .. } => {
                 self.walk_expr(subject, depth, Escape::Local);
                 self.walk_expr(value, depth, Escape::Sent);
@@ -2044,6 +2062,90 @@ mod tests {
         assert_eq!(st.reclaim, ReclaimScope::EnclosingLocus);
         assert!(st.in_unbounded_loop);
         assert_eq!(st.verdict(), SiteVerdict::AccumulatesUnbounded);
+    }
+
+    #[test]
+    fn fail_payload_in_unbounded_loop_is_once_per_invocation() {
+        // `fail` diverges: however many iterations the loop runs, the
+        // payload allocates at most once per invocation. The 40-advisory
+        // false-positive class from strict parsers (`fail E { … }` inside
+        // `while`) must not flag.
+        let src = r#"
+            type E { code: Int; }
+            fn pump(n: Int) -> Int fallible(E) {
+                while true {
+                    if n == 1 { fail E { code: n }; }
+                }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::free_fn("pump"));
+        let st = f
+            .sites
+            .iter()
+            .find(|s| matches!(s.kind, AllocKind::StructLit(_)))
+            .expect("fail payload site");
+        assert_eq!(st.escape, Escape::Returned, "payload still escapes to the caller");
+        assert!(!st.in_unbounded_loop, "divergence clears the loop context");
+        assert_eq!(st.loop_depth, 0);
+        assert_eq!(st.verdict(), SiteVerdict::OncePerInvocation);
+    }
+
+    #[test]
+    fn return_payload_in_unbounded_loop_is_once_per_invocation() {
+        // Same divergence class as `fail`: a `return` in a loop executes
+        // at most once per invocation.
+        let src = r#"
+            type Q { a: Int; }
+            fn find(n: Int) -> Q {
+                let mut i = 0;
+                while i < n {
+                    if i == 7 { return Q { a: i }; }
+                    i = i + 1;
+                }
+                return Q { a: 0 };
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::free_fn("find"));
+        for st in f.sites.iter().filter(|s| matches!(s.kind, AllocKind::StructLit(_))) {
+            assert_eq!(st.verdict(), SiteVerdict::OncePerInvocation);
+        }
+    }
+
+    #[test]
+    fn divergence_exemption_is_site_scoped() {
+        // A genuinely-accumulating alloc in the same loop as a `fail`
+        // must still flag — only the fail/return payload itself is
+        // at-most-once.
+        let src = r#"
+            type Q { a: Int; }
+            type E { code: Int; }
+            fn pump(n: Int) -> Int fallible(E) {
+                while true {
+                    let q = Q { a: n };
+                    let _ = q.a;
+                    if n == 1 { fail E { code: n }; }
+                }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::free_fn("pump"));
+        let q = f
+            .sites
+            .iter()
+            .find(|s| matches!(&s.kind, AllocKind::StructLit(name) if name == "Q"))
+            .expect("Q site");
+        assert_eq!(q.verdict(), SiteVerdict::AccumulatesUnbounded);
+        let e = f
+            .sites
+            .iter()
+            .find(|s| matches!(&s.kind, AllocKind::StructLit(name) if name == "E"))
+            .expect("E site");
+        assert_eq!(e.verdict(), SiteVerdict::OncePerInvocation);
     }
 
     #[test]
