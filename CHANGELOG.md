@@ -39,6 +39,10 @@ Eight substrate findings from a downstream service built on hale
   keep resolving to the caller (F.4). A default reading a
   later-declared sibling is now a compile error instead of an
   uninitialized read.
+- **Unbounded-alloc lint: `fail`/`return` payloads in loops no
+  longer flag.** Both diverge — the payload allocates at most once
+  per invocation. Removes the false-positive class on strict
+  parsers (`fail E { … }` inside `while`).
 - Filed as issues: migrating `Stream.send`/`recv` to
   `fallible(IoError)` (finding 5) and implicit error propagation
   on tail-position `return` (finding 8).
