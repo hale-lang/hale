@@ -1110,6 +1110,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "io", "tls", "connect"] => Ok(Some(
                 self.lower_std_io_tls_connect_fallible(args, scope)?,
             )),
+            // upgrade wraps an already-connected fd in a TLS session
+            // (STARTTLS-style); same fallible(IoError) surface as
+            // connect since it handshakes + optionally verifies.
+            ["std", "io", "tls", "upgrade"] => Ok(Some(
+                self.lower_std_io_tls_upgrade_fallible(args, scope)?,
+            )),
             ["std", "bytes", "at"] => Ok(Some(
                 self.lower_std_bytes_at_fallible(args, scope)?,
             )),
