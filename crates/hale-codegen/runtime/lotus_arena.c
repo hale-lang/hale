@@ -6267,6 +6267,11 @@ static int64_t lotus_now_mono_ns(void) {
     return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
 }
 
+/* Caller-arena TLS (defined further below). Declared here so the coro
+ * park/resume path can snapshot and restore it across a context switch
+ * — see lotus_coro_t.saved_caller_arena. */
+extern __thread lotus_arena_t *lotus_current_caller_arena;
+
 /* F.35 Slice 1: ucontext-backed coroutine state for one in-flight
  * handler invocation on an async_io pool. Each pool worker maintains
  * a per-invocation `lotus_coro_t` so the handler can `park_on_fd`
@@ -6296,6 +6301,17 @@ typedef struct lotus_coro {
     void             *handler;
     void             *self_ptr;
     void             *payload_ptr;
+    /* Per-coro snapshot of the `lotus_current_caller_arena` TLS
+     * (downstream handoff 2026-07-15, item 3). That TLS decides where
+     * stdlib primitives (recv result blobs, str builders, …) allocate,
+     * but it is thread-local while coros multiplex ONE worker thread.
+     * When this coro parks, another coro runs and overwrites the TLS —
+     * and may then complete and destroy the arena the TLS pointed at.
+     * So park() saves the running value here and restores it on resume;
+     * without it a resumed coro allocates through a dangling arena
+     * pointer (heap-use-after-free). NULL while running / not yet
+     * parked. */
+    lotus_arena_t    *saved_caller_arena;
     /* Intrusive list pointers — used for the pool's `parked_head`
      * chain (when this coro is waiting on epoll) and the pool's
      * free-list of reusable coro slots (later). */
@@ -6864,13 +6880,21 @@ int lotus_coop_park_on_fd_deadline(int fd, uint32_t events,
      * worker touches this list), no lock needed. */
     c->next = p->parked_head;
     p->parked_head = c;
+    /* Snapshot the caller-arena TLS before yielding: the worker will
+     * run OTHER coros (and the drain loop) that overwrite it, so we
+     * must restore our own on resume — otherwise we'd allocate through
+     * whatever arena the last-running coro left behind, which may since
+     * have been destroyed (use-after-free). */
+    c->saved_caller_arena = lotus_current_caller_arena;
     /* Swap to drain. Returns here when the worker swaps back in
      * after epoll_wait wakeup (fd ready) or deadline expiry. The fd
      * has already been removed from epoll by the resume path before
      * swap-back. */
     swapcontext(&c->ctx, &p->drain_ctx);
     /* Resumed. The resume path cleared parked_fd to -1, detached us
-     * from parked_head, and set park_timed_out on the expiry path. */
+     * from parked_head, and set park_timed_out on the expiry path.
+     * Restore the caller-arena TLS we were running with. */
+    lotus_current_caller_arena = c->saved_caller_arena;
     c->park_deadline_ns = 0;
     int timed_out = c->park_timed_out;
     c->park_timed_out = 0;
@@ -7009,6 +7033,13 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
             g_current_coro_tls = c;
             swapcontext(&p->drain_ctx, &c->ctx);
             g_current_coro_tls = NULL;
+            /* The coro left the caller-arena TLS pointing at its own
+             * arena; the drain loop runs outside any locus, so reset to
+             * the worker baseline. A completed coro's arena is about to
+             * be reclaimed by its dissolve cascade — leaving the TLS on
+             * it would dangle. (A resumed coro restores its own on the
+             * park-return path.) */
+            lotus_current_caller_arena = NULL;
             if (c->done) {
                 lotus_coro_free(c);
             }
@@ -7044,6 +7075,7 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
             g_current_coro_tls = expired;
             swapcontext(&p->drain_ctx, &expired->ctx);
             g_current_coro_tls = NULL;
+            lotus_current_caller_arena = NULL;   /* drain baseline — see above */
             if (expired->done) {
                 lotus_coro_free(expired);
             }
@@ -7108,6 +7140,7 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
     g_current_coro_tls = c;
     swapcontext(&p->drain_ctx, &c->ctx);
     g_current_coro_tls = NULL;
+    lotus_current_caller_arena = NULL;   /* drain baseline — see above */
     if (c->done) {
         if (cell_copy.payload_heap) free(cell_copy.payload_heap);
         if (cell_copy.payload_region)
@@ -9866,6 +9899,25 @@ void *lotus_bus_payload_arena_alloc(uint64_t size, uint64_t align);
  * messages larger than `cap` (per recvfrom man page).
  */
 
+/* Async-aware recvfrom, shared by the whole lotus_udp_recv* family
+ * (downstream handoff 2026-07-15, item 3). On a `where async_io`
+ * pool a blocking recvfrom would pin the worker thread inside the
+ * syscall — so a second reader locus queued behind it on the same
+ * pool never starts (its run() cell can't be drained while the
+ * worker is blocked). This helper instead sets the fd nonblocking
+ * and PARKS the coro on EPOLLIN (bounded by the socket's
+ * SO_RCVTIMEO-derived deadline), handing the worker back to the
+ * drain loop so it can start the queued reader; the parked coro
+ * resumes when epoll reports the fd readable. Off async pools it is
+ * a plain blocking recvfrom. Deadline expiry is reported as `-1 /
+ * errno=EAGAIN` — byte-identical to the timeout a blocking
+ * SO_RCVTIMEO recv already produced, so the Bytes wrappers' NULL =
+ * "no datagram" contract is unchanged; only the thread-blocking is.
+ * Defined after lotus_recv_park_deadline; forward-declared here. */
+static ssize_t lotus_udp_recvfrom_async(int fd, void *buf, size_t cap,
+                                        struct sockaddr *src,
+                                        socklen_t *slen);
+
 int lotus_udp_bind(const char *host, uint16_t port) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -9926,7 +9978,7 @@ ssize_t lotus_udp_recv(int fd, void *buf, size_t cap) {
         errno = EINVAL;
         return -1;
     }
-    ssize_t n = recvfrom(fd, buf, cap, 0, NULL, NULL);
+    ssize_t n = lotus_udp_recvfrom_async(fd, buf, cap, NULL, NULL);
     return n;
 }
 
@@ -10187,8 +10239,8 @@ void *lotus_udp_recv_bytes_with_source(int fd, int max_bytes) {
     struct sockaddr_in src;
     socklen_t src_len = sizeof(src);
     memset(&src, 0, sizeof(src));
-    ssize_t n = recvfrom(fd, stack_buf, cap, 0,
-                         (struct sockaddr *)&src, &src_len);
+    ssize_t n = lotus_udp_recvfrom_async(fd, stack_buf, cap,
+                                         (struct sockaddr *)&src, &src_len);
     if (n < 0) {
         /* Reset source TLS so a stale value isn't read by a
          * caller that ignores the err path. */
@@ -10286,6 +10338,38 @@ static int64_t lotus_recv_park_deadline(int fd) {
     return t > 0 ? lotus_now_mono_ns() + t : 0;
 }
 
+/* See the forward declaration above lotus_udp_bind for the rationale. */
+static ssize_t lotus_udp_recvfrom_async(int fd, void *buf, size_t cap,
+                                        struct sockaddr *src,
+                                        socklen_t *slen) {
+    int async = lotus_io_on_async_io_pool();
+    int64_t deadline = 0;
+    if (async) {
+        lotus_io_set_nonblock(fd);
+        deadline = lotus_recv_park_deadline(fd);
+    }
+    for (;;) {
+        socklen_t local_len = slen ? *slen : 0;
+        ssize_t n = recvfrom(fd, buf, cap, 0, src, slen ? &local_len : NULL);
+        if (n >= 0) {
+            if (slen) *slen = local_len;
+            return n;
+        }
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (async
+                && lotus_coop_park_on_fd_deadline(fd, EPOLLIN, deadline) == 0) {
+                continue;                  /* fd readable — retry recvfrom */
+            }
+            /* Park deadline expired (or a non-async would-block): surface
+             * the same timeout shape a blocking SO_RCVTIMEO recv produced. */
+            errno = EAGAIN;
+            return -1;
+        }
+        return -1;                         /* genuine error — errno preserved */
+    }
+}
+
 int lotus_udp_set_recv_timeout_ns(int fd, int64_t ns) {
     return sock_set_timeout_ns(fd, SO_RCVTIMEO, ns);
 }
@@ -10338,7 +10422,7 @@ void *lotus_udp_recv_bytes_global(int fd, int max_bytes) {
     char stack_buf[65536];
     size_t cap = (size_t)max_bytes;
     if (cap > sizeof(stack_buf)) cap = sizeof(stack_buf);
-    ssize_t n = recvfrom(fd, stack_buf, cap, 0, NULL, NULL);
+    ssize_t n = lotus_udp_recvfrom_async(fd, stack_buf, cap, NULL, NULL);
     if (n < 0) return NULL;
     /* Hand-build a Bytes blob ([i64 len][body]) in the global
      * payload arena via the public alloc helper. Mirrors the

@@ -92,6 +92,22 @@ Eight substrate findings from a downstream service built on hale
   the leaking cross-thread wire path is affected; same-thread and
   main-pool delivery were never impacted. See spec/memory.md
   § Cross-thread wire cell per-delivery reclaim.
+- **Fixed: N readers can share one `async_io` pool** (downstream
+  handoff 2026-07-15, item 3). The Bytes-returning
+  `std::io::udp::recv` / `recv_with_source` did a blocking
+  `recvfrom`, pinning the single pool worker inside the syscall —
+  so a second reader locus's `run()` queued behind it on the same
+  pool never started (with no recv timeout, never at all; the
+  drain otherwise hung at shutdown). They now park on EPOLLIN like
+  the tcp/tls siblings, bounded by the socket's `set_recv_timeout`
+  deadline (or indefinitely when unset), yielding the worker so
+  every reader parked on its own socket is serviced concurrently.
+  Also fixes a latent use-after-free the concurrency exposed: a
+  coro's caller-arena (where its stdlib allocations land) is now
+  snapshotted across a park and restored on resume, so a resumed
+  reader no longer allocates through an arena a sibling coro tore
+  down while it was parked. See spec/runtime.md § `where async_io`
+  and spec/stdlib.md `std::io::udp`.
 - Filed as an issue: implicit error propagation on tail-position
   `return` (finding 8).
 
