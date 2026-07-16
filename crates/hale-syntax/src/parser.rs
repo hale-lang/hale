@@ -370,6 +370,8 @@ impl Parser {
                 matches!(&kind_tok, TokenKind::Ident(s) if s == "bounded");
             let is_unbounded =
                 matches!(&kind_tok, TokenKind::Ident(s) if s == "unbounded");
+            let is_budget =
+                matches!(&kind_tok, TokenKind::Ident(s) if s == "budget");
             if is_export {
                 // WASM entry-inversion. `@export fn …` is a free-fn
                 // module export; `@export locus …` is the persistent
@@ -478,6 +480,31 @@ impl Parser {
                 fn_decl.span = at.span.merge(fn_decl.span);
                 return Ok(TopDecl::Fn(fn_decl));
             }
+            if is_budget {
+                // fn-only, like `@unbounded` / `@ffi` / `@export fn`.
+                if form.is_some() || locality.is_some() || export_locus
+                    || bounded_locus
+                {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "`@budget(...)` is fn-only; it can't stack with \
+                         `@form(...)` / `@locality(...)` / `@bounded` / \
+                         `@export locus` (those precede `locus`)",
+                    ));
+                }
+                let (budget, bspan) = self.parse_budget_annotation()?;
+                if !matches!(self.peek(), TokenKind::Fn) {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "expected `fn` after `@budget(alloc_per_call = N)` — \
+                         it is a per-call allocation contract on a fn",
+                    ));
+                }
+                let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
+                fn_decl.budget = Some(budget);
+                fn_decl.span = bspan.merge(fn_decl.span);
+                return Ok(TopDecl::Fn(fn_decl));
+            }
             if is_form {
                 if form.is_some() {
                     return Err(Diag::parse(
@@ -512,8 +539,8 @@ impl Parser {
             }
             return Err(Diag::parse(
                 self.peek_token().span,
-                "expected `form`, `locality`, `bounded`, `unbounded`, or \
-                 `ffi` after `@`",
+                "expected `form`, `locality`, `bounded`, `unbounded`, \
+                 `budget`, or `ffi` after `@`",
             ));
         }
         if form.is_some() || locality.is_some() || export_locus || bounded_locus {
@@ -1033,6 +1060,56 @@ impl Parser {
         })
     }
 
+    /// Lever 2 (2026-07-16): `@budget(alloc_per_call = N)` — an opt-in
+    /// hot-path contract on a free fn or locus method. Returns the
+    /// per-call allocation budget `N` and the annotation span. The
+    /// contract is enforced in `hale-types::budget_check`.
+    ///
+    /// Grammar: `'@' 'budget' '(' 'alloc_per_call' '=' INT ')'`.
+    fn parse_budget_annotation(&mut self) -> Result<(u32, Span), Diag> {
+        let at = self.expect(TokenKind::At, "@")?;
+        let next = self.peek_token().clone();
+        let is_budget = matches!(&next.kind, TokenKind::Ident(s) if s == "budget");
+        if !is_budget {
+            return Err(Diag::parse(next.span, "expected `budget` after `@`"));
+        }
+        self.bump();
+        self.expect(TokenKind::LParen, "(")?;
+        let key_tok = self.peek_token().clone();
+        let key_ok =
+            matches!(&key_tok.kind, TokenKind::Ident(s) if s == "alloc_per_call");
+        if !key_ok {
+            return Err(Diag::parse(
+                key_tok.span,
+                "expected `alloc_per_call` inside `@budget(...)` — the only \
+                 budget dimension in v0.1 (per-call arena allocations)",
+            ));
+        }
+        self.bump();
+        self.expect(TokenKind::Eq, "=")?;
+        let n_tok = self.peek_token().clone();
+        let n = match &n_tok.kind {
+            TokenKind::IntLit(v) if *v >= 0 => *v as u32,
+            TokenKind::IntLit(_) => {
+                return Err(Diag::parse(
+                    n_tok.span,
+                    "`@budget(alloc_per_call = N)` needs a non-negative \
+                     integer (0 = the zero-alloc certificate)",
+                ));
+            }
+            _ => {
+                return Err(Diag::parse(
+                    n_tok.span,
+                    "expected an integer after `alloc_per_call =` (e.g. \
+                     `@budget(alloc_per_call = 0)`)",
+                ));
+            }
+        };
+        self.bump();
+        let close = self.expect(TokenKind::RParen, ")")?;
+        Ok((n, at.span.merge(close.span)))
+    }
+
     /// Stage-1 FFI (2026-05-22): parse `@ffi("c")` — the
     /// annotation prefix that marks the following `fn` declaration
     /// as an external C-ABI binding. Stage 1 accepts only the
@@ -1458,12 +1535,32 @@ impl Parser {
             // member.
             TokenKind::At => {
                 let kind_tok = self.peek_at(1);
+                // `@budget(alloc_per_call = N)` on a method — the hot-path
+                // allocation contract. fn-only (a lifecycle `run()` is
+                // one-shot; the contract is about per-call cost).
+                if matches!(&kind_tok, TokenKind::Ident(s) if s == "budget") {
+                    let (budget, bspan) = self.parse_budget_annotation()?;
+                    if !matches!(self.peek(), TokenKind::Fn) {
+                        return Err(Diag::parse(
+                            self.peek_token().span,
+                            "expected `fn` after `@budget(alloc_per_call = N)` \
+                             — it is a per-call allocation contract on a \
+                             method",
+                        ));
+                    }
+                    let mut fn_decl = self.parse_fn_decl()?;
+                    fn_decl.budget = Some(budget);
+                    fn_decl.span = bspan.merge(fn_decl.span);
+                    return Ok(LocusMember::Fn(fn_decl));
+                }
                 if !matches!(&kind_tok, TokenKind::Ident(s) if s == "unbounded") {
                     return Err(Diag::parse(
                         self.peek_token().span,
-                        "the only `@` annotation valid on a locus member is \
+                        "the only `@` annotations valid on a locus member are \
                          `@unbounded` (on a `fn` or a lifecycle hook — \
-                         acknowledge an intentionally-unbounded body)",
+                         acknowledge an intentionally-unbounded body) and \
+                         `@budget(alloc_per_call = N)` (on a `fn` — a per-call \
+                         allocation contract)",
                     ));
                 }
                 let at = self.expect(TokenKind::At, "@")?;
@@ -3450,6 +3547,7 @@ impl Parser {
                 ffi,
                 export: false,
                 unbounded: false,
+                budget: None,
                 span: kw.span.merge(semi.span),
                 body,
             });
@@ -3474,6 +3572,7 @@ impl Parser {
                 ffi,
                 export: false,
                 unbounded: false,
+                budget: None,
                 span: kw.span.merge(semi.span),
                 body,
             });
@@ -3494,6 +3593,7 @@ impl Parser {
             ffi,
             export: false,
             unbounded: false,
+            budget: None,
             span: kw.span.merge(body.span),
             body,
         })
@@ -5521,6 +5621,81 @@ main locus App {
             msg.contains("opts in with `@bounded`"),
             "wrong error: {msg}"
         );
+    }
+
+    // === Lever 2: @budget(alloc_per_call = N) =============
+
+    #[test]
+    fn parse_budget_free_fn() {
+        let src = "@budget(alloc_per_call = 0) fn hot() { }";
+        let prog = parse_str(src).expect("parse failed");
+        match &prog.items[0] {
+            TopDecl::Fn(f) => assert_eq!(f.budget, Some(0)),
+            _ => panic!("expected fn"),
+        }
+    }
+
+    #[test]
+    fn parse_budget_nonzero_free_fn() {
+        let src = "@budget(alloc_per_call = 3) fn warm() { }";
+        let prog = parse_str(src).expect("parse failed");
+        match &prog.items[0] {
+            TopDecl::Fn(f) => assert_eq!(f.budget, Some(3)),
+            _ => panic!("expected fn"),
+        }
+    }
+
+    #[test]
+    fn parse_budget_method() {
+        let src = r#"
+locus L {
+    @budget(alloc_per_call = 0) fn on_msg() { }
+    fn plain() { }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let TopDecl::Locus(l) = &prog.items[0] else {
+            panic!("expected locus");
+        };
+        let mut saw_budgeted = false;
+        let mut saw_plain = false;
+        for m in &l.members {
+            if let LocusMember::Fn(f) = m {
+                match f.name.name.as_str() {
+                    "on_msg" => {
+                        assert_eq!(f.budget, Some(0));
+                        saw_budgeted = true;
+                    }
+                    "plain" => {
+                        assert_eq!(f.budget, None);
+                        saw_plain = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(saw_budgeted && saw_plain);
+    }
+
+    #[test]
+    fn parse_budget_rejects_unknown_dimension() {
+        let err = parse_str("@budget(bytes_per_call = 8) fn f() { }")
+            .expect_err("expected parse error");
+        assert!(format!("{:?}", err).contains("alloc_per_call"));
+    }
+
+    #[test]
+    fn parse_budget_requires_integer() {
+        let err = parse_str("@budget(alloc_per_call = foo) fn f() { }")
+            .expect_err("expected parse error");
+        assert!(format!("{:?}", err).contains("integer"));
+    }
+
+    #[test]
+    fn parse_budget_rejects_locus_target() {
+        let err = parse_str("@budget(alloc_per_call = 0) locus L { }")
+            .expect_err("expected parse error");
+        assert!(format!("{:?}", err).contains("fn"));
     }
 
     #[test]

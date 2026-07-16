@@ -6825,6 +6825,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     ffi: None,
                     export: false,
                     unbounded: false,
+                    budget: None,
                     body: Block {
                         stmts: Vec::new(),
                         tail: None,
@@ -9848,6 +9849,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ffi: fd.ffi.clone(),
                 export: fd.export,
                 unbounded: fd.unbounded,
+                budget: fd.budget,
                 body: Self::substitute_block_type_ascriptions(
                     &fd.body, subst,
                 ),
@@ -10093,6 +10095,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ffi: template.ffi.clone(),
             export: template.export,
             unbounded: template.unbounded,
+            budget: template.budget,
             body: new_body,
             span: template.span.clone(),
         })

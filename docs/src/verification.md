@@ -106,7 +106,20 @@ and no bus handler) warn nothing — a script owes no bound proof.
 `@unbounded fn` is the in-source carve-out for an acknowledged
 site; `--no-warn-unbounded-alloc` opts a run out. Advisory today; a
 hard error contract is the intended end state once the remaining
-documented false-positive classes get their annotations.
+documented false-positive classes get their annotations. A separate
+advisory also flags two **loop-scoped hot-path allocations** — a locus
+or `BytesBuilder` instantiated per iteration, and an allocating `recv`
+in a loop — steering toward a hoisted field / `recv_into`.
+
+**Hot-path allocation budget** *(opt-in, hard error).* `@budget(alloc_per_call
+= N)` on a fn is the dual of `@unbounded`: an explicit per-call
+allocation ceiling the compiler enforces. It counts the arena
+allocations it can see — literals, `@form` inserts, transitively
+through resolved callees, plus the known-allocating `recv` family — and
+**fails the build** if the fn allocates more than `N` per call (a
+loop-nested allocation is unbounded per call). `N = 0` is the zero-alloc
+certificate for a hot-path handler. The one allocation check that gates
+the build, because you opted into it.
 
 **Resource budgets** *(opt-in).* Static counts of file descriptors, OS
 threads, cooperative pools, and bus subjects, with a

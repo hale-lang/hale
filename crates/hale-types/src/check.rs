@@ -378,6 +378,19 @@ pub fn check_bundle(
     // Long-running cooperative children`.
     check_nested_long_running_child(bundle, &mut diags);
     check_cooperative_pool_blocking(bundle, &mut diags);
+    // Perf lint (2026-07-16): hot-path allocation anti-patterns — a
+    // locus instantiated per loop iteration, an allocating recv in a
+    // loop. Warnings that steer toward the allocation-free shape
+    // (hoisted field / `recv_into`).
+    check_hot_path_alloc(bundle, top, &mut diags);
+    // Lever 2 (2026-07-16): `@budget(alloc_per_call = N)` — an opt-in
+    // hot-path allocation contract. A hard error when an annotated fn
+    // allocates more than its declared per-call ceiling (0 = zero-alloc
+    // certificate). Reuses the `alloc_summary` call graph.
+    {
+        let programs_vec: Vec<&Program> = bundle.programs.values().copied().collect();
+        diags.extend(crate::budget_check::budget_diags(&programs_vec));
+    }
     // 2026-05-29: a bus-subscribing locus instantiated non-owned
     // inside another locus's method/handler body dissolves at that
     // method's scope exit, so its subscription can never fire.
@@ -1403,6 +1416,258 @@ fn external_subscription_handlers(decl: &LocusDecl) -> Vec<String> {
         .filter(|(subj, _)| !published.contains(subj))
         .map(|(_, h)| h)
         .collect()
+}
+
+// ===================================================================
+// Perf lint (downstream handoff 2026-07-16): hot-path allocation
+// anti-patterns. Steer the naive shape toward the allocation-free one
+// so the fast path is the path of least resistance rather than expert
+// folklore. Two loop-scoped patterns, both warnings:
+//   1. a locus (its own arena / heap buffer) instantiated per loop
+//      iteration — hoist to a reused field;
+//   2. an allocating `recv` in a loop — use `recv_into` with a reused
+//      buffer.
+// Both accumulate in the method scratch until the enclosing method
+// returns, and a `run()` read loop never returns, so under load they
+// dominate the p50 tax and (per the recv_bytes-in-a-loop footgun) can
+// grow unboundedly. Loop-scoped keeps the signal clean (per-iteration
+// is the unambiguous case); a handler-scratch instantiation reclaims
+// per invocation and isn't flagged.
+// ===================================================================
+
+struct HotPathCx<'a> {
+    top: &'a TopScope,
+    diags: &'a mut Vec<Diag>,
+    loop_depth: u32,
+}
+
+/// A locus literal worth hoisting out of a loop: a user locus (carries
+/// its own arena) or a heap-bearing stdlib builder. Plain struct/type
+/// literals are values and don't allocate, so they're not flagged.
+fn hot_locus_name(path: &QualifiedName, top: &TopScope) -> Option<String> {
+    let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+    if segs == ["std", "bytes", "BytesBuilder"] {
+        return Some("std::bytes::BytesBuilder".to_string());
+    }
+    if segs.len() == 1 && matches!(top.lookup(segs[0]), Some(TopSymbol::Locus(_))) {
+        return Some(segs[0].to_string());
+    }
+    None
+}
+
+/// An allocating recv path-call (the result Bytes/String lands in the
+/// caller's scratch). `recv_into` is the zero-alloc alternative.
+fn allocating_recv_name(callee: &Expr) -> Option<String> {
+    match callee {
+        // Path-call form: `std::io::udp::recv(fd, n)`.
+        Expr::Path(qn) => {
+            let segs: Vec<&str> =
+                qn.segments.iter().map(|s| s.name.as_str()).collect();
+            match segs.as_slice() {
+                ["std", "io", "tcp", "recv"]
+                | ["std", "io", "tcp", "recv_bytes"]
+                | ["std", "io", "udp", "recv"]
+                | ["std", "io", "udp", "recv_with_source"]
+                | ["std", "io", "tls", "recv_bytes"] => Some(segs.join("::")),
+                _ => None,
+            }
+        }
+        // Method-call form: `stream.recv_bytes(n)`. The Stream receiver
+        // types as Unknown in the checker (stdlib handle locus), so key
+        // off the method name. `recv_bytes` / `recv_with_source` are
+        // stdlib-specific enough that false positives are rare; plain
+        // `recv` (a common user-method name) is only flagged in the
+        // path-call form above.
+        Expr::Field { name, .. } => match name.name.as_str() {
+            "recv_bytes" | "recv_with_source" => Some(name.name.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn hot_walk_block(b: &Block, cx: &mut HotPathCx) {
+    for s in &b.stmts {
+        hot_walk_stmt(s, cx);
+    }
+    if let Some(t) = &b.tail {
+        hot_walk_expr(t, cx);
+    }
+}
+
+fn hot_walk_if(i: &IfStmt, cx: &mut HotPathCx) {
+    hot_walk_expr(&i.cond, cx);
+    hot_walk_block(&i.then_block, cx);
+    if let Some(eb) = &i.else_block {
+        match eb.as_ref() {
+            ElseBranch::Else(b) => hot_walk_block(b, cx),
+            ElseBranch::ElseIf(i2) => hot_walk_if(i2, cx),
+        }
+    }
+}
+
+fn hot_walk_match(m: &MatchStmt, cx: &mut HotPathCx) {
+    hot_walk_expr(&m.scrutinee, cx);
+    for arm in &m.arms {
+        if let Some(g) = &arm.guard {
+            hot_walk_expr(g, cx);
+        }
+        match &arm.body {
+            MatchArmBody::Expr(e) => hot_walk_expr(e, cx),
+            MatchArmBody::Block(b) => hot_walk_block(b, cx),
+        }
+    }
+}
+
+fn hot_walk_stmt(s: &Stmt, cx: &mut HotPathCx) {
+    match s {
+        Stmt::While { cond, body, .. } => {
+            hot_walk_expr(cond, cx);
+            cx.loop_depth += 1;
+            hot_walk_block(body, cx);
+            cx.loop_depth -= 1;
+        }
+        Stmt::For { iter, body, .. } => {
+            hot_walk_expr(iter, cx);
+            cx.loop_depth += 1;
+            hot_walk_block(body, cx);
+            cx.loop_depth -= 1;
+        }
+        Stmt::Let { value, .. }
+        | Stmt::LetTuple { value, .. }
+        | Stmt::Assign { value, .. } => hot_walk_expr(value, cx),
+        Stmt::If(i) => hot_walk_if(i, cx),
+        Stmt::Match(m) => hot_walk_match(m, cx),
+        Stmt::Return(Some(e), _) => hot_walk_expr(e, cx),
+        Stmt::Fail { value, .. } => hot_walk_expr(value, cx),
+        Stmt::Expr(e) => hot_walk_expr(e, cx),
+        _ => {}
+    }
+}
+
+fn hot_walk_expr(e: &Expr, cx: &mut HotPathCx) {
+    match e {
+        Expr::Struct { path, inits, span } => {
+            for init in inits {
+                hot_walk_expr(&init.value, cx);
+            }
+            if cx.loop_depth > 0 {
+                if let Some(name) = hot_locus_name(path, cx.top) {
+                    cx.diags.push(Diag::warn(
+                        *span,
+                        format!(
+                            "hot-path allocation: locus `{}` is instantiated \
+                             inside a loop — a fresh instance (its own arena / \
+                             heap buffer) is allocated every iteration and only \
+                             reclaimed when the enclosing method returns (a \
+                             `run()` read loop never returns). Hoist it to a \
+                             reused field, or `clear()` and refill one builder, \
+                             to keep the hot path allocation-free.",
+                            name
+                        ),
+                    ));
+                }
+            }
+        }
+        Expr::Call { callee, args, span } => {
+            hot_walk_expr(callee, cx);
+            for a in args {
+                hot_walk_expr(a, cx);
+            }
+            if cx.loop_depth > 0 {
+                if let Some(disp) = allocating_recv_name(callee) {
+                    cx.diags.push(Diag::warn(
+                        *span,
+                        format!(
+                            "hot-path allocation: `{}` in a loop allocates a \
+                             fresh result buffer each iteration (it accumulates \
+                             in the method scratch until the method returns). \
+                             Use `recv_into(fd, buf, max)` with a reused \
+                             `std::bytes::BytesBuilder` for a zero-alloc hot \
+                             path.",
+                            disp
+                        ),
+                    ));
+                }
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            hot_walk_expr(left, cx);
+            hot_walk_expr(right, cx);
+        }
+        Expr::Unary { operand, .. } => hot_walk_expr(operand, cx),
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
+            hot_walk_expr(receiver, cx)
+        }
+        Expr::Index { receiver, index, .. } => {
+            hot_walk_expr(receiver, cx);
+            hot_walk_expr(index, cx);
+        }
+        Expr::Tuple(es, _) | Expr::Array(es, _) => {
+            for e in es {
+                hot_walk_expr(e, cx);
+            }
+        }
+        Expr::Sum(e, _) | Expr::Prod(e, _) => hot_walk_expr(e, cx),
+        Expr::Approx { left, right, tolerance, .. } => {
+            hot_walk_expr(left, cx);
+            hot_walk_expr(right, cx);
+            hot_walk_expr(tolerance, cx);
+        }
+        Expr::Range { lo, hi, .. } => {
+            hot_walk_expr(lo, cx);
+            hot_walk_expr(hi, cx);
+        }
+        Expr::ArrayRepeat { val, .. } => hot_walk_expr(val, cx),
+        Expr::Block(b) => hot_walk_block(b, cx),
+        Expr::If(i) => hot_walk_if(i, cx),
+        Expr::Match(m) => hot_walk_match(m, cx),
+        Expr::Or { inner, disposition, .. } => {
+            hot_walk_expr(inner, cx);
+            match disposition {
+                OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
+                    hot_walk_expr(e, cx)
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+fn check_hot_path_alloc(bundle: &Bundle<'_>, top: &TopScope, diags: &mut Vec<Diag>) {
+    for program in bundle.programs.values() {
+        for item in &program.items {
+            match item {
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        let body = match m {
+                            LocusMember::Fn(fd) => Some(&fd.body),
+                            LocusMember::Lifecycle(ld) => Some(&ld.body),
+                            _ => None,
+                        };
+                        if let Some(b) = body {
+                            let mut cx = HotPathCx {
+                                top,
+                                diags: &mut *diags,
+                                loop_depth: 0,
+                            };
+                            hot_walk_block(b, &mut cx);
+                        }
+                    }
+                }
+                TopDecl::Fn(fd) => {
+                    let mut cx = HotPathCx {
+                        top,
+                        diags: &mut *diags,
+                        loop_depth: 0,
+                    };
+                    hot_walk_block(&fd.body, &mut cx);
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 /// Flag blocking calls on cooperative pools. Two outcomes:
