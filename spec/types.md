@@ -613,12 +613,19 @@ from the `main locus`'s `placement { }` entries:
 2. Each nested locus inherits its containing tower's pool
    (see `spec/semantics.md` § "Nested instantiation"). Methods
    on a nested locus run on the parent's pool's thread.
-3. For each method-call expression `recv.foo(args)`, the
-   typechecker determines `recv`'s pool from its static type
-   and the surrounding pool context.
-4. If `recv`'s pool differs from the caller's pool, the call
-   is rejected with a diagnostic naming both pools and
-   pointing at the `placement { }` entries that picked them.
+3. For a method-call expression `self.field.foo(args)`, the
+   receiver's pool is the pool of the *field instance*,
+   inferred at the call site: the enclosing locus's own
+   `placement { }` entry for `field` if it names one (e.g. a
+   `db: pinned` field on the main locus), otherwise the field
+   co-locates with its owner (the caller's pool). The pool is a
+   property of the **instance**, not the field's type — the
+   same locus type used as a field in two loci on two pools is
+   two independent instances, one per owner, each single-pool.
+4. If the receiver instance's pool differs from the caller's
+   pool, the call is rejected with a diagnostic naming both
+   pools and pointing at the `placement { }` entries that
+   picked them.
 5. Bus sends (`Topic <- v;` / `"subj" <- v;`) are unrestricted
    — the runtime's cross-thread dispatch (m28b condvar+memcpy)
    handles the boundary safely.
@@ -674,6 +681,18 @@ the substrate's chosen discipline carries the safety
 contract. Plain `@form(...)` (no sync kwarg) gets the same
 cross-pool diagnostic as any other locus, extended with an
 upgrade-path hint naming the sync kwargs.
+
+Because a form field's pool is its instance's (rule 3 above),
+two loci that each hold their own `@form` field of the same
+type on different pools are two **separate**, single-threaded
+structures — each accessed only by its owner's pool. Neither
+is a cross-pool access, so neither is flagged, and neither
+needs a `sync` discipline (there is no sharing to synchronize).
+The diagnostic fires only on a genuine cross-pool access —
+reaching one instance from a pool other than the one it lives
+on, e.g. a form field explicitly placed off its owner. (This
+is why two same-type form instances on two pools do **not**
+require byte-identical twin types.)
 
 Concrete shape: a `Registry @form(hashmap, sync = striped)
 of Counter indexed_by name` shared across producer pools
