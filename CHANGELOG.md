@@ -77,6 +77,21 @@ Eight substrate findings from a downstream service built on hale
   (TSan-verified race). Same-thread publishes keep the
   deserialize-at-dispatch fast path. See spec/runtime.md
   § Owner-executed handlers.
+- **Fixed: P0 memory leak on cross-thread bus dispatch to a
+  parked `async_io` subscriber** (downstream handoff 2026-07-15).
+  The owner-routed wire-cell path above deserialized each
+  delivery's payload straight into the subscriber's locus arena —
+  fine for a subscriber that dissolves, but a per-delivery leak on
+  a long-lived one whose `run()` is parked forever (the canonical
+  accept/recv server loop): the arena never dissolves, so every
+  message's String/Bytes fields accumulated unboundedly (~320 MiB
+  over 20k 16-KiB deliveries; flat afterward). Each wire cell now
+  deserializes into a per-delivery subregion destroyed the instant
+  the handler returns. Retention patterns are unchanged —
+  `self.saved = msg` still deep-copies into the locus arena. Only
+  the leaking cross-thread wire path is affected; same-thread and
+  main-pool delivery were never impacted. See spec/memory.md
+  § Cross-thread wire cell per-delivery reclaim.
 - Filed as an issue: implicit error propagation on tail-position
   `return` (finding 8).
 
