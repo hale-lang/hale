@@ -137,6 +137,20 @@ Eight substrate findings from a downstream service built on hale
   typecheck-time diagnostic would need stdlib handle loci in the
   type table (a larger follow-on); this removes the ICE, which was
   the defect.
+- **Fixed: two `@form` instances on two pools no longer need twin
+  types** (downstream handoff 2026-07-15, item 5). The F.31
+  cross-pool-method check pinned a `@form` (or any) locus **type**
+  to one pool (first placement seen), so two loci that each held
+  their own field of that type on different pools false-flagged
+  every owner but the first with a "cross-pool method call" error —
+  forcing byte-identical twin types as a workaround. The receiver's
+  pool is now inferred per **instance** at the call site: the
+  enclosing locus's own placement of the field, else the field
+  co-locates with its owner. Two separate `self.<field>` maps, each
+  touched only by its owner's pool, are single-threaded and no
+  longer flagged (they never needed a sync discipline). A genuine
+  cross-pool access — a form field explicitly placed off its owner —
+  still flags and still carries the sync-discipline hint.
 - Filed as an issue: implicit error propagation on tail-position
   `return` (finding 8).
 
