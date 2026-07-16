@@ -6,6 +6,38 @@ behavior.
 
 ---
 
+## Unreleased — compiler allocation enforcement (2026-07-16)
+
+Make the allocation-free hot path the path of least resistance, and
+let a fn *certify* it. Two compiler additions, one advisory and one
+enforced.
+
+- **New default-on advisory: hot-path allocation lint.** `hale check`
+  now warns on two loop-scoped anti-patterns: a **locus** or a
+  `std::bytes::BytesBuilder` instantiated inside a loop (a fresh arena
+  / heap buffer every iteration — hoist it to a reused field), and an
+  **allocating `recv`** (`recv` / `recv_bytes` / `recv_with_source`)
+  in a loop (use `recv_into` with a reused `BytesBuilder`). Both
+  accumulate in the method scratch until the enclosing method returns,
+  and a `run()` read loop never returns. A plain value struct/type
+  literal isn't flagged, and an instantiation outside a loop isn't —
+  only the unambiguous per-iteration case. Warning, never a build
+  failure.
+- **New opt-in contract: `@budget(alloc_per_call = N)`.** The dual of
+  `@unbounded` — an explicit per-call allocation ceiling on a `fn`
+  (free or method), enforced as a **hard error**. The compiler counts
+  the arena allocations it can see (literals, `@form` inserts) —
+  transitively through resolved callees — plus the known-allocating
+  `recv` family, and errors if the fn allocates more than `N` per
+  call; a loop-nested allocation, a call to an allocating fn in a
+  loop, or recursion is unbounded per call. `N = 0` is the zero-alloc
+  certificate for a per-datagram handler or decode helper. fn-only;
+  mutually exclusive with `@unbounded`. A violation reports the
+  measured count and pinpoints every offending allocation with the
+  fast-path fix. Reuses the item-1 (`--dump-alloc-summary`) allocation
+  summary + call graph. See `spec/verification.md`,
+  `docs/src/systems/performance.md`.
+
 ## Unreleased — downstream-handoff substrate fixes (2026-07-14)
 
 Eight substrate findings from a downstream service built on hale

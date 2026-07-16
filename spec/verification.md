@@ -131,6 +131,39 @@ assume the others in a build:
   param fields — not inferred ones.) Zero corpus false positives. Type-aware
   String-concat sites and untyped-receiver collection inserts remain
   deferred. See `notes/memory-bound-proofs.md`.
+- **Hot-path allocation contract — `@budget(alloc_per_call = N)`** (2026-07-16).
+  The dual of `@unbounded`: where `@unbounded` acknowledges intentional
+  unbounded allocation, `@budget` declares an *opt-in per-call ceiling* and
+  the compiler **enforces it as a hard error**. On a `fn` (free or method),
+  `@budget(alloc_per_call = N)` asserts the fn performs at most `N` arena
+  allocations per call. The check reuses the item-1 allocation summary +
+  call graph: it counts the arena-allocating literals / `@form` inserts it
+  can see, **transitively through resolved (bundle-local) callees**, plus
+  the known-allocating `recv` family (`recv` / `recv_bytes` /
+  `recv_with_source` — the same set the hot-path lint flags); a
+  loop-nested allocation, or a call to an allocating fn inside a loop, or
+  recursion, is **unbounded per call**. `N = 0` is the zero-alloc
+  certificate — the strongest form, for a per-datagram handler or decode
+  helper the runtime calls on the hot path with a guarantee it touches no
+  arena. Opaque calls other than the `recv` family are outside what the
+  budget sees (the same boundary the escape analysis draws); pair the
+  contract with `recv_into` + a reused `BytesBuilder`. fn-only; mutually
+  exclusive with `@unbounded`. A violation reports the measured count and
+  points at every offending allocation with the fast-path fix.
+- **Hot-path allocation lint — default-on advisory** (2026-07-16). Two
+  loop-scoped anti-patterns get a **warning** (never a build failure), so
+  the allocation-free shape is the path of least resistance rather than
+  expert folklore: (1) a **locus** (its own arena / heap buffer) or a
+  `std::bytes::BytesBuilder` instantiated inside a loop — hoist it to a
+  reused field; (2) an **allocating `recv`** (the `recv` family) in a loop
+  — use `recv_into` with a reused `BytesBuilder`. Both accumulate in the
+  method scratch until the enclosing method returns, and a `run()` read
+  loop never returns. Loop-scoped keeps the signal clean (per-iteration is
+  the unambiguous case); a plain value struct/type literal is not flagged
+  (only loci and heap-bearing builders), and a per-invocation
+  instantiation outside a loop reclaims at method exit. This is the
+  conservative default advisory; `@budget` is the strict opt-in contract
+  built on the same intent.
 - **Resource-budget tracking (item 5)** — fully shipped, opt-in. A static
   **count** of pinned threads / cooperative pools / bus subjects /
   fd-acquisition sites (fd-opening calls *and* held-fd `Listener` /
@@ -158,8 +191,11 @@ assume the others in a build:
   built. Closures still verify their (runtime-observing) invariants at
   *runtime*. See `notes/closure-lifting.md`.
 
-Nothing here yet *proves* allocation, fd, or thread bounds as a
-build-failing gate; the item-1 warnings are advisory.
+The item-1 whole-program survey and the hot-path lint are advisory
+(warnings). The one build-failing *allocation* gate is opt-in:
+`@budget(alloc_per_call = N)` on a fn — you ask for the ceiling, and a
+violation is a hard error. fd and thread bounds remain advisory / CI-gated
+(item 5), not automatic build failures.
 
 Item 2 (race-completeness for substrate primitives) is a *substrate*
 quality bar, not a user-facing check: it model-checks the runtime's own

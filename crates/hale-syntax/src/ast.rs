@@ -1458,6 +1458,16 @@ pub struct FnDecl {
     /// silence under `--warn-unbounded-alloc`. Applies to free fns and
     /// locus methods alike.
     pub unbounded: bool,
+    /// Lever 2 (2026-07-16): `@budget(alloc_per_call = N)` — an opt-in
+    /// hot-path contract asserting this fn performs at most `N` arena
+    /// allocations per call (counting the literals/collection inserts the
+    /// compiler sees, transitively through resolved callees, plus the
+    /// known-allocating stdlib recv family; a loop-nested allocation is
+    /// "unbounded per call"). Enforced as a hard error in
+    /// [`crate`](hale-types)`::budget_check`. `@budget(alloc_per_call = 0)`
+    /// is the zero-alloc certificate. Mutually exclusive with `@unbounded`
+    /// (only one fn-prefix annotation parses).
+    pub budget: Option<u32>,
     pub body: Block,
     pub span: Span,
 }

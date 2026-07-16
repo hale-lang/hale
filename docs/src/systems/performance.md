@@ -119,6 +119,39 @@ These are advisory warnings, not build failures:
   loop) is the fix. (Detection reads the receiver's *declared* type, so
   it sees `fn f(v: IntVec)` and `self.buf: IntVec` but not an untyped
   `let`.)
+- It also flags two **loop-scoped hot-path allocations** (also advisory):
+  a **locus** or a `std::bytes::BytesBuilder` instantiated *inside a loop*
+  (a fresh arena / heap buffer every iteration — hoist it to a reused
+  field), and an **allocating `recv`** (`recv` / `recv_bytes` /
+  `recv_with_source`) in a loop (use `recv_into` with a reused
+  `BytesBuilder`). A plain value struct/type literal isn't flagged, and an
+  instantiation outside a loop reclaims at method exit — only the
+  per-iteration case, the unambiguous one, warns.
+
+Once the loop is clean, you can **certify** it and have the compiler hold
+the line. `@budget(alloc_per_call = N)` on a fn (free or method) is an
+opt-in contract: the fn allocates at most `N` times per call, enforced as
+a **hard error** (this is the one allocation check that fails the build —
+because you asked for it).
+
+```hale
+@budget(alloc_per_call = 0)
+fn decode(buf: Bytes) -> Tick {
+    // no arena allocation reachable from here — the compiler proves it.
+    // reads via reused fields / recv_into; parses in place.
+}
+```
+
+`N = 0` is the zero-alloc certificate — exactly what you want on a
+per-datagram handler or decode helper. The check counts the arena
+allocations it can see (literals, `@form` inserts) transitively through
+resolved callees, plus the known-allocating `recv` family; a loop-nested
+allocation or a call to an allocating fn in a loop is unbounded per call
+and busts any finite budget. On a violation it reports the count and
+points at every offending line. It's the dual of `@unbounded` — one
+acknowledges intentional allocation, the other forbids it — and the two
+are mutually exclusive on a fn.
+
 The same idea extends to file descriptors and resource budgets. The
 full diagnostic surface — runtime residency dumps,
 `--dump-alloc-summary`, the fd-leak and resource-budget checks, and
