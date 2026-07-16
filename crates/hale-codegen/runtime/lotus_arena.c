@@ -10239,15 +10239,23 @@ void *lotus_udp_recv_bytes_with_source(int fd, int max_bytes) {
         errno = EINVAL;
         return NULL;
     }
-    char stack_buf[65536];
     size_t cap = (size_t)max_bytes;
-    if (cap > sizeof(stack_buf)) cap = sizeof(stack_buf);
+    if (cap > 65536) cap = 65536;
+    /* Kernel handoff buffer on the HEAP, not a 64 KiB stack local:
+     * this runs inside bus handlers / child run() bodies on 64 KiB
+     * async coro stacks (LOTUS_CORO_STACK_BYTES), where a 64 KiB stack
+     * buffer overflows the coro stack — a latent corruption that
+     * becomes a hard crash the moment the stack layout shifts
+     * (downstream handoff 2026-07-16). Freed before every return. */
+    char *tmp = (char *)malloc(cap);
+    if (!tmp) { errno = ENOMEM; return NULL; }
     struct sockaddr_in src;
     socklen_t src_len = sizeof(src);
     memset(&src, 0, sizeof(src));
-    ssize_t n = lotus_udp_recvfrom_async(fd, stack_buf, cap,
+    ssize_t n = lotus_udp_recvfrom_async(fd, tmp, cap,
                                          (struct sockaddr *)&src, &src_len);
     if (n < 0) {
+        free(tmp);
         /* Reset source TLS so a stale value isn't read by a
          * caller that ignores the err path. */
         g_udp_last_source_host[0] = '0';
@@ -10275,11 +10283,12 @@ void *lotus_udp_recv_bytes_with_source(int fd, int max_bytes) {
     /* Build the Bytes blob in the bus payload arena. */
     size_t blob_size = sizeof(int64_t) + (size_t)n;
     void *blob = lotus_bus_payload_arena_alloc(blob_size, 8);
-    if (!blob) return NULL;
+    if (!blob) { free(tmp); return NULL; }
     *(int64_t *)blob = (int64_t)n;
     if (n > 0) {
-        memcpy((char *)blob + sizeof(int64_t), stack_buf, (size_t)n);
+        memcpy((char *)blob + sizeof(int64_t), tmp, (size_t)n);
     }
+    free(tmp);
     return blob;
 }
 
@@ -10421,26 +10430,32 @@ void *lotus_udp_recv_bytes_global(int fd, int max_bytes) {
         errno = EINVAL;
         return NULL;
     }
-    /* Use a stack buffer for the kernel handoff; the result is
-     * copied into a Bytes blob in the payload arena. UDP max
-     * packet size is ~65507 bytes on IPv4, so a 64KB stack
-     * buffer covers anything. */
-    char stack_buf[65536];
+    /* Kernel handoff buffer on the HEAP, not a 64 KiB stack local.
+     * UDP max packet is ~65507 bytes on IPv4, so cap covers anything,
+     * but this runs inside bus handlers / child run() bodies on 64 KiB
+     * async coro stacks (LOTUS_CORO_STACK_BYTES) — a 64 KiB stack
+     * buffer overflows the coro stack (latent corruption, hard crash
+     * once the layout shifts; downstream handoff 2026-07-16). The
+     * result is copied into a Bytes blob in the payload arena; the temp
+     * is freed before every return. */
     size_t cap = (size_t)max_bytes;
-    if (cap > sizeof(stack_buf)) cap = sizeof(stack_buf);
-    ssize_t n = lotus_udp_recvfrom_async(fd, stack_buf, cap, NULL, NULL);
-    if (n < 0) return NULL;
+    if (cap > 65536) cap = 65536;
+    char *tmp = (char *)malloc(cap);
+    if (!tmp) { errno = ENOMEM; return NULL; }
+    ssize_t n = lotus_udp_recvfrom_async(fd, tmp, cap, NULL, NULL);
+    if (n < 0) { free(tmp); return NULL; }
     /* Hand-build a Bytes blob ([i64 len][body]) in the global
      * payload arena via the public alloc helper. Mirrors the
      * lotus_bytes_create shape (without needing a direct
      * lotus_arena_t handle to the static g_bus_payload_arena). */
     size_t blob_size = sizeof(int64_t) + (size_t)n;
     void *blob = lotus_bus_payload_arena_alloc(blob_size, 8);
-    if (!blob) return NULL;
+    if (!blob) { free(tmp); return NULL; }
     *(int64_t *)blob = (int64_t)n;
     if (n > 0) {
-        memcpy((char *)blob + sizeof(int64_t), stack_buf, (size_t)n);
+        memcpy((char *)blob + sizeof(int64_t), tmp, (size_t)n);
     }
+    free(tmp);
     return blob;
 }
 
@@ -14299,9 +14314,16 @@ const char *lotus_process_pipe_read_nonblocking(int32_t fd) {
         errno = EBADF;
         return NULL;
     }
-    char buf[65536];
-    ssize_t r = read((int)fd, buf, sizeof(buf) - 1);
+    /* Heap, not a 64 KiB stack local: a handler that reads a child's
+     * pipe can run on a 64 KiB async coro stack, where this buffer
+     * overflows it (downstream handoff 2026-07-16). Freed before every
+     * return. */
+    const size_t bufcap = 65536;
+    char *buf = (char *)malloc(bufcap);
+    if (!buf) { errno = ENOMEM; return NULL; }
+    ssize_t r = read((int)fd, buf, bufcap - 1);
     if (r < 0) {
+        free(buf);
         if (errno == EAGAIN
 #if defined(EWOULDBLOCK) && (EWOULDBLOCK != EAGAIN)
             || errno == EWOULDBLOCK
@@ -14313,15 +14335,18 @@ const char *lotus_process_pipe_read_nonblocking(int32_t fd) {
     }
     if (r == 0) {
         /* EOF — surface as empty. */
+        free(buf);
         return empty;
     }
     buf[r] = '\0';
     char *out = (char *)lotus_bus_payload_arena_alloc((size_t)r + 1, 1);
     if (!out) {
+        free(buf);
         errno = ENOMEM;
         return NULL;
     }
     memcpy(out, buf, (size_t)r + 1);
+    free(buf);
     return out;
 }
 
