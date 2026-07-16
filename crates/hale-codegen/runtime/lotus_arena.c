@@ -9636,20 +9636,26 @@ int lotus_tcp_listen_socket(const char *host, uint16_t port) {
         close(sock);
         return -1;
     }
-    /* v1.x polish (2026-05-20): SO_REUSEPORT in addition to
-     * SO_REUSEADDR. The pair covers more restart-within-TIME_WAIT
-     * edge cases than SO_REUSEADDR alone — specifically when the
-     * previous process exited via SIGKILL with TCP state still in
-     * the kernel's tear-down window. Surfaced by an HTTP /metrics
-     * port 9100 restart-within-60s. SO_REUSEPORT is Linux 3.9+
-     * and is best-effort: log + continue if the kernel rejects
-     * the option, since SO_REUSEADDR already covers the common
-     * case. */
-#ifdef SO_REUSEPORT
-    if (setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) < 0) {
-        /* Not fatal — keep going with just SO_REUSEADDR. */
-    }
-#endif
+    /* SO_REUSEADDR (set above) is the whole fix for the
+     * restart-within-TIME_WAIT case: it lets a fresh listener rebind
+     * a port whose previous owner is gone but still lingering in the
+     * kernel's teardown window (the port 9100 /metrics restart that
+     * motivated this).
+     *
+     * We deliberately do NOT set SO_REUSEPORT (downstream handoff
+     * 2026-07-15, item 4). SO_REUSEPORT lets *two live processes*
+     * both bind the same port and have the kernel round-robin
+     * connections between them — so a second copy of a server booted
+     * by accident gets no EADDRINUSE, and clients are silently
+     * load-balanced across two processes with divergent state
+     * (split-brain no post-hoc diagnostic can catch). SO_REUSEADDR
+     * does not enable that dual bind; SO_REUSEPORT was the sole
+     * cause. Exclusive bind is the right default for a server — a
+     * second boot now fails loudly at bind, matching Go/Rust. If a
+     * future workload genuinely wants kernel-level multi-process
+     * load balancing, that belongs behind an explicit opt-in
+     * (`Listener { exclusive: false }` / a dedicated primitive), not
+     * the default path. */
     if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         perror("lotus_tcp_listen_socket: bind");
         close(sock);

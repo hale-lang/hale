@@ -108,6 +108,19 @@ Eight substrate findings from a downstream service built on hale
   reader no longer allocates through an arena a sibling coro tore
   down while it was parked. See spec/runtime.md § `where async_io`
   and spec/stdlib.md `std::io::udp`.
+- **BREAKING: TCP listeners bind exclusively** (downstream handoff
+  2026-07-15, item 4). `std::io::tcp::listen_socket` (and the
+  `Listener` / `http::Server` that use it) no longer set
+  `SO_REUSEPORT` — only `SO_REUSEADDR`, which still covers the
+  restart-within-`TIME_WAIT` case. `SO_REUSEPORT` let two live
+  processes both bind the same host:port and have the kernel
+  round-robin connections between them, so a second server booted
+  by accident got no error and clients were silently split-brained
+  across two divergent-state processes. A second live bind now
+  fails with `EADDRINUSE`, matching Go/Rust. Only affects the
+  accidental-dual-bind case; a single server is unchanged.
+  Intentional multi-process port sharing would need an explicit
+  opt-in (none today). See spec/stdlib.md `std::io::tcp`.
 - Filed as an issue: implicit error propagation on tail-position
   `return` (finding 8).
 
