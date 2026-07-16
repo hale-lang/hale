@@ -1,0 +1,109 @@
+// Hale stdlib — std::io::udp (handle surface).
+//
+// The path-call primitives (`std::io::udp::bind` / `recv` /
+// `recv_into` / `send` / …) are lowered in codegen. This file adds
+// the *ergonomic* handle: `Reader`, the zero-alloc, event-driven
+// datagram-ingest default.
+//
+// Lands after io_tcp.hl in the stdlib concat so `IoError` (declared
+// there) resolves for this file's fn signatures.
+//
+// ── Why a Reader handle ──────────────────────────────────────────
+// The measured-fastest ingest shape is: one long-lived socket, a
+// single reused receive buffer, and a `recv` that parks on EPOLLIN
+// (no timeout) so an idle signal costs zero CPU and a datagram wakes
+// the worker in microseconds. Written by hand that is a bind, a
+// BytesBuilder, `recv_into` into it, and a `.view()` — easy to get
+// subtly wrong (a fresh allocation per datagram, a timeout that adds
+// a kernel quantum, forgetting to clear the buffer). `Reader` bakes
+// the fast path in so it's the path of least resistance:
+//
+//   locus Ingest {
+//       params { r: std::io::udp::Reader =
+//           std::io::udp::Reader { addr: "127.0.0.1", port: 9000 }; }
+//       run() {
+//           while true {
+//               let dg = self.r.next() or raise;   // parks, zero-alloc
+//               // parse `dg` (a zero-copy view of this datagram)
+//           }
+//       }
+//   }
+//   // placement { ing_owner: cooperative(pool = ing) where async_io; }
+//
+// `next()` parks until a datagram arrives, so it always returns one on
+// success; its only failures are a bind failure (first call) or a
+// fatal recv error (a broken socket) — both genuinely exceptional, so
+// `or raise` (propagate / root-panic) is the honest disposition.
+// `or discard` does NOT apply here: it's for Unit-returning fallibles,
+// and `next()` yields a value (the datagram view).
+//
+// On a `where async_io` pool `next()` parks the worker on EPOLLIN
+// (kernel-woken, no busy-poll, no SO_RCVTIMEO quantum); on a classic
+// pool it blocks the worker in recvfrom, same as any blocking read.
+//
+// Zero per-datagram allocation: the buffer is a single BytesBuilder
+// owned by the Reader (allocated once at birth), cleared and refilled
+// in place each call; `next()` returns a NON-owning `BytesView`
+// aliasing it. The view is valid until the NEXT `next()` (the builder
+// mutates then) — read or copy out of it before looping.
+
+locus __StdIoUdpReader {
+    params {
+        // Bind address + port. Port 0 lets the OS choose (read it
+        // back with `local_port()` if you need it — e.g. an
+        // ephemeral reply socket).
+        addr: String = "0.0.0.0";
+        port: Int    = 0;
+        // Max datagram size accepted per `next()` — the recv chunk.
+        // A datagram larger than this is truncated by the kernel
+        // (UDP semantics); size it to your protocol's MTU.
+        cap: Int = 2048;
+        // The bound socket fd, assigned lazily on the first `next()`
+        // so a bind failure propagates through `next()`'s fallible
+        // channel rather than a birth-time violation. -1 = not yet
+        // bound.
+        fd: Int = -1;
+        // The single reused receive buffer. Allocated once at this
+        // Reader's birth (the nested locus's birth runs with the
+        // Reader's), freed at its dissolve. `next()` clears + refills
+        // it in place — no per-datagram allocation.
+        buf: std::bytes::BytesBuilder =
+            std::bytes::BytesBuilder { initial_cap: 2048 };
+    }
+    // Receive one datagram, parking on EPOLLIN if none is ready (on
+    // an async_io pool). Returns a zero-copy `BytesView` of exactly
+    // this datagram's bytes, aliasing the reused buffer — valid until
+    // the next `next()`. Fails with `IoError` on a bind failure (first
+    // call) or a fatal recv error; an empty datagram is a success
+    // returning a zero-length view.
+    fn next() -> BytesView fallible(IoError) {
+        // Lazy bind: propagate a bind failure through this fallible
+        // channel on the first call. `bind` fails with IoError, so
+        // `or raise` re-raises it unchanged.
+        if self.fd < 0 {
+            self.fd = std::io::udp::bind(self.addr, self.port) or raise;
+        }
+        // Clear + refill in place: no allocation, datagram boundary
+        // preserved (a single recvfrom).
+        self.buf.clear();
+        let n = std::io::udp::recv_into(self.fd, self.buf, self.cap);
+        if n < 0 {
+            // -2 = retryable (a set_recv_timeout expiry / park
+            // deadline; only reachable if a timeout was configured on
+            // the fd — the event-driven default never sets one), any
+            // other negative = fatal. Both surface as IoError; the
+            // kind distinguishes them.
+            let k = "io";
+            if n == 0 - 2 { k = "timeout"; }
+            fail IoError { kind: k, errno: 0, path: "" };
+        }
+        return self.buf.view();
+    }
+    dissolve() {
+        // The nested `buf` BytesBuilder dissolves with this locus
+        // (its malloc buffer freed there); we only own the socket.
+        if self.fd >= 0 {
+            let _ = std::io::udp::__close(self.fd);
+        }
+    }
+}

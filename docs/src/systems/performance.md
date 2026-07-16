@@ -207,6 +207,16 @@ bursty 64KB steps mean chunk-pool overflow (a loop accumulator)
 For latency-sensitive sockets, the stdlib exposes the knobs you'd
 reach for in C, without an FFI shim:
 
+- **Event-driven datagram ingest** — `std::io::udp::Reader { addr,
+  port, cap }` is the zero-copy, reused-buffer ingest handle. `let dg =
+  r.next() or raise` parks on `EPOLLIN` on a `where async_io` pool
+  (kernel-woken, no busy-poll, no timeout quantum — an idle signal
+  costs zero CPU) and hands back a zero-copy view of the datagram
+  aliasing a single reused buffer. It's the hand-rolled "bind +
+  `BytesBuilder` + `recv_into` + `.view()`" fast path in one handle, so
+  the allocation-free event-driven shape is the default you reach for
+  rather than the one you have to remember to assemble; unlike the
+  allocating `recv` it copies no per-datagram payload.
 - **Disable Nagle** — `std::io::tcp::set_nodelay(fd, true)` (and the
   `std::io::tls` sibling) so small writes hit the wire immediately
   instead of waiting ~40ms to coalesce. The first thing a
