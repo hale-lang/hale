@@ -6,6 +6,14 @@ behavior.
 
 ---
 
+## v0.11.1 — Linux ARM64 release binary (2026-07-16)
+
+- **Release: Linux ARM64 binary.** Releases now ship an
+  `aarch64-unknown-linux-gnu` tarball (built on a native
+  `ubuntu-24.04-arm` runner) alongside the x86_64 Linux and macOS arm64
+  binaries — for aarch64 Linux servers (AWS Graviton / EKS arm64 nodes,
+  Ampere). Toolchain packaging only; no compiler/runtime changes.
+
 ## v0.11.0 — substrate hardening + hot-path enforcement (2026-07-16)
 
 Two arcs. First, a downstream service built on 0.10.0 filed a batch of
