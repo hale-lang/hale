@@ -647,6 +647,23 @@ inside the locus is unchanged — `recv_bytes(stream)` reads the
 same line of source whether the pool is `async_io` or not; the
 substrate picks the right lowering at the syscall boundary.
 
+Because parking yields the shared worker, N reader loci that each
+park on their own fd — the F.35 one-reader-per-signal shape —
+are serviced concurrently by a single pool. Two invariants make
+that multiplexing correct: (1) the drain loop starts a queued
+`run()` the moment the running coro *parks*, not only when it
+completes, so a long-lived reader never starves the readers
+queued behind it; and (2) each coro's caller-arena — the
+thread-local that decides where its stdlib allocations (recv
+result blobs, string builders) land — is snapshotted across the
+park and restored on resume, so a coro that resumes after a
+sibling ran (and perhaps dissolved) never allocates through an
+arena the sibling has since torn down. Every blocking-recv
+primitive on the pool honors invariant (1) by parking rather than
+blocking `recvfrom`/`read` (the `std::io::udp` recv family joined
+the `tcp`/`tls` siblings here in the 2026-07-15 downstream
+handoff).
+
 Typecheck rules:
 
 - All placement entries on the same named cooperative pool must
