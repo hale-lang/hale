@@ -51,8 +51,15 @@ buffer/slot walk, not per-element method calls. (Don't mutate the
 form inside the body — a grow would rehash under the cursor.)
 
 By default a `@form(hashmap)` is single-pool: its densest layout
-has no synchronization, and a cross-pool call into it is rejected.
-Opt into concurrent access with the `sync = …` parameter —
+has no synchronization, and a *cross-pool* call into one instance
+is rejected. "Cross-pool" is judged per instance, at the call
+site: two loci that each hold their own form field on different
+pools are two separate, single-threaded maps — each touched only
+by its owner's pool — so neither is flagged and neither needs a
+discipline. (You don't need byte-identical twin types to place
+two same-type forms on two pools.) The rejection is for genuine
+sharing: reaching one instance from a pool other than the one it
+lives on. Opt into that with the `sync = …` parameter —
 `@form(hashmap, sync = serialized)` (per-map mutex),
 `sync = striped` (concurrent readers), or `sync = lockfree`
 (CAS-only steady state) — trading layout density for the sharing
