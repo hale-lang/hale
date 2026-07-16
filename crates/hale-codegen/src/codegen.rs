@@ -2179,6 +2179,13 @@ const STDLIB_AP_SOURCE: &str = concat!(
     "\n",
     include_str!("../runtime/stdlib/io_tcp.hl"),
     "\n",
+    // io_udp.hl declares the `Reader` handle and references `IoError`
+    // (declared in io_tcp.hl) in its fn signatures, so it must land
+    // after io_tcp.hl for pass A1 type resolution. Only path-call
+    // primitives otherwise, so its position past io_tcp is the only
+    // ordering constraint.
+    include_str!("../runtime/stdlib/io_udp.hl"),
+    "\n",
     include_str!("../runtime/stdlib/http.hl"),
     "\n",
     include_str!("../runtime/stdlib/text.hl"),
@@ -2348,6 +2355,7 @@ const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "io", "tcp", "Listener"], "__StdIoTcpListener"),
     (&["std", "io", "tcp", "Stream"], "__StdIoTcpStream"),
     (&["std", "io", "tcp", "LogEvent"], "__StdIoTcpLogEvent"),
+    (&["std", "io", "udp", "Reader"], "__StdIoUdpReader"),
     (&["std", "iter", "Lines"], "__StdIterLines"),
     (&["std", "json", "ArrayIter"], "__JsonArrayIter"),
     (&["std", "json", "ArrayIterSpan"], "__JsonArrayIterSpan"),

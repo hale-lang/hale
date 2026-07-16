@@ -38,6 +38,40 @@ you need it. Multicast is a `join_group` away (`set_multicast_ttl`
 / `set_multicast_loop` tune it), and `set_recv_timeout(fd, 100ms)`
 bounds a quiet `recv`.
 
+### `Reader` — the ingest handle
+
+For a signal reader that just wants each datagram with no per-message
+allocation, reach for `std::io::udp::Reader` instead of hand-managing
+a socket and a buffer:
+
+```hale
+locus Ingest {
+    params {
+        r: std::io::udp::Reader =
+            std::io::udp::Reader { addr: "127.0.0.1", port: 9000, cap: 2048 };
+    }
+    run() {
+        while true {
+            let dg = self.r.next() or raise;   // parks until a datagram, zero-alloc
+            // parse `dg` — a zero-copy view of this datagram's bytes
+        }
+    }
+}
+// placement { ing_owner: cooperative(pool = ing) where async_io; }
+```
+
+`Reader` bundles the bound socket and a single reused buffer. `next()`
+binds lazily on the first call, refills the buffer in place (no
+per-datagram allocation), and returns a **zero-copy view** aliasing it
+— valid until the next `next()`, so read or copy out before looping.
+On a `where async_io` pool `next()` parks on `EPOLLIN` (kernel-woken,
+no busy-poll, no timeout quantum): an idle signal costs zero CPU and a
+datagram wakes the worker in microseconds. It parks until data arrives,
+so its only failures are a bind failure (first call) or a broken
+socket — both exceptional, hence `or raise` (not `or discard`, which is
+for Unit-returning fallibles). This is the event-driven, allocation-free
+ingest shape as a default you reach for rather than one you assemble.
+
 > **UDP as a bus transport.** The raw socket above is *not* the
 > typed bus. To carry bus messages over UDP, use the
 > `udp://host:port` substrate transport instead (see

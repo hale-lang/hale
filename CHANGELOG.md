@@ -6,6 +6,21 @@ behavior.
 
 ---
 
+## Unreleased — std::io::udp::Reader ingest handle (2026-07-16)
+
+- **New stdlib: `std::io::udp::Reader` — the event-driven ingest
+  handle.** `std::io::udp::Reader { addr, port, cap }` bundles a bound
+  socket + a single reused `BytesBuilder`; `next() -> BytesView
+  fallible(IoError)` parks on EPOLLIN on a `where async_io` pool
+  (kernel-woken, no busy-poll, no timeout quantum) and returns a
+  zero-copy view of each datagram aliasing the reused buffer. It's the
+  hand-rolled "bind + `BytesBuilder` + `recv_into` + `.view()`" fast
+  path baked into one handle so the allocation-free, event-driven shape
+  is the default you reach for. Binds lazily on the first `next()` (so
+  a bind failure propagates through the fallible channel); `dissolve()`
+  closes the socket. Validated RSS-flat over 40k datagrams; unlike the
+  allocating `recv` it copies no per-datagram payload.
+
 ## Unreleased — coro pooling on async_io pools (2026-07-16)
 
 - **Runtime: coro pooling on `async_io` pools.** Bus dispatch to an
