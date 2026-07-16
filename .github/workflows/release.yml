@@ -26,8 +26,9 @@ name: release
 # Rosetta 2 with no functional difference for our workload. Add
 # native Intel back if/when a downstream consumer asks.
 #
-# Linux arm64 is also not covered — add when a user surfaces the
-# need.
+# Linux arm64 (aarch64-unknown-linux-gnu) is covered on a native
+# GitHub-hosted `ubuntu-24.04-arm` runner — added 2026-07-16 for
+# aarch64 Linux servers (AWS Graviton / EKS arm64 nodes, Ampere).
 
 on:
   push:
@@ -55,6 +56,9 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            llvm-prefix: /usr/lib/llvm-18
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
             llvm-prefix: /usr/lib/llvm-18
           - os: macos-14
             target: aarch64-apple-darwin
