@@ -264,7 +264,10 @@ lock-free bus plus static-dispatch devirtualization turned
 coordination from a deficit into an advantage over Go: message
 dispatch, once several times behind, now runs ahead. Reach for
 Hale's structure where the work is coordination-shaped, which is
-most real systems.
+most real systems. On the fan-out path specifically, dispatch to a
+`where async_io` subscriber reuses coroutine stacks from a bounded
+per-worker pool rather than allocating one per delivery — the
+per-dispatch stack malloc/free is gone once the pool warms.
 
 The tight loop caught up too. Pure arithmetic used to be the
 place the substrate showed through, but native codegen closed the
