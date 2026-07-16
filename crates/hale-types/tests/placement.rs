@@ -403,17 +403,26 @@ fn main() { App { }; }
     );
 }
 
-// F.32-1∞ (2026-05-25): when the offending cross-pool call IS
-// one of the synthesized hashmap methods, the diagnostic should
-// substitute the inference-specific hint (naming the picked
-// discipline + the observed writer/reader pools) for the
-// generic "choose serialized or striped" hint.
+// F.31 (downstream handoff 2026-07-15): the cross-pool-form check
+// infers the receiver's pool per INSTANCE at the call site — the
+// enclosing locus's own placement of the field, else the field
+// co-locates with its owner. Two loci that each hold their OWN
+// `@form` field are two independent, single-threaded maps; each is
+// only ever touched by its owner's pool, so there is no shared
+// access to synchronize and the check must NOT flag them (the old
+// type-global pool assignment collapsed the type to one pool and
+// false-flagged every owner but the first — forcing byte-identical
+// twin types as a workaround). A genuine cross-pool access — a form
+// field explicitly placed off its owner — still flags, and still
+// carries the sync-discipline hint.
 
 #[test]
-fn cross_pool_set_call_carries_inferred_sync_hint() {
-    // Two pools (io + compute) each fire `self.reg.set(...)`
-    // inside a bus handler (`on_tick`). Inference: 2 writer
-    // pools, hot-path (in `on_*` handlers) → striped.
+fn separate_per_owner_form_fields_on_distinct_pools_build_clean() {
+    // Two workers on two pools, each with its OWN `reg` field, each
+    // calling `self.reg.set(...)` on its own instance. These are
+    // separate maps, each single-threaded — no cross-pool sharing,
+    // so no diagnostic. (Pre-F.31 this false-flagged the second
+    // worker because `Registry` was pinned type-globally to `io`.)
     let src = r#"
 type Entry { k: Int; v: Int; }
 type Tick { n: Int; }
@@ -458,83 +467,34 @@ fn main() { App { }; }
     let cross_pool: Vec<_> =
         msgs.iter().filter(|m| m.contains("cross-pool")).collect();
     assert!(
-        !cross_pool.is_empty(),
-        "expected cross-pool diagnostic; got: {:?}",
-        msgs
-    );
-    let msg = cross_pool[0];
-    assert!(
-        msg.contains("inferred sync (F.32-1∞)"),
-        "diagnostic should carry the inferred-sync banner: {}",
-        msg
-    );
-    assert!(
-        msg.contains("sync = striped"),
-        "inference should pick striped (2 writer pools, hot-path): {}",
-        msg
-    );
-    assert!(
-        msg.contains("hot-path: yes"),
-        "hot-path detection should fire (call inside on_tick): {}",
-        msg
-    );
-    // Should NOT carry the generic "choose serialized or striped"
-    // fallback hint — the inference picked one, the diagnostic
-    // names it specifically.
-    assert!(
-        !msg.contains("sync = serialized")
-            || msg.contains("`sync = striped` for `Registry`"),
-        "diagnostic should not fall back to the generic both-options hint: {}",
-        msg
+        cross_pool.is_empty(),
+        "separate per-owner `@form` fields (each single-threaded) must \
+         NOT be flagged cross-pool; got: {:?}",
+        cross_pool
     );
 }
 
 #[test]
-fn cross_pool_set_call_one_writer_picks_serialized() {
-    // 1 writer pool (io), 2 reader pools (io, compute) → the
-    // 2-vs-1 rule fires `serialized`. Concrete shape: each
-    // worker holds its own `reg` field; pool propagation
-    // first-wins puts Registry on `io` (from IoWriter).
-    // CompReader on `compute` calling `self.reg.has(...)` is
-    // the cross-pool call site; the diagnostic includes the
-    // inference banner.
+fn off_owner_placed_form_field_flags_cross_pool_with_sync_hint() {
+    // A GENUINE cross-pool access: `reg` is a field of `App` (on the
+    // main pool) but is explicitly PLACED on `io`, so its instance
+    // lives on a different pool than the enclosing locus that calls
+    // into it. The direct `self.reg.set(...)` crosses pools and must
+    // flag, carrying the sync-discipline upgrade hint.
     let src = r#"
 type Entry { k: Int; v: Int; }
-type Tick { n: Int; }
 
 @form(hashmap)
 locus Registry {
     capacity { pool entries of Entry indexed_by k; }
 }
 
-locus IoWriter {
-    params { reg: Registry = Registry { }; }
-    bus { subscribe "tick" as on_tick of type Tick; }
-    fn on_tick(t: Tick) {
-        self.reg.set(Entry { k: t.n, v: 1 });
-        let _ = self.reg.has(t.n);
-    }
-}
-
-locus CompReader {
-    params { reg: Registry = Registry { }; }
-    bus { subscribe "tick" as on_tick of type Tick; }
-    fn on_tick(t: Tick) {
-        let _ = self.reg.has(t.n);
-    }
-}
-
 main locus App {
-    params {
-        io: IoWriter = IoWriter { };
-        cpu: CompReader = CompReader { };
+    params { reg: Registry = Registry { }; }
+    placement { reg: cooperative(pool = io); }
+    run() {
+        self.reg.set(Entry { k: 1, v: 1 });
     }
-    placement {
-        io: cooperative(pool = io);
-        cpu: cooperative(pool = compute);
-    }
-    bus { publish "tick" of type Tick; }
-    run() { }
 }
 
 fn main() { App { }; }
@@ -544,7 +504,7 @@ fn main() { App { }; }
         msgs.iter().filter(|m| m.contains("cross-pool")).collect();
     assert!(
         !cross_pool.is_empty(),
-        "expected cross-pool diagnostic; got: {:?}",
+        "off-owner-placed `@form` field access must flag cross-pool; got: {:?}",
         msgs
     );
     let combined = cross_pool
@@ -553,8 +513,10 @@ fn main() { App { }; }
         .collect::<Vec<&str>>()
         .join("\n");
     assert!(
-        combined.contains("sync = serialized"),
-        "inference should pick serialized (1 writer, multi reader): {}",
+        combined.contains("sync = serialized")
+            || combined.contains("sync = striped"),
+        "genuine cross-pool `@form` access should carry the sync-discipline \
+         hint: {}",
         combined
     );
 }

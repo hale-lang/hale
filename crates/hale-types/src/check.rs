@@ -2332,8 +2332,35 @@ fn walk_expr_pool(expr: &Expr, cx: &mut PoolCheckCx) {
                 cx.enclosing_locus,
                 cx.top,
             ) {
+                // F.31 (downstream handoff 2026-07-15): the receiver's
+                // pool is the pool of THIS field INSTANCE, inferred at
+                // the call site — not a type-global property. A locus
+                // type used as a plain field in two loci on two pools
+                // yields two independent instances, one co-located with
+                // each owner; `pool_of_locus_type` collapses the type to
+                // a single (first-seen) pool and would false-flag every
+                // other owner's own `self.<field>` call (two separate
+                // `@form` maps each touched by a single pool need no sync
+                // — flagging them was never sound). Compute it
+                // owner-relative: the enclosing locus's OWN placement of
+                // the field if it names one (e.g. `db: pinned` on the
+                // main locus — a genuine off-owner cross-pool access),
+                // else the field co-locates with its owner (the caller's
+                // pool → same pool → not flagged).
+                let field_name = match receiver.as_ref() {
+                    Expr::Field { name, .. } => name.name.clone(),
+                    _ => String::new(),
+                };
+                let instance_pool: Option<PoolId> =
+                    cx.caller_pool.map(|caller| {
+                        enclosing_field_placement(
+                            cx.enclosing_locus,
+                            &field_name,
+                        )
+                        .unwrap_or_else(|| caller.clone())
+                    });
                 if let (Some(callee_pool), Some(caller_pool_val)) = (
-                    cx.pool_of_locus_type.get(&field_locus),
+                    instance_pool.as_ref(),
                     cx.caller_pool,
                 ) {
                     // F.32-0: receivers with an explicit
@@ -2493,6 +2520,24 @@ fn receiver_field_locus_type(
     let param = params.params.iter().find(|p| p.name.name == name.name)?;
     let ty = param.ty.as_ref()?;
     type_expr_locus_name(ty, top)
+}
+
+/// The pool a field is EXPLICITLY placed on by its owning locus's
+/// own `placement { }` block, if any. `None` means the field carries
+/// no explicit placement, so its instance co-locates with its owner's
+/// pool. (F.31: a field instance's pool is owner-relative, not a
+/// type-global property — the same locus type used as a field in two
+/// loci on two pools yields two instances, one per owner.)
+fn enclosing_field_placement(
+    enclosing_locus: &LocusDecl,
+    field_name: &str,
+) -> Option<PoolId> {
+    let pb = enclosing_locus.members.iter().find_map(|m| match m {
+        LocusMember::Placement(pb) => Some(pb),
+        _ => None,
+    })?;
+    let entry = pb.entries.iter().find(|e| e.field.name == field_name)?;
+    Some(placement_spec_to_pool(&entry.spec, &entry.field.name))
 }
 
 fn receiver_display(e: &Expr) -> String {
