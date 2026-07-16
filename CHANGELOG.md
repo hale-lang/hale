@@ -6,7 +6,17 @@ behavior.
 
 ---
 
-## Unreleased — std::io::udp::Reader ingest handle (2026-07-16)
+## v0.11.0 — substrate hardening + hot-path enforcement (2026-07-16)
+
+Two arcs. First, a downstream service built on 0.10.0 filed a batch of
+substrate findings — this release hardens the runtime against all of
+them (async_io recv parking, cross-thread bus reclaim, exclusive binds,
+fallible `Stream`, TLS socket-upgrade, and more). Second, a push to make
+the compiler *enforce* the allocation-free hot path rather than leave it
+to folklore — a lint, an opt-in `@budget` contract, coro-stack pooling,
+and an ergonomic zero-copy UDP ingest handle.
+
+### Hot-path enforcement
 
 - **New stdlib: `std::io::udp::Reader` — the event-driven ingest
   handle.** `std::io::udp::Reader { addr, port, cap }` bundles a bound
@@ -21,8 +31,6 @@ behavior.
   closes the socket. Validated RSS-flat over 40k datagrams; unlike the
   allocating `recv` it copies no per-datagram payload.
 
-## Unreleased — coro pooling on async_io pools (2026-07-16)
-
 - **Runtime: coro pooling on `async_io` pools.** Bus dispatch to an
   `async_io` subscriber previously `malloc`'d a fresh coroutine +
   64 KiB stack per delivery and freed it on completion. The pool now
@@ -35,12 +43,6 @@ behavior.
   async pool. Correctness validated under ASan+UBSan+LSan (a
   20k-dispatch flood and the full corpus oracle). Transparent — no
   surface change.
-
-## Unreleased — compiler allocation enforcement (2026-07-16)
-
-Make the allocation-free hot path the path of least resistance, and
-let a fn *certify* it. Two compiler additions, one advisory and one
-enforced.
 
 - **New default-on advisory: hot-path allocation lint.** `hale check`
   now warns on two loop-scoped anti-patterns: a **locus** or a
@@ -68,7 +70,7 @@ enforced.
   summary + call graph. See `spec/verification.md`,
   `docs/src/systems/performance.md`.
 
-## Unreleased — downstream-handoff substrate fixes (2026-07-14)
+### Substrate hardening (downstream-handoff fixes)
 
 Eight substrate findings from a downstream service built on hale
 0.10.0; six fixed here, two filed as issues.
