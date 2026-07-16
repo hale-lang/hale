@@ -121,6 +121,22 @@ Eight substrate findings from a downstream service built on hale
   accidental-dual-bind case; a single server is unchanged.
   Intentional multi-process port sharing would need an explicit
   opt-in (none today). See spec/stdlib.md `std::io::tcp`.
+- **Fixed: unaddressed fallible `Stream` call is a clean error, not
+  an LLVM ICE** (downstream handoff 2026-07-15, item 5). After #209
+  made `Stream.send` / `send_bytes` / `recv` / `recv_bytes`
+  `fallible(IoError)`, a call site that omitted the `or` clause (a
+  bare statement or a plain value-binding) reached codegen's
+  non-fallible method-call lowering and emitted a call to the
+  fallible callee with the wrong arity — surfacing only as `module
+  verification failed … Incorrect number of arguments passed to
+  called function`. The typechecker can't catch it because a
+  `std::io::tcp::Stream` literal types as `Unknown` there (stdlib
+  handle loci aren't in the type table), so codegen now rejects the
+  call by name: `error not addressed: \`std::io::tcp::Stream.send_bytes\`
+  is fallible — handle its error with an \`or\` clause`. A
+  typecheck-time diagnostic would need stdlib handle loci in the
+  type table (a larger follow-on); this removes the ICE, which was
+  the defect.
 - Filed as an issue: implicit error propagation on tail-position
   `return` (finding 8).
 

@@ -23102,6 +23102,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         struct MethodSig {
             params: Vec<Param>,
             ret: Option<TypeExpr>,
+            fallible: Option<TypeExpr>,
         }
         let sig: MethodSig = self
             .program
@@ -23116,6 +23117,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             Some(MethodSig {
                                 params: fd.params.clone(),
                                 ret: fd.ret.clone(),
+                                fallible: fd.fallible.clone(),
                             })
                         }
                         // B11 / G25: external `g.bulk(...)` /
@@ -23138,6 +23140,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 Some(MethodSig {
                                     params: md.params.clone(),
                                     ret: md.ret.clone(),
+                                    fallible: None,
                                 })
                             } else {
                                 None
@@ -23153,6 +23156,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     method_name, locus_name
                 ))
             })?;
+        // Reaching here with a fallible method means the call site did
+        // NOT address the error with an `or` clause — the addressed
+        // path routes through lower_fallible_method_call and never
+        // gets here. For a USER locus the typechecker already rejects
+        // this (its method fallibility is known), but a STDLIB handle
+        // locus (`std::io::tcp::Stream`) types as `Unknown` there, so
+        // the check slips through to codegen. Historically this then
+        // emitted a plain (non-fallible-ABI) call to the fallible
+        // callee — whose declared signature carries the extra
+        // error-channel params — an arity mismatch that surfaced only
+        // as an LLVM verifier ICE ("Incorrect number of arguments
+        // passed to called function"). Reject it here with an
+        // actionable message (downstream handoff 2026-07-15, item 5).
+        if sig.fallible.is_some() {
+            // Demangle the stdlib handle name for the message
+            // (`__StdIoTcpStream` → `std::io::tcp::Stream`); user loci
+            // pass through unchanged.
+            let display_locus = STDLIB_PATH_RENAMES
+                .iter()
+                .find(|(_, mangled)| *mangled == locus_name)
+                .map(|(segs, _)| segs.join("::"))
+                .unwrap_or_else(|| locus_name.clone());
+            return Err(CodegenError::Unsupported(format!(
+                "error not addressed: `{}.{}` is fallible — handle its \
+                 error with an `or` clause (`or raise`, `or discard`, \
+                 `or <fallback>`, or `or handler(err)`)",
+                display_locus, method_name
+            )));
+        }
         if args.len() > sig.params.len() {
             return Err(CodegenError::Unsupported(format!(
                 "{}.{}: expected at most {} args, got {}",
