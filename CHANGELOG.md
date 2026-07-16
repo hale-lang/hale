@@ -6,6 +6,21 @@ behavior.
 
 ---
 
+## Unreleased — coro pooling on async_io pools (2026-07-16)
+
+- **Runtime: coro pooling on `async_io` pools.** Bus dispatch to an
+  `async_io` subscriber previously `malloc`'d a fresh coroutine +
+  64 KiB stack per delivery and freed it on completion. The pool now
+  keeps a bounded per-worker free-list (cap 64) of completed coro
+  slots and reuses them — a warm fan-out skips the per-dispatch stack
+  malloc/free entirely. Measured **~640 vs ~729 ns/dispatch (~12%)**
+  on a 300k-message single-subscriber flood, stable run-to-run. The
+  free-list is worker-thread-local (no lock), drained at pool
+  teardown; steady-state RSS retains up to 64 × 64 KiB (~4 MiB) per
+  async pool. Correctness validated under ASan+UBSan+LSan (a
+  20k-dispatch flood and the full corpus oracle). Transparent — no
+  surface change.
+
 ## Unreleased — compiler allocation enforcement (2026-07-16)
 
 Make the allocation-free hot path the path of least resistance, and

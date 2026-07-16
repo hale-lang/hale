@@ -6387,6 +6387,15 @@ typedef struct lotus_coop_pool {
     ucontext_t        drain_ctx;
     lotus_coro_t     *current_coro;
     lotus_coro_t     *parked_head;
+    /* Coro pooling (2026-07-16): a free-list of completed coro slots
+     * (struct + its 64 KiB stack) kept for reuse instead of malloc/free
+     * per bus dispatch. Only ever touched by this pool's own worker
+     * thread (alloc in drain_one_async, release on completion) — no
+     * lock. Bounded at LOTUS_CORO_FREELIST_MAX so a fan-out burst can't
+     * retain stacks without limit; the list is drained + freed at pool
+     * teardown. `free_count` is the current list length. */
+    lotus_coro_t     *free_head;
+    int               free_count;
 #endif
 } lotus_coop_pool_t;
 
@@ -6396,6 +6405,12 @@ typedef struct lotus_coop_pool {
  * Tunable via the F.35 follow-on `@stack_size(N)` annotation if a
  * workload ever needs a different default per locus. */
 #define LOTUS_CORO_STACK_BYTES (64 * 1024)
+
+/* Coro pooling (2026-07-16): cap on the per-pool free-list of reusable
+ * coro slots. Bounds retained memory at MAX * (sizeof(lotus_coro_t) +
+ * 64 KiB) per async pool — ~4 MiB at 64. A steady fan-out reuses within
+ * this pool; a burst beyond it frees the excess rather than hoarding. */
+#define LOTUS_CORO_FREELIST_MAX 64
 
 /* Phase-1b: the cooperative pool's queue is now a fixed-cap lock-free ring
  * pre-allocated at bus_queue_max_cap() (like the mailbox), so there is no
@@ -6470,6 +6485,8 @@ lotus_coop_pool_t *lotus_coop_pool_register(const char *name) {
 #if LOTUS_HAVE_ASYNC_IO
     p->current_coro     = NULL;
     p->parked_head      = NULL;
+    p->free_head        = NULL;
+    p->free_count       = 0;
 #endif
     /* Truncated copy — the bound is LOTUS_COOP_POOL_MAX-name's-
      * worth and pool names are conventionally short. Anything
@@ -6787,19 +6804,40 @@ static void lotus_coro_thunk(void) {
     setcontext(&g_current_pool_tls->drain_ctx);
 }
 
-/* F.35 Slice 1: allocate a coro for one handler invocation. Each
- * invocation gets its own stack (mmap'd with guard pages would be
- * ideal; v1 uses malloc for portability, falls back to no guard).
- * Returns NULL on OOM. */
+static void lotus_coro_free(lotus_coro_t *c) {
+    if (!c) return;
+    if (c->stack) free(c->stack);
+    free(c);
+}
+
+/* F.35 Slice 1: obtain a coro for one handler invocation. Coro pooling
+ * (2026-07-16): reuse a slot from the pool's free-list when one is
+ * available — its 64 KiB stack is already allocated, so reuse skips the
+ * malloc/free of the struct AND the stack (the expensive part on the
+ * per-dispatch fan-out path). A completed coro has fully returned to the
+ * drain context, so its stack is idle and safe to re-init. The ucontext
+ * is consumed by each run, so it's freshly getcontext+makecontext'd here
+ * whether reused or newly malloc'd. Returns NULL on OOM.
+ *
+ * Worker-thread-only: the free-list is touched solely by this pool's
+ * worker (this alloc + lotus_coro_release on completion), so no lock. */
 static lotus_coro_t *lotus_coro_alloc(lotus_coop_pool_t *p,
                                        void *handler,
                                        void *self_ptr,
                                        void *payload_ptr) {
-    lotus_coro_t *c = (lotus_coro_t *)malloc(sizeof(lotus_coro_t));
-    if (!c) return NULL;
-    c->stack = malloc(LOTUS_CORO_STACK_BYTES);
-    if (!c->stack) { free(c); return NULL; }
-    c->stack_size  = LOTUS_CORO_STACK_BYTES;
+    lotus_coro_t *c = NULL;
+    if (p->free_head) {
+        /* Reuse: pop a slot; keep its stack + stack_size. */
+        c = p->free_head;
+        p->free_head = c->next;
+        p->free_count--;
+    } else {
+        c = (lotus_coro_t *)malloc(sizeof(lotus_coro_t));
+        if (!c) return NULL;
+        c->stack = malloc(LOTUS_CORO_STACK_BYTES);
+        if (!c->stack) { free(c); return NULL; }
+        c->stack_size = LOTUS_CORO_STACK_BYTES;
+    }
     c->parked_fd   = -1;
     c->done        = 0;
     c->park_deadline_ns = 0;
@@ -6807,10 +6845,12 @@ static lotus_coro_t *lotus_coro_alloc(lotus_coop_pool_t *p,
     c->handler     = handler;
     c->self_ptr    = self_ptr;
     c->payload_ptr = payload_ptr;
+    c->saved_caller_arena = NULL;
     c->next        = NULL;
     if (getcontext(&c->ctx) != 0) {
-        free(c->stack);
-        free(c);
+        /* Fully free (stack included) — a half-initialized reused slot
+         * has no business going back on the free-list. */
+        lotus_coro_free(c);
         return NULL;
     }
     c->ctx.uc_stack.ss_sp   = c->stack;
@@ -6820,10 +6860,19 @@ static lotus_coro_t *lotus_coro_alloc(lotus_coop_pool_t *p,
     return c;
 }
 
-static void lotus_coro_free(lotus_coro_t *c) {
+/* Coro pooling (2026-07-16): return a COMPLETED coro to the pool's
+ * free-list for reuse, or free it outright if the list is at cap. Call
+ * only on a coro that has finished (c->done) — its stack must be idle.
+ * Worker-thread-only (see lotus_coro_alloc). */
+static void lotus_coro_release(lotus_coop_pool_t *p, lotus_coro_t *c) {
     if (!c) return;
-    if (c->stack) free(c->stack);
-    free(c);
+    if (p->free_count < LOTUS_CORO_FREELIST_MAX) {
+        c->next = p->free_head;
+        p->free_head = c;
+        p->free_count++;
+    } else {
+        lotus_coro_free(c);
+    }
 }
 
 /* F.35 Slice 1: park the current coro on `fd`. Called from inside a
@@ -7041,7 +7090,7 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
              * park-return path.) */
             lotus_current_caller_arena = NULL;
             if (c->done) {
-                lotus_coro_free(c);
+                lotus_coro_release(p, c);
             }
         }
         /* Expiry sweep (timed parks): resume every parked coro whose
@@ -7077,7 +7126,7 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
             g_current_coro_tls = NULL;
             lotus_current_caller_arena = NULL;   /* drain baseline — see above */
             if (expired->done) {
-                lotus_coro_free(expired);
+                lotus_coro_release(p, expired);
             }
         }
         /* If we just blocked (no cell to drain this pass), return to the
@@ -7145,7 +7194,7 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
         if (cell_copy.payload_heap) free(cell_copy.payload_heap);
         if (cell_copy.payload_region)
             lotus_arena_destroy(cell_copy.payload_region);
-        lotus_coro_free(c);
+        lotus_coro_release(p, c);
     }
     /* If c is not done (it parked), the cell's payload_heap and
      * payload_region are retained by the coro and freed when it
@@ -7348,6 +7397,15 @@ void lotus_coop_pool_destroy_all(void) {
             c = next;
         }
         p->parked_head = NULL;
+        /* Coro pooling (2026-07-16): free the reuse free-list too. */
+        c = p->free_head;
+        while (c) {
+            lotus_coro_t *next = c->next;
+            lotus_coro_free(c);
+            c = next;
+        }
+        p->free_head = NULL;
+        p->free_count = 0;
 #endif
         free(p);
         g_coop_pools[i] = NULL;

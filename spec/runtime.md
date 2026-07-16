@@ -664,6 +664,16 @@ blocking `recvfrom`/`read` (the `std::io::udp` recv family joined
 the `tcp`/`tls` siblings here in the 2026-07-15 downstream
 handoff).
 
+Each bus delivery to a subscriber on an `async_io` pool runs its
+handler on a coroutine (a struct + a 64 KiB stack). Rather than
+allocate and free that pair per delivery, the pool keeps a bounded
+per-worker free-list (cap 64) of completed coro slots and reuses
+them — a warm fan-out skips the per-dispatch stack allocation
+entirely (2026-07-16). The free-list is worker-thread-local (no
+lock) and drained at pool teardown, so a busy async pool retains up
+to 64 × 64 KiB (~4 MiB) of coro stacks at steady state. Transparent
+to user code — a pure allocation optimization, no behavior change.
+
 Typecheck rules:
 
 - All placement entries on the same named cooperative pool must
