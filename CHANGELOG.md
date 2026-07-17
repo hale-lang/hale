@@ -6,6 +6,33 @@ behavior.
 
 ---
 
+## v0.11.6 — `hale lsp` (2026-07-17)
+
+- **`hale lsp` — a stdio Language Server, v1: diagnostics.** Point
+  any LSP-speaking editor or coding-agent harness at it and the full
+  `hale check` surface arrives as you type: parse/type errors at
+  error severity, the advisory analyses (unbounded-allocation
+  survey, hot-path lint, placement/starvation, accept-without-
+  release) as warnings, each with real ranges (UTF-16 columns) and
+  the diagnostic kind as the LSP code. The design leans on the
+  front-end being ~free (`hale check` ≈ 10 ms whole-program): every
+  didOpen/didChange/didSave re-parses and re-checks the changed
+  file's whole seed (its directory, per the F.19 model) with the
+  editor's unsaved buffer winning over disk — no incremental
+  analysis, no index, no warm-up, no configuration. Diagnostics
+  publish for every file in the seed so stale squiggles clear
+  without bookkeeping; a parse error gates the typecheck so
+  mid-keystroke syntax holes don't cascade phantom type errors.
+  Protocol lifecycle covered end-to-end in
+  `crates/hale-cli/tests/lsp.rs` (initialize → error → fix-clears →
+  warnings → parse error → clean shutdown). v2 (staged in
+  `notes/build-latency-and-lsp.md`): hover with type + fallibility
+  + enforcement status, go-to-definition/references, and the
+  hale-only custom methods — `hale/busGraph`, `hale/placement`,
+  `hale/allocSummary` — the checker already computes.
+- README + first-run guide teach the one-command integration;
+  `hale check --json` remains the minimal scripted alternative.
+
 ## v0.11.5 — std::process::try_wait + signal (2026-07-17)
 
 The subprocess arc: the one missing lifecycle primitive for
