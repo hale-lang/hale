@@ -6,6 +6,43 @@ behavior.
 
 ---
 
+## v0.11.5 — std::process::try_wait + signal (2026-07-17)
+
+The subprocess arc: the one missing lifecycle primitive for
+supervising daemons, plus arbitrary signals — promoted from
+pond/subprocess's surface.
+
+- **`std::process::try_wait(c) -> Int fallible(IoError)`** —
+  non-blocking reap via `waitpid(WNOHANG)`. Returns `-2` while the
+  child is still running (the same retryable-sentinel shape
+  `recv_into` uses — poll again on your next tick), the exit code
+  (`0..255`) on a normal exit, or `-1` when killed by a signal (the
+  child is reaped in both terminal cases). An already-reaped child
+  surfaces `kind="not_found"` (ECHILD) through the error channel.
+  This closes the styleguide's "daemons can't non-blocking-reap
+  children" gap: a supervisor's periodic `tick()` polls `try_wait`
+  per child without ever parking its pool, where the only prior
+  option was a blocking `wait` or short-timeout sleeps. The
+  supervisor idiom is documented in the operations chapter.
+- **`std::process::signal(c, sig) -> () fallible(IoError)`** —
+  send an arbitrary POSIX signal to the child's pid (15 = TERM,
+  1 = HUP for config reloads, 10/12 = USR1/USR2, …). Promoted from
+  pond/subprocess's `Process.signal`; the fixed TERM→KILL
+  escalation remains `kill`'s job. ESRCH surfaces
+  `kind="not_found"` — usually benign post-exit (`or discard`).
+- Both honor the manual-`Child` convention `wait` established:
+  `pid <= 0` answers "already exited with code 0" / no-ops.
+- Deliberately NOT promoted: pond's `Process` bus-streaming locus —
+  its stdout/stderr streaming side is a documented placeholder in
+  pond (`run()` is a no-op pending non-blocking line-drain
+  primitives), and the stdlib ships behavior, not intentions. The
+  vendored lib carries a pointer at the new surface.
+
+Coverage: `process_try_wait.rs` (poll-to-exit without blocking,
+TERM observed as signal-kill, double-reap through the error
+channel, sentinel conventions). Full workspace suite green (296
+test binaries).
+
 ## v0.11.4 — std::http grows a Router and a client (2026-07-17)
 
 Two pond libraries promoted into the stdlib — the batteries every HTTP
