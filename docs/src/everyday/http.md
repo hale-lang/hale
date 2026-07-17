@@ -43,8 +43,9 @@ them — because the `Api` locus is alive for the whole run.
 ## The pieces
 
 - **`std::http::Request`** carries `method`, `path`, `version`,
-  `body`, and headers (looked up case-insensitively). You
-  `match` / `if` on `method` and `path` to route.
+  `body`, and headers (looked up case-insensitively). For a couple
+  of routes you `match` / `if` on `method` and `path` right in the
+  handler; past that, use the Router (below).
 - **`std::http::Response`** needs at least `status` and `body`;
   `content_type` defaults to `text/plain`, and you can add custom
   `headers`.
@@ -55,6 +56,55 @@ them — because the `Api` locus is alive for the whole run.
   so clients that write headers and body in separate segments
   (python's urllib, for one) work; requests are capped at 1 MiB
   (oversized declared bodies get a `413`).
+
+## Routing
+
+When the `if` ladder in a handler grows past a few routes, hand
+the routing to `std::http::Router`: register patterns, get path
+captures and query params extracted, and mount the router as the
+server's handler —
+
+```hale
+locus Hello {
+    fn handle(ctx: std::http::Context) -> std::http::Response {
+        let who = std::http::path_param(ctx.params, "name");
+        return std::http::Response { status: 200, body: "hi " + who };
+    }
+}
+
+fn build_router() -> std::http::Router {
+    let r = std::http::Router { };
+    r.add("GET", "/hello/:name", Hello { });
+    return r;
+}
+
+fn main() {
+    std::http::Server { port: 8080, handler: build_router() };
+}
+```
+
+`:name` segments capture (`path_param`), `?k=v` pairs are one
+`query_param(ctx.params, "k")` away, the first matching route
+wins (register specific patterns before general ones), and
+anything unmatched hits an overridable 404. Middleware wraps the
+chain in onion order:
+
+```hale
+locus Cors {
+    fn before(ctx: std::http::Context) -> std::http::Context { return ctx; }
+    fn after(ctx: std::http::Context, resp: std::http::Response) -> std::http::Response {
+        return std::http::Response {
+            status: resp.status, content_type: resp.content_type,
+            headers: "Access-Control-Allow-Origin: *", body: resp.body
+        };
+    }
+}
+// r.use(Cors { });
+```
+
+Each route's handler is its own locus, so per-route state lives
+where it belongs (a `hits` counter on the route that counts, not
+on a god-handler).
 
 ## A first taste of interfaces
 
@@ -78,14 +128,32 @@ programmers will recognize this; it's interfaces without the
 
 ## Calling out
 
-The standard library ships the server. For an HTTP *client* —
-making outbound requests, with connection pooling and TLS — reach
-for the `http/client` library in [pond](../libraries.md):
+Outbound requests are one call:
 
 ```hale
-import "vendor/pond/http/client" as http;
-// let resp = http::get("https://example.com") or raise;
+let resp = std::http::get("https://example.com") or raise;
+println(std::str::from_bytes(resp.body));
+
+let posted = std::http::post("http://api.local/things",
+    std::bytes::from_string("{\"n\": 1}"), "application/json") or raise;
 ```
+
+Both are `fallible(std::http::HttpError)` — address the error with
+`or raise` / a substitute / an error-check fn, and branch on
+`err.kind` (`connect_failed`, `bad_url`, …) when it matters.
+Response bodies are **Bytes** (binary-safe; `std::str::from_bytes`
+when you know it's text). For repeated calls to the same host,
+`std::http::Client { keep_alive: true }` pools connections and
+retries with backoff:
+
+```hale
+let c = std::http::Client { keep_alive: true, max_retries: 2 };
+let r = c.get("http://api.local/health") or raise;
+```
+
+One placement note: **https calls block their thread** (TLS has no
+async_io integration yet) — keep loci that make them on `pinned`
+or an ordinary cooperative pool, not an `async_io` one.
 
 That import line, the `bindings` that wire a server across
 processes, and the lifecycle that lets a server shut down cleanly

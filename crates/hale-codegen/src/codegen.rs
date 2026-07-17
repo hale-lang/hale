@@ -2199,6 +2199,11 @@ const STDLIB_AP_SOURCE: &str = concat!(
     "\n",
     include_str!("../runtime/stdlib/http.hl"),
     "\n",
+    // Client surface (promoted from pond/http/client, 2026-07-17).
+    // References http.hl's __http_find_header_in_block and
+    // io_tcp.hl's IoError, so it lands after both.
+    include_str!("../runtime/stdlib/http_client.hl"),
+    "\n",
     include_str!("../runtime/stdlib/text.hl"),
     "\n",
     include_str!("../runtime/stdlib/test.hl"),
@@ -2352,6 +2357,29 @@ const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "http", "Request"], "__StdHttpRequest"),
     (&["std", "http", "Response"], "__StdHttpResponse"),
     (&["std", "http", "Server"], "__StdHttpServer"),
+    // Router battery (promoted from pond/router, 2026-07-17). The
+    // free-fn surface (path_param / query_param) routes through
+    // this table to its bare implementations in http.hl, same as
+    // the std::process fns below.
+    (&["std", "http", "Router"], "__StdHttpRouter"),
+    (&["std", "http", "Context"], "__StdHttpContext"),
+    (&["std", "http", "RouteParams"], "__StdHttpRouteParams"),
+    (&["std", "http", "RouteHandler"], "__StdHttpRouteHandler"),
+    (&["std", "http", "Middleware"], "__StdHttpMiddleware"),
+    (&["std", "http", "RouteEntry"], "__StdHttpRouteEntry"),
+    (&["std", "http", "NotFound404"], "__StdHttpNotFound404"),
+    (&["std", "http", "path_param"], "__http_path_param"),
+    (&["std", "http", "query_param"], "__http_query_param"),
+    // Client surface (promoted from pond/http/client, 2026-07-17).
+    (&["std", "http", "Client"], "__StdHttpClient"),
+    (&["std", "http", "ClientRequest"], "__StdHttpClientRequest"),
+    (&["std", "http", "ClientResponse"], "__StdHttpClientResponse"),
+    (&["std", "http", "HttpError"], "__StdHttpError"),
+    (&["std", "http", "Url"], "__StdHttpUrl"),
+    (&["std", "http", "get"], "__http_client_get"),
+    (&["std", "http", "post"], "__http_client_post"),
+    (&["std", "http", "request"], "__http_client_request"),
+    (&["std", "http", "parse_url"], "__http_parse_url"),
     (&["std", "io", "file", "File"], "__StdIoFileFile"),
     (&["std", "io", "MirrorRing"], "__StdIoMirrorRing"),
     (&["std", "io", "file", "open"], "__std_io_file_open"),

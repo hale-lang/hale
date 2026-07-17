@@ -1,0 +1,699 @@
+// Hale stdlib — std::http client surface (promoted from
+// pond/http/client, 2026-07-17).
+//
+// Outbound HTTP/1.1 for both schemes:
+//   - `std::http::get(url)` / `post(url, body, content_type)` /
+//     `request(req)` — one-shot free fns, `Connection: close`,
+//     read-to-close. `fallible(std::http::HttpError)`.
+//   - `std::http::Client` — pooled locus: per-host keep-alive
+//     (opt-in), retry-with-backoff, configurable user-agent /
+//     body cap.
+//   - `std::http::parse_url(s)` — URL decomposition.
+//
+// Client-side types are deliberately DISTINCT from the server
+// side: a `ClientRequest` targets a `Url` (the server's `Request`
+// carries a parsed request line), and a `ClientResponse` body is
+// **Bytes** for binary safety (images, protobuf — embedded NULs
+// survive), where the server's `Response` body is String. One
+// name-space, two honest shapes.
+//
+// PLACEMENT CAVEAT (https): TLS I/O has no async_io integration
+// yet — an https call on a `where async_io` pool blocks the
+// worker thread, starving sibling coroutines. Keep loci that
+// make https calls on `pinned` or a classic cooperative pool
+// (styleguide C3 / §7). Plain-http calls park fine on async_io.
+//
+// Not implemented at v1: redirects (3xx returns as-is),
+// URL-decoding, proxies, compression.
+
+// A parsed URL. `parse_url` produces one; callers may also build
+// one by hand and feed it to `request`. `port` 0 at parse time
+// takes the scheme default (80 / 443).
+type __StdHttpUrl {
+    scheme: String = "http";
+    host: String = "";
+    port: Int = 80;
+    path: String = "/";
+}
+
+// One outbound request. Headers are a CRLF-joined block (no
+// trailing CRLF) so the wire assembly is a single append; body
+// is Bytes for binary safety.
+type __StdHttpClientRequest {
+    method: String = "GET";
+    url: std::http::Url;
+    headers: String = "";
+    body: Bytes;
+}
+
+// One received response. `headers` is the same packed block
+// shape; `body` is exactly the framed payload (or what arrived
+// before the peer closed).
+type __StdHttpClientResponse {
+    status: Int = 0;
+    headers: String = "";
+    body: Bytes;
+}
+
+// The single error payload for every fallible surface here.
+// kinds: bad_url, unsupported_scheme, connect_failed,
+// send_failed, recv_failed, bad_response, too_large,
+// retries_exhausted. `status` carries the HTTP code when the
+// failure happened post-parse (a 5xx surfacing through the err
+// arm); 0 otherwise.
+type __StdHttpError {
+    kind: String = "";
+    status: Int = 0;
+    detail: String = "";
+}
+
+// ---- URL parsing -----------------------------------------------------
+
+fn __http_default_port(scheme: String) -> Int {
+    if scheme == "http"  { return 80; }
+    if scheme == "https" { return 443; }
+    return 0;
+}
+
+// `std::http::parse_url(s)` — scheme + host + optional :port +
+// optional path (query string rides in `path`; that's all a
+// request line needs). `//host/path` is tolerated as http.
+// Rejects bare paths, missing host, malformed port.
+fn __http_parse_url(s: String) -> std::http::Url fallible(std::http::HttpError) {
+    let total = len(s);
+    if total <= 0 {
+        fail std::http::HttpError { kind: "bad_url", status: 0, detail: "empty url" };
+    }
+    let scheme_sep = std::str::index_of(s, "://");
+    let mut scheme = "http";
+    let mut after_scheme_idx = 0;
+    if scheme_sep >= 0 {
+        scheme = s[0..scheme_sep];
+        after_scheme_idx = scheme_sep + 3;
+    } else {
+        let lead = std::str::index_of(s, "//");
+        if lead == 0 {
+            after_scheme_idx = 2;
+        } else {
+            fail std::http::HttpError { kind: "bad_url", status: 0, detail: "missing scheme://" };
+        }
+    }
+    if after_scheme_idx >= total {
+        fail std::http::HttpError { kind: "bad_url", status: 0, detail: "missing host" };
+    }
+    let tail = s[after_scheme_idx..total];
+    let tail_len = len(tail);
+    let path_sep = std::str::index_of(tail, "/");
+    let mut authority = "";
+    let mut path = "/";
+    if path_sep < 0 {
+        authority = tail;
+    } else {
+        authority = tail[0..path_sep];
+        path = tail[path_sep..tail_len];
+    }
+    if len(authority) <= 0 {
+        fail std::http::HttpError { kind: "bad_url", status: 0, detail: "empty authority" };
+    }
+    let auth_len = len(authority);
+    let port_sep = std::str::index_of(authority, ":");
+    let mut host = authority;
+    let mut port = __http_default_port(scheme);
+    if port_sep >= 0 {
+        host = authority[0..port_sep];
+        let port_str = authority[(port_sep + 1)..auth_len];
+        port = std::str::parse_int(port_str) or 0;
+        if port <= 0 {
+            fail std::http::HttpError { kind: "bad_url", status: 0, detail: "bad port" };
+        }
+    }
+    if len(host) <= 0 {
+        fail std::http::HttpError { kind: "bad_url", status: 0, detail: "empty host" };
+    }
+    return std::http::Url { scheme: scheme, host: host, port: port, path: path };
+}
+
+// ---- raw-handle transport (TCP fd vs TLS handle) --------------------
+//
+// Both substrates address connections by Int; `is_tls` routes.
+// These operate on the RAW handle with no auto-close — the
+// keep-alive pool owns fd lifecycles across round-trips.
+
+fn __http_send_raw(handle: Int, is_tls: Bool, b: Bytes) -> Int {
+    if is_tls { return std::io::tls::send_bytes(handle, b); }
+    return std::io::tcp::__send_bytes(handle, b);
+}
+
+fn __http_recv_raw(handle: Int, is_tls: Bool, max_bytes: Int) -> Bytes {
+    if is_tls { return std::io::tls::recv_bytes(handle, max_bytes); }
+    return std::io::tcp::__recv_bytes(handle, max_bytes);
+}
+
+fn __http_close_handle(handle: Int, is_tls: Bool) {
+    if handle < 0 { return; }
+    if is_tls { std::io::tls::close(handle); } else { std::io::tcp::__close_fd(handle); }
+}
+
+// Connect + TCP_NODELAY (Nagle costs up to ~40ms on small
+// writes). -1 on failure (the pooled path retries).
+fn __http_dial_nd(host: String, port: Int, is_tls: Bool) -> Int {
+    if is_tls {
+        let h = std::io::tls::connect(host, port) or -1;
+        if h < 0 { return -1; }
+        std::io::tls::set_nodelay(h, true) or discard;
+        return h;
+    }
+    let fd = std::io::tcp::connect(host, port) or -1;
+    if fd < 0 { return -1; }
+    std::io::tcp::set_nodelay(fd, true) or discard;
+    return fd;
+}
+
+// Auto-closing one-shot wrapper: dissolve closes the handle at
+// fn-exit — right for the free-fn surface, wrong for pooled fds
+// (which use the raw-handle fns above).
+locus __StdHttpConn {
+    params {
+        handle: Int = -1;
+        is_tls: Bool = false;
+    }
+    fn send_bytes(b: Bytes) -> Int {
+        return __http_send_raw(self.handle, self.is_tls, b);
+    }
+    fn recv_bytes(max_bytes: Int) -> Bytes {
+        return __http_recv_raw(self.handle, self.is_tls, max_bytes);
+    }
+    dissolve() {
+        __http_close_handle(self.handle, self.is_tls);
+    }
+}
+
+// ---- wire format -----------------------------------------------------
+
+// Assemble the request header block. Body ships as a separate
+// trailing send. ASCII throughout, so String concat is safe.
+fn __http_build_request_headers(req: std::http::ClientRequest, user_agent: String, keep_alive: Bool) -> String {
+    let host_header = "Host: " + req.url.host + ":" + to_string(req.url.port) + "\r\n";
+    let ua_header   = "User-Agent: " + user_agent + "\r\n";
+    let cl_header   = "Content-Length: " + to_string(len(req.body)) + "\r\n";
+    let conn_header = if keep_alive { "Connection: keep-alive\r\n" } else { "Connection: close\r\n" };
+    let request_line = req.method + " " + req.url.path + " HTTP/1.1\r\n";
+    let mut user_headers = "";
+    if len(req.headers) > 0 {
+        user_headers = req.headers + "\r\n";
+    }
+    return request_line + host_header + ua_header + cl_header + conn_header + user_headers + "\r\n";
+}
+
+// Header lookup with whitespace-trimmed value. Reuses http.hl's
+// case-insensitive block walker (the same shape serves Request /
+// Response / client headers); the trim guards `parse_int` on
+// values like Content-Length.
+fn __http_client_header(headers: String, name: String) -> String {
+    return std::str::trim(__http_find_header_in_block(headers, name));
+}
+
+// Parse "HTTP/1.1 NNN PHRASE" → code, or -1 malformed.
+fn __http_parse_status(line: String) -> Int {
+    let line_len = len(line);
+    if line_len < 12 { return -1; }
+    let sp1 = std::str::index_of(line, " ");
+    if sp1 < 0 { return -1; }
+    let after = line[(sp1 + 1)..line_len];
+    let sp2 = std::str::index_of(after, " ");
+    let mut code_str = after;
+    if sp2 >= 0 { code_str = after[0..sp2]; }
+    return std::str::parse_int(code_str) or -1;
+}
+
+fn __http_empty_client_response() -> std::http::ClientResponse {
+    return std::http::ClientResponse { status: 0, headers: "", body: b"" };
+}
+
+// Split a received blob into status + headers + body. Headers
+// parse through the String view (ASCII-safe); the body is carved
+// from the Bytes by offset so binary content survives. status=0
+// on parse failure (callers treat as bad_response).
+fn __http_parse_client_response(raw: Bytes) -> std::http::ClientResponse {
+    let raw_len = len(raw);
+    if raw_len <= 0 { return __http_empty_client_response(); }
+    let raw_str = std::str::from_bytes(raw);
+    let header_end = std::str::index_of(raw_str, "\r\n\r\n");
+    if header_end < 0 { return __http_empty_client_response(); }
+    let line_end = std::str::index_of(raw_str, "\r\n");
+    if line_end < 0 || line_end > header_end { return __http_empty_client_response(); }
+    let status = __http_parse_status(raw_str[0..line_end]);
+    if status < 0 { return __http_empty_client_response(); }
+    let mut headers = "";
+    let headers_start = line_end + 2;
+    if headers_start < header_end {
+        headers = raw_str[headers_start..header_end];
+    }
+    let body_start = header_end + 4;
+    let mut body = b"";
+    if body_start < raw_len {
+        body = std::bytes::slice(raw, body_start, raw_len);
+    }
+    return std::http::ClientResponse { status: status, headers: headers, body: body };
+}
+
+// Drain a one-shot connection to close (or max_total).
+fn __http_recv_to_close(s: __StdHttpConn, max_total: Int) -> Bytes {
+    let chunk_size = 8192;
+    let mut total = 0;
+    let buf = std::bytes::BytesBuilder { initial_cap: 4096 };
+    while total < max_total {
+        let want = max_total - total;
+        let mut take = chunk_size;
+        if want < take { take = want; }
+        let piece = s.recv_bytes(take);
+        let n = len(piece);
+        if n <= 0 { return buf.snapshot(); }
+        buf.append(piece);
+        total = total + n;
+    }
+    return buf.snapshot();
+}
+
+// One one-shot round-trip on an auto-closing conn.
+fn __http_exchange_oneshot(
+    s: __StdHttpConn,
+    req: std::http::ClientRequest,
+    user_agent: String,
+    max_body: Int
+) -> std::http::ClientResponse {
+    let header_block = __http_build_request_headers(req, user_agent, false);
+    s.send_bytes(std::bytes::from_string(header_block));
+    if len(req.body) > 0 {
+        s.send_bytes(req.body);
+    }
+    let raw = __http_recv_to_close(s, max_body);
+    return __http_parse_client_response(raw);
+}
+
+// ---- keep-alive framing ---------------------------------------------
+
+// Index of "\r\n\r\n" in a Bytes blob; -1 absent.
+fn __http_find_hdr_end(raw: Bytes) -> Int {
+    let n = len(raw);
+    let mut i = 0;
+    while i + 3 < n {
+        let a = std::bytes::at(raw, i) or -1;
+        if a == 13 {
+            let b = std::bytes::at(raw, i + 1) or -1;
+            let c = std::bytes::at(raw, i + 2) or -1;
+            let d = std::bytes::at(raw, i + 3) or -1;
+            if b == 10 && c == 13 && d == 10 { return i; }
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// Next CRLF at/after `from`, bounded by `end`; -1 none.
+fn __http_crlf_at(raw: Bytes, from: Int, end: Int) -> Int {
+    let mut i = from;
+    while i + 1 < end {
+        let a = std::bytes::at(raw, i) or -1;
+        let b = std::bytes::at(raw, i + 1) or -1;
+        if a == 13 && b == 10 { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// Hex chunk-size in [lo, hi), stopping at ';' (chunk-ext) or
+// space; -1 if no hex digits.
+fn __http_hex_size(raw: Bytes, lo: Int, hi: Int) -> Int {
+    let mut v = 0;
+    let mut i = lo;
+    let mut any = false;
+    while i < hi {
+        let ch = std::bytes::at(raw, i) or -1;
+        if ch == 59 || ch == 32 { break; }
+        let mut dgt = -1;
+        if ch >= 48 && ch <= 57 { dgt = ch - 48; }
+        else if ch >= 97 && ch <= 102 { dgt = ch - 87; }
+        else if ch >= 65 && ch <= 70 { dgt = ch - 55; }
+        if dgt < 0 { break; }
+        v = v * 16 + dgt;
+        any = true;
+        i = i + 1;
+    }
+    if !any { return -1; }
+    return v;
+}
+
+type __StdHttpChunkScan { body: Bytes; complete: Bool; }
+
+// De-chunk [start, end); complete once the 0-size terminator is
+// seen, else "need more wire bytes".
+fn __http_scan_chunks(raw: Bytes, start: Int, end: Int) -> __StdHttpChunkScan {
+    let out = std::bytes::BytesBuilder { initial_cap: 4096 };
+    let mut pos = start;
+    while pos < end {
+        let nl = __http_crlf_at(raw, pos, end);
+        if nl < 0 { return __StdHttpChunkScan { body: b"", complete: false }; }
+        let size = __http_hex_size(raw, pos, nl);
+        if size < 0 { return __StdHttpChunkScan { body: b"", complete: false }; }
+        if size == 0 { return __StdHttpChunkScan { body: out.snapshot(), complete: true }; }
+        let data_start = nl + 2;
+        let data_end = data_start + size;
+        if data_end + 2 > end { return __StdHttpChunkScan { body: b"", complete: false }; }
+        out.append(std::bytes::slice(raw, data_start, data_end));
+        pos = data_end + 2;
+    }
+    return __StdHttpChunkScan { body: b"", complete: false };
+}
+
+type __StdHttpFramedRead { bytes: Bytes; framed: Bool; }
+
+// Read exactly ONE response off a keep-alive connection, framed
+// by Content-Length or chunked. framed=true ⇒ stopped cleanly at
+// the boundary (connection reusable); framed=false ⇒ EOF/close
+// or unframable (fall back to read-to-close semantics).
+fn __http_recv_framed(handle: Int, is_tls: Bool, max_body: Int) -> __StdHttpFramedRead {
+    let chunk = 8192;
+    let buf = std::bytes::BytesBuilder { initial_cap: 4096 };
+    let mut total = 0;
+    let mut full = b"";
+    let mut hdr_end = -1;
+
+    while total < max_body {
+        let take = if (max_body - total) < chunk { max_body - total } else { chunk };
+        let piece = __http_recv_raw(handle, is_tls, take);
+        let n = len(piece);
+        if n <= 0 { return __StdHttpFramedRead { bytes: buf.snapshot(), framed: false }; }
+        buf.append(piece);
+        total = total + n;
+        full = buf.snapshot();
+        hdr_end = __http_find_hdr_end(full);
+        if hdr_end >= 0 { break; }
+    }
+    if hdr_end < 0 { return __StdHttpFramedRead { bytes: full, framed: false }; }
+
+    let headers_str = std::str::from_bytes(std::bytes::slice(full, 0, hdr_end));
+    let body_start = hdr_end + 4;
+
+    let te = std::str::lower(__http_client_header(headers_str, "transfer-encoding"));
+    if std::str::index_of(te, "chunked") >= 0 {
+        while total < max_body {
+            let sc = __http_scan_chunks(full, body_start, total);
+            if sc.complete {
+                let hb = std::bytes::BytesBuilder { initial_cap: 4096 };
+                hb.append(std::bytes::slice(full, 0, body_start));
+                hb.append(sc.body);
+                return __StdHttpFramedRead { bytes: hb.snapshot(), framed: true };
+            }
+            let take = if (max_body - total) < chunk { max_body - total } else { chunk };
+            let piece = __http_recv_raw(handle, is_tls, take);
+            let n = len(piece);
+            if n <= 0 { return __StdHttpFramedRead { bytes: full, framed: false }; }
+            buf.append(piece);
+            total = total + n;
+            full = buf.snapshot();
+        }
+        return __StdHttpFramedRead { bytes: full, framed: false };
+    }
+
+    let cl = __http_client_header(headers_str, "content-length");
+    if len(cl) > 0 {
+        let clen = std::str::parse_int(cl) or 0;
+        let need = body_start + clen;
+        while total < need && total < max_body {
+            let want = need - total;
+            let take = if want < chunk { want } else { chunk };
+            let piece = __http_recv_raw(handle, is_tls, take);
+            let n = len(piece);
+            if n <= 0 { return __StdHttpFramedRead { bytes: buf.snapshot(), framed: false }; }
+            buf.append(piece);
+            total = total + n;
+        }
+        full = buf.snapshot();
+        let end = if need < total { need } else { total };
+        return __StdHttpFramedRead { bytes: std::bytes::slice(full, 0, end), framed: total >= need };
+    }
+
+    while total < max_body {
+        let take = if (max_body - total) < chunk { max_body - total } else { chunk };
+        let piece = __http_recv_raw(handle, is_tls, take);
+        let n = len(piece);
+        if n <= 0 { break; }
+        buf.append(piece);
+        total = total + n;
+    }
+    return __StdHttpFramedRead { bytes: buf.snapshot(), framed: false };
+}
+
+type __StdHttpExchangeResult { resp: std::http::ClientResponse; ok: Bool; reusable: Bool; }
+
+// One keep-alive round-trip on a raw handle (no auto-close).
+// reusable ⇒ cleanly framed AND the peer didn't say
+// `Connection: close`.
+fn __http_exchange_on_handle(handle: Int, is_tls: Bool, req: std::http::ClientRequest, ua: String, max_body: Int) -> __StdHttpExchangeResult {
+    let header_block = __http_build_request_headers(req, ua, true);
+    let sent = __http_send_raw(handle, is_tls, std::bytes::from_string(header_block));
+    if sent < 0 { return __StdHttpExchangeResult { resp: __http_empty_client_response(), ok: false, reusable: false }; }
+    if len(req.body) > 0 {
+        let bs = __http_send_raw(handle, is_tls, req.body);
+        if bs < 0 { return __StdHttpExchangeResult { resp: __http_empty_client_response(), ok: false, reusable: false }; }
+    }
+    let fr = __http_recv_framed(handle, is_tls, max_body);
+    let resp = __http_parse_client_response(fr.bytes);
+    if resp.status <= 0 { return __StdHttpExchangeResult { resp: resp, ok: false, reusable: false }; }
+    let conn = std::str::lower(__http_client_header(resp.headers, "connection"));
+    let reusable = fr.framed && conn != "close";
+    return __StdHttpExchangeResult { resp: resp, ok: true, reusable: reusable };
+}
+
+// ---- dial + one-shot round trip -------------------------------------
+
+fn __http_raise_connect(e: IoError, host: String, port: Int) -> Int fallible(std::http::HttpError) {
+    fail std::http::HttpError {
+        kind: "connect_failed",
+        status: 0,
+        detail: host + ":" + to_string(port) + " " + e.kind
+    };
+}
+
+fn __http_check_scheme(scheme: String) -> Int fallible(std::http::HttpError) {
+    if scheme == "http" { return 0; }
+    if scheme == "https" { return 0; }
+    fail std::http::HttpError {
+        kind: "unsupported_scheme",
+        status: 0,
+        detail: scheme + " — only http / https supported"
+    };
+}
+
+// One-shot exchange: connect, send, recv-to-close, parse. The
+// __StdHttpConn's fn-exit dissolve closes the handle.
+fn __http_round_trip_oneshot(
+    req: std::http::ClientRequest,
+    user_agent: String,
+    max_body: Int
+) -> std::http::ClientResponse fallible(std::http::HttpError) {
+    let host = req.url.host;
+    let port = req.url.port;
+    let is_tls = req.url.scheme == "https";
+    let mut handle = -1;
+    if is_tls {
+        handle = std::io::tls::connect(host, port) or __http_raise_connect(err, host, port);
+        std::io::tls::set_nodelay(handle, true) or discard;
+    } else {
+        handle = std::io::tcp::connect(host, port) or __http_raise_connect(err, host, port);
+        std::io::tcp::set_nodelay(handle, true) or discard;
+    }
+    let s = __StdHttpConn { handle: handle, is_tls: is_tls };
+    let resp = __http_exchange_oneshot(s, req, user_agent, max_body);
+    if resp.status <= 0 {
+        fail std::http::HttpError { kind: "bad_response", status: 0, detail: "unparseable response" };
+    }
+    return resp;
+}
+
+fn __http_retry_sentinel(e: std::http::HttpError) -> std::http::ClientResponse {
+    return __http_empty_client_response();
+}
+
+// Retry wrapper: retries connect/send/recv failures + 5xx with
+// backoff; 4xx returns directly (the caller's business).
+fn __http_round_trip_with_retry(
+    req: std::http::ClientRequest,
+    user_agent: String,
+    max_body: Int,
+    max_retries: Int
+) -> std::http::ClientResponse fallible(std::http::HttpError) {
+    let mut attempt = 0;
+    let mut last_err = std::http::HttpError { kind: "retries_exhausted", status: 0, detail: "" };
+    let max_attempts = max_retries + 1;
+    while attempt < max_attempts {
+        let resp = __http_round_trip_oneshot(req, user_agent, max_body)
+            or __http_retry_sentinel(err);
+        if resp.status > 0 && resp.status < 500 {
+            return resp;
+        }
+        if resp.status >= 500 {
+            last_err = std::http::HttpError {
+                kind: "retries_exhausted", status: resp.status, detail: "5xx after retries"
+            };
+        }
+        attempt = attempt + 1;
+        if attempt < max_attempts {
+            std::time::sleep(50ms);
+        }
+    }
+    fail last_err;
+}
+
+// ---- free-fn surface (one-shot) -------------------------------------
+
+// `std::http::get(url)`.
+fn __http_client_get(url_str: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+    let u = __http_parse_url(url_str) or raise;
+    let _ = __http_check_scheme(u.scheme) or raise;
+    let req = std::http::ClientRequest { method: "GET", url: u, headers: "", body: b"" };
+    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216) or raise;
+}
+
+// `std::http::post(url, body, content_type)`.
+fn __http_client_post(url_str: String, body: Bytes, content_type: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+    let u = __http_parse_url(url_str) or raise;
+    let _ = __http_check_scheme(u.scheme) or raise;
+    let req = std::http::ClientRequest {
+        method: "POST", url: u, headers: "Content-Type: " + content_type, body: body
+    };
+    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216) or raise;
+}
+
+// `std::http::request(req)` — full control over method / headers
+// / body / a hand-built Url.
+fn __http_client_request(req: std::http::ClientRequest) -> std::http::ClientResponse fallible(std::http::HttpError) {
+    let _ = __http_check_scheme(req.url.scheme) or raise;
+    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216) or raise;
+}
+
+// ---- the pooled Client ----------------------------------------------
+//
+// The connection pool is a fixed-cap (4-slot) hand-rolled MRU
+// over scalar params — deliberately NOT `@form(lru_cache)`: an
+// fd-owning cache needs (a) an eviction hook (the evicted fd
+// must be CLOSED, not silently dropped — a form eviction would
+// leak it) and (b) take-semantics (ownership transfers OUT on
+// hit; LRU get keeps the entry). Until the form grows those,
+// the hand-rolled pool is the correct shape, and 4 host:port
+// slots cover the typical client workload (an API + a couple
+// of webhooks).
+
+locus __StdHttpClient {
+    params {
+        user_agent: String = "hale-std-http/0.11";
+        timeout_ms: Int = 30000;
+        max_retries: Int = 3;
+        max_body: Int = 16777216;
+
+        // Opt-in keep-alive: reuse pooled connections (framed
+        // reads + `Connection: keep-alive`). Default false keeps
+        // the one-shot `Connection: close` behavior.
+        keep_alive: Bool = false;
+
+        // Pool slots. -1 fd = empty; `tls` routes the close.
+        pool_fd0: Int = -1; pool_host0: String = ""; pool_port0: Int = 0; pool_tls0: Bool = false;
+        pool_fd1: Int = -1; pool_host1: String = ""; pool_port1: Int = 0; pool_tls1: Bool = false;
+        pool_fd2: Int = -1; pool_host2: String = ""; pool_port2: Int = 0; pool_tls2: Bool = false;
+        pool_fd3: Int = -1; pool_host3: String = ""; pool_port3: Int = 0; pool_tls3: Bool = false;
+    }
+
+    fn get(url_str: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+        let u = __http_parse_url(url_str) or raise;
+        return self.request(std::http::ClientRequest {
+            method: "GET", url: u, headers: "", body: b""
+        }) or raise;
+    }
+
+    fn post(url_str: String, body: Bytes, content_type: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+        let u = __http_parse_url(url_str) or raise;
+        return self.request(std::http::ClientRequest {
+            method: "POST", url: u, headers: "Content-Type: " + content_type, body: body
+        }) or raise;
+    }
+
+    fn request(req: std::http::ClientRequest) -> std::http::ClientResponse fallible(std::http::HttpError) {
+        let _ = __http_check_scheme(req.url.scheme) or raise;
+        if self.keep_alive { return self.__pooled(req) or raise; }
+        return __http_round_trip_with_retry(
+            req, self.user_agent, self.max_body, self.max_retries
+        ) or raise;
+    }
+
+    // Keep-alive round-trip: reuse a pooled connection if
+    // present (one stale-retry), else dial fresh with backoff.
+    // On success the fd returns to the pool when the peer left
+    // it open (framed + not `Connection: close`), else closes.
+    fn __pooled(req: std::http::ClientRequest) -> std::http::ClientResponse fallible(std::http::HttpError) {
+        let host = req.url.host;
+        let port = req.url.port;
+        let is_tls = req.url.scheme == "https";
+
+        let pfd = self.__pool_take(host, port, is_tls);
+        if pfd >= 0 {
+            let ex = __http_exchange_on_handle(pfd, is_tls, req, self.user_agent, self.max_body);
+            if ex.ok {
+                if ex.reusable { self.__pool_put(host, port, pfd, is_tls); }
+                else { __http_close_handle(pfd, is_tls); }
+                return ex.resp;
+            }
+            __http_close_handle(pfd, is_tls);
+        }
+
+        let mut attempt = 0;
+        let max_attempts = self.max_retries + 1;
+        while attempt < max_attempts {
+            let fd = __http_dial_nd(host, port, is_tls);
+            if fd >= 0 {
+                let ex = __http_exchange_on_handle(fd, is_tls, req, self.user_agent, self.max_body);
+                if ex.ok && ex.resp.status < 500 {
+                    if ex.reusable { self.__pool_put(host, port, fd, is_tls); }
+                    else { __http_close_handle(fd, is_tls); }
+                    return ex.resp;
+                }
+                __http_close_handle(fd, is_tls);
+            }
+            attempt = attempt + 1;
+            if attempt < max_attempts { std::time::sleep(50ms); }
+        }
+        fail std::http::HttpError { kind: "retries_exhausted", status: 0, detail: host + ":" + to_string(port) };
+    }
+
+    fn __pool_take(host: String, port: Int, is_tls: Bool) -> Int {
+        if self.pool_fd0 >= 0 && self.pool_host0 == host && self.pool_port0 == port && self.pool_tls0 == is_tls {
+            let fd = self.pool_fd0; self.pool_fd0 = -1; self.pool_host0 = ""; self.pool_port0 = 0; self.pool_tls0 = false; return fd;
+        }
+        if self.pool_fd1 >= 0 && self.pool_host1 == host && self.pool_port1 == port && self.pool_tls1 == is_tls {
+            let fd = self.pool_fd1; self.pool_fd1 = -1; self.pool_host1 = ""; self.pool_port1 = 0; self.pool_tls1 = false; return fd;
+        }
+        if self.pool_fd2 >= 0 && self.pool_host2 == host && self.pool_port2 == port && self.pool_tls2 == is_tls {
+            let fd = self.pool_fd2; self.pool_fd2 = -1; self.pool_host2 = ""; self.pool_port2 = 0; self.pool_tls2 = false; return fd;
+        }
+        if self.pool_fd3 >= 0 && self.pool_host3 == host && self.pool_port3 == port && self.pool_tls3 == is_tls {
+            let fd = self.pool_fd3; self.pool_fd3 = -1; self.pool_host3 = ""; self.pool_port3 = 0; self.pool_tls3 = false; return fd;
+        }
+        return -1;
+    }
+
+    fn __pool_put(host: String, port: Int, fd: Int, is_tls: Bool) {
+        if self.pool_fd0 < 0 { self.pool_fd0 = fd; self.pool_host0 = host; self.pool_port0 = port; self.pool_tls0 = is_tls; return; }
+        if self.pool_fd1 < 0 { self.pool_fd1 = fd; self.pool_host1 = host; self.pool_port1 = port; self.pool_tls1 = is_tls; return; }
+        if self.pool_fd2 < 0 { self.pool_fd2 = fd; self.pool_host2 = host; self.pool_port2 = port; self.pool_tls2 = is_tls; return; }
+        if self.pool_fd3 < 0 { self.pool_fd3 = fd; self.pool_host3 = host; self.pool_port3 = port; self.pool_tls3 = is_tls; return; }
+        __http_close_handle(self.pool_fd3, self.pool_tls3);
+        self.pool_fd3 = fd; self.pool_host3 = host; self.pool_port3 = port; self.pool_tls3 = is_tls;
+    }
+
+    dissolve() {
+        __http_close_handle(self.pool_fd0, self.pool_tls0);
+        __http_close_handle(self.pool_fd1, self.pool_tls1);
+        __http_close_handle(self.pool_fd2, self.pool_tls2);
+        __http_close_handle(self.pool_fd3, self.pool_tls3);
+    }
+}

@@ -533,3 +533,380 @@ locus __StdHttpServer {
         std::io::tcp::__close_fd(self.listen_fd);
     }
 }
+
+// =====================================================================
+// std::http::Router — path routing + middleware (promoted from
+// pond/router, 2026-07-17).
+// =====================================================================
+//
+// The routing battery the Server was missing: register
+// `METHOD /path/:capture` patterns against handler loci, get
+// path/query params extracted, and wrap the chain in
+// before/after middleware. The Router satisfies
+// `std::http::Handler` structurally, so it plugs straight into
+// the Server:
+//
+//   locus Hello {
+//       fn handle(ctx: std::http::Context) -> std::http::Response {
+//           let who = std::http::path_param(ctx.params, "name");
+//           return std::http::Response { status: 200, body: "hi " + who };
+//       }
+//   }
+//   fn main() {
+//       let r = std::http::Router { };
+//       r.add("GET", "/hello/:name", Hello { });
+//       std::http::Server { port: 8080, handler: r };
+//   }
+//
+// Two handler contracts exist on purpose:
+//   - `std::http::Handler`      — `handle(req: Request) -> Response`;
+//     the Server's contract. One locus owns everything.
+//   - `std::http::RouteHandler` — `handle(ctx: Context) -> Response`;
+//     the Router's contract. The Context adds extracted params.
+// The Router is the bridge: it IS a Handler, and it dispatches
+// to RouteHandlers.
+//
+// Promotion notes vs the pond original: handlers return
+// `std::http::Response` directly (pond's local Response type +
+// boundary conversion existed only because vendored libs can't
+// alias stdlib types); the storage loci are declared before the
+// Router in this file, retiring pond's lists.hl name-ordering
+// workaround. URL-decoding of params is not performed at v1.
+
+// Per-request capture state. `qs` is the raw query string with
+// the leading `?` stripped ("a=1&b=2") — kept raw because most
+// requests never read it. Path captures live in the bounded
+// parallel pair; capacity 8 bounds the number of `:name`
+// segments in a route pattern (a developer-authored constant —
+// exceeding it is a programming error, surfaced loudly by the
+// matcher's `or raise`).
+type __StdHttpRouteParams {
+    qs:        String = "";
+    path_keys: bounded[String; 8];
+    path_vals: bounded[String; 8];
+}
+
+// The per-request bundle a RouteHandler receives: the parsed
+// Request nested under `req`, the matcher's captures under
+// `params`. Note `ctx.req.path` is the RAW request target
+// including any query string; the Router matches against the
+// query-stripped path and `ctx.params.qs` carries the query
+// half.
+type __StdHttpContext {
+    req:    std::http::Request;
+    params: std::http::RouteParams;
+}
+
+// Route-table handler contract. Structural (F.20): any locus
+// with a matching `handle` satisfies it.
+interface __StdHttpRouteHandler {
+    fn handle(ctx: std::http::Context) -> std::http::Response;
+}
+
+// Middleware contract — onion order: every `before` runs
+// forward over the Context, the matched handler runs, every
+// `after` runs backward over the Response.
+interface __StdHttpMiddleware {
+    fn before(ctx: std::http::Context) -> std::http::Context;
+    fn after(ctx: std::http::Context, resp: std::http::Response) -> std::http::Response;
+}
+
+// One registered route. `method` stored uppercased; `pattern`
+// as-written; `handler` is the F.20 fat-pointer interface value
+// coerced from the concrete locus at the literal-init site.
+type __StdHttpRouteEntry {
+    method:  String;
+    pattern: String;
+    handler: std::http::RouteHandler;
+}
+
+// Route + middleware storage ("one form per locus" — each vec
+// is its own child locus, held as Router params).
+@form(vec)
+locus __StdHttpEntryList {
+    capacity { heap items of __StdHttpRouteEntry; }
+}
+
+@form(vec)
+locus __StdHttpMwList {
+    capacity { heap items of __StdHttpMiddleware; }
+}
+
+// ---- path / query helpers -------------------------------------------
+
+// `std::http::path_param(ctx.params, "name")` — the value a
+// `:name` pattern segment captured, or "" when absent.
+fn __http_path_param(p: std::http::RouteParams, name: String) -> String {
+    let n = count(p.path_keys);
+    let mut i = 0;
+    while i < n {
+        let k = at(p.path_keys, i) or "";
+        if k == name {
+            return at(p.path_vals, i) or "";
+        }
+        i = i + 1;
+    }
+    return "";
+}
+
+// `std::http::query_param(ctx.params, "q")` — the value of a
+// `k=v` pair in the query string, or "" when absent. Walks
+// pair-by-pair so an early hit skips the rest; comparisons are
+// case-sensitive; values are NOT URL-decoded at v1.
+fn __http_query_param(p: std::http::RouteParams, name: String) -> String {
+    let qs = p.qs;
+    let total = len(qs);
+    if total == 0 {
+        return "";
+    }
+    let needle = name + "=";
+    let needle_len = len(needle);
+    let mut cursor = 0;
+    while cursor < total {
+        let rel = std::str::index_of(qs[cursor..total], "&");
+        let pair_end = if rel < 0 { total } else { cursor + rel };
+        let pair = qs[cursor..pair_end];
+        let plen = len(pair);
+        if plen >= needle_len {
+            if pair[0..needle_len] == needle {
+                if needle_len >= plen {
+                    return "";
+                }
+                return pair[needle_len..plen];
+            }
+        }
+        if rel < 0 {
+            return "";
+        }
+        cursor = pair_end + 1;
+    }
+    return "";
+}
+
+// Path component of a request target (before any `?`).
+fn __http_path_only(target: String) -> String {
+    let n = len(target);
+    if n == 0 {
+        return "";
+    }
+    let q = std::str::index_of(target, "?");
+    if q < 0 {
+        return target;
+    }
+    return target[0..q];
+}
+
+// Query component of a request target (after the `?`, which is
+// stripped). "" when absent.
+fn __http_query_only(target: String) -> String {
+    let n = len(target);
+    if n == 0 {
+        return "";
+    }
+    let q = std::str::index_of(target, "?");
+    if q < 0 {
+        return "";
+    }
+    let start = q + 1;
+    if start >= n {
+        return "";
+    }
+    return target[start..n];
+}
+
+// Count `/`-separated non-empty segments ("/users/42" and
+// "/users/42/" both count 2).
+fn __http_seg_count(p: String) -> Int {
+    let n = len(p);
+    if n == 0 {
+        return 0;
+    }
+    let mut count = 0;
+    let mut i = 0;
+    let mut in_seg = false;
+    while i < n {
+        let ch = p[i..(i + 1)];
+        if ch == "/" {
+            if in_seg {
+                count = count + 1;
+                in_seg = false;
+            }
+        } else {
+            in_seg = true;
+        }
+        i = i + 1;
+    }
+    if in_seg {
+        count = count + 1;
+    }
+    return count;
+}
+
+// The idx-th non-empty segment (0-based), or "" out of range.
+fn __http_seg_at(p: String, idx: Int) -> String {
+    let n = len(p);
+    if n == 0 {
+        return "";
+    }
+    let mut seen = 0;
+    let mut i = 0;
+    let mut start = -1;
+    while i < n {
+        let ch = p[i..(i + 1)];
+        if ch == "/" {
+            if start >= 0 {
+                if seen == idx {
+                    return p[start..i];
+                }
+                seen = seen + 1;
+                start = -1;
+            }
+        } else {
+            if start < 0 {
+                start = i;
+            }
+        }
+        i = i + 1;
+    }
+    if start >= 0 {
+        if seen == idx {
+            return p[start..n];
+        }
+    }
+    return "";
+}
+
+// Bind `path` against `pattern`, pushing `:name` captures into
+// the RouteParams' bounded pair. True on match; a false return
+// leaves the captures cleared so the dispatch loop can retry
+// the next pattern with the same RouteParams. Bool-not-fallible
+// because match failure is the COMMON path. Trailing-slash
+// tolerant on both sides; no implicit wildcard suffix.
+fn __http_match_pattern_into(pattern: String, path: String, p: std::http::RouteParams) -> Bool {
+    let pn = __http_seg_count(pattern);
+    let rn = __http_seg_count(path);
+    if pn != rn {
+        return false;
+    }
+    clear(p.path_keys);
+    clear(p.path_vals);
+    let mut i = 0;
+    while i < pn {
+        let ps = __http_seg_at(pattern, i);
+        let rs = __http_seg_at(path, i);
+        let psl = len(ps);
+        if psl > 0 && ps[0..1] == ":" {
+            push(p.path_keys, ps[1..psl]) or raise;
+            push(p.path_vals, rs) or raise;
+        } else {
+            if ps != rs {
+                clear(p.path_keys);
+                clear(p.path_vals);
+                return false;
+            }
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// ---- the Router ------------------------------------------------------
+
+// Default 404. Consumer-overridable via `Router { not_found: ... }`.
+locus __StdHttpNotFound404 {
+    fn handle(ctx: std::http::Context) -> std::http::Response {
+        return std::http::Response {
+            status:       404,
+            content_type: "text/plain",
+            body:         "not found"
+        };
+    }
+}
+
+// Middleware-route-middleware chain. Free fn (not a Router
+// method) because it is naturally return-bearing. First match
+// wins — register more-specific patterns first.
+fn __http_run_chain(
+    entries:   __StdHttpEntryList,
+    mws:       __StdHttpMwList,
+    ctx:       std::http::Context,
+    not_found: std::http::RouteHandler
+) -> std::http::Response {
+    let mut cur = ctx;
+    let mlen = mws.len();
+    let mut i = 0;
+    while i < mlen {
+        let m = mws.get(i) or raise;
+        cur = m.before(cur);
+        i = i + 1;
+    }
+
+    let path_only = __http_path_only(cur.req.path);
+    let mut resp = not_found.handle(cur);
+    let rlen = entries.len();
+    let mut j = 0;
+    while j < rlen {
+        let e = entries.get(j) or raise;
+        if e.method == cur.req.method {
+            if __http_match_pattern_into(e.pattern, path_only, cur.params) {
+                resp = e.handler.handle(cur);
+                break;
+            }
+        }
+        j = j + 1;
+    }
+
+    let mut k = mlen - 1;
+    while k >= 0 {
+        let m = mws.get(k) or raise;
+        resp = m.after(cur, resp);
+        k = k - 1;
+    }
+    return resp;
+}
+
+// `std::http::Router` — register routes with `add`, middleware
+// with `use`, hand the Router to a Server as its handler.
+locus __StdHttpRouter {
+    params {
+        not_found: std::http::RouteHandler = __StdHttpNotFound404 { };
+        entries:   __StdHttpEntryList      = __StdHttpEntryList { };
+        mws:       __StdHttpMwList         = __StdHttpMwList { };
+    }
+
+    // Register a route. Method matching is case-insensitive at
+    // the register site (stored uppercased); pattern segments
+    // are literal or `:name` captures.
+    fn add(method: String, pattern: String, h: std::http::RouteHandler) {
+        self.entries.push(__StdHttpRouteEntry {
+            method:  std::str::upper(method),
+            pattern: pattern,
+            handler: h
+        });
+    }
+
+    // Register a middleware (onion order).
+    fn use(m: std::http::Middleware) {
+        self.mws.push(m);
+    }
+
+    // Route lookup entry point: builds the Context (query split
+    // off the raw target), runs the chain.
+    fn dispatch(req: std::http::Request) -> std::http::Response {
+        let ctx = std::http::Context {
+            req:    req,
+            params: std::http::RouteParams {
+                qs: __http_query_only(req.path)
+            }
+        };
+        return __http_run_chain(
+            self.entries, self.mws, ctx, self.not_found
+        );
+    }
+
+    // `std::http::Handler` satisfaction — lets
+    // `Server { handler: router }` dispatch through the vtable.
+    fn handle(req: std::http::Request) -> std::http::Response {
+        return self.dispatch(req);
+    }
+}

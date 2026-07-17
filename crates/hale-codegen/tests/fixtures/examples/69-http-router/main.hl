@@ -1,0 +1,71 @@
+// 69-http-router — std::http::Router (promoted from pond/router,
+// 2026-07-17). Drives dispatch() directly (no sockets — corpus-
+// oracle-safe): route registration, :name captures, query params,
+// the middleware onion (after() stamping a header), a stateful
+// per-route handler, the 404 default, and method matching. The
+// socketed Server round-trip lives in tests/http_router.rs.
+locus Hello {
+    fn handle(ctx: std::http::Context) -> std::http::Response {
+        let who = std::http::path_param(ctx.params, "name");
+        let greet = std::http::query_param(ctx.params, "greet");
+        let g = if len(greet) > 0 { greet } else { "hi" };
+        return std::http::Response { status: 200, body: g + " " + who };
+    }
+}
+locus Count {
+    params { hits: Int = 0; }
+    fn handle(ctx: std::http::Context) -> std::http::Response {
+        self.hits = self.hits + 1;
+        return std::http::Response { status: 200, body: "hits=" + self.hits };
+    }
+}
+locus Stamp {
+    fn before(ctx: std::http::Context) -> std::http::Context {
+        return ctx;
+    }
+    fn after(ctx: std::http::Context, resp: std::http::Response) -> std::http::Response {
+        return std::http::Response {
+            status: resp.status,
+            content_type: resp.content_type,
+            headers: "X-Stamp: yes",
+            body: resp.body
+        };
+    }
+}
+fn main() {
+    let r = std::http::Router { };
+    r.add("GET", "/hello/:name", Hello { });
+    r.add("get", "/count", Count { });
+    r.use(Stamp { });
+
+    // Drive dispatch() directly — no sockets needed to validate
+    // routing, captures, middleware, and the 404 path.
+    let r1 = r.dispatch(std::http::Request {
+        method: "GET", path: "/hello/world?greet=yo",
+        version: "HTTP/1.1", headers: "", body: ""
+    });
+    println("r1 ", r1.status, " [", r1.body, "] hdr=", r1.headers);
+
+    let r2 = r.dispatch(std::http::Request {
+        method: "GET", path: "/count",
+        version: "HTTP/1.1", headers: "", body: ""
+    });
+    let r3 = r.dispatch(std::http::Request {
+        method: "GET", path: "/count",
+        version: "HTTP/1.1", headers: "", body: ""
+    });
+    println("r2 ", r2.status, " [", r2.body, "]");
+    println("r3 ", r3.status, " [", r3.body, "]");
+
+    let r4 = r.dispatch(std::http::Request {
+        method: "GET", path: "/nope",
+        version: "HTTP/1.1", headers: "", body: ""
+    });
+    println("r4 ", r4.status, " [", r4.body, "]");
+
+    let r5 = r.dispatch(std::http::Request {
+        method: "POST", path: "/hello/x",
+        version: "HTTP/1.1", headers: "", body: ""
+    });
+    println("r5 ", r5.status, " (method mismatch -> 404)");
+}
