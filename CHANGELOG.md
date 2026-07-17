@@ -6,6 +6,129 @@ behavior.
 
 ---
 
+## v0.11.3 — five language gaps + the unified styleguide (2026-07-17)
+
+A gap-closing release driven by a survey of five production Hale
+codebases: the recurring footguns and missing surface they converged on,
+closed in one arc, then the styleguide rewritten around what now exists.
+
+### Memory: plain self-field stores retire + single-owner value semantics
+
+- **`self.<field> = Struct { ... }` replaces now reclaim.** The anchor
+  retirement shipped for `@form(hashmap)` cells extends to plain
+  self-field stores: a whole-value replace memcpys the struct bytes in
+  place and *retires* each replaced String clone at the enclosing
+  method's activation boundary (`lotus_str_field_replace_fixup`), so
+  the clones recycle on the next store. Previously each replace orphaned
+  the old clones in the locus lifetime arena forever — the leak every
+  production codebase mitigated by hand with in-place scalar mutation
+  and construction-position idioms. Validated: 1M whole-struct replaces
+  (two fresh String clones each) hold RSS exactly flat; 200k mixed
+  alias/RMW/grow churn clean under ASan+UBSan. Direct `self.f = String`
+  reassignment also retires its abandoned buffer on the grow path.
+  String leaves only at v0.1 — structs carrying `Bytes` / nested
+  compound fields keep the prior behavior, and stores looping directly
+  inside `run()` (no activation boundary) still accumulate.
+- **Found en route, fixed: same-arena stores could alias two fields to
+  one buffer.** The clone same-arena skip let `self.g = self.f` (on the
+  non-fitting path) and struct literals embedding a `self.<field>` read
+  *share* the source slot's buffer — the source's next in-place
+  overwrite silently mutated the other field (broken value semantics,
+  reproducible on prior releases with concat-built strings), and
+  retirement would have upgraded that to use-after-free. Every
+  self-storage store path now enforces single ownership: a same-arena
+  incoming pointer that isn't the slot's own old pointer is
+  force-copied. Fresh values, statics, and RMW round-trips keep the
+  zero-copy paths. Regression suite `self_field_alias.rs` + corpus
+  fixture `66-self-field-retire`.
+- **The unbounded-alloc survey learned retirement.** A whole-field
+  replace of an all-scalar/String struct in a method is no longer
+  reported as unbounded accumulation (it provably reclaims); the
+  conservative verdict stays for Bytes/nested-compound fields,
+  `run()`-loop-direct stores, and scratchless owners.
+
+### Bus: String routing keys
+
+- **`keyed_by` accepts `String` fields; `where key == self.<String>`
+  works.** The registry stores the subscriber key's FNV-1a-64 hash plus
+  its own copy of the string (capture-by-value, per the existing key
+  stability rule — required, since the subscriber's field may be
+  reassigned and its old buffer retired); the publish site passes the
+  payload field's hash, and only a hash match pays a full string
+  compare — a mismatched key still costs one integer compare per entry.
+  No dispatch ABI change; remote fanout stays unkeyed (no key material
+  crosses a process boundary). Name-keyed fan-out (rooms, symbols,
+  topics) now routes on the bus instead of filtering in handlers — the
+  README chat room drops its `if m.room == self.name` line for
+  `keyed_by room` + `where key == self.name`. `StringView` / `Bytes`
+  keys stay rejected. Validated: exact-count routing over 50k keyed
+  publishes, ASan-clean; capture-by-value semantics regression-tested
+  against retirement.
+
+### Language: `match` in expression position
+
+- **`let x = match n { 0 -> 10, _ -> 20, };` now compiles.** The form
+  parsed and typechecked but had no codegen (`Unsupported("expression
+  form ...")`) — the docs' control-flow chapter already showed it. The
+  lowering shares the statement form's full pattern machinery (literal /
+  binding / wildcard / tuple / enum-constructor patterns, guards, block
+  arm bodies) and phi-merges arm values, mirroring if-expressions.
+  Typecheck now types the expression as the join of its arm types with
+  a proper spanned mismatch diagnostic (statement-position arms remain
+  heterogeneous-legal); F.18 exhaustiveness applies in both positions.
+  The one reachable no-match case (every arm guarded, all guards false)
+  yields the result type's zero value — defined, never poison. Zero new
+  syntax. (`else if`, String-scrutinee match, and enum payload
+  destructuring all predate this release — a survey finding was that
+  production code ladders `} else { if` simply because the features
+  were younger than the code.)
+
+### Checks: `@hot` certification + handler-context lint + accept/release
+
+- **`@hot fn` — hot-path certification.** Promotes the hot-path
+  allocation lint's findings inside that fn to hard errors and enables
+  two stricter perf hints: `.snapshot()`/`.finish()` in a loop (prefer
+  the zero-copy `.view()`), and whole-struct self-field replace
+  (reclaimed now, but in-place scalar mutation is still
+  allocation-free). Stacks with the counted contract:
+  `@hot @budget(alloc_per_call = 0) fn send(...)`.
+- **The hot-path lint understands bus handlers.** A locus /
+  `BytesBuilder` instantiated *anywhere* in a bus handler (not just a
+  loop) warns — a handler runs per message, so that's a fresh arena
+  per frame (~4.5 KB/frame measured downstream). Plain methods at
+  depth 0 stay silent.
+- **`accept` without `release` on a daemon warns.** Every accepted
+  child of a release-less parent is resident until the parent
+  dissolves; when the parent's `run()` loops forever that's unbounded
+  growth. Deliberately narrow daemon signal (a literal `while true`),
+  so run-to-exit programs accepting bounded batches stay silent. Zero
+  new diagnostics across the 81-example corpus.
+
+### Coverage: raw-fd TCP free fns
+
+- The historically-reported native crash in `std::io::tcp::
+  __send_bytes` / `__recv_bytes` does **not** reproduce on ≥ v0.10.0 —
+  verified across pinned / classic cooperative / async_io placements,
+  direct and wrapper-fn call shapes, under ASan, and against rebuilt
+  v0.10.0 and pre-#215 binaries. The surface previously had zero native
+  run coverage (the corpus oracle skips server fixtures); it is now
+  regression-tested end-to-end (`tcp_raw_fd_freefns.rs`). Reminder:
+  these free fns return `0` = success / `-1` = error, not a byte count.
+
+### Docs: the unified styleguide
+
+- **`spec/styleguide.md` rewritten** as the single author-facing guide:
+  Foundations (the one-page memory model — the highest-leverage page a
+  `.hl` author can read), the seven-shape catalog (new: the `@form`
+  collection with a domain facade), correctness rules C1–C7 and speed
+  rules S1–S12 each tagged with their enforcement status, the compiler
+  enforcement ladder (default warns → `@hot` → `@budget`), and a
+  de-staled gaps list. `agents/memory-patterns.md` folded in (now a
+  pointer stub); README chat room rewritten to the keyed form;
+  `docs/src/services/patterns.md` gains the reused-buffer connection,
+  pre-render/fan-out, and event-driven ingest compositions. All guide
+  examples compile-verified.
+
 ## v0.11.2 — recycle small replaced hashmap clones (2026-07-17)
 
 - **Runtime: small `@form(hashmap)` replaced-value clones now recycle.**
