@@ -162,6 +162,21 @@ For a long-running child you drive incrementally, the lower-level
 `spawn` / `wait` / `kill` / `write_stdin` / `read_stdout` /
 `read_stderr` surface over a `Child` handle is in
 [`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md).
+A supervising daemon reaps without blocking via
+`std::process::try_wait(c)` — `-2` means still running (poll again
+on your next tick), any other value is the exit code (`-1` =
+killed by a signal), and the child is reaped:
+
+```hale
+fn tick() {
+    let code = std::process::try_wait(self.child) or -2;
+    if code != -2 { self.on_child_exit(code); }
+}
+```
+
+`std::process::signal(c, sig)` sends an arbitrary POSIX signal
+(15 = TERM, 1 = HUP for a config reload, …) when the fixed
+TERM→KILL escalation of `kill` is more than you want.
 
 Other process self-introspection: `std::process::pid()`,
 `std::process::exit(code)`, and `std::process::rss_bytes()` (peak

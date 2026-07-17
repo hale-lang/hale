@@ -14563,6 +14563,53 @@ int lotus_process_wait(
     return 0;
 }
 
+/* try_wait (2026-07-17): non-blocking reap via waitpid(WNOHANG).
+ * A still-running child reports *out_code = -2 (the stdlib's
+ * retryable sentinel, mirroring recv_into's -2 deadline shape) with
+ * 0 returned; an exited child decodes exactly as lotus_process_wait
+ * (code 0..255, or -1 + terminating signal). Returns errno on
+ * failure — ECHILD when the pid was already reaped. Closes the
+ * "daemons can't non-blocking-reap children" gap: a supervisor's
+ * periodic tick can poll try_wait per child without ever parking. */
+int lotus_process_try_wait(
+    int32_t pid,
+    int32_t *out_code,
+    int32_t *out_signal
+) {
+    if (!out_code || !out_signal) return EINVAL;
+    *out_code = -2;
+    *out_signal = 0;
+    int status = 0;
+    for (;;) {
+        pid_t w = waitpid((pid_t)pid, &status, WNOHANG);
+        if (w == 0) return 0;               /* still running */
+        if (w == (pid_t)pid) break;
+        if (w < 0 && errno == EINTR) continue;
+        return errno ? errno : ECHILD;
+    }
+    if (WIFEXITED(status)) {
+        *out_code = WEXITSTATUS(status);
+        *out_signal = 0;
+    } else if (WIFSIGNALED(status)) {
+        *out_code = -1;
+        *out_signal = WTERMSIG(status);
+    }
+    /* Neither branch (stopped/continued — not requested via
+     * WUNTRACED, but belt-and-braces): stays -2 = still running. */
+    return 0;
+}
+
+/* signal (2026-07-17, promoted from pond/subprocess's Process.signal
+ * surface): send an arbitrary signal to the child. Targets the pid
+ * (not the process group — group escalation stays kill_escalate's
+ * job). Returns 0 on success, errno on failure (ESRCH when the pid
+ * is gone). */
+int lotus_process_signal(int32_t pid, int32_t sig) {
+    if (pid <= 0 || sig < 0) return EINVAL;
+    if (kill((pid_t)pid, sig) != 0) return errno ? errno : ESRCH;
+    return 0;
+}
+
 /* C2 surface 2c: TERM → wait 100ms → KILL → reap. Returns 0 on
  * success (the process has been reaped or was already gone),
  * errno on failure. Idempotent against already-reaped children

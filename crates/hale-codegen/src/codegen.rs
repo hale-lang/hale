@@ -2418,7 +2418,9 @@ const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "process", "kill"], "__std_process_kill"),
     (&["std", "process", "read_stderr"], "__std_process_read_stderr"),
     (&["std", "process", "read_stdout"], "__std_process_read_stdout"),
+    (&["std", "process", "signal"], "__std_process_signal"),
     (&["std", "process", "spawn"], "__std_process_spawn"),
+    (&["std", "process", "try_wait"], "__std_process_try_wait"),
     (&["std", "process", "wait"], "__std_process_wait"),
     (&["std", "process", "write_stdin"], "__std_process_write_stdin"),
     (&["std", "source", "Walk"], "__StdSourceWalk"),
@@ -21131,6 +21133,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | ["std", "process", "run"]
             | ["std", "process", "__spawn"]
             | ["std", "process", "__wait_pid"]
+            | ["std", "process", "__try_wait_pid"]
+            | ["std", "process", "__signal_pid"]
             | ["std", "process", "__kill_escalate"]
             | ["std", "process", "__pipe_read"]
             | ["std", "process", "__pipe_write"]
@@ -22142,6 +22146,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | ["std", "process", "run"]
             | ["std", "process", "__spawn"]
             | ["std", "process", "__wait_pid"]
+            | ["std", "process", "__try_wait_pid"]
+            | ["std", "process", "__signal_pid"]
             | ["std", "process", "__kill_escalate"]
             | ["std", "process", "__pipe_read"]
             | ["std", "process", "__pipe_write"]

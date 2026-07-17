@@ -58,6 +58,16 @@ pub(crate) trait ProcessStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
+    fn lower_std_process_try_wait_pid_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
+    fn lower_std_process_signal_pid_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
 
     fn lower_std_process_pipe_read_fallible(
         &mut self,
@@ -627,6 +637,167 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
                 "__StdProcessWaitOutcome".to_string()
             ))),
             "proc.wait",
+        )
+    }
+
+    /// try_wait (2026-07-17): non-blocking sibling of __wait_pid.
+    /// Same WaitOutcome shape; the C side reports a still-running
+    /// child as code = -2 (the stdlib retryable sentinel).
+    fn lower_std_process_try_wait_pid_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::process::__try_wait_pid takes 1 arg (pid: Int), got {}",
+                args.len()
+            )));
+        }
+        let (pid_val, pid_ty) = self.lower_expr(&args[0], scope)?;
+        if pid_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::process::__try_wait_pid: pid must be Int, got {:?}",
+                pid_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let pid_i32 = self
+            .builder
+            .build_int_truncate(pid_val.into_int_value(), i32_t, "proc.trywait.pid.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let code_slot = self.alloca_in_entry(i32_t.into(), "proc.trywait.code.slot")?;
+        let sig_slot = self.alloca_in_entry(i32_t.into(), "proc.trywait.sig.slot")?;
+        let f = self
+            .module
+            .get_function("lotus_process_try_wait")
+            .expect("lotus_process_try_wait declared");
+        let ret_i32 = self
+            .builder
+            .build_call(
+                f,
+                &[pid_i32.into(), code_slot.into(), sig_slot.into()],
+                "proc.trywait.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                ret_i32,
+                i32_t.const_zero(),
+                "proc.trywait.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let info = self
+            .user_types
+            .get("__StdProcessWaitOutcome")
+            .cloned()
+            .expect("__StdProcessWaitOutcome declared in process.hl");
+        let size = info
+            .struct_ty
+            .size_of()
+            .expect("__StdProcessWaitOutcome has known size");
+        let struct_ptr = self.arena_alloc(size, "TryWaitOutcome.alloc")?;
+
+        let code_i64 = self.load_i32_to_i64(code_slot, "proc.trywait.code.val")?;
+        let sig_i64 = self.load_i32_to_i64(sig_slot, "proc.trywait.sig.val")?;
+        self.store_struct_field(
+            &info, struct_ptr, "code", code_i64.into(), "WaitOutcome",
+        )?;
+        self.store_struct_field(
+            &info, struct_ptr, "signal", sig_i64.into(), "WaitOutcome",
+        )?;
+
+        let path_label = self
+            .builder
+            .build_global_string_ptr("std::process::try_wait", "proc.trywait.label")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .as_pointer_value();
+        self.complete_io_fallible_call(
+            is_err,
+            path_label.into(),
+            Some((struct_ptr.into(), CodegenTy::TypeRef(
+                "__StdProcessWaitOutcome".to_string()
+            ))),
+            "proc.trywait",
+        )
+    }
+
+    /// signal (2026-07-17, promoted from pond/subprocess): send an
+    /// arbitrary signal to the child's pid. Unit success; ESRCH
+    /// surfaces via the IoError channel.
+    fn lower_std_process_signal_pid_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::process::__signal_pid takes 2 args (pid: Int, sig: Int), got {}",
+                args.len()
+            )));
+        }
+        let (pid_val, pid_ty) = self.lower_expr(&args[0], scope)?;
+        if pid_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::process::__signal_pid: pid must be Int, got {:?}",
+                pid_ty
+            )));
+        }
+        let (sig_val, sig_ty) = self.lower_expr(&args[1], scope)?;
+        if sig_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::process::__signal_pid: sig must be Int, got {:?}",
+                sig_ty
+            )));
+        }
+        let i32_t = self.context.i32_type();
+        let pid_i32 = self
+            .builder
+            .build_int_truncate(pid_val.into_int_value(), i32_t, "proc.signal.pid.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let sig_i32 = self
+            .builder
+            .build_int_truncate(sig_val.into_int_value(), i32_t, "proc.signal.sig.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_process_signal")
+            .expect("lotus_process_signal declared");
+        let ret_i32 = self
+            .builder
+            .build_call(f, &[pid_i32.into(), sig_i32.into()], "proc.signal.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                ret_i32,
+                i32_t.const_zero(),
+                "proc.signal.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let path_label = self
+            .builder
+            .build_global_string_ptr("std::process::signal", "proc.signal.label")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .as_pointer_value();
+        self.complete_io_fallible_call(
+            is_err,
+            path_label.into(),
+            None,
+            "proc.signal",
         )
     }
 

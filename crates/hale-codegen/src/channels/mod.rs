@@ -1309,6 +1309,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "process", "__kill_escalate"] => Ok(Some(
                 self.lower_std_process_kill_escalate_fallible(args, scope)?,
             )),
+            ["std", "process", "__try_wait_pid"] => Ok(Some(
+                self.lower_std_process_try_wait_pid_fallible(args, scope)?,
+            )),
+            ["std", "process", "__signal_pid"] => Ok(Some(
+                self.lower_std_process_signal_pid_fallible(args, scope)?,
+            )),
             ["std", "process", "__pipe_read"] => Ok(Some(
                 self.lower_std_process_pipe_read_fallible(args, scope)?,
             )),

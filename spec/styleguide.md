@@ -787,8 +787,6 @@ Write the workaround knowing it's a placeholder.
 - **`or fail E { ... }` payloads can't reference `err`.** Wrap
   the fallible call in a helper that catches-and-rebuilds the
   error (the `pond` subprocess wrapper is the reference).
-- **`std::process::try_wait` is missing** — daemons can't
-  non-blocking-reap children; poll with a short timeout.
 - **Duration arithmetic in expression position** is limited —
   hold clock readings as Int ns from the start (`monotonic_ns`),
   which is also the fast path (no ASCII round-trip).

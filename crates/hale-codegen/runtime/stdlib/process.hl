@@ -208,3 +208,45 @@ fn __std_process_read_stdout(c: std::process::Child) -> String fallible(IoError)
 fn __std_process_read_stderr(c: std::process::Child) -> String fallible(IoError) {
     return std::process::__pipe_read(c.stderr_fd) or raise;
 }
+
+// Non-blocking reap (2026-07-17 — closes the "daemons can't
+// non-blocking-reap children" gap). Returns:
+//   -2         → still running (nothing reaped; poll again later —
+//                the same retryable sentinel shape as recv_into)
+//   0..255     → exited normally with that code (reaped)
+//   -1         → killed by a signal (reaped)
+// Surfaced as `std::process::try_wait`. A supervisor's periodic
+// tick polls this per child without ever parking its pool:
+//
+//   fn tick() {
+//       let code = std::process::try_wait(self.child) or -2;
+//       if code != -2 { self.on_exit(code); }
+//   }
+//
+// Errors: kind="not_found" (ECHILD) when the child was already
+// reaped — e.g. wait()/try_wait() already returned it, or the
+// dissolve() race reaped first. Same manual-Child convention as
+// `wait`: pid <= 0 answers "already exited, code 0".
+fn __std_process_try_wait(c: std::process::Child) -> Int fallible(IoError) {
+    if c.pid <= 0 {
+        return 0;
+    }
+    let o = std::process::__try_wait_pid(c.pid) or raise;
+    return o.code;
+}
+
+// Send an arbitrary signal to the child (2026-07-17, promoted
+// from pond/subprocess's Process.signal). Targets the pid, not
+// the process group; the TERM→KILL escalation stays `kill`'s
+// job. Signal numbers are the POSIX ones (15 = TERM, 9 = KILL,
+// 1 = HUP, 10/12 = USR1/USR2...). Surfaced as
+// `std::process::signal`.
+//
+// Errors: kind="not_found" (ESRCH) when the pid is gone —
+// usually benign post-exit; wrap with `or discard` if you don't
+// care. No-op on an unspawned Child (pid <= 0).
+fn __std_process_signal(c: std::process::Child, sig: Int) -> () fallible(IoError) {
+    if c.pid > 0 {
+        std::process::__signal_pid(c.pid, sig) or raise;
+    }
+}

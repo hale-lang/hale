@@ -413,10 +413,12 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["process"],
         fns: &[
-            "__kill_escalate", "__pipe_read", "__pipe_write", "__spawn",
-            "__wait_pid", "dump_arena_residency", "dump_pool_residency",
+            "__kill_escalate", "__pipe_read", "__pipe_write",
+            "__signal_pid", "__spawn", "__try_wait_pid", "__wait_pid",
+            "dump_arena_residency", "dump_pool_residency",
             "exit", "kill", "pid", "read_stderr", "read_stdout",
-            "rss_bytes", "run", "spawn", "wait", "write_stdin",
+            "rss_bytes", "run", "signal", "spawn", "try_wait", "wait",
+            "write_stdin",
         ],
         open_prefixes: &[],
     },

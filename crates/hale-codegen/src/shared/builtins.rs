@@ -791,6 +791,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_process_wait", process_wait_ty, None);
+        // declare i32 @lotus_process_try_wait(i32 pid,
+        //     ptr out_code, ptr out_signal) — WNOHANG reap;
+        //     out_code = -2 means still running.
+        let process_try_wait_ty = i32_t.fn_type(
+            &[i32_t.into(), ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_process_try_wait",
+            process_try_wait_ty,
+            None,
+        );
+        // declare i32 @lotus_process_signal(i32 pid, i32 sig)
+        let process_signal_ty =
+            i32_t.fn_type(&[i32_t.into(), i32_t.into()], false);
+        self.module.add_function(
+            "lotus_process_signal",
+            process_signal_ty,
+            None,
+        );
         // declare i32 @lotus_process_kill_escalate(i32 pid)
         let process_kill_ty = i32_t.fn_type(&[i32_t.into()], false);
         self.module.add_function(
