@@ -24,20 +24,18 @@ Async plumbing. By the time it works, the idea you started with is buried.
 ```hale
 type Msg { room: String; user: String; text: String; }
 
-topic Posted    { payload: Msg; }      // typed pub/sub channels
+topic Posted    { payload: Msg; keyed_by room; }   // routed by room name
 topic Broadcast { payload: Msg; }
 
 locus Room {
     params { name: String = "lobby"; }
     bus {
-        subscribe Posted    as on_post;    // a message was posted
+        subscribe Posted as on_post where key == self.name;
         publish   Broadcast;               // fan it out to everyone here
     }
 
     fn on_post(m: Msg) {
-        if m.room == self.name {
-            Broadcast <- m;                //  <-  sends on the bus
-        }
+        Broadcast <- m;                    //  <-  sends on the bus
     }
 }
 ```
@@ -46,13 +44,19 @@ Every phrase from the description has a home, in the order you thought it:
 
 - *"a chat room"* → `locus Room`
 - *"each message posted to it"* → `subscribe Posted as on_post`
-- *"in the room"* (only this room's traffic) → `if m.room == self.name`
+- *"in the room"* (only this room's traffic) → `keyed_by room` +
+  `where key == self.name` — the bus itself is the routing table, so a
+  message for `"lobby"` is delivered only to the lobby `Room`, and the
+  handler body never filters
 - *"relays it out to everyone"* → `publish Broadcast` / `Broadcast <- m`,
   and the bus fans it out to every subscriber
 
 No connection registry, no member list to lock, no broadcast loop, no
-`async`/`await`, no lifecycle wiring. You wrote down the idea; the idea is
-the program.
+`async`/`await`, no lifecycle wiring — and no dispatch code either: with
+ten rooms, a posted message costs one delivery, not ten filtered ones.
+You wrote down the idea; the idea is the program. (Rooms here are wired
+at startup; a lobby that mints brand-new rooms at runtime still declares
+them — dynamic subject creation is on the roadmap.)
 
 > GitHub can't syntax-highlight Hale yet, so the snippets here render in a
 > single color. For highlighted, runnable Hale, open the

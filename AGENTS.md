@@ -82,9 +82,12 @@ not framework gap.
 
 ## The pattern catalog
 
-Six shapes. Every well-written `.hl` program matches one. If
+Seven shapes. Every well-written `.hl` program matches one. If
 something doesn't fit, reconsider against the catalog before
-inventing.
+inventing. (`spec/styleguide.md` is the unified guide — shapes,
+correctness rules, hot-path speed rules, and the compiler's
+enforcement ladder in one place; this section is the working
+summary.)
 
 1. **App locus** — outer encapsulation; one per app. PascalCase
    name; `params` from argv defaults; `run()` delegates to a
@@ -114,10 +117,18 @@ inventing.
      child is a *resident* and lives until the parent dissolves
      — on a daemon, forever (unbounded growth). See
      `spec/semantics.md § release(c)`.
-5. **Shape type** — `type Foo { a: Int; b: String; }`. Pure
+5. **Data collection** — a `@form(vec)` / `@form(hashmap)` locus
+   holding the storage, wrapped by a thin facade locus whose
+   methods name the domain operations (`append` / `count` / `at`
+   over `push` / `len` / `get`). Cell types must be unqualified
+   in-seed structs; hashmap iteration is bucket-order (add a
+   `seq` field for order) and has no delete (tombstone with a
+   `present: Bool`). Fixed scalar `[T; N]` arrays are the
+   zero-alloc alternative for fixed populations.
+6. **Shape type** — `type Foo { a: Int; b: String; }`. Pure
    data, no flow. PascalCase, snake_case fields. Construct via
    struct literal.
-6. **Free fn** — first-class seed member. Use when the operation
+7. **Free fn** — first-class seed member. Use when the operation
    has no flow and isn't naturally a method on an existing
    locus. When 3+ free fns form a coherent vocabulary, promote
    them to a namespace lotus (pattern 2).
@@ -126,10 +137,13 @@ inventing.
 real services; full treatment in `docs/src/services/patterns.md`):
 
 - **Three-locus gateway** — pinned reader → cooperative manager that
-  `accept()`s → keyed per-entity children (`subscribe … where key ==
-  self.id`). The answer to "N dynamic keyed children with
-  lifecycle"; the bus *is* the keyed routing table, so you never
-  need a map of loci. Declare `release(c)` so children reclaim.
+  `accept()`s → keyed per-entity children. The topic declares
+  `keyed_by <field>` and each child subscribes `where key ==
+  self.<field>` (scalar or String keys), so the bus delivers only
+  that entity's traffic — never filter in the handler. The answer
+  to "N dynamic keyed children with lifecycle"; the bus *is* the
+  keyed routing table, so you never need a map of loci. Declare
+  `release(c)` so children reclaim.
 - **Demand-driven discovery** — a subscription triggers the
   `accept()`; topology grows from the data, zero hardcoded children.
 - **Hot-path counters/gauges** — locus methods returning locus
@@ -248,8 +262,9 @@ surprises:
 
 ## First step
 
-1. Skim `spec/styleguide.md` if you haven't (the six patterns
-   above are condensed from it).
+1. Skim `spec/styleguide.md` if you haven't (the seven patterns
+   above are condensed from it — its §1 memory model and §4
+   speed rules are the parts most sessions under-read).
 2. Pick the smallest target. State it out loud: app name,
    stdlib paths you'll need, what you're not sure about.
 3. Read 2-3 programs close to your target shape. The richest
@@ -266,14 +281,18 @@ surprises:
 
 Before writing code that runs many times per second (per-frame
 handlers, tight loops, bus dispatch hot paths), read
-[`agents/memory-patterns.md`](./agents/memory-patterns.md). It
-catalogs which assignment / return / lookup shapes the substrate
-makes allocation-free automatically and which require care from
-the author. The arena allocator doesn't free per-allocation, so
-patterns that look innocent at the call site can leak into a
-locus's lifetime arena — but the substrate closes more of those
-shapes than you'd expect, and the file's "When NOT to worry"
-section preempts overcautious code.
+[`spec/styleguide.md`](./spec/styleguide.md) §1 "The memory model
+in one page" and §4 "Speed rules" (which absorbed the old
+`agents/memory-patterns.md`). They catalog which assignment /
+return / lookup shapes the substrate makes allocation-free
+automatically and which require care from the author. The arena
+allocator doesn't free per-allocation, so patterns that look
+innocent at the call site can leak into a locus's lifetime arena
+— but the substrate closes more of those shapes than you'd
+expect, and the "What's already free" list preempts overcautious
+code. The compiler backs the rules with a layered enforcement
+ladder (default warnings → `@hot` → `@budget`); see styleguide
+§5.
 
 ## Binding an external C library
 

@@ -1,12 +1,12 @@
 # Composition patterns
 
-The [shape catalog](https://github.com/hale-lang/hale/blob/main/AGENTS.md) names the six building blocks —
-app locus, namespace locus, service locus, spawned child, shape
-type, free fn. This chapter is the next layer up: five *compositions*
-of those blocks that recur in real Hale services, distilled from
-production use. Reach for one of these when a problem feels like it
-needs a new language feature — usually it doesn't, it needs one of
-these shapes.
+The [shape catalog](https://github.com/hale-lang/hale/blob/main/AGENTS.md) names the seven building blocks —
+app locus, namespace locus, service locus, spawned child, `@form`
+collection with a domain facade, shape type, free fn. This chapter
+is the next layer up: the *compositions* of those blocks that recur
+in real Hale services, distilled from production use. Reach for one
+of these when a problem feels like it needs a new language feature —
+usually it doesn't, it needs one of these shapes.
 
 ## 1. The three-locus gateway
 
@@ -24,13 +24,26 @@ pinned reader  ──▶  cooperative manager  ──▶  keyed per-entity child
 - A **cooperative manager** subscribes to "new entity" events and
   `accept()`s one child per key. Declare `release(c: Child)` so each
   child is reclaimed when its flow ends (otherwise it's a resident
-  and lives until the manager dissolves — unbounded on a daemon).
-- Each **child** subscribes with a key filter (`subscribe Update as
-  on_update where key == self.id`) so the bus routes only its own
-  entity's messages to it.
+  and lives until the manager dissolves — unbounded on a daemon; the
+  compiler warns on that shape).
+- The **topic declares its routing field** and each child subscribes
+  with a key filter, so the bus delivers only that entity's traffic:
+
+  ```hale
+  topic Update { payload: Tick; keyed_by id; }
+  // in the child:
+  bus { subscribe Update as on_update where key == self.id; }
+  ```
+
+  Keys can be scalars or `String` — a symbol id and a symbol *name*
+  both work (String keys are hash-gated, so non-matching traffic
+  costs one integer compare per entry).
 
 This gives you per-entity state and lifecycle without a map of loci —
-the bus *is* the routing table, keyed.
+the bus *is* the routing table, keyed. Filtering in the handler
+instead (`if u.id == self.id`) is the anti-pattern this composition
+deletes: it delivers every message to every child and discards
+N-1 of N.
 
 ## 2. Demand-driven discovery
 
@@ -132,3 +145,72 @@ with a diagnostic rather than reading garbage), so you'll see a clear
 "view used after its buffer was overwritten" message instead of a
 silent corruption — but the fix is always to clone out before the
 overwriting call.
+
+## 6. The reused-buffer connection
+
+Every production connection locus converges on the same three
+fields: buffers held as `params`, reused every frame, never
+instantiated in a handler:
+
+```hale
+locus WsConn {
+    params {
+        rx_buf:  std::bytes::BytesBuilder = ...;  // frame reassembly
+        tx_buf:  std::bytes::BytesBuilder = ...;  // send assembly
+        scratch: std::bytes::BytesBuilder = ...;  // unmask / inflate
+    }
+    fn on_data(...) {
+        std::io::tcp::recv_into(self.fd, self.rx_buf, 65536);
+        // parse from self.rx_buf.view() — zero-copy
+    }
+}
+```
+
+A builder created *inside* the handler is a fresh heap buffer per
+message that reclaims only at method return (the compiler warns).
+Read with `.view()` / `.text_view()` and clear the buffer at the
+*start* of the next cycle, not the end of this one, so views handed
+out stay valid between frames. The full hot-path discipline lives in
+the [styleguide §4](https://github.com/hale-lang/hale/blob/main/spec/styleguide.md)
+and [Performance](../systems/performance.md).
+
+## 7. Pre-render once, fan out many
+
+When one event reaches N consumers, render the shared payload once
+at ingest; each consumer adds only its per-consumer delta:
+
+```hale
+// ingest: render once
+self.update_json = render_update(t);          // one render
+Tick <- Update { json: self.update_json };    // fan out
+// each connection: prepend its own seq only
+fn on_update(u: Update) { self.send_frame("" + self.seq + u.json); }
+```
+
+N× a tiny prepend beats N× a full render. Pair it with the
+**two-flavor emitter** convention: a `std::json::Builder` version
+for cold paths (readable, allocating) and a raw-concat `_pre`
+version for the hot fan-out — keeping both documents which callers
+are hot.
+
+## 8. Event-driven ingest
+
+One reader locus per source, parked on readiness — never a poll
+loop with `set_recv_timeout`:
+
+```hale
+main locus App {
+    params { r0: Reader = Reader { port: 9000 }; r1: Reader = Reader { port: 9001 }; }
+    placement {
+        r0: cooperative(pool = ingest) where async_io;
+        r1: cooperative(pool = ingest) where async_io;
+    }
+}
+```
+
+Each reader's `recv` parks its coroutine on EPOLLIN; N readers
+share one pool worker with microsecond wakes (measured ~4 µs p50).
+Poll-scanner sleeps accumulate tail-latency debt that looks like a
+runtime problem but is the sleep schedule. Blocking I/O that can't
+park (TLS today) goes on `pinned` instead — see
+[Concurrency & placement](./concurrency.md).

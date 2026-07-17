@@ -302,6 +302,7 @@ Some C surfaces don't translate cleanly:
   (syntax, ABI, lifetime rules, diagnostic surface).
 - [`notes/ffi-design.md`](../notes/ffi-design.md) — design
   memo with the 3-stage rollout history.
-- [`agents/memory-patterns.md`](./memory-patterns.md) — the
+- [`spec/styleguide.md`](../spec/styleguide.md) §1 + §4 — the
   hot-path memory shapes a binding lib's Hale wrapper may
-  encounter when persisting upstream state in `self.X` fields.
+  encounter when persisting upstream state in `self.X` fields
+  (absorbed the old `agents/memory-patterns.md`).

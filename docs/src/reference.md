@@ -19,7 +19,7 @@ diagnostic's meaning, go there.
 | The form library (`vec` / `hashmap` / `ring_buffer`) | [`spec/forms.md`](https://github.com/hale-lang/hale/blob/main/spec/forms.md) |
 | The always-loaded runtime | [`spec/runtime.md`](https://github.com/hale-lang/hale/blob/main/spec/runtime.md) |
 | The standard library surface | [`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md) |
-| Idiomatic patterns & the six shapes | [`spec/styleguide.md`](https://github.com/hale-lang/hale/blob/main/spec/styleguide.md) |
+| Idiomatic patterns, the seven shapes, correctness + speed rules | [`spec/styleguide.md`](https://github.com/hale-lang/hale/blob/main/spec/styleguide.md) |
 | The FFI contract — C (`@ffi("c")`) and the WASM host interface (`@ffi("js")` / `@export`) | [`spec/ffi.md`](https://github.com/hale-lang/hale/blob/main/spec/ffi.md) |
 | Dependencies & vendoring | [`spec/packages.md`](https://github.com/hale-lang/hale/blob/main/spec/packages.md) |
 | Project layout & imports | [`spec/projects.md`](https://github.com/hale-lang/hale/blob/main/spec/projects.md) |
