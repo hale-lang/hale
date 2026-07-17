@@ -231,6 +231,17 @@ pub(crate) struct LoopFrame<'ctx> {
     break_bb: BasicBlock<'ctx>,
 }
 
+/// Gap C (2026-07-17): expression-position match support. Passed
+/// into `lower_match_core` by `lower_match_expr`; each
+/// value-producing (non-terminated) arm records its value, type,
+/// and the block the value flows out of, and the fallthrough
+/// block records the no-arm-matched edge — the wrapper joins them
+/// with a phi at `match.after`.
+pub(crate) struct MatchExprCapture<'ctx> {
+    arm_values: Vec<(BasicValueEnum<'ctx>, CodegenTy, BasicBlock<'ctx>)>,
+    fallthrough_bb: Option<BasicBlock<'ctx>>,
+}
+
 /// Bounds-check-elimination (BCE) support for `@form(vec)` `.get`
 /// inside counted loops. Stably identifies the self-rooted vec a
 /// `for VAR in 0..V.len()` loop iterates, so a matching
@@ -6834,6 +6845,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     export: false,
                     unbounded: false,
                     budget: None,
+                    hot: false,
                     body: Block {
                         stmts: Vec::new(),
                         tail: None,
@@ -9858,6 +9870,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 export: fd.export,
                 unbounded: fd.unbounded,
                 budget: fd.budget,
+                hot: fd.hot,
                 body: Self::substitute_block_type_ascriptions(
                     &fd.body, subst,
                 ),
@@ -10104,6 +10117,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             export: template.export,
             unbounded: template.unbounded,
             budget: template.budget,
+            hot: template.hot,
             body: new_body,
             span: template.span.clone(),
         })
@@ -15622,6 +15636,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         m: &MatchStmt,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
+        self.lower_match_core(m, scope, None)
+    }
+
+    /// Shared match lowering (Gap C, 2026-07-17). Statement position
+    /// passes `capture: None` and arm-body values are discarded
+    /// (the original `lower_match_stmt` behavior, preserved exactly).
+    /// Expression position (`lower_match_expr`) passes a capture:
+    /// each arm body is lowered AS AN EXPRESSION and its (value,
+    /// type, incoming-block) is recorded for the phi the wrapper
+    /// builds at `match.after`; the no-arm-matched fallthrough
+    /// block is recorded too so the phi can cover that edge (F.18
+    /// exhaustiveness makes it unreachable for well-typed programs,
+    /// but guarded arms mean codegen cannot prove it, so the edge
+    /// carries a zero value rather than poison).
+    fn lower_match_core(
+        &mut self,
+        m: &MatchStmt,
+        scope: &mut Scope<'ctx>,
+        mut capture: Option<&mut MatchExprCapture<'ctx>>,
+    ) -> Result<BlockEnd, CodegenError> {
         let (scrutinee_val, scrutinee_ty) = self.lower_expr(&m.scrutinee, scope)?;
         let func = self.current_fn.expect("match outside function");
         let after_bb = self.context.append_basic_block(func, "match.after");
@@ -16031,24 +16065,51 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 saved = install_bindings(self, scope, &bindings)?;
             }
 
-            let body_end = match &arm.body {
-                MatchArmBody::Expr(e) => {
-                    // Statement-position match: arm body is treated
-                    // like a Stmt::Expr (value discarded). Route
-                    // call exprs through `lower_stmt` so calls to
-                    // builtins (println) and void-returning user
-                    // fns are handled by the existing dispatch
-                    // table; other expressions go through
-                    // `lower_expr` and have their value dropped.
-                    if matches!(e, Expr::Call { .. }) {
-                        let s = Stmt::Expr(e.clone());
-                        self.lower_stmt(&s, scope)?
-                    } else {
-                        let _ = self.lower_expr(e, scope)?;
-                        BlockEnd::Open
+            let body_end = if let Some(cap) = capture.as_mut() {
+                // Expression-position arm: the body must produce a
+                // value. Record it with the block the value flows
+                // out of (body lowering may have opened nested
+                // blocks) for the wrapper's phi.
+                let (arm_v, arm_ty, arm_end) = match &arm.body {
+                    MatchArmBody::Expr(e) => {
+                        let (v, ty) = self.lower_expr(e, scope)?;
+                        (v, ty, BlockEnd::Open)
                     }
+                    MatchArmBody::Block(b) => {
+                        let mut arm_scope = Scope {
+                            locals: scope.locals.clone(),
+                        };
+                        self.lower_block_as_expr(b, &mut arm_scope)?
+                    }
+                };
+                if arm_end == BlockEnd::Open {
+                    let incoming = self
+                        .builder
+                        .get_insert_block()
+                        .unwrap_or(body_bb);
+                    cap.arm_values.push((arm_v, arm_ty, incoming));
                 }
-                MatchArmBody::Block(b) => self.lower_block(b, scope)?,
+                arm_end
+            } else {
+                match &arm.body {
+                    MatchArmBody::Expr(e) => {
+                        // Statement-position match: arm body is treated
+                        // like a Stmt::Expr (value discarded). Route
+                        // call exprs through `lower_stmt` so calls to
+                        // builtins (println) and void-returning user
+                        // fns are handled by the existing dispatch
+                        // table; other expressions go through
+                        // `lower_expr` and have their value dropped.
+                        if matches!(e, Expr::Call { .. }) {
+                            let s = Stmt::Expr(e.clone());
+                            self.lower_stmt(&s, scope)?
+                        } else {
+                            let _ = self.lower_expr(e, scope)?;
+                            BlockEnd::Open
+                        }
+                    }
+                    MatchArmBody::Block(b) => self.lower_block(b, scope)?,
+                }
             };
 
             // Restore previous bindings (if any were shadowed) in
@@ -16082,6 +16143,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // (silent no-op) — F.18 exhaustiveness is enforced at
         // typecheck, so this path is unreachable for well-typed
         // programs.
+        if let Some(cap) = capture.as_mut() {
+            cap.fallthrough_bb = self.builder.get_insert_block();
+        }
         self.builder
             .build_unconditional_branch(after_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -16090,6 +16154,90 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let _ = all_terminated;
         self.builder.position_at_end(after_bb);
         Ok(BlockEnd::Open)
+    }
+
+    /// Gap C (2026-07-17): `match` in expression position —
+    /// `let x = match n { 0 -> 10, _ -> 20, };`. Runs the shared
+    /// core with a capture, then joins the arm values with a phi
+    /// at `match.after`, mirroring `lower_if_expr`. Every
+    /// value-producing arm must agree on one type. The
+    /// no-arm-matched fallthrough edge contributes a zero value
+    /// of the result type (never poison): F.18 exhaustiveness
+    /// makes it unreachable for well-typed programs, but a match
+    /// whose arms are all guarded can genuinely fall through at
+    /// runtime, and the statement form's silent-no-op precedent
+    /// argues for a defined value over UB.
+    fn lower_match_expr(
+        &mut self,
+        m: &MatchStmt,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let mut cap = MatchExprCapture {
+            arm_values: Vec::new(),
+            fallthrough_bb: None,
+        };
+        let mut inner = Scope {
+            locals: scope.locals.clone(),
+        };
+        let _ = self.lower_match_core(m, &mut inner, Some(&mut cap))?;
+        // The core leaves the builder positioned at `match.after`.
+        if cap.arm_values.is_empty() {
+            return Err(CodegenError::Unsupported(
+                "match expression needs at least one arm whose body \
+                 produces a value (every arm body terminated)"
+                    .to_string(),
+            ));
+        }
+        let result_ty = cap.arm_values[0].1.clone();
+        for (_, ty, _) in &cap.arm_values {
+            if *ty != result_ty {
+                return Err(CodegenError::Unsupported(format!(
+                    "match expression arms have mismatched types: \
+                     {:?} vs {:?}",
+                    result_ty, ty
+                )));
+            }
+        }
+        let llvm_ty = self.llvm_basic_type(&result_ty);
+        let phi = self
+            .builder
+            .build_phi(llvm_ty, "matchx.phi")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        for (v, _, bb) in &cap.arm_values {
+            phi.add_incoming(&[(v, *bb)]);
+        }
+        if let Some(fbb) = cap.fallthrough_bb {
+            let zero = Self::zero_basic_value(llvm_ty);
+            phi.add_incoming(&[(&zero, fbb)]);
+        }
+        Ok((phi.as_basic_value(), result_ty))
+    }
+
+    /// A defined all-zeroes value of the given LLVM type (null for
+    /// pointers). Used for the match-expression fallthrough edge.
+    fn zero_basic_value(
+        ty: inkwell::types::BasicTypeEnum<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        match ty {
+            inkwell::types::BasicTypeEnum::IntType(t) => {
+                t.const_zero().into()
+            }
+            inkwell::types::BasicTypeEnum::FloatType(t) => {
+                t.const_zero().into()
+            }
+            inkwell::types::BasicTypeEnum::PointerType(t) => {
+                t.const_null().into()
+            }
+            inkwell::types::BasicTypeEnum::StructType(t) => {
+                t.const_zero().into()
+            }
+            inkwell::types::BasicTypeEnum::ArrayType(t) => {
+                t.const_zero().into()
+            }
+            inkwell::types::BasicTypeEnum::VectorType(t) => {
+                t.const_zero().into()
+            }
+        }
     }
 
     /// Lower `for X in iter { body }`. v0 codegen recognizes only
@@ -18889,6 +19037,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
             Expr::If(ifs) => self.lower_if_expr(ifs, scope),
+            // Gap C (2026-07-17): match in expression position.
+            Expr::Match(m) => self.lower_match_expr(m, scope),
             Expr::Block(block) => {
                 let mut inner = Scope {
                     locals: scope.locals.clone(),
@@ -26670,7 +26820,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             // Skip entirely when nothing reachable from this locus
             // can retire: no sync-free string-celled hashmap child
-            // and no string self-fields means no retire sites.
+            // and no retiring self-fields means no retire sites.
             let has_retiring_child =
                 info.fields.values().any(|(_, fty)| {
                     if let CodegenTy::LocusRef(child_name) = fty {
@@ -26693,7 +26843,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         false
                     }
                 });
-            if !has_retiring_child {
+            // Gap A (2026-07-17): direct self-field stores retire
+            // too — a String field's grow-path reassign
+            // (lotus_str_assign_in_place) and a compound
+            // `self.f = Struct { ... }` store's replaced String
+            // clones (lotus_str_field_replace_fixup). Either kind
+            // of field on this locus means its own arena can hold
+            // pending retires at the activation boundary.
+            let has_retiring_self_fields =
+                info.fields.values().any(|(_, fty)| match fty {
+                    CodegenTy::String => true,
+                    CodegenTy::TypeRef(tn) => self
+                        .user_types
+                        .get(tn)
+                        .map(|t| {
+                            t.fields.values().any(|(_, f)| {
+                                matches!(f, CodegenTy::String)
+                            })
+                        })
+                        .unwrap_or(false),
+                    _ => false,
+                });
+            if !has_retiring_child && !has_retiring_self_fields {
                 return Ok(());
             }
             let flush_fn = self

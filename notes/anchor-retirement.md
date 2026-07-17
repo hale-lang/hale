@@ -22,11 +22,42 @@ floor (was ~40 MB), ASan clean, 5×30k acceptance bench flat. Full
 suite green; the earlier ≥16 in-band path is unchanged. GOTCHA that cost a
 segfault: lotus_hashmap_t is mirrored FIELD-FOR-FIELD by an inline
 LLVM struct in locus/decl.rs — new C fields go at the TAIL of both.
-Remaining: compound self.field-store retire (assign_in_place covers
-the direct-String case; struct-store leaves the old field clones),
-synced maps (needs an epoch scheme — cross-thread readers), vec
-cells, run-loop direct sets (no activation boundary — pending list
-just holds; no worse than before). The TP-3 class
+SELF-FIELD STORES (Gap A, 2026-07-17): compound
+`self.f = Struct{...}` replaces now retire the old struct's String
+clones via a per-field post-memcpy fixup
+(`lotus_str_field_replace_fixup`), and `lotus_str_assign_in_place`
+retires the abandoned buffer on its grow path. Validated: 1M
+whole-struct replaces (2 fresh clones each) = RSS flat
+(alloc_model_rss.rs::self_field_struct_replace_churn), 200k mixed
+alias/RMW/grow churn ASan+UBSan clean.
+
+FOUND EN ROUTE — same-arena skip broke value semantics: the clone
+skip let `self.g = self.f` (non-fitting path) and struct literals
+embedding a `self.<field>` read SHARE the source slot's blob; the
+source's next in-place overwrite mutated the aliased slot (probe:
+g printed f's new bytes). That aliasing also made retire unsound
+(freeing a blob the other slot still holds). Fix = SINGLE-OWNER
+rule: at self-storage store sites, a same-arena incoming pointer
+that isn't the slot's own old pointer force-copies
+(`lotus_str_copy_owned` / `lotus_bytes_copy_owned`, no skips).
+Fresh clones, statics, and RMW round-trips keep the zero-copy
+paths. Regression tests: tests/self_field_alias.rs. NOTE: reads of
+self heap fields return RAW arena pointers (no clone-on-read) —
+any future anchor site must preserve single-owner or retire breaks.
+
+Remaining: Bytes grow-path retire (align-8 blobs vs the align-1
+freelist — needs an aligned pop or a separate list); nested
+compound / Bytes fields of a replaced struct (String leaves only in
+v1); struct-field in-place shrink collapses the recorded capacity
+(strlen at retire under-reports after a fit-path shrink → reuse
+degrades on oscillating lengths, still sound); user methods on a
+@form locus never flush (the form-locus early-return); hashmap
+CROSS-CELL aliasing (`m.set(k1, m.get(k2))` skip-shares cell blobs
+→ a later retire of k2's cell can dangle k1 — pre-existing, same
+single-owner fix shape, needs its own pass); synced maps (needs an
+epoch scheme — cross-thread readers), vec cells, run-loop direct
+sets (no activation boundary — pending list just holds; no worse
+than before). The TP-3 class
 from the stage-5 audit: 53 corpus sites where a hashmap `set` or a
 compound `self.field = Struct{...}` store anchors a fresh String
 clone into the locus arena and the PREVIOUS clone for the same slot

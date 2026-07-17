@@ -1065,6 +1065,49 @@ mod tests {
     }
 
     #[test]
+    fn err_match_expr_arm_type_mismatch() {
+        // Gap C (2026-07-17): in EXPRESSION position the match's
+        // type is the join of its arm-body types — a value arm
+        // disagreeing with the others diags here with the match's
+        // span (previously the expression typed as Unit and the
+        // mismatch only surfaced as a codegen error).
+        let src = r#"
+            fn main() {
+                let x = match 1 {
+                    0 -> 10,
+                    _ -> "oops",
+                };
+                println(x);
+            }
+        "#;
+        let diags = check(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("mismatched types")),
+            "expected arm-type mismatch error; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn ok_match_expr_statement_position_arms_stay_heterogeneous() {
+        // Statement-position arms discard their values, so
+        // heterogeneous arm types stay legal — the Gap C join
+        // must not fire there.
+        let src = r#"
+            fn main() {
+                match 1 {
+                    0 -> 10,
+                    _ -> "fine",
+                }
+            }
+        "#;
+        let diags = check(src);
+        assert!(diags.is_empty(), "expected no diags; got: {:?}", diags);
+    }
+
+    #[test]
     fn ok_generic_enum_match_with_monomorph_arms_no_wildcard() {
         // m68: matching a generic-enum-typed scrutinee with
         // arms that use the synthesized monomorph name
@@ -2878,15 +2921,17 @@ mod tests {
 
     #[test]
     fn keyed_by_field_must_be_key_eligible() {
+        // Gap B (2026-07-17): String became key-eligible, so the
+        // rejected exemplar is Bytes (hash+compare over binary
+        // blobs is NOT supported — no NUL-terminated compare).
         let src = r#"
-            type T { name: String; }
-            topic K { payload: T; subject: "k"; keyed_by name; }
+            type T { blob: Bytes; }
+            topic K { payload: T; subject: "k"; keyed_by blob; }
         "#;
         let diags = check(src);
         assert!(
             diags.iter().any(|d| {
-                d.message.contains("int-shaped")
-                    || d.message.contains("routing-key fields")
+                d.message.contains("routing-key fields")
             }),
             "expected key-eligibility diag, got: {:?}",
             diags
@@ -2902,12 +2947,14 @@ mod tests {
                 c: Time;
                 d: Duration;
                 e: Bool;
+                f: String;
             }
             topic A { payload: T; subject: "a"; keyed_by a; }
             topic B { payload: T; subject: "b"; keyed_by b; }
             topic C { payload: T; subject: "c"; keyed_by c; }
             topic D { payload: T; subject: "d"; keyed_by d; }
             topic E { payload: T; subject: "e"; keyed_by e; }
+            topic F { payload: T; subject: "f"; keyed_by f; }
         "#;
         let diags = check(src);
         assert!(

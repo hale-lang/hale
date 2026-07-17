@@ -6,7 +6,7 @@ use hale_syntax::ast::KeyFilter;
 use inkwell::values::{FunctionValue, PointerValue};
 use inkwell::AddressSpace;
 
-use crate::bus::dispatch::BusDispatch;
+use crate::bus::dispatch::{BusDispatch, LoweredKeyFilter};
 use crate::codegen::{CodegenError, Cx};
 
 pub(crate) trait BusRuntime<'ctx> {
@@ -342,8 +342,43 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
 
         let i8_t = self.context.i8_type();
         let i64_t = self.context.i64_type();
-        let (kind_v, key_lo_v, key_hi_v) =
+        let lowered_filter =
             self.lower_subscribe_key_filter(self_ptr, key_filter, subject)?;
+        // Gap B (2026-07-17): String-keyed subscriptions register
+        // through lotus_bus_register_keyed_str — the runtime hashes
+        // the key and stores an owned copy. String-keyed subjects
+        // are never static-devirt eligible (routing keys are an
+        // eligibility exclusion), so this path skips the bucket
+        // branch below by construction.
+        let (kind_v, key_lo_v, key_hi_v) = match lowered_filter {
+            LoweredKeyFilter::Str(key_ptr) => {
+                let register_str_fn = self
+                    .module
+                    .get_function("lotus_bus_register_keyed_str")
+                    .expect(
+                        "lotus_bus_register_keyed_str declared in \
+                         declare_builtins",
+                    );
+                self.builder
+                    .build_call(
+                        register_str_fn,
+                        &[
+                            subj_str.into(),
+                            self_ptr.into(),
+                            handler_ptr.into(),
+                            mailbox_val.into(),
+                            deserialize_ptr.into(),
+                            coop_pool_ptr.into(),
+                            key_ptr.into(),
+                        ],
+                        "bus.register_keyed_str.call",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let _ = i64_t;
+                return Ok(());
+            }
+            LoweredKeyFilter::Scalar(k, lo, hi) => (k, lo, hi),
+        };
         let kind_iv = i8_t.const_int(kind_v as u64, false);
 
         // Static-devirt (build #1b): when this subject is statically

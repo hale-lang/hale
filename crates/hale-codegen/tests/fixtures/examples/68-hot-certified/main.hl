@@ -1,0 +1,44 @@
+// 68-hot-certified — `@hot` hot-path certification (Gap D, 2026-07-17).
+//
+// `@hot` promotes the default-advisory hot-path allocation lint to
+// hard errors inside the certified fn and enables the stricter perf
+// hints (snapshot-in-loop, whole-struct self-field replace). It
+// stacks with `@budget`: `@hot @budget(alloc_per_call = 0)` is the
+// full certificate — "this path is hot, and the compiler proves it
+// allocation-free." This fixture must stay WARNING-CLEAN: it shows
+// the certified-fast shapes, not the anti-patterns (those live in
+// hale-types/tests/hot_path_alloc.rs as expected-diag tests).
+
+locus Summer {
+    params { total: Int = 0; }
+
+    // The zero-alloc certificate: scalar arithmetic only.
+    @hot @budget(alloc_per_call = 0) fn add_range(lo: Int, hi: Int) -> Int {
+        let mut i = lo;
+        let mut acc = 0;
+        while i < hi {
+            acc = acc + i;
+            i = i + 1;
+        }
+        return acc;
+    }
+
+    // @hot alone: certified, no counted ceiling.
+    @hot fn bump(n: Int) {
+        self.total = self.total + n;
+    }
+
+    run() {
+        self.bump(self.add_range(0, 100));
+        self.bump(self.add_range(100, 200));
+    }
+}
+
+main locus App {
+    params { s: Summer = Summer { }; }
+    run() {
+        println("total=", self.s.total);
+    }
+}
+
+fn main() { App { }; }

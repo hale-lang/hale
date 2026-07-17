@@ -1468,6 +1468,14 @@ pub struct FnDecl {
     /// is the zero-alloc certificate. Mutually exclusive with `@unbounded`
     /// (only one fn-prefix annotation parses).
     pub budget: Option<u32>,
+    /// Gap D (2026-07-17): `@hot fn` — the author certifies this fn
+    /// (or handler) is a hot path (per-frame / tight-loop / 100s-per-
+    /// second class). Promotes the default-advisory hot-path
+    /// allocation lint to HARD ERRORS inside this fn and enables the
+    /// stricter perf hints (`snapshot()`-in-loop, whole-struct
+    /// self-field replace). Stacks with `@budget(...)`:
+    /// `@hot @budget(alloc_per_call = 0) fn send(...)`.
+    pub hot: bool,
     pub body: Block,
     pub span: Span,
 }

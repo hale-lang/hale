@@ -383,6 +383,9 @@ pub fn check_bundle(
     // loop. Warnings that steer toward the allocation-free shape
     // (hoisted field / `recv_into`).
     check_hot_path_alloc(bundle, top, &mut diags);
+    // Gap D (2026-07-17): accept-without-release on a daemon-shaped
+    // locus — resident children accumulate until OOM.
+    check_accept_release(bundle, &mut diags);
     // Lever 2 (2026-07-16): `@budget(alloc_per_call = N)` — an opt-in
     // hot-path allocation contract. A hard error when an annotated fn
     // allocates more than its declared per-call ceiling (0 = zero-alloc
@@ -1439,6 +1442,29 @@ struct HotPathCx<'a> {
     top: &'a TopScope,
     diags: &'a mut Vec<Diag>,
     loop_depth: u32,
+    /// Gap D (2026-07-17): walking a BUS HANDLER body. A handler runs
+    /// per message, so per-call allocation findings fire at any
+    /// nesting depth, not just inside loops (the ~4.5 KB/frame
+    /// locus-in-handler class).
+    in_handler: bool,
+    /// Gap D: inside an `@hot fn`. Findings become hard errors and
+    /// the stricter perf hints (`snapshot()`/`finish()` in a loop,
+    /// whole-struct self-field replace) activate.
+    hot: bool,
+}
+
+impl HotPathCx<'_> {
+    /// Advisory warn by default; hard error inside `@hot`.
+    fn emit(&mut self, span: Span, msg: String) {
+        if self.hot {
+            self.diags.push(Diag::ty(
+                span,
+                format!("@hot: {}", msg),
+            ));
+        } else {
+            self.diags.push(Diag::warn(span, msg));
+        }
+    }
 }
 
 /// A locus literal worth hoisting out of a loop: a user locus (carries
@@ -1533,9 +1559,38 @@ fn hot_walk_stmt(s: &Stmt, cx: &mut HotPathCx) {
             hot_walk_block(body, cx);
             cx.loop_depth -= 1;
         }
-        Stmt::Let { value, .. }
-        | Stmt::LetTuple { value, .. }
-        | Stmt::Assign { value, .. } => hot_walk_expr(value, cx),
+        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+            hot_walk_expr(value, cx)
+        }
+        Stmt::Assign { target, value, span, .. } => {
+            hot_walk_expr(value, cx);
+            // Gap D (@hot only): whole-struct replace of a direct
+            // self-field on a certified-hot path. Since Gap A the
+            // replaced String clones RETIRE (this is no longer a
+            // leak in methods/handlers) — but each store still pays
+            // an anchor-clone + retire per heap field, where
+            // in-place scalar mutation is allocation-free. Perf
+            // hint, so @hot-gated.
+            if cx.hot
+                && (cx.loop_depth > 0 || cx.in_handler)
+                && target.head.name == "self"
+                && target.tail.len() == 1
+                && matches!(target.tail[0], LValueSeg::Field(_))
+                && matches!(value, Expr::Struct { .. })
+            {
+                cx.emit(
+                    *span,
+                    "hot-path store: whole-struct replace of a \
+                     self-field — every store re-anchors the struct's \
+                     heap fields (clone + retire per String field). \
+                     On a certified-hot path prefer mutating the \
+                     changed scalar fields in place \
+                     (`self.field.x = v`), or keep the replace if \
+                     most fields genuinely change."
+                        .to_string(),
+                );
+            }
+        }
         Stmt::If(i) => hot_walk_if(i, cx),
         Stmt::Match(m) => hot_walk_match(m, cx),
         Stmt::Return(Some(e), _) => hot_walk_expr(e, cx),
@@ -1551,21 +1606,32 @@ fn hot_walk_expr(e: &Expr, cx: &mut HotPathCx) {
             for init in inits {
                 hot_walk_expr(&init.value, cx);
             }
-            if cx.loop_depth > 0 {
+            // Gap D: a bus handler runs per message — a locus/builder
+            // instantiated ANYWHERE in it is the ~4.5 KB/frame class
+            // (a fresh arena per frame, reclaimed only at handler
+            // return... and its chunk only at locus dissolve), so the
+            // handler context fires at depth 0 too.
+            if cx.loop_depth > 0 || cx.in_handler {
                 if let Some(name) = hot_locus_name(path, cx.top) {
-                    cx.diags.push(Diag::warn(
+                    let where_ = if cx.loop_depth > 0 {
+                        "inside a loop — a fresh instance (its own arena / \
+                         heap buffer) is allocated every iteration"
+                    } else {
+                        "inside a bus handler — a fresh instance (its own \
+                         arena / heap buffer) is allocated every message"
+                    };
+                    cx.emit(
                         *span,
                         format!(
                             "hot-path allocation: locus `{}` is instantiated \
-                             inside a loop — a fresh instance (its own arena / \
-                             heap buffer) is allocated every iteration and only \
-                             reclaimed when the enclosing method returns (a \
-                             `run()` read loop never returns). Hoist it to a \
-                             reused field, or `clear()` and refill one builder, \
-                             to keep the hot path allocation-free.",
-                            name
+                             {} and only reclaimed when the enclosing method \
+                             returns (a `run()` read loop never returns). \
+                             Hoist it to a reused field, or `clear()` and \
+                             refill one builder, to keep the hot path \
+                             allocation-free.",
+                            name, where_
                         ),
-                    ));
+                    );
                 }
             }
         }
@@ -1574,9 +1640,13 @@ fn hot_walk_expr(e: &Expr, cx: &mut HotPathCx) {
             for a in args {
                 hot_walk_expr(a, cx);
             }
+            // Loop-only (NOT handler-at-depth-0): a single recv per
+            // handler call reclaims at the handler's scratch destroy;
+            // only the in-loop shape accumulates within one
+            // activation.
             if cx.loop_depth > 0 {
                 if let Some(disp) = allocating_recv_name(callee) {
-                    cx.diags.push(Diag::warn(
+                    cx.emit(
                         *span,
                         format!(
                             "hot-path allocation: `{}` in a loop allocates a \
@@ -1587,7 +1657,29 @@ fn hot_walk_expr(e: &Expr, cx: &mut HotPathCx) {
                              path.",
                             disp
                         ),
-                    ));
+                    );
+                }
+            }
+            // Gap D (@hot only): `snapshot()` / `finish()` in a loop
+            // or handler materializes a fresh String/Bytes copy of
+            // the builder's contents per call — `.view()` /
+            // `.text_view()` reads the same bytes zero-copy.
+            if cx.hot && (cx.loop_depth > 0 || cx.in_handler) {
+                if let Expr::Field { name, .. } = callee.as_ref() {
+                    if name.name == "snapshot" || name.name == "finish" {
+                        cx.emit(
+                            *span,
+                            format!(
+                                "hot-path allocation: `.{}()` copies the \
+                                 builder's full contents into a fresh \
+                                 buffer each call. On a certified-hot path \
+                                 prefer `.view()` / `.text_view()` \
+                                 (zero-copy; valid until the next \
+                                 overwrite).",
+                                name.name
+                            ),
+                        );
+                    }
                 }
             }
         }
@@ -1640,17 +1732,43 @@ fn check_hot_path_alloc(bundle: &Bundle<'_>, top: &TopScope, diags: &mut Vec<Dia
         for item in &program.items {
             match item {
                 TopDecl::Locus(l) => {
-                    for m in &l.members {
-                        let body = match m {
-                            LocusMember::Fn(fd) => Some(&fd.body),
-                            LocusMember::Lifecycle(ld) => Some(&ld.body),
+                    // Gap D: fn members bound as bus handlers get the
+                    // per-message context (findings fire at depth 0).
+                    let handler_names: BTreeSet<&str> = l
+                        .members
+                        .iter()
+                        .filter_map(|m| match m {
+                            LocusMember::Bus(bb) => Some(bb.members.iter()),
                             _ => None,
+                        })
+                        .flatten()
+                        .filter_map(|bm| match bm {
+                            BusMember::Subscribe { handler, .. } => {
+                                Some(handler.name.as_str())
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    for m in &l.members {
+                        let (body, in_handler, hot) = match m {
+                            LocusMember::Fn(fd) => (
+                                Some(&fd.body),
+                                handler_names
+                                    .contains(fd.name.name.as_str()),
+                                fd.hot,
+                            ),
+                            LocusMember::Lifecycle(ld) => {
+                                (Some(&ld.body), false, false)
+                            }
+                            _ => (None, false, false),
                         };
                         if let Some(b) = body {
                             let mut cx = HotPathCx {
                                 top,
                                 diags: &mut *diags,
                                 loop_depth: 0,
+                                in_handler,
+                                hot,
                             };
                             hot_walk_block(b, &mut cx);
                         }
@@ -1661,10 +1779,107 @@ fn check_hot_path_alloc(bundle: &Bundle<'_>, top: &TopScope, diags: &mut Vec<Dia
                         top,
                         diags: &mut *diags,
                         loop_depth: 0,
+                        in_handler: false,
+                        hot: fd.hot,
                     };
                     hot_walk_block(&fd.body, &mut cx);
                 }
                 _ => {}
+            }
+        }
+    }
+}
+
+/// Gap D (2026-07-17): `accept` without `release` on a daemon-shaped
+/// locus. Declaring `release(c: C)` marks `C` a FLOW child (reclaimed
+/// when its `run()` completes); without it every accept'd child is
+/// RESIDENT — it lives until the accepting locus dissolves. On a
+/// run-to-exit program that's fine (and the corpus's accept examples
+/// are exactly that shape), but on a locus whose `run()` never
+/// returns (`while true { accept-and-spawn }` — the daemon idiom)
+/// resident children are O(accepted) growth until OOM. Daemon signal
+/// (deliberately narrow, corpus-clean): the accepting locus's own
+/// `run()` contains a literal `while true` loop.
+fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    fn block_has_while_true(b: &Block) -> bool {
+        b.stmts.iter().any(|s| match s {
+            Stmt::While { cond, body, .. } => {
+                matches!(cond, Expr::Literal(Literal::Bool(true), _))
+                    || block_has_while_true(body)
+            }
+            Stmt::For { body, .. } => block_has_while_true(body),
+            Stmt::If(i) => {
+                block_has_while_true(&i.then_block)
+                    || i.else_block.as_deref().is_some_and(|eb| match eb {
+                        ElseBranch::Else(blk) => block_has_while_true(blk),
+                        ElseBranch::ElseIf(i2) => {
+                            block_has_while_true(&i2.then_block)
+                        }
+                    })
+            }
+            _ => false,
+        })
+    }
+    for program in bundle.programs.values() {
+        for item in &program.items {
+            let TopDecl::Locus(l) = item else { continue };
+            let mut accepts: Vec<(&LifecycleDecl, String)> = Vec::new();
+            let mut releases: BTreeSet<String> = BTreeSet::new();
+            let mut run_daemon = false;
+            for m in &l.members {
+                let LocusMember::Lifecycle(ld) = m else { continue };
+                match ld.kind {
+                    LifecycleKind::Accept => {
+                        if let Some(p) = ld.params.first() {
+                            if let TypeExpr::Named { path: qn, .. } = &p.ty {
+                                if let Some(seg) = qn.segments.last() {
+                                    accepts
+                                        .push((ld, seg.name.clone()));
+                                }
+                            }
+                        }
+                    }
+                    LifecycleKind::Release => {
+                        if let Some(p) = ld.params.first() {
+                            if let TypeExpr::Named { path: qn, .. } = &p.ty {
+                                if let Some(seg) = qn.segments.last() {
+                                    releases.insert(seg.name.clone());
+                                }
+                            }
+                        }
+                    }
+                    LifecycleKind::Run => {
+                        if block_has_while_true(&ld.body) {
+                            run_daemon = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if !run_daemon {
+                continue;
+            }
+            for (ld, child_ty) in accepts {
+                if releases.contains(&child_ty) {
+                    continue;
+                }
+                diags.push(Diag::warn(
+                    ld.span,
+                    format!(
+                        "locus `{}` accepts `{}` children but declares no \
+                         `release({}: {})`, and its `run()` loops forever — \
+                         every accepted child is RESIDENT (lives until this \
+                         locus dissolves), so long-running accept traffic \
+                         grows memory without bound. Declare `release(c: \
+                         {})` to reclaim each child when its `run()` \
+                         completes (or `terminate` it from a handler body).",
+                        l.name.name,
+                        child_ty,
+                        child_ty.to_lowercase().chars().next().unwrap_or('c'),
+                        child_ty,
+                        child_ty
+                    ),
+                ));
             }
         }
     }
@@ -5035,9 +5250,9 @@ impl<'a> Checker<'a> {
                                 format!(
                                     "topic `{}`'s `keyed_by` field \
                                      `{}` has type `{}`; routing-key \
-                                     fields must be int-shaped (Int, \
-                                     Decimal, Time, Duration, Bool, \
-                                     or a no-payload enum)",
+                                     fields must be Int, Decimal, \
+                                     Time, Duration, Bool, String, \
+                                     or a no-payload enum",
                                     t.name.name,
                                     field_ident.name,
                                     fty.display(),
@@ -8497,16 +8712,52 @@ impl<'a> Checker<'a> {
     }
 
     fn check_match(&mut self, stmt: &MatchStmt) {
+        let _ = self.check_match_core(stmt, false);
+    }
+
+    /// Shared match checking (Gap C, 2026-07-17). In statement
+    /// position (`as_expr = false`) arm-body types are discarded —
+    /// heterogeneous arms are legal, exactly the pre-Gap-C
+    /// behavior. In expression position the match's type is the
+    /// join of its arm-body types: every value arm must agree
+    /// (`Unknown` is lenient in either direction), and a mismatch
+    /// diags here with the match's span rather than surfacing as a
+    /// codegen error. Block arm bodies type as `Unknown` at v0.1
+    /// (no block-tail typing helper yet); codegen's phi-build
+    /// still validates them.
+    fn check_match_core(&mut self, stmt: &MatchStmt, as_expr: bool) -> Ty {
         let scrut_ty = self.check_expr(&stmt.scrutinee);
+        let mut joined: Option<Ty> = None;
         for arm in &stmt.arms {
             if let Some(g) = &arm.guard {
                 let _ = self.check_expr(g);
             }
-            match &arm.body {
-                MatchArmBody::Expr(e) => {
-                    let _ = self.check_expr(e);
+            let arm_ty = match &arm.body {
+                MatchArmBody::Expr(e) => self.check_expr(e),
+                MatchArmBody::Block(b) => {
+                    self.check_block(b);
+                    Ty::Unknown
                 }
-                MatchArmBody::Block(b) => self.check_block(b),
+            };
+            if as_expr {
+                match &joined {
+                    None => joined = Some(arm_ty),
+                    Some(prev) => {
+                        if *prev == Ty::Unknown {
+                            joined = Some(arm_ty);
+                        } else if arm_ty != Ty::Unknown && arm_ty != *prev {
+                            self.diags.push(Diag::ty(
+                                stmt.span,
+                                format!(
+                                    "match expression arms have \
+                                     mismatched types: `{}` vs `{}`",
+                                    prev.display(),
+                                    arm_ty.display()
+                                ),
+                            ));
+                        }
+                    }
+                }
             }
         }
         if !match_is_exhaustive(&scrut_ty, &stmt.arms, self.top) {
@@ -8518,6 +8769,11 @@ impl<'a> Checker<'a> {
                     scrut_ty.display()
                 ),
             ));
+        }
+        if as_expr {
+            joined.unwrap_or(Ty::Unknown)
+        } else {
+            Ty::Unit
         }
     }
 
@@ -10026,10 +10282,9 @@ impl<'a> Checker<'a> {
             Expr::Struct { path, inits, span } => self.check_struct_literal(path, inits, *span),
             Expr::Block(b) => self.check_block_as_expr(b),
             Expr::If(s) => self.check_if_as_expr(s),
-            Expr::Match(m) => {
-                self.check_match(m);
-                Ty::Unit
-            }
+            // Gap C (2026-07-17): match in expression position types
+            // as the join of its arm-body types.
+            Expr::Match(m) => self.check_match_core(m, true),
             Expr::Sum(inner, _) | Expr::Prod(inner, _) => self.check_expr(inner),
             Expr::Approx { left, right, tolerance, span } => {
                 if !self.in_closure {

@@ -606,6 +606,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             str_assign_inplace_ty,
             None,
         );
+        // Gap A (2026-07-17): per-String-field fixup for compound
+        // `self.X = Struct { ... }` stores — retires the replaced
+        // clone and force-copies a skip-shared same-arena pointer so
+        // self-storage slots never alias (see lotus_arena.c).
+        // declare void @lotus_str_field_replace_fixup(
+        //     ptr arena, ptr slot, ptr oldp, ptr rawp)
+        let str_field_fixup_ty = void_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_str_field_replace_fixup",
+            str_field_fixup_ty,
+            None,
+        );
         // F.30: deep-copy Bytes blob (length-prefixed) into a
         // destination arena. Companion to lotus_str_clone for
         // BytesView → Bytes upgrades via `std::bytes::clone`.
@@ -1093,6 +1108,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function(
             "lotus_bus_register_keyed",
             bus_register_keyed_ty,
+            None,
+        );
+        // Gap B (2026-07-17): String-keyed registration — same first
+        // 6 args, then the key as a char*. The runtime hashes it and
+        // stores an owned copy (lotus_arena.c).
+        // declare void @lotus_bus_register_keyed_str(ptr, ptr, ptr,
+        //     ptr, ptr, ptr, ptr key)
+        let bus_register_keyed_str_ty = void_t.fn_type(
+            &[
+                ptr_t.into(),     // subject
+                ptr_t.into(),     // self_ptr
+                ptr_t.into(),     // handler
+                ptr_t.into(),     // mailbox
+                ptr_t.into(),     // deserialize
+                ptr_t.into(),     // coop_pool
+                ptr_t.into(),     // key (char*)
+            ],
+            false,
+        );
+        self.module.add_function(
+            "lotus_bus_register_keyed_str",
+            bus_register_keyed_str_ty,
+            None,
+        );
+        // Gap B: routing-key hash for String keys (FNV-1a 64); the
+        // publish site calls it on the payload's keyed_by field.
+        // declare i64 @lotus_route_key_hash(ptr)
+        let route_key_hash_ty = i64_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_route_key_hash",
+            route_key_hash_ty,
             None,
         );
         // Phase 3 keyed dispatch entry point. Same first 5 args as

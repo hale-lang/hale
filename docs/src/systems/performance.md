@@ -95,13 +95,21 @@ These are advisory warnings, not build failures:
 - `hale check app.hl` flags (by default — no flag needed) an allocation that
   accumulates without bound: a struct / array / bytes value created
   in a per-message bus handler (or a runtime-bounded loop) that
-  escapes into `self`, where it lives until the locus dissolves —
-  e.g. a whole-value replace `self.latest = Thing{…}`, which
-  bump-allocates a fresh value each message. The fix is usually
-  **in-place mutation** (`self.latest.field = v`, `self.arr[i] = v`)
-  instead of replacing the whole value, or the moves from this
-  chapter — a capacity-bounded `@form`, route it over the bus, or a
-  per-iteration child. A `while i < N { … }` counter with a constant
+  escapes into `self`, where it lives until the locus dissolves.
+  The classic instance — a whole-value replace `self.latest =
+  Thing{…}` allocating a fresh value each message — is largely
+  closed since v0.11.3: inside a method or handler, the replaced
+  value's String clones retire at the activation boundary and
+  recycle on the next store (the struct's own bytes were already
+  overwritten in place), so a steady-state replace holds the arena
+  flat. **In-place mutation** (`self.latest.field = v`,
+  `self.arr[i] = v`) is still the faster idiom — it skips the
+  clone-and-retire cycle entirely — and remains the fix for what
+  retirement doesn't yet cover: Bytes fields, nested compound
+  fields, and stores looping inside `run()` itself (no activation
+  boundary). For genuinely unbounded growth, reach for the moves
+  from this chapter — a capacity-bounded `@form`, route it over
+  the bus, or a per-iteration child. A `while i < N { … }` counter with a constant
   bound is *proven* bounded and left alone. Run-to-exit programs (a
   `main` with no `run` loop and no bus handler) are exempt
   automatically — a script that allocates and exits owes nothing.
@@ -119,20 +127,41 @@ These are advisory warnings, not build failures:
   loop) is the fix. (Detection reads the receiver's *declared* type, so
   it sees `fn f(v: IntVec)` and `self.buf: IntVec` but not an untyped
   `let`.)
-- It also flags two **loop-scoped hot-path allocations** (also advisory):
-  a **locus** or a `std::bytes::BytesBuilder` instantiated *inside a loop*
-  (a fresh arena / heap buffer every iteration — hoist it to a reused
-  field), and an **allocating `recv`** (`recv` / `recv_bytes` /
+- It also flags **hot-path allocations** (also advisory): a **locus** or
+  a `std::bytes::BytesBuilder` instantiated *inside a loop* — or
+  *anywhere in a bus handler*, which runs per message (a fresh arena /
+  heap buffer every iteration or frame — hoist it to a reused field);
+  and an **allocating `recv`** (`recv` / `recv_bytes` /
   `recv_with_source`) in a loop (use `recv_into` with a reused
-  `BytesBuilder`). A plain value struct/type literal isn't flagged, and an
-  instantiation outside a loop reclaims at method exit — only the
-  per-iteration case, the unambiguous one, warns.
+  `BytesBuilder`). A plain value struct/type literal isn't flagged, and
+  an instantiation outside a loop in a plain method reclaims at method
+  exit — only the per-iteration / per-message cases, the unambiguous
+  ones, warn.
+- One structural warning: **`accept` without `release` on a locus whose
+  `run()` loops forever**. Without a `release(c: C)` declaration every
+  accepted child is *resident* — it lives until the accepting locus
+  dissolves — so a daemon accepting connections forever grows without
+  bound. Declaring `release` makes each child a *flow*, reclaimed when
+  its `run()` completes. Run-to-exit programs that accept a bounded
+  batch of children are fine and stay silent.
 
-Once the loop is clean, you can **certify** it and have the compiler hold
-the line. `@budget(alloc_per_call = N)` on a fn (free or method) is an
-opt-in contract: the fn allocates at most `N` times per call, enforced as
-a **hard error** (this is the one allocation check that fails the build —
-because you asked for it).
+When a path really is hot — a per-frame handler, a tight decode loop, a
+10k/s ingest — **certify it** and have the compiler hold the line.
+That's layered, so the strictness lands only where you ask for it:
+
+`@hot` on a fn or handler promotes the advisory findings above to
+**hard errors** inside that fn, and turns on two stricter perf hints
+that would nag as defaults: `.snapshot()` / `.finish()` in a loop (each
+call copies the builder's whole contents — prefer the zero-copy
+`.view()` / `.text_view()`), and a whole-struct self-field replace
+(reclaimed since v0.11.3, but each store still pays a clone + retire
+per String field where in-place scalar mutation is allocation-free).
+
+`@budget(alloc_per_call = N)` on a fn (free or method) is the counted
+contract on top: the fn allocates at most `N` times per call, enforced
+as a **hard error** (this is the one allocation check that fails the
+build — because you asked for it). The two stack:
+`@hot @budget(alloc_per_call = 0) fn send(...)`.
 
 ```hale
 @budget(alloc_per_call = 0)

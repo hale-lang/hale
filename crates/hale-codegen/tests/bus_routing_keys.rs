@@ -741,3 +741,136 @@ fn keyed_subscribe_with_literal_key() {
     );
     assert!(lines[0].contains("id=42"), "got: {}", lines[0]);
 }
+
+/// Gap B (2026-07-17): String routing keys — the chatroom shape.
+/// Two Room instances keyed by a String `name`; each receives ONLY
+/// its own room's messages, and an unknown room's publish swallows.
+/// Keys on both sides are CONCAT-BUILT so they live in arenas, not
+/// .rodata — static literals short-circuit the clone/hash paths and
+/// would mask registration-copy or pointer-compare bugs.
+#[test]
+fn string_keyed_subscribe_routes_to_matching_instance_only() {
+    let src = r#"
+        type Msg { room: String = ""; text: String = ""; }
+        topic Posted { payload: Msg; subject: "posted"; keyed_by room; }
+        locus Room {
+            params { name: String = "?"; }
+            bus { subscribe Posted as on_post where key == self.name; }
+            fn on_post(m: Msg) {
+                println("room.", self.name, " got ", m.text);
+            }
+        }
+        main locus App {
+            params {
+                a: Room = Room { name: "lob" + "by" };
+                b: Room = Room { name: "d" + "ev" };
+            }
+            bus { publish Posted; }
+            run() {
+                let lobby = "lob" + "by";
+                let dev = "d" + "ev";
+                Posted <- Msg { room: lobby, text: "one" };
+                Posted <- Msg { room: dev, text: "two" };
+                Posted <- Msg { room: lobby, text: "three" };
+                Posted <- Msg { room: "no" + "body", text: "dropped" };
+            }
+        }
+        fn main() { App { }; }
+    "#;
+    let bin = build("string_keyed_rooms", src);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "non-zero exit: {:?}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let a_lines: Vec<&str> = stdout
+        .lines()
+        .filter(|ln| ln.starts_with("room.lobby "))
+        .collect();
+    let b_lines: Vec<&str> = stdout
+        .lines()
+        .filter(|ln| ln.starts_with("room.dev "))
+        .collect();
+    assert_eq!(
+        a_lines.len(),
+        2,
+        "room.lobby should get exactly its 2 messages; got {:?}\nfull:\n{}",
+        a_lines,
+        stdout
+    );
+    assert_eq!(
+        b_lines.len(),
+        1,
+        "room.dev should get exactly its 1 message; got {:?}\nfull:\n{}",
+        b_lines,
+        stdout
+    );
+    assert!(
+        !stdout.contains("dropped"),
+        "unmatched room's message must swallow:\n{}",
+        stdout
+    );
+    for ln in &a_lines {
+        assert!(
+            ln.contains("got one") || ln.contains("got three"),
+            "room.lobby saw a foreign message: {}",
+            ln
+        );
+    }
+    assert!(b_lines[0].contains("got two"), "got: {}", b_lines[0]);
+}
+
+/// Gap B: capture-by-value key stability for String keys (the spec's
+/// "Key stability" rule). The registry owns a COPY of the key taken
+/// at registration; reassigning the subscriber's key field afterwards
+/// must not re-key the subscription — and, with Gap A retirement live,
+/// must not dangle the registry's key either (the old field blob is
+/// retired on reassign; a registry that stored the raw pointer would
+/// strcmp freed-and-recycled bytes).
+#[test]
+fn string_key_is_captured_by_value_at_registration() {
+    let src = r#"
+        type Msg { room: String = ""; text: String = ""; }
+        topic Posted { payload: Msg; subject: "posted"; keyed_by room; }
+        locus Room {
+            params { name: String = "?"; }
+            bus { subscribe Posted as on_post where key == self.name; }
+            fn on_post(m: Msg) { println("got ", m.text); }
+            fn rename(to: String) {
+                self.name = to;   // retires the old name blob (Gap A)
+                println("renamed to ", self.name);
+            }
+        }
+        main locus App {
+            params { a: Room = Room { name: "al" + "pha" }; }
+            bus { publish Posted; }
+            run() {
+                Posted <- Msg { room: "al" + "pha", text: "before" };
+                // Direct call — executes NOW, unlike a bus handler,
+                // which only runs when the queue drains after run().
+                // Routing for the publishes below therefore sees the
+                // post-rename field (and post-retire arena) state.
+                self.a.rename("be" + "ta-longer-than-alpha");
+                Posted <- Msg { room: "al" + "pha", text: "after" };
+                Posted <- Msg { room: "be" + "ta-longer-than-alpha", text: "wrong" };
+            }
+        }
+        fn main() { App { }; }
+    "#;
+    let bin = build("string_key_capture", src);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "non-zero exit: {:?}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("got before"), "pre-rename miss:\n{}", stdout);
+    assert!(
+        stdout.contains("got after"),
+        "the registered key `alpha` must keep routing after the field \
+         is reassigned (capture-by-value):\n{}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("got wrong"),
+        "the NEW field value must not re-key the subscription:\n{}",
+        stdout
+    );
+}

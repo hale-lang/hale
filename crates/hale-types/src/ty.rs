@@ -275,13 +275,15 @@ fn is_flat_shapeable_inner(
 }
 
 /// Phase-3 routing-key eligibility (2026-05-25). A topic's
-/// `keyed_by FIELD` field must resolve to an int-shaped scalar
-/// the bus router can compare in one or two i64 ops — see
-/// `spec/semantics.md` § "Phase 3: routing keys" for the table.
-/// Accepted: `Int`, `Decimal`, `Time`, `Duration`, `Bool`, and
-/// no-payload `enum`. Everything else (String / Bytes / Array /
-/// nested struct / has-payload enum / fallible / function /
-/// unknown) is rejected.
+/// `keyed_by FIELD` field must resolve to a type the bus router
+/// can compare per entry — see `spec/semantics.md` § "Phase 3:
+/// routing keys" for the table. Accepted: `Int`, `Decimal`,
+/// `Time`, `Duration`, `Bool`, no-payload `enum` (one or two i64
+/// compares), and — since Gap B (2026-07-17) — `String` (u64
+/// hash gate + full compare on hash match; the registry owns a
+/// copy of each subscriber's key). Everything else (Bytes /
+/// Array / nested struct / has-payload enum / fallible /
+/// function / unknown) is rejected.
 pub fn is_key_eligible(ty: &Ty, scope: &crate::resolve::TopScope) -> bool {
     match ty {
         Ty::Prim(p) => matches!(
@@ -291,6 +293,7 @@ pub fn is_key_eligible(ty: &Ty, scope: &crate::resolve::TopScope) -> bool {
                 | PrimType::Time
                 | PrimType::Duration
                 | PrimType::Bool
+                | PrimType::String
         ),
         Ty::Named(name) => match scope.lookup(name) {
             Some(crate::symbol::TopSymbol::Type(info)) => match &info.kind {

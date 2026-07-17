@@ -100,6 +100,24 @@ Phase 2b introduced `if`-as-expression; WS3.2
 block tail. See F.24 in `spec/decisions.md` and the
 Phase 2b entry in `spec/stdlib.md`.
 
+`match` is dual-position too (Gap C, 2026-07-17):
+
+- **As statement**: arm bodies are evaluated for side effects;
+  heterogeneous arm-body types are legal (values discarded).
+- **As expression** (`let x = match n { 0 -> 10, _ -> 20, };`):
+  every arm body's value is phi-merged at the join block, so
+  all value-producing arms must agree on one type (checked at
+  typecheck with the match's span; `match` expression works with
+  every pattern form the statement supports — literal / binding /
+  wildcard / tuple / enum-constructor patterns, guards, and
+  block arm bodies with trailing expressions). F.18
+  exhaustiveness applies in both positions. The only reachable
+  no-arm-matched case in expression position is a match whose
+  arms are all guarded and every guard is false at runtime; it
+  yields the zero value of the result type (`0` / `0.0` /
+  `false` / empty for pointer-shaped types), mirroring the
+  statement form's silent-no-op fallthrough.
+
 ## Binary data — Bytes and conversion
 
 `Bytes` is the binary-safe sibling of `String`. Same
@@ -1496,12 +1514,23 @@ storage at v0.1:
 | `Time`, `Duration` | u64 (ns since epoch) | one i64 cmp |
 | no-payload `enum` | u64 (i32 tag zero-extended) | one i64 cmp |
 | `Decimal` | u128 (i64 pair) | two i64 cmps |
+| `String` | u64 hash + owned copy | one i64 cmp; full compare on hash match |
 
 The bus runtime stores both halves of a u128 uniformly
 (`key_lo: u64, key_hi: u64`) — narrower types zero-extend. Apps
 that need compound keys (`(sym_id, venue, side)`) pack them into
 a `Decimal` field themselves; the language does not bake compound-
 key derivation at v0.1.
+
+`String` keys (2026-07-17) hash-gate the per-entry compare: the
+registry stores the subscriber key's 64-bit hash plus its own
+copy of the string (capture-by-value — see "Key stability"
+below), the publish site hashes the payload's `keyed_by` field,
+and only a hash match pays the full string compare, so a
+mismatched key still costs one i64 compare per entry. `StringView`
+and `Bytes` are not key-eligible. Remote fanout stays unkeyed at
+v0.1 for String keys just as for scalars — no key material
+crosses a process boundary.
 
 **`where key == EXPR` — what EXPR can be.**
 
@@ -1510,10 +1539,12 @@ point where its `params` defaults are resolved), and the resulting
 key value is captured into the bus registry alongside the
 handler's self pointer. v0.1 restricts EXPR to:
 
-1. An integer / decimal literal: `where key == 42`
+1. An integer / decimal / string literal: `where key == 42`,
+   `where key == "lobby"`
 2. A const identifier resolving to a scalar of the topic's key type
 3. A `self.<field>` path read, where `<field>` is a `params`-block
-   field of the subscribing locus
+   field of the subscribing locus (for a String-keyed topic, a
+   `String` field — e.g. `where key == self.name`)
 
 Higher-shape expressions (`self.a + self.b`, method calls in the
 filter, cross-locus reads) are reserved for later. The

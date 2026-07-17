@@ -1,0 +1,62 @@
+// 67-match-expression — `match` in expression position (Gap C, 2026-07-17).
+//
+// `Expr::Match` parsed + typechecked but had no codegen arm until Gap C
+// (`Unsupported("expression form Discriminant(15)")`). The lowering
+// shares the statement form's pattern machinery (lower_match_core) and
+// phi-merges arm values at match.after, like if-expressions. Covered
+// here: String scrutinee -> Int result, enum -> String result, payload
+// destructuring (Ev::Tick(n) -> n * 2), guards, block arm bodies with
+// trailing expressions, and match-exprs nested inside arithmetic.
+
+type Color = enum { Red, Green, Blue };
+type Ev = enum { Tick(Int), Halt };
+
+fn str_code(cmd: String) -> Int {
+    return match cmd {
+        "move" -> 1,
+        "fire" -> 2,
+        _ -> 0,
+    };
+}
+
+fn color_name(c: Color) -> String {
+    return match c {
+        Color::Red -> "red",
+        Color::Green -> "green",
+        Color::Blue -> "blue",
+    };
+}
+
+fn ev_value(e: Ev) -> Int {
+    return match e {
+        Ev::Tick(n) -> n * 2,
+        Ev::Halt -> -1,
+    };
+}
+
+fn guarded(n: Int) -> String {
+    return match n {
+        v if v < 0 -> "neg",
+        0 -> "zero",
+        _ -> "pos",
+    };
+}
+
+fn block_arms(n: Int) -> Int {
+    let x = match n {
+        0 -> { let a = 5; a * 2 },
+        _ -> { let b = n; b + 100 },
+    };
+    return x;
+}
+
+fn main() {
+    println("move=", str_code("mo" + "ve"), " fire=", str_code("fire"), " ?=", str_code("xyz"));
+    println("green=", color_name(Color::Green));
+    println("tick7=", ev_value(Ev::Tick(7)), " halt=", ev_value(Ev::Halt));
+    println("g(-3)=", guarded(-3), " g(0)=", guarded(0), " g(9)=", guarded(9));
+    println("blk0=", block_arms(0), " blk4=", block_arms(4));
+    // nested in a larger expression
+    let total = match 1 { 1 -> 10, _ -> 0, } + match 2 { 2 -> 5, _ -> 0, };
+    println("total=", total);
+}

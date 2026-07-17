@@ -372,6 +372,8 @@ impl Parser {
                 matches!(&kind_tok, TokenKind::Ident(s) if s == "unbounded");
             let is_budget =
                 matches!(&kind_tok, TokenKind::Ident(s) if s == "budget");
+            let is_hot =
+                matches!(&kind_tok, TokenKind::Ident(s) if s == "hot");
             if is_export {
                 // WASM entry-inversion. `@export fn …` is a free-fn
                 // module export; `@export locus …` is the persistent
@@ -503,6 +505,45 @@ impl Parser {
                 let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
                 fn_decl.budget = Some(budget);
                 fn_decl.span = bspan.merge(fn_decl.span);
+                return Ok(TopDecl::Fn(fn_decl));
+            }
+            if is_hot {
+                // Gap D (2026-07-17): `@hot fn` — hot-path
+                // certification; promotes the hot-path allocation
+                // lint to errors inside this fn and enables the
+                // stricter perf hints. fn-only. Stacks with a
+                // FOLLOWING `@budget(...)`:
+                //   `@hot @budget(alloc_per_call = 0) fn send(...)`.
+                if form.is_some() || locality.is_some() || export_locus
+                    || bounded_locus
+                {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "`@hot` is fn-only; it can't stack with \
+                         `@form(...)` / `@locality(...)` / `@bounded` / \
+                         `@export locus` (those precede `locus`)",
+                    ));
+                }
+                let at = self.expect(TokenKind::At, "@")?;
+                self.bump(); // consume `hot`
+                let budget = if matches!(self.peek(), TokenKind::At) {
+                    Some(self.parse_budget_annotation()?)
+                } else {
+                    None
+                };
+                if !matches!(self.peek(), TokenKind::Fn) {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "expected `fn` (or `@budget(...) fn`) after `@hot` \
+                         — it certifies a fn as a hot path",
+                    ));
+                }
+                let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
+                fn_decl.hot = true;
+                if let Some((b, _)) = budget {
+                    fn_decl.budget = Some(b);
+                }
+                fn_decl.span = at.span.merge(fn_decl.span);
                 return Ok(TopDecl::Fn(fn_decl));
             }
             if is_form {
@@ -1553,14 +1594,43 @@ impl Parser {
                     fn_decl.span = bspan.merge(fn_decl.span);
                     return Ok(LocusMember::Fn(fn_decl));
                 }
+                // Gap D (2026-07-17): `@hot fn` on a method/handler —
+                // the common placement (a bus handler is a member fn).
+                // Optionally followed by `@budget(...)`.
+                if matches!(&kind_tok, TokenKind::Ident(s) if s == "hot") {
+                    let at = self.expect(TokenKind::At, "@")?;
+                    self.bump(); // consume `hot`
+                    let budget = if matches!(self.peek(), TokenKind::At) {
+                        Some(self.parse_budget_annotation()?)
+                    } else {
+                        None
+                    };
+                    if !matches!(self.peek(), TokenKind::Fn) {
+                        return Err(Diag::parse(
+                            self.peek_token().span,
+                            "expected `fn` (or `@budget(...) fn`) after \
+                             `@hot` — it certifies a method/handler as a \
+                             hot path",
+                        ));
+                    }
+                    let mut fn_decl = self.parse_fn_decl()?;
+                    fn_decl.hot = true;
+                    if let Some((b, _)) = budget {
+                        fn_decl.budget = Some(b);
+                    }
+                    fn_decl.span = at.span.merge(fn_decl.span);
+                    return Ok(LocusMember::Fn(fn_decl));
+                }
                 if !matches!(&kind_tok, TokenKind::Ident(s) if s == "unbounded") {
                     return Err(Diag::parse(
                         self.peek_token().span,
                         "the only `@` annotations valid on a locus member are \
                          `@unbounded` (on a `fn` or a lifecycle hook — \
-                         acknowledge an intentionally-unbounded body) and \
+                         acknowledge an intentionally-unbounded body), \
                          `@budget(alloc_per_call = N)` (on a `fn` — a per-call \
-                         allocation contract)",
+                         allocation contract), and `@hot` (on a `fn` — \
+                         hot-path certification, promotes the hot-path lint \
+                         to errors)",
                     ));
                 }
                 let at = self.expect(TokenKind::At, "@")?;
@@ -3548,6 +3618,7 @@ impl Parser {
                 export: false,
                 unbounded: false,
                 budget: None,
+                hot: false,
                 span: kw.span.merge(semi.span),
                 body,
             });
@@ -3573,6 +3644,7 @@ impl Parser {
                 export: false,
                 unbounded: false,
                 budget: None,
+                hot: false,
                 span: kw.span.merge(semi.span),
                 body,
             });
@@ -3594,6 +3666,7 @@ impl Parser {
             export: false,
             unbounded: false,
             budget: None,
+                hot: false,
             span: kw.span.merge(body.span),
             body,
         })

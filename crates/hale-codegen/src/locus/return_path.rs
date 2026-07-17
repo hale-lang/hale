@@ -975,6 +975,100 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .into_pointer_value();
 
+        // Existing struct pointer — slot is guaranteed non-null
+        // because every locus field has either a default or an
+        // instantiation-time value (typecheck-enforced), so by
+        // the time any method body runs the slot has been
+        // populated by lower_locus_instantiation's field init.
+        // Loaded BEFORE the anchor walk: the Gap A fixup below
+        // needs the pre-replace field pointers.
+        let existing_ptr = self
+            .builder
+            .build_load(ptr_t, slot_ptr, "self_field.existing")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+
+        // Gap A (2026-07-17, notes/anchor-retirement.md): a compound
+        // store REPLACES the existing struct's String clones — the
+        // memcpy below overwrites their pointers, orphaning them in
+        // the locus lifetime arena (the sme/causality construction-
+        // position leak). Capture, per String field, the pointer
+        // being replaced (oldp, from the existing struct) and the
+        // rhs field pointer BEFORE the anchor walk rewrites it
+        // (rawp); after the memcpy, one runtime call per field
+        // retires oldp and force-copies a skip-shared same-arena
+        // pointer so self-storage slots never alias
+        // (lotus_str_field_replace_fixup). String fields only in
+        // v1, mirroring the hashmap retire descriptor; nested
+        // compound fields keep today's behavior.
+        let mut retire_fields: Vec<(
+            PointerValue<'ctx>,
+            PointerValue<'ctx>,
+            PointerValue<'ctx>,
+        )> = Vec::new();
+        if let CodegenTy::TypeRef(tn) = slot_ty {
+            if let Some(tinfo) = self.user_types.get(tn).cloned() {
+                let rhs_ptr = rhs.into_pointer_value();
+                for fname in &tinfo.field_order {
+                    let (idx, fty) = tinfo
+                        .fields
+                        .get(fname)
+                        .cloned()
+                        .expect("field_order lists declared fields");
+                    if !matches!(fty, CodegenTy::String) {
+                        continue;
+                    }
+                    let old_slot = self
+                        .builder
+                        .build_struct_gep(
+                            tinfo.struct_ty,
+                            existing_ptr,
+                            idx,
+                            &format!("retire.{}.old.ptr", fname),
+                        )
+                        .map_err(|e| {
+                            CodegenError::LlvmEmit(e.to_string())
+                        })?;
+                    let oldp = self
+                        .builder
+                        .build_load(
+                            ptr_t,
+                            old_slot,
+                            &format!("retire.{}.old", fname),
+                        )
+                        .map_err(|e| {
+                            CodegenError::LlvmEmit(e.to_string())
+                        })?
+                        .into_pointer_value();
+                    let raw_slot = self
+                        .builder
+                        .build_struct_gep(
+                            tinfo.struct_ty,
+                            rhs_ptr,
+                            idx,
+                            &format!("retire.{}.raw.ptr", fname),
+                        )
+                        .map_err(|e| {
+                            CodegenError::LlvmEmit(e.to_string())
+                        })?;
+                    let rawp = self
+                        .builder
+                        .build_load(
+                            ptr_t,
+                            raw_slot,
+                            &format!("retire.{}.raw", fname),
+                        )
+                        .map_err(|e| {
+                            CodegenError::LlvmEmit(e.to_string())
+                        })?
+                        .into_pointer_value();
+                    // old_slot doubles as the destination slot for
+                    // the post-memcpy fixup (same GEP).
+                    retire_fields.push((old_slot, oldp, rawp));
+                }
+            }
+        }
+
         // Anchor rhs's heap fields in self.__arena. Same-arena
         // skip and static-literal skip from 6a56d7c make this
         // identity for the common RMW + literal-field patterns.
@@ -987,17 +1081,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             "self_field_inplace",
         )?;
 
-        // Existing struct pointer — slot is guaranteed non-null
-        // because every locus field has either a default or an
-        // instantiation-time value (typecheck-enforced), so by
-        // the time any method body runs the slot has been
-        // populated by lower_locus_instantiation's field init.
-        let existing_ptr = self
-            .builder
-            .build_load(ptr_t, slot_ptr, "self_field.existing")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_pointer_value();
-
         let size = self.compound_storage_size(slot_ty)?;
 
         self.emit_memcpy_call(
@@ -1006,6 +1089,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             size,
             "self_field_inplace.memcpy",
         )?;
+
+        if !retire_fields.is_empty() {
+            let fixup_fn = self
+                .module
+                .get_function("lotus_str_field_replace_fixup")
+                .expect("lotus_str_field_replace_fixup declared");
+            for (dest_slot, oldp, rawp) in retire_fields {
+                self.builder
+                    .build_call(
+                        fixup_fn,
+                        &[
+                            dest_arena.into(),
+                            dest_slot.into(),
+                            oldp.into(),
+                            rawp.into(),
+                        ],
+                        "self_field_inplace.retire_fixup",
+                    )
+                    .map_err(|e| {
+                        CodegenError::LlvmEmit(e.to_string())
+                    })?;
+            }
+        }
 
         // No build_store — slot's pointer is unchanged.
         Ok(())

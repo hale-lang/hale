@@ -381,6 +381,73 @@ const HASHMAP_SMALL_CONTROL: &str = r#"
     fn main() { Acc { }; }
 "#;
 
+// Gap A (2026-07-17): anchor retirement extended to plain self-field
+// stores. A compound `self.<field> = Struct { ... }` replace anchors
+// fresh String clones into the locus lifetime arena and (pre-fix)
+// orphaned the OLD clones on every store — the construction-position
+// leak downstream apps mitigated by hand (in-place scalar mutation,
+// construction-position init). Post-fix the per-field replace fixup
+// (lotus_str_field_replace_fixup) retires the replaced clones at the
+// user-method activation boundary and they recycle through the same
+// freelists as the hashmap path.
+const STRUCT_REPLACE: &str = r#"
+    type Cell { s: String = ""; t: String = ""; n: Int = 0; }
+    locus Rec {
+        params { st: Cell = Cell { }; n: Int = 1000000; }
+        fn record(i: Int) {
+            self.st = Cell { s: "value." + (i - (i / 100) * 100), t: "" + i, n: i };
+        }
+        run() {
+            let mut i = 0;
+            while i < self.n { self.record(i); i = i + 1; }
+            print("last="); println(self.st.s);
+            print("final_rss_mb="); println(std::process::rss_bytes() / 1048576);
+        }
+    }
+    fn main() { Rec { }; }
+"#;
+
+const STRUCT_REPLACE_CONTROL: &str = r#"
+    type Cell { s: String = ""; t: String = ""; n: Int = 0; }
+    locus Rec {
+        params { st: Cell = Cell { }; n: Int = 1000000; sink: Int = 0; }
+        fn record(i: Int) {
+            let s = "value." + (i - (i / 100) * 100);
+            self.sink = self.sink + len(s) + i;   // same string work, no store
+        }
+        run() {
+            let mut i = 0;
+            while i < self.n { self.record(i); i = i + 1; }
+            print("sink="); println(self.sink);
+            print("final_rss_mb="); println(std::process::rss_bytes() / 1048576);
+        }
+    }
+    fn main() { Rec { }; }
+"#;
+
+#[test]
+fn self_field_struct_replace_churn_recycles_stays_flat() {
+    // Runtime reclamation property: 1M whole-struct replaces, each
+    // anchoring two fresh String clones, over a long-lived locus. The
+    // store runs in a `record` METHOD so the retire flush fires at its
+    // activation boundary. Pre-fix the old clones accumulated for the
+    // locus lifetime (~30 B/store → tens of MB over the control);
+    // post-fix every replaced clone recycles.
+    let churn_rss = build_and_rss("struct_replace", STRUCT_REPLACE);
+    let ctrl_rss = build_and_rss("struct_replace_control", STRUCT_REPLACE_CONTROL);
+
+    assert!(
+        churn_rss <= ctrl_rss + 12,
+        "compound self-field replace churn must stay flat: churn={}MB vs \
+         control={}MB. A >12MB gap means replaced String clones on \
+         `self.<field> = Struct {{ ... }}` stores are being orphaned in the \
+         locus arena again instead of retiring at the activation boundary \
+         (lotus_str_field_replace_fixup / the Gap A flush gate).",
+        churn_rss,
+        ctrl_rss
+    );
+}
+
 #[test]
 fn hashmap_small_value_replace_churn_recycles_stays_flat() {
     // Runtime side only: this is a reclamation property, not a model verdict.

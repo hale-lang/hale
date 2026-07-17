@@ -7522,6 +7522,19 @@ typedef struct lotus_bus_entry {
     uint8_t               key_filter_kind;
     uint64_t              key_lo;
     uint64_t              key_hi;
+    /* Gap B (2026-07-17): String routing keys. NULL for scalar-keyed
+     * and unkeyed entries. For a String-keyed subscriber this is a
+     * heap-owned copy of the key (the subscriber's `self.<field>` may
+     * be reassigned — and its blob retired — after registration);
+     * key_lo carries its FNV-1a-64 hash, key_hi is 0. The publish
+     * site passes (hash, payload-field char*) in the same two slots;
+     * lotus_bus_key_matches gates on the hash and settles collisions
+     * with a full strcmp. Same-process only: remote fanout is unkeyed
+     * at v0.1, so the pointer never crosses an address space. Freed
+     * only in lotus_bus_router_destroy — quarantine must NOT free it
+     * (a concurrent dispatch walk past the subject gate may still
+     * read it). */
+    const char           *key_str;
 } lotus_bus_entry_t;
 
 static lotus_bus_entry_t *g_bus_entries = NULL;
@@ -7761,6 +7774,70 @@ void lotus_bus_register_keyed(const char *subject,
     e->key_filter_kind = key_filter_kind;
     e->key_lo      = key_lo;
     e->key_hi      = key_hi;
+    e->key_str     = NULL;
+}
+
+/* Gap B (2026-07-17): routing-key hash for String-keyed topics.
+ * FNV-1a 64. NULL hashes like "" (String fields default to the empty
+ * literal). Exported — the publish site calls it on the payload's
+ * keyed_by field; registration calls it on the subscriber's key. */
+uint64_t lotus_route_key_hash(const char *s) {
+    uint64_t h = 1469598103934665603ULL;        /* FNV offset basis */
+    if (s) {
+        for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+            h ^= (uint64_t)*p;
+            h *= 1099511628211ULL;              /* FNV prime */
+        }
+    }
+    return h;
+}
+
+/* Gap B: String-keyed registration. Same shape as
+ * lotus_bus_register_keyed but takes the key as a string; stores a
+ * heap-owned copy plus its hash. On any OOM the entry is dropped
+ * whole (graceful degrade, mirroring the registry-grow path) — a
+ * hash-only entry would false-positive on collision and route
+ * another key's traffic. Registration runs single-threaded at locus
+ * birth (before pools spin up), so the copy needs no synchronization. */
+void lotus_bus_register_keyed_str(const char *subject,
+                                  void *self_ptr,
+                                  void *handler,
+                                  lotus_mailbox_t *mailbox,
+                                  lotus_deserialize_fn deserialize,
+                                  lotus_coop_pool_t *coop_pool,
+                                  const char *key) {
+    size_t before = g_bus_count;
+    lotus_bus_register_keyed(subject, self_ptr, handler, mailbox,
+                             deserialize, coop_pool,
+                             /* key_filter_kind */ 1,
+                             lotus_route_key_hash(key),
+                             /* key_hi */ 0);
+    if (g_bus_count == before) return;          /* registry-grow OOM */
+    const char *k = key ? key : "";
+    size_t n = strlen(k) + 1;
+    char *copy = (char *)malloc(n);
+    if (!copy) {                                /* copy OOM — drop whole */
+        g_bus_count--;
+        return;
+    }
+    memcpy(copy, k, n);
+    g_bus_entries[g_bus_count - 1].key_str = copy;
+}
+
+/* Gap B: does keyed entry `e` (kind==1) match the published key?
+ * Scalar keys compare the (lo, hi) pair verbatim. String-keyed
+ * entries gate on the hash in key_lo, then settle collisions with a
+ * full strcmp against the publish-side pointer carried in key_hi.
+ * Typecheck fixes ONE key type per topic, so entries and publishes
+ * on a subject never mix scalar and String key encodings. */
+static int lotus_bus_key_matches(const lotus_bus_entry_t *e,
+                                 uint64_t key_lo, uint64_t key_hi) {
+    if (e->key_str) {
+        if (e->key_lo != key_lo) return 0;
+        const char *pk = (const char *)(uintptr_t)key_hi;
+        return pk && strcmp(e->key_str, pk) == 0;
+    }
+    return e->key_lo == key_lo && e->key_hi == key_hi;
 }
 
 /* Grow g_bus_static_buckets so index `id` is valid; new slots are
@@ -7967,7 +8044,7 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
         if (!lotus_subject_match(e->subject, subject)) continue;
         if (e->key_filter_kind == 1) {
             specific_subs_on_subject++;
-            if (e->key_lo != key_lo || e->key_hi != key_hi) continue;
+            if (!lotus_bus_key_matches(e, key_lo, key_hi)) continue;
             matched_specific = 1;
         } else if (e->key_filter_kind == 0) {
             unkeyed_subs_on_subject++;
@@ -8455,6 +8532,13 @@ void lotus_bus_quarantine_self(void *self_ptr) {
 }
 
 void lotus_bus_router_destroy(void) {
+    /* Gap B: release String-key copies (single-threaded teardown —
+     * the only safe point; see the key_str field comment). */
+    for (size_t i = 0; i < g_bus_count; i++) {
+        if (g_bus_entries && g_bus_entries[i].key_str) {
+            free((void *)g_bus_entries[i].key_str);
+        }
+    }
     if (g_bus_entries) free(g_bus_entries);
     g_bus_entries = NULL;
     g_bus_count   = 0;
@@ -8693,6 +8777,65 @@ char *lotus_str_clone(lotus_arena_t *a, const char *s) {
     return out;
 }
 
+/* Gap A (2026-07-17): force-copy variant of lotus_str_clone — NO
+ * static-literal and NO same-arena passthrough. The self-storage
+ * single-owner fixups use this when an incoming pointer is already
+ * inside the destination arena but is NOT the slot's own old
+ * pointer: that pointer is another slot's blob (a `self.g = self.f`
+ * style store, or a struct literal embedding a `self.<field>` read),
+ * and sharing it breaks value semantics — the original slot's next
+ * in-place overwrite would mutate this slot's value too, and anchor
+ * retirement would free a blob the other slot still references.
+ * Copying restores exclusive ownership; the clone-skip fast paths
+ * stay untouched for every other caller. */
+static char *lotus_str_copy_owned(lotus_arena_t *a, const char *s) {
+    size_t n = strlen(s);
+    char *out = (char *)lotus_arena_alloc_reusable(a, n + 1, 1);
+    if (!out) return NULL;
+    memcpy(out, s, n);
+    out[n] = '\0';
+    return out;
+}
+
+/* Gap A (2026-07-17): post-replace fixup for ONE String field of a
+ * compound `self.<field> = Struct { ... }` store. Called by codegen
+ * after the rhs bytes are memcpy'd over the existing struct, once
+ * per String field, with:
+ *   slot — the field's slot inside the DESTINATION struct
+ *   oldp — the field's pointer before the memcpy (the replaced clone)
+ *   rawp — the rhs field's pointer BEFORE the anchor walk ran
+ *
+ * Cases (see notes/anchor-retirement.md):
+ *   *slot == oldp   RMW round-trip (`self.f = self.f`, or a scratch
+ *                   copy that kept the field untouched) — the pointer
+ *                   survives, nothing to retire, nothing to copy.
+ *   otherwise       the old clone is replaced: retire it (the gates
+ *                   inside lotus_arena_retire_str skip NULL, static
+ *                   literals, and other-arena pointers). Then, if the
+ *                   stored pointer is same-arena AND the anchor walk
+ *                   passed it through unchanged (*slot == rawp), it
+ *                   was skip-shared from another self-storage slot —
+ *                   force an owned copy so slots never alias. A fresh
+ *                   anchor clone (*slot != rawp) or a static literal
+ *                   is already exclusively owned / immutable.
+ *
+ * No within-call dedup (unlike lotus_hashmap_retire_cell): plain
+ * struct fields can only alias each other via the same skip-share
+ * paths this fix removes, so with this binary the old struct's
+ * fields are pairwise-distinct arena blobs. */
+void lotus_str_field_replace_fixup(void *arena_ptr, char **slot,
+                                   char *oldp, char *rawp) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (!a || !slot) return;
+    char *ap = *slot;
+    if (ap == oldp) return;
+    lotus_arena_retire_str(a, oldp);
+    if (ap && ap == rawp && lotus_ptr_in_arena(a, ap)) {
+        char *own = lotus_str_copy_owned(a, ap);
+        if (own) *slot = own;
+    }
+}
+
 /* 2026-05-22 PM: in-place String reassignment for the
  * `self.X = String_value` field-assign hot path. The motivating
  * leak class (a downstream daemon / SymbolBook): every per-delta
@@ -8734,9 +8877,26 @@ char *lotus_str_clone(lotus_arena_t *a, const char *s) {
 char *lotus_str_assign_in_place(lotus_arena_t *a, char *old,
                                  const char *new_s) {
     if (!new_s) return NULL;
-    if (!old) return lotus_str_clone(a, new_s);
+    /* Gap A (2026-07-17): single-owner discipline. When the incoming
+     * pointer is already inside `a`, it is another self-storage
+     * slot's blob (fresh values live in method scratch; only reads
+     * of self-storage produce same-arena pointers here). The old
+     * same-arena passthrough in lotus_str_clone shared that blob
+     * between two slots, so the source slot's next in-place
+     * overwrite silently mutated this slot too — and a shared blob
+     * must never be retired. Force an owned copy instead; the
+     * static-literal and cross-arena paths keep the clone-skip. */
+    if (!old) {
+        if (lotus_ptr_in_arena(a, new_s)) {
+            return lotus_str_copy_owned(a, new_s);
+        }
+        return lotus_str_clone(a, new_s);
+    }
     if (old == new_s) return old;
     if (lotus_str_is_static_literal(old)) {
+        if (lotus_ptr_in_arena(a, new_s)) {
+            return lotus_str_copy_owned(a, new_s);
+        }
         return lotus_str_clone(a, new_s);
     }
     /* old is an arena-owned NUL-terminated buffer. strlen(old)
@@ -8748,7 +8908,18 @@ char *lotus_str_assign_in_place(lotus_arena_t *a, char *old,
         old[new_len] = '\0';
         return old;
     }
-    /* New is longer than old's buffer — clone. */
+    /* New is longer than old's buffer — the slot abandons `old`.
+     * Gap A: retire it (reusable at the activation-boundary flush)
+     * instead of orphaning it in the locus arena for the locus's
+     * lifetime; that was the "old buffer leaks per the structural
+     * arena limitation" case above. Note the recorded size is
+     * strlen(old)+1, which UNDER-reports the physical block after a
+     * prior in-place shrink — safe (the flush never writes past the
+     * recorded size), it only degrades reuse matching. */
+    lotus_arena_retire_str(a, old);
+    if (lotus_ptr_in_arena(a, new_s)) {
+        return lotus_str_copy_owned(a, new_s);
+    }
     return lotus_str_clone(a, new_s);
 }
 
@@ -9054,12 +9225,46 @@ void *lotus_bytes_clone(lotus_arena_t *a, const void *src) {
  *
  * Static-literal skip + null-old skip + same-pointer skip mirror
  * lotus_str_assign_in_place's logic. */
+
+/* Gap A (2026-07-17): Bytes companion to lotus_str_copy_owned —
+ * unconditional deep copy, no static/same-arena passthrough. Plain
+ * lotus_arena_alloc (NOT the retire freelist): Bytes blobs need
+ * align 8 for their length prefix and the freelist recycles align-1
+ * String blocks, so Bytes stays out of block reuse in v1 (the
+ * aliasing fix matters; the grow-path reclaim is a follow-up). */
+static void *lotus_bytes_copy_owned(lotus_arena_t *a, const void *src) {
+    int64_t len = lotus_bytes_len(src);
+    if (len < 0) len = 0;
+    void *blob = lotus_bytes_create(a, len);
+    if (!blob) return NULL;
+    if (len > 0) {
+        memcpy(lotus_bytes_data(blob),
+               (const char *)src + sizeof(int64_t), (size_t)len);
+    }
+    return blob;
+}
+
 void *lotus_bytes_assign_in_place(lotus_arena_t *a, void *old,
                                    const void *new_b) {
     if (!new_b) return NULL;
-    if (!old) return lotus_bytes_clone(a, new_b);
+    /* Gap A: single-owner discipline, mirroring
+     * lotus_str_assign_in_place — a same-arena incoming pointer is
+     * another self-storage slot's blob; sharing it lets the source
+     * slot's next in-place overwrite mutate this slot too. Force an
+     * owned copy on every path that would otherwise store the
+     * shared pointer. (No retire for Bytes in v1 — see
+     * lotus_bytes_copy_owned.) */
+    if (!old) {
+        if (lotus_ptr_in_arena(a, new_b)) {
+            return lotus_bytes_copy_owned(a, new_b);
+        }
+        return lotus_bytes_clone(a, new_b);
+    }
     if (old == new_b) return old;
     if (lotus_str_is_static_literal((const char *)old)) {
+        if (lotus_ptr_in_arena(a, new_b)) {
+            return lotus_bytes_copy_owned(a, new_b);
+        }
         return lotus_bytes_clone(a, new_b);
     }
     int64_t old_cap = lotus_bytes_len(old);
@@ -9075,6 +9280,12 @@ void *lotus_bytes_assign_in_place(lotus_arena_t *a, void *old,
                 (size_t)new_len);
         }
         return old;
+    }
+    /* Doesn't fit — the slot abandons `old` (still orphaned in v1;
+     * Bytes retire is a follow-up). Same single-owner rule for the
+     * replacement pointer. */
+    if (lotus_ptr_in_arena(a, new_b)) {
+        return lotus_bytes_copy_owned(a, new_b);
     }
     return lotus_bytes_clone(a, new_b);
 }
@@ -12878,7 +13089,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
         if (!e->deserialize) continue;
         if (e->key_filter_kind == 1) {
             specific_subs_on_subject++;
-            if (e->key_lo != key_lo || e->key_hi != key_hi) continue;
+            if (!lotus_bus_key_matches(e, key_lo, key_hi)) continue;
             matched_specific = 1;
         } else if (e->key_filter_kind == 0) {
             unkeyed_subs_on_subject++;

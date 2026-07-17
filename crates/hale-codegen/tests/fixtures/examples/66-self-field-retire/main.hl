@@ -1,0 +1,90 @@
+// 66-self-field-retire — plain self-field anchor retirement + the
+// single-owner aliasing fix (Gap A, 2026-07-17).
+//
+// Two properties under churn, both SEGV-or-corruption-prone regressions:
+//
+//  1. RECLAIM: a compound `self.<field> = Struct { ... }` replace
+//     retires the old struct's String clones at the method activation
+//     boundary (lotus_str_field_replace_fixup), and a direct
+//     `self.<field> = String` grow retires the abandoned buffer
+//     (lotus_str_assign_in_place). Recycled blocks flow through the
+//     same freelists as the hashmap path — double-retire or a
+//     dangling slot corrupts within a few thousand churns.
+//
+//  2. SINGLE-OWNER: `self.b = self.a`, and a struct literal embedding
+//     a `self.<field>` read, must COPY — pre-fix the same-arena clone
+//     skip shared the source slot's blob, so the source's next
+//     in-place overwrite silently mutated the aliased slot (and a
+//     retire would have freed a blob the other slot still held).
+//
+// Strings are concat-built on purpose: static literals live in
+// .rodata, short-circuit the clone helpers, and never exercise the
+// retire/reuse path.
+
+type Cell { s: String = ""; t: String = ""; n: Int = 0; }
+
+main locus SelfFieldRetire {
+    params {
+        a: Cell = Cell { };
+        b: Cell = Cell { };
+        f: String = "";
+        g: String = "";
+        iters: Int = 100000;
+        sink: Int = 0;
+    }
+
+    // Fresh-clone whole-struct replace — the primary retire path.
+    fn churn(i: Int) {
+        self.a = Cell { s: "value." + (i - (i / 100) * 100), t: "" + i, n: i };
+    }
+
+    // Cross-slot whole-struct copy (force-copy), then replace the source.
+    fn alias_struct(i: Int) {
+        self.b = self.a;
+        self.a = Cell { s: "repl." + i, t: "x" + i, n: i };
+    }
+
+    // Literal embedding a same-arena self String read (force-copy).
+    fn alias_literal(i: Int) {
+        self.f = "shared." + (i - (i / 50) * 50);
+        self.a = Cell { s: self.f, t: "y" + i, n: i };
+    }
+
+    // Same-slot round-trips: pointers survive, nothing retires.
+    fn rmw() {
+        self.a = self.a;
+        self.g = self.g;
+    }
+
+    // Direct String churn incl. grow-path retire + cross-slot copy.
+    fn direct(i: Int) {
+        self.g = "grow." + i + ".padpadpadpad";
+        self.f = self.g;
+    }
+
+    // Read every slot so a dangling blob is actually dereferenced.
+    fn check() {
+        self.sink = self.sink + len(self.a.s) + len(self.a.t)
+            + len(self.b.s) + len(self.b.t) + len(self.f) + len(self.g);
+    }
+
+    run() {
+        let mut i = 0;
+        while i < self.iters {
+            self.churn(i);
+            self.alias_struct(i);
+            self.alias_literal(i);
+            self.rmw();
+            self.direct(i);
+            self.check();
+            i = i + 1;
+        }
+        // b took its copy from `a` while `a` held churn's "value.<i%100>";
+        // both later `a` replacements and f/g overwrites must not reach it.
+        println("churn done: b.s=", self.b.s, " f=", self.f, " sink>0=", self.sink > 0);
+    }
+}
+
+fn main() {
+    SelfFieldRetire { };
+}

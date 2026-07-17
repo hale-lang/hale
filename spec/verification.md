@@ -164,6 +164,42 @@ assume the others in a build:
   instantiation outside a loop reclaims at method exit. This is the
   conservative default advisory; `@budget` is the strict opt-in contract
   built on the same intent.
+
+  Gap D extensions (2026-07-17): (3) a locus / `BytesBuilder`
+  instantiated **anywhere in a bus handler** (not just a loop) — a
+  handler runs per message, so a per-call instance is the
+  ~4.5 KB/frame class; hoist it to a reused field. (4) **`accept`
+  without `release` on a daemon-shaped locus** — declaring
+  `release(c: C)` marks `C` a flow child (reclaimed when its `run()`
+  completes); without it every accepted child is RESIDENT until the
+  parent dissolves, so a parent whose `run()` loops forever (literal
+  `while true` — the deliberately narrow daemon signal) grows
+  O(accepted children). Run-to-exit accept examples stay silent.
+- **`@hot` — hot-path certification** (Gap D, 2026-07-17). The layered
+  escalation between the default advisory and `@budget`'s counted
+  ceiling: `@hot fn` certifies "this is a 10k/s-class path" and (a)
+  **promotes the hot-path lint's findings inside that fn to hard
+  errors** (prefixed `@hot:`), and (b) enables two stricter,
+  perf-only hints that would nag as defaults: `.snapshot()` /
+  `.finish()` in a loop or handler (each call copies the builder's
+  full contents — prefer the zero-copy `.view()` / `.text_view()`),
+  and a whole-struct replace of a direct self-field (post-Gap-A the
+  replaced String clones retire, so this is no longer a leak — but
+  each store still pays a clone + retire per heap field where
+  in-place scalar mutation is allocation-free). fn-only; stacks with
+  a following `@budget(...)`:
+  `@hot @budget(alloc_per_call = 0) fn send(...)`.
+- **Anchor-retirement verdict flip** (Gap D, 2026-07-17). The item-1
+  survey's model learned what Gap A's runtime now does: a whole-field
+  `self.<f> = Struct { ... }` replace of a struct whose fields are all
+  scalar / `String` reclaims at the enclosing method's activation
+  boundary (the struct bytes memcpy in place; replaced String clones
+  retire and recycle — RSS-validated flat over 1M replaces), so such a
+  site invoked unboundedly is no longer reported. The conservative
+  verdict stays for: structs with `Bytes` / nested compound / array
+  fields (those leaves don't retire yet), stores directly inside a
+  `run()`-loop (no activation boundary — pending retires never
+  flush), and scratchless owners.
 - **Resource-budget tracking (item 5)** — fully shipped, opt-in. A static
   **count** of pinned threads / cooperative pools / bus subjects /
   fd-acquisition sites (fd-opening calls *and* held-fd `Listener` /

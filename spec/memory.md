@@ -1139,9 +1139,26 @@ reclaim on a real-world long-running workload:
      anchors the rhs's heap fields in `self.__arena` (same
      mechanism as #5), then memcpys the rhs's bytes over the
      existing struct's bytes via the slot's pointer. The slot's
-     pointer doesn't change; `self.__arena` doesn't grow under
-     repeated assigns to the same slot. Bounds locus arenas
-     under any assign frequency.
+     pointer doesn't change.
+
+     Since 2026-07-17 the store also runs a per-String-field
+     replace fixup (`lotus_str_field_replace_fixup`): each old
+     field pointer the memcpy overwrites is *retired* (pending
+     until the user-method activation-boundary flush, then
+     reusable — the same anchor-retirement machinery as
+     @form(hashmap) set/remove), and a same-arena rhs pointer
+     that the anchor walk passed through unchanged is force-
+     copied so two self-storage slots never share a blob
+     (single-owner; see #7's aliasing note). RMW round-trips
+     (`self.X = self.X`, a scratch copy with untouched fields)
+     keep their pointers and retire nothing. Net: repeated
+     whole-struct replaces with fresh String contents hold
+     `self.__arena` flat — previously each replace orphaned the
+     old clones for the locus lifetime. String fields only at
+     v0.1 (Bytes and pointer-shaped compound fields of the
+     replaced struct keep the pre-fix behavior); fields of
+     @form vec / bounded cells and stores from boundary-less
+     contexts (a `run()` loop) do not retire.
 
   7. **In-place String / Bytes reassignment at `self.X =
      heap_value`.** `lotus_str_assign_in_place(arena, old, new)`
@@ -1152,10 +1169,23 @@ reclaim on a real-world long-running workload:
      [payload]` Bytes header; when `new_len <= old_cap` it
      updates the prefix and memcpys the payload in place.
      Static-literal `old` falls through to the clone path
-     (`.rodata` isn't writable); same when new is longer than
-     old's buffer (the old buffer leaks like before, but only
-     on rare length-growth events rather than every
-     reassignment). The codegen emits the right helper at every
+     (`.rodata` isn't writable). When new is longer than old's
+     buffer, the abandoned String buffer is *retired* since
+     2026-07-17 (reusable after the activation-boundary flush)
+     instead of leaking; a Bytes grow still leaks (Bytes blobs
+     are align-8 and stay out of the align-1 retire freelist —
+     follow-up).
+
+     Single-owner rule (2026-07-17): on every path that stores
+     a replacement pointer, an incoming pointer that is already
+     inside `a` is another self-storage slot's blob (fresh
+     values live in method scratch; only self-storage reads
+     produce same-arena pointers here) and is force-copied
+     rather than shared. Pre-fix, `self.g = self.f` on the
+     non-fitting path stored `f`'s own pointer into `g`'s slot,
+     and `f`'s next in-place overwrite silently mutated `g` —
+     a value-semantics violation, and unsound to combine with
+     retirement. The codegen emits the right helper at every
      `self.X = String|Bytes` site inside a method-with-scratch.
      Closes the per-update heap-field-reassignment leak class
      — measured against a per-frame `self.last_ts = ts` pattern

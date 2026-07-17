@@ -12,13 +12,22 @@ use crate::codegen::{
     CodegenError, CodegenTy, Cx, RoutingKeySubjectInfo, Scope,
 };
 
+/// Gap B (2026-07-17): a lowered `where key ==` filter. Scalar keys
+/// keep the Phase-3 (kind, key_lo, key_hi) triple; String keys carry
+/// the key's pointer — the runtime (`lotus_bus_register_keyed_str`)
+/// hashes it and stores an owned copy at registration.
+pub(crate) enum LoweredKeyFilter<'ctx> {
+    Scalar(u8, IntValue<'ctx>, IntValue<'ctx>),
+    Str(PointerValue<'ctx>),
+}
+
 pub(crate) trait BusDispatch<'ctx> {
     fn lower_subscribe_key_filter(
         &mut self,
         self_ptr: PointerValue<'ctx>,
         key_filter: Option<&KeyFilter>,
         subject: &str,
-    ) -> Result<(u8, IntValue<'ctx>, IntValue<'ctx>), CodegenError>;
+    ) -> Result<LoweredKeyFilter<'ctx>, CodegenError>;
     fn lower_send(
         &mut self,
         subject: &Expr,
@@ -48,14 +57,18 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
     /// (m59) can decode wire-format bytes into a struct before
     /// dispatching to the handler.
     /// Phase 3 (2026-05-25): lower a `where key == EXPR` clause's
-    /// RHS into the (kind, key_lo, key_hi) triple that
-    /// `lotus_bus_register_keyed` expects.
+    /// RHS into what the runtime registration expects — the
+    /// (kind, key_lo, key_hi) triple for scalar keys
+    /// (`lotus_bus_register_keyed`), or the key's String pointer
+    /// for String keys (`lotus_bus_register_keyed_str`, Gap B
+    /// 2026-07-17 — the runtime hashes it and stores an owned
+    /// copy).
     ///
     /// v0.1 supports three RHS shapes:
     ///   - literal Int / Decimal / Time / Duration / Bool /
-    ///     no-payload enum variant
-    ///   - `self.<field>` path read (field must be int-shaped,
-    ///     enforced here as a codegen-time diag if it isn't)
+    ///     no-payload enum variant / String
+    ///   - `self.<field>` path read (field must be a supported
+    ///     key type, enforced here as a codegen-time diag)
     ///   - `_` sentinel → kind = 2 (catch-unmatched fallback)
     ///
     /// For absent filter: kind = 0; key_lo = key_hi = 0
@@ -65,10 +78,14 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
         self_ptr: PointerValue<'ctx>,
         key_filter: Option<&KeyFilter>,
         subject: &str,
-    ) -> Result<(u8, IntValue<'ctx>, IntValue<'ctx>), CodegenError> {
+    ) -> Result<LoweredKeyFilter<'ctx>, CodegenError> {
         let i64_t = self.context.i64_type();
         match key_filter {
-            None => Ok((0, i64_t.const_zero(), i64_t.const_zero())),
+            None => Ok(LoweredKeyFilter::Scalar(
+                0,
+                i64_t.const_zero(),
+                i64_t.const_zero(),
+            )),
             Some(KeyFilter::Unmatched { .. }) => {
                 // Phase 3 fallback policy (2026-05-25): register
                 // with key_filter_kind=2. The runtime's keyed-
@@ -79,7 +96,11 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                 // topic; codegen trusts that contract.
                 let _ = self_ptr;
                 let _ = subject;
-                Ok((2, i64_t.const_zero(), i64_t.const_zero()))
+                Ok(LoweredKeyFilter::Scalar(
+                    2,
+                    i64_t.const_zero(),
+                    i64_t.const_zero(),
+                ))
             }
             Some(KeyFilter::Specific { expr, .. }) => {
                 // Lower the EXPR. `lower_expr` reads `self.X`
@@ -91,17 +112,28 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                 let _ = self_ptr;
                 let scope = Scope::default();
                 let (val, ty) = self.lower_expr(expr, &scope)?;
+                // Gap B: String key — hand the pointer to the
+                // runtime, which owns a copy + its hash.
+                // (StringView is NOT accepted: its data pointer
+                // isn't NUL-terminated, and the runtime key copy /
+                // compare are strcmp-shaped. `std::str::clone` a
+                // view first.)
+                if matches!(ty, CodegenTy::String) {
+                    return Ok(LoweredKeyFilter::Str(
+                        val.into_pointer_value(),
+                    ));
+                }
                 let (key_lo, key_hi) = self.key_value_to_i64_pair(val, &ty)
                     .ok_or_else(|| {
                         CodegenError::Unsupported(format!(
                             "subscribe `{}`: `where key == EXPR` RHS \
-                             of type {:?} is not int-shaped (must be \
-                             Int / Decimal / Time / Duration / Bool / \
-                             no-payload enum)",
+                             of type {:?} is not a supported key type \
+                             (must be Int / Decimal / Time / Duration \
+                             / Bool / no-payload enum / String)",
                             subject, ty
                         ))
                     })?;
-                Ok((1, key_lo, key_hi))
+                Ok(LoweredKeyFilter::Scalar(1, key_lo, key_hi))
             }
         }
     }
@@ -391,15 +423,57 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                     ),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let (key_lo, key_hi) = self
-                .key_value_to_i64_pair(field_val, &field_ty)
-                .ok_or_else(|| {
-                    CodegenError::Unsupported(format!(
-                        "keyed_by field `{}.{}` of type {:?} is not \
-                         int-shaped (typecheck should have caught this)",
-                        info.payload_type_name, info.keyed_by_field, field_ty
-                    ))
-                })?;
+            // Gap B (2026-07-17): String keys ride the existing
+            // (key_lo, key_hi) i64 pair — key_lo is the FNV-1a
+            // hash (lotus_route_key_hash), key_hi the field's
+            // char* as an integer. Dispatch runs synchronously on
+            // this thread, so the pointer is live for the whole
+            // call, and remote fanout is unkeyed at v0.1, so it
+            // never crosses an address space. String-keyed
+            // registry entries compare hash-then-strcmp
+            // (lotus_bus_key_matches).
+            let (key_lo, key_hi) = if matches!(field_ty, CodegenTy::String)
+            {
+                let field_ptr = field_val.into_pointer_value();
+                let i64_t = self.context.i64_type();
+                let hash_fn = self
+                    .module
+                    .get_function("lotus_route_key_hash")
+                    .expect("lotus_route_key_hash declared");
+                let hash = self
+                    .builder
+                    .build_call(
+                        hash_fn,
+                        &[field_ptr.into()],
+                        "bus.send.key.str.hash",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_route_key_hash returns i64")
+                    .into_int_value();
+                let ptr_int = self
+                    .builder
+                    .build_ptr_to_int(
+                        field_ptr,
+                        i64_t,
+                        "bus.send.key.str.ptr",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                (hash, ptr_int)
+            } else {
+                self.key_value_to_i64_pair(field_val, &field_ty)
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "keyed_by field `{}.{}` of type {:?} is not \
+                             a supported key type (typecheck should \
+                             have caught this)",
+                            info.payload_type_name,
+                            info.keyed_by_field,
+                            field_ty
+                        ))
+                    })?
+            };
             // Phase 3 fail policy (2026-05-25): `on_unmatched:
             // fail` routes through the fallible dispatch variant
             // and branches on the no-match return path into the

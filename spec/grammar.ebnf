@@ -765,14 +765,24 @@ function_decl     = [ function_decorator ] ,
    call. `N = 0` is the zero-alloc certificate. fn-only; mutually
    exclusive with `@unbounded` (only one fn decorator parses).
    `budget` / `alloc_per_call` are contextual, recognized only in
-   this annotation. See `spec/verification.md`. *)
+   this annotation. See `spec/verification.md`.
+
+   `@hot` (Gap D, 2026-07-17) certifies a fn/handler as a hot path:
+   the hot-path allocation lint's findings inside it become hard
+   errors and the stricter perf hints activate. fn-only (free fn or
+   locus method); `hot` is contextual, recognized only after `@`.
+   The one decorator that STACKS: an optional `budget_annotation`
+   may follow it (`@hot @budget(alloc_per_call = 0) fn …`). See
+   `spec/verification.md`. *)
 function_decorator = ffi_annotation | export_annotation
-                   | unbounded_annotation | budget_annotation ;
+                   | unbounded_annotation | budget_annotation
+                   | hot_annotation ;
 ffi_annotation    = "@" , "ffi" , "(" , STRING_LIT , ")" ;
 export_annotation = "@" , "export" ;
 unbounded_annotation = "@" , "unbounded" ;
 budget_annotation = "@" , "budget" , "(" , "alloc_per_call" ,
                     "=" , INT_LIT , ")" ;
+hot_annotation    = "@" , "hot" , [ budget_annotation ] ;
 
 (* v1.x-FORM-1: a fallible fn's return type is "value of T, or
    an error has occurred with payload P." Callers MUST address

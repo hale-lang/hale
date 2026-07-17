@@ -247,6 +247,20 @@ pub struct AllocSite {
     /// name. `None` for non-self escapes and for indexed in-place writes.
     /// The solver (D2) uses it to ask whether `<field>` is a capacity slot.
     pub target_field: Option<String>,
+    /// Gap D (2026-07-17): a whole-field `self.<f> = Struct { ... }`
+    /// replace whose struct type has ONLY scalar / String fields. Since
+    /// Gap A, such a store fully reclaims: the struct's bytes memcpy in
+    /// place, and each replaced String clone RETIRES at the enclosing
+    /// method's activation boundary and recycles on the next store —
+    /// RSS-validated flat over 1M replaces (alloc_model_rss.rs::
+    /// self_field_struct_replace_churn). Cross-invocation multiplicity
+    /// therefore no longer accumulates for these sites. The within-call
+    /// loop verdict is NOT flipped: retires only flush at activation
+    /// exit, so a `while true` churn inside one call (a `run()` loop)
+    /// still grows and stays flagged. Structs with Bytes / nested
+    /// compound / array fields keep the conservative verdict (those
+    /// leaves don't retire yet).
+    pub retired_store: bool,
     pub span: Span,
 }
 
@@ -613,6 +627,19 @@ impl AllocSummary {
                             SiteVerdict::PerIterationReclaim
                         }
                     }
+                    // Gap D (2026-07-17): a retired whole-field struct
+                    // replace reclaims at each invocation's activation
+                    // boundary (Gap A anchor retirement, RSS-proven
+                    // flat) — unbounded INVOCATION no longer means
+                    // unbounded accumulation. Needs the activation
+                    // boundary: a scratchless owner never flushes its
+                    // pending retires, so it keeps the conservative
+                    // verdict.
+                    Escape::StoredToSelf
+                        if site.retired_store && !owner_scratchless =>
+                    {
+                        SiteVerdict::PerIterationReclaim
+                    }
                     _ => SiteVerdict::AccumulatesUnbounded,
                 }
             }
@@ -842,6 +869,11 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
     let mut locus_shapes: BTreeMap<String, LocusShape> = BTreeMap::new();
     // Phase D / D2 — per-locus param field → declared type name.
     let mut locus_field_types: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    // Gap D — struct types whose fields are ALL scalar / String: a
+    // whole-field replace of one fully reclaims via anchor retirement
+    // (Gap A). Conservative: any Bytes / nested compound / array /
+    // view field disqualifies (those leaves don't retire yet).
+    let mut retirable_structs: BTreeSet<String> = BTreeSet::new();
     // 2026-07-01 — per-locus scalar-[T; N] param fields (inline layout).
     let mut locus_inline_arrays: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
@@ -856,6 +888,29 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
                     }
                     known.insert(key.clone());
                     bodies.push((key, decl.body.clone(), entry, None, param_var_types(&decl.params)));
+                }
+                TopDecl::Type(td) => {
+                    if let TypeDeclBody::Struct(fields) = &td.body {
+                        let all_retirable = fields.iter().all(|f| {
+                            matches!(
+                                &f.ty,
+                                TypeExpr::Primitive(
+                                    PrimType::Int
+                                        | PrimType::Uint
+                                        | PrimType::Float
+                                        | PrimType::Decimal
+                                        | PrimType::String
+                                        | PrimType::Bool
+                                        | PrimType::Time
+                                        | PrimType::Duration,
+                                    _
+                                )
+                            )
+                        });
+                        if all_retirable {
+                            retirable_structs.insert(td.name.name.clone());
+                        }
+                    }
                 }
                 TopDecl::Locus(l) => {
                     let locus = l.name.name.clone();
@@ -947,6 +1002,7 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
             field_types,
             inline_array_fields,
             form_of: &form_of,
+            retirable_structs: &retirable_structs,
         };
         w.walk_block(body, 0, Escape::Local);
         summary.fns.insert(
@@ -1206,6 +1262,10 @@ struct Walker<'a> {
     /// Every locus's `@form(...)` name, keyed by locus type name — the
     /// lookup `var_types`/`field_types` feed into `form_grows`.
     form_of: &'a BTreeMap<String, String>,
+    /// Gap D: struct type names whose fields are ALL scalar / String —
+    /// a whole-field replace of such a struct fully reclaims via anchor
+    /// retirement (see `AllocSite::retired_store`).
+    retirable_structs: &'a BTreeSet<String>,
 }
 
 impl<'a> Walker<'a> {
@@ -1217,6 +1277,11 @@ impl<'a> Walker<'a> {
         } else {
             None
         };
+        // Gap D: whole-field struct replace of an all-scalar/String
+        // struct — reclaimed via anchor retirement (Gap A).
+        let retired_store = target_field.is_some()
+            && matches!(&kind, AllocKind::StructLit(n)
+                if self.retirable_structs.contains(n));
         self.sites.push(AllocSite {
             kind,
             escape,
@@ -1225,6 +1290,7 @@ impl<'a> Walker<'a> {
             in_infinite_loop: self.infinite_stack.iter().any(|i| *i),
             reclaim: ReclaimScope::of(escape),
             target_field,
+            retired_store,
             span,
         });
     }
@@ -1281,6 +1347,7 @@ impl<'a> Walker<'a> {
             in_infinite_loop: self.infinite_stack.iter().any(|i| *i),
             reclaim: ReclaimScope::EnclosingLocus,
             target_field: None,
+            retired_store: false,
             span,
         });
     }
@@ -1952,9 +2019,12 @@ mod tests {
             "a non-escaping handler local is reclaimed per delivery — must not flag"
         );
 
-        // (b) the same handler storing the struct INTO self → escapes the
-        // scratch → accumulates across deliveries → flagged.
-        let stored = r#"
+        // (b) the same handler storing the struct INTO self. Gap D
+        // (2026-07-17) split this by field types: an ALL-scalar/String
+        // struct replace fully reclaims (in-place memcpy + Gap A anchor
+        // retirement at the activation boundary, RSS-proven flat), so
+        // it is no longer flagged...
+        let stored_retirable = r#"
             type T { n: Int; }
             type Tmp { a: Int; b: Int; }
             locus L {
@@ -1964,10 +2034,29 @@ mod tests {
             }
             fn main() { }
         "#;
+        assert!(
+            summarize(stored_retirable).leak_sites().is_empty(),
+            "an all-scalar struct replace reclaims per activation (Gap A \
+             retirement) — must NOT flag"
+        );
+        // ...while a struct carrying a non-retirable leaf (Bytes /
+        // nested compound) keeps the conservative escape verdict —
+        // the escape-awareness this test exists to pin.
+        let stored_leaky = r#"
+            type T { n: Int; }
+            type Tmp { a: Int; b: Bytes; }
+            locus L {
+                params { last: Tmp; }
+                bus { subscribe "in" as on_in of type T; }
+                fn on_in(m: T) { self.last = Tmp { a: m.n, b: std::bytes::from_string("x") }; }
+            }
+            fn main() { }
+        "#;
         assert_eq!(
-            summarize(stored).leak_sites().len(),
+            summarize(stored_leaky).leak_sites().len(),
             1,
-            "a self-stored handler alloc persists across deliveries — must flag"
+            "a self-stored alloc with a non-retirable leaf persists \
+             across deliveries — must flag"
         );
 
         // (c) a non-escaping local in an UNBOUNDED LOOP inside the handler
@@ -2320,6 +2409,95 @@ mod tests {
         assert!(
             unbounded_alloc_diags(&[&program], false).is_empty(),
             "@unbounded suppresses the site in @bounded scope too"
+        );
+    }
+
+    // === Gap D (2026-07-17): anchor-retirement verdict flip ===========
+
+    fn leak_msgs(src: &str) -> Vec<String> {
+        let program = hale_syntax::parse_source(src).expect("parse");
+        unbounded_alloc_diags(&[&program], true)
+            .into_iter()
+            .map(|d| d.message)
+            .collect()
+    }
+
+    #[test]
+    fn retired_struct_replace_in_method_not_flagged() {
+        // Gap A retires the replaced String clones of an all-scalar/
+        // String struct at the method activation boundary — a method
+        // invoked unboundedly from a run-loop no longer accumulates
+        // (RSS-proven flat). The verdict model must not flag it.
+        let src = r#"
+            type Cell { s: String = ""; t: String = ""; n: Int = 0; }
+            locus Rec {
+                params { st: Cell = Cell { }; }
+                fn record(i: Int) {
+                    self.st = Cell { s: "v" + i, t: "" + i, n: i };
+                }
+                run() {
+                    while true { self.record(1); }
+                }
+            }
+            fn main() { Rec { }; }
+        "#;
+        let msgs = leak_msgs(src);
+        assert!(
+            !msgs.iter().any(|m| m.contains("struct Cell")),
+            "retired struct replace must not be flagged, got: {:?}",
+            msgs
+        );
+    }
+
+    #[test]
+    fn bytes_field_struct_replace_still_flagged() {
+        // Bytes fields don't retire (v1) — the conservative verdict
+        // stays for structs carrying one.
+        let src = r#"
+            type Cell { s: String = ""; b: Bytes; n: Int = 0; }
+            locus Rec {
+                params { st: Cell; }
+                fn record(i: Int) {
+                    self.st = Cell { s: "v" + i, b: std::bytes::from_string("x"), n: i };
+                }
+                run() {
+                    while true { self.record(1); }
+                }
+            }
+            fn main() { }
+        "#;
+        let msgs = leak_msgs(src);
+        assert!(
+            msgs.iter().any(|m| m.contains("struct Cell")),
+            "Bytes-field struct replace must stay flagged, got: {:?}",
+            msgs
+        );
+    }
+
+    #[test]
+    fn retired_struct_replace_in_run_loop_direct_still_flagged() {
+        // Directly inside run()'s `while true` there is no activation
+        // boundary — pending retires never flush, so the store still
+        // accumulates and must stay flagged.
+        let src = r#"
+            type Cell { s: String = ""; n: Int = 0; }
+            locus Rec {
+                params { st: Cell = Cell { }; }
+                run() {
+                    let mut i = 0;
+                    while true {
+                        self.st = Cell { s: "v" + i, n: i };
+                        i = i + 1;
+                    }
+                }
+            }
+            fn main() { Rec { }; }
+        "#;
+        let msgs = leak_msgs(src);
+        assert!(
+            msgs.iter().any(|m| m.contains("struct Cell")),
+            "run-loop direct struct replace must stay flagged, got: {:?}",
+            msgs
         );
     }
 

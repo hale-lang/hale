@@ -222,3 +222,260 @@ fn main() { }
         warnings(src)
     );
 }
+
+// ---- Gap D (2026-07-17): handler context, @hot, accept/release ------
+
+fn all_diags(src: &str) -> Vec<(bool, String)> {
+    // (is_error, message) pairs — Gap D promotes hot-path findings to
+    // errors inside `@hot` fns, so tests need the severity too.
+    let prog = parse_source(src).expect("parse failed");
+    check_program(&prog)
+        .into_iter()
+        .map(|d| (d.is_error(), d.message))
+        .collect()
+}
+
+#[test]
+fn builder_in_bus_handler_flagged_at_depth_zero() {
+    // A bus handler runs per message — a builder instantiated anywhere
+    // in it (no loop needed) is the ~4.5 KB/frame class.
+    let src = r#"
+type Msg { text: String = ""; }
+topic T { payload: Msg; subject: "t"; }
+locus Sub {
+    params { n: Int = 0; }
+    bus { subscribe T as on_msg; }
+    fn on_msg(m: Msg) {
+        let b = std::bytes::BytesBuilder { };
+        self.n = self.n + 1;
+    }
+}
+fn main() { }
+"#;
+    let ws = warnings(src);
+    assert!(
+        ws.iter().any(|m| m.contains("bus handler")),
+        "expected handler-scoped builder warning, got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn non_handler_method_at_depth_zero_stays_silent() {
+    // The same builder in a PLAIN method (not a handler, no loop) is
+    // once-per-call scratch — silent.
+    let src = r#"
+locus L {
+    params { n: Int = 0; }
+    fn helper() {
+        let b = std::bytes::BytesBuilder { };
+        self.n = self.n + 1;
+    }
+    run() { self.helper(); }
+}
+fn main() { }
+"#;
+    let ws = warnings(src);
+    assert!(ws.is_empty(), "expected no warnings, got: {:?}", ws);
+}
+
+#[test]
+fn hot_promotes_loop_finding_to_error() {
+    let src = r#"
+locus L {
+    @hot fn spin(x: Int) {
+        let mut i = 0;
+        while i < x {
+            let b = std::bytes::BytesBuilder { };
+            i = i + 1;
+        }
+    }
+    run() { }
+}
+fn main() { }
+"#;
+    let ds = all_diags(src);
+    assert!(
+        ds.iter().any(|(is_err, m)| *is_err
+            && m.contains("@hot")
+            && m.contains("hot-path allocation")),
+        "expected @hot-promoted ERROR, got: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn hot_snapshot_in_loop_suggests_view() {
+    let src = r#"
+locus L {
+    params { n: Int = 0; }
+    @hot fn drainy(b: std::bytes::BytesBuilder, x: Int) {
+        let mut i = 0;
+        while i < x {
+            let s = b.snapshot();
+            self.n = self.n + len(s);
+            i = i + 1;
+        }
+    }
+    run() { }
+}
+fn main() { }
+"#;
+    let ds = all_diags(src);
+    assert!(
+        ds.iter().any(|(is_err, m)| *is_err && m.contains(".view()")),
+        "expected @hot snapshot()-in-loop hint, got: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn snapshot_in_loop_without_hot_stays_silent() {
+    // The snapshot hint is @hot-tier — legitimate cold-path uses must
+    // not warn by default.
+    let src = r#"
+locus L {
+    params { n: Int = 0; }
+    fn drainy(b: std::bytes::BytesBuilder, x: Int) {
+        let mut i = 0;
+        while i < x {
+            let s = b.snapshot();
+            self.n = self.n + len(s);
+            i = i + 1;
+        }
+    }
+    run() { }
+}
+fn main() { }
+"#;
+    let ds = all_diags(src);
+    assert!(
+        !ds.iter().any(|(_, m)| m.contains(".view()")),
+        "snapshot hint must be @hot-gated, got: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn hot_whole_struct_replace_hinted() {
+    let src = r#"
+type State { a: Int = 0; b: String = ""; }
+locus L {
+    params { st: State = State { }; }
+    @hot fn tick(i: Int, x: Int) {
+        let mut j = 0;
+        while j < x {
+            self.st = State { a: j, b: "z" };
+            j = j + 1;
+        }
+    }
+    run() { }
+}
+fn main() { }
+"#;
+    let ds = all_diags(src);
+    assert!(
+        ds.iter().any(|(is_err, m)| *is_err
+            && m.contains("whole-struct replace")),
+        "expected @hot whole-struct-replace hint, got: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn hot_budget_stacking_parses_and_zero_alloc_passes() {
+    let src = r#"
+locus L {
+    @hot @budget(alloc_per_call = 0) fn tight(x: Int) -> Int {
+        let mut i = 0;
+        let mut acc = 0;
+        while i < x { acc = acc + i; i = i + 1; }
+        return acc;
+    }
+    run() { }
+}
+fn main() { }
+"#;
+    let ds = all_diags(src);
+    assert!(
+        !ds.iter().any(|(is_err, _)| *is_err),
+        "zero-alloc @hot @budget fn must be clean, got: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn accept_without_release_on_daemon_warns() {
+    let src = r#"
+locus Conn {
+    params { fd: Int = -1; }
+    run() { }
+}
+locus Gateway {
+    params { served: Int = 0; }
+    accept(c: Conn) { self.served = self.served + 1; }
+    run() {
+        while true {
+            std::time::sleep(1ms);
+        }
+    }
+}
+fn main() { }
+"#;
+    let ds = all_diags(src);
+    assert!(
+        ds.iter().any(|(is_err, m)| !*is_err
+            && m.contains("RESIDENT")
+            && m.contains("release(c: Conn)")),
+        "expected accept-without-release daemon warning, got: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn accept_without_release_run_to_exit_stays_silent() {
+    // The corpus's accept examples are run-to-exit — the warn is gated
+    // on the daemon shape (a literal `while true` in run()).
+    let src = r#"
+locus Conn { run() { } }
+locus Gateway {
+    params { served: Int = 0; }
+    accept(c: Conn) { self.served = self.served + 1; }
+    run() {
+        let mut i = 0;
+        while i < 3 { i = i + 1; }
+    }
+}
+fn main() { }
+"#;
+    let ds = all_diags(src);
+    assert!(
+        !ds.iter().any(|(_, m)| m.contains("RESIDENT")),
+        "run-to-exit accept must stay silent, got: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn accept_with_release_on_daemon_stays_silent() {
+    let src = r#"
+locus Conn { run() { } }
+locus Gateway {
+    params { served: Int = 0; }
+    accept(c: Conn) { self.served = self.served + 1; }
+    release(c: Conn) { }
+    run() {
+        while true {
+            std::time::sleep(1ms);
+        }
+    }
+}
+fn main() { }
+"#;
+    let ds = all_diags(src);
+    assert!(
+        !ds.iter().any(|(_, m)| m.contains("RESIDENT")),
+        "accept+release must stay silent, got: {:?}",
+        ds
+    );
+}
