@@ -6,6 +6,65 @@ behavior.
 
 ---
 
+## v0.11.4 — std::http grows a Router and a client (2026-07-17)
+
+Two pond libraries promoted into the stdlib — the batteries every HTTP
+program reached for: path routing on the server side, and outbound
+requests on the client side. Both arrived production-proven (pond's
+vendored copies are frozen with pointers here).
+
+### std::http::Router (promoted from pond/router)
+
+- **Path routing + middleware as a stdlib battery.** Register
+  `METHOD /path/:capture` patterns against handler loci
+  (`add(method, pattern, h)`; first match wins, method matching is
+  case-insensitive at register time), wrap the chain in
+  before/after `Middleware` (onion order, `use(m)`), and mount the
+  Router straight on a Server — it satisfies `std::http::Handler`
+  structurally, so `Server { handler: router }` just works. Route
+  handlers implement the new `RouteHandler` contract
+  (`handle(ctx: Context) -> Response`); `Context` bundles the parsed
+  request with extracted params — `path_param(ctx.params, "name")`
+  for `:name` captures, `query_param(ctx.params, "k")` for `?k=v`
+  pairs (`""` when absent; not URL-decoded at v1). Unmatched
+  requests hit an overridable `not_found` handler. Promotion
+  simplifications vs the vendored original: handlers return
+  `std::http::Response` directly (the local Response type + boundary
+  conversion were a vendored-lib aliasing workaround), and in-file
+  declaration order retires the alphabetical file-naming hack the
+  vendored copy needed for its storage loci.
+
+### std::http client (promoted from pond/http/client)
+
+- **Outbound HTTP/1.1 for both schemes.** One-shot free fns —
+  `get(url)` / `post(url, body, content_type)` / `request(req)`, all
+  `fallible(HttpError)`, `Connection: close` — plus the pooled
+  `Client` locus: retry-with-backoff, configurable user-agent/body
+  cap, and opt-in `keep_alive: true` that switches to framed reads
+  (Content-Length or `Transfer-Encoding: chunked`, chunk extensions
+  included) over a per-host connection pool. Fd reuse is
+  regression-proven: two keep-alive requests ride one accepted
+  connection in the test's server-side accept count. Client-side
+  types are deliberately distinct from the server side —
+  `ClientRequest` targets a `Url`; `ClientResponse` carries a
+  **Bytes** body so binary content (embedded NULs) survives —
+  and `parse_url` decomposes scheme/host/port/path. Placement
+  caveat carried in docs + spec: https rides `std::io::tls`, whose
+  recv blocks the worker thread (no async_io park yet) — keep
+  https-calling loci off `async_io` pools. Not in v1: redirects,
+  proxies, compression, URL-decoding.
+- **Form-design finding recorded:** the connection pool deliberately
+  is NOT `@form(lru_cache)` — an fd-owning cache needs an eviction
+  hook (the evicted fd must be closed, not dropped) and
+  take-semantics (ownership transfers out on hit), neither of which
+  the form offers. Logged in-code and in `spec/stdlib.md` as
+  feedback for a future forms arc.
+
+Docs: the everyday HTTP chapter gained a Routing section and its
+"calling out" section now teaches the stdlib client; `spec/stdlib.md`
+carries both contracts. New coverage: `http_router.rs`,
+`http_client.rs`, corpus fixture `69-http-router`.
+
 ## v0.11.3 — five language gaps + the unified styleguide (2026-07-17)
 
 A gap-closing release driven by a survey of five production Hale
