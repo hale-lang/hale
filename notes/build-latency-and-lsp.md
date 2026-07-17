@@ -42,6 +42,28 @@ Two facts kill the classic incremental-compilation plan:
   groundwork: a future `hale lsp` server wraps the same
   parse+check path; every M3 diagnostic already carries spans.
 
+## Shipped (2026-07-17) — `hale lsp` v1
+
+Staged item 2 landed: a stdio LSP server (`crates/hale-cli/src/
+lsp.rs`, `hale lsp`) over the existing parse+check. v1 =
+publishDiagnostics only: initialize/initialized/shutdown/exit +
+didOpen/didChange(full sync)/didSave(includeText)/didClose. Every
+document event re-checks the changed file's whole SEED (its
+directory, F.19) with overlay text winning over disk, then
+publishes for every file in the seed — empties clear stale
+squiggles with zero bookkeeping. The 10 ms check is what makes
+the no-incrementality design correct. Diagnostics carry the full
+check set (parse/type errors severity 1, advisories severity 2)
+with UTF-16 columns. Protocol test: crates/hale-cli/tests/lsp.rs.
+
+v2 candidates, in value order: hover (type + fallibility +
+enforcement status at position), goto-definition/references (the
+resolver's TopScope has the symbols; needs a position index), and
+the hale-only custom methods no generic LSP has — `hale/busGraph`
+(who publishes/subscribes a topic), `hale/placement`,
+`hale/allocSummary` — all already computed by the checker. These
+are the agent-facing wins: harnesses speak LSP natively now.
+
 ## Staged next (in value order)
 
 1. **Prebuilt stdlib object (dev mode)**: cache the stdlib's .o per
@@ -49,11 +71,8 @@ Two facts kill the classic incremental-compilation plan:
    it instead of re-lowering + re-emitting stdlib fns the app DOES
    use. Loses stdlib inlining in dev (fine). Projected: a downstream service dev
    ≈ 150–250 ms.
-2. **`hale lsp`**: a stdio LSP server over the existing
-   parse+check (publishDiagnostics only, v1). The --json shape is
-   the dry run for its payloads.
-3. **Per-seed object caching (release)**: content-hash each import
+2. **Per-seed object caching (release)**: content-hash each import
    seed → cache its .o; only re-emit changed seeds; final link
    combines. Real work (cross-seed inlining boundaries); only
    worth it when apps reach ~50k+ lines or fleet builds hurt.
-4. **Watch mode** (`hale build --watch`): trivial once 1 lands.
+3. **Watch mode** (`hale build --watch`): trivial once 1 lands.

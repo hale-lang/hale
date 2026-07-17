@@ -82,10 +82,16 @@ A few switches worth knowing from day one:
   tuned for your CPU.
 - **Where did the build time go?** `HALE_TIME=1 hale build app.hl`
   prints per-phase wall times.
-- **Editor integration:** `hale check app.hl --json` emits one JSON
-  object per diagnostic (file, line, col, severity, message) on
-  stdout. `hale check` itself runs in ~10 ms even on large
-  programs, so a save-hook is all an editor needs.
+- **Editor & agent integration:** `hale lsp` is a stdio Language
+  Server — point any LSP-speaking editor (or agent harness) at it
+  and you get live diagnostics: type errors as errors, the
+  advisory analyses (unbounded-alloc survey, hot-path lint,
+  placement warnings) as warnings, re-checked whole-program on
+  every keystroke because the check runs in ~10 ms. No
+  configuration; diagnostics only in v1. Prefer plain JSON?
+  `hale check app.hl --json` emits one object per diagnostic
+  (file, line, col, severity, message) on stdout — a save-hook is
+  all a minimal integration needs.
 - **Real debugging:** binaries carry DWARF line tables by default —
   `gdb ./app`, `break app.hl:42`, backtraces with real file:line,
   and ASAN reports that point at the exact source line. Zero

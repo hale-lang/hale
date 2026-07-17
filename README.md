@@ -227,6 +227,22 @@ hale run   hello.hl          # compile + run
 hale build hello.hl && ./hello
 ```
 
+**Editor & agent integration** is one command:
+
+```sh
+hale lsp                     # stdio Language Server — live diagnostics
+```
+
+Point any LSP-speaking editor (or coding-agent harness — they speak
+LSP natively now) at `hale lsp` and you get the full `hale check`
+surface as you type: type errors, plus the analyses no generic
+tooling has — the unbounded-allocation survey, the hot-path
+allocation lint, placement/starvation warnings. The whole program
+re-checks in ~10 ms per keystroke, so there's no indexing step, no
+warm-up, no configuration. (Scripted integrations can use
+`hale check app.hl --json` — one JSON object per diagnostic —
+instead.)
+
 Platform-specific setup (Linux, macOS/Apple Silicon) is in
 [the install guide](./docs/src/getting-started/install.md).
 

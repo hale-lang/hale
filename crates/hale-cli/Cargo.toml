@@ -15,4 +15,5 @@ hale-syntax = { path = "../hale-syntax" }
 hale-types = { path = "../hale-types" }
 hale-codegen = { path = "../hale-codegen" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.8"

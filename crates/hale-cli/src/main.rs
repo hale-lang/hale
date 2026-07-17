@@ -26,6 +26,7 @@ use std::process::ExitCode;
 
 use hale_syntax::ast::Program;
 
+mod lsp;
 mod pkg;
 
 fn main() -> ExitCode {
@@ -74,6 +75,12 @@ fn main() -> ExitCode {
         return run_test(&rest);
     }
 
+    // `lsp` speaks stdio and takes no target — the seed to check is
+    // derived per-document from the client's textDocument URIs.
+    if cmd == "lsp" {
+        return lsp::run_lsp();
+    }
+
     if args.len() < 3 {
         usage();
         return ExitCode::from(2);
@@ -116,6 +123,7 @@ fn usage() {
     eprintln!("    hale test  [file | dir]       compile + run *_test.hl (default: cwd)");
     eprintln!("        [-run <substr>] [--json]");
     eprintln!("    hale fetch [repo-root]        fetch git deps from hale.toml into vendor/");
+    eprintln!("    hale lsp                      stdio Language Server (diagnostics)");
     eprintln!();
     eprintln!("    hale --version               print the version");
     eprintln!("    hale --help                  print this help");
