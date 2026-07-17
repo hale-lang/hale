@@ -324,3 +324,80 @@ fn collection_insert_growth_matches_rss() {
         ctrl_rss
     );
 }
+
+// === 2026-07-17: small replaced hashmap clones recycle (out-of-band) ===
+//
+// Anchor retirement recycles a @form(hashmap) slot's replaced String clones
+// at the activation boundary. The reuse freelist stored its node IN the dead
+// block (size@0, next@8), so blocks < 16 bytes couldn't carry it and were
+// DROPPED at flush — a short market-data value or key (a "12.3", a "sig.4")
+// replaced every frame never recycled, leaking ~50-128 B per set. A
+// downstream service measured this as ~128 B/frame linear on a churned
+// recorded-state map (v0.11.1). Fix: blocks < 16 bytes recycle via an
+// out-of-band shell freelist (no write into the block, sound for any size);
+// `lotus_str_clone` drops its 16-byte floor so recorded size == block size.
+//
+// These programs churn a bounded key set with SHORT (< 16 byte) values —
+// every set after warmup is a keyed replace. The set runs in a `record`
+// METHOD so the flush fires at its activation boundary. The control does the
+// identical key work but no set(). Pre-fix the churn added ~40 MB over the
+// control across 1M sets; post-fix it stays at the floor.
+const HASHMAP_SMALL_REPLACE: &str = r#"
+    type Cell { key: String = ""; value_raw: String = ""; ts: String = ""; }
+    @form(hashmap)
+    locus Map { capacity { pool entries of Cell indexed_by key; } }
+    locus Acc {
+        params { m: Map = Map { }; n: Int = 1000000; }
+        fn record(i: Int) {
+            let key = "sig." + (i - (i / 100) * 100);
+            self.m.set(Cell { key: key, value_raw: "" + i, ts: "" + (i * 3) });
+        }
+        run() {
+            let mut i = 0;
+            while i < self.n { self.record(i); i = i + 1; }
+            print("final_rss_mb="); println(std::process::rss_bytes() / 1048576);
+        }
+    }
+    fn main() { Acc { }; }
+"#;
+
+const HASHMAP_SMALL_CONTROL: &str = r#"
+    type Cell { key: String = ""; value_raw: String = ""; ts: String = ""; }
+    @form(hashmap)
+    locus Map { capacity { pool entries of Cell indexed_by key; } }
+    locus Acc {
+        params { m: Map = Map { }; n: Int = 1000000; sink: Int = 0; }
+        fn record(i: Int) {
+            let key = "sig." + (i - (i / 100) * 100);
+            self.sink = self.sink + len(key);   // same key work, no set()
+        }
+        run() {
+            let mut i = 0;
+            while i < self.n { self.record(i); i = i + 1; }
+            print("sink="); println(self.sink);
+            print("final_rss_mb="); println(std::process::rss_bytes() / 1048576);
+        }
+    }
+    fn main() { Acc { }; }
+"#;
+
+#[test]
+fn hashmap_small_value_replace_churn_recycles_stays_flat() {
+    // Runtime side only: this is a reclamation property, not a model verdict.
+    // 1M replaces of short values over 100 keys. Pre-fix (< 16 B blocks
+    // dropped at flush) the churn grew ~40 MB over the control; post-fix the
+    // out-of-band small-block freelist recycles every replaced clone, so the
+    // churn sits within allocator noise of the no-set control.
+    let churn_rss = build_and_rss("hashmap_small_replace", HASHMAP_SMALL_REPLACE);
+    let ctrl_rss = build_and_rss("hashmap_small_control", HASHMAP_SMALL_CONTROL);
+
+    assert!(
+        churn_rss <= ctrl_rss + 12,
+        "small-value hashmap replace churn must stay flat: churn={}MB vs \
+         control={}MB. A >12MB gap means replaced clones under 16 bytes are \
+         being dropped at flush again instead of recycling through the \
+         out-of-band small-block freelist (the v0.11.1 ~128 B/frame leak).",
+        churn_rss,
+        ctrl_rss
+    );
+}

@@ -4,11 +4,22 @@ Status: SHIPPED for @form(hashmap) sync=none (2026-07-03) — set
 overwrite, remove, and string keys all retire; flush at USER-method
 scratch destroy (never in form-synthesized methods — a caller-held
 cell copy must survive its own activation, and that placement was
-also the per-set overhead); clones floor at 16 bytes so every blob
-can carry a freelist node. Validated: 4M-set churn over 16 keys with
+also the per-set overhead). Validated: 4M-set churn over 16 keys with
 fresh key+value strings per set = 4.8 MB flat RSS (was 207 MB —
-~50 B/set, the audited on_mark shape). Full suite green; pond +
-a downstream app corpus builds; a downstream service smoke passes. GOTCHA that cost a
+~50 B/set, the audited on_mark shape).
+
+SMALL-BLOCK FIX (2026-07-17): the reuse freelist stored its node IN
+the dead block (size@0, next@8), so blocks < 16 bytes could not carry
+it and were DROPPED at flush — short replaced values/keys (a "12.3",
+a "sig.4") leaked ~50-128 B per set. A downstream service measured
+this as ~128 B/frame linear on a churned recorded-state map (v0.11.1).
+Fix: blocks < 16 recycle OUT-OF-BAND via their shell {blob,size,next}
+on `retire_free_small` (no write into the block → sound for any size);
+`lotus_str_clone` drops its 16-byte floor so the recorded size equals
+the true block size and small/large reuse both match. Validated: a
+1M-set churn of sub-16-byte values over 100 keys stays at the RSS
+floor (was ~40 MB), ASan clean, 5×30k acceptance bench flat. Full
+suite green; the earlier ≥16 in-band path is unchanged. GOTCHA that cost a
 segfault: lotus_hashmap_t is mirrored FIELD-FOR-FIELD by an inline
 LLVM struct in locus/decl.rs — new C fields go at the TAIL of both.
 Remaining: compound self.field-store retire (assign_in_place covers

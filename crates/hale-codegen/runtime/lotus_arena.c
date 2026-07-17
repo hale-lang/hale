@@ -402,11 +402,21 @@ typedef struct lotus_arena {
      * via re-anchored self-storage (the method-scratch argument).
      * retire_pending: shell list {blob, next} of blocks awaiting
      *   the flush. retire_shells: recycled shells (allocation-free
-     *   steady state). retire_free: flushed blocks, intrusive
-     *   nodes IN the dead bytes (size@0, next@8). */
+     *   steady state). retire_free: flushed blocks >= 16 bytes,
+     *   intrusive nodes IN the dead bytes (size@0, next@8).
+     * retire_free_small (2026-07-17): flushed blocks < 16 bytes,
+     *   which cannot hold a 16-byte intrusive node without
+     *   overrunning the block — so they are tracked OUT-OF-BAND by
+     *   keeping their shell {blob, size, next} as the free node.
+     *   Fixes the small-clone leak: short replaced clones (a 6-byte
+     *   market-data value, a short key) were previously dropped at
+     *   flush and never recycled — ~128 B/frame on a churned
+     *   recorded-state map. Out-of-band = no write into the dead
+     *   block, so it is sound for any block size. */
     void                *retire_pending;
     void                *retire_shells;
     void                *retire_free;
+    void                *retire_free_small;
     /* 2026-06-13: set to 1 only on the shared g_bus_payload_arena. That
      * arena is reachable lock-free via lotus_caller_arena_or_global() (the
      * fallback when the per-thread caller_arena TLS is unset) — e.g. a
@@ -1546,6 +1556,7 @@ static lotus_arena_t *lotus_arena_alloc_struct(void) {
     a->retire_pending = NULL;
     a->retire_shells = NULL;
     a->retire_free = NULL;
+    a->retire_free_small = NULL;
     a->numa_node = -1;  /* topology arena-on-node: unbound by default */
     /* 2026-05-26 substrate-race fix: subregion freelist mutex.
      * Used by create_subregion / destroy via the PARENT arena's
@@ -4502,23 +4513,19 @@ void lotus_arena_retire_str(void *arena_ptr, char *s) {
     lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
     if (!a || !s) return;
     if (!lotus_arena_contains_ptr(a, s)) return;
-    /* Downstream handoff 2026-07-15 (heap corruption at ≥~300k
-     * churn): the recorded size must NEVER exceed the blob's true
-     * allocation, and strlen+1 is the only bound this fn can
-     * prove (every String producer allocates AT LEAST strlen+1).
-     * The old code floored the size up to 16 on the assumption
-     * that all retired blobs come from lotus_str_clone (which
-     * floors its allocations) — but the clone's same-arena skip
-     * stores UNFLOORED producer blobs (str_concat / str_slice
-     * allocate exactly strlen+1) straight into retire-tracked
-     * slots. Flooring a 6-byte concat blob to 16 made the flush
-     * write a 16-byte freelist node over the neighboring
-     * allocations (and past chunk ends). Record the honest size;
-     * the flush's existing `size >= 16` guard drops blobs too
-     * small to carry a node — they leak, which costs almost
-     * nothing and corrupts nothing. (Flooring str_concat /
-     * str_slice allocations so short strings recycle again is a
-     * possible follow-up optimization.) */
+    /* Record the HONEST block size (strlen+1). Every String
+     * producer allocates exactly strlen+1 at align 1 (lotus_str_clone
+     * no longer floors to 16 since 2026-07-17), so strlen recovers
+     * the true block size — the recorded size must NEVER exceed it
+     * (Downstream handoff 2026-07-15: flooring a 6-byte concat blob's
+     * retire size to 16 made the flush write a 16-byte node past the
+     * block → heap corruption at ~300k churn).
+     * The flush routes this by size: blocks >= 16 carry an in-band
+     * node; blocks < 16 recycle OUT-OF-BAND via their shell (see
+     * lotus_arena_flush_retired). So short replaced clones now
+     * recycle too — the 2026-07-17 fix for the downstream ~128 B/frame
+     * churned-recorded-state-map leak, where sub-16-byte values were
+     * previously dropped at flush and leaked. */
     lotus_arena_retire_sized(a, s, strlen(s) + 1);
 }
 
@@ -4554,14 +4561,26 @@ void lotus_arena_flush_retired(void *arena_ptr) {
         lotus_retire_shell_t *next = sh->next;
         if (sh->size >= 16) {
             /* String blobs are align-1; unaligned on purpose
-             * (fine on x86-64, the only native target). */
+             * (fine on x86-64, the only native target). The block
+             * is >= 16 bytes, so it can carry the 16-byte intrusive
+             * node (size@0, next@8); the shell is then recyclable. */
             char *b = (char *)sh->blob;
             memcpy(b, &sh->size, sizeof(size_t));
             memcpy(b + 8, &a->retire_free, sizeof(void *));
             a->retire_free = b;
+            sh->next = (lotus_retire_shell_t *)a->retire_shells;
+            a->retire_shells = sh;
+        } else {
+            /* Block too small for an in-band node — writing one would
+             * overrun it (the 2026-07-15 SEGV). Keep it reusable
+             * OUT-OF-BAND: the shell itself is the free node (it
+             * already holds {blob, size, next}), parked on the
+             * small-free list. It is NOT recycled while the block is
+             * free; it returns to the shell pool when the block is
+             * popped for reuse. */
+            sh->next = (lotus_retire_shell_t *)a->retire_free_small;
+            a->retire_free_small = sh;
         }
-        sh->next = (lotus_retire_shell_t *)a->retire_shells;
-        a->retire_shells = sh;
         sh = next;
     }
 }
@@ -4593,15 +4612,41 @@ static void *lotus_retire_free_pop(lotus_arena_t *a, size_t size) {
     return NULL;
 }
 
+/* Bounded first-fit pop for the OUT-OF-BAND small-block freelist
+ * (blocks < 16 bytes, tracked by their shells so nothing is written
+ * into the block). Unlinks the matched shell, recycles it to the
+ * shell pool, and returns its blob. Returns NULL on miss. */
+static void *lotus_retire_free_small_pop(lotus_arena_t *a, size_t size) {
+    lotus_retire_shell_t **pp =
+        (lotus_retire_shell_t **)&a->retire_free_small;
+    int probes = 0;
+    while (*pp && probes < 8) {
+        lotus_retire_shell_t *sh = *pp;
+        if (sh->size >= size && sh->size <= size + (size >> 2) + 16) {
+            *pp = sh->next;
+            void *blob = sh->blob;
+            sh->next = (lotus_retire_shell_t *)a->retire_shells;
+            a->retire_shells = sh;
+            return blob;
+        }
+        pp = &sh->next;
+        probes++;
+    }
+    return NULL;
+}
+
 /* Anchor-site allocator: reuse a flushed retired block when one
  * fits, else bump-allocate. Only the anchor sites call this — the
- * hot general alloc path stays branch-free. */
+ * hot general alloc path stays branch-free. Blocks >= 16 come from
+ * the in-band freelist; smaller blocks from the out-of-band shell
+ * freelist (so short replaced clones recycle instead of leaking). */
 void *lotus_arena_alloc_reusable(void *arena_ptr, uint64_t size,
                                  uint64_t align) {
     lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
     if (!a) return NULL;
-    if (align <= 8 && size >= 16) {
-        void *b = lotus_retire_free_pop(a, (size_t)size);
+    if (align <= 8) {
+        void *b = size >= 16 ? lotus_retire_free_pop(a, (size_t)size)
+                             : lotus_retire_free_small_pop(a, (size_t)size);
         if (b) return b;
     }
     return lotus_arena_alloc(a, size, align);
@@ -8631,11 +8676,16 @@ char *lotus_str_clone(lotus_arena_t *a, const char *s) {
     size_t n = strlen(s);
     /* 2026-07-03: consult the retired-block freelist first —
      * steady-state re-anchors reuse the previous generation's
-     * clones instead of growing the arena. Floor of 16 bytes so
-     * every clone can later carry a freelist node (size@0,next@8);
-     * strlen stays the conservative capacity bound the
-     * assign_in_place path relies on. */
-    size_t alloc_n = n + 1 < 16 ? 16 : n + 1;
+     * clones instead of growing the arena.
+     * 2026-07-17: allocate the honest strlen+1 (no 16-byte floor).
+     * `lotus_arena_alloc_reusable` now recycles small blocks too via
+     * an out-of-band shell freelist, so a short clone no longer
+     * needs to be padded to carry an in-band node — and the honest
+     * size keeps the retire record (also strlen+1) equal to the
+     * block's true size, which is what makes the small-block reuse
+     * match. `strlen` stays the capacity bound assign_in_place
+     * relies on. */
+    size_t alloc_n = n + 1;
     char *out = (char *)lotus_arena_alloc_reusable(a, alloc_n, 1);
     if (!out) return NULL;
     memcpy(out, s, n);

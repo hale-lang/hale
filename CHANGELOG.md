@@ -6,6 +6,27 @@ behavior.
 
 ---
 
+## v0.11.2 — recycle small replaced hashmap clones (2026-07-17)
+
+- **Runtime: small `@form(hashmap)` replaced-value clones now recycle.**
+  Anchor retirement reclaims a hashmap slot's replaced String clones at
+  the activation boundary, but its reuse freelist stored the free node
+  *inside* the dead block (16 bytes), so blocks under 16 bytes couldn't
+  carry it and were dropped at flush — a short replaced value or key (a
+  `"12.3"`, a `"sig.4"`) never recycled. On a continuously-churned
+  recorded-state map (one keyed replace per delivered frame) that leaked
+  ~50–128 B/frame, linear, no plateau — measured downstream at ~128
+  B/frame on a long-lived subscriber connection. Fix: blocks under 16
+  bytes recycle **out-of-band** via their shell node (nothing is written
+  into the block, so it is sound at any size), and `lotus_str_clone`
+  drops its 16-byte allocation floor so the recorded size equals the
+  block size. A prior attempt to floor the *retire* size to 16 corrupted
+  genuinely-small blocks (SEGV at high churn); the out-of-band approach
+  avoids that entirely. Validated: a 1M-set churn of sub-16-byte values
+  over a bounded key set stays at the RSS floor (was tens of MB), flat
+  across 5 consecutive 30k-frame runs, clean under ASan+UBSan; the
+  ≥16-byte in-band path is unchanged. See `notes/anchor-retirement.md`.
+
 ## v0.11.1 — Linux ARM64 release binary (2026-07-16)
 
 - **Release: Linux ARM64 binary.** Releases now ship an
