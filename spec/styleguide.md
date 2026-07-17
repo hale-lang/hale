@@ -104,7 +104,7 @@ the order you should reach for them:
    method's activation boundary, recycling them on the next
    store. Steady-state replace of a scalar/String struct holds
    the arena flat. (Structs carrying `Bytes` / nested compound
-   fields aren't fully retired yet — see Gaps.)
+   fields aren't fully retired yet — see §7.)
 4. **Bound the container.** `capacity` slots, `bounded[T; N]`,
    `@form(ring_buffer)` / `@form(lru_cache)` are cap-bounded by
    type.
@@ -397,7 +397,7 @@ websocket's client is the reference). **[convention]**
   poll scalar fields across pools rather than sharing heap
   values. **[convention]**
 - TLS I/O never goes on an async_io pool (its recv blocks the
-  worker; no park integration yet — see Gaps). **[convention]**
+  worker; no park integration yet — see §7). **[convention]**
 
 ### C4. accept / release — flows, not residents
 
@@ -497,7 +497,7 @@ positions; expression-position arms must agree on one type.
 - A fixed-array *field* (`[Int; N]` on a struct) is out-of-line
   storage — it dangles across a zero-copy SHM boundary even
   though typecheck accepts it; SHM payloads need scalar fields.
-  **[convention — see Gaps]**
+  **[convention — see §7]**
 
 ---
 
@@ -574,7 +574,7 @@ per-frame path entirely — the `pond` client does this.
 `self.f = <String/Bytes>` reuses the existing buffer when the new
 value fits. Bounded-variance fields (timestamps, fixed headers,
 checksums) hit the memcpy path forever. Grow-paths clone (the
-abandoned String buffer retires; Bytes doesn't yet — Gaps), and
+abandoned String buffer retires; Bytes doesn't yet — §7), and
 oscillating lengths degrade capacity — genuinely variable-length
 hot fields belong in a reused `BytesBuilder` + view instead.
 **[convention]**
@@ -729,60 +729,96 @@ thread / pool / subject / fd counts in CI — see
 
 ---
 
-## 7. Current language gaps (and idiomatic workarounds)
+## 7. Boundaries — deliberate absences, open gaps, sharp edges
 
-Gaps are current as of v0.11.3-dev (2026-07-17). Shipped-and-gone
-gaps are deliberately absent — if you read an older revision of
-this guide, several existed that no longer do (keyed String
-routing, match-as-expression, whole-struct replace reclamation
-all shipped).
+Three different kinds of "the language doesn't do X" live here,
+and they call for three different behaviors from you: absences
+you should stop wanting (the design says no, and names the shape
+to use instead), gaps you can expect to close (write the
+workaround knowing it's temporary), and sharp edges you step
+around (current limitations, no promise either way). Current as
+of v0.11.3 (2026-07-17); shipped-and-gone entries are removed on
+shipping — keyed String routing, match-as-expression, and
+whole-struct replace reclamation all lived here once.
 
-- **Lifecycle bodies reject `return`.** Factor into a free
-  helper. Also: `-> ()` on a non-fallible method fails codegen —
-  omit the return type instead; empty `if` bodies parse-fail —
-  add a comment or invert the condition.
+### Deliberate absences — the design says no
+
+Not on any roadmap. Each has a blessed shape; reaching for the
+absent thing means fighting the design, not waiting on it.
+
+- **No parametric collection types** (`List<T>` / `Map<K,V>`).
+  Collections are loci: `@form(vec)` / `@form(hashmap)` /
+  `bounded[T; N]` with the facade shape (2.5). A builtin generic
+  container would be a second primitive; the locus axiom says
+  there is one.
+- **No stdlib `Option<T>`.** The mechanism isn't missing —
+  generic enums work, and `type Option<T> = enum { Some(T),
+  None };` compiles, constructs, and matches today. What's
+  deliberate is the *idiom*: the blessed "couldn't compute"
+  shapes are a sentinel + sibling predicate, or `fallible(E)`
+  when diagnostic context matters (free fns, stdlib wrappers,
+  and user-declared `fn` members all support it). An
+  Option-threading style imports another language's error
+  culture; the two-channel design is the native one.
+- **Fn-pointer callbacks don't capture state.** Loci are the
+  language's closures — state lives in a locus with its own
+  `self`, or routes through bus subjects. A capturing lambda
+  would be an anonymous locus without lifecycle or contracts;
+  name it instead.
+
+### Open gaps — expect these to close
+
+Write the workaround knowing it's a placeholder.
+
+- **Bytes / nested-compound fields of a replaced struct don't
+  retire** (String leaves do, since v0.11.3). Until then:
+  genuinely-churning Bytes fields in a reused `BytesBuilder`;
+  nested compound fields in their own locus or flattened.
+- **Synced (cross-pool) `@form` maps don't retire** replaced
+  cells (needs an epoch scheme). Churned shared maps on hot
+  paths stay single-pool for now.
+- **Dynamic per-instance bus subjects** (the conversation-per-
+  topic shape). Keyed routing covers the *bounded/known* key-set
+  case — including String keys — but an unbounded,
+  runtime-created subject set still has no shape.
+- **TLS has no async_io integration** — its recv blocks the
+  thread, not the coro. Keep TLS off async_io pools (C3) until
+  non-blocking TLS reads land.
 - **`or fail E { ... }` payloads can't reference `err`.** Wrap
   the fallible call in a helper that catches-and-rebuilds the
   error (the `pond` subprocess wrapper is the reference).
-- **Bytes / nested-compound fields of a replaced struct don't
-  retire** (String leaves do). Genuinely-churning Bytes fields
-  belong in a reused `BytesBuilder`; nested compound fields in
-  their own locus or flattened.
-- **Synced (cross-pool) `@form` maps don't retire** replaced
-  cells (needs an epoch scheme). Churned shared maps on hot paths
-  should stay single-pool.
-- **`@form` cell types can't be loci or qualified paths** — keep
-  cell structs in-seed (C7).
-- **Fixed-array struct fields are out-of-line pointers** — SHM
-  zero-copy payloads need scalar fields (the 512-hand-spelled-
-  fields workaround in `bench` marks the pain; a flattening form
-  is future work).
-- **Dynamic per-instance bus subjects are blocked** (the
-  conversation-per-topic shape). Keyed routing covers the
-  *bounded/known* key-set case — including String keys — but an
-  unbounded, runtime-created subject set still has no shape.
-- **TLS has no async_io integration** — blocking `SSL_read`
-  parks the thread, not the coro. Keep TLS off async_io pools
-  (C3).
-- **`std::process::try_wait` missing** — daemons can't
-  non-blocking-reap children; poll with a short timeout instead.
+- **`std::process::try_wait` is missing** — daemons can't
+  non-blocking-reap children; poll with a short timeout.
 - **Duration arithmetic in expression position** is limited —
   hold clock readings as Int ns from the start (`monotonic_ns`),
   which is also the fast path (no ASCII round-trip).
-- **No parametric collections** (`List<T>` / `Map<K,V>`).
-  `@form(vec)` / `@form(hashmap)` / `bounded[T; N]` cover the
-  ground; the facade shape (2.5) is the idiom.
-- **No `Option<T>`.** Sentinel + sibling predicate, or
-  `fallible(E)` (free fns, stdlib wrappers, and user-declared
-  `fn` members all support it).
-- **No char-level `s[i]`.** Use `s[i..i+1]` slices or
+
+### Sharp edges — current limitations, step around them
+
+Implementation constraints, not positions; no promise attached.
+One is soundness-adjacent and worth knowing cold.
+
+- **Fixed-array struct fields are out-of-line pointers, and
+  typecheck accepts them in zero-copy SHM payloads** — where
+  they dangle cross-process. This is the sharpest edge in the
+  list: the compiler does not stop you. SHM payloads need scalar
+  fields (the 512-hand-spelled-fields workaround in `bench`
+  marks the pain; a flattening form is future work).
+- **`@form` cell types can't be loci or qualified paths** — keep
+  cell structs in-seed (C7).
+- **Lifecycle bodies reject `return`** — factor short-circuit
+  logic into a free helper. Related paper cuts: `-> ()` on a
+  non-fallible method fails codegen (omit the return type);
+  empty `if` bodies parse-fail (add a comment or invert the
+  condition).
+- **No char-level `s[i]`** — use `s[i..i+1]` slices or
   `std::str::index_of`.
-- **Fn-pointer callbacks can't capture state.** Route state
-  through bus subjects or use a locus method with its own `self`.
 
 If the catalog seems to be missing a pattern, log a friction
 entry with the smallest reproducible example — the catalog grows
-from real friction, not speculation.
+from real friction, not speculation. (That's also how entries
+move between the buckets above: friction against a *deliberate
+absence* is a design conversation, not a feature request.)
 
 ---
 
