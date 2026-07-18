@@ -618,6 +618,30 @@ fn env_flag(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// One-shot probe: is `ld.lld` on PATH? The non-LTO link uses it
+/// when present — the default bfd link spends ~120 ms scanning the
+/// ~27 MB tree-sitter shim staticlib on every build (measured
+/// 148 ms bfd vs 26 ms lld on the same link line, 2026-07-18);
+/// lld is the single biggest dev-loop latency lever. Linux-only
+/// (macOS's system ld64 is fine and ld64.lld is not a drop-in).
+/// HALE_NO_LLD=1 forces the default linker for debugging.
+fn lld_available() -> bool {
+    use std::sync::OnceLock;
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        if env_flag("HALE_NO_LLD") {
+            return false;
+        }
+        Command::new("ld.lld")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+}
+
 /// Where compiled+cached runtime objects live (per user, persistent).
 fn runtime_cache_dir() -> PathBuf {
     if let Ok(x) = std::env::var("XDG_CACHE_HOME") {
@@ -1707,6 +1731,11 @@ pub fn build_executable_with_options(
         clang.arg("-flto").arg("-O3").arg("-fuse-ld=lld");
     } else {
         clang.arg("-O2");
+        // Non-LTO: prefer lld when installed (see lld_available).
+        // The LTO branch above already requires lld.
+        if !cfg!(target_os = "macos") && lld_available() {
+            clang.arg("-fuse-ld=lld");
+        }
     }
     // Form K5: SHM ring uses shm_open / shm_unlink which on Linux live in
     // librt. On macOS POSIX shm is in libc and there is NO librt — `-lrt`

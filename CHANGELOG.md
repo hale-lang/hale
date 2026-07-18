@@ -8,6 +8,18 @@ behavior.
 
 ## Unreleased
 
+- **Build: link via lld when installed.** The non-LTO link now
+  probes once for `ld.lld` and passes `-fuse-ld=lld` (Linux;
+  `HALE_NO_LLD=1` opts out; silent fallback otherwise). The default
+  bfd linker spent ~120 ms per build scanning the ~27 MB
+  tree-sitter shim staticlib — measured 148 ms vs 26 ms on the
+  identical link line. Dev builds drop from ~100 to ~55 ms (hello)
+  and ~159 to ~119 ms (Server+metrics app); release links speed up
+  identically. The staged dev-mode prebuilt-stdlib-object cache was
+  re-scoped and deferred on fresh measurements — post-DCE its
+  remaining win (~50-65 ms) no longer justifies split-module
+  emission (stdlib lowering bakes app-derived bus-devirt state);
+  rationale + numbers in notes/build-latency-and-lsp.md.
 - **Runtime: @form cell single-owner + Bytes grow-path retirement.**
   Two anchor-retirement residuals closed. (1) A hashmap `set` / lru
   `put` now walks a stack snapshot of the value struct and clones

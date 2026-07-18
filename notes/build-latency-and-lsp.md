@@ -89,15 +89,56 @@ Remaining LSP ideas (unstaged): scope-aware references, rename,
 document symbols, workspace symbols, `hale/enforcement` (per-fn
 @hot/@budget map).
 
+## Shipped (2026-07-18) — lld link + stdlib-cache re-scope
+
+Re-measured before building staged item 1, and the data
+redirected the fix. On HEAD (post-DCE), per-phase dev times:
+
+| phase | hello (1 line) | Server+metrics app |
+|---|---|---|
+| front-end + codegen | 18 ms | 19 ms |
+| llvm-passes | 4 ms | 34 ms |
+| obj-emit | 2 ms | 36 ms |
+| emit+link | 70 ms | 71 ms |
+| **total** | **~100 ms** | **~159 ms** |
+
+Two conclusions:
+
+1. The 2026-07-02 internalize+globaldce work already ate most of
+   the stdlib-object cache's projected win: the stdlib-attributable
+   llvm work on a stdlib-heavy app is ~65 ms, not the hundreds of
+   ms the original projection assumed. The dominant flat cost was
+   the LINK — clang's default bfd ld spends ~120 ms scanning the
+   ~27 MB tree-sitter shim staticlib on every build.
+2. **lld fixes that for ~15 lines**: measured 148 ms (bfd) vs
+   26 ms (lld) on the identical link line. Shipped: the non-LTO
+   link probes for `ld.lld` once per process and uses
+   `-fuse-ld=lld` when present (Linux only; HALE_NO_LLD=1 opts
+   out; silent fallback to the default linker otherwise). Dev
+   builds: hello 100 → 55 ms, Server+metrics 159 → 119 ms; release
+   links speed up identically.
+
+**Stdlib-object cache: RE-SCOPED, deferred.** The remaining win
+(~50-65 ms of llvm-passes+obj-emit for used stdlib fns on a
+stdlib-heavy app) no longer justifies the architecture: stdlib
+lowering is NOT app-independent today — bus-devirt ids, the
+`no_pinned` static-dispatch flag, and `program_has_offthread` are
+computed from the merged app+stdlib program and baked into
+stdlib-fn bodies (a cached stdlib .o would need an all-dynamic /
+always-locked conservative build), plus split-module emission
+requires symbol-name stability for every stdlib fn, form-locus
+synthesized method, and closure the app references. That's a
+multi-session change for a sub-70 ms win on a 119 ms build.
+Revisit only if apps get big enough that the llvm-passes phase
+dominates again — and then item 2 (per-seed caching) subsumes it.
+
 ## Staged next (in value order)
 
-1. **Prebuilt stdlib object (dev mode)**: cache the stdlib's .o per
-   compiler build (like ~/.cache/hale/runtime); dev links against
-   it instead of re-lowering + re-emitting stdlib fns the app DOES
-   use. Loses stdlib inlining in dev (fine). Projected: a downstream service dev
-   ≈ 150–250 ms.
-2. **Per-seed object caching (release)**: content-hash each import
+1. **Per-seed object caching (release)**: content-hash each import
    seed → cache its .o; only re-emit changed seeds; final link
    combines. Real work (cross-seed inlining boundaries); only
    worth it when apps reach ~50k+ lines or fleet builds hurt.
-3. **Watch mode** (`hale build --watch`): trivial once 1 lands.
+   Subsumes the deferred stdlib-object cache (the stdlib is just
+   another seed with the caveats above).
+2. **Watch mode** (`hale build --watch`): trivial; the whole dev
+   rebuild is ~55-120 ms now.
