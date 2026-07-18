@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.11.9 — hale fmt + hale doc, LSP completion, DWARF variables, hale test @ffi (2026-07-18)
 
 - **`hale doc` — API-reference generator + `///` doc-comment
   convention.** `///` lines directly above a declaration attach to
