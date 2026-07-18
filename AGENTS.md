@@ -275,7 +275,10 @@ surprises:
 4. Write the smallest program that gets one thing working.
    `hale run <file-or-dir>` for fast feedback; `hale build`
    for the native binary.
-5. Iterate.
+5. Iterate. Before you finish, run `hale fmt <file-or-dir>` —
+   canonical form is tool-defined (zero config), so your diff
+   touches only the lines you actually changed. Never
+   hand-align columns; fmt collapses them.
 
 ## Hot-path memory patterns
 

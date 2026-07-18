@@ -334,6 +334,36 @@ Library exports: pick short lowercase import aliases; name decls
 to read naturally under the alias (`fin::Quote`, not
 `fin::FinQuote`). See `spec/projects.md` for the seed model.
 
+### Canonical form — `hale fmt` is the arbiter
+
+Mechanical style is not a judgment call: `hale fmt` (v0.11.9,
+spec/testing.md) defines the canonical form, zero config, and
+`hale fmt --check` gates it in CI. Don't hand-enforce anything in
+this list — run the tool:
+
+- 4-space indentation, bracket-driven; a closer returns to its
+  opener's line indent; continuation lines (a leading `&&`/`.`, a
+  trailing operator) get one level.
+- Binary operators spaced; unary `-`/`!` tight; `.`/`::`/`..`
+  tight; nothing inside `(` `)` `[` `]`; literal braces spaced
+  (`Rec { key: 1 }`, `{ }`); `:` tight-left except the spaced
+  `locus X : serves P` conformance colon; generics tight
+  (`Holder<Int>`); lifecycle parens tight (`run()`).
+- Blank lines collapse to at most one; no alignment padding
+  (`let x   = 1;` becomes single-spaced — don't build alignment
+  columns, they churn every diff); exactly one trailing newline.
+- Comments stay where you put them: own-line comments indent with
+  the code, trailing comments sit one space after it.
+
+What fmt deliberately does **not** decide stays yours, and is
+where the rest of this guide applies: *where lines break* (fmt
+preserves your line structure, gofmt-style — there is no
+max-line-length rewrap), naming, comment content, and blank-line
+placement (it collapses runs, it never inserts or removes the
+single separators you chose). Write the shape; let the tool make
+it canonical. For agents this is load-bearing: canonical form
+means a model-written diff touches only the lines it changed.
+
 ### Rolling the design
 
 The catalog is small on purpose. A new primitive must **roll
@@ -692,6 +722,7 @@ you certify a path.
 | **warn** (default) | unbounded-alloc survey (self-escaping allocs in unbounded contexts; retirement-aware since v0.11.3); subscription nothing publishes to; locus/builder in a loop **or bus handler**; allocating recv in a loop; blocking call on a cooperative pool (interprocedural); accept-without-release on a daemon | advisory |
 | **@hot** (opt-in) | all of the above as errors within the fn; `snapshot()`/`finish()` in a loop; whole-struct self-field replace | errors in certified fns |
 | **@budget** (opt-in) | `alloc_per_call = N` counted transitively; `N=0` zero-alloc certificate | build fails on violation |
+| **fmt** (CI gate) | `hale fmt --check` — canonical mechanical form (§2, "Canonical form"); exit 1 lists offenders | gate in CI; `hale fmt` fixes |
 | escape hatches | `@unbounded` (fn or lifecycle hook) acknowledges intentional accumulation; `--allow-unowned-subscriber`; `--no-warn-unbounded-alloc` | |
 
 Resource budgets (`--dump-resource-budget`,
