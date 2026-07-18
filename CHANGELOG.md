@@ -6,6 +6,45 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **`std::metrics` — Prometheus metrics, promoted from pond/metrics.**
+  `Registry` (namespace prefix; **owns its storage** as param-default
+  children, so `Registry { namespace: "app" }` is the whole
+  construction and a Registry returned from a builder fn keeps its
+  series alive), idempotent factory free fns `counter` / `gauge` /
+  `histogram` returning hot-path handles that reference the storage
+  slots directly (resolve at boot, cache as a field — S12), labels
+  helpers, text-exposition `render()`, and `Endpoint` — a
+  `std::http::Handler` that turns any `std::http::Server` into a
+  `/metrics` scrape target (`Content-Type: text/plain;
+  version=0.0.4`). Histogram bounds are a space-separated ascending
+  String parsed once at registration (max 32 buckets), replacing
+  pond's math-lib Matrix signature; buckets render cumulatively with
+  the implicit `+Inf` plus `_sum` / `_count`. The metric map is
+  `sync = serialized` for the scrape-pool-reads-while-handlers-write
+  topology. Covered direct + over-TCP in
+  `crates/hale-codegen/tests/stdlib_metrics.rs`; new docs chapter
+  (`docs/src/everyday/metrics.md`); pond copy frozen.
+- **`std::log::FileSink` + `std::log::ConsoleSink` — promoted from
+  pond/logfmt.** FileSink appends every `log.**` event to `path` and
+  rotates by size (`max_size_bytes`, `keep_files`; atomic
+  `rename(2)` chain shifts, oldest evicted), capturing I/O failures
+  in the `last_error_kind/errno/path` triple; it also wears the
+  `std::text::Sink` shape (`write`/`line`/`newline`). ConsoleSink
+  renders dim HH:MM:SS + colored width-5 level badge + dim path +
+  message with the WARN/ERROR stderr lane split; color is AUTO
+  (stderr tty probe; `FORCE_COLOR`/`CLICOLOR_FORCE` override,
+  `NO_COLOR` always wins, `color: false` = never). pond's OtlpSink
+  stays pond-tier. Test:
+  `crates/hale-codegen/tests/stdlib_log_sinks.rs`.
+- **LSP v3: definition, references, `hale/placement`,
+  `hale/allocSummary`** (committed 2026-07-17 as `92fb0c6`).
+  Goto-definition and find-references over the same seed re-analysis
+  the rest of the server uses; `hale/placement` answers the
+  pool/placement table the checker computes; `hale/allocSummary`
+  surfaces the per-fn allocation survey.
+
 ## v0.11.7 — LSP v2: hover with contracts + `hale/busGraph` (2026-07-17)
 
 - **Hover.** `textDocument/hover` resolves the token at position and

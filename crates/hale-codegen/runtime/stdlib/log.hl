@@ -119,3 +119,201 @@ locus __StdLogStdoutSink {
         }
     }
 }
+
+// =====================================================================
+// Sinks (promoted from pond/logfmt, 2026-07-18).
+// =====================================================================
+//
+// Two drop-in alternatives to StdoutSink — same "log.**"
+// subscription, so swapping sinks is a one-line change at the
+// wiring site. Both also wear the std::text::Sink shape
+// (write/line/newline — non-fallible per the interface contract;
+// I/O failures land in the FileSink's last_* triple instead of
+// the value channel). pond's OtlpSink (OpenTelemetry export)
+// deliberately stays in pond — vendor-protocol integration is
+// app-tier.
+
+// std::log::FileSink — append every event to a file, rotate by
+// size. Rotation shifts path.N-1 → path.N (atomic rename(2)
+// overwrite evicts the oldest), …, path → path.1; the next
+// append recreates the active file.
+//
+//   std::log::FileSink { path: "logs/app.log" };
+//   let log = std::log::Logger { name: "app" };
+//   log.info("started");            // → appended to logs/app.log
+//
+// I/O failures are captured in the last-error triple
+// (last_error_kind / last_error_errno / last_error_path) — the
+// canonical scratch convention for loci whose methods can't
+// return through the value channel (styleguide 2.7).
+locus __StdLogFileSink {
+    params {
+        path: String = "";
+        max_size_bytes: Int = 10000000;
+        keep_files: Int = 5;
+        last_kind: String = "";
+        last_errno: Int = 0;
+        last_path: String = "";
+    }
+    bus {
+        subscribe "log.**" as on_event of type __StdLogEvent;
+    }
+
+    // std::text::Sink shape — raw text with the same rotation.
+    fn write(s: String) {
+        self.__append(s);
+    }
+    fn line(s: String) {
+        self.__append(s + "\n");
+    }
+    fn newline() {
+        self.__append("\n");
+    }
+
+    fn on_event(e: __StdLogEvent) {
+        let mut name = "?";
+        if e.level == 1 { name = "INFO"; }
+        if e.level == 2 { name = "WARN"; }
+        if e.level == 3 { name = "ERROR"; }
+        if e.level == 4 { name = "DEBUG"; }
+        if e.level == 5 { name = "TRACE"; }
+        self.__append("[" + name + " " + e.path + "] " + e.msg + "\n");
+    }
+
+    fn last_error_kind() -> String { return self.last_kind; }
+    fn last_error_errno() -> Int { return self.last_errno; }
+    fn last_error_path() -> String { return self.last_path; }
+
+    fn __append(s: String) {
+        let written = self.__do_append(s);
+        if !written {
+            return;
+        }
+        self.__maybe_rotate();
+    }
+    fn __do_append(s: String) -> Bool {
+        std::io::fs::write_file_append(self.path, s) or self.__handle_io(err);
+        if self.last_kind != "" {
+            return false;
+        }
+        return true;
+    }
+    fn __handle_io(e: IoError) {
+        self.last_kind = e.kind;
+        self.last_errno = e.errno;
+        self.last_path = e.path;
+    }
+    fn __maybe_rotate() {
+        let size = std::io::fs::file_size(self.path) or 0;
+        if size <= self.max_size_bytes {
+            return;
+        }
+        self.__rotate();
+    }
+    fn __rotate() {
+        let mut i = self.keep_files - 1;
+        while i >= 1 {
+            let src = self.path + "." + to_string(i);
+            let dst = self.path + "." + to_string(i + 1);
+            self.__shift_if_exists(src, dst);
+            i = i - 1;
+        }
+        let dst1 = self.path + ".1";
+        self.__shift_if_exists(self.path, dst1);
+    }
+    fn __shift_if_exists(src: String, dst: String) {
+        if !std::io::fs::file_exists(src) {
+            return;
+        }
+        std::io::fs::rename(src, dst) or self.__handle_io(err);
+    }
+}
+
+// std::log::ConsoleSink — the human-facing console renderer:
+// dim HH:MM:SS timestamp, colored width-5 level badge, dim
+// logger path, plain message. WARN/ERROR route to stderr (the
+// StdoutSink lane split). Color is AUTO by default: kept only
+// when stderr is a tty, FORCE_COLOR/CLICOLOR_FORCE override,
+// NO_COLOR always wins; `color: false` means never.
+locus __StdLogConsoleSink {
+    params {
+        color: Bool = true;
+        show_time: Bool = true;
+    }
+    bus {
+        subscribe "log.**" as on_event of type __StdLogEvent;
+    }
+    birth() {
+        if std::env::var_exists("NO_COLOR") {
+            self.color = false;
+        } else if self.color {
+            if !std::term::is_tty(2) && !__log_force_color() {
+                self.color = false;
+            }
+        }
+    }
+
+    fn write(s: String) {
+        print(s);
+    }
+    fn line(s: String) {
+        println(s);
+    }
+    fn newline() {
+        println("");
+    }
+
+    fn on_event(e: __StdLogEvent) {
+        let rendered = self.render(e);
+        if e.level == 2 || e.level == 3 {
+            eprintln(rendered);
+        } else {
+            println(rendered);
+        }
+    }
+
+    fn render(e: __StdLogEvent) -> String {
+        let mut out = "";
+        if self.show_time {
+            out = out + self.paint("\x1b[2m", __log_clock()) + " ";
+        }
+        out = out + self.badge(e.level) + " ";
+        if len(e.path) > 0 {
+            out = out + self.paint("\x1b[2m", e.path) + " ";
+        }
+        return out + e.msg;
+    }
+    fn badge(level: Int) -> String {
+        if level == 1 { return self.paint("\x1b[36m", "INFO "); }
+        if level == 2 { return self.paint("\x1b[33;1m", "WARN "); }
+        if level == 3 { return self.paint("\x1b[31;1m", "ERROR"); }
+        if level == 4 { return self.paint("\x1b[2m", "DEBUG"); }
+        if level == 5 { return self.paint("\x1b[2m", "TRACE"); }
+        return self.paint("\x1b[2m", "LOG  ");
+    }
+    fn paint(sgr: String, s: String) -> String {
+        if !self.color { return s; }
+        return sgr + s + "\x1b[0m";
+    }
+}
+
+fn __log_force_color() -> Bool {
+    if std::env::var_exists("FORCE_COLOR") {
+        if std::env::var("FORCE_COLOR") != "0" { return true; }
+    }
+    if std::env::var_exists("CLICOLOR_FORCE") {
+        if std::env::var("CLICOLOR_FORCE") != "0" { return true; }
+    }
+    return false;
+}
+
+fn __log_clock() -> String {
+    let now = std::time::now();
+    let secs_today = now % 86400;
+    let h = secs_today / 3600;
+    let m = (secs_today % 3600) / 60;
+    let s = secs_today % 60;
+    return std::str::pad_left(to_string(h), 2, "0") + ":"
+        + std::str::pad_left(to_string(m), 2, "0") + ":"
+        + std::str::pad_left(to_string(s), 2, "0");
+}

@@ -1,0 +1,468 @@
+// Hale stdlib — std::metrics (promoted from pond/metrics,
+// 2026-07-18).
+//
+// Prometheus-shaped metrics: a per-app Registry over
+// @form storage, thin Counter / Gauge / Histogram handles
+// created by factory free fns (resolve once at boot, cache the
+// handle as a field — styleguide S12), and text-exposition
+// rendering with an HTTP endpoint that plugs straight into
+// std::http::Server.
+//
+//   let reg  = std::metrics::Registry { namespace: "myapp" };
+//   let hits = std::metrics::counter(reg, "hits",
+//                   std::metrics::labels_one("route", "/api"));
+//   hits.inc();
+//   std::http::Server {
+//       port: 9090,
+//       handler: std::metrics::Endpoint { registry: reg }
+//   };
+//
+// The MetricMap is `sync = serialized`: the canonical topology
+// reads it from a /metrics scrape pool while another pool's
+// handlers write — the per-map mutex is the right discipline
+// for single-writer-many-reader at scrape rates.
+//
+// Promotion notes: histogram bucket bounds are passed as a
+// space-separated String ("0.005 0.01 0.05") parsed once at
+// registration (pond's signature took its math-lib Matrix,
+// which the stdlib doesn't depend on); the parse is cold —
+// observe() mutates bounded arrays in place.
+
+// Label set, serialized "k1=v1\tk2=v2". Construct via the
+// labels_* helpers.
+type __StdMetricsLabels {
+    kv: String = "";
+}
+
+// One stored series cell. kind: 0=counter 1=gauge 2=histogram;
+// histograms carry their index into the HistogramList.
+type __StdMetricsEntry {
+    key:      String = "";
+    name:     String = "";
+    labels:   String = "";
+    kind:     Int    = 0;
+    value:    Float  = 0.0;
+    hist_idx: Int    = -1;
+}
+
+// Bucket bounds + cumulative counts + sum + count for one
+// histogram series. counts is one longer than bounds (the
+// trailing +Inf bucket). Capacity 32 bounds the bucket count;
+// registration clamps beyond it.
+type __StdMetricsHistogramData {
+    name:   String = "";
+    labels: String = "";
+    bounds: bounded[Float; 32];
+    counts: bounded[Int; 33];
+    sum:    Float  = 0.0;
+    count:  Int    = 0;
+}
+
+@form(hashmap, sync = serialized)
+locus __StdMetricsMap {
+    capacity { pool entries of __StdMetricsEntry indexed_by key; }
+}
+
+@form(vec)
+locus __StdMetricsHistogramList {
+    capacity { heap items of __StdMetricsHistogramData; }
+}
+
+// ---- labels ---------------------------------------------------------
+
+fn __metrics_labels_empty() -> std::metrics::Labels {
+    return std::metrics::Labels { kv: "" };
+}
+
+fn __metrics_labels_one(k: String, v: String) -> std::metrics::Labels {
+    return std::metrics::Labels { kv: k + "=" + v };
+}
+
+fn __metrics_labels_two(k1: String, v1: String, k2: String, v2: String) -> std::metrics::Labels {
+    return std::metrics::Labels { kv: k1 + "=" + v1 + "\t" + k2 + "=" + v2 };
+}
+
+fn __metrics_labels_append(l: std::metrics::Labels, k: String, v: String) -> std::metrics::Labels {
+    if len(l.kv) == 0 {
+        return std::metrics::Labels { kv: k + "=" + v };
+    }
+    return std::metrics::Labels { kv: l.kv + "\t" + k + "=" + v };
+}
+
+// Composite series key: `name{k1=v1\t...}`.
+fn __metrics_key(name: String, labels: std::metrics::Labels) -> String {
+    return name + "{" + labels.kv + "}";
+}
+
+// ---- token helpers (internal) ---------------------------------------
+
+fn __metrics_tok_count(s: String, sep: String) -> Int {
+    let n = len(s);
+    if n == 0 {
+        return 0;
+    }
+    let mut count = 1;
+    let mut i = 0;
+    while i < n {
+        if s[i..i + 1] == sep {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    return count;
+}
+
+fn __metrics_tok_at(s: String, sep: String, i: Int) -> String {
+    let n = len(s);
+    if n == 0 {
+        return "";
+    }
+    let mut idx = 0;
+    let mut start = 0;
+    let mut j = 0;
+    while j < n {
+        if s[j..j + 1] == sep {
+            if idx == i {
+                return s[start..j];
+            }
+            idx = idx + 1;
+            start = j + 1;
+        }
+        j = j + 1;
+    }
+    if idx == i {
+        return s[start..n];
+    }
+    return "";
+}
+
+fn __metrics_count_out_of_order(h: __StdMetricsHistogramData) -> Int {
+    let n = count(h.counts);
+    if n <= 1 {
+        return 0;
+    }
+    let mut violations = 0;
+    let mut prev = at(h.counts, 0) or 0;
+    let mut j = 1;
+    while j < n {
+        let cur = at(h.counts, j) or 0;
+        if cur < prev {
+            violations = violations + 1;
+        }
+        prev = cur;
+        j = j + 1;
+    }
+    return violations;
+}
+
+// ---- factories ------------------------------------------------------
+//
+// Idempotent on (name, labels): a repeat call returns a handle to
+// the same series without resetting it. Handles carry references
+// to the STORAGE slots (not the Registry) — resolve once at boot,
+// cache the handle as a field, mutate from the hot path.
+
+fn __metrics_counter(reg: std::metrics::Registry, name: String, labels: std::metrics::Labels) -> std::metrics::Counter {
+    let k = __metrics_key(name, labels);
+    if !reg.store.has(k) {
+        reg.store.set(__StdMetricsEntry {
+            key: k, name: name, labels: labels.kv,
+            kind: 0, value: 0.0, hist_idx: -1
+        });
+    }
+    return std::metrics::Counter { store: reg.store, key: k };
+}
+
+fn __metrics_gauge(reg: std::metrics::Registry, name: String, labels: std::metrics::Labels) -> std::metrics::Gauge {
+    let k = __metrics_key(name, labels);
+    if !reg.store.has(k) {
+        reg.store.set(__StdMetricsEntry {
+            key: k, name: name, labels: labels.kv,
+            kind: 1, value: 0.0, hist_idx: -1
+        });
+    }
+    return std::metrics::Gauge { store: reg.store, key: k };
+}
+
+// `bounds` is a space-separated ascending list of bucket upper
+// bounds ("0.005 0.01 0.05 0.1"); parsed once here (cold), max
+// 32 buckets (over-cap clamps). The +Inf bucket is implicit.
+fn __metrics_histogram(reg: std::metrics::Registry, name: String, bounds: String, labels: std::metrics::Labels) -> std::metrics::Histogram {
+    let k = __metrics_key(name, labels);
+    let mut nb_declared = __metrics_tok_count(bounds, " ");
+    if !reg.store.has(k) {
+        let mut nb = nb_declared;
+        if nb > 32 { nb = 32; }
+        let h = __StdMetricsHistogramData {
+            name: name, labels: labels.kv, sum: 0.0, count: 0
+        };
+        let mut bi = 0;
+        while bi < nb {
+            let tok = __metrics_tok_at(bounds, " ", bi);
+            push(h.bounds, std::str::parse_float(tok) or 0.0) or discard;
+            bi = bi + 1;
+        }
+        let mut ci = 0;
+        while ci <= nb {
+            push(h.counts, 0) or discard;
+            ci = ci + 1;
+        }
+        reg.histograms.push(h);
+        let new_idx = reg.histograms.len() - 1;
+        reg.store.set(__StdMetricsEntry {
+            key: k, name: name, labels: labels.kv,
+            kind: 2, value: 0.0, hist_idx: new_idx
+        });
+    }
+    let e = reg.store.get(k) or __StdMetricsEntry { };
+    return std::metrics::Histogram {
+        store: reg.store, histograms: reg.histograms,
+        key: k, hist_idx: e.hist_idx, bucket_count: nb_declared
+    };
+}
+
+// ---- handles --------------------------------------------------------
+
+locus __StdMetricsCounter {
+    params {
+        store: __StdMetricsMap;
+        key:   String = "";
+    }
+    fn inc() {
+        self.add(1.0);
+    }
+    fn add(v: Float) {
+        if self.store.has(self.key) {
+            let e = self.store.get(self.key) or __StdMetricsEntry { };
+            self.store.set(__StdMetricsEntry {
+                key: e.key, name: e.name, labels: e.labels,
+                kind: e.kind, value: e.value + v, hist_idx: e.hist_idx
+            });
+        }
+    }
+}
+
+locus __StdMetricsGauge {
+    params {
+        store: __StdMetricsMap;
+        key:   String = "";
+    }
+    fn set(v: Float) {
+        if self.store.has(self.key) {
+            let e = self.store.get(self.key) or __StdMetricsEntry { };
+            self.store.set(__StdMetricsEntry {
+                key: e.key, name: e.name, labels: e.labels,
+                kind: e.kind, value: v, hist_idx: e.hist_idx
+            });
+        }
+    }
+    fn add(v: Float) {
+        if self.store.has(self.key) {
+            let e = self.store.get(self.key) or __StdMetricsEntry { };
+            self.store.set(__StdMetricsEntry {
+                key: e.key, name: e.name, labels: e.labels,
+                kind: e.kind, value: e.value + v, hist_idx: e.hist_idx
+            });
+        }
+    }
+    fn sub(v: Float) {
+        self.add(0.0 - v);
+    }
+    fn inc() {
+        self.add(1.0);
+    }
+    fn dec() {
+        self.add(0.0 - 1.0);
+    }
+}
+
+locus __StdMetricsHistogram {
+    params {
+        store:        __StdMetricsMap;
+        histograms:   __StdMetricsHistogramList;
+        key:          String = "";
+        hist_idx:     Int    = -1;
+        bucket_count: Int    = 0;
+        out_of_order: Int    = 0;
+    }
+
+    // Structural invariant: cumulative bucket counts stay
+    // monotonic. observe() folds the check into a scalar and
+    // fires the named closure on breach (the styleguide-2.7
+    // value→structural bridge).
+    closure buckets_monotonic {
+        captures: out_of_order;
+        epoch inline;
+    }
+
+    fn observe(v: Float) {
+        if self.hist_idx < 0 {
+            return;
+        }
+        if self.hist_idx >= self.histograms.len() {
+            return;
+        }
+        let mut h = self.histograms.get(self.hist_idx) or __StdMetricsHistogramData { };
+        let nb = count(h.bounds);
+        let mut hit = nb;
+        let mut i = 0;
+        while i < nb {
+            let b = at(h.bounds, i) or 0.0;
+            if v <= b {
+                hit = i;
+                i = nb;
+            } else {
+                i = i + 1;
+            }
+        }
+        let mut j = hit;
+        while j <= nb {
+            let c = at(h.counts, j) or 0;
+            set(h.counts, j, c + 1) or discard;
+            j = j + 1;
+        }
+        h.sum = h.sum + v;
+        h.count = h.count + 1;
+        self.histograms.set(self.hist_idx, h) or discard;
+
+        self.out_of_order = __metrics_count_out_of_order(h);
+        if self.out_of_order > 0 {
+            violate buckets_monotonic;
+        }
+    }
+}
+
+// ---- Prometheus rendering (internal) --------------------------------
+
+fn __metrics_full_name(ns: String, name: String) -> String {
+    if len(ns) == 0 {
+        return name;
+    }
+    return ns + "_" + name;
+}
+
+fn __metrics_escape_label(v: String) -> String {
+    let s1 = std::str::replace(v, "\\", "\\\\");
+    let s2 = std::str::replace(s1, "\"", "\\\"");
+    return std::str::replace(s2, "\n", "\\n");
+}
+
+fn __metrics_render_labels(kv: String) -> String {
+    if len(kv) == 0 {
+        return "";
+    }
+    let mut out = "{";
+    let n = __metrics_tok_count(kv, "\t");
+    let mut i = 0;
+    while i < n {
+        let pair = __metrics_tok_at(kv, "\t", i);
+        let eq = std::str::index_of(pair, "=");
+        if eq >= 0 {
+            let k = pair[0..eq];
+            let v = pair[(eq + 1)..len(pair)];
+            if i > 0 {
+                out = out + ",";
+            }
+            out = out + k + "=\"" + __metrics_escape_label(v) + "\"";
+        }
+        i = i + 1;
+    }
+    return out + "}";
+}
+
+fn __metrics_render_labels_le(kv: String, le: String) -> String {
+    let escaped_le = __metrics_escape_label(le);
+    if len(kv) == 0 {
+        return "{le=\"" + escaped_le + "\"}";
+    }
+    let base = __metrics_render_labels(kv);
+    let baselen = len(base);
+    return base[0..baselen - 1] + ",le=\"" + escaped_le + "\"}";
+}
+
+fn __metrics_render_type_line(ns: String, name: String, kind: String) -> String {
+    return "# TYPE " + __metrics_full_name(ns, name) + " " + kind + "\n";
+}
+
+fn __metrics_render_sample(ns: String, name: String, labels: String, value: Float) -> String {
+    return __metrics_full_name(ns, name) + __metrics_render_labels(labels)
+        + " " + to_string(value) + "\n";
+}
+
+fn __metrics_render_histogram(ns: String, h: __StdMetricsHistogramData) -> String {
+    let full = __metrics_full_name(ns, h.name);
+    let nb = count(h.bounds);
+    let nc = count(h.counts);
+    let b = std::bytes::BytesBuilder { initial_cap: 1024 };
+    let mut i = 0;
+    while i < nb {
+        let bound = to_string(at(h.bounds, i) or 0.0);
+        let cnt = at(h.counts, i) or 0;
+        let lab = __metrics_render_labels_le(h.labels, bound);
+        b.append(std::bytes::from_string(full + "_bucket" + lab + " " + to_string(cnt) + "\n"));
+        i = i + 1;
+    }
+    if nc > nb {
+        let inf_cnt = at(h.counts, nb) or 0;
+        let lab_inf = __metrics_render_labels_le(h.labels, "+Inf");
+        b.append(std::bytes::from_string(full + "_bucket" + lab_inf + " " + to_string(inf_cnt) + "\n"));
+    }
+    let lab_total = __metrics_render_labels(h.labels);
+    b.append(std::bytes::from_string(full + "_sum"   + lab_total + " " + to_string(h.sum)   + "\n"));
+    b.append(std::bytes::from_string(full + "_count" + lab_total + " " + to_string(h.count) + "\n"));
+    return std::str::from_bytes(b.finish());
+}
+
+// ---- the Registry + endpoint ----------------------------------------
+
+locus __StdMetricsRegistry {
+    params {
+        namespace:  String = "";
+        // Storage owned by the Registry (param-default children) —
+        // pond's two-step construction (let-bound storage passed
+        // in) was a workaround for a since-closed default-init gap,
+        // and it dissolves the storage at the constructing fn's
+        // scope exit if the Registry outlives it. Owned defaults
+        // make `Registry { namespace: "x" }` safe to return from a
+        // builder fn; explicit overrides still accepted.
+        store:      __StdMetricsMap          = __StdMetricsMap { };
+        histograms: __StdMetricsHistogramList = __StdMetricsHistogramList { };
+    }
+
+    // Prometheus text exposition. BytesBuilder accumulation
+    // keeps the scratch peak O(total) instead of O(lines²).
+    fn render() -> String {
+        let b = std::bytes::BytesBuilder { initial_cap: 8192 };
+        for e in self.store.entries {
+            if e.kind == 0 {
+                b.append(std::bytes::from_string(__metrics_render_type_line(self.namespace, e.name, "counter")));
+                b.append(std::bytes::from_string(__metrics_render_sample(self.namespace, e.name, e.labels, e.value)));
+            } else if e.kind == 1 {
+                b.append(std::bytes::from_string(__metrics_render_type_line(self.namespace, e.name, "gauge")));
+                b.append(std::bytes::from_string(__metrics_render_sample(self.namespace, e.name, e.labels, e.value)));
+            } else if e.kind == 2 {
+                b.append(std::bytes::from_string(__metrics_render_type_line(self.namespace, e.name, "histogram")));
+                let h = self.histograms.get(e.hist_idx) or __StdMetricsHistogramData { };
+                b.append(std::bytes::from_string(__metrics_render_histogram(self.namespace, h)));
+            }
+        }
+        return std::str::from_bytes(b.finish());
+    }
+}
+
+// std::metrics::Endpoint — std::http::Handler serving the
+// exposition:
+//   std::http::Server { port: 9090,
+//       handler: std::metrics::Endpoint { registry: reg } };
+locus __StdMetricsEndpoint {
+    params {
+        registry: __StdMetricsRegistry;
+    }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        return std::http::Response {
+            status:       200,
+            content_type: "text/plain; version=0.0.4",
+            body:         self.registry.render()
+        };
+    }
+}

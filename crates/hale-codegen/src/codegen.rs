@@ -2204,6 +2204,10 @@ const STDLIB_AP_SOURCE: &str = concat!(
     // io_tcp.hl's IoError, so it lands after both.
     include_str!("../runtime/stdlib/http_client.hl"),
     "\n",
+    // std::metrics (promoted from pond/metrics, 2026-07-18) —
+    // Endpoint references std::http types, so it lands after http.hl.
+    include_str!("../runtime/stdlib/metrics.hl"),
+    "\n",
     include_str!("../runtime/stdlib/text.hl"),
     "\n",
     include_str!("../runtime/stdlib/test.hl"),
@@ -2403,9 +2407,30 @@ const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "json", "JsonFieldRange"], "__JsonFieldRange"),
     (&["std", "lang", "Lang"], "__StdLangLang"),
     (&["std", "lang", "Morpheme"], "__StdLangMorpheme"),
+    (&["std", "log", "ConsoleSink"], "__StdLogConsoleSink"),
+    (&["std", "log", "FileSink"], "__StdLogFileSink"),
     (&["std", "log", "LogEvent"], "__StdLogEvent"),
     (&["std", "log", "Logger"], "__StdLogLogger"),
     (&["std", "log", "StdoutSink"], "__StdLogStdoutSink"),
+    // std::metrics (promoted from pond/metrics, 2026-07-18).
+    (&["std", "metrics", "Counter"], "__StdMetricsCounter"),
+    (&["std", "metrics", "Endpoint"], "__StdMetricsEndpoint"),
+    (&["std", "metrics", "Gauge"], "__StdMetricsGauge"),
+    (&["std", "metrics", "Histogram"], "__StdMetricsHistogram"),
+    (&["std", "metrics", "HistogramData"], "__StdMetricsHistogramData"),
+    (&["std", "metrics", "HistogramList"], "__StdMetricsHistogramList"),
+    (&["std", "metrics", "Labels"], "__StdMetricsLabels"),
+    (&["std", "metrics", "MetricEntry"], "__StdMetricsEntry"),
+    (&["std", "metrics", "MetricMap"], "__StdMetricsMap"),
+    (&["std", "metrics", "Registry"], "__StdMetricsRegistry"),
+    (&["std", "metrics", "counter"], "__metrics_counter"),
+    (&["std", "metrics", "gauge"], "__metrics_gauge"),
+    (&["std", "metrics", "histogram"], "__metrics_histogram"),
+    (&["std", "metrics", "labels_append"], "__metrics_labels_append"),
+    (&["std", "metrics", "labels_empty"], "__metrics_labels_empty"),
+    (&["std", "metrics", "labels_one"], "__metrics_labels_one"),
+    (&["std", "metrics", "labels_two"], "__metrics_labels_two"),
+    (&["std", "metrics", "metric_key"], "__metrics_key"),
     (&["std", "name", "Convention"], "__StdNameConvention"),
     // C2 — subprocess. ProcessOutput is the captured-output struct
     // returned by `std::process::run`; Child is the lifecycle-bound

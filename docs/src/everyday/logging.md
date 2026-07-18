@@ -62,6 +62,28 @@ only database logs, `log.**` to capture all of them — without the
 loggers knowing who's listening. Publisher and subscriber never
 reference each other; they only share the topic name.
 
+## Files and pretty consoles
+
+`StdoutSink` is the minimal sink; two richer drop-ins subscribe to
+the same `log.**`, so swapping is a one-line change at the wiring
+site:
+
+```hale
+std::log::FileSink { path: "logs/app.log" };       // append + rotate
+std::log::ConsoleSink { };                          // colored badges
+```
+
+`FileSink` appends every event and rotates by size — `app.log` →
+`app.log.1` → … up to `keep_files`, oldest evicted, all atomic
+renames. I/O failures never crash your program; they land in the
+sink's `last_error_kind()` / `last_error_errno()` /
+`last_error_path()` accessors. `ConsoleSink` renders
+`14:02:07 WARN  app.db retry 1/3` with colored level badges —
+automatically disabled when output isn't a terminal (and `NO_COLOR`
+always wins). Both send WARN/ERROR to stderr so shell pipelines and
+CI capture keep the signal lane separate. Run several sinks at once
+— they're all just subscribers.
+
 ## You just used the bus
 
 That decoupling — emitters publish, sinks subscribe, neither
