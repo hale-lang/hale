@@ -180,6 +180,7 @@ tests by suffix (`_test.hl`) regardless of location.
 | `hale check` | Static checks: parse, typecheck, framework discipline |
 | `hale test` | Run all `*_test.hl` files in the project |
 | `hale test -run pattern` | Run matching tests only |
+| | (`hale test` applies the same `hale.toml [ffi]` csrc/link pickup as `hale build`, so tests importing FFI-bearing libs link — 2026-07-18) |
 | `hale bench` *(planned)* | Run all `*_bench.hl` files |
 | `hale bench -compare` *(planned)* | Build and run external equivalents alongside |
 | `hale verify` *(planned)* | Layer-2 discipline checks specifically (no execution) |

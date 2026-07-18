@@ -1354,7 +1354,7 @@ fn collect_test_files(target: &Path, out: &mut Vec<PathBuf>) -> Result<(), Strin
 /// (parse_with_imports → check_bundle_opts → build) but stops at
 /// the binary so the caller can `.output()`-capture the run.
 fn compile_test_binary(entry: &Path) -> Result<PathBuf, String> {
-    let (program, renames, sources, file_bases, _ctx) = match parse_with_imports(entry) {
+    let (program, renames, sources, file_bases, ctx) = match parse_with_imports(entry) {
         Ok(x) => x,
         Err(errors) => {
             let mut msg = String::new();
@@ -1381,7 +1381,23 @@ fn compile_test_binary(entry: &Path) -> Result<PathBuf, String> {
     h.write(entry.display().to_string().as_bytes());
     h.write_u32(std::process::id());
     bin.push(format!("hale_test_{:016x}", h.finish()));
-    if let Err(e) = hale_codegen::build_executable_with_imports(&program, &bin, &renames) {
+    // Stage-2 FFI pickup, same as `hale build` (2026-07-18; closes
+    // pond FRICTION "hale test cannot link @ffi libs"): a test that
+    // imports an FFI-bearing lib (sqlite et al.) needs the lib's
+    // hale.toml [ffi] link/csrc surface on the link line, or every
+    // such test dies with undefined lotus_* references regardless
+    // of the test's own correctness.
+    let mut options = collect_ffi_from_imports(
+        &ctx.imports,
+        &ctx.entry_dir,
+        ctx.workspace_root.as_deref(),
+    );
+    // Tests are rebuilt every run — take the dev profile's build
+    // latency win; the exit-code contract doesn't time anything.
+    options.dev_profile = true;
+    if let Err(e) = hale_codegen::build_executable_with_options(
+        &program, &bin, &renames, &options,
+    ) {
         return Err(format!("codegen error: {:?}", e));
     }
     Ok(bin)

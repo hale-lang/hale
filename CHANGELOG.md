@@ -8,6 +8,18 @@ behavior.
 
 ## Unreleased
 
+- **`hale test` links `@ffi` libs.** The test runner's per-file
+  compile now runs the same Stage-2 `hale.toml [ffi]` csrc/link
+  pickup `hale build` does, so tests importing FFI-bearing libs
+  (pond/sqlite and everything on it) compile and link instead of
+  dying with undefined references — closing the open pond FRICTION
+  entry ("hale test cannot link @ffi libs", 2026-07-04) and the
+  one place the runner contradicted the three-gates verification
+  story. Test binaries also build with the dev profile now (they
+  rebuild every run; nothing in the exit-code contract times).
+  Regression: `hale-cli/tests/test_ffi_pickup.rs`; validated
+  against pond's real sqlite/jobs/migrations tests (previously 5
+  link failures, now green).
 - **LSP v4: completion.** `textDocument/completion` (trigger
   characters `.` and `:`): after `self.` — the enclosing locus's
   params (with types) and user-declared methods (with signatures);
