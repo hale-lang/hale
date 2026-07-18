@@ -2047,12 +2047,54 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         CodegenError::LlvmEmit(e.to_string())
                     })?
                     .into_pointer_value();
-                let arg_val = self.emit_cross_arena_store_deep_copy(
+                // Cell single-owner (2026-07-18): the walk's
+                // String/Bytes leaves must not skip-share a
+                // same-arena pointer into the cell — a value read
+                // out of another cell (or a self-storage field)
+                // would alias it, and anchor retirement frees
+                // aliased blobs (UAF) while in-place self-field
+                // overwrites mutate them. Toggle the owned-clone
+                // variants for the duration of this walk.
+                // Cell single-owner, part 2 (2026-07-18): walk a
+                // stack SNAPSHOT of the value struct, not the
+                // source. The anchor walk rewrites heap-pointer
+                // fields in place; when the source is a
+                // self-storage struct (`m.set(self.rec)`), the
+                // store-back would re-point the locus field at the
+                // very blob the cell is about to own — the two
+                // alias again (in-place field overwrites then
+                // mutate the cell, and a later retire of either
+                // dangles the other). Snapshotting first leaves the
+                // source untouched; entry-block alloca so a hot
+                // loop reuses one slot.
+                let snap = self.alloca_in_entry(
+                    cell_info.struct_ty.into(),
+                    &format!("{}.set.snap", locus_name),
+                )?;
+                let snap_size = cell_info
+                    .struct_ty
+                    .size_of()
+                    .expect("cell struct has known size");
+                self.builder
+                    .build_memcpy(
+                        snap,
+                        8,
+                        arg_val.into_pointer_value(),
+                        8,
+                        snap_size,
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let arg_val: BasicValueEnum = snap.into();
+                let prev_owned = self.cell_owned_clone;
+                self.cell_owned_clone = true;
+                let walk_res = self.emit_cross_arena_store_deep_copy(
                     arg_val,
                     &expected_value_ty,
                     dest_arena,
                     &format!("{}.hashmap_set", locus_name),
-                )?;
+                );
+                self.cell_owned_clone = prev_owned;
+                let arg_val = walk_res?;
                 // The value lowered to a TypeRef arrives as a
                 // pointer to the struct (user_type instantiations
                 // return `*StructTy`). Pass it directly as
@@ -2811,12 +2853,48 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                     .into_pointer_value();
-                let arg_val = self.emit_cross_arena_store_deep_copy(
+                // Cell single-owner: same rule as hashmap_set —
+                // see the comment there.
+                // Cell single-owner, part 2 (2026-07-18): walk a
+                // stack SNAPSHOT of the value struct, not the
+                // source. The anchor walk rewrites heap-pointer
+                // fields in place; when the source is a
+                // self-storage struct (`m.put(self.rec)`), the
+                // store-back would re-point the locus field at the
+                // very blob the cell is about to own — the two
+                // alias again (in-place field overwrites then
+                // mutate the cell, and a later retire of either
+                // dangles the other). Snapshotting first leaves the
+                // source untouched; entry-block alloca so a hot
+                // loop reuses one slot.
+                let snap = self.alloca_in_entry(
+                    cell_info.struct_ty.into(),
+                    &format!("{}.put.snap", locus_name),
+                )?;
+                let snap_size = cell_info
+                    .struct_ty
+                    .size_of()
+                    .expect("cell struct has known size");
+                self.builder
+                    .build_memcpy(
+                        snap,
+                        8,
+                        arg_val.into_pointer_value(),
+                        8,
+                        snap_size,
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let arg_val: BasicValueEnum = snap.into();
+                let prev_owned = self.cell_owned_clone;
+                self.cell_owned_clone = true;
+                let walk_res = self.emit_cross_arena_store_deep_copy(
                     arg_val,
                     &expected_value_ty,
                     dest_arena,
                     &format!("{}.lru_put", locus_name),
-                )?;
+                );
+                self.cell_owned_clone = prev_owned;
+                let arg_val = walk_res?;
                 let value_ptr = arg_val.into_pointer_value();
                 let key_field_ptr = self
                     .builder

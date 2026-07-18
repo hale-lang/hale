@@ -1,0 +1,118 @@
+// 70-cell-single-owner — @form cell stores never share a blob with
+// self-storage or another cell (cell single-owner, 2026-07-18), plus
+// Bytes grow-path retirement soundness under mixed churn.
+//
+// The pre-fix hazard: the cell anchor walk's same-arena clone skip
+// let `m.set(self.rec)` store the SELF FIELD's own String/Bytes
+// blobs into the cell (walking the source in place even re-pointed
+// the field at the cell's blob). Two owners of one blob breaks both
+// ways: an in-place self-field overwrite silently mutated the cell,
+// and anchor retirement freed a blob the other owner still held.
+// The fix walks a stack snapshot with force-copy clones
+// (lotus_*_clone_cell_owned) — exclusive ownership either side.
+//
+// The Bytes part: `self.buf = <bigger Bytes>` grow now RETIRES the
+// abandoned buffer (lotus_arena_retire_bytes) instead of orphaning
+// it, and Bytes allocation consults the same freelist through
+// alignment-aware pops — align-8 Bytes blocks and align-1 String
+// blocks share one list, so this churn mixes both kinds and a
+// misaligned pop or double-retire corrupts within a few thousand
+// iterations (ASan-visible via the corpus oracle).
+//
+// Strings are concat-built on purpose: static literals live in
+// .rodata, short-circuit the clone helpers, and never exercise the
+// retire/reuse path.
+
+type Rec {
+    key:  String = "";
+    val:  String = "";
+    data: Bytes  = std::bytes::from_string("");
+}
+
+@form(hashmap)
+locus Store {
+    capacity { pool recs of Rec indexed_by key; }
+}
+
+main locus CellSingleOwner {
+    params {
+        m: Store = Store { };
+        rec: Rec = Rec { };
+        buf: Bytes = std::bytes::from_string("");
+        name: String = "";
+        iters: Int = 20000;
+        sink: Int = 0;
+    }
+
+    fn seed() {
+        self.buf = std::bytes::from_string("seed-" + "bytes-payload-24b!!");
+        self.rec = Rec {
+            key: "k" + "r",
+            val: "original-" + "vr" + "-payload",
+            data: self.buf
+        };
+        // Whole self-storage struct straight into the cell — the
+        // shape whose walk used to alias cell and field.
+        self.m.set(self.rec);
+    }
+
+    // In-place mutations of the self field the cell was copied
+    // from. Same-length String overwrite hits the fit path (bytes
+    // rewritten in the blob); the cell must not see either.
+    fn mutate_source(i: Int) {
+        self.rec.val = "REWRITTEN-" + (i - (i / 10) * 10) + "-inplace";
+        self.buf = std::bytes::from_string("mut" + i);
+    }
+
+    // Cell churn over rotating keys: retire + flush + reuse every
+    // activation, consuming freelist blocks of both alignments.
+    fn churn_cells(i: Int) {
+        self.m.set(Rec {
+            key: "c." + (i - (i / 16) * 16),
+            val: "cell." + i,
+            data: std::bytes::from_string("d." + i)
+        });
+    }
+
+    // Bytes grow-path retire: oscillating sizes force the
+    // doesn't-fit branch (retire old, clone new) every other call.
+    fn churn_bytes(i: Int) {
+        self.buf = std::bytes::from_string(
+            "grow-" + i + "-abcdefghijklmnopqrstuvwxyz");
+        self.buf = std::bytes::from_string("s" + i);
+    }
+
+    // String churn interleaves align-1 blocks into the freelist.
+    fn churn_name(i: Int) {
+        self.name = "name-" + i + "-padpadpad";
+    }
+
+    fn check() {
+        let e = self.m.get("kr") or Rec { };
+        self.sink = self.sink + len(e.val) + len(e.data);
+    }
+
+    run() {
+        self.seed();
+        let mut i = 0;
+        while i < self.iters {
+            self.mutate_source(i);
+            self.churn_cells(i);
+            self.churn_bytes(i);
+            self.churn_name(i);
+            self.check();
+            i = i + 1;
+        }
+        let e = self.m.get("kr") or Rec { };
+        let ok_val = e.val == "original-vr-payload";
+        let ok_data = len(e.data) == 24;
+        println("cell-single-owner: kr.val=", e.val,
+            " data_len=", len(e.data), " sink>0=", self.sink > 0);
+        if !ok_val { std::process::exit(1); }
+        if !ok_data { std::process::exit(2); }
+    }
+}
+
+fn main() {
+    CellSingleOwner { };
+}

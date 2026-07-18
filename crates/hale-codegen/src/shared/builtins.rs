@@ -629,6 +629,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
         self.module
             .add_function("lotus_bytes_clone", bytes_clone_ty, None);
+        // Cell-store single-owner clones (2026-07-18): like the
+        // plain clones but a same-arena input force-copies instead
+        // of passing through — the @form cell anchor walk uses
+        // these so two map cells (or a cell and a self-storage
+        // field) never share a blob. Statics still pass through;
+        // cross-arena values clone as before.
+        // declare ptr @lotus_str_clone_cell_owned(ptr arena, ptr s)
+        // declare ptr @lotus_bytes_clone_cell_owned(ptr arena, ptr b)
+        self.module.add_function(
+            "lotus_str_clone_cell_owned",
+            str_clone_ty,
+            None,
+        );
+        self.module.add_function(
+            "lotus_bytes_clone_cell_owned",
+            bytes_clone_ty,
+            None,
+        );
         let i32_t_local = self.context.i32_type();
         let str_eq_ty =
             i32_t_local.fn_type(&[ptr_t.into(), ptr_t.into()], false);

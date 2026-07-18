@@ -1129,6 +1129,30 @@ reclaim on a real-world long-running workload:
      RMW back to zero allocations once the previously-stored
      buffer is already in the hashmap's arena.
 
+     Cell single-owner (2026-07-18): the String/Bytes leaves of
+     the walk no longer use the plain clones' same-arena SKIP —
+     they route through `lotus_str_clone_cell_owned` /
+     `lotus_bytes_clone_cell_owned`, which force-copy a
+     same-arena input (statics still pass through; cross-arena
+     values clone exactly as before). And the walk operates on a
+     stack *snapshot* of the value struct rather than the source:
+     anchoring in place used to rewrite a self-storage source
+     (`m.set(self.rec)`) so the locus field and the cell ended up
+     pointing at the same blob — an in-place field overwrite then
+     mutated the cell silently, and anchor retirement could free
+     a blob the other owner still held. With snapshot +
+     owned-clone, a cell's top-level String/Bytes fields are
+     always exclusively owned. The compound-field gate (`Array`,
+     nested `TypeRef`, …) keeps its identity-skip — compounds
+     don't retire, so sharing there is a mutation-visibility
+     caveat, not a use-after-free (tracked in
+     notes/anchor-retirement.md). Note the RMW zero-allocation
+     claim above narrows accordingly: same-pointer String/Bytes
+     fields carried through a get-then-set now cost one owned
+     copy per set, served by the retire freelist (the replaced
+     generation recycles into the next), so steady-state memory
+     stays flat while compound fields keep the zero-copy skip.
+
   6. **In-place mutation at `self.X = Struct{...}` and
      `self.X[i] = Struct{...}` assigns.** Locus self-fields
      (and elements of self-array-fields) are pre-allocated at
@@ -1170,11 +1194,17 @@ reclaim on a real-world long-running workload:
      updates the prefix and memcpys the payload in place.
      Static-literal `old` falls through to the clone path
      (`.rodata` isn't writable). When new is longer than old's
-     buffer, the abandoned String buffer is *retired* since
-     2026-07-17 (reusable after the activation-boundary flush)
-     instead of leaking; a Bytes grow still leaks (Bytes blobs
-     are align-8 and stay out of the align-1 retire freelist —
-     follow-up).
+     buffer, the abandoned buffer is *retired* (String since
+     2026-07-17, Bytes since 2026-07-18) — reusable after the
+     activation-boundary flush instead of leaking. The retire
+     freelist mixes align-1 String blocks and align-8 Bytes
+     blocks; pops are alignment-aware (a String request reuses
+     either kind, a Bytes request only 8-aligned blocks). Note
+     the capacity-collapse caveat below bounds what Bytes-grow
+     retire can reclaim: a single oscillating field's grow
+     requests are always larger than its own shrink-collapsed
+     retire records, so the recycled blocks pay off through
+     other same-arena allocations of matching sizes.
 
      Single-owner rule (2026-07-17): on every path that stores
      a replacement pointer, an incoming pointer that is already

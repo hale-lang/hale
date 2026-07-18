@@ -8,6 +8,29 @@ behavior.
 
 ## Unreleased
 
+- **Runtime: @form cell single-owner + Bytes grow-path retirement.**
+  Two anchor-retirement residuals closed. (1) A hashmap `set` / lru
+  `put` now walks a stack snapshot of the value struct and clones
+  String/Bytes leaves through force-copy variants
+  (`lotus_*_clone_cell_owned`) — previously the same-arena clone
+  skip let a cell share a blob with the self-storage struct it was
+  set from (`m.set(self.rec)`), so an in-place field overwrite
+  mutated the cell silently and a retire on either side could
+  dangle the other. Statics still pass through and cross-arena
+  values clone as before; the cost lands only on get-then-set
+  round-trips, where the freelist recycles the replaced
+  generation. (2) `self.X = <bigger Bytes>` grow now retires the
+  abandoned blob instead of orphaning it, and Bytes allocation
+  consults the retire freelist through alignment-aware pops
+  (align-1 String and align-8 Bytes blocks share one list; a
+  candidate must satisfy the request's alignment). Caveat carried
+  over from the String side: a shrink collapses recorded capacity,
+  so an oscillating field can't self-serve its own grows — the
+  reclaim pays off through other same-arena allocations. Tests:
+  `hashmap_cell_alias.rs` (deterministic mutation-visibility
+  repro) + fixture `70-cell-single-owner` (mixed String/Bytes
+  churn, ASan-clean under the corpus oracle); spec/memory.md §5/§7
+  updated.
 - **`std::metrics` — Prometheus metrics, promoted from pond/metrics.**
   `Registry` (namespace prefix; **owns its storage** as param-default
   children, so `Registry { namespace: "app" }` is the whole

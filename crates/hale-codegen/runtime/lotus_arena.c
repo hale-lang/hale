@@ -4529,6 +4529,24 @@ void lotus_arena_retire_str(void *arena_ptr, char *s) {
     lotus_arena_retire_sized(a, s, strlen(s) + 1);
 }
 
+/* Bytes companion (2026-07-18): blobs are `[int64 len][payload]` at
+ * align 8, so the len prefix recovers the block size the same way
+ * strlen does for Strings — and it under-reports after an in-place
+ * shrink exactly like the String case (safe: the flush never writes
+ * past the recorded size, reuse matching just degrades). The flush
+ * and pops are alignment-aware, so an 8-aligned Bytes block on the
+ * shared freelist is reusable by either a Bytes request (align 8)
+ * or a String request (align 1). */
+void lotus_arena_retire_bytes(void *arena_ptr, void *b) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (!a || !b) return;
+    if (!lotus_arena_contains_ptr(a, b)) return;
+    int64_t len;
+    memcpy(&len, b, sizeof(int64_t));
+    if (len < 0) len = 0;
+    lotus_arena_retire_sized(a, b, sizeof(int64_t) + (size_t)len);
+}
+
 /* Install the retire descriptor on a map (codegen, once at
  * instantiation; offsets point at a static global). */
 /* Test-harness probe: the C driver reserves opaque storage for the
@@ -4586,8 +4604,14 @@ void lotus_arena_flush_retired(void *arena_ptr) {
 }
 
 /* Bounded first-fit pop for the allocator (mirrors the
- * child-struct recycler's probe discipline). Returns NULL on miss. */
-static void *lotus_retire_free_pop(lotus_arena_t *a, size_t size) {
+ * child-struct recycler's probe discipline). Returns NULL on miss.
+ * `align`: the freelist mixes align-1 String blocks with align-8
+ * Bytes blocks (2026-07-18 Bytes-grow retire); a candidate only
+ * matches if its ADDRESS satisfies the request's alignment — a
+ * String request (align 1) can reuse either kind, a Bytes request
+ * (align 8) skips the odd-addressed String blocks. */
+static void *lotus_retire_free_pop(lotus_arena_t *a, size_t size,
+                                   size_t align) {
     void *cur = a->retire_free;
     void *prev_blob = NULL;
     int probes = 0;
@@ -4597,7 +4621,8 @@ static void *lotus_retire_free_pop(lotus_arena_t *a, size_t size) {
         void *next;
         memcpy(&bsize, b, sizeof(size_t));
         memcpy(&next, b + 8, sizeof(void *));
-        if (bsize >= size && bsize <= size + (size >> 2) + 16) {
+        if (bsize >= size && bsize <= size + (size >> 2) + 16 &&
+            ((uintptr_t)b & (align - 1)) == 0) {
             if (prev_blob) {
                 memcpy((char *)prev_blob + 8, &next, sizeof(void *));
             } else {
@@ -4616,13 +4641,15 @@ static void *lotus_retire_free_pop(lotus_arena_t *a, size_t size) {
  * (blocks < 16 bytes, tracked by their shells so nothing is written
  * into the block). Unlinks the matched shell, recycles it to the
  * shell pool, and returns its blob. Returns NULL on miss. */
-static void *lotus_retire_free_small_pop(lotus_arena_t *a, size_t size) {
+static void *lotus_retire_free_small_pop(lotus_arena_t *a, size_t size,
+                                         size_t align) {
     lotus_retire_shell_t **pp =
         (lotus_retire_shell_t **)&a->retire_free_small;
     int probes = 0;
     while (*pp && probes < 8) {
         lotus_retire_shell_t *sh = *pp;
-        if (sh->size >= size && sh->size <= size + (size >> 2) + 16) {
+        if (sh->size >= size && sh->size <= size + (size >> 2) + 16 &&
+            ((uintptr_t)sh->blob & (align - 1)) == 0) {
             *pp = sh->next;
             void *blob = sh->blob;
             sh->next = (lotus_retire_shell_t *)a->retire_shells;
@@ -4645,8 +4672,9 @@ void *lotus_arena_alloc_reusable(void *arena_ptr, uint64_t size,
     lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
     if (!a) return NULL;
     if (align <= 8) {
-        void *b = size >= 16 ? lotus_retire_free_pop(a, (size_t)size)
-                             : lotus_retire_free_small_pop(a, (size_t)size);
+        void *b = size >= 16
+            ? lotus_retire_free_pop(a, (size_t)size, (size_t)align)
+            : lotus_retire_free_small_pop(a, (size_t)size, (size_t)align);
         if (b) return b;
     }
     return lotus_arena_alloc(a, size, align);
@@ -9192,11 +9220,17 @@ void *lotus_bytes_clone(lotus_arena_t *a, const void *src) {
     }
     int64_t len = lotus_bytes_len(src);
     if (len < 0) len = 0;
-    void *blob = lotus_bytes_create(a, len);
+    /* 2026-07-18: consult the retire freelist (align 8 — the pops
+     * are alignment-aware and only hand back 8-aligned blocks), so
+     * a cross-arena Bytes clone can recycle a grow-abandoned blob.
+     * Mirrors lotus_str_clone's alloc_reusable use. */
+    void *blob = lotus_arena_alloc_reusable(
+        a, sizeof(int64_t) + (uint64_t)len, 8);
     if (!blob) return NULL;
+    *(int64_t *)blob = len;
     if (len > 0) {
         memcpy(
-            lotus_bytes_data(blob),
+            (char *)blob + sizeof(int64_t),
             (const char *)src + sizeof(int64_t),
             (size_t)len);
     }
@@ -9227,18 +9261,21 @@ void *lotus_bytes_clone(lotus_arena_t *a, const void *src) {
  * lotus_str_assign_in_place's logic. */
 
 /* Gap A (2026-07-17): Bytes companion to lotus_str_copy_owned —
- * unconditional deep copy, no static/same-arena passthrough. Plain
- * lotus_arena_alloc (NOT the retire freelist): Bytes blobs need
- * align 8 for their length prefix and the freelist recycles align-1
- * String blocks, so Bytes stays out of block reuse in v1 (the
- * aliasing fix matters; the grow-path reclaim is a follow-up). */
+ * unconditional deep copy, no static/same-arena passthrough.
+ * 2026-07-18: allocates through the retire freelist (align 8; the
+ * pops are alignment-aware, so it only matches 8-aligned blocks —
+ * in practice the Bytes blobs the grow path retires), closing the
+ * loop on Bytes-grow reclaim: the abandoned buffer one activation
+ * ago is this activation's replacement. */
 static void *lotus_bytes_copy_owned(lotus_arena_t *a, const void *src) {
     int64_t len = lotus_bytes_len(src);
     if (len < 0) len = 0;
-    void *blob = lotus_bytes_create(a, len);
+    void *blob = lotus_arena_alloc_reusable(
+        a, sizeof(int64_t) + (uint64_t)len, 8);
     if (!blob) return NULL;
+    *(int64_t *)blob = len;
     if (len > 0) {
-        memcpy(lotus_bytes_data(blob),
+        memcpy((char *)blob + sizeof(int64_t),
                (const char *)src + sizeof(int64_t), (size_t)len);
     }
     return blob;
@@ -9281,13 +9318,46 @@ void *lotus_bytes_assign_in_place(lotus_arena_t *a, void *old,
         }
         return old;
     }
-    /* Doesn't fit — the slot abandons `old` (still orphaned in v1;
-     * Bytes retire is a follow-up). Same single-owner rule for the
-     * replacement pointer. */
+    /* Doesn't fit — the slot abandons `old`. Retire it (2026-07-18)
+     * so the activation-boundary flush recycles it; the recorded
+     * size comes from the (possibly shrunk) len prefix — an honest
+     * lower bound. Same single-owner rule for the replacement
+     * pointer. */
+    lotus_arena_retire_bytes(a, old);
     if (lotus_ptr_in_arena(a, new_b)) {
         return lotus_bytes_copy_owned(a, new_b);
     }
     return lotus_bytes_clone(a, new_b);
+}
+
+/* ── cell-store single-owner clones (2026-07-18) ─────────────────
+ * The @form cell-store anchor walk used lotus_str_clone /
+ * lotus_bytes_clone, whose same-arena passthrough skip-SHARED a
+ * blob between two map cells whenever the stored value came from a
+ * get() of another cell (`m.set(m.get(k2) with key k1)`), from a
+ * sibling map in the same locus arena, or from a self-storage
+ * field read. Sharing breaks both ways: anchor retirement frees
+ * the blob when EITHER owner replaces it (the other dangles →
+ * UAF), and an in-place self-field overwrite mutates the aliased
+ * cell silently. These variants force an owned copy for
+ * same-arena inputs while keeping the common paths free:
+ * cross-arena values clone exactly as before, and static literals
+ * pass through (immutable, never retired — safe to share). The
+ * cost lands only on get-then-set round-trips, where the freelist
+ * hands back the just-retired previous generation. Same
+ * single-owner rule Gap A applied to self-storage stores. */
+char *lotus_str_clone_cell_owned(lotus_arena_t *a, const char *s) {
+    if (!s) return NULL;
+    if (lotus_str_is_static_literal(s)) return (char *)s;
+    if (lotus_ptr_in_arena(a, s)) return lotus_str_copy_owned(a, s);
+    return lotus_str_clone(a, s);
+}
+
+void *lotus_bytes_clone_cell_owned(lotus_arena_t *a, const void *b) {
+    if (!b) return NULL;
+    if (lotus_str_is_static_literal((const char *)b)) return (void *)b;
+    if (lotus_ptr_in_arena(a, b)) return lotus_bytes_copy_owned(a, b);
+    return lotus_bytes_clone(a, b);
 }
 
 int64_t lotus_str_index_of(const char *s, const char *sub) {

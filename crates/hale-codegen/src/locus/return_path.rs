@@ -172,10 +172,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
             CodegenTy::String => {
+                // Cell stores force same-arena inputs to an owned
+                // copy (cell single-owner rule); everything else
+                // keeps the skip-sharing clone.
+                let clone_name = if self.cell_owned_clone {
+                    "lotus_str_clone_cell_owned"
+                } else {
+                    "lotus_str_clone"
+                };
                 let f = self
                     .module
-                    .get_function("lotus_str_clone")
-                    .expect("lotus_str_clone declared");
+                    .get_function(clone_name)
+                    .expect("str clone builtin declared");
                 let res = self
                     .builder
                     .build_call(
@@ -204,10 +212,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // a dangling pointer. Use `lotus_bytes_clone`
                 // (defined alongside `lotus_bytes_from_buf`) so
                 // the length prefix is honored.
+                let clone_name = if self.cell_owned_clone {
+                    "lotus_bytes_clone_cell_owned"
+                } else {
+                    "lotus_bytes_clone"
+                };
                 let f = self
                     .module
-                    .get_function("lotus_bytes_clone")
-                    .expect("lotus_bytes_clone declared");
+                    .get_function(clone_name)
+                    .expect("bytes clone builtin declared");
                 let res = self
                     .builder
                     .build_call(

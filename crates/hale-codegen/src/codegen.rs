@@ -1137,6 +1137,7 @@ pub fn build_executable_with_options(
         is_wasm,
         wasm_exports: Vec::new(),
         instantiating_persistent_singleton: false,
+        cell_owned_clone: false,
         program: &merged,
         current_fn: None,
         current_user_fn_ret: None,
@@ -2638,6 +2639,13 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// allocates its struct in the persistent program arena (not a
     /// stack alloca — the singleton outlives `_hale_start`).
     pub(crate) instantiating_persistent_singleton: bool,
+    /// Set while emitting the anchor walk of a @form cell store
+    /// (hashmap set / lru put): String/Bytes leaves clone through
+    /// the `_cell_owned` runtime variants, which force-copy a
+    /// same-arena input instead of skip-sharing it — the cell
+    /// single-owner rule (2026-07-18). False everywhere else, so
+    /// returns and self-field stores keep their zero-copy skips.
+    pub(crate) cell_owned_clone: bool,
     pub(crate) program: &'p Program,
     /// Set while lowering a function's body so that `if` / `while`
     /// can `append_basic_block` onto it.

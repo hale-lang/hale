@@ -45,19 +45,53 @@ paths. Regression tests: tests/self_field_alias.rs. NOTE: reads of
 self heap fields return RAW arena pointers (no clone-on-read) —
 any future anchor site must preserve single-owner or retire breaks.
 
-Remaining: Bytes grow-path retire (align-8 blobs vs the align-1
-freelist — needs an aligned pop or a separate list); nested
-compound / Bytes fields of a replaced struct (String leaves only in
-v1); struct-field in-place shrink collapses the recorded capacity
-(strlen at retire under-reports after a fit-path shrink → reuse
-degrades on oscillating lengths, still sound); user methods on a
-@form locus never flush (the form-locus early-return); hashmap
-CROSS-CELL aliasing (`m.set(k1, m.get(k2))` skip-shares cell blobs
-→ a later retire of k2's cell can dangle k1 — pre-existing, same
-single-owner fix shape, needs its own pass); synced maps (needs an
-epoch scheme — cross-thread readers), vec cells, run-loop direct
-sets (no activation boundary — pending list just holds; no worse
-than before). The TP-3 class
+CELL SINGLE-OWNER + BYTES-GROW RETIRE (2026-07-18): two former
+residuals shipped together.
+
+ 1. Bytes grow: `lotus_bytes_assign_in_place`'s doesn't-fit branch
+    now retires the abandoned blob (lotus_arena_retire_bytes, size
+    from the len prefix — under-reports after a fit-path shrink,
+    same caveat as String), and Bytes allocation
+    (lotus_bytes_clone / lotus_bytes_copy_owned) consults the
+    freelist via ALIGNMENT-AWARE pops: align-8 Bytes blocks and
+    align-1 String blocks share one list; a candidate only matches
+    if its address satisfies the request's alignment (String
+    requests take either kind, Bytes requests skip odd-addressed
+    blocks). NOTE the shrink-collapse means a single oscillating
+    field cannot self-serve its own grows (recorded size < the
+    physical block it needs next) — the reclaim pays off through
+    OTHER same-arena allocations of matching sizes, not the
+    growing field itself.
+ 2. Cell single-owner: the @form cell-store anchor walk
+    (hashmap set / lru put) now (a) walks a stack SNAPSHOT of the
+    value struct — the in-place store-back used to re-point a
+    self-storage source (`m.set(self.rec)`) at the cell's own
+    blob, re-aliasing them — and (b) clones String/Bytes leaves
+    through `lotus_*_clone_cell_owned`, which force-copy a
+    same-arena input instead of skip-sharing it (statics still
+    pass through; cross-arena values clone as before). Empirical
+    note that cost a debugging detour: literal builds and
+    hashmap-get both round-trip through method scratch, so
+    `m.set(Rec { val: e2.val })` shapes were ALREADY de-aliased —
+    the reachable pre-fix repro was the whole-struct self-field
+    store `m.set(self.rec)`, proven by same-length in-place
+    mutation visibility (tests/hashmap_cell_alias.rs; fixture
+    70-cell-single-owner runs the mixed churn under the ASan
+    corpus oracle).
+
+Remaining: nested compound / Bytes fields of a replaced struct
+(String leaves only in v1; a nested compound that same-arena
+skip-shares through the contains_ptr gate still aliases — no
+retire for compounds, so no UAF, but shared mutation);
+struct-field in-place shrink collapses the recorded capacity
+(strlen / len-prefix at retire under-reports after a fit-path
+shrink → reuse degrades on oscillating lengths, still sound — now
+applies to Bytes too); user methods on a @form locus never flush
+(the form-locus early-return); synced maps (needs an epoch scheme
+— cross-thread readers), vec cells (no retire; String elements
+pushed from self-storage still skip-share — benign until vec
+retire exists), run-loop direct sets (no activation boundary —
+pending list just holds; no worse than before). The TP-3 class
 from the stage-5 audit: 53 corpus sites where a hashmap `set` or a
 compound `self.field = Struct{...}` store anchors a fresh String
 clone into the locus arena and the PREVIOUS clone for the same slot
