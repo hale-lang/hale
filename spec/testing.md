@@ -185,9 +185,25 @@ tests by suffix (`_test.hl`) regardless of location.
 | `hale bench -compare` *(planned)* | Build and run external equivalents alongside |
 | `hale verify` *(planned)* | Layer-2 discipline checks specifically (no execution) |
 | `hale fmt` | Canonical formatter (Go-style: zero config; see below) |
+| `hale doc` | API reference from `///` doc comments (Markdown / `--json`; see below) |
 
 `hale test` runs Layer 1 + Layer 2 today; `hale bench` (planned)
 runs Layer 3.
+
+## `hale doc` — the API-reference generator
+
+Zero config. `hale doc [file | dir]` renders a seed's API
+reference from `///` doc comments (the convention in
+spec/tokens.md): every public top-level declaration — fns, loci
+(with params and their documented methods), types, topics,
+interfaces, consts — with its signature and doc text. Markdown to
+stdout by default; `-o <path>` writes it; `--json` emits one
+record per declaration (`file`/`kind`/`name`/`signature`/`doc`/
+`members`) for tooling and agents. `__`-prefixed names and `main`
+are internal and skipped; a file that doesn't parse is reported
+and skipped with exit 1. Doc text is recovered positionally (the
+lines directly above the declaration, stepping over decorator
+lines), so the lexer and AST are untouched.
 
 ## `hale fmt` — the canonical formatter
 

@@ -1604,7 +1604,7 @@ fn placement(
     Some(json!({ "fields": [], "noMainLocus": true }))
 }
 
-fn type_expr_str(t: &hale_syntax::ast::TypeExpr) -> String {
+pub(crate) fn type_expr_str(t: &hale_syntax::ast::TypeExpr) -> String {
     use hale_syntax::ast::TypeExpr;
     match t {
         TypeExpr::Primitive(p, _) => format!("{:?}", p),

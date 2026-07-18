@@ -26,9 +26,12 @@ simplifies tooling.
 
 - Line comment: `// ...` to end of line.
 - Block comment: `/* ... */`. Block comments do not nest in v0.
-- Doc comment: `///` (line) or `/** */` (block) attached to the
-  following declaration. Doc comments are preserved by the lexer
-  for tooling consumption.
+- Doc comment: `///` lines directly above a declaration attach to
+  it (decorator lines like `@hot` may sit between). Rendered by
+  `hale doc` into the seed's API reference (spec/testing.md).
+  Tooling recovers doc text positionally from the source — the
+  lexer itself skips all comments. `/** */` stays reserved for a
+  future block form; `hale doc` v1 reads `///` only.
 
 ## Identifiers
 

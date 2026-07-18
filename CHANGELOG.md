@@ -8,6 +8,16 @@ behavior.
 
 ## Unreleased
 
+- **`hale doc` — API-reference generator + `///` doc-comment
+  convention.** `///` lines directly above a declaration attach to
+  it (decorators may sit between); `hale doc [file | dir]` renders
+  every public top-level declaration — fns, loci with params and
+  documented methods, types, topics, interfaces, consts — with
+  signatures and doc text, as Markdown (stdout or `-o`) or `--json`
+  records for tooling. `__`-prefixed names and `main` are skipped.
+  Doc text recovers positionally, so no lexer/AST change. Spec:
+  tokens.md comment section + testing.md tool row/section. Tests:
+  `hale-cli/tests/doc.rs`.
 - **DWARF variable info (debug story stage 3).** Emission moves
   from LineTablesOnly to Full: fn/method parameters and let-bound
   locals carry `dbg.declare` with real DWARF types — `Int`/`Float`/

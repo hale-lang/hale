@@ -88,6 +88,12 @@ fn main() -> ExitCode {
         return run_fmt(&rest);
     }
 
+    // `doc` renders a seed's API reference from `///` doc comments.
+    if cmd == "doc" {
+        let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+        return run_doc(&rest);
+    }
+
     if args.len() < 3 {
         usage();
         return ExitCode::from(2);
@@ -131,6 +137,8 @@ fn usage() {
     eprintln!("        [-run <substr>] [--json]");
     eprintln!("    hale fmt   [file | dir] ...   canonical formatter (default: cwd)");
     eprintln!("        [--check] [--diff] [--stdin]");
+    eprintln!("    hale doc   [file | dir]       render the seed's API reference (/// doc comments)");
+    eprintln!("        [--json] [-o <path>]");
     eprintln!("    hale fetch [repo-root]        fetch git deps from hale.toml into vendor/");
     eprintln!("    hale lsp                      stdio Language Server (diagnostics)");
     eprintln!();
@@ -326,6 +334,435 @@ fn print_fmt_diff(path: &Path, before: &str, after: &str) {
             println!("{}: + {}", i + 1, al);
         }
     }
+}
+
+
+/// `hale doc [file | dir] [--json] [-o <path>]` — the API-reference
+/// generator (spec/testing.md). Zero config: the convention is
+/// `///` doc comments on the lines directly above a declaration
+/// (decorator lines like `@hot` may sit between); the generator
+/// renders every public top-level declaration — fns, loci (with
+/// their params and documented methods), types, topics, interfaces,
+/// consts — as Markdown (default, stdout or `-o`) or JSON records.
+/// Names starting with `__` are internal and skipped. A file that
+/// doesn't parse is reported and skipped (exit 1).
+fn run_doc(rest: &[String]) -> ExitCode {
+    let mut json = false;
+    let mut out_path: Option<PathBuf> = None;
+    let mut target: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "-o" | "--out" => match rest.get(i + 1) {
+                Some(v) => {
+                    out_path = Some(PathBuf::from(v));
+                    i += 2;
+                }
+                None => {
+                    eprintln!("hale doc: {} requires a path", rest[i]);
+                    return ExitCode::from(2);
+                }
+            },
+            other if other.starts_with('-') => {
+                eprintln!("hale doc: unknown flag {}", other);
+                return ExitCode::from(2);
+            }
+            other => {
+                target = Some(PathBuf::from(other));
+                i += 1;
+            }
+        }
+    }
+    let target = target
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    // A seed = one directory (F.19): file target docs that file,
+    // dir target docs every .hl directly in it.
+    let mut files: Vec<PathBuf> = Vec::new();
+    if target.is_file() {
+        files.push(target.clone());
+    } else if target.is_dir() {
+        if let Ok(rd) = fs::read_dir(&target) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().is_some_and(|x| x == "hl") {
+                    files.push(p);
+                }
+            }
+        }
+        files.sort();
+    } else {
+        eprintln!("hale doc: {} not found", target.display());
+        return ExitCode::from(1);
+    }
+
+    let mut failed = false;
+    let mut md = String::new();
+    let seed_name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| target.display().to_string());
+    md.push_str(&format!("# API — {}\n", seed_name));
+    let mut json_items: Vec<serde_json::Value> = Vec::new();
+
+    for f in &files {
+        let src = match fs::read_to_string(f) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("hale doc: could not read {}: {}", f.display(), e);
+                failed = true;
+                continue;
+            }
+        };
+        let program = match hale_syntax::parse_source(&src) {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!(
+                    "hale doc: {}: does not parse — skipped",
+                    f.display()
+                );
+                failed = true;
+                continue;
+            }
+        };
+        let entries = doc_entries_for(&src, &program);
+        if entries.is_empty() {
+            continue;
+        }
+        md.push_str(&format!("\n## {}\n", f.display()));
+        for e in &entries {
+            md.push_str(&format!("\n### {}\n\n```hale\n{}\n```\n", e.name, e.signature));
+            if !e.doc.is_empty() {
+                md.push_str(&format!("\n{}\n", e.doc));
+            }
+            for m in &e.members {
+                md.push_str(&format!(
+                    "\n- `{}`{}\n",
+                    m.signature,
+                    if m.doc.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" — {}", m.doc.replace('\n', " "))
+                    }
+                ));
+            }
+            if json {
+                json_items.push(serde_json::json!({
+                    "file": f.display().to_string(),
+                    "kind": e.kind,
+                    "name": e.name,
+                    "signature": e.signature,
+                    "doc": e.doc,
+                    "members": e.members.iter().map(|m| serde_json::json!({
+                        "signature": m.signature, "doc": m.doc
+                    })).collect::<Vec<_>>(),
+                }));
+            }
+        }
+    }
+
+    let rendered = if json {
+        serde_json::to_string_pretty(&json_items)
+            .unwrap_or_else(|_| "[]".into())
+            + "\n"
+    } else {
+        md
+    };
+    match out_path {
+        Some(p) => {
+            if let Err(e) = fs::write(&p, rendered) {
+                eprintln!("hale doc: could not write {}: {}", p.display(), e);
+                return ExitCode::from(1);
+            }
+            eprintln!("wrote {}", p.display());
+        }
+        None => print!("{}", rendered),
+    }
+    if failed {
+        return ExitCode::from(1);
+    }
+    ExitCode::SUCCESS
+}
+
+struct DocMember {
+    signature: String,
+    doc: String,
+}
+
+struct DocEntry {
+    kind: &'static str,
+    name: String,
+    signature: String,
+    doc: String,
+    members: Vec<DocMember>,
+}
+
+/// The `///` block directly above the line holding `anchor`
+/// (byte offset). Decorator lines (`@hot`, `@form(...)`) between
+/// the docs and the declaration are stepped over.
+fn doc_comment_above(src: &str, anchor: usize) -> String {
+    let lines: Vec<&str> = src.lines().collect();
+    // Line index containing the anchor offset.
+    let mut off = 0usize;
+    let mut anchor_line = 0usize;
+    for (i, l) in lines.iter().enumerate() {
+        let end = off + l.len() + 1;
+        if anchor < end {
+            anchor_line = i;
+            break;
+        }
+        off = end;
+    }
+    let mut i = anchor_line;
+    // Step over decorator-only lines above the decl.
+    while i > 0 {
+        let prev = lines[i - 1].trim();
+        if prev.starts_with('@') {
+            i -= 1;
+        } else {
+            break;
+        }
+    }
+    let mut docs: Vec<&str> = Vec::new();
+    while i > 0 {
+        let prev = lines[i - 1].trim();
+        if let Some(text) = prev.strip_prefix("///") {
+            docs.push(text.strip_prefix(' ').unwrap_or(text));
+            i -= 1;
+        } else {
+            break;
+        }
+    }
+    docs.reverse();
+    docs.join("\n").trim().to_string()
+}
+
+fn doc_fn_signature(fd: &hale_syntax::ast::FnDecl) -> String {
+    let ps = fd
+        .params
+        .iter()
+        .map(|p| format!("{}: {}", p.name.name, lsp::type_expr_str(&p.ty)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut sig = format!("fn {}({})", fd.name.name, ps);
+    if let Some(r) = &fd.ret {
+        sig.push_str(&format!(" -> {}", lsp::type_expr_str(r)));
+    }
+    if let Some(e) = &fd.fallible {
+        sig.push_str(&format!(" fallible({})", lsp::type_expr_str(e)));
+    }
+    sig
+}
+
+fn doc_entries_for(
+    src: &str,
+    program: &hale_syntax::ast::Program,
+) -> Vec<DocEntry> {
+    use hale_syntax::ast::{LocusMember, TopDecl, TypeDeclBody};
+    let mut out = Vec::new();
+    for item in &program.items {
+        match item {
+            TopDecl::Fn(fd) => {
+                if fd.name.name.starts_with("__")
+                    || fd.name.name == "main"
+                {
+                    continue;
+                }
+                out.push(DocEntry {
+                    kind: "fn",
+                    name: fd.name.name.clone(),
+                    signature: doc_fn_signature(fd),
+                    doc: doc_comment_above(
+                        src,
+                        fd.name.span.start.as_usize(),
+                    ),
+                    members: Vec::new(),
+                });
+            }
+            TopDecl::Locus(l) => {
+                if l.name.name.starts_with("__") {
+                    continue;
+                }
+                let mut sig = format!("locus {}", l.name.name);
+                let mut members = Vec::new();
+                for m in &l.members {
+                    match m {
+                        LocusMember::Params(pb) => {
+                            let ps = pb
+                                .params
+                                .iter()
+                                .map(|p| match &p.ty {
+                                    Some(t) => format!(
+                                        "{}: {}",
+                                        p.name.name,
+                                        lsp::type_expr_str(t)
+                                    ),
+                                    None => p.name.name.clone(),
+                                })
+                                .collect::<Vec<_>>()
+                                .join("; ");
+                            sig.push_str(&format!(
+                                " {{ params {{ {} }} }}",
+                                ps
+                            ));
+                        }
+                        LocusMember::Fn(fd) => {
+                            if fd.name.name.starts_with("__") {
+                                continue;
+                            }
+                            members.push(DocMember {
+                                signature: doc_fn_signature(fd),
+                                doc: doc_comment_above(
+                                    src,
+                                    fd.name.span.start.as_usize(),
+                                ),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                out.push(DocEntry {
+                    kind: "locus",
+                    name: l.name.name.clone(),
+                    signature: sig,
+                    doc: doc_comment_above(
+                        src,
+                        l.name.span.start.as_usize(),
+                    ),
+                    members,
+                });
+            }
+            TopDecl::Type(t) => {
+                if t.name.name.starts_with("__") {
+                    continue;
+                }
+                let sig = match &t.body {
+                    TypeDeclBody::Struct(fields) => {
+                        let fs = fields
+                            .iter()
+                            .map(|f| {
+                                format!(
+                                    "{}: {};",
+                                    f.name.name,
+                                    lsp::type_expr_str(&f.ty)
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        format!("type {} {{ {} }}", t.name.name, fs)
+                    }
+                    TypeDeclBody::Enum(vs) => {
+                        let names = vs
+                            .iter()
+                            .map(|v| v.name.name.clone())
+                            .collect::<Vec<_>>()
+                            .join(" | ");
+                        format!("type {} = enum {{ {} }}", t.name.name, names)
+                    }
+                    TypeDeclBody::Alias(inner) => format!(
+                        "type {} = {}",
+                        t.name.name,
+                        lsp::type_expr_str(inner)
+                    ),
+                };
+                out.push(DocEntry {
+                    kind: "type",
+                    name: t.name.name.clone(),
+                    signature: sig,
+                    doc: doc_comment_above(
+                        src,
+                        t.name.span.start.as_usize(),
+                    ),
+                    members: Vec::new(),
+                });
+            }
+            TopDecl::Topic(t) => {
+                let mut sig = format!(
+                    "topic {} {{ payload: {}",
+                    t.name.name,
+                    lsp::type_expr_str(&t.payload)
+                );
+                if let Some(k) = &t.keyed_by {
+                    sig.push_str(&format!("; keyed_by {}", k.name));
+                }
+                sig.push_str(" }");
+                out.push(DocEntry {
+                    kind: "topic",
+                    name: t.name.name.clone(),
+                    signature: sig,
+                    doc: doc_comment_above(
+                        src,
+                        t.name.span.start.as_usize(),
+                    ),
+                    members: Vec::new(),
+                });
+            }
+            TopDecl::Interface(iface) => {
+                let ms = iface
+                    .methods
+                    .iter()
+                    .map(|m| {
+                        let ps = m
+                            .params
+                            .iter()
+                            .map(|p| {
+                                format!(
+                                    "{}: {}",
+                                    p.name.name,
+                                    lsp::type_expr_str(&p.ty)
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let ret = m
+                            .ret
+                            .as_ref()
+                            .map(|r| {
+                                format!(" -> {}", lsp::type_expr_str(r))
+                            })
+                            .unwrap_or_default();
+                        format!("fn {}({}){};", m.name.name, ps, ret)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                out.push(DocEntry {
+                    kind: "interface",
+                    name: iface.name.name.clone(),
+                    signature: format!(
+                        "interface {} {{ {} }}",
+                        iface.name.name, ms
+                    ),
+                    doc: doc_comment_above(
+                        src,
+                        iface.name.span.start.as_usize(),
+                    ),
+                    members: Vec::new(),
+                });
+            }
+            TopDecl::Const(c) => {
+                out.push(DocEntry {
+                    kind: "const",
+                    name: c.name.name.clone(),
+                    signature: format!(
+                        "const {}: {}",
+                        c.name.name,
+                        lsp::type_expr_str(&c.ty)
+                    ),
+                    doc: doc_comment_above(
+                        src,
+                        c.name.span.start.as_usize(),
+                    ),
+                    members: Vec::new(),
+                });
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn run_lex_file(path: &Path) -> ExitCode {
