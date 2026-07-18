@@ -58,7 +58,8 @@ pub fn run_lsp() -> ExitCode {
                             "change": 1,           // full-document sync
                             "save": { "includeText": true }
                         },
-                        "positionEncoding": "utf-16"
+                        "positionEncoding": "utf-16",
+                        "hoverProvider": true
                     },
                     "serverInfo": {
                         "name": "hale-lsp",
@@ -112,6 +113,19 @@ pub fn run_lsp() -> ExitCode {
                     // reflect the on-disk truth again.
                     check_and_publish(&mut writer, &path, &overlays);
                 }
+            }
+            "textDocument/hover" => {
+                let result = hover(&msg, &overlays).unwrap_or(Value::Null);
+                respond(&mut writer, id, result);
+            }
+            // hale-only custom method: the whole seed's bus graph —
+            // per subject: publishers, subscribers (locus + handler +
+            // placement), payload types, devirt eligibility. Params:
+            // { textDocument: { uri } } picking the seed.
+            "hale/busGraph" => {
+                let result = bus_graph(&msg, &overlays)
+                    .unwrap_or_else(|| json!({ "subjects": [] }));
+                respond(&mut writer, id, result);
             }
             _ => {
                 // Unknown REQUESTS (they carry an id) get a null
@@ -422,4 +436,454 @@ fn offset_to_lsp_pos(src: &str, offset: usize) -> (u32, u32) {
         .map(|c| c.len_utf16() as u32)
         .sum();
     (line, col)
+}
+
+// ---- v2: shared seed analysis ---------------------------------------
+
+/// One parsed seed (overlay-aware). Built on demand per request —
+/// the ~10 ms front-end makes caching pointless.
+struct SeedAnalysis {
+    sources: BTreeMap<PathBuf, String>,
+    file_bases: Vec<(u32, PathBuf, u32)>,
+    programs: BTreeMap<PathBuf, Program>,
+    parse_ok: bool,
+}
+
+fn analyze_seed(
+    changed: &Path,
+    overlays: &BTreeMap<PathBuf, String>,
+) -> SeedAnalysis {
+    let seed_dir = changed
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let mut files: Vec<PathBuf> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&seed_dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("hl") {
+                files.push(p);
+            }
+        }
+    }
+    if !files.iter().any(|f| same_file(f, changed)) {
+        files.push(changed.to_path_buf());
+    }
+    files.sort();
+
+    let mut sources = BTreeMap::new();
+    let mut file_bases: Vec<(u32, PathBuf, u32)> = Vec::new();
+    let mut programs = BTreeMap::new();
+    let mut parse_ok = true;
+    for f in &files {
+        let source = match overlay_or_disk(f, overlays) {
+            Some(s) => s,
+            None => continue,
+        };
+        let base = file_bases
+            .last()
+            .map(|(b, _, l)| b + l + 1)
+            .unwrap_or(0);
+        file_bases.push((base, f.clone(), source.len() as u32));
+        match hale_syntax::parse_source_at(&source, base) {
+            Ok(p) => {
+                programs.insert(f.clone(), p);
+            }
+            Err(_) => {
+                parse_ok = false;
+            }
+        }
+        sources.insert(f.clone(), source);
+    }
+    SeedAnalysis { sources, file_bases, programs, parse_ok }
+}
+
+impl SeedAnalysis {
+    fn base_of(&self, path: &Path) -> Option<u32> {
+        self.file_bases
+            .iter()
+            .find(|(_, p, _)| same_file(p, path))
+            .map(|(b, _, _)| *b)
+    }
+    fn bundle(&self) -> hale_types::Bundle<'_> {
+        hale_types::Bundle {
+            programs: self
+                .programs
+                .iter()
+                .map(|(p, prog)| (p.display().to_string(), prog))
+                .collect(),
+        }
+    }
+}
+
+/// LSP (0-based line, UTF-16 col) → byte offset.
+fn lsp_pos_to_offset(src: &str, line: u32, character: u32) -> usize {
+    let mut cur_line = 0u32;
+    let mut i = 0usize;
+    let bytes = src.as_bytes();
+    while cur_line < line && i < bytes.len() {
+        if bytes[i] == b'\n' {
+            cur_line += 1;
+        }
+        i += 1;
+    }
+    // Walk `character` UTF-16 units into the line.
+    let mut units = 0u32;
+    let line_str = &src[i..];
+    for (ci, c) in line_str.char_indices() {
+        if units >= character || c == '\n' {
+            return i + ci;
+        }
+        units += c.len_utf16() as u32;
+    }
+    src.len()
+}
+
+// ---- v2: hover -------------------------------------------------------
+
+fn hover(msg: &Value, overlays: &BTreeMap<PathBuf, String>) -> Option<Value> {
+    let path = text_document_path(msg)?;
+    let line = msg.pointer("/params/position/line")?.as_u64()? as u32;
+    let character =
+        msg.pointer("/params/position/character")?.as_u64()? as u32;
+
+    let analysis = analyze_seed(&path, overlays);
+    let src = analysis.sources.get(&path).or_else(|| {
+        let canon = path.canonicalize().ok()?;
+        analysis.sources.get(&canon)
+    })?.clone();
+    let offset = lsp_pos_to_offset(&src, line, character);
+
+    // Token at position (file-local lex; parse errors don't matter).
+    let tokens = hale_syntax::lexer::lex(&src).ok()?;
+    let idx = tokens.iter().position(|t| {
+        t.span.start.as_usize() <= offset && offset < t.span.end.as_usize()
+    })?;
+    let tok = &tokens[idx];
+    let word = match &tok.kind {
+        hale_syntax::lexer::TokenKind::Ident(name) => name.clone(),
+        _ => return None,
+    };
+
+    // Assemble a `::`-joined path around the token.
+    let mut lo = idx;
+    while lo >= 2
+        && matches!(tokens[lo - 1].kind, hale_syntax::lexer::TokenKind::ColonColon)
+        && matches!(tokens[lo - 2].kind, hale_syntax::lexer::TokenKind::Ident(_))
+    {
+        lo -= 2;
+    }
+    let mut hi = idx;
+    while hi + 2 < tokens.len()
+        && matches!(tokens[hi + 1].kind, hale_syntax::lexer::TokenKind::ColonColon)
+        && matches!(tokens[hi + 2].kind, hale_syntax::lexer::TokenKind::Ident(_))
+    {
+        hi += 2;
+    }
+    let mut segs: Vec<String> = Vec::new();
+    let mut k = lo;
+    while k <= hi {
+        if let hale_syntax::lexer::TokenKind::Ident(n) = &tokens[k].kind {
+            segs.push(n.clone());
+        }
+        k += 2;
+    }
+
+    let text = hover_text(&analysis, &path, &tokens, idx, &word, &segs)?;
+    let (sl, sc) = offset_to_lsp_pos(&src, tok.span.start.as_usize());
+    let (el, ec) = offset_to_lsp_pos(&src, tok.span.end.as_usize());
+    Some(json!({
+        "contents": { "kind": "markdown", "value": text },
+        "range": {
+            "start": { "line": sl, "character": sc },
+            "end":   { "line": el, "character": ec }
+        }
+    }))
+}
+
+fn hover_text(
+    analysis: &SeedAnalysis,
+    path: &Path,
+    tokens: &[hale_syntax::lexer::Token],
+    idx: usize,
+    word: &str,
+    segs: &[String],
+) -> Option<String> {
+    use hale_syntax::lexer::TokenKind as TK;
+
+    // std:: paths — the stdlib signature table.
+    if segs.len() >= 2 && segs[0] == "std" {
+        let seg_refs: Vec<&str> = segs.iter().map(String::as_str).collect();
+        if let Some(sig) = hale_types::stdlib_surface::signature_for(&seg_refs)
+        {
+            let params = sig
+                .params
+                .iter()
+                .map(sig_ty_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut out = format!(
+                "```hale\nfn {}({}) -> {}\n```",
+                segs.join("::"),
+                params,
+                sig_ty_str(&sig.ret)
+            );
+            if let Some(f) = sig.fallible {
+                out.push_str(&format!(
+                    "\n\n`fallible({})` — address with `or raise` / \
+                     `or <substitute>` / `or self.handler(err)`",
+                    f
+                ));
+            }
+            return Some(out);
+        }
+        return Some(format!("`{}` — stdlib surface", segs.join("::")));
+    }
+
+    // `self.<field>` — the enclosing locus's param.
+    if idx >= 2
+        && matches!(tokens[idx - 1].kind, TK::Dot)
+        && matches!(tokens[idx - 2].kind, TK::KwSelf)
+    {
+        if analysis.parse_ok {
+            let base = analysis.base_of(path)?;
+            let merged = base as usize + tokens[idx].span.start.as_usize();
+            let bundle = analysis.bundle();
+            let (top, _) = hale_types::resolve::build_top_scope(&bundle);
+            for sym in top.symbols.values() {
+                if let hale_types::symbol::TopSymbol::Locus(l) = sym {
+                    let sp = sym.span();
+                    if sp.start.as_usize() <= merged
+                        && merged < sp.end.as_usize()
+                    {
+                        if let Some(p) =
+                            l.params.iter().find(|p| p.name == word)
+                        {
+                            return Some(format!(
+                                "```hale\nself.{}: {}\n```\n\nparam of \
+                                 `locus {}`",
+                                p.name,
+                                p.ty.display(),
+                                l.name
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        return None;
+    }
+
+    // Top-level symbol lookup.
+    if !analysis.parse_ok {
+        return None;
+    }
+    let bundle = analysis.bundle();
+    let (top, _) = hale_types::resolve::build_top_scope(&bundle);
+    let sym = top.lookup(word)?;
+    use hale_types::symbol::{TopSymbol, TypeKind};
+    let text = match sym {
+        TopSymbol::Fn(f) => {
+            let params = f
+                .params
+                .iter()
+                .map(|(n, t)| format!("{}: {}", n, t.display()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut out = format!(
+                "```hale\nfn {}({}) -> {}\n```",
+                f.name,
+                params,
+                f.ret.display()
+            );
+            if let Some(e) = &f.fallible {
+                out.push_str(&format!(
+                    "\n\n`fallible({})` — callers must address the error",
+                    e.display()
+                ));
+            }
+            // Enforcement status from the AST decl.
+            for prog in analysis.programs.values() {
+                for item in &prog.items {
+                    if let hale_syntax::ast::TopDecl::Fn(fd) = item {
+                        if fd.name.name == f.name {
+                            if fd.hot {
+                                out.push_str(
+                                    "\n\n`@hot` — hot-path lint enforced \
+                                     as errors here",
+                                );
+                            }
+                            if let Some(b) = fd.budget {
+                                out.push_str(&format!(
+                                    "\n\n`@budget(alloc_per_call = {})` — \
+                                     compiler-enforced allocation ceiling",
+                                    b
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            out
+        }
+        TopSymbol::Locus(l) => {
+            let mut out = format!("```hale\nlocus {}\n```", l.name);
+            if !l.params.is_empty() {
+                out.push_str("\n\nparams: ");
+                out.push_str(
+                    &l.params
+                        .iter()
+                        .map(|p| format!("`{}: {}`", p.name, p.ty.display()))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+            }
+            if let Some((n, t)) = &l.accept_param {
+                out.push_str(&format!(
+                    "\n\naccepts children: `{}: {}`",
+                    n,
+                    t.display()
+                ));
+            }
+            if !l.bus_subscribes.is_empty() || !l.bus_publishes.is_empty() {
+                out.push_str(&format!(
+                    "\n\nbus: {} subscription(s), {} publish(es)",
+                    l.bus_subscribes.len(),
+                    l.bus_publishes.len()
+                ));
+            }
+            out
+        }
+        TopSymbol::Type(t) => match &t.kind {
+            TypeKind::Struct(fields) => {
+                let fs = fields
+                    .iter()
+                    .map(|f| format!("    {}: {};", f.name, f.ty.display()))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("```hale\ntype {} {{\n{}\n}}\n```", t.name, fs)
+            }
+            TypeKind::Enum(vs) => {
+                let names = vs
+                    .iter()
+                    .map(|v| v.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                format!("```hale\ntype {} = enum {{ {} }}\n```", t.name, names)
+            }
+            TypeKind::Alias(inner) => format!(
+                "```hale\ntype {} = {}\n```",
+                t.name,
+                inner.display()
+            ),
+        },
+        TopSymbol::Topic(ti) => {
+            let mut out = format!(
+                "```hale\ntopic {} {{ payload: {}; subject: \"{}\" }}\n```",
+                ti.name,
+                ti.payload.display(),
+                ti.subject
+            );
+            if let Some(k) = &ti.keyed_by {
+                out.push_str(&format!(
+                    "\n\nrouted: `keyed_by {}` — subscribers filter with \
+                     `where key == …`",
+                    k
+                ));
+            }
+            out
+        }
+        TopSymbol::Interface(i) => {
+            let ms = i
+                .methods
+                .iter()
+                .map(|m| {
+                    let ps = m
+                        .params
+                        .iter()
+                        .map(|(n, t)| format!("{}: {}", n, t.display()))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("    fn {}({}) -> {};", m.name, ps, m.ret.display())
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "```hale\ninterface {} {{\n{}\n}}\n```\n\nstructural \
+                 satisfaction — any locus with matching methods qualifies",
+                i.name, ms
+            )
+        }
+        TopSymbol::Const(c) => {
+            format!("```hale\nconst {}: {}\n```", c.name, c.ty.display())
+        }
+        _ => return None,
+    };
+    Some(text)
+}
+
+fn sig_ty_str(t: &hale_types::stdlib_surface::SigTy) -> &'static str {
+    use hale_types::stdlib_surface::SigTy::*;
+    match t {
+        Int => "Int",
+        Uint => "Uint",
+        Float => "Float",
+        Bool => "Bool",
+        Str => "String",
+        Bytes => "Bytes",
+        BytesMut => "Bytes",
+        Decimal => "Decimal",
+        Duration => "Duration",
+        Time => "Time",
+        Unit => "()",
+        Any => "…",
+        _ => "…",
+    }
+}
+
+// ---- v2: hale/busGraph ----------------------------------------------
+
+fn bus_graph(
+    msg: &Value,
+    overlays: &BTreeMap<PathBuf, String>,
+) -> Option<Value> {
+    let path = text_document_path(msg).or_else(|| {
+        // No textDocument param: fall back to the sole open document.
+        if overlays.len() == 1 {
+            overlays.keys().next().cloned()
+        } else {
+            None
+        }
+    })?;
+    let analysis = analyze_seed(&path, overlays);
+    if !analysis.parse_ok {
+        return Some(json!({ "subjects": [], "parseErrors": true }));
+    }
+    let bundle = analysis.bundle();
+    let (top, _) = hale_types::resolve::build_top_scope(&bundle);
+    let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
+    let subjects: Vec<Value> = graph
+        .subjects
+        .iter()
+        .map(|(subject, info)| {
+            json!({
+                "subject": subject,
+                "publishers": info.publishers.iter().map(|p| json!({
+                    "locus": p.locus,
+                    "payload": p.payload,
+                })).collect::<Vec<_>>(),
+                "subscribers": info.subscribers.iter().map(|s| json!({
+                    "locus": s.locus,
+                    "handler": s.handler,
+                    "payload": s.payload,
+                    "placement": format!("{:?}", s.placement),
+                })).collect::<Vec<_>>(),
+                "staticDispatchEligible": info.eligible,
+                "directCallEligible": info.direct_call_eligible,
+                "ineligibleReason": info.ineligible_reason.as_ref()
+                    .map(|r| format!("{:?}", r)),
+            })
+        })
+        .collect();
+    Some(json!({ "subjects": subjects }))
 }

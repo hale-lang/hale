@@ -56,13 +56,22 @@ the no-incrementality design correct. Diagnostics carry the full
 check set (parse/type errors severity 1, advisories severity 2)
 with UTF-16 columns. Protocol test: crates/hale-cli/tests/lsp.rs.
 
-v2 candidates, in value order: hover (type + fallibility +
-enforcement status at position), goto-definition/references (the
-resolver's TopScope has the symbols; needs a position index), and
-the hale-only custom methods no generic LSP has — `hale/busGraph`
-(who publishes/subscribes a topic), `hale/placement`,
-`hale/allocSummary` — all already computed by the checker. These
-are the agent-facing wins: harnesses speak LSP natively now.
+v2 (2026-07-17, same day): **hover + `hale/busGraph` shipped.**
+Hover is token-at-position → TopScope/stdlib-signature resolution:
+fn signatures with `fallible(E)` AND enforcement status (`@hot` /
+`@budget(N)` read from the AST decl), locus params/accept/bus
+counts, struct fields / enum variants, topic payload + `keyed_by`,
+interface methods, `self.<field>` through the enclosing locus, and
+`std::` paths through the stdlib signature table. `hale/busGraph`
+returns the seed's full graph — per subject: publishers,
+subscribers (locus + handler + placement), payload types, and the
+static-dispatch verdict with its honest ineligibility reason.
+Both re-analyze on demand (the 10 ms front-end again). Known
+polish: a user fn's fallible payload naming a stdlib-injected
+error type (IoError) hovers as `?`.
+
+Still staged for v3: goto-definition/references (needs a position
+index over TopScope), `hale/placement`, `hale/allocSummary`.
 
 ## Staged next (in value order)
 

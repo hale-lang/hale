@@ -87,8 +87,11 @@ A few switches worth knowing from day one:
   and you get live diagnostics: type errors as errors, the
   advisory analyses (unbounded-alloc survey, hot-path lint,
   placement warnings) as warnings, re-checked whole-program on
-  every keystroke because the check runs in ~10 ms. No
-  configuration; diagnostics only in v1. Prefer plain JSON?
+  every keystroke because the check runs in ~10 ms. Hover shows
+  signatures with their contracts (fallibility, `@hot`/`@budget`
+  status, a topic's routing key), and the custom `hale/busGraph`
+  request returns the seed's full pub/sub topology. No
+  configuration. Prefer plain JSON?
   `hale check app.hl --json` emits one object per diagnostic
   (file, line, col, severity, message) on stdout — a save-hook is
   all a minimal integration needs.

@@ -177,3 +177,149 @@ fn lsp_v1_diagnostics_lifecycle() {
 
     let _ = std::fs::remove_dir_all(&seed);
 }
+
+#[test]
+fn lsp_v2_hover_and_bus_graph() {
+    let seed = std::env::temp_dir().join(format!(
+        "hale_lsp_v2_test_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&seed).expect("mkdir");
+    let file = seed.join("main.hl");
+    let uri = format!("file://{}", file.display());
+
+    let src = r#"type Msg { room: String; text: String; }
+topic Posted { payload: Msg; subject: "posted"; keyed_by room; }
+
+locus Room {
+    params { name: String = "lobby"; }
+    bus { subscribe Posted as on_post where key == self.name; }
+    fn on_post(m: Msg) { println(self.name, m.text); }
+}
+
+@hot @budget(alloc_per_call = 0) fn add_range(lo: Int, hi: Int) -> Int {
+    let mut i = lo;
+    let mut acc = 0;
+    while i < hi { acc = acc + i; i = i + 1; }
+    return acc;
+}
+
+main locus App {
+    params { r: Room = Room { }; }
+    bus { publish Posted; }
+    run() {
+        Posted <- Msg { room: "lobby", text: "t" };
+        println(add_range(0, 10));
+    }
+}
+fn main() { App { }; }
+"#;
+    std::fs::write(&file, src).expect("write");
+
+    let mut lsp = Lsp::start();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    let init = lsp.recv();
+    assert_eq!(
+        init.pointer("/result/capabilities/hoverProvider"),
+        Some(&serde_json::json!(true))
+    );
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri, "languageId": "hale", "version": 1, "text": src
+        }}
+    }));
+    let _diags = lsp.recv();
+
+    // Position helper: (line, col) of the first occurrence + 1.
+    let pos = |needle: &str| -> (u32, u32) {
+        for (ln, line) in src.lines().enumerate() {
+            if let Some(col) = line.find(needle) {
+                return (ln as u32, col as u32 + 1);
+            }
+        }
+        panic!("needle not found: {}", needle);
+    };
+
+    let mut hover_at = |needle: &str, extra: u32| -> String {
+        let (line, character) = pos(needle);
+        lsp.send(serde_json::json!({
+            "jsonrpc": "2.0", "id": 9, "method": "textDocument/hover",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": character + extra }
+            }
+        }));
+        let r = lsp.recv();
+        r.pointer("/result/contents/value")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+
+    // @hot @budget fn hover carries signature + enforcement status.
+    let h = hover_at("add_range(0, 10)", 0);
+    assert!(h.contains("fn add_range(lo: Int, hi: Int) -> Int"), "{}", h);
+    assert!(h.contains("`@hot`"), "{}", h);
+    assert!(h.contains("@budget(alloc_per_call = 0)"), "{}", h);
+
+    // Keyed topic hover names the routing field.
+    let h = hover_at("Posted <- ", 0);
+    assert!(h.contains("topic Posted"), "{}", h);
+    assert!(h.contains("keyed_by room"), "{}", h);
+
+    // self.<field> hover resolves through the enclosing locus.
+    let (line, character) = pos("self.name, m.text");
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 9, "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character + 6 }
+        }
+    }));
+    let r = lsp.recv();
+    let h = r
+        .pointer("/result/contents/value")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(h.contains("self.name: String"), "{}", h);
+    assert!(h.contains("locus Room"), "{}", h);
+
+    // hale/busGraph: both subjects, keyed one honestly ineligible.
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 10, "method": "hale/busGraph",
+        "params": { "textDocument": { "uri": uri } }
+    }));
+    let g = lsp.recv();
+    let subjects = g.pointer("/result/subjects").unwrap().as_array().unwrap();
+    let posted = subjects
+        .iter()
+        .find(|s| s["subject"] == "Posted")
+        .expect("Posted in graph");
+    assert_eq!(posted["publishers"][0]["locus"], "App");
+    assert_eq!(posted["subscribers"][0]["handler"], "on_post");
+    assert_eq!(posted["subscribers"][0]["locus"], "Room");
+    assert_eq!(posted["staticDispatchEligible"], false);
+    assert!(
+        posted["ineligibleReason"]
+            .as_str()
+            .unwrap()
+            .contains("routing-key"),
+        "{}",
+        posted
+    );
+
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": null
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "exit", "params": null
+    }));
+    let status = lsp.child.wait().expect("wait");
+    assert!(status.success());
+    let _ = std::fs::remove_dir_all(&seed);
+}

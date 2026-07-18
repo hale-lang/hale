@@ -237,9 +237,15 @@ Point any LSP-speaking editor (or coding-agent harness — they speak
 LSP natively now) at `hale lsp` and you get the full `hale check`
 surface as you type: type errors, plus the analyses no generic
 tooling has — the unbounded-allocation survey, the hot-path
-allocation lint, placement/starvation warnings. The whole program
-re-checks in ~10 ms per keystroke, so there's no indexing step, no
-warm-up, no configuration. (Scripted integrations can use
+allocation lint, placement/starvation warnings. Hover shows a
+symbol's signature *with its contracts*: fallibility
+(`fallible(IoError)`), `@hot` / `@budget` enforcement status,
+a topic's routing key. And one custom method, `hale/busGraph`,
+returns the whole message topology — who publishes and subscribes
+every topic, with placements — which is exactly the question an
+agent otherwise greps for. The whole program re-checks in ~10 ms
+per keystroke, so there's no indexing step, no warm-up, no
+configuration. (Scripted integrations can use
 `hale check app.hl --json` — one JSON object per diagnostic —
 instead.)
 
