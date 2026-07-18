@@ -47,7 +47,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "hale-cli"
-version = "0.11.7"
+version = "0.11.8"
 dependencies = [
  "hale-codegen",
  "hale-syntax",
@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "hale-codegen"
-version = "0.11.7"
+version = "0.11.8"
 dependencies = [
  "hale-syntax",
  "hale-types",
@@ -68,11 +68,11 @@ dependencies = [
 
 [[package]]
 name = "hale-syntax"
-version = "0.11.7"
+version = "0.11.8"
 
 [[package]]
 name = "hale-ts-shim"
-version = "0.11.7"
+version = "0.11.8"
 dependencies = [
  "tree-sitter",
  "tree-sitter-go",
@@ -80,7 +80,7 @@ dependencies = [
 
 [[package]]
 name = "hale-types"
-version = "0.11.7"
+version = "0.11.8"
 dependencies = [
  "hale-syntax",
 ]

@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.11.8 — std::metrics + log sinks, LSP v3, cell single-owner, lld links (2026-07-18)
 
 - **Build: link via lld when installed.** The non-LTO link now
   probes once for `ld.lld` and passes `-fuse-ld=lld` (Linux;
