@@ -241,7 +241,9 @@ tooling has — the unbounded-allocation survey, the hot-path
 allocation lint, placement/starvation warnings. Hover shows a
 symbol's signature *with its contracts*: fallibility
 (`fallible(IoError)`), `@hot` / `@budget` enforcement status,
-a topic's routing key. Go-to-definition and find-references work
+a topic's routing key. Completion offers `self.` members with
+signatures, the `std::` surface namespace-by-namespace, and the
+seed's own symbols. Go-to-definition and find-references work
 across the seed. And the custom methods return what agents
 otherwise grep for: `hale/busGraph` (the whole message topology —
 who publishes and subscribes every topic, with placements),

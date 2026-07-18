@@ -85,9 +85,21 @@ flagged explicit:false). `hale/allocSummary` returns the survey's
 leak sites with positions plus the full text dump. No position
 index anywhere — still the 10 ms re-analysis per request.
 
-Remaining LSP ideas (unstaged): scope-aware references, rename,
-document symbols, workspace symbols, `hale/enforcement` (per-fn
-@hot/@budget map).
+v4 (2026-07-18): **completion shipped** — `self.` members
+(params as fields + user methods with signatures), `std::` paths
+namespace-by-namespace off the stdlib surface tables (fns carry
+their signatures + fallibility as detail), and bare-word top-level
+symbols + keywords + primitive types. Context detection is
+text-based (works mid-keystroke when the buffer doesn't parse);
+the symbol side falls back to the on-disk seed when the overlay
+is unparseable. Trigger characters `.` and `:`. Also shipped
+2026-07-18: `hale fmt` (see spec/testing.md) — an LSP
+documentFormattingProvider over it is a natural follow-up.
+
+Remaining LSP ideas (unstaged): documentFormattingProvider (wrap
+hale fmt --stdin), scope-aware references, rename, document
+symbols, workspace symbols, semantic tokens, `hale/enforcement`
+(per-fn @hot/@budget map).
 
 ## Shipped (2026-07-18) — lld link + stdlib-cache re-scope
 

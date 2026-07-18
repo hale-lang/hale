@@ -89,8 +89,9 @@ A few switches worth knowing from day one:
   placement warnings) as warnings, re-checked whole-program on
   every keystroke because the check runs in ~10 ms. Hover shows
   signatures with their contracts (fallibility, `@hot`/`@budget`
-  status, a topic's routing key), go-to-definition and references
-  work across the seed, and the custom requests `hale/busGraph`,
+  status, a topic's routing key), completion covers `self.`
+  members, the `std::` surface, and your seed's symbols,
+  go-to-definition and references work across the seed, and the custom requests `hale/busGraph`,
   `hale/placement`, and `hale/allocSummary` return the pub/sub
   topology, the thread/pool map, and the allocation survey's leak
   sites. No configuration. Prefer plain JSON?

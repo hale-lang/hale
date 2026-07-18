@@ -463,3 +463,196 @@ fn main() { App { }; }
     assert!(lsp.child.wait().expect("wait").success());
     let _ = std::fs::remove_dir_all(&seed);
 }
+
+#[test]
+fn lsp_v4_completion() {
+    let seed = std::env::temp_dir().join(format!(
+        "hale_lsp_v4_test_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&seed).expect("mkdir");
+    let file = seed.join("main.hl");
+    let uri = format!("file://{}", file.display());
+
+    // Line 6 (0-based) inside on_post gives three cursor sites:
+    //   `self.` member completion, `std::str::` namespace
+    //   completion, and a bare partial word. The buffer does NOT
+    //   parse at those cursors (mid-keystroke) — context detection
+    //   is text-based, so items must still arrive for self./std::
+    //   (top-level symbols degrade to keywords-only on parse
+    //   failure, which the bare-word probe uses a parseable buffer
+    //   for).
+    let src = r#"type Msg { room: String; text: String; }
+
+locus Room {
+    params { name: String = "lobby"; hits: Int = 0; }
+    fn bump(n: Int) -> Int { return n + 1; }
+    fn on_post(m: Msg) {
+        println(self.name, m.text);
+    }
+}
+fn main() { Room { }; }
+"#;
+    std::fs::write(&file, src).expect("write");
+
+    let mut lsp = Lsp::start();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    let init = lsp.recv();
+    assert!(
+        init.pointer("/result/capabilities/completionProvider").is_some(),
+        "completionProvider capability missing"
+    );
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri, "languageId": "hale", "version": 1, "text": src
+        }}
+    }));
+    let _diags = lsp.recv();
+
+    let labels = |resp: &serde_json::Value| -> Vec<String> {
+        resp.pointer("/result/items")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|i| i.pointer("/label"))
+                    .filter_map(|l| l.as_str())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    // 1. `self.` → params (name, hits) + methods (bump, on_post).
+    //    Edit line 6 to end mid-typing: `        self.`
+    let edited = src.replace(
+        "        println(self.name, m.text);",
+        "        self.",
+    );
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "text": edited }]
+        }
+    }));
+    let _diags = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/completion",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 6, "character": 13 }
+        }
+    }));
+    let resp = lsp.recv();
+    let ls = labels(&resp);
+    assert!(ls.contains(&"name".to_string()), "self. params: {:?}", ls);
+    assert!(ls.contains(&"hits".to_string()), "self. params: {:?}", ls);
+    assert!(ls.contains(&"bump".to_string()), "self. methods: {:?}", ls);
+    let bump = resp
+        .pointer("/result/items")
+        .and_then(|v| v.as_array())
+        .and_then(|a| {
+            a.iter().find(|i| i.pointer("/label")
+                == Some(&serde_json::json!("bump")))
+        })
+        .cloned()
+        .expect("bump item");
+    assert!(
+        bump.pointer("/detail")
+            .and_then(|d| d.as_str())
+            .is_some_and(|d| d.contains("-> Int")),
+        "method detail: {:?}",
+        bump
+    );
+
+    // 2. `std::str::` → stdlib namespace fns with signatures.
+    let edited = src.replace(
+        "        println(self.name, m.text);",
+        "        std::str::",
+    );
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": { "uri": uri, "version": 3 },
+            "contentChanges": [{ "text": edited }]
+        }
+    }));
+    let _diags = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "textDocument/completion",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 6, "character": 18 }
+        }
+    }));
+    let resp = lsp.recv();
+    let ls = labels(&resp);
+    assert!(
+        ls.contains(&"parse_int".to_string()),
+        "std::str:: fns: {:?}",
+        ls
+    );
+
+    // 3. `std::` → child namespaces.
+    let edited = src.replace(
+        "        println(self.name, m.text);",
+        "        std::",
+    );
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": { "uri": uri, "version": 4 },
+            "contentChanges": [{ "text": edited }]
+        }
+    }));
+    let _diags = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 4, "method": "textDocument/completion",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 6, "character": 13 }
+        }
+    }));
+    let resp = lsp.recv();
+    let ls = labels(&resp);
+    assert!(ls.contains(&"str".to_string()), "std:: children: {:?}", ls);
+    assert!(ls.contains(&"io".to_string()), "std:: children: {:?}", ls);
+
+    // 4. Bare partial on a PARSEABLE buffer → top-level symbols +
+    //    keywords. `Ro` should offer the Room locus; `wh` the
+    //    while keyword.
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": { "uri": uri, "version": 5 },
+            "contentChanges": [{ "text": src }]
+        }
+    }));
+    let _diags = lsp.recv();
+    // Cursor right after `Ro` in `fn main() { Room { }; }` (line 9,
+    // "fn main() { Ro|om" → character 14).
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 5, "method": "textDocument/completion",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 9, "character": 14 }
+        }
+    }));
+    let resp = lsp.recv();
+    let ls = labels(&resp);
+    assert!(ls.contains(&"Room".to_string()), "top-level: {:?}", ls);
+
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 6, "method": "shutdown", "params": null
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "exit", "params": null
+    }));
+    let _ = lsp.child.wait();
+    let _ = std::fs::remove_dir_all(&seed);
+}

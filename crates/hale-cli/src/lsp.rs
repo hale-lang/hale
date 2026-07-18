@@ -61,7 +61,10 @@ pub fn run_lsp() -> ExitCode {
                         "positionEncoding": "utf-16",
                         "hoverProvider": true,
                         "definitionProvider": true,
-                        "referencesProvider": true
+                        "referencesProvider": true,
+                        "completionProvider": {
+                            "triggerCharacters": [".", ":"]
+                        }
                     },
                     "serverInfo": {
                         "name": "hale-lsp",
@@ -115,6 +118,13 @@ pub fn run_lsp() -> ExitCode {
                     // reflect the on-disk truth again.
                     check_and_publish(&mut writer, &path, &overlays);
                 }
+            }
+            "textDocument/completion" => {
+                let result = completion(&msg, &overlays)
+                    .unwrap_or_else(|| json!({
+                        "isIncomplete": false, "items": []
+                    }));
+                respond(&mut writer, id, result);
             }
             "textDocument/hover" => {
                 let result = hover(&msg, &overlays).unwrap_or(Value::Null);
@@ -564,6 +574,370 @@ fn lsp_pos_to_offset(src: &str, line: u32, character: u32) -> usize {
         units += c.len_utf16() as u32;
     }
     src.len()
+}
+
+
+// ---- v4: completion --------------------------------------------------
+//
+// Same design as everything else in this server: no index, no
+// incremental state — every request re-derives what it needs from
+// the overlay text + a fresh seed analysis (the ~10 ms front-end).
+// Context comes from the RAW TEXT left of the cursor (robust
+// mid-keystroke, when the buffer usually doesn't parse):
+//
+//   `self.<partial>`          → the enclosing locus's params +
+//                               user-declared methods
+//   `std::io::tcp::<partial>` → stdlib namespace: free fns (with
+//                               signatures) + locus paths + child
+//                               namespaces
+//   bare `<partial>`          → seed top-level symbols (fns, loci,
+//                               types, topics, interfaces, consts)
+//                               + keywords + primitive type names
+//
+// The client filters against the partial word; we pre-filter to
+// keep payloads small but always return isIncomplete: false.
+fn completion(
+    msg: &Value,
+    overlays: &BTreeMap<PathBuf, String>,
+) -> Option<Value> {
+    let path = text_document_path(msg)?;
+    let line = msg.pointer("/params/position/line")?.as_u64()? as u32;
+    let character =
+        msg.pointer("/params/position/character")?.as_u64()? as u32;
+
+    let analysis = analyze_seed(&path, overlays);
+    let src = analysis
+        .sources
+        .get(&path)
+        .or_else(|| {
+            let canon = path.canonicalize().ok()?;
+            analysis.sources.get(&canon)
+        })?
+        .clone();
+    let offset = lsp_pos_to_offset(&src, line, character);
+    let before = &src[..offset.min(src.len())];
+
+    // Partial word being typed (may be empty right after a trigger).
+    let word_start = before
+        .rfind(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let partial = &before[word_start..];
+    let ctx = &before[..word_start];
+
+    // Mid-keystroke the overlay usually does NOT parse (that's when
+    // completion fires) — fall back to the on-disk seed for the
+    // SYMBOL side while keeping the cursor context from the overlay.
+    // Offsets differ by the in-flight edit's byte delta, which is
+    // small; enclosing-locus detection is span-containment and
+    // tolerates it.
+    let disk_fallback;
+    let sym_analysis: &SeedAnalysis = if analysis.parse_ok {
+        &analysis
+    } else {
+        disk_fallback = analyze_seed(&path, &BTreeMap::new());
+        &disk_fallback
+    };
+
+    let mut items: Vec<Value> = Vec::new();
+
+    if ctx.ends_with("self.") {
+        complete_self_members(
+            sym_analysis, &path, offset, partial, &mut items,
+        );
+    } else if ctx.ends_with("::") {
+        // Collect the `::`-joined path segments left of the cursor.
+        let mut segs: Vec<String> = Vec::new();
+        let mut rest = &ctx[..ctx.len() - 2];
+        loop {
+            let seg_start = rest
+                .rfind(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let seg = &rest[seg_start..];
+            if seg.is_empty() {
+                break;
+            }
+            segs.insert(0, seg.to_string());
+            if seg_start >= 2 && rest[..seg_start].ends_with("::") {
+                rest = &rest[..seg_start - 2];
+            } else {
+                break;
+            }
+        }
+        if segs.first().map(String::as_str) == Some("std") {
+            complete_std_path(&segs[1..], partial, &mut items);
+        }
+    } else {
+        complete_top_level(sym_analysis, partial, &mut items);
+    }
+
+    Some(json!({ "isIncomplete": false, "items": items }))
+}
+
+/// LSP CompletionItemKind constants (the handful we use).
+mod ci_kind {
+    pub const METHOD: u64 = 2;
+    pub const FUNCTION: u64 = 3;
+    pub const FIELD: u64 = 5;
+    pub const CLASS: u64 = 7; // locus
+    pub const INTERFACE: u64 = 8;
+    pub const MODULE: u64 = 9; // namespace
+    pub const ENUM: u64 = 13;
+    pub const KEYWORD: u64 = 14;
+    pub const STRUCT: u64 = 22;
+    pub const EVENT: u64 = 23; // topic
+    pub const CONSTANT: u64 = 21;
+}
+
+fn push_item(
+    items: &mut Vec<Value>,
+    label: &str,
+    kind: u64,
+    detail: Option<String>,
+) {
+    let mut v = json!({ "label": label, "kind": kind });
+    if let Some(d) = detail {
+        v["detail"] = json!(d);
+    }
+    items.push(v);
+}
+
+fn complete_self_members(
+    analysis: &SeedAnalysis,
+    path: &Path,
+    offset: usize,
+    partial: &str,
+    items: &mut Vec<Value>,
+) {
+    if !analysis.parse_ok {
+        return;
+    }
+    let Some(base) = analysis.base_of(path) else { return };
+    let merged = base as usize + offset;
+    let bundle = analysis.bundle();
+    let (top, _) = hale_types::resolve::build_top_scope(&bundle);
+    // Enclosing locus by span containment.
+    let mut locus_name: Option<String> = None;
+    for sym in top.symbols.values() {
+        if let hale_types::symbol::TopSymbol::Locus(l) = sym {
+            let sp = sym.span();
+            if sp.start.as_usize() <= merged && merged < sp.end.as_usize() {
+                for p in &l.params {
+                    if p.name.starts_with(partial) {
+                        push_item(
+                            items,
+                            &p.name,
+                            ci_kind::FIELD,
+                            Some(p.ty.display()),
+                        );
+                    }
+                }
+                locus_name = Some(l.name.clone());
+            }
+        }
+    }
+    // User-declared methods from the AST decl (TopScope doesn't
+    // carry method lists).
+    let Some(lname) = locus_name else { return };
+    for prog in analysis.programs.values() {
+        for item in &prog.items {
+            let hale_syntax::ast::TopDecl::Locus(l) = item else {
+                continue;
+            };
+            if l.name.name != lname {
+                continue;
+            }
+            for m in &l.members {
+                let hale_syntax::ast::LocusMember::Fn(f) = m else {
+                    continue;
+                };
+                if !f.name.name.starts_with(partial) {
+                    continue;
+                }
+                let ps = f
+                    .params
+                    .iter()
+                    .map(|p| {
+                        format!("{}: {}", p.name.name, type_expr_str(&p.ty))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let ret = f
+                    .ret
+                    .as_ref()
+                    .map(type_expr_str)
+                    .unwrap_or_else(|| "()".to_string());
+                push_item(
+                    items,
+                    &f.name.name,
+                    ci_kind::METHOD,
+                    Some(format!("fn({}) -> {}", ps, ret)),
+                );
+            }
+        }
+    }
+}
+
+fn complete_std_path(
+    ns: &[String],
+    partial: &str,
+    items: &mut Vec<Value>,
+) {
+    use hale_types::stdlib_surface as surf;
+    let ns_refs: Vec<&str> = ns.iter().map(String::as_str).collect();
+
+    // Free fns in the exact namespace, with signatures as detail.
+    for surface in surf::SURFACES {
+        if surface.ns == ns_refs.as_slice() {
+            for f in surface.fns {
+                if !f.starts_with(partial) {
+                    continue;
+                }
+                let mut segs: Vec<&str> = vec!["std"];
+                segs.extend(ns_refs.iter().copied());
+                segs.push(f);
+                let detail =
+                    surf::signature_for(&segs).map(|sig| {
+                        let ps = sig
+                            .params
+                            .iter()
+                            .map(|t| sig_ty_str(t).to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let mut d = format!(
+                            "fn({}) -> {}",
+                            ps,
+                            sig_ty_str(&sig.ret)
+                        );
+                        if let Some(e) = sig.fallible {
+                            d.push_str(&format!(" fallible({})", e));
+                        }
+                        d
+                    });
+                push_item(items, f, ci_kind::FUNCTION, detail);
+            }
+        }
+    }
+
+    // Stdlib locus/type paths one segment below the cursor's path
+    // (`std::metrics::` → Registry, Counter, …) and child
+    // namespaces (`std::` → io, str, bytes, …; `std::io::` → tcp,
+    // udp, tls, fs).
+    let mut seen_ns: std::collections::BTreeSet<&str> =
+        std::collections::BTreeSet::new();
+    for lp in surf::LOCUS_PATHS {
+        // LOCUS_PATHS entries carry the leading "std".
+        let rest = match lp.split_first() {
+            Some((&"std", rest)) => rest,
+            _ => continue,
+        };
+        if rest.len() == ns_refs.len() + 1
+            && rest[..ns_refs.len()] == ns_refs[..]
+        {
+            let leaf = rest[ns_refs.len()];
+            if leaf.starts_with(partial) {
+                push_item(items, leaf, ci_kind::CLASS, None);
+            }
+        }
+    }
+    for surface in surf::SURFACES {
+        if surface.ns.len() > ns_refs.len()
+            && surface.ns[..ns_refs.len()] == ns_refs[..]
+        {
+            seen_ns.insert(surface.ns[ns_refs.len()]);
+        }
+    }
+    for child in seen_ns {
+        if child.starts_with(partial) {
+            push_item(items, child, ci_kind::MODULE, None);
+        }
+    }
+}
+
+fn complete_top_level(
+    analysis: &SeedAnalysis,
+    partial: &str,
+    items: &mut Vec<Value>,
+) {
+    use hale_types::symbol::{TopSymbol, TypeKind};
+    if analysis.parse_ok {
+        let bundle = analysis.bundle();
+        let (top, _) = hale_types::resolve::build_top_scope(&bundle);
+        for (name, sym) in &top.symbols {
+            if !name.starts_with(partial) || name.starts_with("__") {
+                continue;
+            }
+            match sym {
+                TopSymbol::Fn(f) => {
+                    let ps = f
+                        .params
+                        .iter()
+                        .map(|(n, t)| format!("{}: {}", n, t.display()))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    push_item(
+                        items,
+                        name,
+                        ci_kind::FUNCTION,
+                        Some(format!("fn({}) -> {}", ps, f.ret.display())),
+                    );
+                }
+                TopSymbol::Locus(_) => {
+                    push_item(items, name, ci_kind::CLASS, Some("locus".into()));
+                }
+                TopSymbol::Type(t) => {
+                    let kind = match &t.kind {
+                        TypeKind::Enum(_) => ci_kind::ENUM,
+                        _ => ci_kind::STRUCT,
+                    };
+                    push_item(items, name, kind, Some("type".into()));
+                }
+                TopSymbol::Topic(t) => {
+                    push_item(
+                        items,
+                        name,
+                        ci_kind::EVENT,
+                        Some(format!("topic \"{}\"", t.subject)),
+                    );
+                }
+                TopSymbol::Interface(_) => {
+                    push_item(
+                        items,
+                        name,
+                        ci_kind::INTERFACE,
+                        Some("interface".into()),
+                    );
+                }
+                TopSymbol::Const(c) => {
+                    push_item(
+                        items,
+                        name,
+                        ci_kind::CONSTANT,
+                        Some(c.ty.display()),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    // Keywords + primitive type names + the std root.
+    for kw in hale_syntax::keywords::HARD_KEYWORDS {
+        if kw.starts_with(partial) {
+            push_item(items, kw, ci_kind::KEYWORD, None);
+        }
+    }
+    for prim in [
+        "Int", "Uint", "Float", "Decimal", "String", "Bool", "Time",
+        "Duration", "Bytes",
+    ] {
+        if prim.starts_with(partial) {
+            push_item(items, prim, ci_kind::STRUCT, None);
+        }
+    }
+    if "std".starts_with(partial) {
+        push_item(items, "std", ci_kind::MODULE, None);
+    }
 }
 
 // ---- v2: hover -------------------------------------------------------

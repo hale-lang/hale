@@ -8,6 +8,19 @@ behavior.
 
 ## Unreleased
 
+- **LSP v4: completion.** `textDocument/completion` (trigger
+  characters `.` and `:`): after `self.` — the enclosing locus's
+  params (with types) and user-declared methods (with signatures);
+  after `std::…::` — the stdlib surface namespace-by-namespace
+  (free fns carry `fn(params) -> ret fallible(E)` detail from the
+  signature table, locus paths and child namespaces listed); bare
+  words — the seed's top-level symbols (fns/loci/types/topics/
+  interfaces/consts), keywords, and primitive type names. Context
+  detection reads the raw text left of the cursor, so it works
+  mid-keystroke when the buffer doesn't parse; the symbol side
+  falls back to the on-disk seed in that case. Same
+  no-index/no-state design as v1-v3. Protocol test:
+  `lsp_v4_completion`.
 - **`hale fmt` — the canonical formatter** (spec/testing.md's
   "(planned)" slot, now real). Zero config, Go-style: a
   token-stream formatter that preserves the author's line breaks
