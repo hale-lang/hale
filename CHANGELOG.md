@@ -6,6 +6,33 @@ behavior.
 
 ---
 
+## v0.11.7 — LSP v2: hover with contracts + `hale/busGraph` (2026-07-17)
+
+- **Hover.** `textDocument/hover` resolves the token at position and
+  answers with the signature *plus the contracts no generic language
+  server carries*: a fn's `fallible(E)` with the addressing hint and
+  its enforcement status (`@hot` — lint-as-errors; `@budget(
+  alloc_per_call = N)` — compiler-enforced ceiling) read from the
+  declaration; a topic's payload, subject, and `keyed_by` routing
+  field; a locus's params, accepted child type, and bus surface; a
+  type's full field/variant listing; an interface's methods with the
+  structural-satisfaction note; `self.<field>` resolved through the
+  enclosing locus; and `std::` paths through the stdlib signature
+  table. Same design as v1: no index — every request re-analyzes the
+  seed through the ~10 ms front-end.
+- **`hale/busGraph`** — a hale-only custom request returning the
+  seed's whole message topology: per subject, its publishers (locus +
+  payload), subscribers (locus + handler + placement + payload), and
+  the static-dispatch verdict with its honest ineligibility reason.
+  "Who subscribes to this topic?" becomes one protocol call instead
+  of a grep session — aimed squarely at coding-agent harnesses.
+- Protocol test extended (`lsp_v2_hover_and_bus_graph`); README and
+  the first-run guide describe the new surface. Known polish item: a
+  user fn whose fallible payload names a stdlib-injected error type
+  (e.g. `IoError`) hovers that payload as `?` — the fallibility
+  itself still shows. Staged for v3: goto-definition/references,
+  `hale/placement`, `hale/allocSummary`.
+
 ## v0.11.6 — `hale lsp` (2026-07-17)
 
 - **`hale lsp` — a stdio Language Server, v1: diagnostics.** Point
