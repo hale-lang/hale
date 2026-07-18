@@ -59,7 +59,9 @@ pub fn run_lsp() -> ExitCode {
                             "save": { "includeText": true }
                         },
                         "positionEncoding": "utf-16",
-                        "hoverProvider": true
+                        "hoverProvider": true,
+                        "definitionProvider": true,
+                        "referencesProvider": true
                     },
                     "serverInfo": {
                         "name": "hale-lsp",
@@ -125,6 +127,31 @@ pub fn run_lsp() -> ExitCode {
             "hale/busGraph" => {
                 let result = bus_graph(&msg, &overlays)
                     .unwrap_or_else(|| json!({ "subjects": [] }));
+                respond(&mut writer, id, result);
+            }
+            "textDocument/definition" => {
+                let result = definition(&msg, &overlays).unwrap_or(Value::Null);
+                respond(&mut writer, id, result);
+            }
+            "textDocument/references" => {
+                let result = references(&msg, &overlays)
+                    .unwrap_or_else(|| json!([]));
+                respond(&mut writer, id, result);
+            }
+            // hale-only: the main locus's placement map — every params
+            // field with its resolved placement spec + constraints
+            // (unlisted fields default to cooperative(pool = main)).
+            "hale/placement" => {
+                let result = placement(&msg, &overlays)
+                    .unwrap_or_else(|| json!({ "fields": [] }));
+                respond(&mut writer, id, result);
+            }
+            // hale-only: the allocation-bound survey — the leak sites
+            // the default-on unbounded-alloc analysis reports, with
+            // positions, plus the full text dump.
+            "hale/allocSummary" => {
+                let result = alloc_summary(&msg, &overlays)
+                    .unwrap_or_else(|| json!({ "leakSites": [] }));
                 respond(&mut writer, id, result);
             }
             _ => {
@@ -697,9 +724,27 @@ fn hover_text(
                 f.ret.display()
             );
             if let Some(e) = &f.fallible {
+                // Polish: a payload naming a stdlib-injected error
+                // type (IoError et al.) resolves as Unknown and
+                // displays `?` — recover the written name from the
+                // AST decl.
+                let mut shown = e.display();
+                if shown == "?" {
+                    for prog in analysis.programs.values() {
+                        for item in &prog.items {
+                            if let hale_syntax::ast::TopDecl::Fn(fd) = item {
+                                if fd.name.name == f.name {
+                                    if let Some(te) = &fd.fallible {
+                                        shown = type_expr_str(te);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 out.push_str(&format!(
                     "\n\n`fallible({})` — callers must address the error",
-                    e.display()
+                    shown
                 ));
             }
             // Enforcement status from the AST decl.
@@ -886,4 +931,349 @@ fn bus_graph(
         })
         .collect();
     Some(json!({ "subjects": subjects }))
+}
+
+// ---- v3: shared token context ---------------------------------------
+
+/// The Ident token at `offset` plus its `::`-joined path context.
+fn token_context(
+    src: &str,
+    offset: usize,
+) -> Option<(Vec<hale_syntax::lexer::Token>, usize, String, Vec<String>)> {
+    use hale_syntax::lexer::TokenKind as TK;
+    let tokens = hale_syntax::lexer::lex(src).ok()?;
+    let idx = tokens.iter().position(|t| {
+        t.span.start.as_usize() <= offset && offset < t.span.end.as_usize()
+    })?;
+    let word = match &tokens[idx].kind {
+        TK::Ident(name) => name.clone(),
+        _ => return None,
+    };
+    let mut lo = idx;
+    while lo >= 2
+        && matches!(tokens[lo - 1].kind, TK::ColonColon)
+        && matches!(tokens[lo - 2].kind, TK::Ident(_))
+    {
+        lo -= 2;
+    }
+    let mut hi = idx;
+    while hi + 2 < tokens.len()
+        && matches!(tokens[hi + 1].kind, TK::ColonColon)
+        && matches!(tokens[hi + 2].kind, TK::Ident(_))
+    {
+        hi += 2;
+    }
+    let mut segs: Vec<String> = Vec::new();
+    let mut k = lo;
+    while k <= hi {
+        if let TK::Ident(n) = &tokens[k].kind {
+            segs.push(n.clone());
+        }
+        k += 2;
+    }
+    Some((tokens, idx, word, segs))
+}
+
+/// Merged-bundle span → (file, LSP range).
+fn merged_span_to_location(
+    analysis: &SeedAnalysis,
+    span: hale_syntax::Span,
+) -> Option<Value> {
+    let off = span.start.as_usize() as u32;
+    for (base, path, len) in &analysis.file_bases {
+        if off >= *base && off < base.saturating_add(*len) {
+            let src = analysis.sources.get(path)?;
+            let local_start = span.start.as_usize() - *base as usize;
+            let local_end =
+                (span.end.as_usize() - *base as usize).min(src.len());
+            let (sl, sc) = offset_to_lsp_pos(src, local_start);
+            let (el, ec) = offset_to_lsp_pos(src, local_end);
+            return Some(json!({
+                "uri": path_to_uri(path),
+                "range": {
+                    "start": { "line": sl, "character": sc },
+                    "end":   { "line": el, "character": ec }
+                }
+            }));
+        }
+    }
+    None
+}
+
+// ---- v3: definition / references ------------------------------------
+
+fn definition(
+    msg: &Value,
+    overlays: &BTreeMap<PathBuf, String>,
+) -> Option<Value> {
+    let path = text_document_path(msg)?;
+    let line = msg.pointer("/params/position/line")?.as_u64()? as u32;
+    let character =
+        msg.pointer("/params/position/character")?.as_u64()? as u32;
+    let analysis = analyze_seed(&path, overlays);
+    if !analysis.parse_ok {
+        return None;
+    }
+    let src = analysis.sources.get(&path).or_else(|| {
+        let canon = path.canonicalize().ok()?;
+        analysis.sources.get(&canon)
+    })?.clone();
+    let offset = lsp_pos_to_offset(&src, line, character);
+    let (tokens, idx, word, segs) = token_context(&src, offset)?;
+
+    // std:: paths have no in-seed definition.
+    if segs.first().map(String::as_str) == Some("std") {
+        return None;
+    }
+
+    let bundle = analysis.bundle();
+    let (top, _) = hale_types::resolve::build_top_scope(&bundle);
+
+    // self.<field> → the param decl on the enclosing locus.
+    use hale_syntax::lexer::TokenKind as TK;
+    if idx >= 2
+        && matches!(tokens[idx - 1].kind, TK::Dot)
+        && matches!(tokens[idx - 2].kind, TK::KwSelf)
+    {
+        let base = analysis.base_of(&path)?;
+        let merged = base as usize + tokens[idx].span.start.as_usize();
+        for sym in top.symbols.values() {
+            if let hale_types::symbol::TopSymbol::Locus(l) = sym {
+                let sp = sym.span();
+                if sp.start.as_usize() <= merged && merged < sp.end.as_usize()
+                {
+                    if let Some(p) = l.params.iter().find(|p| p.name == word)
+                    {
+                        return merged_span_to_location(&analysis, p.span);
+                    }
+                }
+            }
+        }
+        return None;
+    }
+
+    let sym = top.lookup(&word)?;
+    merged_span_to_location(&analysis, sym.span())
+}
+
+fn references(
+    msg: &Value,
+    overlays: &BTreeMap<PathBuf, String>,
+) -> Option<Value> {
+    let path = text_document_path(msg)?;
+    let line = msg.pointer("/params/position/line")?.as_u64()? as u32;
+    let character =
+        msg.pointer("/params/position/character")?.as_u64()? as u32;
+    let include_decl = msg
+        .pointer("/params/context/includeDeclaration")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let analysis = analyze_seed(&path, overlays);
+    let src = analysis.sources.get(&path).or_else(|| {
+        let canon = path.canonicalize().ok()?;
+        analysis.sources.get(&canon)
+    })?.clone();
+    let offset = lsp_pos_to_offset(&src, line, character);
+    let (_, _, word, _) = token_context(&src, offset)?;
+
+    // The declaration's merged span, for includeDeclaration=false.
+    let decl_span = if analysis.parse_ok {
+        let bundle = analysis.bundle();
+        let (top, _) = hale_types::resolve::build_top_scope(&bundle);
+        top.lookup(&word).map(|s| s.span())
+    } else {
+        None
+    };
+
+    // Name-scoped scan of every file's Ident tokens. Honest v3
+    // semantics: references-by-name across the seed (hale's flat
+    // per-seed namespace makes this accurate for top-level symbols;
+    // shadowing locals will over-report — a documented limitation).
+    let mut out: Vec<Value> = Vec::new();
+    for (file, source) in &analysis.sources {
+        let Ok(tokens) = hale_syntax::lexer::lex(source) else {
+            continue;
+        };
+        let base = analysis.base_of(file).unwrap_or(0);
+        for t in &tokens {
+            if let hale_syntax::lexer::TokenKind::Ident(n) = &t.kind {
+                if n == &word {
+                    if !include_decl {
+                        if let Some(ds) = decl_span {
+                            let merged =
+                                base as usize + t.span.start.as_usize();
+                            if ds.start.as_usize() <= merged
+                                && merged < ds.end.as_usize()
+                            {
+                                continue;
+                            }
+                        }
+                    }
+                    let (sl, sc) =
+                        offset_to_lsp_pos(source, t.span.start.as_usize());
+                    let (el, ec) =
+                        offset_to_lsp_pos(source, t.span.end.as_usize());
+                    out.push(json!({
+                        "uri": path_to_uri(file),
+                        "range": {
+                            "start": { "line": sl, "character": sc },
+                            "end":   { "line": el, "character": ec }
+                        }
+                    }));
+                }
+            }
+        }
+    }
+    Some(Value::Array(out))
+}
+
+// ---- v3: hale/placement ---------------------------------------------
+
+fn placement_spec_str(e: &hale_syntax::ast::PlacementEntry) -> String {
+    use hale_syntax::ast::PlacementSpec;
+    let mut out = match &e.spec {
+        PlacementSpec::Cooperative { pool } => match pool {
+            Some(p) => format!("cooperative(pool = {})", p.name),
+            None => "cooperative(pool = main)".to_string(),
+        },
+        PlacementSpec::Pinned { affinity, replicas } => {
+            let mut s = format!("pinned{:?}", affinity)
+                .replace("Any", "")
+                .replace("pinned", "pinned");
+            // Debug-format affinity compactly; `PinAffinity::Any`
+            // renders as bare `pinned`.
+            s = if format!("{:?}", affinity).contains("Any") {
+                "pinned".to_string()
+            } else {
+                format!("pinned({:?})", affinity)
+            };
+            if let Some(k) = replicas {
+                s.push_str(&format!(" replicas = {}", k));
+            }
+            s
+        }
+    };
+    if !e.constraints.is_empty() {
+        let cs: Vec<String> = e
+            .constraints
+            .iter()
+            .map(|c| format!("{:?}", c.kind))
+            .collect();
+        out.push_str(&format!(" where {}", cs.join(", ").to_lowercase()));
+    }
+    out
+}
+
+fn placement(
+    msg: &Value,
+    overlays: &BTreeMap<PathBuf, String>,
+) -> Option<Value> {
+    let path = text_document_path(msg)?;
+    let analysis = analyze_seed(&path, overlays);
+    if !analysis.parse_ok {
+        return Some(json!({ "fields": [], "parseErrors": true }));
+    }
+    use hale_syntax::ast::{LocusMember, TopDecl};
+    for prog in analysis.programs.values() {
+        for item in &prog.items {
+            let TopDecl::Locus(l) = item else { continue };
+            if !l.is_main {
+                continue;
+            }
+            let mut placements: BTreeMap<String, String> = BTreeMap::new();
+            let mut params: Vec<(String, String)> = Vec::new();
+            for m in &l.members {
+                match m {
+                    LocusMember::Placement(pb) => {
+                        for e in &pb.entries {
+                            placements.insert(
+                                e.field.name.clone(),
+                                placement_spec_str(e),
+                            );
+                        }
+                    }
+                    LocusMember::Params(ps) => {
+                        for pd in &ps.params {
+                            let ty = pd
+                                .ty
+                                .as_ref()
+                                .map(type_expr_str)
+                                .unwrap_or_else(|| "?".to_string());
+                            params.push((pd.name.name.clone(), ty));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let fields: Vec<Value> = params
+                .iter()
+                .map(|(name, ty)| {
+                    json!({
+                        "field": name,
+                        "locus": ty,
+                        "placement": placements
+                            .get(name)
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                "cooperative(pool = main)".to_string()
+                            }),
+                        "explicit": placements.contains_key(name),
+                    })
+                })
+                .collect();
+            return Some(json!({
+                "mainLocus": l.name.name,
+                "fields": fields
+            }));
+        }
+    }
+    Some(json!({ "fields": [], "noMainLocus": true }))
+}
+
+fn type_expr_str(t: &hale_syntax::ast::TypeExpr) -> String {
+    use hale_syntax::ast::TypeExpr;
+    match t {
+        TypeExpr::Primitive(p, _) => format!("{:?}", p),
+        TypeExpr::Named { path, .. } => path
+            .segments
+            .iter()
+            .map(|s| s.name.clone())
+            .collect::<Vec<_>>()
+            .join("::"),
+        _ => "…".to_string(),
+    }
+}
+
+// ---- v3: hale/allocSummary ------------------------------------------
+
+fn alloc_summary(
+    msg: &Value,
+    overlays: &BTreeMap<PathBuf, String>,
+) -> Option<Value> {
+    let path = text_document_path(msg)?;
+    let analysis = analyze_seed(&path, overlays);
+    if !analysis.parse_ok {
+        return Some(json!({ "leakSites": [], "parseErrors": true }));
+    }
+    let progs: Vec<&Program> = analysis.programs.values().collect();
+    let summary = hale_types::alloc_summary::summarize_programs(&progs);
+    let sites: Vec<Value> = summary
+        .leak_sites()
+        .iter()
+        .filter_map(|site| {
+            let loc = merged_span_to_location(&analysis, site.span)?;
+            Some(json!({
+                "fn": site.owner.display(),
+                "kind": format!("{:?}", site.kind),
+                "escape": format!("{:?}", site.escape),
+                "reason": format!("{:?}", site.reason),
+                "location": loc,
+            }))
+        })
+        .collect();
+    let bundle = analysis.bundle();
+    Some(json!({
+        "leakSites": sites,
+        "text": hale_types::dump_alloc_summary(&bundle),
+    }))
 }

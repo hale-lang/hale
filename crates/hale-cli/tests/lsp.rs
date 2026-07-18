@@ -323,3 +323,143 @@ fn main() { App { }; }
     assert!(status.success());
     let _ = std::fs::remove_dir_all(&seed);
 }
+
+#[test]
+fn lsp_v3_definition_references_placement_alloc() {
+    let seed = std::env::temp_dir().join(format!(
+        "hale_lsp_v3_test_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&seed).expect("mkdir");
+    let file = seed.join("main.hl");
+    let uri = format!("file://{}", file.display());
+
+    // A daemon shape: Worker churns a struct into self from an
+    // unbounded run loop DIRECTLY (no method boundary) — the one
+    // store shape the alloc survey still reports post-retirement.
+    let src = r#"type Cell { s: String; n: Int; }
+
+locus Worker {
+    params { st: Cell = Cell { s: "", n: 0 }; }
+    run() {
+        let mut i = 0;
+        while true {
+            self.st = Cell { s: "v" + i, n: i };
+            i = i + 1;
+        }
+    }
+}
+
+main locus App {
+    params { w: Worker = Worker { }; }
+    placement {
+        w: pinned;
+    }
+    run() { }
+}
+fn main() { App { }; }
+"#;
+    std::fs::write(&file, src).expect("write");
+
+    let mut lsp = Lsp::start();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    let init = lsp.recv();
+    assert_eq!(
+        init.pointer("/result/capabilities/definitionProvider"),
+        Some(&serde_json::json!(true))
+    );
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri, "languageId": "hale", "version": 1, "text": src
+        }}
+    }));
+    let _diags = lsp.recv();
+
+    let pos = |needle: &str| -> (u32, u32) {
+        for (ln, line) in src.lines().enumerate() {
+            if let Some(col) = line.find(needle) {
+                return (ln as u32, col as u32 + 1);
+            }
+        }
+        panic!("needle not found: {}", needle);
+    };
+
+    // definition: `Cell { s: "v" + i` use → the type decl on line 0.
+    let (line, character) = pos("Cell { s: \"v\"");
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/definition",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character }
+        }
+    }));
+    let d = lsp.recv();
+    assert_eq!(
+        d.pointer("/result/range/start/line"),
+        Some(&serde_json::json!(0)),
+        "Cell defines on line 0: {}",
+        d
+    );
+
+    // references: Worker appears at decl, params type, and literal.
+    let (line, character) = pos("Worker = ");
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "textDocument/references",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character },
+            "context": { "includeDeclaration": true }
+        }
+    }));
+    let refs = lsp.recv();
+    let n = refs.pointer("/result").unwrap().as_array().unwrap().len();
+    assert!(n >= 3, "Worker referenced at >= 3 sites, got {}: {}", n, refs);
+
+    // hale/placement: the explicit pinned entry surfaces.
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 4, "method": "hale/placement",
+        "params": { "textDocument": { "uri": uri } }
+    }));
+    let pl = lsp.recv();
+    assert_eq!(pl.pointer("/result/mainLocus"), Some(&serde_json::json!("App")));
+    let fields = pl.pointer("/result/fields").unwrap().as_array().unwrap();
+    let w = fields.iter().find(|f| f["field"] == "w").expect("w placed");
+    assert_eq!(w["locus"], "Worker");
+    assert_eq!(w["explicit"], true);
+    assert!(
+        w["placement"].as_str().unwrap().starts_with("pinned"),
+        "{}",
+        pl
+    );
+
+    // hale/allocSummary: the run-loop-direct churn is a leak site.
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 5, "method": "hale/allocSummary",
+        "params": { "textDocument": { "uri": uri } }
+    }));
+    let al = lsp.recv();
+    let sites = al.pointer("/result/leakSites").unwrap().as_array().unwrap();
+    assert!(!sites.is_empty(), "run-loop churn must report: {}", al);
+    assert!(
+        sites[0]["fn"].as_str().unwrap().contains("Worker"),
+        "{}",
+        al
+    );
+    assert!(
+        al.pointer("/result/text").unwrap().as_str().unwrap().len() > 0
+    );
+
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 6, "method": "shutdown", "params": null
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "exit", "params": null
+    }));
+    assert!(lsp.child.wait().expect("wait").success());
+    let _ = std::fs::remove_dir_all(&seed);
+}

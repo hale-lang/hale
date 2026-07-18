@@ -70,8 +70,24 @@ Both re-analyze on demand (the 10 ms front-end again). Known
 polish: a user fn's fallible payload naming a stdlib-injected
 error type (IoError) hovers as `?`.
 
-Still staged for v3: goto-definition/references (needs a position
-index over TopScope), `hale/placement`, `hale/allocSummary`.
+v3 (2026-07-18): **definition + references + `hale/placement` +
+`hale/allocSummary` shipped**, and the `fallible(?)` hover polish
+(payload name recovered from the AST decl when the resolved Ty is
+Unknown). Definition resolves through TopScope symbol spans
+(self.<field> → the exact ParamInfo span) demuxed back to
+file+range; references is a seed-wide Ident-token scan — honest
+name-based semantics (hale's flat per-seed namespace makes it
+accurate for top-level symbols; shadowing locals over-report, a
+documented limitation). `hale/placement` returns the main locus's
+field→placement map (explicit entries rendered from the AST spec +
+where-constraints; unlisted fields default cooperative(pool=main),
+flagged explicit:false). `hale/allocSummary` returns the survey's
+leak sites with positions plus the full text dump. No position
+index anywhere — still the 10 ms re-analysis per request.
+
+Remaining LSP ideas (unstaged): scope-aware references, rename,
+document symbols, workspace symbols, `hale/enforcement` (per-fn
+@hot/@budget map).
 
 ## Staged next (in value order)
 
