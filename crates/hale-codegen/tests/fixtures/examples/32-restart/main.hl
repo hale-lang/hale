@@ -53,9 +53,9 @@ locus Worker {
 locus Coordinator {
     on_failure(c: Worker, err: ClosureViolation) {
         println("Coordinator: ", err.closure,
-                " on ", err.locus,
-                " — calling restart");
-        restart(c);
+            " on ", err.locus,
+            " — calling restart");
+        restart (c);
     }
 
     run() {

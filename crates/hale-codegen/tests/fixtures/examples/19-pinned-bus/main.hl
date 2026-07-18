@@ -73,7 +73,7 @@ locus Publisher {
 main locus PinnedBusApp {
     params {
         sub: PinnedSubscriber = PinnedSubscriber { };
-        pub: Publisher        = Publisher        { };
+        pub: Publisher = Publisher { };
     }
     placement {
         sub: pinned;

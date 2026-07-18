@@ -54,8 +54,8 @@ locus Configured {
 locus AuditL {
     on_failure(c: Configured, err: ClosureViolation) {
         println("AuditL absorbed birth violation: ",
-                err.closure, " on ", err.locus,
-                " (diff=", err.diff, ")");
+            err.closure, " on ", err.locus,
+            " (diff=", err.diff, ")");
     }
 
     run() {

@@ -3,16 +3,16 @@
 // Reporter prints results; a Submitter feeds jobs in. Nobody calls anybody —
 // they publish and subscribe. (This is step 3 of the "Build a job queue"
 // tutorial; the same loci deploy across processes by changing only `main`.)
-type Job    { id: Int; work: Int; }
+type Job { id: Int; work: Int; }
 type Result { id: Int; out: Int; }
 
-topic Jobs    { payload: Job; }
+topic Jobs { payload: Job; }
 topic Results { payload: Result; }
 
 locus Worker {
     bus {
         subscribe Jobs as on_job;
-        publish   Results;
+        publish Results;
     }
     fn on_job(j: Job) {
         let out: Int = j.work * j.work;

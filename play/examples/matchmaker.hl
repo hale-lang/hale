@@ -10,14 +10,14 @@ fn clock() -> String {
     return pad2(day / 3600) + ":" + pad2(modi(day / 60, 60)) + ":" + pad2(modi(day, 60));
 }
 
-type Player    { name: String; }
+type Player { name: String; }
 type MatchInfo { size: Int; }
 
 locus Matchmaker {
     params { target_size: Int = 4; waiting: Int = 0; }
     bus {
-        subscribe "queue.join"  as on_join of type Player;
-        publish   "match.ready"            of type MatchInfo;
+        subscribe "queue.join" as on_join of type Player;
+        publish "match.ready" of type MatchInfo;
     }
     fn on_join(p: Player) {
         self.waiting = self.waiting + 1;

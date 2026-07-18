@@ -21,7 +21,6 @@
 // parent counts fires so the test reads as a single count, not
 // a stream.
 
-
 // F.31 (2026-05-23): pinned placement moved from the locus
 // annotation to a placement entry on main locus.
 
@@ -58,7 +57,7 @@ main locus Coordinator {
     on_failure(h: Heartbeat, err: ClosureViolation) {
         self.post_run_fires = self.post_run_fires + 1;
         println("Coordinator: duration fired post-run on pinned (#",
-                self.post_run_fires, ")");
+            self.post_run_fires, ")");
     }
 
     run() {

@@ -95,7 +95,7 @@ fn main() {
     s1.push(0.0, 1.0);
     s1.push(1.0, 3.0);
     s1.push(2.0, 5.0);
-    near_eq(s1.slope(),     2.0, 0.0001, "case 1: slope y=2x+1");
+    near_eq(s1.slope(), 2.0, 0.0001, "case 1: slope y=2x+1");
     near_eq(s1.intercept(), 1.0, 0.0001, "case 1: intercept y=2x+1");
     std::test::assert_eq_int(s1.count(), 3, "case 1: count");
 
@@ -105,7 +105,7 @@ fn main() {
     s2.push(1.0, 7.0);
     s2.push(2.0, 4.0);
     s2.push(3.0, 1.0);
-    near_eq(s2.slope(),     -3.0, 0.0001, "case 2: slope y=-3x+10");
+    near_eq(s2.slope(), -3.0, 0.0001, "case 2: slope y=-3x+10");
     near_eq(s2.intercept(), 10.0, 0.0001, "case 2: intercept y=-3x+10");
     std::test::assert_eq_int(s2.count(), 4, "case 2: count");
 
@@ -127,8 +127,8 @@ fn main() {
     let s4 = Segment { };
     s4.push(1.0, 5.0);
     s4.push(2.0, 3.0);
-    near_eq(s4.slope(),     -2.0, 0.0001, "case 5: slope of two points");
-    near_eq(s4.intercept(),  7.0, 0.0001, "case 5: intercept of two points");
+    near_eq(s4.slope(), -2.0, 0.0001, "case 5: slope of two points");
+    near_eq(s4.intercept(), 7.0, 0.0001, "case 5: intercept of two points");
 
     println("all segment tests passed");
 }

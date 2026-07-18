@@ -33,8 +33,8 @@ locus AuditL {
         //   left, right, tolerance: the assertion values
         //   diff: left - right when both are numeric
         println("AuditL absorbed: ", err.closure,
-                " on ", err.locus,
-                " (diff=", err.diff, ")");
+            " on ", err.locus,
+            " (diff=", err.diff, ")");
         // Returning without re-raising counts as absorption.
         // A future bubble(err) would propagate to grandparent.
     }

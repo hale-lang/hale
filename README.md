@@ -230,6 +230,7 @@ hale build hello.hl && ./hello
 **Editor & agent integration** is one command:
 
 ```sh
+hale fmt                     # canonical formatter (zero config; --check for CI)
 hale lsp                     # stdio Language Server — live diagnostics
 ```
 

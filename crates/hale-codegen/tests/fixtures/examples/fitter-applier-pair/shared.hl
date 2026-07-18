@@ -21,7 +21,7 @@ type Kernel {
 }
 
 type Action {
-    kind: String;            // "primary" or "secondary"
+    kind: String; // "primary" or "secondary"
     magnitude: Decimal;
     quantity: Decimal;
     action_id: Int;

@@ -6,6 +6,27 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **`hale fmt` — the canonical formatter** (spec/testing.md's
+  "(planned)" slot, now real). Zero config, Go-style: a
+  token-stream formatter that preserves the author's line breaks
+  and normalizes indentation (4-space, bracket-stack), inter-token
+  spacing (canonical pair rules incl. unary/binary `-`
+  disambiguation, tight generics, the spaced `: serves` colon),
+  blank lines (max one), and comment placement. `hale fmt [paths]`
+  writes in place; `--check` is the CI gate (exit 1 + offender
+  list); `--diff` previews; `--stdin` filters for editors. Safety:
+  output is re-lexed and must produce a byte-identical semantic
+  token stream or the file is left untouched — a formatter bug
+  can't change what the compiler sees; unlexable files are skipped
+  loudly. Idempotence + gate anchored over every fixture and
+  stdlib source (`fmt_corpus.rs`); CLI contract covered in
+  `hale-cli/tests/fmt.rs`. The repo's own `.hl` surface (fixtures,
+  stdlib, README/play examples) is reformatted to canonical form
+  in the same change — the full suite runs green on the formatted
+  corpus.
+
 ## v0.11.8 — std::metrics + log sinks, LSP v3, cell single-owner, lld links (2026-07-18)
 
 - **Build: link via lld when installed.** The non-LTO link now

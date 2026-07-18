@@ -26,7 +26,7 @@ locus __StdNameConvention {
     fn cap(c: String) -> String {
         let idx = std::str::index_of("abcdefghijklmnopqrstuvwxyz", c);
         if idx < 0 { return c; }
-        return "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[idx..idx+1];
+        return "ABCDEFGHIJKLMNOPQRSTUVWXYZ" [idx..idx + 1];
     }
 
     // Lower an ASCII letter; pass any other character through
@@ -34,7 +34,7 @@ locus __StdNameConvention {
     fn low(c: String) -> String {
         let idx = std::str::index_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ", c);
         if idx < 0 { return c; }
-        return "abcdefghijklmnopqrstuvwxyz"[idx..idx+1];
+        return "abcdefghijklmnopqrstuvwxyz" [idx..idx + 1];
     }
 
     // snake_case → CamelCase. "request_cache" → "RequestCache".
@@ -47,7 +47,7 @@ locus __StdNameConvention {
         let mut i = 0;
         let mut next_upper = true;
         while i < n {
-            let c = s[i..i+1];
+            let c = s[i..i + 1];
             if c == "_" {
                 next_upper = true;
             } else {
@@ -70,7 +70,7 @@ locus __StdNameConvention {
         let mut out = "";
         let mut i = 0;
         while i < n {
-            let c = s[i..i+1];
+            let c = s[i..i + 1];
             let up_idx = std::str::index_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ", c);
             if up_idx >= 0 && i > 0 {
                 out = out + "_" + self.low(c);
@@ -88,8 +88,8 @@ locus __StdNameConvention {
         let fl = len(file);
         let xl = len(self.strip);
         if fl < xl { return file; }
-        if file[fl-xl..fl] != self.strip { return file; }
-        return file[0..fl-xl];
+        if file[fl - xl..fl] != self.strip { return file; }
+        return file[0..fl - xl];
     }
 
     // File-stem → CamelCased locus name. "request_cache.go" →

@@ -4,8 +4,8 @@
 // the exact a downstream P2.1 shape.
 
 type GreaseOrderRequest {
-    id:  Int;
-    px:  Decimal;
+    id: Int;
+    px: Decimal;
     qty: Decimal;
     tag: String;
 }

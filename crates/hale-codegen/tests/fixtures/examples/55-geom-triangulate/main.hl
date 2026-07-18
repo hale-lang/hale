@@ -75,7 +75,7 @@ locus Segment {
 
 locus LeadingEdge {
     params {
-        times:  [Float; 8] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        times: [Float; 8] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         values: [Float; 8] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         head: Int = 0;
         n: Int = 0;
@@ -192,13 +192,13 @@ locus Triangulator {
         }
         let mean = sum / count;
         let mut best_dist = 1.0e18;
-        let mut best_est  = mean;
+        let mut best_est = mean;
         for child in self.children {
             let est = child.extrapolate(t_target);
             let dist = abs(est - mean);
             if dist < best_dist {
                 best_dist = dist;
-                best_est  = est;
+                best_est = est;
             }
         }
         return best_est;
@@ -243,7 +243,7 @@ locus Triangulator {
         let r = self.resolution(5.0);
 
         near_eq(b, 11.0, 0.001, "triangulator bulk = mean of 10/11/12");
-        near_eq(h,  2.0, 0.001, "triangulator harmonic = spread 12-10");
+        near_eq(h, 2.0, 0.001, "triangulator harmonic = spread 12-10");
         near_eq(r, 11.0, 0.001, "triangulator resolution = closest-to-mean");
 
         println("all triangulator tests passed");

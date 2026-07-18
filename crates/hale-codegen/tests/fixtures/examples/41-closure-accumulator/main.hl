@@ -43,7 +43,6 @@
 //   - Subsequent publishes don't reach the quarantined
 //     Tracker (m41b bus-dispatch gating), so no further fires.
 
-
 type Sample {
     value: Int;
 }
@@ -56,7 +55,7 @@ locus Tracker {
     closure within_band {
         sum(self.delta) ~~ 0 within 100;
         epoch tick;
-        persists_through(quarantine);
+        persists_through (quarantine);
     }
 
     bus {
@@ -72,8 +71,8 @@ locus Tracker {
 locus Coordinator {
     on_failure(t: Tracker, err: ClosureViolation) {
         println("Coordinator: drift detected (diff=", err.diff,
-                ") — quarantining Tracker");
-        quarantine(t);
+            ") — quarantining Tracker");
+        quarantine (t);
     }
 
     bus {

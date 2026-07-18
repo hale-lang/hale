@@ -35,7 +35,7 @@ locus Ring {
         // partial-fill bugs visible (Float -1.0 is fine in
         // a ring of monotonic timestamps which are always
         // non-negative in normal use).
-        times:  [Float; 8] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        times: [Float; 8] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         values: [Float; 8] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
 
         // Next-write position. After cap pushes, head wraps
@@ -98,7 +98,7 @@ locus Ring {
     }
 
     fn clear() {
-        self.times  = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        self.times = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         self.values = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         self.head = 0;
         self.n = 0;
@@ -128,9 +128,9 @@ fn main() {
     r1.push(2.0, 20.0);
     r1.push(3.0, 30.0);
     std::test::assert_eq_int(r1.len(), 3, "case 2: partial len");
-    near_eq(r1.time_at(0),  1.0, 0.0001, "case 2: time_at(0)");
+    near_eq(r1.time_at(0), 1.0, 0.0001, "case 2: time_at(0)");
     near_eq(r1.value_at(0), 10.0, 0.0001, "case 2: value_at(0)");
-    near_eq(r1.time_at(2),  3.0, 0.0001, "case 2: time_at(2)");
+    near_eq(r1.time_at(2), 3.0, 0.0001, "case 2: time_at(2)");
     near_eq(r1.value_at(2), 30.0, 0.0001, "case 2: value_at(2)");
 
     // Case 3 — exactly full, len = 8, all entries readable
@@ -145,27 +145,27 @@ fn main() {
     }
     // Reset and push known points (t = 1..8, v = 10*t).
     r2.clear();
-    r2.push(1.0,  10.0);
-    r2.push(2.0,  20.0);
-    r2.push(3.0,  30.0);
-    r2.push(4.0,  40.0);
-    r2.push(5.0,  50.0);
-    r2.push(6.0,  60.0);
-    r2.push(7.0,  70.0);
-    r2.push(8.0,  80.0);
+    r2.push(1.0, 10.0);
+    r2.push(2.0, 20.0);
+    r2.push(3.0, 30.0);
+    r2.push(4.0, 40.0);
+    r2.push(5.0, 50.0);
+    r2.push(6.0, 60.0);
+    r2.push(7.0, 70.0);
+    r2.push(8.0, 80.0);
     std::test::assert_eq_int(r2.len(), 8, "case 3: full len");
-    near_eq(r2.time_at(0),  1.0, 0.0001, "case 3: oldest time");
-    near_eq(r2.time_at(7),  8.0, 0.0001, "case 3: newest time");
+    near_eq(r2.time_at(0), 1.0, 0.0001, "case 3: oldest time");
+    near_eq(r2.time_at(7), 8.0, 0.0001, "case 3: newest time");
     near_eq(r2.value_at(0), 10.0, 0.0001, "case 3: oldest value");
     near_eq(r2.value_at(7), 80.0, 0.0001, "case 3: newest value");
 
     // Case 4 — wrap: push two more, oldest two fall off.
-    r2.push(9.0,  90.0);
+    r2.push(9.0, 90.0);
     r2.push(10.0, 100.0);
     std::test::assert_eq_int(r2.len(), 8, "case 4: wrapped len still 8");
-    near_eq(r2.time_at(0),  3.0, 0.0001, "case 4: oldest after wrap");
+    near_eq(r2.time_at(0), 3.0, 0.0001, "case 4: oldest after wrap");
     near_eq(r2.value_at(0), 30.0, 0.0001, "case 4: oldest value after wrap");
-    near_eq(r2.time_at(7),  10.0, 0.0001, "case 4: newest after wrap");
+    near_eq(r2.time_at(7), 10.0, 0.0001, "case 4: newest after wrap");
     near_eq(r2.value_at(7), 100.0, 0.0001, "case 4: newest value after wrap");
 
     // Case 5 — clear() resets.

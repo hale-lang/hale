@@ -24,7 +24,7 @@ fn classify(n: Int) {
 
 fn status_label(b: Bool) {
     match b {
-        true  -> println("status: live"),
+        true -> println("status: live"),
         false -> println("status: dormant"),
     }
 }
@@ -41,9 +41,9 @@ fn echo(n: Int) {
 // inspect it.
 fn sign_of(n: Int) {
     match n {
-        v if v < 0   -> println("sign(", v, ") = negative"),
-        v if v == 0  -> println("sign(", v, ") = zero"),
-        v            -> println("sign(", v, ") = positive"),
+        v if v < 0 -> println("sign(", v, ") = negative"),
+        v if v == 0 -> println("sign(", v, ") = zero"),
+        v -> println("sign(", v, ") = positive"),
     }
 }
 

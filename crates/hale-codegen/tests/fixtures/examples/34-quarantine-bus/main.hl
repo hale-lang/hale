@@ -68,7 +68,7 @@ locus HealthyWatcher {
 locus Coordinator {
     on_failure(f: FailingWatcher, err: ClosureViolation) {
         println("Coordinator: quarantining FailingWatcher");
-        quarantine(f);
+        quarantine (f);
     }
 
     bus {

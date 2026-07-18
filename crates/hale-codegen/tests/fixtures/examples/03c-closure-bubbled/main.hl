@@ -25,9 +25,9 @@ locus CheckerL {
 locus AuditL {
     on_failure(c: CheckerL, err: ClosureViolation) {
         println("AuditL saw violation on ", err.locus,
-                " closure=", err.closure,
-                "; bubbling.");
-        bubble(err);
+            " closure=", err.closure,
+            "; bubbling.");
+        bubble (err);
     }
 
     run() {

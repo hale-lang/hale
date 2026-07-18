@@ -1,14 +1,14 @@
-type Player    { id: String; name: String; }
+type Player { id: String; name: String; }
 type MatchInfo { match_id: String; players: [Player]; }
 
-topic JoinQueue  { payload: Player; }
+topic JoinQueue { payload: Player; }
 topic MatchReady { payload: MatchInfo; }
 
 locus Matchmaker {
     params { target_size: Int = 4; }
     bus {
         subscribe JoinQueue as on_join;
-        publish   MatchReady;
+        publish MatchReady;
     }
 
     fn on_join(p: Player) {

@@ -65,7 +65,7 @@ locus Worker {
 locus Coordinator {
     on_failure(w: Worker, err: ClosureViolation) {
         println("  -> restart_in_place (factory reset)");
-        restart_in_place(w);
+        restart_in_place (w);
     }
 
     run() {

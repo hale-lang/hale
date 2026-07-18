@@ -21,10 +21,10 @@ locus GreeterL {
 
 locus CoordinatorL {
     params {
-        B: Int = 100;        // budget: 100 units
-        c: Int = 1;          // attach cost per coordinatee
-        sigma: Int = 1;      // summary cost per coordinatee
-        phi: Float = 1.0;    // formality: fully typed contract
+        B: Int = 100; // budget: 100 units
+        c: Int = 1; // attach cost per coordinatee
+        sigma: Int = 1; // summary cost per coordinatee
+        phi: Float = 1.0; // formality: fully typed contract
     }
 
     contract {

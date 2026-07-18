@@ -175,7 +175,7 @@ locus __StdLangLang {
     fn strip_string_quotes(raw: String) -> String {
         let n = len(raw);
         if n < 2 { return ""; }
-        return raw[1..n-1];
+        return raw[1..n - 1];
     }
 
     // ---- Heuristics ----
@@ -343,23 +343,23 @@ locus __StdLangLang {
     // on Morpheme.
     fn is_builtin(name: String) -> Bool {
         if self.flavor == "go" {
-            if name == "append"  { return true; }
-            if name == "cap"     { return true; }
-            if name == "clear"   { return true; }
-            if name == "close"   { return true; }
+            if name == "append" { return true; }
+            if name == "cap" { return true; }
+            if name == "clear" { return true; }
+            if name == "close" { return true; }
             if name == "complex" { return true; }
-            if name == "copy"    { return true; }
-            if name == "delete"  { return true; }
-            if name == "imag"    { return true; }
-            if name == "len"     { return true; }
-            if name == "make"    { return true; }
-            if name == "max"     { return true; }
-            if name == "min"     { return true; }
-            if name == "new"     { return true; }
-            if name == "panic"   { return true; }
-            if name == "print"   { return true; }
+            if name == "copy" { return true; }
+            if name == "delete" { return true; }
+            if name == "imag" { return true; }
+            if name == "len" { return true; }
+            if name == "make" { return true; }
+            if name == "max" { return true; }
+            if name == "min" { return true; }
+            if name == "new" { return true; }
+            if name == "panic" { return true; }
+            if name == "print" { return true; }
             if name == "println" { return true; }
-            if name == "real"    { return true; }
+            if name == "real" { return true; }
             if name == "recover" { return true; }
         }
         return false;
@@ -529,10 +529,10 @@ locus __StdLangMorpheme {
         let mut out = "";
         let mut i = 0;
         while i < n {
-            let c = s[i..i+1];
+            let c = s[i..i + 1];
             let idx = std::str::index_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ", c);
             if idx >= 0 {
-                out = out + "abcdefghijklmnopqrstuvwxyz"[idx..idx+1];
+                out = out + "abcdefghijklmnopqrstuvwxyz" [idx..idx + 1];
             } else {
                 out = out + c;
             }
@@ -545,7 +545,7 @@ locus __StdLangMorpheme {
         let sl = len(s);
         let xl = len(suffix);
         if sl < xl { return false; }
-        return s[sl-xl..sl] == suffix;
+        return s[sl - xl..sl] == suffix;
     }
 
     // Trim ASCII whitespace from both ends of `s`. Routes through
@@ -577,7 +577,7 @@ locus __StdLangMorpheme {
             if colon < 0 { continue; }
             let key = self.trim(trimmed[0..colon]);
             if key == m {
-                let val = self.trim(trimmed[colon+1..len(trimmed)]);
+                let val = self.trim(trimmed[colon + 1..len(trimmed)]);
                 return val;
             }
         }
@@ -601,20 +601,20 @@ locus __StdLangMorpheme {
         // would gate on `self.flavor == "..."` but isn't
         // needed at v0.
         if m == "Controller" { return "controlling"; }
-        if m == "Processor"  { return "processing"; }
-        if m == "Manager"    { return "managing"; }
-        if m == "Handler"    { return "handling"; }
-        if m == "Listener"   { return "listening"; }
-        if m == "Validator"  { return "checking"; }
-        if m == "Builder"    { return "building"; }
-        if m == "Parser"     { return "parsing"; }
+        if m == "Processor" { return "processing"; }
+        if m == "Manager" { return "managing"; }
+        if m == "Handler" { return "handling"; }
+        if m == "Listener" { return "listening"; }
+        if m == "Validator" { return "checking"; }
+        if m == "Builder" { return "building"; }
+        if m == "Parser" { return "parsing"; }
         if m == "Repository" { return "carrying"; }
-        if m == "Cache"      { return "remembering"; }
-        if m == "Bus"        { return "routing"; }
-        if m == "Queue"      { return "queuing"; }
-        if m == "Pool"       { return "pooling"; }
-        if m == "Pipeline"   { return "flowing"; }
-        if m == "Service"    { return "serving"; }
+        if m == "Cache" { return "remembering"; }
+        if m == "Bus" { return "routing"; }
+        if m == "Queue" { return "queuing"; }
+        if m == "Pool" { return "pooling"; }
+        if m == "Pipeline" { return "flowing"; }
+        if m == "Service" { return "serving"; }
         return "";
     }
 
@@ -634,13 +634,13 @@ locus __StdLangMorpheme {
         let n = len(m);
         if n < 6 { return ""; }
         if self.ends_with(m, "er") {
-            return self.to_lower(m[0..n-2]) + "ing";
+            return self.to_lower(m[0..n - 2]) + "ing";
         }
         if self.ends_with(m, "or") {
-            return self.to_lower(m[0..n-2]) + "ing";
+            return self.to_lower(m[0..n - 2]) + "ing";
         }
         if self.ends_with(m, "ar") {
-            return self.to_lower(m[0..n-2]) + "ing";
+            return self.to_lower(m[0..n - 2]) + "ing";
         }
         return "";
     }
@@ -677,13 +677,13 @@ locus __StdLangMorpheme {
         let mut start = 0;
         let mut i = 1;
         while i < n {
-            let c = name[i..i+1];
+            let c = name[i..i + 1];
             if self.is_upper(c) {
-                let prev = name[i-1..i];
+                let prev = name[i - 1..i];
                 let prev_lower = !self.is_upper(prev);
                 let mut next_lower = false;
                 if i + 1 < n {
-                    let next = name[i+1..i+2];
+                    let next = name[i + 1..i + 2];
                     next_lower = !self.is_upper(next);
                 }
                 if prev_lower || next_lower {

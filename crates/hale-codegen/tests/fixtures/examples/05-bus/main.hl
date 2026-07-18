@@ -22,7 +22,7 @@ type Acknowledgment {
 locus EchoL {
     bus {
         subscribe "demo.greeting" as on_greeting of type Greeting;
-        publish   "demo.ack"               of type Acknowledgment;
+        publish "demo.ack" of type Acknowledgment;
     }
 
     fn on_greeting(g: Greeting) {

@@ -128,8 +128,8 @@ fn __md_to_html(md: String) -> String {
                 }
                 let level_str = to_string(level);
                 html = html + "<h" + level_str + ">"
-                            + __html_escape(content)
-                            + "</h" + level_str + ">\n";
+                    + __html_escape(content)
+                    + "</h" + level_str + ">\n";
             } else if !is_blank {
                 // Plain paragraph content — accumulate.
                 // Multi-line paragraphs join with a single
@@ -157,7 +157,6 @@ fn __md_to_html(md: String) -> String {
     }
     return html;
 }
-
 
 // std::text::Sink — destination interface for flowing text.
 //

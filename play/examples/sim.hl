@@ -5,11 +5,11 @@
 // locus's params and persists across frames, exactly as it would natively.
 @export locus Lobby {
     params {
-        countdown: Int = 40;   // frames until the next player joins
-        queued:    Int = 0;
-        target:    Int = 4;
+        countdown: Int = 40; // frames until the next player joins
+        queued: Int = 0;
+        target: Int = 4;
         player_no: Int = 0;
-        matches:   Int = 0;
+        matches: Int = 0;
     }
     birth() {
         println("lobby open — waiting for players...");

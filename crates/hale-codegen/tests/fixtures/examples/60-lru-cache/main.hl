@@ -60,8 +60,8 @@ fn main() {
     // The three most-recently-inserted keys (8, 9, 10) survive;
     // everything older was evicted.
     expect(b.contains(10), "case 1: newest (10) present");
-    expect(b.contains(9),  "case 1: (9) present");
-    expect(b.contains(8),  "case 1: (8) present");
+    expect(b.contains(9), "case 1: (9) present");
+    expect(b.contains(8), "case 1: (8) present");
     expect_false(b.contains(7), "case 1: (7) evicted");
     expect_false(b.contains(1), "case 1: oldest (1) evicted");
 
@@ -70,20 +70,20 @@ fn main() {
     // insert D. A pure-FIFO policy would evict A (oldest inserted);
     // LRU must evict B instead (the true least-recently-used).
     let c = Cache { };
-    c.put(Entry { id: 1, val: 100 });   // A
-    c.put(Entry { id: 2, val: 200 });   // B
-    c.put(Entry { id: 3, val: 300 });   // C
+    c.put(Entry { id: 1, val: 100 }); // A
+    c.put(Entry { id: 2, val: 200 }); // B
+    c.put(Entry { id: 3, val: 300 }); // C
 
-    let a_hit = c.get(1) or raise;      // touch A → most recently used
+    let a_hit = c.get(1) or raise; // touch A → most recently used
     std::test::assert_eq_int(a_hit.val, 100, "case 2: get(A) round-trip");
 
-    c.put(Entry { id: 4, val: 400 });   // D — forces one eviction
+    c.put(Entry { id: 4, val: 400 }); // D — forces one eviction
 
     std::test::assert_eq_int(c.len(), 3, "case 2: len still cap after evict");
-    expect(c.contains(1),        "case 2: A survived (was get-touched)");
-    expect_false(c.contains(2),  "case 2: B evicted (LRU, not FIFO)");
-    expect(c.contains(3),        "case 2: C survived");
-    expect(c.contains(4),        "case 2: D inserted");
+    expect(c.contains(1), "case 2: A survived (was get-touched)");
+    expect_false(c.contains(2), "case 2: B evicted (LRU, not FIFO)");
+    expect(c.contains(3), "case 2: C survived");
+    expect(c.contains(4), "case 2: D inserted");
 
     // ---- Case 3: contains does NOT touch recency ---------------
     // Fresh cache. Insert A,B,C; `contains(A)` (membership only,
@@ -91,18 +91,18 @@ fn main() {
     // so A — not B or C — is evicted. This is the mirror of case 2
     // and proves contains and get differ.
     let d = Cache { };
-    d.put(Entry { id: 1, val: 100 });   // A
-    d.put(Entry { id: 2, val: 200 });   // B
-    d.put(Entry { id: 3, val: 300 });   // C
+    d.put(Entry { id: 1, val: 100 }); // A
+    d.put(Entry { id: 2, val: 200 }); // B
+    d.put(Entry { id: 3, val: 300 }); // C
 
-    expect(d.contains(1), "case 3: contains(A) sees A");  // must NOT touch
+    expect(d.contains(1), "case 3: contains(A) sees A"); // must NOT touch
 
-    d.put(Entry { id: 4, val: 400 });   // D — forces one eviction
+    d.put(Entry { id: 4, val: 400 }); // D — forces one eviction
 
     expect_false(d.contains(1), "case 3: A evicted (contains didn't touch it)");
-    expect(d.contains(2),       "case 3: B survived");
-    expect(d.contains(3),       "case 3: C survived");
-    expect(d.contains(4),       "case 3: D inserted");
+    expect(d.contains(2), "case 3: B survived");
+    expect(d.contains(3), "case 3: C survived");
+    expect(d.contains(4), "case 3: D inserted");
 
     // ---- Case 4: value round-trip + update-in-place ------------
     let e = Cache { };

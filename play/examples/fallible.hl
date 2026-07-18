@@ -14,7 +14,7 @@ fn main() {
     let good: Int = parse_count("42") or 0;
     println("parse_count 42      = ", good);
 
-    let bad: Int = parse_count("oops") or -1;
+    let bad: Int = parse_count("oops") or - 1;
     println("parse_count oops    = ", bad, "   (failed, defaulted via or -1)");
 
     let port: Int = parse_count("not set") or parse_count("8080") or 0;

@@ -22,7 +22,7 @@ locus Leaf {
     }
 }
 
-locus RichCoord : projection rich {
+locus RichCoord: projection rich {
     contract {
         consume value: Int;
     }
@@ -39,7 +39,7 @@ locus RichCoord : projection rich {
     }
 }
 
-locus ChunkedCoord : projection chunked {
+locus ChunkedCoord: projection chunked {
     contract {
         consume value: Int;
     }
@@ -60,7 +60,7 @@ locus ChunkedCoord : projection chunked {
 // declaration site. fixed_cell(bytes=64) gives each Leaf child a
 // 64-byte cell with bitmap-tracked acquire/release; cap=4 covers
 // 3 leaves plus one slot of headroom.
-locus RecognitionCoord : projection recognition(cap=4, fixed_cell) {
+locus RecognitionCoord: projection recognition (cap = 4, fixed_cell) {
     contract {
         consume value: Int;
     }

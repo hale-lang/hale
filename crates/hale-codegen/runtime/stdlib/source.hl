@@ -50,9 +50,9 @@
 // they only care about the side-effects (rare) or are
 // building a Walk for tests.
 fn __std_source_walk_noop(lang: std::lang::Lang, name: String,
-                          root: Int) -> String {
-    return "";
-}
+    root: Int) -> String {
+        return "";
+    }
 
 locus __StdSourceWalk {
     params {
@@ -74,8 +74,8 @@ locus __StdSourceWalk {
         // callback for each matched file. The callback's
         // returned String is concatenated into the walk's
         // final output verbatim.
-        on_file: fn(std::lang::Lang, String, Int) -> String
-                = __std_source_walk_noop;
+        on_file: fn (std::lang::Lang, String, Int) -> String
+            = __std_source_walk_noop;
     }
 
     // Iterate every file in `dir` whose extension matches

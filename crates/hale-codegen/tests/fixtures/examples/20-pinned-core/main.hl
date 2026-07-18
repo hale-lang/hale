@@ -43,7 +43,7 @@ locus CoreOneWorker {
 main locus CoreWorkersApp {
     params {
         worker_0: CoreZeroWorker = CoreZeroWorker { };
-        worker_1: CoreOneWorker  = CoreOneWorker  { };
+        worker_1: CoreOneWorker = CoreOneWorker { };
     }
     placement {
         worker_0: pinned(core = 0);

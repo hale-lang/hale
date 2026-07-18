@@ -13,9 +13,9 @@ fn main() {
     s.push(78);
     s.push(88);
     println("count    = ", s.len());
-    println("first    = ", s.get(0) or -1);
-    println("third    = ", s.get(2) or -1);
-    let last: Int = s.pop() or -1;
+    println("first    = ", s.get(0) or - 1);
+    println("third    = ", s.get(2) or - 1);
+    let last: Int = s.pop() or - 1;
     println("popped   = ", last, "   -> count now ", s.len());
-    println("get(99)  = ", s.get(99) or -1, "    (out of range, defaulted)");
+    println("get(99)  = ", s.get(99) or - 1, "    (out of range, defaulted)");
 }

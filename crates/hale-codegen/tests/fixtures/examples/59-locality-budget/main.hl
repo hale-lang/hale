@@ -32,11 +32,11 @@ type Entry { k: Int; v: Int; }
 @locality(L1)
 locus Counter {
     params {
-        ticks:  Int = 0;
+        ticks: Int = 0;
         scaled: Int = 0;
     }
     fn bump(n: Int) {
-        self.ticks  = self.ticks + 1;
+        self.ticks = self.ticks + 1;
         self.scaled = self.scaled + n;
     }
 }
@@ -61,9 +61,9 @@ locus Cache {
 
 main locus App {
     params {
-        counter:  Counter  = Counter  { };
+        counter: Counter = Counter { };
         registry: Registry = Registry { };
-        cache:    Cache    = Cache    { };
+        cache: Cache = Cache { };
     }
     placement {
         // Counter on the main pool; Registry + Cache opted
@@ -71,12 +71,12 @@ main locus App {
         // (F.32-3) sees a non-main placement and the budget
         // analysis runs against the right pool's L2 slice.
         registry: cooperative(pool = io);
-        cache:    cooperative(pool = compute);
+        cache: cooperative(pool = compute);
     }
     run() {
         self.counter.bump(1);
         self.counter.bump(2);
-        println("ticks=",  self.counter.ticks);
+        println("ticks=", self.counter.ticks);
         println("scaled=", self.counter.scaled);
     }
 }

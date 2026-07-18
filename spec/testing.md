@@ -183,10 +183,49 @@ tests by suffix (`_test.hl`) regardless of location.
 | `hale bench` *(planned)* | Run all `*_bench.hl` files |
 | `hale bench -compare` *(planned)* | Build and run external equivalents alongside |
 | `hale verify` *(planned)* | Layer-2 discipline checks specifically (no execution) |
-| `hale fmt` *(planned)* | Canonical formatter (Go-style: zero config) |
+| `hale fmt` | Canonical formatter (Go-style: zero config; see below) |
 
 `hale test` runs Layer 1 + Layer 2 today; `hale bench` (planned)
 runs Layer 3.
+
+## `hale fmt` — the canonical formatter
+
+Zero config, Go-style: there are no options that change the output.
+`hale fmt [paths]` formats `.hl` files in place (no path = the
+current directory tree; `vendor/` and dot-directories are skipped);
+`--check` lists files that would change and exits 1 (the CI gate);
+`--diff` previews without writing; `--stdin` filters stdin→stdout
+for editor integration.
+
+What canonical form means (a token-stream formatter — the author's
+line-break structure is PRESERVED, gofmt-style; there is no
+max-line-length enforcement):
+
+- **Indentation** — 4 spaces per bracket depth. A closing bracket
+  returns to its opener's line indent; brackets opened together on
+  one line indent their contents once. Bracket-less continuation
+  lines (a leading `&&`/`.`, a trailing binary operator on the
+  previous line) get one extra level.
+- **Spacing** — canonical pair rules: binary operators spaced,
+  unary `-`/`!` tight to their operand, `.`/`::`/`..` tight,
+  nothing inside `(` `)` `[` `]`, literal braces spaced
+  (`Rec { key: 1 }`, `{ }`), `:` tight-left (except the spaced
+  `locus X : serves P` conformance colon, per this spec's own
+  examples), generic angles tight (`Holder<Int>`), lifecycle
+  parens tight (`run()`).
+- **Blank lines** — collapsed to at most one; none at file start;
+  exactly one trailing newline. Intra-line alignment padding
+  (`let x   = 1;`) collapses to single spaces.
+- **Comments** — preserved verbatim in position: own-line comments
+  indent with the code, trailing comments sit one space after it.
+
+Safety: the formatter re-lexes its own output and refuses to write
+unless the semantic token stream is byte-identical to the input's —
+a formatter bug can mangle whitespace, never what the compiler
+sees. Files that don't lex are reported and left untouched.
+Formatting is idempotent; the corpus test
+(`hale-syntax/tests/fmt_corpus.rs`) holds every fixture example and
+stdlib source to both properties.
 
 ## Test assertion library
 

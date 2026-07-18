@@ -4,8 +4,8 @@
 // fields feed a cross-seed struct literal in another seed.
 
 type OrderIntent {
-    id:  Int;
-    px:  Decimal;
+    id: Int;
+    px: Decimal;
     qty: Decimal;
 }
 

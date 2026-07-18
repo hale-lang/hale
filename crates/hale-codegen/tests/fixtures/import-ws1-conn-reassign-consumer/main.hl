@@ -6,7 +6,7 @@ import "../lib-ws1-conn" as wsx;
 
 locus Gw {
     params {
-        conn:    wsx::Conn = wsx::Conn { url: "wss://first" };
+        conn: wsx::Conn = wsx::Conn { url: "wss://first" };
         reconns: Int = 0;
     }
     fn reconnect() {
@@ -16,13 +16,13 @@ locus Gw {
     }
     run() {
         println("init   url=", self.conn.describe(), " fd=", self.conn.handle(),
-                " ready=", self.conn.rdy(), " read=", self.conn.read_msg());
+            " ready=", self.conn.rdy(), " read=", self.conn.read_msg());
         self.reconnect();
         // After the reassignment: url must be the new value (not
         // null), fd must be the birth()-set handle (not 0), and
         // read_msg() must not crash.
         println("reconn url=", self.conn.describe(), " fd=", self.conn.handle(),
-                " ready=", self.conn.rdy(), " read=", self.conn.read_msg());
+            " ready=", self.conn.rdy(), " read=", self.conn.read_msg());
     }
 }
 

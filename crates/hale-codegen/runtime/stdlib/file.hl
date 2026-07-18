@@ -73,12 +73,12 @@ locus __StdIoFileFile {
 //     mode strings
 fn __std_io_file_open(path: String, mode_str: String)
     -> std::io::file::File fallible(IoError) {
-    let fd = std::io::file::__open(path, mode_str) or raise;
-    return std::io::file::File {
-        fd: fd,
-        path: path,
-    };
-}
+        let fd = std::io::file::__open(path, mode_str) or raise;
+        return std::io::file::File {
+            fd: fd,
+            path: path,
+        };
+    }
 
 // Read one '\n'-terminated line. Returns the line (newline
 // included if present) or "" at EOF / on read error. Pair with
@@ -98,23 +98,23 @@ fn __std_io_file_at_eof(f: std::io::file::File) -> Bool {
 // regardless of current position.
 fn __std_io_file_write_bytes(f: std::io::file::File, b: Bytes)
     -> () fallible(IoError) {
-    std::io::file::__write_bytes(f.fd, b) or raise;
-}
+        std::io::file::__write_bytes(f.fd, b) or raise;
+    }
 
 // Write a String followed by a '\n'. Convenience wrapper over
 // write_bytes for the common log-line case.
 fn __std_io_file_write_line(f: std::io::file::File, line: String)
     -> () fallible(IoError) {
-    let body = std::bytes::concat(
-        std::bytes::from_string(line),
-        std::bytes::from_string("\n"));
-    std::io::file::__write_bytes(f.fd, body) or raise;
-}
+        let body = std::bytes::concat(
+            std::bytes::from_string(line),
+            std::bytes::from_string("\n"));
+        std::io::file::__write_bytes(f.fd, body) or raise;
+    }
 
 // Seek to absolute byte offset. Position negative or beyond
 // end-of-file raises invalid / io. Not valid on pipes /
 // sockets (they have no seekable position).
 fn __std_io_file_seek(f: std::io::file::File, offset: Int)
     -> () fallible(IoError) {
-    std::io::file::__seek(f.fd, offset) or raise;
-}
+        std::io::file::__seek(f.fd, offset) or raise;
+    }

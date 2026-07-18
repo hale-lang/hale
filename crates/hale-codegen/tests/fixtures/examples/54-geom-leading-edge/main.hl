@@ -78,7 +78,7 @@ locus Segment {
 
 locus LeadingEdge {
     params {
-        times:  [Float; 8] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        times: [Float; 8] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         values: [Float; 8] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         head: Int = 0;
         n: Int = 0;
@@ -153,7 +153,7 @@ locus LeadingEdge {
     }
 
     fn clear() {
-        self.times  = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        self.times = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         self.values = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         self.head = 0;
         self.n = 0;
@@ -183,7 +183,7 @@ fn main() {
     le1.push(3.0, 7.0);
     le1.push(4.0, 9.0);
     std::test::assert_eq_int(le1.len(), 5, "case 1: len");
-    near_eq(le1.slope(),     2.0, 0.0001, "case 1: slope");
+    near_eq(le1.slope(), 2.0, 0.0001, "case 1: slope");
     near_eq(le1.intercept(), 1.0, 0.0001, "case 1: intercept");
     near_eq(le1.extrapolate(5.0), 11.0, 0.0001, "case 1: extrapolate(5)");
     near_eq(le1.extrapolate(10.0), 21.0, 0.0001, "case 1: extrapolate(10)");
@@ -204,15 +204,15 @@ fn main() {
     // Now push 8 points on y = 3*t - 16 (slope 3, intercept
     // -16). The window fully refreshes — all old slope-1
     // points fall off — and the slope reads 3 exactly.
-    le2.push(8.0,  8.0);
-    le2.push(9.0,  11.0);
+    le2.push(8.0, 8.0);
+    le2.push(9.0, 11.0);
     le2.push(10.0, 14.0);
     le2.push(11.0, 17.0);
     le2.push(12.0, 20.0);
     le2.push(13.0, 23.0);
     le2.push(14.0, 26.0);
     le2.push(15.0, 29.0);
-    near_eq(le2.slope(),      3.0, 0.0001, "case 2: refreshed slope");
+    near_eq(le2.slope(), 3.0, 0.0001, "case 2: refreshed slope");
     near_eq(le2.intercept(), -16.0, 0.0001, "case 2: refreshed intercept");
 
     // Case 3 — degenerate: 1 point, slope returns 0.

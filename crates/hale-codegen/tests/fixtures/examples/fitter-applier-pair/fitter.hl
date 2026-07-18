@@ -34,7 +34,7 @@ locus FitterL {
 
     bus {
         subscribe "fitter.observation" as on_observation of type Observation;
-        publish   "fitter.kernel"                        of type Kernel;
+        publish "fitter.kernel" of type Kernel;
     }
 
     fn on_observation(obs: Observation) {

@@ -38,8 +38,8 @@ locus Watcher {
         self.count = self.count + 1;
         self.sum = self.sum + s.value;
         println("Watcher#", self.id,
-                ": count=", self.count,
-                " sum=", self.sum);
+            ": count=", self.count,
+            " sum=", self.sum);
     }
 }
 

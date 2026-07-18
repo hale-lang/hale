@@ -35,10 +35,10 @@
 //   fd     — the underlying socket fd, for correlating
 //            multi-connection traffic onto a single subject
 type __StdIoTcpLogEvent {
-    phase:  String = "";
+    phase: String = "";
     detail: String = "";
-    bytes:  Int    = -1;
-    fd:     Int    = -1;
+    bytes: Int = -1;
+    fd: Int = -1;
 }
 
 // #209 — the shared I/O error payload, declared in-source so
@@ -54,9 +54,9 @@ type __StdIoTcpLogEvent {
 //   errno — raw platform errno for callers that want it.
 //   path  — file path / connection target / "" (diagnostic).
 type IoError {
-    kind:  String;
+    kind: String;
     errno: Int;
-    path:  String;
+    path: String;
 }
 
 // m81: Stream locus — owns one connected TCP fd, exposes
@@ -199,7 +199,7 @@ fn __default_on_connection(s: std::io::tcp::Stream) {
 // between. Exists as a free fn (not inline in the run()
 // loop) so each call's scope-exit flush dissolves *its*
 // Stream — fn-level dissolve frame is what m82 ships.
-fn __handle_one_connection(conn_fd: Int, on_conn: fn(std::io::tcp::Stream)) {
+fn __handle_one_connection(conn_fd: Int, on_conn: fn (std::io::tcp::Stream)) {
     let s = std::io::tcp::Stream { conn_fd: conn_fd };
     on_conn(s);
 }
@@ -254,7 +254,7 @@ locus __StdIoTcpListener {
         // (via Stream dissolve) so a Listener with no override
         // still acts like a real server. Users override at
         // instantiation.
-        on_connection: fn(std::io::tcp::Stream) = __default_on_connection;
+        on_connection: fn (std::io::tcp::Stream) = __default_on_connection;
     }
     birth() {
         println("__StdIoTcpListener.birth host=", self.host, " port=", self.port);

@@ -217,7 +217,7 @@ locus __StdJsonBuilder {
         self.buf = self.buf + v;
     }
     fn string_value(s: String) { self.value(self.quote(s)); }
-    fn int_value(n: Int)       { self.value(to_string(n)); }
+    fn int_value(n: Int) { self.value(to_string(n)); }
     fn bool_value(b: Bool) {
         let s: String = if b { "true" } else { "false" };
         self.value(s);
@@ -258,13 +258,13 @@ fn __json_escape_string(s: String) -> String {
     let mut i = 0;
     while i < n {
         let c = std::bytes::at(bs, i) or 0;
-        if c == 92  { out = out + "\\\\"; }
-        else if c == 34  { out = out + "\\\""; }
-        else if c == 8   { out = out + "\\b"; }
-        else if c == 12  { out = out + "\\f"; }
-        else if c == 10  { out = out + "\\n"; }
-        else if c == 13  { out = out + "\\r"; }
-        else if c == 9   { out = out + "\\t"; }
+        if c == 92 { out = out + "\\\\"; }
+        else if c == 34 { out = out + "\\\""; }
+        else if c == 8 { out = out + "\\b"; }
+        else if c == 12 { out = out + "\\f"; }
+        else if c == 10 { out = out + "\\n"; }
+        else if c == 13 { out = out + "\\r"; }
+        else if c == 9 { out = out + "\\t"; }
         else if c < 32 {
             // \u00XX for remaining control bytes. Hex via
             // a tiny nibble table — keeps the helper free of
@@ -296,10 +296,10 @@ fn __json_unescape_string(s: String) -> String {
         let c = std::bytes::at(bs, i) or 0;
         if c == 92 && i + 1 < n {
             let nx = std::bytes::at(bs, i + 1) or 0;
-            if nx == 34       { out = out + "\""; i = i + 2; }
-            else if nx == 92  { out = out + "\\"; i = i + 2; }
-            else if nx == 47  { out = out + "/"; i = i + 2; }
-            else if nx == 98  { out = out + "\x08"; i = i + 2; }
+            if nx == 34 { out = out + "\""; i = i + 2; }
+            else if nx == 92 { out = out + "\\"; i = i + 2; }
+            else if nx == 47 { out = out + "/"; i = i + 2; }
+            else if nx == 98 { out = out + "\x08"; i = i + 2; }
             else if nx == 102 { out = out + "\x0c"; i = i + 2; }
             else if nx == 110 { out = out + "\n"; i = i + 2; }
             else if nx == 114 { out = out + "\r"; i = i + 2; }
@@ -385,12 +385,12 @@ fn __json_byte_to_string(b: Int) -> String {
     // (printable ASCII, common control). For arbitrary bytes
     // the agent should drop to std::bytes::* anyway.
     if b == 32 { return " "; }
-    if b == 9  { return "\t"; }
+    if b == 9 { return "\t"; }
     if b == 10 { return "\n"; }
     if b == 13 { return "\r"; }
     // ASCII printable range — use the raw bytes API.
     let bs = std::bytes::from_string("?");
-    return std::str::from_bytes(bs);  // fallback placeholder
+    return std::str::from_bytes(bs); // fallback placeholder
 }
 
 // 2026-05-16 — Flat-object field lookup. Scans `json` for the
@@ -532,8 +532,8 @@ fn __json_find_field_raw(json: String, name: String) -> String {
 //   }
 type __JsonArrayIter {
     json: String;
-    pos: Int;        // next-byte index in `json`; -1 once exhausted
-    done: Bool;      // true when no more elements; sticky
+    pos: Int; // next-byte index in `json`; -1 once exhausted
+    done: Bool; // true when no more elements; sticky
     element: String; // current element token (empty when done)
 }
 
@@ -652,10 +652,10 @@ fn __json_array_step(json: String, start: Int) -> std::json::ArrayIter {
 //       it = std::json::array_next_span(it, body);
 //   }
 type __JsonArrayIterSpan {
-    pos: Int;          // next scan position in source json
-    cur_start: Int;    // current element's start (-1 when done)
-    cur_end: Int;      // current element's end exclusive (0 when done)
-    done: Bool;        // sticky; once true, helpers no-op
+    pos: Int; // next scan position in source json
+    cur_start: Int; // current element's start (-1 when done)
+    cur_end: Int; // current element's end exclusive (0 when done)
+    done: Bool; // sticky; once true, helpers no-op
 }
 
 fn __json_array_first_span(json: String) -> std::json::ArrayIterSpan {
@@ -721,18 +721,18 @@ fn __json_array_step_span(json: String, start: Int)
             scanning = false;
         } else {
             let ch = std::str::byte_at_unchecked(json, p);
-            if ch == 34 {  // string — skip to its closing quote
+            if ch == 34 { // string — skip to its closing quote
                 let mut sp = std::json::next_quote_or_bs(json, p + 1, total);
                 while sp < total && std::str::byte_at_unchecked(json, sp) == 92 {
                     sp = std::json::next_quote_or_bs(json, sp + 2, total);
                 }
                 if sp >= total { p = total; scanning = false; } else { p = sp + 1; }
-            } else if ch == 123 || ch == 91 {  // { [
+            } else if ch == 123 || ch == 91 { // { [
                 depth = depth + 1;
                 p = p + 1;
-            } else if ch == 125 || ch == 93 {  // } ]
+            } else if ch == 125 || ch == 93 { // } ]
                 if depth == 0 { scanning = false; } else { depth = depth - 1; p = p + 1; }
-            } else {  // comma
+            } else { // comma
                 if depth == 0 { scanning = false; } else { p = p + 1; }
             }
         }
@@ -800,12 +800,12 @@ fn __json_iter_substring(it: std::json::ArrayIterSpan, json: String) -> String {
 // effectively all real schemas; an escaped key (`"a\"b"`) won't match
 // and is treated as an unknown field (skipped).
 type __JsonObjectIterSpan {
-    pos: Int;          // next scan position in source json
-    key_start: Int;    // current key's content start (inside quotes), -1 done
-    key_end: Int;      // current key's content end exclusive
-    val_start: Int;    // current value's start
-    val_end: Int;      // current value's end exclusive (ws-trimmed)
-    done: Bool;        // sticky; once true, helpers no-op
+    pos: Int; // next scan position in source json
+    key_start: Int; // current key's content start (inside quotes), -1 done
+    key_end: Int; // current key's content end exclusive
+    val_start: Int; // current value's start
+    val_end: Int; // current value's end exclusive (ws-trimmed)
+    done: Bool; // sticky; once true, helpers no-op
 }
 
 fn __json_obj_first_span(json: String) -> std::json::ObjectIterSpan {
@@ -845,12 +845,12 @@ fn __json_obj_step_span(json: String, start: Int)
     }
     if p >= total { return done_iter; }
     let c = std::str::byte_at_unchecked(json, p);
-    if c == 125 {  // `}` — end of object
+    if c == 125 { // `}` — end of object
         return std::json::ObjectIterSpan {
             pos: p + 1, key_start: -1, key_end: 0, val_start: -1, val_end: 0, done: true
         };
     }
-    if c != 34 { return done_iter; }  // expected a `"`-quoted key
+    if c != 34 { return done_iter; } // expected a `"`-quoted key
     // Key string: jump to the next quote/backslash; a backslash escapes
     // the next byte, a quote closes the key.
     let key_start = p + 1;
@@ -861,7 +861,7 @@ fn __json_obj_step_span(json: String, start: Int)
     let key_end = kp;
     // Whitespace, `:`, whitespace.
     let mut q = std::json::next_non_ws(json, kp + 1, total);
-    if q >= total || std::str::byte_at_unchecked(json, q) != 58 { return done_iter; }  // `:`
+    if q >= total || std::str::byte_at_unchecked(json, q) != 58 { return done_iter; } // `:`
     q = std::json::next_non_ws(json, q + 1, total);
     // Value: jump structural-to-structural, tracking nesting depth and
     // skipping string contents wholesale.
@@ -875,18 +875,18 @@ fn __json_obj_step_span(json: String, start: Int)
             scanning = false;
         } else {
             let ch = std::str::byte_at_unchecked(json, q);
-            if ch == 34 {  // string value — skip to its closing quote
+            if ch == 34 { // string value — skip to its closing quote
                 let mut sp = std::json::next_quote_or_bs(json, q + 1, total);
                 while sp < total && std::str::byte_at_unchecked(json, sp) == 92 {
                     sp = std::json::next_quote_or_bs(json, sp + 2, total);
                 }
                 if sp >= total { q = total; scanning = false; } else { q = sp + 1; }
-            } else if ch == 123 || ch == 91 {  // { [
+            } else if ch == 123 || ch == 91 { // { [
                 depth = depth + 1;
                 q = q + 1;
-            } else if ch == 125 || ch == 93 {  // } ]
+            } else if ch == 125 || ch == 93 { // } ]
                 if depth == 0 { scanning = false; } else { depth = depth - 1; q = q + 1; }
-            } else {  // comma
+            } else { // comma
                 if depth == 0 { scanning = false; } else { q = q + 1; }
             }
         }
@@ -969,11 +969,11 @@ fn __json_obj_value_string(it: std::json::ObjectIterSpan, json: String) -> Strin
 //       it = std::json::array_next_span(it, json);
 //   }
 type __JsonFieldRange {
-    ok: Bool;         // false if field absent / malformed / iter exhausted
-    start: Int;       // inclusive byte offset within json
-    end_pos: Int;     // exclusive byte offset within json
-                      // string fields: span EXCLUDES the surrounding quotes
-                      // numeric / bool fields: span IS the literal token
+    ok: Bool; // false if field absent / malformed / iter exhausted
+    start: Int; // inclusive byte offset within json
+    end_pos: Int; // exclusive byte offset within json
+    // string fields: span EXCLUDES the surrounding quotes
+    // numeric / bool fields: span IS the literal token
 }
 
 // Range-bearing variant of iter_find_field_raw. Returns ok=false
@@ -1137,7 +1137,7 @@ fn __json_find_field_raw_in(json: String, name: String, start: Int, end_exclusiv
     let total = len(json);
     let bound = if end_exclusive < total { end_exclusive } else { total };
     let name_len = len(name);
-    let needle_len = name_len + 2;     // quotes around the name
+    let needle_len = name_len + 2; // quotes around the name
     // Manual bounded scan for the `"<name>"` needle. We can't use
     // std::str::index_of because it works on the whole json from
     // a starting position — bounded by `end_exclusive` matters

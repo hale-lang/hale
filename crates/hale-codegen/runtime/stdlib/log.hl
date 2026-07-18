@@ -36,8 +36,8 @@
 // a single subject can still show context.
 type __StdLogEvent {
     level: Int;
-    msg:   String;
-    path:  String;
+    msg: String;
+    path: String;
 }
 
 // std::log::Logger — a publishing locus with cascading
@@ -54,9 +54,9 @@ type __StdLogEvent {
 // where `subj` is non-literal.
 locus __StdLogLogger {
     params {
-        name:        String = "root";
+        name: String = "root";
         parent_path: String = "";
-        full_path:   String = "";       // computed in birth()
+        full_path: String = ""; // computed in birth()
     }
     bus {
         publish "log.**" of type __StdLogEvent;

@@ -34,9 +34,9 @@ fn triangular(n: Int) -> Int {
 }
 
 fn main() {
-    println("triangular(10) = ", triangular(10));     // 0+1+...+9 = 45
-    println("factorial(5)   = ", factorial(5));       // 5! = 120
-    println("factorial(7)   = ", factorial(7));       // 7! = 5040
+    println("triangular(10) = ", triangular(10)); // 0+1+...+9 = 45
+    println("factorial(5)   = ", factorial(5)); // 5! = 120
+    println("factorial(7)   = ", factorial(7)); // 7! = 5040
 
     // Loop with break inside a range.
     let mut first_square_above_50 = 0;
@@ -46,5 +46,5 @@ fn main() {
             break;
         }
     }
-    println("first i with i*i > 50: ", first_square_above_50);  // 8 (64 > 50)
+    println("first i with i*i > 50: ", first_square_above_50); // 8 (64 > 50)
 }

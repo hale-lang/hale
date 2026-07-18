@@ -60,10 +60,10 @@ locus Velocity {
             self.primed_vel = true;
         } else {
             self.smooth_v = self.smooth_v * self.alpha
-                          + raw_v * (1.0 - self.alpha);
+                + raw_v * (1.0 - self.alpha);
             let raw_a = (raw_v - self.last_velocity) / dt;
             self.smooth_a = self.smooth_a * self.alpha
-                          + raw_a * (1.0 - self.alpha);
+                + raw_a * (1.0 - self.alpha);
         }
         self.last_velocity = raw_v;
         self.last_t = t;
@@ -123,7 +123,7 @@ fn main() {
         tf = tf + 0.1;
         j = j + 1;
     }
-    near_eq(v1.velocity(),     2.0, 0.001, "case 1: constant velocity = 2");
+    near_eq(v1.velocity(), 2.0, 0.001, "case 1: constant velocity = 2");
     near_eq(v1.acceleration(), 0.0, 0.001, "case 1: constant accel = 0");
 
     // Case 2 — constant acceleration. y = 0.5 * t^2 (velocity
@@ -141,8 +141,8 @@ fn main() {
     // Final t ~ 4.9, instantaneous velocity ~ 4.9, EMA-smoothed
     // lags toward the average — accept anywhere in (2.0, 4.9)
     // and accel reasonably near 1.0.
-    std::test::assert(v2.velocity() > 2.0,  "case 2: velocity rising");
-    std::test::assert(v2.velocity() < 4.9,  "case 2: velocity lags raw");
+    std::test::assert(v2.velocity() > 2.0, "case 2: velocity rising");
+    std::test::assert(v2.velocity() < 4.9, "case 2: velocity lags raw");
     near_eq(v2.acceleration(), 1.0, 0.3, "case 2: accel ~1");
 
     // Case 3 — count tracks pushes.
@@ -152,7 +152,7 @@ fn main() {
     // post-clear push starts fresh.
     v1.clear();
     std::test::assert_eq_int(v1.count(), 0, "case 4: cleared count");
-    near_eq(v1.velocity(),     0.0, 0.0001, "case 4: cleared velocity");
+    near_eq(v1.velocity(), 0.0, 0.0001, "case 4: cleared velocity");
     near_eq(v1.acceleration(), 0.0, 0.0001, "case 4: cleared accel");
 
     // Case 5 — non-monotonic time is ignored (dt <= 0).

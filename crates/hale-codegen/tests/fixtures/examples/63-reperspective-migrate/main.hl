@@ -42,13 +42,13 @@ locus Service {
     run() {
         self.counter.bump();
         self.counter.bump();
-        println(self.counter.get());              // V1 counted 2
+        println(self.counter.get()); // V1 counted 2
 
-        reperspective self.counter as CounterV2;   // redeploy, live
-        println(self.counter.get());              // 2 — state carried
+        reperspective self.counter as CounterV2; // redeploy, live
+        println(self.counter.get()); // 2 — state carried
 
-        self.counter.bump();                       // V2 adds 10
-        println(self.counter.get());              // 12
+        self.counter.bump(); // V2 adds 10
+        println(self.counter.get()); // 12
     }
 }
 

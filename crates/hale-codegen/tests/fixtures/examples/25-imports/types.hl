@@ -5,6 +5,6 @@
 
 type Trade {
     symbol: String;
-    price:  Decimal;
-    qty:    Decimal;
+    price: Decimal;
+    qty: Decimal;
 }

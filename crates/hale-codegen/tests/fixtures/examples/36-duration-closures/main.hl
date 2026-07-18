@@ -35,7 +35,6 @@
 //   - Expected: 3 fires (one less than the cell count
 //     because the first cell's elapsed is too small).
 
-
 type Tick {
     value: Int;
 }

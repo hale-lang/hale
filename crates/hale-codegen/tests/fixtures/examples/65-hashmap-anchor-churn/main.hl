@@ -40,7 +40,7 @@ main locus HashmapAnchorChurn {
     // scratch arena resetting each call, so only the map's own arena —
     // the anchor-retirement reuse path under test — persists.
     fn step(src: String) {
-        let desk   = col(src, 1);
+        let desk = col(src, 1);
         let symbol = col(src, 2);
         let k = desk + "|" + symbol;
         let cur = self.basis.get(k) or ChurnSlot { };
@@ -48,7 +48,7 @@ main locus HashmapAnchorChurn {
     }
 
     run() {
-        let line  = "TQ3ZXO\tsignals\tKKN:S:btc-usd\tbuy";
+        let line = "TQ3ZXO\tsignals\tKKN:S:btc-usd\tbuy";
         let line2 = "TQ3ZXO\tbeta\tKKN:S:btc-usd\tbuy";
         let mut i = 0;
         while i < self.iters {
@@ -60,7 +60,7 @@ main locus HashmapAnchorChurn {
         // sig + bet must equal iters (no lost updates); each key advanced
         // once per churn it owned.
         println("churn done: signals=", sig.qty, " beta=", bet.qty,
-                " total=", sig.qty + bet.qty);
+            " total=", sig.qty + bet.qty);
     }
 }
 

@@ -70,7 +70,7 @@ type __StdHttpError {
 // ---- URL parsing -----------------------------------------------------
 
 fn __http_default_port(scheme: String) -> Int {
-    if scheme == "http"  { return 80; }
+    if scheme == "http" { return 80; }
     if scheme == "https" { return 443; }
     return 0;
 }
@@ -158,12 +158,12 @@ fn __http_close_handle(handle: Int, is_tls: Bool) {
 // writes). -1 on failure (the pooled path retries).
 fn __http_dial_nd(host: String, port: Int, is_tls: Bool) -> Int {
     if is_tls {
-        let h = std::io::tls::connect(host, port) or -1;
+        let h = std::io::tls::connect(host, port) or - 1;
         if h < 0 { return -1; }
         std::io::tls::set_nodelay(h, true) or discard;
         return h;
     }
-    let fd = std::io::tcp::connect(host, port) or -1;
+    let fd = std::io::tcp::connect(host, port) or - 1;
     if fd < 0 { return -1; }
     std::io::tcp::set_nodelay(fd, true) or discard;
     return fd;
@@ -194,8 +194,8 @@ locus __StdHttpConn {
 // trailing send. ASCII throughout, so String concat is safe.
 fn __http_build_request_headers(req: std::http::ClientRequest, user_agent: String, keep_alive: Bool) -> String {
     let host_header = "Host: " + req.url.host + ":" + to_string(req.url.port) + "\r\n";
-    let ua_header   = "User-Agent: " + user_agent + "\r\n";
-    let cl_header   = "Content-Length: " + to_string(len(req.body)) + "\r\n";
+    let ua_header = "User-Agent: " + user_agent + "\r\n";
+    let cl_header = "Content-Length: " + to_string(len(req.body)) + "\r\n";
     let conn_header = if keep_alive { "Connection: keep-alive\r\n" } else { "Connection: close\r\n" };
     let request_line = req.method + " " + req.url.path + " HTTP/1.1\r\n";
     let mut user_headers = "";
@@ -223,7 +223,7 @@ fn __http_parse_status(line: String) -> Int {
     let sp2 = std::str::index_of(after, " ");
     let mut code_str = after;
     if sp2 >= 0 { code_str = after[0..sp2]; }
-    return std::str::parse_int(code_str) or -1;
+    return std::str::parse_int(code_str) or - 1;
 }
 
 fn __http_empty_client_response() -> std::http::ClientResponse {
@@ -298,11 +298,11 @@ fn __http_find_hdr_end(raw: Bytes) -> Int {
     let n = len(raw);
     let mut i = 0;
     while i + 3 < n {
-        let a = std::bytes::at(raw, i) or -1;
+        let a = std::bytes::at(raw, i) or - 1;
         if a == 13 {
-            let b = std::bytes::at(raw, i + 1) or -1;
-            let c = std::bytes::at(raw, i + 2) or -1;
-            let d = std::bytes::at(raw, i + 3) or -1;
+            let b = std::bytes::at(raw, i + 1) or - 1;
+            let c = std::bytes::at(raw, i + 2) or - 1;
+            let d = std::bytes::at(raw, i + 3) or - 1;
             if b == 10 && c == 13 && d == 10 { return i; }
         }
         i = i + 1;
@@ -314,8 +314,8 @@ fn __http_find_hdr_end(raw: Bytes) -> Int {
 fn __http_crlf_at(raw: Bytes, from: Int, end: Int) -> Int {
     let mut i = from;
     while i + 1 < end {
-        let a = std::bytes::at(raw, i) or -1;
-        let b = std::bytes::at(raw, i + 1) or -1;
+        let a = std::bytes::at(raw, i) or - 1;
+        let b = std::bytes::at(raw, i + 1) or - 1;
         if a == 13 && b == 10 { return i; }
         i = i + 1;
     }
@@ -329,7 +329,7 @@ fn __http_hex_size(raw: Bytes, lo: Int, hi: Int) -> Int {
     let mut i = lo;
     let mut any = false;
     while i < hi {
-        let ch = std::bytes::at(raw, i) or -1;
+        let ch = std::bytes::at(raw, i) or - 1;
         if ch == 59 || ch == 32 { break; }
         let mut dgt = -1;
         if ch >= 48 && ch <= 57 { dgt = ch - 48; }
@@ -529,7 +529,7 @@ fn __http_round_trip_with_retry(
     let max_attempts = max_retries + 1;
     while attempt < max_attempts {
         let resp = __http_round_trip_oneshot(req, user_agent, max_body)
-            or __http_retry_sentinel(err);
+        or __http_retry_sentinel(err);
         if resp.status > 0 && resp.status < 500 {
             return resp;
         }

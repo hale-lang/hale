@@ -37,9 +37,9 @@ fn handle_request(s: std::io::tcp::Stream) {
     }
 
     let body = "<!doctype html><html><head><title>hale</title></head>"
-             + "<body><h1>Hello from Hale</h1>"
-             + "<p>You requested: " + req.path + "</p>"
-             + "</body></html>\n";
+        + "<body><h1>Hello from Hale</h1>"
+        + "<p>You requested: " + req.path + "</p>"
+        + "</body></html>\n";
     let resp = std::http::Response {
         status: 200,
         content_type: "text/html; charset=utf-8",

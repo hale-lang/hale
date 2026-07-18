@@ -110,7 +110,6 @@ locus __StdYamlBuilder {
     }
 }
 
-
 // std::yaml::Reader — schema-aware string-walk over yaml text.
 //
 // Each Reader instance owns a text region that's already
@@ -169,9 +168,9 @@ locus __StdYamlReader {
         // should only set `text`. The sentinel defaults make
         // a freshly-built Reader behave as the pre-cache version
         // until list_count primes the cursor.
-        cursor_key:      String = "";
-        cursor_pos:      Int    = -1;
-        cursor_next_idx: Int    = 0;
+        cursor_key: String = "";
+        cursor_pos: Int = -1;
+        cursor_next_idx: Int = 0;
     }
 
     // ---- Internal helpers ----
@@ -186,7 +185,7 @@ locus __StdYamlReader {
         let n = len(s);
         let mut i = 0;
         while i < n {
-            if !self.__is_space(s[i..i+1]) {
+            if !self.__is_space(s[i..i + 1]) {
                 return s[i..n];
             }
             i = i + 1;
@@ -198,7 +197,7 @@ locus __StdYamlReader {
         let n = len(s);
         let mut e = n;
         while e > 0 {
-            if !self.__is_space(s[e-1..e]) {
+            if !self.__is_space(s[e - 1..e]) {
                 return s[0..e];
             }
             e = e - 1;
@@ -215,8 +214,8 @@ locus __StdYamlReader {
         let n = len(s);
         if n < 2 { return s; }
         if s[0..1] != "\"" { return s; }
-        if s[n-1..n] != "\"" { return s; }
-        return s[1..n-1];
+        if s[n - 1..n] != "\"" { return s; }
+        return s[1..n - 1];
     }
 
     // First char of `line` is not a space — i.e., the line

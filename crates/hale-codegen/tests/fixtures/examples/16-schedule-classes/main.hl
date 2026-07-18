@@ -55,8 +55,8 @@ locus PinnedWorker {
 
 main locus ScheduleClassesApp {
     params {
-        pinned_w: PinnedWorker     = PinnedWorker { };
-        coop_w:   CooperativeWorker = CooperativeWorker { };
+        pinned_w: PinnedWorker = PinnedWorker { };
+        coop_w: CooperativeWorker = CooperativeWorker { };
     }
     placement {
         pinned_w: pinned;

@@ -37,9 +37,9 @@ locus ApplierL {
 
     bus {
         subscribe "fitter.observation" as on_observation of type Observation;
-        subscribe "fitter.kernel"      as on_kernel      of type Kernel;
-        subscribe "fitter.receipt"     as on_receipt     of type Receipt;
-        publish   "fitter.action"                        of type Action;
+        subscribe "fitter.kernel" as on_kernel of type Kernel;
+        subscribe "fitter.receipt" as on_receipt of type Receipt;
+        publish "fitter.action" of type Action;
     }
 
     fn on_observation(obs: Observation) {

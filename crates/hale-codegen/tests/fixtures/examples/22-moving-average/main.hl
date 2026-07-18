@@ -46,8 +46,8 @@ locus Window {
     }
 
     bus {
-        subscribe "sample"   as on_sample of type Sample;
-        publish   "smoothed"             of type Smoothed;
+        subscribe "sample" as on_sample of type Sample;
+        publish "smoothed" of type Smoothed;
     }
 
     fn on_sample(s: Sample) {
@@ -97,6 +97,6 @@ locus Source {
 
 fn main() {
     Window { };
-    Sink   { };
+    Sink { };
     Source { };
 }

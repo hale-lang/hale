@@ -8,10 +8,10 @@
 
 locus Conn {
     params {
-        url:   String = "";
-        fd:    Int = 0;
+        url: String = "";
+        fd: Int = 0;
         ready: Int = 0;
-        seq:   Int = 0;
+        seq: Int = 0;
     }
     birth() {
         self.fd = 7;

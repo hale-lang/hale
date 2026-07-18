@@ -581,7 +581,7 @@ locus __StdHttpServer {
 // exceeding it is a programming error, surfaced loudly by the
 // matcher's `or raise`).
 type __StdHttpRouteParams {
-    qs:        String = "";
+    qs: String = "";
     path_keys: bounded[String; 8];
     path_vals: bounded[String; 8];
 }
@@ -593,7 +593,7 @@ type __StdHttpRouteParams {
 // query-stripped path and `ctx.params.qs` carries the query
 // half.
 type __StdHttpContext {
-    req:    std::http::Request;
+    req: std::http::Request;
     params: std::http::RouteParams;
 }
 
@@ -615,7 +615,7 @@ interface __StdHttpMiddleware {
 // as-written; `handler` is the F.20 fat-pointer interface value
 // coerced from the concrete locus at the literal-init site.
 type __StdHttpRouteEntry {
-    method:  String;
+    method: String;
     pattern: String;
     handler: std::http::RouteHandler;
 }
@@ -816,9 +816,9 @@ fn __http_match_pattern_into(pattern: String, path: String, p: std::http::RouteP
 locus __StdHttpNotFound404 {
     fn handle(ctx: std::http::Context) -> std::http::Response {
         return std::http::Response {
-            status:       404,
+            status: 404,
             content_type: "text/plain",
-            body:         "not found"
+            body: "not found"
         };
     }
 }
@@ -827,9 +827,9 @@ locus __StdHttpNotFound404 {
 // method) because it is naturally return-bearing. First match
 // wins — register more-specific patterns first.
 fn __http_run_chain(
-    entries:   __StdHttpEntryList,
-    mws:       __StdHttpMwList,
-    ctx:       std::http::Context,
+    entries: __StdHttpEntryList,
+    mws: __StdHttpMwList,
+    ctx: std::http::Context,
     not_found: std::http::RouteHandler
 ) -> std::http::Response {
     let mut cur = ctx;
@@ -870,8 +870,8 @@ fn __http_run_chain(
 locus __StdHttpRouter {
     params {
         not_found: std::http::RouteHandler = __StdHttpNotFound404 { };
-        entries:   __StdHttpEntryList      = __StdHttpEntryList { };
-        mws:       __StdHttpMwList         = __StdHttpMwList { };
+        entries: __StdHttpEntryList = __StdHttpEntryList { };
+        mws: __StdHttpMwList = __StdHttpMwList { };
     }
 
     // Register a route. Method matching is case-insensitive at
@@ -879,7 +879,7 @@ locus __StdHttpRouter {
     // are literal or `:name` captures.
     fn add(method: String, pattern: String, h: std::http::RouteHandler) {
         self.entries.push(__StdHttpRouteEntry {
-            method:  std::str::upper(method),
+            method: std::str::upper(method),
             pattern: pattern,
             handler: h
         });
@@ -894,7 +894,7 @@ locus __StdHttpRouter {
     // off the raw target), runs the chain.
     fn dispatch(req: std::http::Request) -> std::http::Response {
         let ctx = std::http::Context {
-            req:    req,
+            req: req,
             params: std::http::RouteParams {
                 qs: __http_query_only(req.path)
             }

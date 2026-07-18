@@ -50,8 +50,8 @@ locus Counter {
 locus Auditor {
     on_failure(c: Counter, err: ClosureViolation) {
         println("Auditor: tick violation in ", err.closure,
-                " (diff=", err.diff, ") — quarantining");
-        quarantine(c);
+            " (diff=", err.diff, ") — quarantining");
+        quarantine (c);
     }
 
     bus {
@@ -64,17 +64,17 @@ locus Auditor {
         Counter { };
 
         println("--- under cap ---");
-        "increment" <- Sample { value: 1 };  // n=1, tick passes
-        "increment" <- Sample { value: 2 };  // n=3, tick passes
-        "increment" <- Sample { value: 1 };  // n=4, tick passes
+        "increment" <- Sample { value: 1 }; // n=1, tick passes
+        "increment" <- Sample { value: 2 }; // n=3, tick passes
+        "increment" <- Sample { value: 1 }; // n=4, tick passes
 
         println("--- pushing past cap ---");
-        "increment" <- Sample { value: 3 };  // n=7, tick fails
-                                              // Auditor quarantines
+        "increment" <- Sample { value: 3 }; // n=7, tick fails
+        // Auditor quarantines
 
         println("--- after quarantine: silenced ---");
-        "increment" <- Sample { value: 1 };  // skipped
-        "increment" <- Sample { value: 1 };  // skipped
+        "increment" <- Sample { value: 1 }; // skipped
+        "increment" <- Sample { value: 1 }; // skipped
 
         println("done");
     }

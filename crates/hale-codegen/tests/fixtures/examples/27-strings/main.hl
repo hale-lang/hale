@@ -33,7 +33,7 @@ fn first_word(s: String) -> String {
     let mut i = 0;
     let n = len(s);
     while i < n {
-        let c = s[i..i+1];
+        let c = s[i..i + 1];
         if c == " " {
             return s[0..i];
         }

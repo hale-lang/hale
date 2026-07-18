@@ -32,11 +32,11 @@ locus Gateway {
         router: perspective(Router) = RouterV1 { };
     }
     run() {
-        println(self.router.route(1));       // V1 → 101
+        println(self.router.route(1)); // V1 → 101
         reperspective self.router as RouterV2;
-        println(self.router.route(1));       // V2 → 201  (same call site)
+        println(self.router.route(1)); // V2 → 201  (same call site)
         reperspective self.router as RouterV1;
-        println(self.router.route(1));       // V1 → 101  (swapped back)
+        println(self.router.route(1)); // V1 → 101  (swapped back)
     }
 }
 

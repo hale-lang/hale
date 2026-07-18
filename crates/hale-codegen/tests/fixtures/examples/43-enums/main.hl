@@ -28,8 +28,8 @@ fn report(l: Light) {
 fn next(l: Light) -> Light {
     let mut out = Light::Red;
     match l {
-        Light::Red    -> { out = Light::Green; },
-        Light::Green  -> { out = Light::Yellow; },
+        Light::Red -> { out = Light::Green; },
+        Light::Green -> { out = Light::Yellow; },
         Light::Yellow -> { out = Light::Red; },
     }
     return out;

@@ -37,12 +37,12 @@ type __StdMetricsLabels {
 // One stored series cell. kind: 0=counter 1=gauge 2=histogram;
 // histograms carry their index into the HistogramList.
 type __StdMetricsEntry {
-    key:      String = "";
-    name:     String = "";
-    labels:   String = "";
-    kind:     Int    = 0;
-    value:    Float  = 0.0;
-    hist_idx: Int    = -1;
+    key: String = "";
+    name: String = "";
+    labels: String = "";
+    kind: Int = 0;
+    value: Float = 0.0;
+    hist_idx: Int = -1;
 }
 
 // Bucket bounds + cumulative counts + sum + count for one
@@ -50,12 +50,12 @@ type __StdMetricsEntry {
 // trailing +Inf bucket). Capacity 32 bounds the bucket count;
 // registration clamps beyond it.
 type __StdMetricsHistogramData {
-    name:   String = "";
+    name: String = "";
     labels: String = "";
     bounds: bounded[Float; 32];
     counts: bounded[Int; 33];
-    sum:    Float  = 0.0;
-    count:  Int    = 0;
+    sum: Float = 0.0;
+    count: Int = 0;
 }
 
 @form(hashmap, sync = serialized)
@@ -226,7 +226,7 @@ fn __metrics_histogram(reg: std::metrics::Registry, name: String, bounds: String
 locus __StdMetricsCounter {
     params {
         store: __StdMetricsMap;
-        key:   String = "";
+        key: String = "";
     }
     fn inc() {
         self.add(1.0);
@@ -245,7 +245,7 @@ locus __StdMetricsCounter {
 locus __StdMetricsGauge {
     params {
         store: __StdMetricsMap;
-        key:   String = "";
+        key: String = "";
     }
     fn set(v: Float) {
         if self.store.has(self.key) {
@@ -278,12 +278,12 @@ locus __StdMetricsGauge {
 
 locus __StdMetricsHistogram {
     params {
-        store:        __StdMetricsMap;
-        histograms:   __StdMetricsHistogramList;
-        key:          String = "";
-        hist_idx:     Int    = -1;
-        bucket_count: Int    = 0;
-        out_of_order: Int    = 0;
+        store: __StdMetricsMap;
+        histograms: __StdMetricsHistogramList;
+        key: String = "";
+        hist_idx: Int = -1;
+        bucket_count: Int = 0;
+        out_of_order: Int = 0;
     }
 
     // Structural invariant: cumulative bucket counts stay
@@ -408,7 +408,7 @@ fn __metrics_render_histogram(ns: String, h: __StdMetricsHistogramData) -> Strin
         b.append(std::bytes::from_string(full + "_bucket" + lab_inf + " " + to_string(inf_cnt) + "\n"));
     }
     let lab_total = __metrics_render_labels(h.labels);
-    b.append(std::bytes::from_string(full + "_sum"   + lab_total + " " + to_string(h.sum)   + "\n"));
+    b.append(std::bytes::from_string(full + "_sum" + lab_total + " " + to_string(h.sum) + "\n"));
     b.append(std::bytes::from_string(full + "_count" + lab_total + " " + to_string(h.count) + "\n"));
     return std::str::from_bytes(b.finish());
 }
@@ -417,7 +417,7 @@ fn __metrics_render_histogram(ns: String, h: __StdMetricsHistogramData) -> Strin
 
 locus __StdMetricsRegistry {
     params {
-        namespace:  String = "";
+        namespace: String = "";
         // Storage owned by the Registry (param-default children) —
         // pond's two-step construction (let-bound storage passed
         // in) was a workaround for a since-closed default-init gap,
@@ -425,7 +425,7 @@ locus __StdMetricsRegistry {
         // scope exit if the Registry outlives it. Owned defaults
         // make `Registry { namespace: "x" }` safe to return from a
         // builder fn; explicit overrides still accepted.
-        store:      __StdMetricsMap          = __StdMetricsMap { };
+        store: __StdMetricsMap = __StdMetricsMap { };
         histograms: __StdMetricsHistogramList = __StdMetricsHistogramList { };
     }
 
@@ -460,9 +460,9 @@ locus __StdMetricsEndpoint {
     }
     fn handle(req: std::http::Request) -> std::http::Response {
         return std::http::Response {
-            status:       200,
+            status: 200,
             content_type: "text/plain; version=0.0.4",
-            body:         self.registry.render()
+            body: self.registry.render()
         };
     }
 }

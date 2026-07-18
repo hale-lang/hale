@@ -27,8 +27,8 @@ locus Accumulator {
     }
 
     birth() {
-        self.total += self.step;        // total = 10
-        self.step *= 3;                 // step  = 30
+        self.total += self.step; // total = 10
+        self.step *= 3; // step  = 30
     }
 
     run() {

@@ -15,8 +15,8 @@ locus Router {
         // 16-aligned the i128 store (movaps) traps; if the copy is
         // wrong the read-back prints garbage.
         let req = gx::GreaseOrderRequest {
-            id:  oi.id,
-            px:  oi.px,
+            id: oi.id,
+            px: oi.px,
             qty: oi.qty,
             tag: "grease",
         };
@@ -34,9 +34,9 @@ locus Router {
 locus Feed {
     bus { publish d::Intents; }
     run() {
-        d::Intents <- d::OrderIntent { id: 1, px: 12345.67d,  qty: 0.5d };
-        d::Intents <- d::OrderIntent { id: 2, px: 99999.99d,  qty: 250.125d };
-        d::Intents <- d::OrderIntent { id: 3, px: 0.000001d,  qty: 1000000.0d };
+        d::Intents <- d::OrderIntent { id: 1, px: 12345.67d, qty: 0.5d };
+        d::Intents <- d::OrderIntent { id: 2, px: 99999.99d, qty: 250.125d };
+        d::Intents <- d::OrderIntent { id: 3, px: 0.000001d, qty: 1000000.0d };
     }
 }
 

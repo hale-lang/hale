@@ -43,16 +43,16 @@ fn handle(e: Event) {
     match e {
         // Literal sub-pattern: matches Tick(0) specifically
         // before the catch-all Tick(n).
-        Event::Tick(0)            -> println("tick zero"),
-        Event::Tick(n)            -> println("tick #", n),
+        Event::Tick(0) -> println("tick zero"),
+        Event::Tick(n) -> println("tick #", n),
         Event::Trade(price, size) -> println("trade ", size, " @ ", price),
-        Event::Halt               -> println("halt"),
+        Event::Halt -> println("halt"),
     }
 }
 
 fn report(r: Result) {
     match r {
-        Result::Ok(n)    -> println("ok: ", n),
+        Result::Ok(n) -> println("ok: ", n),
         Result::Err(msg) -> println("err: ", msg),
     }
 }

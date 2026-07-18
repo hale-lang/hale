@@ -49,9 +49,9 @@ locus Gateway {
     }
     run() {
         // Call through the perspective indirection.
-        println(self.router.route(41));   // 141
-        println(self.handle(7));          // 107
-        println(self.router.health());    // 1
+        println(self.router.route(41)); // 141
+        println(self.handle(7)); // 107
+        println(self.router.health()); // 1
     }
 }
 

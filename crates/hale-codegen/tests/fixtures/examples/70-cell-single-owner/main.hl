@@ -24,9 +24,9 @@
 // retire/reuse path.
 
 type Rec {
-    key:  String = "";
-    val:  String = "";
-    data: Bytes  = std::bytes::from_string("");
+    key: String = "";
+    val: String = "";
+    data: Bytes = std::bytes::from_string("");
 }
 
 @form(hashmap)

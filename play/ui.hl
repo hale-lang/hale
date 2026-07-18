@@ -8,14 +8,14 @@
 // render and run. No `main`: the host instantiates it once (running birth)
 // and then drives its methods, exactly like a native long-lived locus.
 
-@ffi("js") fn js_select(idx: Int);   // render example idx + highlight its tab
-@ffi("js") fn js_run(idx: Int);      // load + run example idx's wasm
-@ffi("js") fn js_stop();             // stop a running (looping) example
+@ffi("js") fn js_select(idx: Int); // render example idx + highlight its tab
+@ffi("js") fn js_run(idx: Int); // load + run example idx's wasm
+@ffi("js") fn js_stop(); // stop a running (looping) example
 
 @export locus Tour {
     params {
-        selected: Int  = 0;
-        running:  Bool = false;
+        selected: Int = 0;
+        running: Bool = false;
     }
 
     birth() {

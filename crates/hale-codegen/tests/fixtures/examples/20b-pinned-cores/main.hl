@@ -37,11 +37,11 @@ locus SetWorker {
 main locus CpusetApp {
     params {
         ranged: RangeWorker = RangeWorker { };
-        setted: SetWorker   = SetWorker { };
+        setted: SetWorker = SetWorker { };
     }
     placement {
         ranged: pinned(cores = 0..2);
-        setted: pinned(cores = {0, 1});
+        setted: pinned(cores = { 0, 1 });
     }
     run() {
         println("main: spawned two pinned workers with cpuset affinity");
