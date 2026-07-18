@@ -694,6 +694,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 self.current_fn_skip_exit_drain = elide_scratch;
 
                 let mut scope = Scope::default();
+                self.di_pending_params.clear();
                 for (i, p) in fd.params.iter().enumerate() {
                     let lt = self.type_expr_to_codegen_ty(&p.ty)?;
                     let alloca = self.alloca_for(&lt, &p.name.name)?;
@@ -703,6 +704,15 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                     self.builder
                         .build_store(alloca, v)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    if self.di.is_some() {
+                        // Stage-3 DWARF: declared as formal params by
+                        // the body's first di_enter_stmt.
+                        self.di_pending_params.push((
+                            alloca,
+                            p.name.name.clone(),
+                            lt.clone(),
+                        ));
+                    }
                     scope.locals.insert(p.name.name.clone(), (alloca, lt));
                 }
 
@@ -965,6 +975,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 self.current_fn_skip_exit_drain = elide_scratch;
 
                 let mut scope = Scope::default();
+                self.di_pending_params.clear();
                 for (i, p) in md.params.iter().enumerate() {
                     let lt = self.type_expr_to_codegen_ty(&p.ty)?;
                     let alloca = self.alloca_for(&lt, &p.name.name)?;
@@ -974,6 +985,13 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                     self.builder
                         .build_store(alloca, v)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    if self.di.is_some() {
+                        self.di_pending_params.push((
+                            alloca,
+                            p.name.name.clone(),
+                            lt.clone(),
+                        ));
+                    }
                     scope.locals.insert(p.name.name.clone(), (alloca, lt));
                 }
 

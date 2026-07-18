@@ -98,7 +98,9 @@ A few switches worth knowing from day one:
   `hale check app.hl --json` emits one object per diagnostic
   (file, line, col, severity, message) on stdout — a save-hook is
   all a minimal integration needs.
-- **Real debugging:** binaries carry DWARF line tables by default —
+- **Real debugging:** binaries carry full DWARF by default —
   `gdb ./app`, `break app.hl:42`, backtraces with real file:line,
+  `info locals` / `print x` with typed values (Strings print their
+  text),
   and ASAN reports that point at the exact source line. Zero
   runtime cost; opt out with `LOTUS_NO_DEBUGINFO=1`.

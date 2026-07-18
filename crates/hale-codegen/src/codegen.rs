@@ -1237,6 +1237,8 @@ pub fn build_executable_with_options(
         di: None,
         di_loc_stack: Vec::new(),
         di_current_loc: None,
+        di_current_pos: None,
+        di_pending_params: Vec::new(),
     };
 
     // 2026-07-01 debug story stage 2: DWARF line tables for the Hale
@@ -1274,7 +1276,11 @@ pub fn build_executable_with_options(
                     "",
                     0,
                     "",
-                    inkwell::debug_info::DWARFEmissionKind::LineTablesOnly,
+                    // Stage 3 (2026-07-18): Full — variable info
+                    // rides along (dbg.declare on param + let
+                    // allocas), so gdb can inspect frames, not just
+                    // stop in them.
+                    inkwell::debug_info::DWARFEmissionKind::Full,
                     0,
                     false,
                     false,
@@ -1301,7 +1307,12 @@ pub fn build_executable_with_options(
                     });
                 }
                 files.sort_by_key(|e| e.base);
-                cx.di = Some(DiState { builder: dib, cu, files });
+                cx.di = Some(DiState {
+                    builder: dib,
+                    cu,
+                    files,
+                    type_cache: std::collections::BTreeMap::new(),
+                });
             }
         }
     }
@@ -3291,7 +3302,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// push/pop + global load + lotus_bus_queue_drain call per
     /// invocation of a two-instruction function.
     pub(crate) current_fn_skip_exit_drain: bool,
-    di: Option<DiState<'ctx>>,
+    pub(crate) di: Option<DiState<'ctx>>,
     /// Per-statement debug-location stack: (function the location
     /// was set in, the location live before this statement). The
     /// lower_stmt wrapper pushes on entry / pops on exit; the pop
@@ -3304,6 +3315,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     di_loc_stack: Vec<(
         inkwell::values::FunctionValue<'ctx>,
         Option<inkwell::debug_info::DILocation<'ctx>>,
+        Option<(usize, u32)>,
     )>,
     /// Shadow of the builder's current debug location. Inkwell's
     /// `get_current_debug_location` routes through the LEGACY
@@ -3314,6 +3326,16 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// location mutations go through di_enter_stmt/di_exit_stmt, so
     /// this field is authoritative.
     pub(crate) di_current_loc: Option<inkwell::debug_info::DILocation<'ctx>>,
+    /// Stage 3: (file index, line) matching di_current_loc — the
+    /// position context di_declare_variable needs, restored in
+    /// lockstep by di_exit_stmt.
+    pub(crate) di_current_pos: Option<(usize, u32)>,
+    /// Stage 3: param allocas collected at a user-fn/method
+    /// prologue, flushed as DW_TAG_formal_parameter declares by the
+    /// first di_enter_stmt inside the body (subprograms are created
+    /// lazily there — the prologue has no scope to attach to yet).
+    pub(crate) di_pending_params:
+        Vec<(PointerValue<'ctx>, String, CodegenTy)>,
 }
 
 /// DWARF emission state (debug story stage 2). One DIBuilder +
@@ -3325,6 +3347,12 @@ pub(crate) struct DiState<'ctx> {
     #[allow(dead_code)]
     pub(crate) cu: inkwell::debug_info::DICompileUnit<'ctx>,
     pub(crate) files: Vec<DiFileEntry<'ctx>>,
+    /// Stage 3: DIType cache keyed by display name — one basic /
+    /// pointer type per Hale type per module.
+    pub(crate) type_cache: std::collections::BTreeMap<
+        String,
+        inkwell::debug_info::DIType<'ctx>,
+    >,
 }
 
 pub(crate) struct DiFileEntry<'ctx> {
@@ -11706,6 +11734,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.current_user_fn_fallible = fallible_ctx;
 
         let mut scope = Scope::default();
+        self.di_pending_params.clear();
         for (i, p) in f.params.iter().enumerate() {
             let lt = sig.params[i].clone();
             let alloca = self.alloca_for(&lt, &p.name.name)?;
@@ -11717,6 +11746,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.builder
                 .build_store(alloca, v)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            if self.di.is_some() {
+                self.di_pending_params.push((
+                    alloca,
+                    p.name.name.clone(),
+                    lt.clone(),
+                ));
+            }
             scope.locals.insert(p.name.name.clone(), (alloca, lt));
         }
 
@@ -13313,6 +13349,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if self.di_current_loc.is_some() {
                 self.builder.unset_current_debug_location();
                 self.di_current_loc = None;
+                self.di_current_pos = None;
             }
             return false;
         }
@@ -13326,6 +13363,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if self.di_current_loc.is_some() {
                 self.builder.unset_current_debug_location();
                 self.di_current_loc = None;
+                self.di_current_pos = None;
             }
             return false;
         };
@@ -13361,6 +13399,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         };
         let prev = self.di_current_loc;
+        let prev_pos = self.di_current_pos;
         let loc = di.builder.create_debug_location(
             self.context,
             line,
@@ -13370,11 +13409,220 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.builder.set_current_debug_location(loc);
         self.di_current_loc = Some(loc);
+        self.di_current_pos = Some((file_idx, line));
+        // Stage 3: the prologue's param allocas become formal-
+        // parameter declares now that a subprogram + location
+        // exist. Drained once — the first statement of the body.
+        if !self.di_pending_params.is_empty() {
+            let pending = std::mem::take(&mut self.di_pending_params);
+            for (arg_no, (alloca, pname, pty)) in
+                pending.into_iter().enumerate()
+            {
+                self.di_declare_variable(
+                    alloca,
+                    &pname,
+                    &pty,
+                    Some(arg_no as u32 + 1),
+                    file_idx,
+                    line,
+                    loc,
+                );
+            }
+        }
         if std::env::var("LOTUS_DI_TRACE").is_ok() {
             eprintln!("di: SET {} line {} col {}", fn_name, line, col);
         }
-        self.di_loc_stack.push((func, prev));
+        self.di_loc_stack.push((func, prev, prev_pos));
         return true;
+    }
+
+    /// Stage 3 (2026-07-18): attach a dbg.declare for a local /
+    /// parameter alloca. `arg_no` Some(n) makes it a formal
+    /// parameter (1-based), None an auto variable. The DIType comes
+    /// from `di_type_for` — precise encodings for the known
+    /// scalars, `char*` for String (gdb prints the text), a named
+    /// opaque-struct pointer for TypeRef, an ABI-derived fallback
+    /// for the rest. The declare inserts right after the alloca's
+    /// own position via before-its-successor, so it lives in the
+    /// entry block with the storage it describes.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn di_declare_variable(
+        &mut self,
+        alloca: PointerValue<'ctx>,
+        name: &str,
+        ty: &CodegenTy,
+        arg_no: Option<u32>,
+        file_idx: usize,
+        line: u32,
+        loc: inkwell::debug_info::DILocation<'ctx>,
+    ) {
+        use inkwell::debug_info::{AsDIScope, DIFlagsConstants};
+        let Some(cur_bb) = self.builder.get_insert_block() else {
+            return;
+        };
+        let Some(func) = cur_bb.get_parent() else { return };
+        let Some(sp) = func.get_subprogram() else { return };
+        let Some(ditype) = self.di_type_for(ty) else { return };
+        let Some(di) = self.di.as_ref() else { return };
+        let file = di.files[file_idx].file;
+        let var = match arg_no {
+            Some(n) => di.builder.create_parameter_variable(
+                sp.as_debug_info_scope(),
+                name,
+                n,
+                file,
+                line,
+                ditype,
+                true,
+                inkwell::debug_info::DIFlags::PUBLIC,
+            ),
+            None => di.builder.create_auto_variable(
+                sp.as_debug_info_scope(),
+                name,
+                file,
+                line,
+                ditype,
+                true,
+                inkwell::debug_info::DIFlags::PUBLIC,
+                0,
+            ),
+        };
+        // Position: right after the alloca instruction (its
+        // successor is the store the prologue/let emitted — always
+        // present). Falls back to skipping when the alloca has no
+        // successor (can't happen in practice).
+        let Some(alloca_inst) = alloca.as_instruction() else {
+            return;
+        };
+        match alloca_inst.get_next_instruction() {
+            Some(next) => {
+                di.builder.insert_declare_before_instruction(
+                    alloca,
+                    Some(var),
+                    None,
+                    loc,
+                    next,
+                );
+            }
+            None => {}
+        }
+    }
+
+    /// Map a CodegenTy to a cached DIType. Precise for the scalar
+    /// surface + String; TypeRef becomes `<Name>*` (opaque struct
+    /// pointer — gdb shows a typed address); anything else derives
+    /// from its ABI shape (int of matching width / opaque pointer)
+    /// or is skipped (None) for aggregate-by-value shapes.
+    fn di_type_for(
+        &mut self,
+        ty: &CodegenTy,
+    ) -> Option<inkwell::debug_info::DIType<'ctx>> {
+        use inkwell::debug_info::DIFlagsConstants;
+        // DW_ATE_* encodings.
+        const BOOLEAN: u32 = 0x02;
+        const FLOAT: u32 = 0x04;
+        const SIGNED: u32 = 0x05;
+        const SIGNED_CHAR: u32 = 0x06;
+        const UNSIGNED: u32 = 0x07;
+
+        let llvm_ty = self.llvm_basic_type(ty);
+        let key;
+        let plan: (&str, u64, u32, bool) = match ty {
+            CodegenTy::Int => ("Int", 64, SIGNED, false),
+            CodegenTy::Float => ("Float", 64, FLOAT, false),
+            CodegenTy::Bool => ("Bool", 32, BOOLEAN, false),
+            CodegenTy::Decimal => ("Decimal", 128, SIGNED, false),
+            CodegenTy::Time => ("Time", 64, SIGNED, false),
+            CodegenTy::Duration => ("Duration", 64, SIGNED, false),
+            CodegenTy::String => ("String", 0, 0, true),
+            CodegenTy::TypeRef(n) => {
+                key = format!("{}*", n);
+                (key.as_str(), 0, 0, true)
+            }
+            _ => {
+                // ABI-derived fallback: ints by width, pointers as
+                // opaque; aggregates-by-value are skipped.
+                match llvm_ty {
+                    inkwell::types::BasicTypeEnum::IntType(it) => {
+                        key = format!("raw_i{}", it.get_bit_width());
+                        (key.as_str(), it.get_bit_width() as u64, UNSIGNED, false)
+                    }
+                    inkwell::types::BasicTypeEnum::FloatType(_) => {
+                        ("Float", 64, FLOAT, false)
+                    }
+                    inkwell::types::BasicTypeEnum::PointerType(_) => {
+                        ("opaque*", 0, 0, true)
+                    }
+                    _ => return None,
+                }
+            }
+        };
+        let (name, bits, enc, is_ptr) = plan;
+        if let Some(t) = self
+            .di
+            .as_ref()
+            .and_then(|di| di.type_cache.get(name).copied())
+        {
+            return Some(t);
+        }
+        let di = self.di.as_mut()?;
+        let created: inkwell::debug_info::DIType<'ctx> = if is_ptr {
+            // Pointee: char for String (so gdb prints the text),
+            // an empty named struct for TypeRef / opaque.
+            let pointee: inkwell::debug_info::DIType<'ctx> =
+                if matches!(ty, CodegenTy::String) {
+                    di.builder
+                        .create_basic_type(
+                            "char",
+                            8,
+                            SIGNED_CHAR,
+                            inkwell::debug_info::DIFlags::PUBLIC,
+                        )
+                        .ok()?
+                        .as_type()
+                } else {
+                    let pointee_name = name.trim_end_matches('*');
+                    let file = di.files[0].file;
+                    use inkwell::debug_info::AsDIScope;
+                    di.builder
+                        .create_struct_type(
+                            file.as_debug_info_scope(),
+                            pointee_name,
+                            file,
+                            0,
+                            0,
+                            0,
+                            inkwell::debug_info::DIFlags::PUBLIC,
+                            None,
+                            &[],
+                            0,
+                            None,
+                            pointee_name,
+                        )
+                        .as_type()
+                };
+            di.builder
+                .create_pointer_type(
+                    name,
+                    pointee,
+                    64,
+                    64,
+                    inkwell::AddressSpace::default(),
+                )
+                .as_type()
+        } else {
+            di.builder
+                .create_basic_type(
+                    name,
+                    bits,
+                    enc,
+                    inkwell::debug_info::DIFlags::PUBLIC,
+                )
+                .ok()?
+                .as_type()
+        };
+        di.type_cache.insert(name.to_string(), created);
+        Some(created)
     }
 
     /// DI verifier fix (2026-07-03): synthesized epilogue code
@@ -13414,7 +13662,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// Pop the per-statement location frame pushed by di_enter_stmt.
     fn di_exit_stmt(&mut self) {
-        let Some((frame_fn, prev)) = self.di_loc_stack.pop() else {
+        let Some((frame_fn, prev, prev_pos)) = self.di_loc_stack.pop()
+        else {
             return;
         };
         let cur_fn = self
@@ -13426,10 +13675,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Some(loc) => {
                     self.builder.set_current_debug_location(loc);
                     self.di_current_loc = Some(loc);
+                    self.di_current_pos = prev_pos;
                 }
                 None => {
                     self.builder.unset_current_debug_location();
                     self.di_current_loc = None;
+                    self.di_current_pos = None;
                 }
             }
         } else {
@@ -13438,6 +13689,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // synthesis boundary). Never restore across functions.
             self.builder.unset_current_debug_location();
             self.di_current_loc = None;
+            self.di_current_pos = None;
         }
     }
 
@@ -13764,6 +14016,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder
                     .build_store(alloca, val)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                if let (Some(loc), Some((fi, ln))) =
+                    (self.di_current_loc, self.di_current_pos)
+                {
+                    self.di_declare_variable(
+                        alloca, &name.name, &ty, None, fi, ln, loc,
+                    );
+                }
                 scope.locals.insert(name.name.clone(), (alloca, ty));
                 Ok(BlockEnd::Open)
             }
@@ -13815,6 +14074,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.builder
                         .build_store(alloca, loaded)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    if let (Some(loc), Some((fi, ln))) =
+                        (self.di_current_loc, self.di_current_pos)
+                    {
+                        self.di_declare_variable(
+                            alloca, &n.name, et, None, fi, ln, loc,
+                        );
+                    }
                     scope.locals.insert(n.name.clone(), (alloca, et.clone()));
                 }
                 Ok(BlockEnd::Open)

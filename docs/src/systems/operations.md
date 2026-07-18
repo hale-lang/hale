@@ -216,8 +216,9 @@ RSS — see [Memory](#memory-my-rss-is-growing) above).
 
 ## Debugging with the native toolchain
 
-Hale binaries carry DWARF line tables by default (zero runtime
-cost). That means real debugging:
+Hale binaries carry full DWARF by default (zero runtime cost):
+line tables *and* variable info. That means real debugging — stop
+AND inspect:
 
 ```sh
 hale build myservice
@@ -225,7 +226,17 @@ gdb ./myservice
 (gdb) break myservice.hl:42
 (gdb) run
 (gdb) backtrace          # real .hl file:line frames, inline stacks
+(gdb) info args          # typed parameters: n = 21
+(gdb) info locals        # typed lets: doubled = 42, frac = 0.5
+(gdb) print msg          # Strings print their text: "hello!"
 ```
+
+Hale scalars map to proper DWARF base types (`Int`, `Float`,
+`Bool`, `Decimal`, `Time`, `Duration`), `String` is a `char*` so
+debuggers print the contents, and struct-typed values show as
+typed pointers. A variable can read `<optimized out>` after its
+last use — that's the optimizer, not missing debug info; `hale
+build --dev` keeps more of the frame live.
 
 `addr2line -e ./myservice 0x4a2f10` resolves crash-dump addresses
 to source lines, and ASAN reports carry file:line through both the

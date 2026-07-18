@@ -8,6 +8,20 @@ behavior.
 
 ## Unreleased
 
+- **DWARF variable info (debug story stage 3).** Emission moves
+  from LineTablesOnly to Full: fn/method parameters and let-bound
+  locals carry `dbg.declare` with real DWARF types — `Int`/`Float`/
+  `Bool`/`Decimal`/`Time`/`Duration` as proper base types, `String`
+  as `char*` (gdb prints the text, not an address), struct values
+  as named typed pointers, everything else ABI-derived. gdb goes
+  from "stop on a .hl line" to `info args` / `info locals` /
+  `print msg` with real values. Param declares attach when the
+  body's first statement creates the subprogram (they're collected
+  at the prologue); `<optimized out>` after a variable's last use
+  remains normal optimizer behavior — `--dev` keeps more of the
+  frame. Structural regression via readelf in
+  `hale-cli/tests/debug_info.rs`; `LOTUS_NO_DEBUGINFO=1` still
+  opts out entirely.
 - **`hale test` links `@ffi` libs.** The test runner's per-file
   compile now runs the same Stage-2 `hale.toml [ffi]` csrc/link
   pickup `hale build` does, so tests importing FFI-bearing libs
