@@ -205,6 +205,16 @@ and skipped with exit 1. Doc text is recovered positionally (the
 lines directly above the declaration, stepping over decorator
 lines), so the lexer and AST are untouched.
 
+`hale doc --stdlib` renders the `std::` surface instead: the
+rename table supplies public paths, the bundled stdlib source
+supplies decl shapes + `///` docs (mangled param types demangled;
+internal-typed params hidden), and the typecheck signature table
+supplies the C-primitive-backed free fns that have no `.hl` decl.
+The spec/stdlib.md tables remain the canonical CONTRACT; the
+generated reference is the browsable companion, and stdlib
+declarations grow `///` docs namespace-by-namespace (metrics,
+log, and BytesBuilder are done).
+
 ## `hale fmt` — the canonical formatter
 
 Zero config, Go-style: there are no options that change the output.

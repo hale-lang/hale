@@ -2394,6 +2394,17 @@ pub(crate) const SOCKOPT_NAMES: &[&str] = &[
     "TCP_NODELAY",
 ];
 
+/// Public accessors for `hale doc --stdlib` (hale-cli): the
+/// concatenated stdlib source (for /// doc-comment recovery and
+/// decl parsing) and the public-path → mangled-name table (to
+/// display entries under their `std::` names).
+pub fn stdlib_doc_source() -> &'static str {
+    STDLIB_AP_SOURCE
+}
+pub fn stdlib_path_renames() -> &'static [(&'static [&'static str], &'static str)] {
+    STDLIB_PATH_RENAMES
+}
+
 const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "bus", "Adapter"], "__StdBusAdapter"),
     (&["std", "bytes", "BytesBuilder"], "__StdBytesBytesBuilder"),

@@ -1486,7 +1486,7 @@ fn hover_text(
     Some(text)
 }
 
-fn sig_ty_str(t: &hale_types::stdlib_surface::SigTy) -> &'static str {
+pub(crate) fn sig_ty_str(t: &hale_types::stdlib_surface::SigTy) -> &'static str {
     use hale_types::stdlib_surface::SigTy::*;
     match t {
         Int => "Int",

@@ -86,6 +86,12 @@
 // unambiguous and the locus method body checks via
 // `std::bytes::__is_alloc_fail(out)` before returning.
 
+/// Growable binary accumulator — THE recv-loop buffer. Append
+/// with `append`/`append_str`/`append_slice`/`xor_mask`, parse
+/// through zero-copy `view()`/`text_view()` windows, consume from
+/// the front with `shift_front(n)`, and take ownership with
+/// `snapshot()` (copy) or `finish()` (final). Distinct from
+/// `Bytes` on purpose — see spec/stdlib.md § Builders vs Bytes.
 locus __StdBytesBytesBuilder {
     params {
         // Caller-tunable starting capacity. Auto-grows on demand

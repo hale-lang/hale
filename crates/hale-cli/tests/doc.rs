@@ -94,3 +94,31 @@ fn json_records() {
 
     let _ = std::fs::remove_dir_all(f.parent().unwrap());
 }
+
+#[test]
+fn stdlib_mode_renders_public_surface() {
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["doc", "--stdlib"])
+        .output()
+        .expect("run doc --stdlib");
+    assert!(out.status.success());
+    let md = String::from_utf8_lossy(&out.stdout);
+
+    // Public paths, never mangled names.
+    assert!(md.contains("### std::metrics::Registry"), "{}", &md[..500]);
+    assert!(!md.contains("__StdMetrics"), "mangled name leaked");
+    assert!(!md.contains("__metrics_"), "mangled fn leaked");
+    // Doc comments flow through with the public signature.
+    assert!(
+        md.contains("Idempotent on"),
+        "counter doc missing"
+    );
+    assert!(
+        md.contains("fn counter(reg: std::metrics::Registry"),
+        "public fn signature missing"
+    );
+    // Signature-table-only fns (no .hl decl) render too.
+    assert!(md.contains("### std::str::parse_int"), "sig-table fn missing");
+    // Locus methods as members.
+    assert!(md.contains("`fn render() -> String`"), "method member missing");
+}

@@ -70,18 +70,23 @@ locus __StdMetricsHistogramList {
 
 // ---- labels ---------------------------------------------------------
 
+/// No labels — the bare series (`app_hits 3`).
 fn __metrics_labels_empty() -> std::metrics::Labels {
     return std::metrics::Labels { kv: "" };
 }
 
+/// One label pair: `labels_one("route", "/api")` →
+/// `{route="/api"}`.
 fn __metrics_labels_one(k: String, v: String) -> std::metrics::Labels {
     return std::metrics::Labels { kv: k + "=" + v };
 }
 
+/// Two label pairs in one call.
 fn __metrics_labels_two(k1: String, v1: String, k2: String, v2: String) -> std::metrics::Labels {
     return std::metrics::Labels { kv: k1 + "=" + v1 + "\t" + k2 + "=" + v2 };
 }
 
+/// Extend an existing label set with one more pair.
 fn __metrics_labels_append(l: std::metrics::Labels, k: String, v: String) -> std::metrics::Labels {
     if len(l.kv) == 0 {
         return std::metrics::Labels { kv: k + "=" + v };
@@ -162,6 +167,10 @@ fn __metrics_count_out_of_order(h: __StdMetricsHistogramData) -> Int {
 // to the STORAGE slots (not the Registry) — resolve once at boot,
 // cache the handle as a field, mutate from the hot path.
 
+/// Register (or re-fetch) a counter series. Idempotent on
+/// (name, labels) — a repeat call returns a handle to the same
+/// series without resetting it. Resolve at boot, cache the handle
+/// as a field, call `inc()` from the hot path.
 fn __metrics_counter(reg: std::metrics::Registry, name: String, labels: std::metrics::Labels) -> std::metrics::Counter {
     let k = __metrics_key(name, labels);
     if !reg.store.has(k) {
@@ -173,6 +182,9 @@ fn __metrics_counter(reg: std::metrics::Registry, name: String, labels: std::met
     return std::metrics::Counter { store: reg.store, key: k };
 }
 
+/// Register (or re-fetch) a gauge series — a value that moves
+/// both ways (queue depth, open connections). Same idempotent
+/// contract as `counter`.
 fn __metrics_gauge(reg: std::metrics::Registry, name: String, labels: std::metrics::Labels) -> std::metrics::Gauge {
     let k = __metrics_key(name, labels);
     if !reg.store.has(k) {
@@ -187,6 +199,10 @@ fn __metrics_gauge(reg: std::metrics::Registry, name: String, labels: std::metri
 // `bounds` is a space-separated ascending list of bucket upper
 // bounds ("0.005 0.01 0.05 0.1"); parsed once here (cold), max
 // 32 buckets (over-cap clamps). The +Inf bucket is implicit.
+/// Register (or re-fetch) a histogram. `bounds` is a
+/// space-separated ascending list of bucket upper bounds
+/// ("0.005 0.01 0.05"), parsed once here; max 32, `+Inf`
+/// implicit. Renders cumulative `_bucket`/`_sum`/`_count`.
 fn __metrics_histogram(reg: std::metrics::Registry, name: String, bounds: String, labels: std::metrics::Labels) -> std::metrics::Histogram {
     let k = __metrics_key(name, labels);
     let mut nb_declared = __metrics_tok_count(bounds, " ");
@@ -223,6 +239,9 @@ fn __metrics_histogram(reg: std::metrics::Registry, name: String, bounds: String
 
 // ---- handles --------------------------------------------------------
 
+/// Hot-path handle to one counter series: `inc()` / `add(v)`.
+/// References the storage slot directly — no registry lookup per
+/// call. Monotonic by convention.
 locus __StdMetricsCounter {
     params {
         store: __StdMetricsMap;
@@ -242,6 +261,8 @@ locus __StdMetricsCounter {
     }
 }
 
+/// Hot-path handle to one gauge series: `set(v)` / `add(v)` /
+/// `sub(v)` / `inc()` / `dec()`.
 locus __StdMetricsGauge {
     params {
         store: __StdMetricsMap;
@@ -276,6 +297,9 @@ locus __StdMetricsGauge {
     }
 }
 
+/// Hot-path handle to one histogram series: `observe(v)` walks
+/// the bounds and bumps the first bucket that fits (cumulative
+/// rendering happens at scrape, not here).
 locus __StdMetricsHistogram {
     params {
         store: __StdMetricsMap;
@@ -415,6 +439,11 @@ fn __metrics_render_histogram(ns: String, h: __StdMetricsHistogramData) -> Strin
 
 // ---- the Registry + endpoint ----------------------------------------
 
+/// The per-app metrics registry. Owns its storage (param-default
+/// children), so `Registry { namespace: "app" }` is the whole
+/// construction and a Registry returned from a builder fn keeps
+/// its series alive. `namespace` prefixes every series name;
+/// `render()` emits the Prometheus text exposition.
 locus __StdMetricsRegistry {
     params {
         namespace: String = "";
@@ -431,6 +460,9 @@ locus __StdMetricsRegistry {
 
     // Prometheus text exposition. BytesBuilder accumulation
     // keeps the scratch peak O(total) instead of O(lines²).
+    /// Prometheus text exposition of every registered series:
+    /// `# TYPE` lines, `ns_name{k="v"} value` samples, histogram
+    /// `_bucket{le=...}` / `_sum` / `_count`.
     fn render() -> String {
         let b = std::bytes::BytesBuilder { initial_cap: 8192 };
         for e in self.store.entries {
@@ -454,6 +486,10 @@ locus __StdMetricsRegistry {
 // exposition:
 //   std::http::Server { port: 9090,
 //       handler: std::metrics::Endpoint { registry: reg } };
+/// A ready-made `std::http::Handler` that answers every request
+/// with `registry.render()` under
+/// `Content-Type: text/plain; version=0.0.4` — mount it as a
+/// Server handler and the app is a /metrics scrape target.
 locus __StdMetricsEndpoint {
     params {
         registry: __StdMetricsRegistry;

@@ -8,6 +8,16 @@ behavior.
 
 ## Unreleased
 
+- **`hale doc --stdlib` + first stdlib doc comments.** The `std::`
+  surface renders as a generated API reference: public paths from
+  the rename table, decl shapes + `///` docs from the bundled
+  stdlib source (mangled param types demangled; internal-typed
+  params hidden), and the signature table fills in the
+  C-primitive-backed free fns with no `.hl` decl. First
+  namespaces migrated to `///` docs: std::metrics (full surface),
+  std::log (Logger + all three sinks), std::bytes::BytesBuilder.
+  spec/stdlib.md stays the contract; the generated reference is
+  the browsable companion.
 - **DWARF struct members (debug stage 4).** User struct types are
   emitted as real `DW_TAG_structure_type`s with named members at
   their LLVM layout offsets — `p *rec` in gdb prints

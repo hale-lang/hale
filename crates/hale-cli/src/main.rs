@@ -138,7 +138,7 @@ fn usage() {
     eprintln!("    hale fmt   [file | dir] ...   canonical formatter (default: cwd)");
     eprintln!("        [--check] [--diff] [--stdin]");
     eprintln!("    hale doc   [file | dir]       render the seed's API reference (/// doc comments)");
-    eprintln!("        [--json] [-o <path>]");
+    eprintln!("        [--json] [-o <path>] [--stdlib: the std:: surface]");
     eprintln!("    hale fetch [repo-root]        fetch git deps from hale.toml into vendor/");
     eprintln!("    hale lsp                      stdio Language Server (diagnostics)");
     eprintln!();
@@ -348,6 +348,7 @@ fn print_fmt_diff(path: &Path, before: &str, after: &str) {
 /// doesn't parse is reported and skipped (exit 1).
 fn run_doc(rest: &[String]) -> ExitCode {
     let mut json = false;
+    let mut stdlib = false;
     let mut out_path: Option<PathBuf> = None;
     let mut target: Option<PathBuf> = None;
     let mut i = 0;
@@ -355,6 +356,10 @@ fn run_doc(rest: &[String]) -> ExitCode {
         match rest[i].as_str() {
             "--json" => {
                 json = true;
+                i += 1;
+            }
+            "--stdlib" => {
+                stdlib = true;
                 i += 1;
             }
             "-o" | "--out" => match rest.get(i + 1) {
@@ -376,6 +381,9 @@ fn run_doc(rest: &[String]) -> ExitCode {
                 i += 1;
             }
         }
+    }
+    if stdlib {
+        return run_doc_stdlib(json, out_path);
     }
     let target = target
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
@@ -484,6 +492,256 @@ fn run_doc(rest: &[String]) -> ExitCode {
     }
     if failed {
         return ExitCode::from(1);
+    }
+    ExitCode::SUCCESS
+}
+
+
+/// `hale doc --stdlib` — the `std::` API reference. Merges three
+/// sources of truth: the rename table (public `std::` path per
+/// mangled decl), the bundled stdlib source (decl shapes + `///`
+/// doc comments — public method surface of each locus), and the
+/// typecheck signature table (the C-primitive-backed free fns that
+/// have no .hl decl). Grouped by namespace; Markdown or JSON like
+/// the seed mode.
+fn run_doc_stdlib(json: bool, out_path: Option<PathBuf>) -> ExitCode {
+    use hale_syntax::ast::{LocusMember, TopDecl};
+    let src = hale_codegen::stdlib_doc_source();
+    let program = match hale_syntax::parse_source(src) {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("hale doc --stdlib: bundled stdlib does not parse (bug)");
+            return ExitCode::from(1);
+        }
+    };
+    // mangled name -> public path segments
+    let mut public: BTreeMap<&str, String> = BTreeMap::new();
+    for (segs, mangled) in hale_codegen::stdlib_path_renames() {
+        public.insert(*mangled, segs.join("::"));
+    }
+    // Signatures written against internal names (a locus param
+    // typed `__StdMetricsMap`) display their public paths.
+    let demangle = |sig: &str| -> String {
+        let mut out = sig.to_string();
+        for (mangled, pubpath) in &public {
+            if out.contains(mangled) {
+                out = out.replace(mangled, pubpath);
+            }
+        }
+        out
+    };
+
+    // namespace ("std::metrics") -> entries
+    let mut groups: BTreeMap<String, Vec<DocEntry>> = BTreeMap::new();
+    let ns_of = |path: &str| -> String {
+        match path.rfind("::") {
+            Some(i) => path[..i].to_string(),
+            None => path.to_string(),
+        }
+    };
+
+    for item in &program.items {
+        match item {
+            TopDecl::Fn(fd) => {
+                let Some(path) = public.get(fd.name.name.as_str()) else {
+                    continue;
+                };
+                // Leaf name first (demangle would otherwise expand
+                // the fn's own mangled name to its full path), then
+                // demangle the param/return types.
+                let leaf = path.rsplit("::").next().unwrap_or(path);
+                let sig = demangle(
+                    &doc_fn_signature(fd).replacen(&fd.name.name, leaf, 1),
+                );
+                groups.entry(ns_of(path)).or_default().push(DocEntry {
+                    kind: "fn",
+                    name: path.clone(),
+                    signature: sig,
+                    doc: doc_comment_above(
+                        src,
+                        fd.name.span.start.as_usize(),
+                    ),
+                    members: Vec::new(),
+                });
+            }
+            TopDecl::Locus(l) => {
+                let Some(path) = public.get(l.name.name.as_str()) else {
+                    continue;
+                };
+                let mut members = Vec::new();
+                let mut params_sig = String::new();
+                for m in &l.members {
+                    match m {
+                        LocusMember::Params(pb) => {
+                            // Skip __-named params AND params whose
+                            // type demangles to nothing public
+                            // (internal owned-storage wiring like
+                            // Router's entry list).
+                            let ps = pb
+                                .params
+                                .iter()
+                                .filter(|p| !p.name.name.starts_with("__"))
+                                .filter_map(|p| match &p.ty {
+                                    Some(t) => {
+                                        let ty =
+                                            demangle(&lsp::type_expr_str(t));
+                                        if ty.contains("__") {
+                                            None
+                                        } else {
+                                            Some(format!(
+                                                "{}: {}",
+                                                p.name.name, ty
+                                            ))
+                                        }
+                                    }
+                                    None => Some(p.name.name.clone()),
+                                })
+                                .collect::<Vec<_>>()
+                                .join("; ");
+                            params_sig = ps;
+                        }
+                        LocusMember::Fn(fd) => {
+                            if fd.name.name.starts_with("__") {
+                                continue;
+                            }
+                            members.push(DocMember {
+                                signature: demangle(&doc_fn_signature(fd)),
+                                doc: doc_comment_above(
+                                    src,
+                                    fd.name.span.start.as_usize(),
+                                ),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                let leaf = path.rsplit("::").next().unwrap_or(path);
+                let sig = if params_sig.is_empty() {
+                    format!("locus {}", leaf)
+                } else {
+                    demangle(&format!(
+                        "locus {} {{ params {{ {} }} }}",
+                        leaf, params_sig
+                    ))
+                };
+                groups.entry(ns_of(path)).or_default().push(DocEntry {
+                    kind: "locus",
+                    name: path.clone(),
+                    signature: sig,
+                    doc: doc_comment_above(
+                        src,
+                        l.name.span.start.as_usize(),
+                    ),
+                    members,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    // Signature-table fns with no .hl decl (C-primitive-backed).
+    let covered: std::collections::BTreeSet<String> = groups
+        .values()
+        .flatten()
+        .map(|e| e.name.clone())
+        .collect();
+    for surface in hale_types::stdlib_surface::SURFACES {
+        for f in surface.fns {
+            if f.starts_with("__") {
+                continue;
+            }
+            let mut segs: Vec<&str> = vec!["std"];
+            segs.extend(surface.ns.iter().copied());
+            segs.push(f);
+            let path = segs.join("::");
+            if covered.contains(&path) {
+                continue;
+            }
+            let sig = match hale_types::stdlib_surface::signature_for(&segs)
+            {
+                Some(sig) => {
+                    let ps = sig
+                        .params
+                        .iter()
+                        .map(|t| lsp::sig_ty_str(t).to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let mut d = format!(
+                        "fn {}({}) -> {}",
+                        f,
+                        ps,
+                        lsp::sig_ty_str(&sig.ret)
+                    );
+                    if let Some(e) = sig.fallible {
+                        d.push_str(&format!(" fallible({})", e));
+                    }
+                    d
+                }
+                None => format!("fn {}(…)", f),
+            };
+            groups.entry(ns_of(&path)).or_default().push(DocEntry {
+                kind: "fn",
+                name: path,
+                signature: sig,
+                doc: String::new(),
+                members: Vec::new(),
+            });
+        }
+    }
+
+    // Render.
+    let mut md = String::from("# API — std\n");
+    let mut json_items: Vec<serde_json::Value> = Vec::new();
+    for (ns, entries) in &groups {
+        md.push_str(&format!("\n## {}\n", ns));
+        for e in entries {
+            md.push_str(&format!(
+                "\n### {}\n\n```hale\n{}\n```\n",
+                e.name, e.signature
+            ));
+            if !e.doc.is_empty() {
+                md.push_str(&format!("\n{}\n", e.doc));
+            }
+            for m in &e.members {
+                md.push_str(&format!(
+                    "\n- `{}`{}\n",
+                    m.signature,
+                    if m.doc.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" — {}", m.doc.replace('\n', " "))
+                    }
+                ));
+            }
+            if json {
+                json_items.push(serde_json::json!({
+                    "kind": e.kind,
+                    "name": e.name,
+                    "signature": e.signature,
+                    "doc": e.doc,
+                    "members": e.members.iter().map(|m| serde_json::json!({
+                        "signature": m.signature, "doc": m.doc
+                    })).collect::<Vec<_>>(),
+                }));
+            }
+        }
+    }
+    let rendered = if json {
+        serde_json::to_string_pretty(&json_items)
+            .unwrap_or_else(|_| "[]".into())
+            + "\n"
+    } else {
+        md
+    };
+    match out_path {
+        Some(p) => {
+            if let Err(e) = fs::write(&p, rendered) {
+                eprintln!("hale doc: could not write {}: {}", p.display(), e);
+                return ExitCode::from(1);
+            }
+            eprintln!("wrote {}", p.display());
+        }
+        None => print!("{}", rendered),
     }
     ExitCode::SUCCESS
 }

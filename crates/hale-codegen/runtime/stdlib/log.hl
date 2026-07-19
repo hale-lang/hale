@@ -52,6 +52,11 @@ type __StdLogEvent {
 // subjects of the right type. Without this declaration,
 // the type-checker would reject `subj <- LogEvent { ... }`
 // where `subj` is non-literal.
+/// Emits typed log events onto the bus (`log.<path>` subjects).
+/// `name` is the path segment; `parent_path` cascades
+/// (`app` → `app.db`). Levels: info / warn / error / debug /
+/// trace. Instantiate a sink FIRST — a subscriber must exist
+/// before the publisher fires.
 locus __StdLogLogger {
     params {
         name: String = "root";
@@ -101,6 +106,8 @@ locus __StdLogLogger {
 // pipelines and supervisor / CI log capture. INFO, DEBUG, and
 // TRACE go to stdout via `println`. Both runtimes implement
 // `eprintln`.
+/// The minimal sink: subscribes `log.**`, prints every event —
+/// INFO/DEBUG/TRACE to stdout, WARN/ERROR to stderr.
 locus __StdLogStdoutSink {
     bus {
         subscribe "log.**" as on_event of type __StdLogEvent;
@@ -146,6 +153,13 @@ locus __StdLogStdoutSink {
 // (last_error_kind / last_error_errno / last_error_path) — the
 // canonical scratch convention for loci whose methods can't
 // return through the value channel (styleguide 2.7).
+/// File sink with size-based rotation: appends every `log.**`
+/// event to `path`; when the file exceeds `max_size_bytes` the
+/// chain shifts (`path` → `path.1` → … → `path.<keep_files>`,
+/// oldest evicted) via atomic rename(2). I/O failures land in
+/// the `last_error_kind/errno/path` triple. Also satisfies
+/// `std::text::Sink` (write/line/newline with the same
+/// rotation).
 locus __StdLogFileSink {
     params {
         path: String = "";
@@ -235,6 +249,10 @@ locus __StdLogFileSink {
 // StdoutSink lane split). Color is AUTO by default: kept only
 // when stderr is a tty, FORCE_COLOR/CLICOLOR_FORCE override,
 // NO_COLOR always wins; `color: false` means never.
+/// Pretty console sink: dim HH:MM:SS, colored width-5 level
+/// badge, dim path, message; WARN/ERROR on stderr. Color is
+/// AUTO (stderr tty probe; FORCE_COLOR/CLICOLOR_FORCE force on,
+/// NO_COLOR always wins, `color: false` = never).
 locus __StdLogConsoleSink {
     params {
         color: Bool = true;
