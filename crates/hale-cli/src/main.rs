@@ -110,7 +110,12 @@ fn main() -> ExitCode {
     match cmd.as_str() {
         "lex" => run_lex_file(&target),
         "parse" => run_parse_file(&target),
-        "check" => run_check(&target),
+        "check" => run_check_impl(&target, false),
+        // `verify` is the Layer-2 discipline GATE: identical
+        // analysis surface to `check`, but every finding —
+        // advisory or error — fails the run. No execution
+        // (spec/testing.md's standalone-verify row).
+        "verify" => run_check_impl(&target, true),
         "run" => {
             // `hale run` compiles the program to a temporary binary
             // (the same codegen backend as `hale build`) and executes
@@ -138,6 +143,7 @@ fn usage() {
     eprintln!("    hale lex   <file.hl>          tokenize and print tokens");
     eprintln!("    hale parse <file.hl>          parse and print the AST");
     eprintln!("    hale check <file.hl | dir>    parse + typecheck");
+    eprintln!("    hale verify <file.hl | dir>   check + FAIL on any advisory (discipline gate)");
     eprintln!("    hale run   <file.hl | dir>    compile + run as a native binary");
     eprintln!("    hale build <file.hl | dir>    parse + typecheck + emit native binary");
     eprintln!("    hale test  [file | dir]       compile + run *_test.hl (default: cwd)");
@@ -2042,6 +2048,13 @@ fn parse_files(
 }
 
 fn run_check(target: &Path) -> ExitCode {
+    run_check_impl(target, false)
+}
+
+/// Shared core of `hale check` (advisories print, only errors
+/// fail) and `hale verify` (every finding fails — the CI
+/// discipline gate; same ~10 ms analysis, no execution).
+fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
     let files = match collect_ap_files(target) {
         Ok(f) => f,
         Err(e) => {
@@ -2186,13 +2199,28 @@ fn run_check(target: &Path) -> ExitCode {
                 eprintln!("{}", render_located(d, &file_bases, &sources));
             }
         }
-        // Warnings print but don't fail the build; only errors do.
+        // check: warnings print but don't fail; only errors do.
+        // verify: everything gates.
+        if gate_warnings {
+            if !json_mode {
+                eprintln!(
+                    "verify: {} finding(s) — the discipline gate \
+                     fails on advisories too",
+                    diags.len()
+                );
+            }
+            return ExitCode::from(1);
+        }
         if diags.iter().any(|d| d.is_error()) {
             return ExitCode::from(1);
         }
     }
     if !json_mode {
-        eprintln!("ok: {} file(s) typechecked", files.len());
+        if gate_warnings {
+            eprintln!("verified: {} file(s), 0 findings", files.len());
+        } else {
+            eprintln!("ok: {} file(s) typechecked", files.len());
+        }
     }
     ExitCode::SUCCESS
 }

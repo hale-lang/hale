@@ -10,8 +10,12 @@ testing infrastructure to be enforced.
 `hale test` (Layer 1 + Layer 2), `hale bench` (Layer 3
 single-language), `hale fmt`, and `hale doc` all ship in the CLI
 today (`lex` / `parse` / `check` / `run` / `build` / `test` /
-`bench` / `fmt` / `doc` / `fetch` / `lsp`). Only `hale verify`
-and `hale bench -compare` remain design-only below.
+`bench` / `verify` / `fmt` / `doc` / `fetch` / `lsp`). Only
+`hale bench -compare` remains design-only below. `hale verify`
+runs `check`'s exact analysis surface but GATES: any finding —
+advisory or error — exits 1, making it the CI discipline gate
+(where `check` stays the fast advisory oracle: warnings print,
+only errors fail).
 
 ## Three layers of correctness
 
@@ -182,7 +186,7 @@ tests by suffix (`_test.hl`) regardless of location.
 | | (`hale test` applies the same `hale.toml [ffi]` csrc/link pickup as `hale build`, so tests importing FFI-bearing libs link — 2026-07-18) |
 | `hale bench` | Run all `*_bench.hl` files (see below) |
 | `hale bench -compare` *(planned)* | Build and run external equivalents alongside |
-| `hale verify` *(planned)* | Layer-2 discipline checks specifically (no execution) |
+| `hale verify` | Layer-2 discipline gate: `check`'s full analysis, ANY finding fails (no execution) |
 | `hale fmt` | Canonical formatter (Go-style: zero config; see below) |
 | `hale doc` | API reference from `///` doc comments (Markdown / `--json`; see below) |
 

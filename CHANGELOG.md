@@ -8,6 +8,14 @@ behavior.
 
 ## Unreleased
 
+- **`hale verify` — the Layer-2 discipline gate** (the last
+  planned CLI row besides `bench -compare`). Identical analysis
+  surface to `hale check` (typecheck + the advisory analyses:
+  unbounded-alloc survey, hot-path lint, placement/starvation,
+  accept-without-release, bus checks) but ANY finding exits 1 —
+  `check` stays the fast advisory oracle, `verify` is what CI
+  runs. `--json` and the check flags carry over. Tests:
+  `hale-cli/tests/verify.rs`.
 - **`hale bench` — the Layer-3 runner** (spec/testing.md's planned
   row, now real). `*_bench.hl` discovery; zero-param `bench_*` free
   fns; a synthesized driver self-calibrates Go-style (batch ×10
