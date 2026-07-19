@@ -8,6 +8,14 @@ behavior.
 
 ## Unreleased
 
+- **DWARF struct members (debug stage 4).** User struct types are
+  emitted as real `DW_TAG_structure_type`s with named members at
+  their LLVM layout offsets — `p *rec` in gdb prints
+  `{key = "alpha!", n = 41, f = 2.5, sub = <ptr>}` instead of an
+  opaque address. Members map shallowly (scalars + String/Bytes
+  precise; nested struct members as typed opaque pointers — no
+  recursion, so mutually-referential shapes can't loop). readelf
+  regression extended.
 - **LSP v5: formatting, document symbols, `hale/enforcement`.**
   documentFormattingProvider wraps the `hale fmt` core (one
   whole-document edit; null on an unlexable buffer);

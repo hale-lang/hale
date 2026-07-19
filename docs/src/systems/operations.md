@@ -233,8 +233,9 @@ gdb ./myservice
 
 Hale scalars map to proper DWARF base types (`Int`, `Float`,
 `Bool`, `Decimal`, `Time`, `Duration`), `String` is a `char*` so
-debuggers print the contents, and struct-typed values show as
-typed pointers. A variable can read `<optimized out>` after its
+debuggers print the contents, and struct-typed values carry full
+member info — `p *r` prints `{key = "alpha!", n = 41, f = 2.5}`
+with nested structs as typed pointers. A variable can read `<optimized out>` after its
 last use — that's the optimizer, not missing debug info; `hale
 build --dev` keeps more of the frame live.
 

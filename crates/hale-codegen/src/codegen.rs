@@ -13508,6 +13508,187 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+
+    /// Stage 4: `<Name>*` as a pointer to a REAL
+    /// DW_TAG_structure_type carrying member offsets/types from the
+    /// LLVM layout. Member types are mapped SHALLOWLY — scalars and
+    /// String precisely, nested TypeRef members as opaque typed
+    /// pointers (no recursion; a mutually-recursive pointer pair
+    /// would otherwise loop), anything unmappable skipped. Cached
+    /// under "<Name>*".
+    fn di_struct_ptr_type(
+        &mut self,
+        type_name: &str,
+    ) -> Option<inkwell::debug_info::DIType<'ctx>> {
+        use inkwell::debug_info::{AsDIScope, DIFlagsConstants};
+        let key = format!("{}*", type_name);
+        if let Some(t) = self
+            .di
+            .as_ref()
+            .and_then(|di| di.type_cache.get(&key).copied())
+        {
+            return Some(t);
+        }
+        let info = self.user_types.get(type_name).cloned()?;
+        let struct_bits =
+            self.target_data.get_abi_size(&info.struct_ty) * 8;
+
+        // Shallow member DI types first (immutable-borrow phase —
+        // di_type_for needs &mut self, so collect the plans before
+        // touching self.di).
+        struct MemberPlan {
+            name: String,
+            offset_bits: u64,
+            size_bits: u64,
+            ty: CodegenTy,
+        }
+        let mut plans: Vec<MemberPlan> = Vec::new();
+        for fname in &info.field_order {
+            let Some((idx, fty)) = info.fields.get(fname).cloned() else {
+                continue;
+            };
+            // Mappable shallowly? scalars + String + TypeRef
+            // (opaque ptr) — skip views/bounded/aggregates.
+            let mappable = matches!(
+                fty,
+                CodegenTy::Int
+                    | CodegenTy::Float
+                    | CodegenTy::Bool
+                    | CodegenTy::Decimal
+                    | CodegenTy::Time
+                    | CodegenTy::Duration
+                    | CodegenTy::String
+                    | CodegenTy::Bytes
+                    | CodegenTy::TypeRef(_)
+            );
+            if !mappable {
+                continue;
+            }
+            let Some(off) = self
+                .target_data
+                .offset_of_element(&info.struct_ty, idx)
+            else {
+                continue;
+            };
+            let llvm_field = self.llvm_basic_type(&fty);
+            let size_bits =
+                self.target_data.get_abi_size(&llvm_field) * 8;
+            plans.push(MemberPlan {
+                name: fname.clone(),
+                offset_bits: off * 8,
+                size_bits,
+                ty: fty,
+            });
+        }
+        // Resolve member DI types (may create cache entries).
+        let mut resolved: Vec<(MemberPlan, inkwell::debug_info::DIType<'ctx>)> =
+            Vec::new();
+        for plan in plans {
+            let dit = match &plan.ty {
+                CodegenTy::TypeRef(inner) => {
+                    // Shallow: opaque typed pointer, no recursion.
+                    self.di_opaque_ptr_type(&format!("{}~", inner))
+                }
+                other => self.di_type_for(&other.clone()),
+            };
+            if let Some(d) = dit {
+                resolved.push((plan, d));
+            }
+        }
+
+        let di = self.di.as_mut()?;
+        let file = di.files[0].file;
+        let members: Vec<inkwell::debug_info::DIType<'ctx>> = resolved
+            .iter()
+            .map(|(plan, dit)| {
+                di.builder
+                    .create_member_type(
+                        file.as_debug_info_scope(),
+                        &plan.name,
+                        file,
+                        0,
+                        plan.size_bits,
+                        64,
+                        plan.offset_bits,
+                        inkwell::debug_info::DIFlags::PUBLIC,
+                        *dit,
+                    )
+                    .as_type()
+            })
+            .collect();
+        let st = di.builder.create_struct_type(
+            file.as_debug_info_scope(),
+            type_name,
+            file,
+            0,
+            struct_bits,
+            64,
+            inkwell::debug_info::DIFlags::PUBLIC,
+            None,
+            &members,
+            0,
+            None,
+            type_name,
+        );
+        let ptr = di
+            .builder
+            .create_pointer_type(
+                &key,
+                st.as_type(),
+                64,
+                64,
+                inkwell::AddressSpace::default(),
+            )
+            .as_type();
+        di.type_cache.insert(key, ptr);
+        Some(ptr)
+    }
+
+    /// A cached opaque named-struct pointer (used for shallow
+    /// nested-struct members).
+    fn di_opaque_ptr_type(
+        &mut self,
+        name: &str,
+    ) -> Option<inkwell::debug_info::DIType<'ctx>> {
+        use inkwell::debug_info::{AsDIScope, DIFlagsConstants};
+        let key = format!("{}*", name);
+        if let Some(t) = self
+            .di
+            .as_ref()
+            .and_then(|di| di.type_cache.get(&key).copied())
+        {
+            return Some(t);
+        }
+        let di = self.di.as_mut()?;
+        let file = di.files[0].file;
+        let st = di.builder.create_struct_type(
+            file.as_debug_info_scope(),
+            name,
+            file,
+            0,
+            0,
+            0,
+            inkwell::debug_info::DIFlags::PUBLIC,
+            None,
+            &[],
+            0,
+            None,
+            name,
+        );
+        let ptr = di
+            .builder
+            .create_pointer_type(
+                &key,
+                st.as_type(),
+                64,
+                64,
+                inkwell::AddressSpace::default(),
+            )
+            .as_type();
+        di.type_cache.insert(key, ptr);
+        Some(ptr)
+    }
+
     /// Map a CodegenTy to a cached DIType. Precise for the scalar
     /// surface + String; TypeRef becomes `<Name>*` (opaque struct
     /// pointer — gdb shows a typed address); anything else derives
@@ -13536,8 +13717,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Duration => ("Duration", 64, SIGNED, false),
             CodegenTy::String => ("String", 0, 0, true),
             CodegenTy::TypeRef(n) => {
-                key = format!("{}*", n);
-                (key.as_str(), 0, 0, true)
+                // Stage 4 (2026-07-19): full member info instead of
+                // an opaque struct — gdb `p *rec` shows the fields.
+                return self.di_struct_ptr_type(n);
             }
             _ => {
                 // ABI-derived fallback: ints by width, pointers as

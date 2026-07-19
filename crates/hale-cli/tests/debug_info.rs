@@ -29,7 +29,11 @@ fn dwarf_carries_typed_params_and_locals() {
     let src_path = dir.join("dbgvars.hl");
     std::fs::write(
         &src_path,
-        r#"fn helper(n: Int, label: String) -> Int {
+        r#"type Rec {
+    key: String = "";
+    n:   Int = 0;
+}
+fn helper(n: Int, label: String) -> Int {
     let doubled = n * 2;
     let msg = label + "!";
     let frac = 0.5;
@@ -37,7 +41,8 @@ fn dwarf_carries_typed_params_and_locals() {
     return doubled;
 }
 fn main() {
-    let x = helper(21, "hello");
+    let r = Rec { key: "k" + "1", n: 7 };
+    let x = helper(r.n, r.key);
     println("x=", x);
 }
 "#,
@@ -89,6 +94,21 @@ fn main() {
         info.contains("DW_TAG_pointer_type"),
         "String pointer type missing"
     );
+    // Stage 4: user structs carry REAL member info — the Rec
+    // structure type exists with named members at layout offsets.
+    assert!(
+        info.contains("DW_TAG_structure_type"),
+        "struct type missing"
+    );
+    assert!(info.contains("DW_TAG_member"), "struct members missing");
+    for m in ["key", "Rec"] {
+        assert!(
+            info.contains(&format!(": {}", m))
+                || info.contains(&format!("DW_AT_name        : {}", m)),
+            "`{}` missing from struct DWARF",
+            m
+        );
+    }
 
     let _ = std::fs::remove_dir_all(&dir);
 }
