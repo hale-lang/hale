@@ -8,6 +8,18 @@ behavior.
 
 ## Unreleased
 
+- **`std::http` connection takeover — the Upgrade surface.**
+  `Request.conn_fd` carries the live fd into the handler;
+  `Response { takeover: true }` writes only the status line + the
+  response's own headers (101 gets its `Switching Protocols`
+  phrase) and returns without closing the connection — the new
+  `Stream.release_fd()` primitive disarms the per-connection scope
+  close and hands ownership to the handler. Status-agnostic
+  (WebSocket 101, CONNECT 200). Verified over a real socket:
+  101 + upgrade headers, then raw bytes echoed on the same
+  connection (`http_upgrade.rs`). This closes the gap WebSocket
+  promotion was blocked on; the 5s recv timeout stays armed until
+  the new owner clears it.
 - **`hale verify` — the Layer-2 discipline gate** (the last
   planned CLI row besides `bench -compare`). Identical analysis
   surface to `hale check` (typecheck + the advisory analyses:

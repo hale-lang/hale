@@ -170,6 +170,17 @@ locus __StdIoTcpStream {
         }
         return b;
     }
+    /// Take ownership of the connection fd away from this Stream:
+    /// flips `owns_fd` off (dissolve becomes a no-op) and returns
+    /// the fd. The caller is now responsible for closing it —
+    /// the primitive behind `std::http` connection takeover
+    /// (`Response { takeover: true }`) and any hand-off of a live
+    /// connection to a longer-lived owner.
+    fn release_fd() -> Int {
+        self.owns_fd = false;
+        return self.conn_fd;
+    }
+
     dissolve() {
         // Borrowed Streams (owns_fd == false) never close the fd
         // and emit no `close` event — the fd lives on past this

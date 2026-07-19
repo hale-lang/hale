@@ -126,6 +126,41 @@ declared `Api` with the right method, so it's a `Handler`. (Go
 programmers will recognize this; it's interfaces without the
 `impl` ceremony.)
 
+## Taking over the connection
+
+Some protocols start as HTTP and then stop being HTTP — WebSocket
+is the famous one. For those, a handler can *take over* the raw
+connection instead of finishing the request/response cycle:
+
+```hale
+locus WsHandler {
+    params { }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        // req.conn_fd is the live socket. Hand it to whoever
+        // will own the session (typically: publish it to a
+        // session locus on its own pool).
+        "ws.conn" <- Conn { fd: req.conn_fd };
+        return std::http::Response {
+            status: 101,
+            headers: "Upgrade: websocket\r\nConnection: Upgrade",
+            body: "",
+            takeover: true
+        };
+    }
+}
+```
+
+With `takeover: true` the server writes just the status line and
+your headers — no `Content-Length`, no `Connection: close` — and
+then *leaves the socket open and forgets it*. It's yours: read
+and write it through the raw-fd `std::io::tcp` functions or a
+borrowed `Stream { conn_fd: fd, owns_fd: false }`, and close it
+when the session ends. Two things to remember: the server's 5s
+receive timeout is still set on the fd (clear it with
+`std::io::tcp::set_recv_timeout(fd, 0)` for a long-lived
+session), and a takeover response without stashing `req.conn_fd`
+leaks the connection.
+
 ## Calling out
 
 Outbound requests are one call:

@@ -39,6 +39,14 @@ type __StdHttpRequest {
     version: String;
     headers: String;
     body: String;
+    /// The live connection fd (Upgrade/takeover surface,
+    /// 2026-07-19). Populated by the Server's per-connection
+    /// loop before dispatch; -1 when the Request was built by
+    /// `parse_request` outside a Server (unit tests, Router
+    /// dispatch probes). Only meaningful together with
+    /// `Response { takeover: true }` — stash it (typically
+    /// publish to a session locus) and the connection is yours.
+    conn_fd: Int = -1;
 }
 
 // Response carries the status code (200, 404, etc.) plus a
@@ -60,6 +68,18 @@ type __StdHttpResponse {
     content_type: String = "text/plain";
     headers: String = "";
     body: String;
+    /// Connection takeover (2026-07-19): when true, the Server
+    /// writes ONLY the status line + `headers` + blank line — no
+    /// Content-Type/Content-Length/Connection: close, no body —
+    /// and returns without closing the fd. The handler owns the
+    /// connection from that moment (it read `req.conn_fd`); the
+    /// 5s recv timeout the conn loop set is still armed — clear
+    /// or re-arm it via `std::io::tcp::set_recv_timeout`. The
+    /// canonical use is `101 Switching Protocols` with
+    /// `Upgrade:`/`Connection: Upgrade` lines in `headers`
+    /// (WebSocket), but takeover is status-agnostic (a CONNECT
+    /// tunnel's 200 works the same way).
+    takeover: Bool = false;
 }
 
 // Map a numeric HTTP status to its canonical reason phrase.
@@ -68,6 +88,7 @@ type __StdHttpResponse {
 // phrase. Lives in the stdlib so user code that wants
 // reason-phrase rendering doesn't have to redo this table.
 fn __status_phrase(status: Int) -> String {
+    if status == 101 { return "Switching Protocols"; }
     if status == 200 { return "OK"; }
     if status == 301 { return "Moved Permanently"; }
     if status == 400 { return "Bad Request"; }
@@ -401,8 +422,25 @@ fn __http_handle_one_conn(conn_fd: Int, h: std::http::Handler) {
         });
         return;
     }
-    let req = std::http::parse_request(raw);
+    let mut req = std::http::parse_request(raw);
+    req.conn_fd = conn_fd;
     let resp = h.handle(req);
+    if resp.takeover {
+        // Upgrade/takeover: status line + user headers only, then
+        // the fd leaves this Stream's ownership — its scope-exit
+        // dissolve becomes a no-op and the handler (which stashed
+        // req.conn_fd) drives the connection from here.
+        let phrase = __status_phrase(resp.status);
+        let status_line = "HTTP/1.1 " + to_string(resp.status) + " " + phrase + "\r\n";
+        let extra = if len(resp.headers) > 0 {
+            resp.headers + "\r\n"
+        } else {
+            ""
+        };
+        s.send(status_line + extra + "\r\n") or discard;
+        let _ = s.release_fd();
+        return;
+    }
     std::http::write_response(s, resp);
 }
 
