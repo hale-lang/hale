@@ -1,4 +1,6 @@
-//! `hale lsp` — a stdio Language Server (v1: diagnostics only).
+//! `hale lsp` — the Hale language server, compiled into the hale
+//! binary (its own crate since 2026-07-19 — same binary, cleaner
+//! boundary; the CLI re-exports it as `lsp`).
 //!
 //! The staged design from `notes/build-latency-and-lsp.md`: with
 //! `hale check` at ~10 ms whole-program, the server needs no
@@ -1486,7 +1488,7 @@ fn hover_text(
     Some(text)
 }
 
-pub(crate) fn sig_ty_str(t: &hale_types::stdlib_surface::SigTy) -> &'static str {
+pub fn sig_ty_str(t: &hale_types::stdlib_surface::SigTy) -> &'static str {
     use hale_types::stdlib_surface::SigTy::*;
     match t {
         Int => "Int",
@@ -1849,7 +1851,7 @@ fn placement(
     Some(json!({ "fields": [], "noMainLocus": true }))
 }
 
-pub(crate) fn type_expr_str(t: &hale_syntax::ast::TypeExpr) -> String {
+pub fn type_expr_str(t: &hale_syntax::ast::TypeExpr) -> String {
     use hale_syntax::ast::TypeExpr;
     match t {
         TypeExpr::Primitive(p, _) => format!("{:?}", p),

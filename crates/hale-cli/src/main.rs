@@ -26,7 +26,7 @@ use std::process::ExitCode;
 
 use hale_syntax::ast::Program;
 
-mod lsp;
+use hale_lsp as lsp;
 mod pkg;
 
 fn main() -> ExitCode {

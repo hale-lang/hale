@@ -4,6 +4,7 @@ members = [
     "crates/hale-syntax",
     "crates/hale-types",
     "crates/hale-codegen",
+    "crates/hale-lsp",
     "crates/hale-cli",
     "crates/hale-ts-shim",
 ]

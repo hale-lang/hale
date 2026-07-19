@@ -1,0 +1,12 @@
+[package]
+name = "hale-lsp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Hale language server — compiled into the hale binary (`hale lsp`)"
+
+[dependencies]
+hale-syntax = { path = "../hale-syntax" }
+hale-types = { path = "../hale-types" }
+serde_json = "1"

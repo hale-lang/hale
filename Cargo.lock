@@ -50,6 +50,7 @@ name = "hale-cli"
 version = "0.11.9"
 dependencies = [
  "hale-codegen",
+ "hale-lsp",
  "hale-syntax",
  "hale-types",
  "serde",
@@ -64,6 +65,15 @@ dependencies = [
  "hale-syntax",
  "hale-types",
  "inkwell",
+]
+
+[[package]]
+name = "hale-lsp"
+version = "0.11.9"
+dependencies = [
+ "hale-syntax",
+ "hale-types",
+ "serde_json",
 ]
 
 [[package]]
