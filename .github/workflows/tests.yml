@@ -104,6 +104,18 @@ jobs:
         # lotus_ts_*`).
         run: cargo build --release --workspace
 
+      - name: hale fmt --check (canonical-form gate)
+        # The styleguide's §5 fmt tier: the repo's own .hl surface
+        # must be canonical. Partition 1 only — the check is
+        # whole-repo and takes <1s; running it 4× adds nothing.
+        if: matrix.partition == 1
+        run: |
+          ./target/release/hale fmt --check \
+            crates/hale-codegen/tests/fixtures/examples \
+            crates/hale-codegen/runtime/stdlib \
+            crates/hale-cli/tests/fixtures \
+            assets/readme play
+
       - name: cargo nextest run (partition ${{ matrix.partition }}/4)
         # Build-and-run in one job (no separate archive job + upload/
         # download round-trip): nextest compiles the test binaries
