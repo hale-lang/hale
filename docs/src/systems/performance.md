@@ -297,21 +297,30 @@ Two knobs matter when that default isn't what you want:
 
 ## Where Hale earns its overhead
 
-Hale is shaped to pay *coordination* cost well — bus dispatch,
-region setup, lifecycle — and that's where it *leads*. The
-lock-free bus plus static-dispatch devirtualization turned
-coordination from a deficit into an advantage over Go: message
-dispatch, once several times behind, now runs ahead. Reach for
-Hale's structure where the work is coordination-shaped, which is
-most real systems. On the fan-out path specifically, dispatch to a
-`where async_io` subscriber reuses coroutine stacks from a bounded
-per-worker pool rather than allocating one per delivery — the
-per-dispatch stack malloc/free is gone once the pool warms.
+Where Hale *leads* is where the design bet lives:
+**subject-keyed dispatch** — the lock-free bus plus
+static-dispatch devirtualization turned message dispatch from
+several-times-behind into an outright lead (ahead of Go ~2.4×,
+and ahead of *hand-written C* ~1.9× on the same workload) — and
+**contended `@form` writes** (hashmap set ~1.3–1.4× vs a
+hand-rolled C table). On the fan-out path, dispatch to a
+`where async_io` subscriber reuses coroutine stacks from a
+bounded per-worker pool rather than allocating one per delivery.
 
-The tight loop caught up too. Pure arithmetic used to be the
-place the substrate showed through, but native codegen closed the
-gap to **parity with `clang -O3` C**. Coordination is the lead;
-tight-loop arithmetic is no longer the price you pay for it.
+The tight loop caught up too: pure arithmetic used to be where
+the substrate showed through, but native codegen closed it to
+**parity with `clang -O3` C** (loops, vec reads, hashmap reads
+all sit in the ±15% band).
+
+And the honest column: the per-op overheads that remain are
+free-fn **call protocol** (~2.5× behind the compiled trio),
+**locus instantiation** (2–3× — region setup is a cost you pay
+at spawn, not a place Hale wins), and heap-payload dispatch.
+The design guidance follows directly: resolve handles at boot
+and keep hot paths on the bus and in `@form` storage (styleguide
+S1/S12), spawn loci at topology changes rather than per message
+(the compiler warns), and the overheads sit outside the paths
+that repeat.
 
 Current benchmark numbers and methodology live in
 [hale-lang/bench](https://github.com/hale-lang/bench).
