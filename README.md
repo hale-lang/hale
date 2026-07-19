@@ -231,6 +231,7 @@ hale build hello.hl && ./hello
 
 ```sh
 hale fmt                     # canonical formatter (zero config; --check for CI)
+hale verify                  # check + FAIL on any advisory — the CI discipline gate
 hale doc                     # API reference from /// doc comments (--json for agents)
 hale bench                   # run *_bench.hl benchmarks — ns/op + allocs/op
 hale lsp                     # stdio Language Server — live diagnostics
@@ -246,8 +247,9 @@ symbol's signature *with its contracts*: fallibility
 (`fallible(IoError)`), `@hot` / `@budget` enforcement status,
 a topic's routing key. Completion offers `self.` members with
 signatures, the `std::` surface namespace-by-namespace, and the
-seed's own symbols. Go-to-definition and find-references work
-across the seed. And the custom methods return what agents
+seed's own symbols. Go-to-definition, find-references, document
+outlines, and format-on-save (the same canonical form as
+`hale fmt`) work across the seed. And the custom methods return what agents
 otherwise grep for: `hale/busGraph` (the whole message topology —
 who publishes and subscribes every topic, with placements),
 `hale/placement` (every component's thread/pool assignment), and
@@ -305,8 +307,10 @@ They mean things, and they fit together:
 - **pond** — the contributed library catalog (web, databases, observability,
   AI clients), much of it thin `@ffi` bindings to C libraries and `interface`
   seams you swap. *Many lotus grow in a pond.*
-- **heron** — the tree-sitter grammar; editors and the future LSP drink from
-  it.
+- **heron** — the tree-sitter grammar, now at
+  [tree-sitter-hale](https://github.com/hale-lang/tree-sitter-hale);
+  editor highlighting drinks from it (the LSP ships in the `hale`
+  binary itself).
 
 ## Where to go next
 

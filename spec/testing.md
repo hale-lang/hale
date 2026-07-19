@@ -10,7 +10,8 @@ testing infrastructure to be enforced.
 `hale test` (Layer 1 + Layer 2), `hale bench` (Layer 3
 single-language), `hale fmt`, and `hale doc` all ship in the CLI
 today (`lex` / `parse` / `check` / `run` / `build` / `test` /
-`bench` / `verify` / `fmt` / `doc` / `fetch` / `lsp`). Only
+`bench` / `verify` / `fmt` / `doc` / `fetch` / `lsp` /
+`mcp`). Only
 `hale bench -compare` remains design-only below. `hale verify`
 runs `check`'s exact analysis surface but GATES: any finding —
 advisory or error — exits 1, making it the CI discipline gate

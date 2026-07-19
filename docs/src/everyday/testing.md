@@ -62,6 +62,10 @@ the program runs. Closures are part of Hale's
 [verification](../verification.md) story, not its testing library —
 but they're how you assert the things a unit test can't reach.
 
-> `hale bench` (benchmarks) and `hale fmt` (formatter) are specified
-> but not yet shipped — the current CLI is `run` / `build` / `check` /
-> `test` / `fetch`.
+The rest of the toolchain rides alongside: `hale bench` runs
+`*_bench.hl` benchmarks (zero-param `bench_*` fns, self-calibrated
+ns/op + allocs/op), `hale verify` is the CI gate (identical
+analysis to `check`, but *any* finding fails), `hale fmt` keeps
+everything canonical (`--check` in CI), and `hale doc` renders API
+references from `///` comments. Everything ships in the one
+binary.

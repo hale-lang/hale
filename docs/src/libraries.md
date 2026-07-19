@@ -84,10 +84,11 @@ vendor both explicitly.
 | `ml` | Neural-network primitives (`ml/neural`). |
 | `math` | Numeric helpers — `math/{matrix, stats}`. |
 
-> `heron` (the tree-sitter grammar that drives editor tooling) also
-> lives in pond, but it's developer tooling, not a vendored runtime
-> library you `import`. The `_util` directory holds internal helper
-> libs consumed by other pond libs, not imported directly by apps.
+> The tree-sitter grammar that drives editor highlighting lives at
+> [tree-sitter-hale](https://github.com/hale-lang/tree-sitter-hale)
+> (it moved out of pond — it's developer tooling, not a library you
+> `import`). The `_util` directory holds internal helper libs
+> consumed by other pond libs, not imported directly by apps.
 
 Pond is where the ecosystem grows: if a protocol, parser, or
 shape is too useful to rewrite per project but doesn't belong in

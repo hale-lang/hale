@@ -76,6 +76,11 @@ Hale program is built from.
 
 A few switches worth knowing from day one:
 
+- **The rest of the loop:** `hale fmt` keeps your code canonical
+  (zero config), `hale test` runs `*_test.hl`, `hale verify` is
+  `check` with teeth (any advisory fails — what CI runs), and
+  `hale doc` renders API references from `///` comments. Agent
+  hosts without a shell get all of it via `hale mcp`.
 - **Faster iteration:** `hale build --dev` (or `HALE_DEV=1`) uses a
   lighter optimization pipeline — noticeably quicker builds while
   you're in an edit-run loop. Release builds default to `-O3`
