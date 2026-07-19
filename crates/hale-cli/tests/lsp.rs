@@ -656,3 +656,107 @@ fn main() { Room { }; }
     let _ = lsp.child.wait();
     let _ = std::fs::remove_dir_all(&seed);
 }
+
+#[test]
+fn lsp_v5_formatting_symbols_enforcement() {
+    let seed = std::env::temp_dir().join(format!(
+        "hale_lsp_v5_test_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&seed).expect("mkdir");
+    let file = seed.join("main.hl");
+    let uri = format!("file://{}", file.display());
+
+    // Deliberately messy spacing so formatting has work to do.
+    let src = "locus Room {\n    params { name: String = \"lobby\"; }\n    @hot @budget(alloc_per_call = 0) fn bump(n:Int) -> Int { return n+1; }\n    fn fetch(u: String) -> Int fallible(IoError) { return 0; }\n}\nfn main() { Room { }; }\n";
+    std::fs::write(&file, src).expect("write");
+
+    let mut lsp = Lsp::start();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    let init = lsp.recv();
+    assert_eq!(
+        init.pointer("/result/capabilities/documentFormattingProvider"),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(
+        init.pointer("/result/capabilities/documentSymbolProvider"),
+        Some(&serde_json::json!(true))
+    );
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri, "languageId": "hale", "version": 1, "text": src
+        }}
+    }));
+    let _diags = lsp.recv();
+
+    // Formatting: one whole-document edit whose newText is the
+    // canonical form (spaces around + and after :).
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/formatting",
+        "params": {
+            "textDocument": { "uri": uri },
+            "options": { "tabSize": 4, "insertSpaces": true }
+        }
+    }));
+    let resp = lsp.recv();
+    let new_text = resp
+        .pointer("/result/0/newText")
+        .and_then(|v| v.as_str())
+        .expect("one edit");
+    assert!(new_text.contains("fn bump(n: Int) -> Int { return n + 1; }"),
+        "{}", new_text);
+
+    // Document symbols: Room (class) with params field + methods.
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "textDocument/documentSymbol",
+        "params": { "textDocument": { "uri": uri } }
+    }));
+    let resp = lsp.recv();
+    let syms = resp.pointer("/result").and_then(|v| v.as_array()).expect("syms");
+    let room = syms
+        .iter()
+        .find(|s| s["name"] == "Room")
+        .expect("Room symbol");
+    assert_eq!(room["kind"], 5, "locus = Class");
+    let children: Vec<&str> = room["children"]
+        .as_array()
+        .expect("children")
+        .iter()
+        .filter_map(|c| c["name"].as_str())
+        .collect();
+    assert!(children.contains(&"name"), "{:?}", children);
+    assert!(children.contains(&"bump"), "{:?}", children);
+
+    // hale/enforcement: bump carries hot + budget, fetch fallible.
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 4, "method": "hale/enforcement",
+        "params": { "textDocument": { "uri": uri } }
+    }));
+    let resp = lsp.recv();
+    let fns = resp.pointer("/result/fns").and_then(|v| v.as_array()).expect("fns");
+    let bump = fns
+        .iter()
+        .find(|f| f["name"] == "Room.bump")
+        .expect("Room.bump");
+    assert_eq!(bump["hot"], true);
+    assert_eq!(bump["budget"], 0);
+    let fetch = fns
+        .iter()
+        .find(|f| f["name"] == "Room.fetch")
+        .expect("Room.fetch");
+    assert_eq!(fetch["fallible"], "IoError");
+
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 5, "method": "shutdown", "params": null
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "exit", "params": null
+    }));
+    let _ = lsp.child.wait();
+    let _ = std::fs::remove_dir_all(&seed);
+}

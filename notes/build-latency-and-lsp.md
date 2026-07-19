@@ -96,10 +96,17 @@ is unparseable. Trigger characters `.` and `:`. Also shipped
 2026-07-18: `hale fmt` (see spec/testing.md) — an LSP
 documentFormattingProvider over it is a natural follow-up.
 
-Remaining LSP ideas (unstaged): documentFormattingProvider (wrap
-hale fmt --stdin), scope-aware references, rename, document
-symbols, workspace symbols, semantic tokens, `hale/enforcement`
-(per-fn @hot/@budget map).
+v5 (2026-07-19): **formatting + document symbols +
+`hale/enforcement` shipped.** documentFormattingProvider returns
+one whole-document edit from the hale fmt core (null on an
+unlexable buffer — never eat text); documentSymbol gives the
+hierarchical outline (locus → params fields + methods) from a
+file-local parse; `hale/enforcement` returns every user fn/method
+with its @hot / @budget / fallible / @unbounded contract — the
+certification map an agent consults before touching a hot path.
+
+Remaining LSP ideas (unstaged): scope-aware references, rename,
+workspace symbols, semantic tokens.
 
 ## Shipped (2026-07-18) — lld link + stdlib-cache re-scope
 

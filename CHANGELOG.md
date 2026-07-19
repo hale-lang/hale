@@ -6,6 +6,18 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **LSP v5: formatting, document symbols, `hale/enforcement`.**
+  documentFormattingProvider wraps the `hale fmt` core (one
+  whole-document edit; null on an unlexable buffer);
+  documentSymbol returns the hierarchical outline (locus → params
+  fields + methods); the hale-only `hale/enforcement` request maps
+  every user fn/method to its `@hot` / `@budget` / `fallible` /
+  `@unbounded` contract. Protocol test `lsp_v5_...`.
+- CI: `hale fmt --check` gates the repo's own `.hl` surface in the
+  tests workflow (styleguide §5's fmt tier).
+
 ## v0.11.9 — hale fmt + hale doc, LSP completion, DWARF variables, hale test @ffi (2026-07-18)
 
 - **`hale doc` — API-reference generator + `///` doc-comment

@@ -64,7 +64,9 @@ pub fn run_lsp() -> ExitCode {
                         "referencesProvider": true,
                         "completionProvider": {
                             "triggerCharacters": [".", ":"]
-                        }
+                        },
+                        "documentFormattingProvider": true,
+                        "documentSymbolProvider": true
                     },
                     "serverInfo": {
                         "name": "hale-lsp",
@@ -124,6 +126,24 @@ pub fn run_lsp() -> ExitCode {
                     .unwrap_or_else(|| json!({
                         "isIncomplete": false, "items": []
                     }));
+                respond(&mut writer, id, result);
+            }
+            "textDocument/formatting" => {
+                let result = formatting(&msg, &overlays)
+                    .unwrap_or(Value::Null);
+                respond(&mut writer, id, result);
+            }
+            "textDocument/documentSymbol" => {
+                let result = document_symbols(&msg, &overlays)
+                    .unwrap_or_else(|| json!([]));
+                respond(&mut writer, id, result);
+            }
+            // hale-only: per-fn enforcement map — every user fn and
+            // locus method with its @hot / @budget / fallible /
+            // @unbounded status. Params: { textDocument: { uri } }.
+            "hale/enforcement" => {
+                let result = enforcement(&msg, &overlays)
+                    .unwrap_or_else(|| json!({ "fns": [] }));
                 respond(&mut writer, id, result);
             }
             "textDocument/hover" => {
@@ -576,6 +596,231 @@ fn lsp_pos_to_offset(src: &str, line: u32, character: u32) -> usize {
     src.len()
 }
 
+
+
+// ---- v5: formatting + document symbols + hale/enforcement ------------
+
+/// Whole-document formatting via the hale fmt core: one TextEdit
+/// replacing the full document with its canonical form. Null when
+/// the buffer doesn't lex (formatting a broken buffer would eat
+/// text) or is already canonical (empty edit list).
+fn formatting(
+    msg: &Value,
+    overlays: &BTreeMap<PathBuf, String>,
+) -> Option<Value> {
+    let path = text_document_path(msg)?;
+    let src = overlay_or_disk(&path, overlays)?;
+    let out = match hale_syntax::fmt::format_source(&src) {
+        Ok(o) => o,
+        Err(_) => return None,
+    };
+    if out == src {
+        return Some(json!([]));
+    }
+    let (el, ec) = offset_to_lsp_pos(&src, src.len());
+    Some(json!([{
+        "range": {
+            "start": { "line": 0, "character": 0 },
+            "end":   { "line": el, "character": ec }
+        },
+        "newText": out
+    }]))
+}
+
+/// LSP SymbolKind constants used below.
+mod sym_kind {
+    pub const METHOD: u64 = 6;
+    pub const FIELD: u64 = 8;
+    pub const CLASS: u64 = 5;
+    pub const INTERFACE: u64 = 11;
+    pub const FUNCTION: u64 = 12;
+    pub const CONSTANT: u64 = 14;
+    pub const STRUCT: u64 = 23;
+    pub const EVENT: u64 = 24;
+    pub const ENUM: u64 = 10;
+}
+
+fn sym_range(src: &str, span: hale_syntax::Span) -> Value {
+    let (sl, sc) = offset_to_lsp_pos(src, span.start.as_usize());
+    let (el, ec) = offset_to_lsp_pos(src, span.end.as_usize());
+    json!({
+        "start": { "line": sl, "character": sc },
+        "end":   { "line": el, "character": ec }
+    })
+}
+
+/// Per-document outline: hierarchical DocumentSymbols from a
+/// single-file parse (file-local spans, no seed analysis needed).
+fn document_symbols(
+    msg: &Value,
+    overlays: &BTreeMap<PathBuf, String>,
+) -> Option<Value> {
+    use hale_syntax::ast::{LocusMember, TopDecl, TypeDeclBody};
+    let path = text_document_path(msg)?;
+    let src = overlay_or_disk(&path, overlays)?;
+    let program = hale_syntax::parse_source(&src).ok()?;
+
+    let mk = |name: &str,
+              kind: u64,
+              full: hale_syntax::Span,
+              sel: hale_syntax::Span,
+              children: Vec<Value>| {
+        let mut v = json!({
+            "name": name,
+            "kind": kind,
+            "range": sym_range(&src, full),
+            "selectionRange": sym_range(&src, sel),
+        });
+        if !children.is_empty() {
+            v["children"] = json!(children);
+        }
+        v
+    };
+
+    let mut out: Vec<Value> = Vec::new();
+    for item in &program.items {
+        match item {
+            TopDecl::Fn(f) => {
+                out.push(mk(
+                    &f.name.name,
+                    sym_kind::FUNCTION,
+                    f.span,
+                    f.name.span,
+                    Vec::new(),
+                ));
+            }
+            TopDecl::Locus(l) => {
+                let mut children = Vec::new();
+                for m in &l.members {
+                    match m {
+                        LocusMember::Params(pb) => {
+                            for p in &pb.params {
+                                children.push(mk(
+                                    &p.name.name,
+                                    sym_kind::FIELD,
+                                    p.span,
+                                    p.name.span,
+                                    Vec::new(),
+                                ));
+                            }
+                        }
+                        LocusMember::Fn(f) => {
+                            children.push(mk(
+                                &f.name.name,
+                                sym_kind::METHOD,
+                                f.span,
+                                f.name.span,
+                                Vec::new(),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+                out.push(mk(
+                    &l.name.name,
+                    sym_kind::CLASS,
+                    l.span,
+                    l.name.span,
+                    children,
+                ));
+            }
+            TopDecl::Type(t) => {
+                let kind = match &t.body {
+                    TypeDeclBody::Enum(_) => sym_kind::ENUM,
+                    _ => sym_kind::STRUCT,
+                };
+                out.push(mk(
+                    &t.name.name,
+                    kind,
+                    t.span,
+                    t.name.span,
+                    Vec::new(),
+                ));
+            }
+            TopDecl::Topic(t) => {
+                out.push(mk(
+                    &t.name.name,
+                    sym_kind::EVENT,
+                    t.name.span,
+                    t.name.span,
+                    Vec::new(),
+                ));
+            }
+            TopDecl::Interface(i) => {
+                out.push(mk(
+                    &i.name.name,
+                    sym_kind::INTERFACE,
+                    i.name.span,
+                    i.name.span,
+                    Vec::new(),
+                ));
+            }
+            TopDecl::Const(c) => {
+                out.push(mk(
+                    &c.name.name,
+                    sym_kind::CONSTANT,
+                    c.span,
+                    c.name.span,
+                    Vec::new(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    Some(json!(out))
+}
+
+/// hale/enforcement: every user fn + locus method in the seed with
+/// its enforcement contract — @hot, @budget(N), fallible payload,
+/// @unbounded — the certification map an agent consults before
+/// touching a hot path.
+fn enforcement(
+    msg: &Value,
+    overlays: &BTreeMap<PathBuf, String>,
+) -> Option<Value> {
+    use hale_syntax::ast::{LocusMember, TopDecl};
+    let path = text_document_path(msg)?;
+    let analysis = analyze_seed(&path, overlays);
+    let mut fns: Vec<Value> = Vec::new();
+    for (fpath, program) in &analysis.programs {
+        let Some(src) = analysis.sources.get(fpath) else { continue };
+        let base = analysis.base_of(fpath).unwrap_or(0) as usize;
+        let mut push_fn = |f: &hale_syntax::ast::FnDecl,
+                           locus: Option<&str>| {
+            if f.name.name.starts_with("__") {
+                return;
+            }
+            let local = f.name.span.start.as_usize().saturating_sub(base);
+            let (line, _) = offset_to_lsp_pos(src, local);
+            fns.push(json!({
+                "name": match locus {
+                    Some(l) => format!("{}.{}", l, f.name.name),
+                    None => f.name.name.clone(),
+                },
+                "file": fpath.display().to_string(),
+                "line": line,
+                "hot": f.hot,
+                "budget": f.budget,
+                "unbounded": f.unbounded,
+                "fallible": f.fallible.as_ref().map(type_expr_str),
+            }));
+        };
+        for item in &program.items {
+            match item {
+                TopDecl::Fn(f) => push_fn(f, None),
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        if let LocusMember::Fn(f) = m {
+                            push_fn(f, Some(&l.name.name));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Some(json!({ "fns": fns }))
+}
 
 // ---- v4: completion --------------------------------------------------
 //
