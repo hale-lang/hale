@@ -29,6 +29,8 @@
 // A parsed URL. `parse_url` produces one; callers may also build
 // one by hand and feed it to `request`. `port` 0 at parse time
 // takes the scheme default (80 / 443).
+/// A decomposed URL: scheme/host/port/path (query rides in
+/// `path`; no userinfo or fragments).
 type __StdHttpUrl {
     scheme: String = "http";
     host: String = "";
@@ -39,6 +41,8 @@ type __StdHttpUrl {
 // One outbound request. Headers are a CRLF-joined block (no
 // trailing CRLF) so the wire assembly is a single append; body
 // is Bytes for binary safety.
+/// Client-side request: method / url / packed headers / Bytes
+/// body. Distinct from the server-side Request on purpose.
 type __StdHttpClientRequest {
     method: String = "GET";
     url: std::http::Url;
@@ -49,6 +53,8 @@ type __StdHttpClientRequest {
 // One received response. `headers` is the same packed block
 // shape; `body` is exactly the framed payload (or what arrived
 // before the peer closed).
+/// Client-side response: status / packed headers / Bytes body
+/// (binary-safe — embedded NULs survive).
 type __StdHttpClientResponse {
     status: Int = 0;
     headers: String = "";
@@ -61,6 +67,9 @@ type __StdHttpClientResponse {
 // retries_exhausted. `status` carries the HTTP code when the
 // failure happened post-parse (a 5xx surfacing through the err
 // arm); 0 otherwise.
+/// The client's fallible payload. `kind` is one of: bad_url,
+/// unsupported_scheme, connect_failed, send_failed, recv_failed,
+/// bad_response, too_large, retries_exhausted.
 type __StdHttpError {
     kind: String = "";
     status: Int = 0;
@@ -79,6 +88,8 @@ fn __http_default_port(scheme: String) -> Int {
 // optional path (query string rides in `path`; that's all a
 // request line needs). `//host/path` is tolerated as http.
 // Rejects bare paths, missing host, malformed port.
+/// Decompose a URL string; fails with HttpError{bad_url} on
+/// malformed input.
 fn __http_parse_url(s: String) -> std::http::Url fallible(std::http::HttpError) {
     let total = len(s);
     if total <= 0 {
@@ -549,6 +560,9 @@ fn __http_round_trip_with_retry(
 // ---- free-fn surface (one-shot) -------------------------------------
 
 // `std::http::get(url)`.
+/// One-shot GET: connect, send, read to close. `Connection:
+/// close`; https rides std::io::tls (placement caveat: TLS recv
+/// blocks the worker — pinned or classic pools).
 fn __http_client_get(url_str: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let u = __http_parse_url(url_str) or raise;
     let _ = __http_check_scheme(u.scheme) or raise;
@@ -557,6 +571,8 @@ fn __http_client_get(url_str: String) -> std::http::ClientResponse fallible(std:
 }
 
 // `std::http::post(url, body, content_type)`.
+/// One-shot POST with a body and content type. Same contract as
+/// `get`.
 fn __http_client_post(url_str: String, body: Bytes, content_type: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let u = __http_parse_url(url_str) or raise;
     let _ = __http_check_scheme(u.scheme) or raise;
@@ -568,6 +584,7 @@ fn __http_client_post(url_str: String, body: Bytes, content_type: String) -> std
 
 // `std::http::request(req)` — full control over method / headers
 // / body / a hand-built Url.
+/// One-shot arbitrary request (build a ClientRequest yourself).
 fn __http_client_request(req: std::http::ClientRequest) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let _ = __http_check_scheme(req.url.scheme) or raise;
     return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216) or raise;
@@ -585,6 +602,11 @@ fn __http_client_request(req: std::http::ClientRequest) -> std::http::ClientResp
 // slots cover the typical client workload (an API + a couple
 // of webhooks).
 
+/// The pooled client: `user_agent`/`timeout_ms`/`max_retries`/
+/// `max_body` params; `keep_alive: true` switches to framed
+/// reads (Content-Length or chunked) over a 4-slot per-host:port
+/// connection pool with retry-and-backoff. Same fallible
+/// get/post/request surface as the free fns.
 locus __StdHttpClient {
     params {
         user_agent: String = "hale-std-http/0.11";

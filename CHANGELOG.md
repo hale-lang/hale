@@ -8,6 +8,20 @@ behavior.
 
 ## Unreleased
 
+- **Stdlib doc migration complete at decl level.** Every public
+  `.hl`-backed declaration in the rename table — 73 more across 19
+  files (http Server/Router/Client + both Request/Response pairs,
+  io_tcp Stream/Listener, udp Reader, json Builder + span types,
+  process Child + the full fn family, file, term, text sinks,
+  yaml, cli, iter, tagged, mirror_ring, lang, name, source, bus
+  Adapter) — now carries `///` docs, so `hale doc --stdlib`
+  renders a fully-documented reference for the entire locus/type
+  surface (`--stdlib` also gained a Type arm for the renamed
+  type decls). Remaining doc-less entries are the
+  signature-table-only C-primitive fns, which need a doc field in
+  the FnSig table (separate arc). Method-level docs exist where
+  the surface demanded them (metrics); broad method-doc coverage
+  is incremental from here.
 - **`std::http` connection takeover — the Upgrade surface.**
   `Request.conn_fd` carries the live fd into the handler;
   `Response { takeover: true }` writes only the status line + the

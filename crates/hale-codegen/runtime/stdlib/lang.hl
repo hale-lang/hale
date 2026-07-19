@@ -26,6 +26,8 @@
 // directly — those are language-agnostic substrate. Only
 // CLASSIFICATION + NAME EXTRACTION go through `Lang`.
 
+/// Natural-language helpers (pluralize/singularize and
+/// friends) over the morpheme tables.
 locus __StdLangLang {
     params {
         // Per-language flavor. v0: "go". Future: "rust",
@@ -498,6 +500,8 @@ locus __StdLangLang {
 // fabricating motions for short non-verb-stem nouns
 // ("Order" → "ording" is wrong; "User" → "using" is wrong).
 // Honesty about uncertainty preserves the recognition.
+/// One morpheme entry in the lang tables (internal shape,
+/// public for iteration).
 locus __StdLangMorpheme {
     params {
         // Per-language flavor. v0: "go". Other flavors share

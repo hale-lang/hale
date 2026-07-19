@@ -47,6 +47,9 @@
 // is symmetric: recv'd bytes go back to the router which
 // deserializes per the subscribing handler's payload type.
 
+/// Contract for user-space transports plugged into `bindings { }`:
+/// an adapter locus exposes recv-loop entry points the runtime
+/// drives to move wire bytes onto the bus (see spec/bus.md).
 interface __StdBusAdapter {
     fn send(subject: String, bytes: Bytes);
 }

@@ -45,6 +45,9 @@
 //       };
 //       OnboardL { config: cfg };
 //   }
+/// Layered config resolution: CLI flag beats env var beats
+/// default. `str_opt("--port", "PORT", "8080")` / `int_opt` /
+/// `bool_opt` answer from the highest-precedence source present.
 locus __StdCliResolver {
     params {
         // Environment-variable prefix. Each `get(key, ...)`

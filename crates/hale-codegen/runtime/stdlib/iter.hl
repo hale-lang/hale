@@ -26,6 +26,9 @@
 // covers the universal config-file shape (blank lines + lines
 // starting with `#`); callers with different skip rules drop the
 // helper and write their own predicate.
+/// Line iterator over a String: `next()` yields successive
+/// lines ("" + `done()` at the end) without materializing a
+/// list.
 locus __StdIterLines {
     params { }
 

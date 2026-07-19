@@ -193,12 +193,17 @@ fn __md_to_html(md: String) -> String {
 //
 // Resolves notes/hale-friction.md 2026-05-10
 // `sink-as-tagged-locus` from [PARTIAL] to [FIXED].
+/// Structural text-output contract: `write(s)` / `line(s)` /
+/// `newline()`. Satisfied by StdoutSink, StringSink, FileSink,
+/// and std::log::FileSink — write formatters against this, not
+/// a concrete sink.
 interface __StdTextSink {
     fn write(s: String);
     fn line(s: String);
     fn newline();
 }
 
+/// The Sink that prints to stdout.
 locus __StdTextStdoutSink {
     params { }
 
@@ -215,6 +220,8 @@ locus __StdTextStdoutSink {
     }
 }
 
+/// The Sink that accumulates into a String (`contents()`)
+/// — the test double for anything writing to a Sink.
 locus __StdTextStringSink {
     params {
         buf: String = "";
@@ -240,6 +247,8 @@ locus __StdTextStringSink {
     }
 }
 
+/// The Sink that appends to a file path (no rotation — for
+/// rotation use std::log::FileSink).
 locus __StdTextFileSink {
     params {
         path: String = "";

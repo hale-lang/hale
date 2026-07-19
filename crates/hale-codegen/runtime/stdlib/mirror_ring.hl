@@ -19,6 +19,10 @@
 //
 // Linux only (memfd_create); birth fails (alloc_failed) elsewhere or on a
 // non-power-of-two / non-page-multiple cap.
+/// A mirror-mapped ring buffer: `writable()`/`readable()` hand
+/// out contiguous BytesMut windows even across the wrap point
+/// (the two virtual mappings alias one physical buffer), so
+/// protocol parsers never see a split record.
 locus __StdIoMirrorRing {
     params {
         cap: Int = 0;

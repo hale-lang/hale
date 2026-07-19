@@ -34,6 +34,9 @@
 //   bytes  — bytes transferred for send/recv events; -1 else
 //   fd     — the underlying socket fd, for correlating
 //            multi-connection traffic onto a single subject
+/// One bus-routed I/O observability event (phase / detail /
+/// bytes / fd) — published on `io.tcp.**` / `io.http.**` when a
+/// Stream's or Server's `log_subject` is set.
 type __StdIoTcpLogEvent {
     phase: String = "";
     detail: String = "";
@@ -66,6 +69,11 @@ type IoError {
 // `s.send(msg)` / `s.recv(max)` against it directly. Standard
 // Hale locus shape — no special cases.
 
+/// A connected TCP stream: `send`/`send_bytes`/`recv`/
+/// `recv_bytes` (all fallible(IoError); EOF and recv-timeout
+/// return empty). Owns its fd by default and closes on dissolve;
+/// borrow with `owns_fd: false`, or take the fd away with
+/// `release_fd()`. `log_subject` publishes per-op bus events.
 locus __StdIoTcpStream {
     params {
         conn_fd: Int = -1;
@@ -244,6 +252,9 @@ fn __handle_one_connection(conn_fd: Int, on_conn: fn (std::io::tcp::Stream)) {
 // wrong. Removed in a later milestone once the stdlib pattern
 // is well-trodden.
 
+/// A listening TCP socket: binds host:port (SO_REUSEADDR, no
+/// SO_REUSEPORT — exclusive bind by design), `accept()` yields
+/// connection fds. Closes on dissolve.
 locus __StdIoTcpListener {
     params {
         host: String = "127.0.0.1";

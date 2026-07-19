@@ -14,6 +14,9 @@
 // extension is supplied (rather than detected) because callers
 // usually know which flavor they're targeting — and v0 doesn't
 // have option types to express "detect from the path."
+/// Identifier-convention conversions: snake_case /
+/// PascalCase / camelCase / kebab-case transforms over one
+/// analyzer.
 locus __StdNameConvention {
     params {
         // Source-extension stripped by propose_locus_name.

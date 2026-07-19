@@ -17,6 +17,9 @@
 // contain those characters, so the no-op is functionally
 // correct for current consumers. The hook exists so a future
 // escaping pass lands without touching every call site.
+/// Streaming JSON output assembly: `obj_open`/`key`/`value`
+/// family appends into an internal buffer, `finish()` returns
+/// the document. No intermediate tree.
 locus __StdJsonBuilder {
     // 2026-05-17 — Builder now supports two styles, sharing
     // state on one locus:
@@ -530,6 +533,8 @@ fn __json_find_field_raw(json: String, name: String) -> String {
 //       println(title);
 //       it = std::json::array_next(it);
 //   }
+/// Cursor state for iterating a JSON array in place (see
+/// `std::json::iter_array`).
 type __JsonArrayIter {
     json: String;
     pos: Int; // next-byte index in `json`; -1 once exhausted
@@ -651,6 +656,8 @@ fn __json_array_step(json: String, start: Int) -> std::json::ArrayIter {
 //       );
 //       it = std::json::array_next_span(it, body);
 //   }
+/// A [start, end) byte span of one array element inside the
+/// source String — parse it in place with the range fns.
 type __JsonArrayIterSpan {
     pos: Int; // next scan position in source json
     cur_start: Int; // current element's start (-1 when done)
@@ -799,6 +806,8 @@ fn __json_iter_substring(it: std::json::ArrayIterSpan, json: String) -> String {
 // between the quotes — correct for the unescaped object keys that cover
 // effectively all real schemas; an escaped key (`"a\"b"`) won't match
 // and is treated as an unknown field (skipped).
+/// A key + value byte span of one object field inside the
+/// source String.
 type __JsonObjectIterSpan {
     pos: Int; // next scan position in source json
     key_start: Int; // current key's content start (inside quotes), -1 done
@@ -968,6 +977,9 @@ fn __json_obj_value_string(it: std::json::ObjectIterSpan, json: String) -> Strin
 //       ) or raise;
 //       it = std::json::array_next_span(it, json);
 //   }
+/// A [start, end) byte range of a field's value inside the
+/// source String — feed to `std::str::range_parse_*` for
+/// allocation-free extraction.
 type __JsonFieldRange {
     ok: Bool; // false if field absent / malformed / iter exhausted
     start: Int; // inclusive byte offset within json

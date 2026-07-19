@@ -45,6 +45,10 @@
 // out-of-band error-channel hook on the locus). `open`,
 // `write_bytes`, `write_line`, and `seek` ARE fallible.
 
+/// A line-oriented open file handle. Construct via
+/// `std::io::file::open`; read with `read_line`, write with
+/// `write_line`/`write_bytes`, reposition with `seek`. The fd
+/// closes when the File dissolves.
 locus __StdIoFileFile {
     params {
         // Held fd from open(). -1 sentinel means "never opened"
@@ -71,6 +75,9 @@ locus __StdIoFileFile {
 //   - kind="permission_denied" if open() returns EACCES / EPERM
 //   - kind="invalid" if mode_str isn't one of the recognized
 //     mode strings
+/// Open a file. `mode`: "r" read, "w" truncate-write, "a"
+/// append, "r+" read-write. Fails with IoError on missing paths
+/// or permissions.
 fn __std_io_file_open(path: String, mode_str: String)
     -> std::io::file::File fallible(IoError) {
         let fd = std::io::file::__open(path, mode_str) or raise;
@@ -83,12 +90,15 @@ fn __std_io_file_open(path: String, mode_str: String)
 // Read one '\n'-terminated line. Returns the line (newline
 // included if present) or "" at EOF / on read error. Pair with
 // at_eof() for an EOF-aware loop.
+/// Read one line (newline stripped). Empty String at EOF —
+/// disambiguate with `at_eof(f)`.
 fn __std_io_file_read_line(f: std::io::file::File) -> String {
     return std::io::file::__read_line(f.fd);
 }
 
 // True when the file has no more bytes to read. Drives
 // while-loops over file contents.
+/// True once a read has hit end-of-file.
 fn __std_io_file_at_eof(f: std::io::file::File) -> Bool {
     return std::io::file::__at_eof(f.fd);
 }
@@ -96,6 +106,7 @@ fn __std_io_file_at_eof(f: std::io::file::File) -> Bool {
 // Write all bytes to the file. Position advances by len(bytes).
 // In "a" / append mode, writes always go to end-of-file
 // regardless of current position.
+/// Write raw bytes at the current position.
 fn __std_io_file_write_bytes(f: std::io::file::File, b: Bytes)
     -> () fallible(IoError) {
         std::io::file::__write_bytes(f.fd, b) or raise;
@@ -103,6 +114,7 @@ fn __std_io_file_write_bytes(f: std::io::file::File, b: Bytes)
 
 // Write a String followed by a '\n'. Convenience wrapper over
 // write_bytes for the common log-line case.
+/// Write a line (newline appended).
 fn __std_io_file_write_line(f: std::io::file::File, line: String)
     -> () fallible(IoError) {
         let body = std::bytes::concat(
@@ -114,6 +126,8 @@ fn __std_io_file_write_line(f: std::io::file::File, line: String)
 // Seek to absolute byte offset. Position negative or beyond
 // end-of-file raises invalid / io. Not valid on pipes /
 // sockets (they have no seekable position).
+/// Reposition the read/write cursor. `whence`: 0 = from start,
+/// 1 = from current, 2 = from end.
 fn __std_io_file_seek(f: std::io::file::File, offset: Int)
     -> () fallible(IoError) {
         std::io::file::__seek(f.fd, offset) or raise;

@@ -47,6 +47,10 @@
 // aliasing it. The view is valid until the NEXT `next()` (the builder
 // mutates then) — read or copy out of it before looping.
 
+/// An owned UDP receive loop: binds, then `read()` parks on
+/// async_io pools until a datagram arrives (source address via
+/// `std::io::udp::last_source_*`). The event-driven ingest
+/// primitive — one Reader per signal source.
 locus __StdIoUdpReader {
     params {
         // Bind address + port. Port 0 lets the OS choose (read it

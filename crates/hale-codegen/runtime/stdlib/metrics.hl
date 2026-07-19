@@ -30,12 +30,17 @@
 
 // Label set, serialized "k1=v1\tk2=v2". Construct via the
 // labels_* helpers.
+/// A serialized label set ("k1=v1\tk2=v2"). Build via the
+/// labels_* helpers, never by hand.
 type __StdMetricsLabels {
     kv: String = "";
 }
 
 // One stored series cell. kind: 0=counter 1=gauge 2=histogram;
 // histograms carry their index into the HistogramList.
+/// One stored series cell (kind 0=counter 1=gauge
+/// 2=histogram). Public for map iteration; mutate through the
+/// handles, not directly.
 type __StdMetricsEntry {
     key: String = "";
     name: String = "";
@@ -49,6 +54,8 @@ type __StdMetricsEntry {
 // histogram series. counts is one longer than bounds (the
 // trailing +Inf bucket). Capacity 32 bounds the bucket count;
 // registration clamps beyond it.
+/// Bucket bounds + cumulative counts + sum/count for one
+/// histogram series (bounds cap at 32; +Inf implicit).
 type __StdMetricsHistogramData {
     name: String = "";
     labels: String = "";
@@ -59,11 +66,16 @@ type __StdMetricsHistogramData {
 }
 
 @form(hashmap, sync = serialized)
+/// The Registry's series storage (`sync = serialized` — one
+/// mutex, single-writer-many-reader at scrape rates). Owned by
+/// the Registry as a param default; you rarely construct one.
 locus __StdMetricsMap {
     capacity { pool entries of __StdMetricsEntry indexed_by key; }
 }
 
 @form(vec)
+/// The Registry's histogram storage — owned param-default
+/// child, like MetricMap.
 locus __StdMetricsHistogramList {
     capacity { heap items of __StdMetricsHistogramData; }
 }
@@ -95,6 +107,8 @@ fn __metrics_labels_append(l: std::metrics::Labels, k: String, v: String) -> std
 }
 
 // Composite series key: `name{k1=v1\t...}`.
+/// The composite series key: `name{k1=v1\t...}` — exposed for
+/// tooling that inspects the MetricMap directly.
 fn __metrics_key(name: String, labels: std::metrics::Labels) -> String {
     return name + "{" + labels.kv + "}";
 }

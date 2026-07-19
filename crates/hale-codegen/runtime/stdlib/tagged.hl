@@ -18,6 +18,8 @@
 //
 // Built on std::iter::Lines so the newline-scan logic lives in
 // exactly one place across the seed.
+/// Group-by-tag accumulation: `add(tag, value)` buckets
+/// values; read back per tag. The keyed scratchpad shape.
 locus __StdTaggedAccumulator {
     params { }
 

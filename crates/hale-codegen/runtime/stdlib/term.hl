@@ -18,6 +18,9 @@
 // or an unhandled error escaping main restores the terminal too — not just
 // the normal dissolve path. (Uncatchable signals / _exit still bypass it.)
 // So an interactive app needs no FFI glue for terminal hygiene.
+/// Terminal raw mode as a scope: entering on birth, restoring
+/// cooked mode on dissolve — drop it in a `let` and the
+/// terminal is always restored.
 locus __StdTermRawMode {
     birth() {
         std::term::__raw_enable();
@@ -32,11 +35,13 @@ locus __StdTermRawMode {
 // sentinel — check `cols == 0`). Poll per frame instead of handling
 // SIGWINCH. The C primitive packs (cols << 16) | rows into one Int; this
 // wrapper unpacks it into the record (cols = p / 65536, rows = p % 65536).
+/// The terminal's current rows/cols (from `std::term::size`).
 type __StdTermTermSize {
     cols: Int;
     rows: Int;
 }
 
+/// Query the controlling terminal's size (TIOCGWINSZ).
 fn __std_term_size() -> __StdTermTermSize {
     let p = std::term::__size_packed();
     return __StdTermTermSize { cols: p / 65536, rows: p % 65536 };

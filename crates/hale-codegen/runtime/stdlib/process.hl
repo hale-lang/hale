@@ -47,6 +47,8 @@
 // automatically when the surrounding fn returns.
 
 // User-facing capture-output struct. Returned by `std::process::run`.
+/// A finished child's exit code + captured stdout/stderr
+/// (from `std::process::run`).
 type __StdProcessOutput {
     // Exit code (0..255) for a process that exited normally.
     // -1 if the process was killed by a signal — check `signal`
@@ -90,6 +92,9 @@ type __StdProcessWaitOutcome {
 // dissolve() is the only "method" the locus ships: it kills (TERM
 // → 100ms grace → KILL) and reaps any unwaited child so the
 // parent doesn't leak zombies on early scope exit.
+/// A spawned child process handle: pid + I/O fds. `pid <= 0`
+/// is the not-running sentinel (manual construction is legal;
+/// the wait/kill family no-ops on it).
 locus __StdProcessChild {
     params {
         // Original argv-blob passed to spawn. Held for diagnostics
@@ -138,6 +143,8 @@ locus __StdProcessChild {
 //   - kind="permission_denied" if argv[0] exists but isn't
 //     executable.
 //   - kind="invalid" for malformed argv (empty, oversized).
+/// Spawn argv with piped stdin/stdout/stderr; returns the
+/// Child without waiting.
 fn __std_process_spawn(argv: String) -> std::process::Child fallible(IoError) {
     let h = std::process::__spawn(argv) or raise;
     return std::process::Child {
@@ -161,6 +168,8 @@ fn __std_process_spawn(argv: String) -> std::process::Child fallible(IoError) {
 // "already exited with code 0" rather than raising — users who
 // construct a Child literal manually for testing get the
 // expected shape without a panic-via-or-raise.
+/// Block until the child exits; returns the exit code (-1 =
+/// killed by signal). Reaps the pid.
 fn __std_process_wait(c: std::process::Child) -> Int fallible(IoError) {
     if c.pid <= 0 {
         return 0;
@@ -177,6 +186,8 @@ fn __std_process_wait(c: std::process::Child) -> Int fallible(IoError) {
 //     This is usually benign — the goal of kill() is "this child
 //     is no longer running", which is true if it was already
 //     reaped. Callers wrap with `or discard` if they don't care.
+/// TERM, grace, then KILL — the escalating stop. Returns the
+/// exit code.
 fn __std_process_kill(c: std::process::Child) -> () fallible(IoError) {
     if c.pid > 0 {
         std::process::__kill_escalate(c.pid) or raise;
@@ -189,6 +200,8 @@ fn __std_process_kill(c: std::process::Child) -> () fallible(IoError) {
 // the write); SIGPIPE is ignored process-wide so a write after
 // the child closed its read end returns EPIPE via the IoError
 // channel instead of killing the parent.
+/// Write bytes to the child's stdin (close it by writing ""
+/// after — EOF signals many tools to proceed).
 fn __std_process_write_stdin(c: std::process::Child, s: String) -> Int fallible(IoError) {
     return std::process::__pipe_write(c.stdin_fd, s) or raise;
 }
@@ -198,6 +211,7 @@ fn __std_process_write_stdin(c: std::process::Child, s: String) -> Int fallible(
 // bytes are available OR the child has closed its stdout (EOF).
 // Use `wait` to distinguish "process still running, no output
 // yet" from "process exited".
+/// Drain available stdout bytes (empty when the pipe is dry).
 fn __std_process_read_stdout(c: std::process::Child) -> String fallible(IoError) {
     return std::process::__pipe_read(c.stdout_fd) or raise;
 }
@@ -205,6 +219,7 @@ fn __std_process_read_stdout(c: std::process::Child) -> String fallible(IoError)
 // Read available bytes from the child's stderr (non-blocking).
 // Surfaced as `std::process::read_stderr`. Same shape as
 // `read_stdout`.
+/// Drain available stderr bytes.
 fn __std_process_read_stderr(c: std::process::Child) -> String fallible(IoError) {
     return std::process::__pipe_read(c.stderr_fd) or raise;
 }
@@ -227,6 +242,9 @@ fn __std_process_read_stderr(c: std::process::Child) -> String fallible(IoError)
 // reaped — e.g. wait()/try_wait() already returned it, or the
 // dissolve() race reaped first. Same manual-Child convention as
 // `wait`: pid <= 0 answers "already exited, code 0".
+/// Non-blocking reap (waitpid WNOHANG): -2 = still running
+/// (poll again — the supervisor-tick idiom), 0..255 = exited,
+/// -1 = killed by signal. ECHILD surfaces kind="not_found".
 fn __std_process_try_wait(c: std::process::Child) -> Int fallible(IoError) {
     if c.pid <= 0 {
         return 0;
@@ -245,6 +263,9 @@ fn __std_process_try_wait(c: std::process::Child) -> Int fallible(IoError) {
 // Errors: kind="not_found" (ESRCH) when the pid is gone —
 // usually benign post-exit; wrap with `or discard` if you don't
 // care. No-op on an unspawned Child (pid <= 0).
+/// Send an arbitrary POSIX signal (15=TERM, 9=KILL, 1=HUP…).
+/// ESRCH (already gone) surfaces kind="not_found" — usually
+/// benign, `or discard`.
 fn __std_process_signal(c: std::process::Child, sig: Int) -> () fallible(IoError) {
     if c.pid > 0 {
         std::process::__signal_pid(c.pid, sig) or raise;

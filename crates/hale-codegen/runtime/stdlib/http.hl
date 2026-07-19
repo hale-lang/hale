@@ -33,6 +33,11 @@
 // per request. Lookup is case-sensitive at v1 — callers that
 // need RFC-7230 case-insensitive semantics pre-normalize the
 // header name.
+/// One parsed HTTP request as the Server hands it to a Handler:
+/// method / path (raw target incl. query string) / version /
+/// CRLF-joined headers / body — plus `conn_fd` for the takeover
+/// surface. Look headers up with `std::http::header(req, name)`
+/// (case-insensitive).
 type __StdHttpRequest {
     method: String;
     path: String;
@@ -63,6 +68,9 @@ type __StdHttpRequest {
 // common case (`Response { status: 200, body: "ok" }`) writes
 // a valid response without the agent having to populate every
 // field. Set it explicitly for JSON / HTML / etc.
+/// The Handler's answer. `content_type` defaults to text/plain;
+/// `headers` carries extra CRLF-joined lines (Set-Cookie, CORS);
+/// `takeover: true` switches to the Upgrade path (see field doc).
 type __StdHttpResponse {
     status: Int;
     content_type: String = "text/plain";
@@ -317,6 +325,9 @@ fn __write_http_response(s: std::io::tcp::Stream, resp: std::http::Response) {
 // shape, which had no place to put per-request state because
 // Hale has no closures. Stateful HTTP (URL shortener, todo
 // list, session store) lands naturally now.
+/// The Server's dispatch contract: any locus with
+/// `fn handle(req: Request) -> Response` satisfies it
+/// structurally — Router, metrics Endpoint, or your own locus.
 interface __StdHttpHandler {
     fn handle(req: std::http::Request) -> std::http::Response;
 }
@@ -444,6 +455,13 @@ fn __http_handle_one_conn(conn_fd: Int, h: std::http::Handler) {
     std::http::write_response(s, resp);
 }
 
+/// The HTTP/1.1 server: binds host:port, accepts, reassembles
+/// each request (multi-segment safe, 1 MiB cap, 5s recv
+/// timeout), dispatches to `handler`, writes the response,
+/// closes (`Connection: close`; no keep-alive). `max_accepts`
+/// bounds the loop for tests; `ready_signal` prints when the
+/// listen socket is up; `shutdown()` is cross-thread safe;
+/// `log_subject` publishes accept/listen events on the bus.
 locus __StdHttpServer {
     params {
         host: String = "127.0.0.1";
@@ -618,6 +636,8 @@ locus __StdHttpServer {
 // segments in a route pattern (a developer-authored constant —
 // exceeding it is a programming error, surfaced loudly by the
 // matcher's `or raise`).
+/// Captures + query params for one routed request; read via
+/// `path_param` / `query_param`.
 type __StdHttpRouteParams {
     qs: String = "";
     path_keys: bounded[String; 8];
@@ -630,6 +650,8 @@ type __StdHttpRouteParams {
 // including any query string; the Router matches against the
 // query-stripped path and `ctx.params.qs` carries the query
 // half.
+/// What a RouteHandler receives: the parsed Request (`ctx.req`)
+/// plus its RouteParams (`ctx.params`).
 type __StdHttpContext {
     req: std::http::Request;
     params: std::http::RouteParams;
@@ -637,6 +659,7 @@ type __StdHttpContext {
 
 // Route-table handler contract. Structural (F.20): any locus
 // with a matching `handle` satisfies it.
+/// A Router target: `fn handle(ctx: Context) -> Response`.
 interface __StdHttpRouteHandler {
     fn handle(ctx: std::http::Context) -> std::http::Response;
 }
@@ -644,6 +667,8 @@ interface __StdHttpRouteHandler {
 // Middleware contract — onion order: every `before` runs
 // forward over the Context, the matched handler runs, every
 // `after` runs backward over the Response.
+/// Router middleware, onion-ordered: `before(ctx)` runs forward
+/// on the way in, `after(ctx, resp)` backward on the way out.
 interface __StdHttpMiddleware {
     fn before(ctx: std::http::Context) -> std::http::Context;
     fn after(ctx: std::http::Context, resp: std::http::Response) -> std::http::Response;
@@ -652,6 +677,7 @@ interface __StdHttpMiddleware {
 // One registered route. `method` stored uppercased; `pattern`
 // as-written; `handler` is the F.20 fat-pointer interface value
 // coerced from the concrete locus at the literal-init site.
+/// One registered route (internal storage shape for Router).
 type __StdHttpRouteEntry {
     method: String;
     pattern: String;
@@ -674,6 +700,8 @@ locus __StdHttpMwList {
 
 // `std::http::path_param(ctx.params, "name")` — the value a
 // `:name` pattern segment captured, or "" when absent.
+/// A `:name` capture's value for this request, or "" when the
+/// pattern had no such capture (sentinel shape; not URL-decoded).
 fn __http_path_param(p: std::http::RouteParams, name: String) -> String {
     let n = count(p.path_keys);
     let mut i = 0;
@@ -691,6 +719,7 @@ fn __http_path_param(p: std::http::RouteParams, name: String) -> String {
 // `k=v` pair in the query string, or "" when absent. Walks
 // pair-by-pair so an early hit skips the rest; comparisons are
 // case-sensitive; values are NOT URL-decoded at v1.
+/// A `k=v` query value, or "" when absent (not URL-decoded).
 fn __http_query_param(p: std::http::RouteParams, name: String) -> String {
     let qs = p.qs;
     let total = len(qs);
@@ -851,6 +880,8 @@ fn __http_match_pattern_into(pattern: String, path: String, p: std::http::RouteP
 // ---- the Router ------------------------------------------------------
 
 // Default 404. Consumer-overridable via `Router { not_found: ... }`.
+/// The Router's default 404 handler; override via the
+/// `not_found` param.
 locus __StdHttpNotFound404 {
     fn handle(ctx: std::http::Context) -> std::http::Response {
         return std::http::Response {
@@ -905,6 +936,12 @@ fn __http_run_chain(
 
 // `std::http::Router` — register routes with `add`, middleware
 // with `use`, hand the Router to a Server as its handler.
+/// Method + pattern dispatch that IS a `std::http::Handler`:
+/// `add("GET", "/hello/:name", handler)` registers (first match
+/// wins, register specific-before-general), `use(mw)` stacks
+/// middleware, `dispatch(req)` runs the chain. Mount directly:
+/// `Server { handler: router }`. Patterns cap at 8 captures;
+/// trailing-slash tolerant.
 locus __StdHttpRouter {
     params {
         not_found: std::http::RouteHandler = __StdHttpNotFound404 { };

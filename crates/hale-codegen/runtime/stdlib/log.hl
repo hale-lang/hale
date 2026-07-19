@@ -34,6 +34,9 @@
 // to a printable name. `path` is the publishing Logger's
 // computed full_path (e.g. "app.db") so a sink subscribing on
 // a single subject can still show context.
+/// One log event on the bus: numeric level (1=INFO 2=WARN
+/// 3=ERROR 4=DEBUG 5=TRACE), cascaded logger path, message.
+/// Subscribe to `log.**` to build your own sink.
 type __StdLogEvent {
     level: Int;
     msg: String;

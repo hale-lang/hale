@@ -54,6 +54,8 @@ fn __std_source_walk_noop(lang: std::lang::Lang, name: String,
         return "";
     }
 
+/// Recursive source-tree walker: `next()` yields file paths
+/// under a root, filtered by extension.
 locus __StdSourceWalk {
     params {
         // Source-language flavor — passed straight to the

@@ -579,6 +579,53 @@ fn run_doc_stdlib(json: bool, out_path: Option<PathBuf>) -> ExitCode {
                     members: Vec::new(),
                 });
             }
+            TopDecl::Type(t) => {
+                let Some(path) = public.get(t.name.name.as_str()) else {
+                    continue;
+                };
+                use hale_syntax::ast::TypeDeclBody;
+                let leaf = path.rsplit("::").next().unwrap_or(path);
+                let sig = match &t.body {
+                    TypeDeclBody::Struct(fields) => {
+                        let fs = fields
+                            .iter()
+                            .filter(|f| !f.name.name.starts_with("__"))
+                            .map(|f| {
+                                format!(
+                                    "{}: {};",
+                                    f.name.name,
+                                    demangle(&lsp::type_expr_str(&f.ty))
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        format!("type {} {{ {} }}", leaf, fs)
+                    }
+                    TypeDeclBody::Enum(vs) => {
+                        let names = vs
+                            .iter()
+                            .map(|v| v.name.name.clone())
+                            .collect::<Vec<_>>()
+                            .join(" | ");
+                        format!("type {} = enum {{ {} }}", leaf, names)
+                    }
+                    TypeDeclBody::Alias(inner) => format!(
+                        "type {} = {}",
+                        leaf,
+                        demangle(&lsp::type_expr_str(inner))
+                    ),
+                };
+                groups.entry(ns_of(path)).or_default().push(DocEntry {
+                    kind: "type",
+                    name: path.clone(),
+                    signature: sig,
+                    doc: doc_comment_above(
+                        src,
+                        t.name.span.start.as_usize(),
+                    ),
+                    members: Vec::new(),
+                });
+            }
             TopDecl::Locus(l) => {
                 let Some(path) = public.get(l.name.name.as_str()) else {
                     continue;

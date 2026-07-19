@@ -28,6 +28,9 @@
 //           files:          # nested_open(2, "files")
 //             - file: x.go  # list_item_first(4, "file", "x.go")
 
+/// Streaming YAML output: mapping/sequence open-close +
+/// scalar emission into a buffer; `finish()` returns the
+/// document.
 locus __StdYamlBuilder {
     params { }
 
@@ -134,6 +137,9 @@ locus __StdYamlBuilder {
 // "absent" from "explicitly null" beyond what the renderer
 // chooses to check via `has()`.
 
+/// Minimal YAML reader for config shapes: top-level scalars,
+/// nested mappings, sequences of scalars — `get("a.b.c")`
+/// path lookups. Not a full YAML parser by design.
 locus __StdYamlReader {
     params {
         text: String = "";
