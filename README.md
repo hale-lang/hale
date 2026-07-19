@@ -232,6 +232,7 @@ hale build hello.hl && ./hello
 ```sh
 hale fmt                     # canonical formatter (zero config; --check for CI)
 hale doc                     # API reference from /// doc comments (--json for agents)
+hale bench                   # run *_bench.hl benchmarks — ns/op + allocs/op
 hale lsp                     # stdio Language Server — live diagnostics
 ```
 

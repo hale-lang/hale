@@ -8,6 +8,14 @@ behavior.
 
 ## Unreleased
 
+- **`hale bench` — the Layer-3 runner** (spec/testing.md's planned
+  row, now real). `*_bench.hl` discovery; zero-param `bench_*` free
+  fns; a synthesized driver self-calibrates Go-style (batch ×10
+  until ≥100 ms) and reports ns/op + allocs/op
+  (`std::diag::heap_alloc_count` deltas). Release-profile compile
+  with the same `[ffi]` pickup as build/test; `-run` filter;
+  `--json` records. Baselines-with-bands and `-compare` stay
+  planned. Tests: `hale-cli/tests/bench.rs`.
 - **`hale doc --stdlib` + first stdlib doc comments.** The `std::`
   surface renders as a generated API reference: public paths from
   the rename table, decl shapes + `///` docs from the bundled

@@ -7,12 +7,11 @@ discipline (closure tests, k_max bounds, projection-class
 invariants, multi-perspective stability commit-rules) needs
 testing infrastructure to be enforced.
 
-`hale test` (Layer 1 + Layer 2 discovery and execution) ships
-today. The benchmark, formatter, and standalone-verify tooling
-described below (`hale bench` / `hale fmt` / `hale verify`) is
-specified here but **not yet implemented** — the shipping CLI is
-`lex` / `parse` / `check` / `run` / `build` / `test` / `fetch`.
-Those sections describe the intended design, not current behavior.
+`hale test` (Layer 1 + Layer 2), `hale bench` (Layer 3
+single-language), `hale fmt`, and `hale doc` all ship in the CLI
+today (`lex` / `parse` / `check` / `run` / `build` / `test` /
+`bench` / `fmt` / `doc` / `fetch` / `lsp`). Only `hale verify`
+and `hale bench -compare` remain design-only below.
 
 ## Three layers of correctness
 
@@ -181,14 +180,37 @@ tests by suffix (`_test.hl`) regardless of location.
 | `hale test` | Run all `*_test.hl` files in the project |
 | `hale test -run pattern` | Run matching tests only |
 | | (`hale test` applies the same `hale.toml [ffi]` csrc/link pickup as `hale build`, so tests importing FFI-bearing libs link — 2026-07-18) |
-| `hale bench` *(planned)* | Run all `*_bench.hl` files |
+| `hale bench` | Run all `*_bench.hl` files (see below) |
 | `hale bench -compare` *(planned)* | Build and run external equivalents alongside |
 | `hale verify` *(planned)* | Layer-2 discipline checks specifically (no execution) |
 | `hale fmt` | Canonical formatter (Go-style: zero config; see below) |
 | `hale doc` | API reference from `///` doc comments (Markdown / `--json`; see below) |
 
-`hale test` runs Layer 1 + Layer 2 today; `hale bench` (planned)
-runs Layer 3.
+`hale test` runs Layer 1 + Layer 2 today; `hale bench` runs
+Layer 3's single-language half.
+
+## `hale bench` — the Layer-3 runner
+
+`hale bench [file | dir]` discovers `*_bench.hl` files (dir walk,
+`vendor/` and dot-dirs skipped); every **zero-param free fn named
+`bench_*`** is a benchmark. The runner appends a synthesized
+driver `main` (a bench file must not define its own), compiles at
+the release profile with the same `hale.toml [ffi]` pickup as
+build/test, and runs it. The driver self-calibrates Go-style:
+batch sizes grow ×10 until one batch takes ≥100 ms, then the
+final batch reports **ns/op** and **allocs/op**
+(`std::diag::heap_alloc_count` deltas; shown as `-` in sanitizer
+builds where the counting shim is absent). `-run <substr>`
+filters by bench name; `--json` emits one record per bench
+(`file`/`name`/`iters`/`ns_per_op`/`allocs_per_op`) for CI.
+Benchmarks may print their own output — non-report lines pass
+through.
+
+Still planned from the original design: stored baselines with
+tolerance bands as a CI gate, and `-compare` external-language
+equivalents. The `fn bench_*` magic-name convention (Go's
+`Benchmark*` shape) is the resolved answer to the "grammar
+extension or magic name?" question above — no grammar change.
 
 ## `hale doc` — the API-reference generator
 
