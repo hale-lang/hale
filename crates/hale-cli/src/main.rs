@@ -27,6 +27,7 @@ use std::process::ExitCode;
 use hale_syntax::ast::Program;
 
 use hale_lsp as lsp;
+mod mcp;
 mod pkg;
 
 fn main() -> ExitCode {
@@ -79,6 +80,14 @@ fn main() -> ExitCode {
     // derived per-document from the client's textDocument URIs.
     if cmd == "lsp" {
         return lsp::run_lsp();
+    }
+
+    // `mcp` speaks Model Context Protocol over stdio — the agent
+    // surface for hosts without a shell. Tools self-exec this
+    // binary (version-locked by construction) or call hale-lsp
+    // directly.
+    if cmd == "mcp" {
+        return mcp::run_mcp();
     }
 
     // `fmt` is discovery-driven like `test`: a bare `hale fmt`
@@ -156,6 +165,7 @@ fn usage() {
     eprintln!("        [--json] [-o <path>] [--stdlib: the std:: surface]");
     eprintln!("    hale fetch [repo-root]        fetch git deps from hale.toml into vendor/");
     eprintln!("    hale lsp                      stdio Language Server (diagnostics)");
+    eprintln!("    hale mcp                      stdio Model Context Protocol server (agent tools)");
     eprintln!();
     eprintln!("    hale --version               print the version");
     eprintln!("    hale --help                  print this help");

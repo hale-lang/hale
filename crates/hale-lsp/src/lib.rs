@@ -600,6 +600,42 @@ fn lsp_pos_to_offset(src: &str, line: u32, character: u32) -> usize {
 
 
 
+// ---- library surface for `hale mcp` ---------------------------------
+//
+// The custom requests, callable without a JSON-RPC transport: the
+// MCP subcommand exposes these as agent tools by direct library
+// call — same seed re-analysis, no drift possible.
+
+fn doc_msg(path: &Path) -> Value {
+    json!({ "params": { "textDocument": {
+        "uri": format!("file://{}", path.display())
+    }}})
+}
+
+/// The seed's bus graph (see the `hale/busGraph` LSP request).
+pub fn bus_graph_for_path(path: &Path) -> Value {
+    bus_graph(&doc_msg(path), &BTreeMap::new())
+        .unwrap_or_else(|| json!({ "subjects": [] }))
+}
+
+/// The main locus's placement map (`hale/placement`).
+pub fn placement_for_path(path: &Path) -> Value {
+    placement(&doc_msg(path), &BTreeMap::new())
+        .unwrap_or_else(|| json!({ "fields": [] }))
+}
+
+/// The allocation-bound survey (`hale/allocSummary`).
+pub fn alloc_summary_for_path(path: &Path) -> Value {
+    alloc_summary(&doc_msg(path), &BTreeMap::new())
+        .unwrap_or_else(|| json!({ "leakSites": [] }))
+}
+
+/// The per-fn enforcement map (`hale/enforcement`).
+pub fn enforcement_for_path(path: &Path) -> Value {
+    enforcement(&doc_msg(path), &BTreeMap::new())
+        .unwrap_or_else(|| json!({ "fns": [] }))
+}
+
 // ---- v5: formatting + document symbols + hale/enforcement ------------
 
 /// Whole-document formatting via the hale fmt core: one TextEdit

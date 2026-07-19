@@ -24,9 +24,50 @@ use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::fs;
 use std::hash::Hasher;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
+/// `hale mcp` docs-search: embed spec/*.md into the binary (864 KB
+/// in a 66 MB binary) so an installed hale grounds language rules
+/// with no sibling checkout. Generates OUT_DIR/spec_embed.rs with
+/// a (name, contents) table.
+fn embed_spec() {
+    let manifest = PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir"),
+    );
+    let spec_dir = manifest.join("../../spec");
+    println!("cargo:rerun-if-changed={}", spec_dir.display());
+    let mut entries: Vec<PathBuf> = fs::read_dir(&spec_dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "md"))
+                .collect()
+        })
+        .unwrap_or_default();
+    entries.sort();
+    let mut out = String::from(
+        "pub static SPEC_FILES: &[(&str, &str)] = &[\n",
+    );
+    for p in &entries {
+        println!("cargo:rerun-if-changed={}", p.display());
+        let name = p.file_name().unwrap().to_string_lossy();
+        writeln!(
+            out,
+            "    ({:?}, include_str!({:?})),",
+            name,
+            p.canonicalize().unwrap().display().to_string()
+        )
+        .unwrap();
+    }
+    out.push_str("];\n");
+    let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap())
+        .join("spec_embed.rs");
+    fs::write(dest, out).unwrap();
+}
+
 fn main() {
+    embed_spec();
     let manifest_dir = env::var("CARGO_MANIFEST_DIR")
         .expect("CARGO_MANIFEST_DIR set by cargo");
     // crates/hale-cli/ -> crates/ -> <repo-root>/

@@ -8,6 +8,24 @@ behavior.
 
 ## Unreleased
 
+- **Toolchain reorg: `hale mcp`, `crates/hale-lsp`,
+  tree-sitter-hale.** (1) `hale mcp` — a Model Context Protocol
+  server in the binary (stdio, newline-delimited JSON-RPC):
+  14 tools — the toolchain surface self-execs this very binary so
+  the tools and the CLI they describe cannot version-skew (the
+  drift that killed the separate Node server), the bus-graph/
+  placement/enforcement/alloc-summary analyses call hale-lsp
+  directly, and `hale_docs_search` greps the language spec
+  embedded at build time (864 KB — an installed hale grounds
+  language rules with no checkout). `HALE_MCP_ROOT` sandboxes
+  path arguments. The Node hale-mcp is retired. (2) The LSP moved
+  to its own workspace crate (`crates/hale-lsp`) — same binary,
+  same surface, cleaner boundary. (3) The tree-sitter grammar
+  moved out of pond to
+  [hale-lang/tree-sitter-hale](https://github.com/hale-lang/tree-sitter-hale)
+  (full history) with corpus-sync CI: every push parses the hale
+  fixture corpus; the 11 known grammar gaps are enumerated in its
+  issue #1 and XFAIL'd, so green means "no NEW drift".
 - **Stdlib doc migration complete at decl level.** Every public
   `.hl`-backed declaration in the rename table — 73 more across 19
   files (http Server/Router/Client + both Request/Response pairs,

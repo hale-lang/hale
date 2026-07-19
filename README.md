@@ -234,6 +234,7 @@ hale fmt                     # canonical formatter (zero config; --check for CI)
 hale doc                     # API reference from /// doc comments (--json for agents)
 hale bench                   # run *_bench.hl benchmarks — ns/op + allocs/op
 hale lsp                     # stdio Language Server — live diagnostics
+hale mcp                     # stdio MCP server — the same tools for shell-less agent hosts
 ```
 
 Point any LSP-speaking editor (or coding-agent harness — they speak
@@ -255,7 +256,13 @@ with positions). The whole program re-checks in ~10 ms
 per keystroke, so there's no indexing step, no warm-up, no
 configuration. (Scripted integrations can use
 `hale check app.hl --json` — one JSON object per diagnostic —
-instead.)
+instead.) Agent hosts without a shell (Claude Desktop, MCP
+clients) get the same toolchain via `hale mcp`: check/verify/
+build/run/test/bench/fmt/doc as typed tools, the bus-graph/
+placement/enforcement analyses as direct calls, and a spec
+search over the language specification embedded in the binary —
+`claude mcp add hale -- hale mcp` and there is nothing else to
+install or keep in sync.
 
 Platform-specific setup (Linux, macOS/Apple Silicon) is in
 [the install guide](./docs/src/getting-started/install.md).
