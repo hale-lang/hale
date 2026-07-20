@@ -12,11 +12,11 @@ applied the framework's primitives coherently rather than fought
 them.
 
 Every rule here is grounded in production Hale code — the
-`pond` contrib libraries, the `causality` game engine, the
-`fathom` market-data connectors, the `bench` performance corpus,
-and a downstream market-data service whose leak hunts drove much
-of the substrate's reclamation machinery. Rules cite the shape
-that earned them.
+`pond` contrib libraries, the `causality` game engine, a
+production market-data connector fleet, the `bench` performance
+corpus, and a downstream market-data service whose leak hunts
+drove much of the substrate's reclamation machinery. Rules cite
+the shape that earned them.
 
 The styleguide is normative for new code in `apps/`, the bundled
 stdlib seed (`crates/hale-codegen/runtime/stdlib/`), and
@@ -61,8 +61,8 @@ a locus plays, realized through which members it declares —
 through separate keywords. Don't hunt the grammar for a `service`
 or `module` keyword; pick the role from the catalog below and
 declare the members that realize it. (Production confirmation:
-`fathom` and `causality` together define every role in the
-catalog using exactly the two forms.)
+the connector fleet and `causality` together define every role
+in the catalog using exactly the two forms.)
 
 ### The memory model in one page
 
@@ -262,7 +262,7 @@ pervasively). Conventions learned there:
 - `@form(hashmap)` iterates in **bucket order** — add a
   `seq: Int` field if consumers need insertion order.
 - `@form(hashmap)` has no delete — model removal with a
-  tombstone field (`present: Bool`), the `fathom` idiom.
+  tombstone field (`present: Bool`), the production idiom.
 - Scalar `[T; N]` fixed arrays are the zero-alloc alternative
   when the population is fixed: `causality` runs its whole game
   state on SoA fixed arrays and uses **zero** `@form` loci.
