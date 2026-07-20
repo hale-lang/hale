@@ -1373,7 +1373,11 @@ impl Parser {
                     }
                     other => Err(Diag::parse(
                         self.peek_token().span,
-                        format!("expected tier integer, got {:?}", other),
+                        format!(
+                            "`tier` takes an integer memory-locality \
+                             tier, e.g. `locus Cache : tier 1`; got {:?}",
+                            other
+                        ),
                     )),
                 }
             }
@@ -1426,8 +1430,12 @@ impl Parser {
             other => Err(Diag::parse(
                 self.peek_token().span,
                 format!(
-                    "expected tier / projection annotation, got {:?}. \
-                     (Schedule moved to main's `placement {{ }}` block in F.31.)",
+                    "expected a locus header annotation after `:` — \
+                     `tier <N>` (memory locality), `projection \
+                     <rich|chunked|recognition(...)>`, or `serves \
+                     <Contract>` — got {:?}. (Thread placement is not \
+                     a locus annotation; it lives in main's \
+                     `placement {{ }}` block.)",
                     other
                 ),
             )),

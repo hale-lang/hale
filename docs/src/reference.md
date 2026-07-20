@@ -35,7 +35,7 @@ diagnostic's meaning, go there.
   the "what's not in the language" reflexes, and the formal
   design model into one file. Excellent for a human, too.
 - **Working programs** — `crates/hale-codegen/tests/fixtures/examples/`
-  holds ~70 small per-feature programs, numbered. Reading a few
+  holds 83 small per-feature programs, numbered. Reading a few
   near your target shape is the fastest way to see real,
   compiling Hale.
 

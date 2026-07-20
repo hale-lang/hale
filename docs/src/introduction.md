@@ -19,8 +19,10 @@ the bottom. There is one primitive — the **locus** — and the
 only thing that changes as you descend is how much of it you
 choose to see.
 
-> **Try it now:** the [playground](https://hale-lang.github.io/hale/play/) runs real Hale,
-> compiled to WebAssembly, right in your browser — no install.
+> **Try it now:** the [playground](https://hale-lang.github.io/hale/play/) runs a set of
+> curated Hale examples, precompiled to WebAssembly, right in your
+> browser — no install. (Read the source and run it; in-browser
+> editing isn't there yet.)
 
 This guide is built around that idea. It introduces Hale at four
 levels, each one self-contained:

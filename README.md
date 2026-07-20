@@ -202,10 +202,12 @@ system.
 
 ## Try it
 
-**No install — [run Hale in your browser](https://hale-lang.github.io/hale/play/).**
-The playground is real Hale, compiled to WebAssembly, running on the page
-(the UI itself is a Hale `@export locus` — the same `.hl` source runs native
-or in the browser).
+**No install — [run curated Hale examples in your browser](https://hale-lang.github.io/hale/play/).**
+Each playground example is real Hale, precompiled to WebAssembly and run
+on the page (the UI itself is a Hale `@export locus` — the same `.hl`
+source runs native or in the browser). You can read the source and run
+it; editing code in the browser isn't there yet — for that, install
+below.
 
 **Prebuilt Linux binaries** are on the
 [releases page](https://github.com/hale-lang/hale/releases) — download,
@@ -271,8 +273,10 @@ Platform-specific setup (Linux, macOS/Apple Silicon) is in
 
 ## Where the language stands
 
-The language surface is **stable** — most work from here is bugs,
-performance, and polish, not new syntax.
+The language surface has taken **no breaking changes since v0.10.0
+(2026-07-07)** — everything since has been additive (`@hot` / `@budget`
+enforcement, `match` expressions, String routing keys) plus runtime
+fixes. It's pre-1.0 because the frontier below is still moving.
 
 The proven core is the typed topic bus, `placement` / `bindings` deployment,
 `@form` collections, structural `interface`s, `@ffi` C bindings, and the
@@ -281,10 +285,33 @@ The proven core is the typed topic bus, `placement` / `bindings` deployment,
 `reperspective` hot-swap. (`mode` projections and `closure` assertions round
 out the surface; reach for them when your problem calls for them.)
 
-**Performance** is a lead, not a cost: at matched workloads, message dispatch
-and `@form` collections run ahead of Go after the lock-free bus and
-static-dispatch devirtualization, and native codegen brings tight loops to
-parity with `clang -O3`. Methodology and current numbers live in
+**Performance, scoped honestly:** Hale is faster than Go at message
+dispatch, JSON parsing, and `@form` collections — and slower at raw
+function-call and spawn overhead. From the cross-language snapshot
+(Hale v0.9.0 grid, 2026-06-30, Ryzen 7 9800X3D; the same workload shape
+in each language):
+
+| Bench | Hale | Go | vs Go |
+|---|---:|---:|---|
+| `bus_dispatch` (100k typed messages) | 196 µs | 471 µs | **2.4× faster** |
+| `json_parse` (200k 7-field parses) | 58.0 ms | 150.0 ms | **2.6× faster** |
+| `form_vec_push` (500k) | 573 µs | 2.76 ms | **4.8× faster** |
+| `loop_overhead` (100M xor-reduce) | 1.59 ms | 19.7 ms | **12.4× faster**\* |
+| `fn_call` (10M free-fn calls) | 19.1 ms | 7.7 ms | 2.5× slower |
+| `locus_instantiation` (100k) | 1.25 ms | 153 µs | 8.2× slower |
+| `coord_with_churn` (2000 children) | 42.8 µs | 2.4 µs | 18× slower |
+
+\* Not dead code on either side (both xor-accumulate and print the
+result) — but LLVM autovectorizes the reduction to AVX-512 while Go
+compiles it scalar, so it measures vectorization on reducible loops,
+not general loop speed.
+
+The split is the design showing through: every locus owns an arena, so
+calls and spawns pay region setup that dispatch and collections
+amortize away. On the roadmap: a cheaper call protocol and spawn path,
+and extending static devirtualization across pipeline hops. The full
+grid — including the losses, plus C and Rust comparators and
+reproduction instructions — lives in
 [hale-lang/bench](https://github.com/hale-lang/bench).
 
 ## Opinionated by design
@@ -320,8 +347,8 @@ They mean things, and they fit together:
   what it describes.
 - **[`AGENTS.md`](./AGENTS.md)** — the load-bearing prompt for coding models
   writing `.hl` (and a tight read for humans).
-- **[Examples](./crates/hale-codegen/tests/fixtures/examples/)** — ~70
-  working `.hl` programs.
+- **[Examples](./crates/hale-codegen/tests/fixtures/examples/)** — 83
+  working example programs (88 `.hl` files), compiled and run in CI.
 - **[pond](https://github.com/hale-lang/pond)** · contributed libraries.
   **[CONTRIBUTING](./CONTRIBUTING.md)** · how to build + send a change.
   **[Issues](https://github.com/hale-lang/hale/issues)** · questions, ideas,
