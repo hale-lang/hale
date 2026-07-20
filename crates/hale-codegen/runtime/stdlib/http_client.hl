@@ -23,6 +23,10 @@
 // make https calls on `pinned` or a classic cooperative pool
 // (styleguide C3 / §7). Plain-http calls park fine on async_io.
 //
+// `Transfer-Encoding: chunked` bodies are de-chunked on every
+// path (one-shot and keep-alive) — `body` is always the payload,
+// never the hex-size framing. Trailer headers are skipped.
+//
 // Not implemented at v1: redirects (3xx returns as-is),
 // URL-decoding, proxies, compression.
 
@@ -243,8 +247,11 @@ fn __http_empty_client_response() -> std::http::ClientResponse {
 
 // Split a received blob into status + headers + body. Headers
 // parse through the String view (ASCII-safe); the body is carved
-// from the Bytes by offset so binary content survives. status=0
-// on parse failure (callers treat as bad_response).
+// from the Bytes by offset so binary content survives. A
+// `Transfer-Encoding: chunked` body is de-chunked here — the
+// caller always sees the payload, never the hex-size framing —
+// and incomplete/malformed chunk framing parses as status=0
+// (callers treat as bad_response) rather than partial data.
 fn __http_parse_client_response(raw: Bytes) -> std::http::ClientResponse {
     let raw_len = len(raw);
     if raw_len <= 0 { return __http_empty_client_response(); }
@@ -262,7 +269,12 @@ fn __http_parse_client_response(raw: Bytes) -> std::http::ClientResponse {
     }
     let body_start = header_end + 4;
     let mut body = b"";
-    if body_start < raw_len {
+    let te = std::str::lower(__http_client_header(headers, "transfer-encoding"));
+    if std::str::index_of(te, "chunked") >= 0 {
+        let sc = __http_scan_chunks(raw, body_start, raw_len);
+        if !sc.complete { return __http_empty_client_response(); }
+        body = sc.body;
+    } else if body_start < raw_len {
         body = std::bytes::slice(raw, body_start, raw_len);
     }
     return std::http::ClientResponse { status: status, headers: headers, body: body };
@@ -355,26 +367,42 @@ fn __http_hex_size(raw: Bytes, lo: Int, hi: Int) -> Int {
     return v;
 }
 
-type __StdHttpChunkScan { body: Bytes; complete: Bool; }
+type __StdHttpChunkScan { body: Bytes; complete: Bool; bad: Bool; }
 
-// De-chunk [start, end); complete once the 0-size terminator is
-// seen, else "need more wire bytes".
+// De-chunk [start, end). complete once the 0-size terminator AND
+// its trailer section (optional trailer headers + final CRLF) are
+// seen; bad=true means the framing is malformed (not "need more
+// wire bytes") — callers must error, never return partial data.
 fn __http_scan_chunks(raw: Bytes, start: Int, end: Int) -> __StdHttpChunkScan {
     let out = std::bytes::BytesBuilder { initial_cap: 4096 };
     let mut pos = start;
     while pos < end {
         let nl = __http_crlf_at(raw, pos, end);
-        if nl < 0 { return __StdHttpChunkScan { body: b"", complete: false }; }
+        if nl < 0 { return __StdHttpChunkScan { body: b"", complete: false, bad: false }; }
         let size = __http_hex_size(raw, pos, nl);
-        if size < 0 { return __StdHttpChunkScan { body: b"", complete: false }; }
-        if size == 0 { return __StdHttpChunkScan { body: out.snapshot(), complete: true }; }
+        if size < 0 { return __StdHttpChunkScan { body: b"", complete: false, bad: true }; }
+        if size == 0 {
+            // Terminator chunk: skip trailer headers (ignored),
+            // then the blank line that ends the message.
+            let mut tpos = nl + 2;
+            while tpos < end {
+                let tnl = __http_crlf_at(raw, tpos, end);
+                if tnl < 0 { return __StdHttpChunkScan { body: b"", complete: false, bad: false }; }
+                if tnl == tpos { return __StdHttpChunkScan { body: out.snapshot(), complete: true, bad: false }; }
+                tpos = tnl + 2;
+            }
+            return __StdHttpChunkScan { body: b"", complete: false, bad: false };
+        }
         let data_start = nl + 2;
         let data_end = data_start + size;
-        if data_end + 2 > end { return __StdHttpChunkScan { body: b"", complete: false }; }
+        if data_end + 2 > end { return __StdHttpChunkScan { body: b"", complete: false, bad: false }; }
+        let ca = std::bytes::at(raw, data_end) or - 1;
+        let cb = std::bytes::at(raw, data_end + 1) or - 1;
+        if ca != 13 || cb != 10 { return __StdHttpChunkScan { body: b"", complete: false, bad: true }; }
         out.append(std::bytes::slice(raw, data_start, data_end));
         pos = data_end + 2;
     }
-    return __StdHttpChunkScan { body: b"", complete: false };
+    return __StdHttpChunkScan { body: b"", complete: false, bad: false };
 }
 
 type __StdHttpFramedRead { bytes: Bytes; framed: Bool; }
@@ -410,11 +438,13 @@ fn __http_recv_framed(handle: Int, is_tls: Bool, max_body: Int) -> __StdHttpFram
     if std::str::index_of(te, "chunked") >= 0 {
         while total < max_body {
             let sc = __http_scan_chunks(full, body_start, total);
+            // Raw bytes go back whole — __http_parse_client_response
+            // de-chunks. framed=true ⇒ terminator + trailers seen.
             if sc.complete {
-                let hb = std::bytes::BytesBuilder { initial_cap: 4096 };
-                hb.append(std::bytes::slice(full, 0, body_start));
-                hb.append(sc.body);
-                return __StdHttpFramedRead { bytes: hb.snapshot(), framed: true };
+                return __StdHttpFramedRead { bytes: full, framed: true };
+            }
+            if sc.bad {
+                return __StdHttpFramedRead { bytes: full, framed: false };
             }
             let take = if (max_body - total) < chunk { max_body - total } else { chunk };
             let piece = __http_recv_raw(handle, is_tls, take);

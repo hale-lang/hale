@@ -161,6 +161,66 @@ fn chunked_response_reassembles() {
 }
 
 #[test]
+fn oneshot_chunked_dechunks_and_rejects_malformed() {
+    // The FRICTION-log failure shape: a chunked response with NO
+    // Content-Length on the DEFAULT one-shot path (std::http::get,
+    // keep_alive off) used to return the raw hex-size framing as
+    // the body ("clean run, empty result" after JSON parsing).
+    // First accept serves a well-formed chunked response with a
+    // chunk-extension and a trailer header; second accept serves
+    // malformed chunk framing, which must surface as an error —
+    // never as partial/framed body bytes.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let responses = [
+            // valid: 3 chunks + chunk-ext + trailer header
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
+             6\r\nhello,\r\n1;ext=x\r\n \r\n5\r\nworld\r\n0\r\nX-Trailer: ignored\r\n\r\n",
+            // malformed: size line is not hex
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
+             zz\r\nbogus\r\n0\r\n\r\n",
+        ];
+        for resp in responses {
+            let (mut s, _) = match listener.accept() {
+                Ok(x) => x,
+                Err(_) => return,
+            };
+            s.set_read_timeout(Some(Duration::from_secs(5))).ok();
+            let _ = read_one_request(&mut s);
+            let _ = s.write_all(resp.as_bytes());
+            // close on drop — one-shot clients read to EOF
+        }
+    });
+
+    let src = format!(
+        r#"
+        fn main() {{
+            let r1 = std::http::get("http://127.0.0.1:{port}/chunked") or raise;
+            println("status=", r1.status, " body=[", std::str::from_bytes(r1.body), "]");
+            let r2 = std::http::get("http://127.0.0.1:{port}/bad-chunked") or std::http::ClientResponse {{
+                status: -1, headers: "", body: b""
+            }};
+            println("malformed-rejected=", r2.status == -1);
+        }}
+    "#
+    );
+    let (out, status) = build_and_run("oneshot_chunked", &src);
+    let _ = server.join();
+    assert!(status.success(), "exit: {:?}\n{}", status, out);
+    assert!(
+        out.contains("status=200 body=[hello, world]"),
+        "one-shot chunked body must be de-chunked (no hex framing):\n{}",
+        out
+    );
+    assert!(
+        out.contains("malformed-rejected=true"),
+        "malformed chunk framing must error, not return partial data:\n{}",
+        out
+    );
+}
+
+#[test]
 fn oneshot_get_post_and_error_channel() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();
