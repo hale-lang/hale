@@ -1,0 +1,29 @@
+# When a push changes the user-facing docs surface, dispatch the
+# hale-lang.org deploy — its build checks THIS repo out and syncs the
+# Book + spec, so the site tracks the repo push-to-push with no cron.
+#
+# Needs the SITE_DEPLOY_TOKEN secret: a fine-grained PAT with
+# Actions: read+write on hale-lang/hale-lang.org (the default
+# GITHUB_TOKEN is repo-scoped and cannot dispatch cross-repo).
+# Until the secret exists this job skips with a notice.
+name: site-deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/src/**'
+      - 'spec/**'
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.SITE_DEPLOY_TOKEN }}
+    steps:
+      - run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::notice::SITE_DEPLOY_TOKEN not set — site not redeployed"
+            exit 0
+          fi
+          GH_TOKEN="$TOKEN" gh workflow run deploy -R hale-lang/hale-lang.org
